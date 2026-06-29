@@ -87,3 +87,17 @@ Note on parameter logging: rejected values now never appear in our messages. Ide
 still passed to the DB as bind parameters (e.g. a real title on `addItem`); PostgreSQL does
 not log bind parameters on error by default (`log_parameter_max_length_on_error = 0`).
 Hardening that GUC in deployment is noted for Phase 2.
+
+---
+
+# Fourth-pass remediation (Codex review #4)
+
+One fresh-install P0: `SET search_path = public` left `pg_temp` implicitly searched **first
+for relations**, so the app could `CREATE TEMP TABLE events` and shadow `public.events`
+inside the `SECURITY DEFINER` functions — the event INSERT hit `pg_temp.events` while the
+projection hit `public.items`, splitting the store. Suite is now **24 passed, 0 failed**.
+
+| Finding | Fix | Proof |
+|---------|-----|-------|
+| `SECURITY DEFINER` permits `pg_temp` table shadowing | Defense in depth: (1) every table & function reference is schema-qualified (`public.*`); (2) every function pins `search_path = pg_catalog, public, pg_temp` with `pg_temp` **last**; (3) `REVOKE TEMPORARY ON DATABASE ... FROM PUBLIC, app`; (4) `REVOKE CREATE ON SCHEMA public FROM PUBLIC, app`. | Test 22b: app cannot create temp tables, and with a `pg_temp.events` shadow present the definer function still writes `durableEvents=1, tempEvents=0` (the inverse of the reported repro). |
+| Upgrade test used an empty legacy DB; a populated pre-UUID DB would fail adding the checks | Documented explicitly: there is no safe automated migration of non-opaque ids; such development volumes must be reset. Comment in `migrations.sql` at the constraint block; fresh installs and empty/compatible upgrades are unaffected. | `migrations.sql` CAVEAT note. |

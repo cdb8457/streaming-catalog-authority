@@ -5,10 +5,11 @@ been addressed. This is a **third-pass review request**: confirm the fixes hold 
 for anything still wrong before it is locked as the baseline for Phase 2. Be adversarial —
 assume green tests can still hide a broken invariant.
 
-Current state: **typecheck clean, 23/23 tests pass** against embedded PostgreSQL 16.14.
+Current state: **typecheck clean, 24/24 tests pass** against embedded PostgreSQL 16.14.
 History: round 1 = 14 tests (TS-centric); round 2 = 19 (typed gate, tombstone, locks,
 roles); round 3 = 21 (**authority moved into the database**); round 4 = 23 (upgrade-path
-migration + value-free error messages). See `REMEDIATION.md` for the finding-by-finding trail.
+migration + value-free error messages); round 5 = 24 (**pg_temp shadowing hardening**).
+See `REMEDIATION.md` for the finding-by-finding trail.
 
 ---
 

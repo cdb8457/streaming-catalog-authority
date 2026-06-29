@@ -365,6 +365,35 @@ async function main(): Promise<void> {
     assert(m3.length > 0 && !m3.includes(sensitive), `TS gate leaked the value: ${m3}`);
   });
 
+  // 22b. SECURITY DEFINER pg_temp shadowing (Codex 4th pass) -----------------
+  await test('SECURITY DEFINER — pg_temp table shadowing cannot split the event store', async () => {
+    await reset(admin);
+    // (a) the app role cannot create temp tables at all (TEMPORARY revoked)
+    await assertThrows(() => pool.query('CREATE TEMP TABLE events (x int)'), 'app cannot create temp tables');
+
+    // (b) even when a pg_temp.events shadow exists in the calling session, the
+    //     SECURITY DEFINER function writes to public.* (schema-qualified +
+    //     pg_temp pinned last). Use a privileged session that *can* make temp
+    //     tables to construct the exact attack Codex reproduced.
+    const shadower = new Client({ connectionString: adminUrl() });
+    await shadower.connect();
+    try {
+      await shadower.query(
+        `CREATE TEMP TABLE events (seq bigint, item_id text, kind text, type text, payload jsonb, created_at timestamptz, expires_at timestamptz)`,
+      );
+      const id = mintItemId();
+      await shadower.query('SELECT cat_add_item($1,NULL,NULL,NULL,NULL,$2::jsonb)', [id, '[]']);
+      const durableEvents = Number((await shadower.query(`SELECT count(*) AS c FROM public.events WHERE item_id=$1`, [id])).rows[0].c);
+      const durableItems = Number((await shadower.query(`SELECT count(*) AS c FROM public.items WHERE id=$1`, [id])).rows[0].c);
+      const tempEvents = Number((await shadower.query(`SELECT count(*) AS c FROM pg_temp.events`)).rows[0].c);
+      assertEq(durableEvents, 1, 'event landed in public.events');
+      assertEq(durableItems, 1, 'projection landed in public.items');
+      assertEq(tempEvents, 0, 'nothing landed in the pg_temp shadow');
+    } finally {
+      await shadower.end(); // drops the temp schema with the session
+    }
+  });
+
   // 23. Upgrade path: legacy schema -> current migration (Codex 3rd pass #1,#3)
   await test('upgrade path — applying current migration over a legacy schema closes the bypasses', async () => {
     const legacySql = readFileSync(fileURLToPath(new URL('./fixtures/legacy-migrations.sql', import.meta.url)), 'utf8');

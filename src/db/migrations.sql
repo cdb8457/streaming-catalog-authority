@@ -3,9 +3,15 @@
 -- The database is the authority boundary. ALL mutation goes through SECURITY
 -- DEFINER functions owned by the migrator; the runtime `app` role is granted
 -- only SELECT on the tables and EXECUTE on the public command/maintenance
--- functions. It cannot INSERT events, UPDATE the projection, prune without
--- rebuilding, or disable the append-only triggers. Lifecycle invariants and the
--- no-leak gate are enforced in the apply path, so no caller can bypass them.
+-- functions. Lifecycle invariants and the no-leak gate are enforced in the apply
+-- path, so no caller can bypass them.
+--
+-- SECURITY DEFINER hardening against pg_temp shadowing:
+--   * every table/function reference is schema-qualified (public.*),
+--   * every function pins search_path = pg_catalog, public, pg_temp (pg_temp LAST
+--     overrides its implicit "searched first for relations" behaviour),
+--   * the app role is denied TEMPORARY on the database and CREATE on schema
+--     public, so it cannot create shadowing objects in the first place.
 
 -- ---------------------------------------------------------------- tables -----
 
@@ -43,6 +49,11 @@ CREATE TABLE IF NOT EXISTS provider_refs (
 -- --------------------------------------------- upgrade-safe migration steps --
 -- Opaque-id CHECKs added idempotently so an upgrade from an older schema (which
 -- created the tables without them) gains the constraints too.
+--
+-- CAVEAT: a *populated* pre-UUID database will fail here, because its old
+-- non-opaque ids violate the new CHECK. There is no safe automated migration of
+-- non-opaque ids (they were never opaque); such development volumes must be
+-- reset. Fresh installs and empty/compatible upgrades are unaffected.
 DO $$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'items_id_uuid_chk') THEN
@@ -64,7 +75,8 @@ DROP FUNCTION IF EXISTS events_append_only();   -- legacy trigger fn, now unused
 
 -- ------------------------------------------------------- append-only guard ---
 
-CREATE OR REPLACE FUNCTION events_no_update_delete() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION events_no_update_delete() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
   IF TG_OP = 'UPDATE' THEN
     RAISE EXCEPTION 'events are append-only: UPDATE is forbidden';
@@ -76,17 +88,18 @@ BEGIN
   END IF;
   RETURN NULL;
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 DROP TRIGGER IF EXISTS events_append_only_trg ON events;
 CREATE TRIGGER events_append_only_trg
   BEFORE UPDATE OR DELETE ON events FOR EACH ROW EXECUTE FUNCTION events_no_update_delete();
 
-CREATE OR REPLACE FUNCTION events_no_truncate() RETURNS trigger AS $$
+CREATE OR REPLACE FUNCTION events_no_truncate() RETURNS trigger
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
   RAISE EXCEPTION 'events are append-only: TRUNCATE is forbidden';
 END;
-$$ LANGUAGE plpgsql;
+$$;
 
 DROP TRIGGER IF EXISTS events_truncate_guard ON events;
 CREATE TRIGGER events_truncate_guard
@@ -96,12 +109,12 @@ CREATE TRIGGER events_truncate_guard
 
 -- No-leak gate. Validates the EXACT jsonb that will be stored (post-parse), so a
 -- client-side toJSON()/getter cannot make validation and persistence disagree.
+-- Messages are generic and value-free: a rejected value or type is never
+-- interpolated, or it would leak into the PostgreSQL log.
 CREATE OR REPLACE FUNCTION cat_validate_payload(p_type TEXT, p_payload JSONB)
-RETURNS VOID LANGUAGE plpgsql IMMUTABLE AS $$
+RETURNS VOID LANGUAGE plpgsql IMMUTABLE SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE v_op TEXT; v_w NUMERIC;
 BEGIN
-  -- All messages are generic and value-free: a rejected payload value or event
-  -- type must NEVER be interpolated, or it leaks into the PostgreSQL log.
   IF p_type IN ('ItemAdded', 'ItemForgotten', 'ItemRestored') THEN
     IF p_payload <> '{}'::jsonb THEN RAISE EXCEPTION 'no-leak: payload not permitted for this event type'; END IF;
 
@@ -133,41 +146,40 @@ $$;
 -- called with already-validated events (live apply) or the trusted log (rebuild).
 CREATE OR REPLACE FUNCTION cat_reduce(
   p_seq BIGINT, p_item_id TEXT, p_type TEXT, p_payload JSONB, p_expires_at TIMESTAMPTZ, p_cutoff TIMESTAMPTZ)
-RETURNS VOID LANGUAGE plpgsql AS $$
+RETURNS VOID LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE v_op TEXT; v_weight INTEGER;
 BEGIN
   IF p_type = 'ItemAdded' THEN
-    INSERT INTO items (id, present, forgotten, last_seq, updated_at)
+    INSERT INTO public.items (id, present, forgotten, last_seq, updated_at)
     VALUES (p_item_id, true, false, p_seq, now())
     ON CONFLICT (id) DO UPDATE SET present = true, last_seq = EXCLUDED.last_seq, updated_at = now();
 
   ELSIF p_type = 'ItemRestored' THEN
-    UPDATE items SET present = true, forgotten = false, last_seq = p_seq, updated_at = now()
+    UPDATE public.items SET present = true, forgotten = false, last_seq = p_seq, updated_at = now()
      WHERE id = p_item_id;
 
   ELSIF p_type = 'ProviderRefAttached' THEN
     v_op := p_payload->>'op';
-    INSERT INTO provider_refs (item_id, ref_type, present) VALUES (p_item_id, v_op, true)
+    INSERT INTO public.provider_refs (item_id, ref_type, present) VALUES (p_item_id, v_op, true)
     ON CONFLICT (item_id, ref_type) DO UPDATE SET present = true;
-    UPDATE items SET last_seq = GREATEST(last_seq, p_seq), updated_at = now() WHERE id = p_item_id;
+    UPDATE public.items SET last_seq = GREATEST(last_seq, p_seq), updated_at = now() WHERE id = p_item_id;
 
   ELSIF p_type = 'ItemForgotten' THEN
-    -- creates a tombstone even if the item never existed
-    INSERT INTO items (id, present, forgotten, last_seq, updated_at)
+    INSERT INTO public.items (id, present, forgotten, last_seq, updated_at)
     VALUES (p_item_id, false, true, p_seq, now())
     ON CONFLICT (id) DO UPDATE
       SET forgotten = true, present = false,
           title = NULL, year = NULL, external_ids = NULL, metadata = NULL,
           last_seq = p_seq, updated_at = now();
-    UPDATE provider_refs SET present = false, ref_value = NULL WHERE item_id = p_item_id;
+    UPDATE public.provider_refs SET present = false, ref_value = NULL WHERE item_id = p_item_id;
 
   ELSIF p_type = 'BehavioralSignal' THEN
     IF p_expires_at <= p_cutoff THEN
-      UPDATE items SET last_seq = GREATEST(last_seq, p_seq), updated_at = now() WHERE id = p_item_id;
+      UPDATE public.items SET last_seq = GREATEST(last_seq, p_seq), updated_at = now() WHERE id = p_item_id;
     ELSE
       v_weight := (p_payload->>'weight')::integer;
-      UPDATE items SET behavioral_score = behavioral_score + v_weight,
-                       last_seq = GREATEST(last_seq, p_seq), updated_at = now()
+      UPDATE public.items SET behavioral_score = behavioral_score + v_weight,
+                              last_seq = GREATEST(last_seq, p_seq), updated_at = now()
        WHERE id = p_item_id;
     END IF;
   END IF;
@@ -175,11 +187,10 @@ END;
 $$;
 
 -- The single event-sourced mutator. Assumes the caller already holds the locks.
--- Enforces id opacity, envelope, payload, and the LIFECYCLE TRANSITION — so the
--- forget tombstone cannot be cleared except via a valid ItemRestored.
+-- Enforces id opacity, envelope, payload, and the LIFECYCLE TRANSITION.
 CREATE OR REPLACE FUNCTION cat_apply_internal(
   p_item_id TEXT, p_type TEXT, p_payload JSONB, p_expires_at TIMESTAMPTZ, p_cutoff TIMESTAMPTZ)
-RETURNS BIGINT LANGUAGE plpgsql AS $$
+RETURNS BIGINT LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE v_kind TEXT; v_seq BIGINT; v_present BOOLEAN; v_forgotten BOOLEAN; v_exists BOOLEAN;
 BEGIN
   IF p_item_id !~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' THEN
@@ -190,9 +201,9 @@ BEGIN
   IF v_kind = 'behavioral' AND p_expires_at IS NULL THEN RAISE EXCEPTION 'behavioral event requires expiry'; END IF;
   IF v_kind = 'structural' AND p_expires_at IS NOT NULL THEN RAISE EXCEPTION 'structural event must not have expiry'; END IF;
 
-  PERFORM cat_validate_payload(p_type, p_payload);
+  PERFORM public.cat_validate_payload(p_type, p_payload);
 
-  SELECT present, forgotten INTO v_present, v_forgotten FROM items WHERE id = p_item_id;
+  SELECT present, forgotten INTO v_present, v_forgotten FROM public.items WHERE id = p_item_id;
   v_exists := FOUND;
 
   IF p_type = 'ItemAdded' THEN
@@ -205,50 +216,51 @@ BEGIN
   END IF;
   -- ItemForgotten: always permitted; reduce creates/maintains the tombstone.
 
-  INSERT INTO events (item_id, kind, type, payload, expires_at)
+  INSERT INTO public.events (item_id, kind, type, payload, expires_at)
   VALUES (p_item_id, v_kind, p_type, p_payload, p_expires_at) RETURNING seq INTO v_seq;
 
-  PERFORM cat_reduce(v_seq, p_item_id, p_type, p_payload, p_expires_at, p_cutoff);
+  PERFORM public.cat_reduce(v_seq, p_item_id, p_type, p_payload, p_expires_at, p_cutoff);
   RETURN v_seq;
 END;
 $$;
 
 -- ------------------------------------------------- public mutation surface ---
 
-CREATE OR REPLACE FUNCTION cat_lock_item(p_item_id TEXT) RETURNS VOID LANGUAGE plpgsql AS $$
+CREATE OR REPLACE FUNCTION cat_lock_item(p_item_id TEXT) RETURNS VOID
+LANGUAGE plpgsql SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-  PERFORM pg_advisory_xact_lock_shared(4242, 1);              -- shared maintenance lock
-  PERFORM pg_advisory_xact_lock(hashtextextended(p_item_id, 0)); -- per-item exclusive
+  PERFORM pg_advisory_xact_lock_shared(4242, 1);                  -- shared maintenance lock
+  PERFORM pg_advisory_xact_lock(hashtextextended(p_item_id, 0));  -- per-item exclusive
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION cat_apply(p_item_id TEXT, p_type TEXT, p_payload JSONB, p_expires_at TIMESTAMPTZ)
-RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-  PERFORM cat_lock_item(p_item_id);
-  RETURN cat_apply_internal(p_item_id, p_type, p_payload, p_expires_at, now());
+  PERFORM public.cat_lock_item(p_item_id);
+  RETURN public.cat_apply_internal(p_item_id, p_type, p_payload, p_expires_at, now());
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION cat_add_item(
   p_item_id TEXT, p_title TEXT, p_year INTEGER, p_external_ids JSONB, p_metadata JSONB, p_refs JSONB)
-RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE v_present BOOLEAN; v_forgotten BOOLEAN; v_exists BOOLEAN; v_last BIGINT; v_seq BIGINT; r JSONB;
 BEGIN
-  PERFORM cat_lock_item(p_item_id);
-  SELECT present, forgotten, last_seq INTO v_present, v_forgotten, v_last FROM items WHERE id = p_item_id;
+  PERFORM public.cat_lock_item(p_item_id);
+  SELECT present, forgotten, last_seq INTO v_present, v_forgotten, v_last FROM public.items WHERE id = p_item_id;
   v_exists := FOUND;
   IF v_exists AND v_forgotten THEN RAISE EXCEPTION 'item is forgotten; use restore()'; END IF;
   IF v_exists AND v_present THEN RETURN v_last; END IF;   -- idempotent no-op
 
-  v_seq := cat_apply_internal(p_item_id, 'ItemAdded', '{}'::jsonb, NULL, now());
+  v_seq := public.cat_apply_internal(p_item_id, 'ItemAdded', '{}'::jsonb, NULL, now());
   IF p_refs IS NOT NULL THEN
     FOR r IN SELECT jsonb_array_elements(p_refs) LOOP
-      PERFORM cat_apply_internal(p_item_id, 'ProviderRefAttached', jsonb_build_object('op', r->>'type'), NULL, now());
-      UPDATE provider_refs SET ref_value = r->>'value' WHERE item_id = p_item_id AND ref_type = r->>'type';
+      PERFORM public.cat_apply_internal(p_item_id, 'ProviderRefAttached', jsonb_build_object('op', r->>'type'), NULL, now());
+      UPDATE public.provider_refs SET ref_value = r->>'value' WHERE item_id = p_item_id AND ref_type = r->>'type';
     END LOOP;
   END IF;
-  UPDATE items SET title = p_title, year = p_year, external_ids = p_external_ids, metadata = p_metadata
+  UPDATE public.items SET title = p_title, year = p_year, external_ids = p_external_ids, metadata = p_metadata
    WHERE id = p_item_id;
   RETURN v_seq;
 END;
@@ -256,64 +268,64 @@ $$;
 
 CREATE OR REPLACE FUNCTION cat_restore(
   p_item_id TEXT, p_title TEXT, p_year INTEGER, p_external_ids JSONB, p_metadata JSONB, p_refs JSONB)
-RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE v_seq BIGINT; r JSONB;
 BEGIN
-  PERFORM cat_lock_item(p_item_id);
-  v_seq := cat_apply_internal(p_item_id, 'ItemRestored', '{}'::jsonb, NULL, now());  -- guards: must be forgotten
+  PERFORM public.cat_lock_item(p_item_id);
+  v_seq := public.cat_apply_internal(p_item_id, 'ItemRestored', '{}'::jsonb, NULL, now());  -- guards: must be forgotten
   IF p_refs IS NOT NULL THEN
     FOR r IN SELECT jsonb_array_elements(p_refs) LOOP
-      PERFORM cat_apply_internal(p_item_id, 'ProviderRefAttached', jsonb_build_object('op', r->>'type'), NULL, now());
-      UPDATE provider_refs SET ref_value = r->>'value' WHERE item_id = p_item_id AND ref_type = r->>'type';
+      PERFORM public.cat_apply_internal(p_item_id, 'ProviderRefAttached', jsonb_build_object('op', r->>'type'), NULL, now());
+      UPDATE public.provider_refs SET ref_value = r->>'value' WHERE item_id = p_item_id AND ref_type = r->>'type';
     END LOOP;
   END IF;
-  UPDATE items SET title = p_title, year = p_year, external_ids = p_external_ids, metadata = p_metadata
+  UPDATE public.items SET title = p_title, year = p_year, external_ids = p_external_ids, metadata = p_metadata
    WHERE id = p_item_id;
   RETURN v_seq;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION cat_forget(p_item_id TEXT)
-RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-  PERFORM cat_lock_item(p_item_id);
-  RETURN cat_apply_internal(p_item_id, 'ItemForgotten', '{}'::jsonb, NULL, now());
+  PERFORM public.cat_lock_item(p_item_id);
+  RETURN public.cat_apply_internal(p_item_id, 'ItemForgotten', '{}'::jsonb, NULL, now());
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION cat_record_signal(p_item_id TEXT, p_weight INTEGER, p_ttl_ms BIGINT)
-RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
-  PERFORM cat_lock_item(p_item_id);
-  RETURN cat_apply_internal(p_item_id, 'BehavioralSignal', jsonb_build_object('weight', p_weight),
-                            now() + (p_ttl_ms || ' milliseconds')::interval, now());
+  PERFORM public.cat_lock_item(p_item_id);
+  RETURN public.cat_apply_internal(p_item_id, 'BehavioralSignal', jsonb_build_object('weight', p_weight),
+                                   now() + (p_ttl_ms || ' milliseconds')::interval, now());
 END;
 $$;
 
 -- ----------------------------------------------------------- maintenance -----
 
 CREATE OR REPLACE FUNCTION cat_rebuild(p_cutoff TIMESTAMPTZ)
-RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE e RECORD;
 BEGIN
   PERFORM pg_advisory_xact_lock(4242, 1);  -- exclusive: no writer can interleave
-  DELETE FROM items;                       -- cascades to provider_refs
-  FOR e IN SELECT seq, item_id, type, payload, expires_at FROM events ORDER BY seq ASC LOOP
-    PERFORM cat_reduce(e.seq, e.item_id, e.type, e.payload, e.expires_at, p_cutoff);
+  DELETE FROM public.items;                -- cascades to provider_refs
+  FOR e IN SELECT seq, item_id, type, payload, expires_at FROM public.events ORDER BY seq ASC LOOP
+    PERFORM public.cat_reduce(e.seq, e.item_id, e.type, e.payload, e.expires_at, p_cutoff);
   END LOOP;
 END;
 $$;
 
 CREATE OR REPLACE FUNCTION cat_prune_and_rebuild(p_cutoff TIMESTAMPTZ)
-RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = public AS $$
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE n INTEGER; e RECORD;
 BEGIN
   PERFORM pg_advisory_xact_lock(4242, 1);  -- exclusive
-  DELETE FROM events WHERE kind = 'behavioral' AND expires_at IS NOT NULL AND expires_at <= p_cutoff;
+  DELETE FROM public.events WHERE kind = 'behavioral' AND expires_at IS NOT NULL AND expires_at <= p_cutoff;
   GET DIAGNOSTICS n = ROW_COUNT;
-  DELETE FROM items;
-  FOR e IN SELECT seq, item_id, type, payload, expires_at FROM events ORDER BY seq ASC LOOP
-    PERFORM cat_reduce(e.seq, e.item_id, e.type, e.payload, e.expires_at, p_cutoff);
+  DELETE FROM public.items;
+  FOR e IN SELECT seq, item_id, type, payload, expires_at FROM public.events ORDER BY seq ASC LOOP
+    PERFORM public.cat_reduce(e.seq, e.item_id, e.type, e.payload, e.expires_at, p_cutoff);
   END LOOP;
   RETURN n;
 END;
@@ -329,10 +341,20 @@ BEGIN
 END;
 $$;
 
--- App can READ the tables, but cannot mutate them directly.
+-- App can READ the tables, but cannot mutate them directly...
 REVOKE ALL ON events, items, provider_refs FROM app;
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs TO app;
+
+-- ...nor create objects that could shadow them inside SECURITY DEFINER functions.
+REVOKE CREATE ON SCHEMA public FROM PUBLIC;
+REVOKE CREATE ON SCHEMA public FROM app;
+DO $$
+BEGIN
+  EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM PUBLIC', current_database());
+  EXECUTE format('REVOKE TEMPORARY ON DATABASE %I FROM app', current_database());
+END;
+$$;
 
 -- No function is callable by the world; the app gets only the public surface.
 REVOKE ALL ON FUNCTION
