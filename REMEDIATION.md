@@ -42,3 +42,29 @@ PostgreSQL 16.14. One finding is **reframed** rather than "fixed" — see P0-6.
 - Routing application logs through `assertNoLeak` (the scanner is already exported and
   reused; wiring app logging is Phase 2).
 - Encrypted backup policy + restore that does not resurrect expired behavioral events.
+
+---
+
+# Second-pass remediation (Codex review #2)
+
+Root cause of the new findings: enforcement lived in TypeScript, so anything holding the
+app connection could bypass `CatalogAuthority`. Fixed by **moving the authority into the
+database** — all mutation is via `SECURITY DEFINER` functions; the app role gets only
+`SELECT` + `EXECUTE`. Suite is now **21 passed, 0 failed**.
+
+| Finding | Fix | Proof |
+|---------|-----|-------|
+| No-leak serialization bypass via non-enumerable `toJSON()` (`{op:"tmdb"}` validates, `{op:"Top Secret Movie"}` persists) | Validate the **exact serialized value**: TS validates `JSON.parse(JSON.stringify(payload))` and passes the same string; the DB `cat_validate_payload` re-validates the stored jsonb. | Test 4 builds the non-enumerable `toJSON` object and asserts `apply` throws + nothing persists. |
+| `item_id` not opaque (`addItem("Top Secret Movie")` stored the title) | Item ids are UUIDs: `mintItemId()`, an `isOpaqueItemId` check in TS, and a DB `CHECK` on `items.id` and `events.item_id`. | Test 5 (TS reject + DB CHECK reject). |
+| Forget bypassable via `apply()`: `apply(ItemRestored)` cleared the tombstone; forgetting an unknown id left no tombstone | Lifecycle transitions enforced in the **apply path** (`cat_apply_internal`): `ItemRestored` requires a forgotten item, `ItemAdded` is rejected on a forgotten item, and `ItemForgotten` always writes a tombstone (even for an unknown id). | Tests 15, 16, 17. |
+| Authority boundary not enforced: app role could raw-insert an event with `{"title":...}` and update `items.title` | App role has **no table DML** — only `SELECT` + `EXECUTE` on the `cat_*` functions. All writes happen inside `SECURITY DEFINER` functions. | Test 20 (raw insert / projection update / prune all denied). |
+| Prune divergence: bare `prune_expired_behavioral()` deleted the event but left `behavioral_score` | Removed the bare prune. The only prune surface is `cat_prune_and_rebuild` (atomic prune + refold, one cutoff). | Test 19 + Test 20 (bare prune function no longer exists). |
+| "Fresh DB" test only truncated; didn't advance the identity sequence | Re-fold now `setval`s the identity sequence and asserts a subsequent append gets `max+1`. | Test 14. |
+| Tests 3–4 didn't `await assertThrows` | `assertThrows` is awaited everywhere; added optional message-match. | Suite. |
+| `reduce()` still exported | `reducer.ts` deleted; the fold lives in `cat_reduce` (plpgsql). | Repo. |
+| Missing `.dockerignore` | Added (excludes host `node_modules`, `.pgdata`, `.git`). | Repo. |
+| `HANDOFF_FOR_REVIEW.md` stale (14-test impl) | Rewritten to the DB-authority design + 21 tests. | Repo. |
+| README lacked Docker Compose commands | Added "Against your own PostgreSQL 16 (or Docker Compose)". | Repo. |
+
+Accepted: the logical-vs-physical erasure reframing stands; crypto-shredding remains the
+first Phase 2 design task.
