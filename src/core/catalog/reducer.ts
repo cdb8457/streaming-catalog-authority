@@ -2,28 +2,39 @@ import type { PoolClient } from 'pg';
 import type { CatalogEvent } from './events.js';
 
 export interface PersistedEvent extends CatalogEvent {
-  seq: number;
+  /** BIGINT carried as string — never coerced to an unsafe JS number. */
+  seq: string;
 }
 
 /**
- * The reducer: a pure fold from an event onto the OPERATIONAL projection.
+ * Pure fold from an event onto the OPERATIONAL projection. Writes only state
+ * derivable from events; NEVER writes content identity (title/year/external_ids/
+ * metadata, or provider ref values). Runs inside the caller's locked txn.
  *
- * It writes only state that is fully derivable from events. It NEVER writes
- * content identity (title/year/external_ids/metadata, or provider ref values) —
- * which is exactly why replaying the log rebuilds operational state and leaves
- * identity NULL until a later phase re-hydrates it.
- *
- * Every statement here runs inside the caller's locked transaction.
+ * `cutoff` makes the behavioral fold deterministic: a behavioral signal counts
+ * only while expires_at > cutoff. Live applies pass `now`; rebuild/prune pass a
+ * single fixed cutoff so the result is reproducible regardless of wall clock.
  */
-export async function reduce(client: PoolClient, e: PersistedEvent): Promise<void> {
+export async function reduce(client: PoolClient, e: PersistedEvent, cutoff: Date): Promise<void> {
   switch (e.type) {
     case 'ItemAdded': {
+      // Authoring is gated by the command (never emitted for a forgotten item),
+      // so this never resurrects identity; forgotten is left untouched here.
       await client.query(
         `INSERT INTO items (id, present, forgotten, last_seq, updated_at)
          VALUES ($1, true, false, $2, now())
          ON CONFLICT (id) DO UPDATE
-           SET present = true, forgotten = false,
-               last_seq = EXCLUDED.last_seq, updated_at = now()`,
+           SET present = true, last_seq = EXCLUDED.last_seq, updated_at = now()`,
+        [e.itemId, e.seq],
+      );
+      return;
+    }
+
+    case 'ItemRestored': {
+      await client.query(
+        `UPDATE items
+           SET present = true, forgotten = false, last_seq = $2, updated_at = now()
+         WHERE id = $1`,
         [e.itemId, e.seq],
       );
       return;
@@ -38,7 +49,7 @@ export async function reduce(client: PoolClient, e: PersistedEvent): Promise<voi
         [e.itemId, refType],
       );
       await client.query(
-        `UPDATE items SET last_seq = $2, updated_at = now() WHERE id = $1`,
+        `UPDATE items SET last_seq = GREATEST(last_seq, $2), updated_at = now() WHERE id = $1`,
         [e.itemId, e.seq],
       );
       return;
@@ -61,14 +72,23 @@ export async function reduce(client: PoolClient, e: PersistedEvent): Promise<voi
     }
 
     case 'BehavioralSignal': {
-      const weight = Number((e.payload as { weight?: unknown }).weight ?? 0) || 0;
-      await client.query(
-        `UPDATE items
-           SET behavioral_score = behavioral_score + $2,
-               last_seq = GREATEST(last_seq, $3), updated_at = now()
-         WHERE id = $1`,
-        [e.itemId, weight, e.seq],
-      );
+      const expired = e.expiresAt !== null && e.expiresAt.getTime() <= cutoff.getTime();
+      if (expired) {
+        // keep last_seq monotonic but do not count an expired signal
+        await client.query(
+          `UPDATE items SET last_seq = GREATEST(last_seq, $2), updated_at = now() WHERE id = $1`,
+          [e.itemId, e.seq],
+        );
+      } else {
+        const weight = Number((e.payload as { weight?: unknown }).weight ?? 0) || 0;
+        await client.query(
+          `UPDATE items
+             SET behavioral_score = behavioral_score + $2,
+                 last_seq = GREATEST(last_seq, $3), updated_at = now()
+           WHERE id = $1`,
+          [e.itemId, weight, e.seq],
+        );
+      }
       return;
     }
 

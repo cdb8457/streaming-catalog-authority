@@ -1,21 +1,21 @@
+import { EVENT_REGISTRY, KNOWN_REF_TYPES } from '../catalog/events.js';
+
 /**
- * No-leak gate for event payloads.
+ * No-leak gate.
  *
- * Two layers, both enforcing identity by STRUCTURE rather than by guessing at
- * meaning:
+ * Two functions, two jobs:
  *
- *   1. Key allowlist — a payload may only contain keys that are known to be
- *      operational and non-identifying. Anything else (title, name, year,
- *      external_ids, value, hash, magnet, url, key, token, ...) is rejected
- *      simply because it is not on the list. This is what structurally keeps
- *      content identity out of the log.
+ *   - validateEventPayload(type, payload): the PRIMARY defense for the event
+ *     log. Each event type has a typed payload schema. Keys must match exactly;
+ *     values must satisfy a type/enum/range. This is what structurally keeps
+ *     content identity out of events — an attacker cannot smuggle a title in as
+ *     `op` because `op` must be a member of the fixed ref-type enum.
  *
- *   2. Signature scan — defence in depth on string VALUES. We only match things
- *      that have an unambiguous signature (URLs, magnet links, urn topics, raw
- *      sha1/sha256 hashes, JWTs, api-key/bearer shapes). We deliberately do NOT
- *      pattern-match plain words like "infohash": an operational LABEL such as
- *      ref_type = "infohash" is legitimate and must pass. The infohash *value*
- *      is blocked structurally (it can never reach a payload), not by word scan.
+ *   - assertNoLeak(value): a generic signature scanner over string values. Used
+ *     as defense-in-depth inside payload validation, and reusable on its own for
+ *     log redaction in Phase 2. It only matches things with an unambiguous
+ *     signature (URLs, magnets, urn topics, raw hashes, JWTs, key/bearer shapes)
+ *     — never plain words, so legitimate labels like "infohash" pass.
  */
 
 export class NoLeakError extends Error {
@@ -25,10 +25,6 @@ export class NoLeakError extends Error {
   }
 }
 
-/** Keys permitted anywhere inside an event payload. Keep this list tiny. */
-const ALLOWED_PAYLOAD_KEYS = new Set<string>(['op', 'weight']);
-
-/** String-value signatures that indicate a leaked secret or content identity. */
 const SIGNATURES: ReadonlyArray<{ re: RegExp; label: string }> = [
   { re: /https?:\/\//i, label: 'url' },
   { re: /magnet:\?/i, label: 'magnet link' },
@@ -41,39 +37,85 @@ const SIGNATURES: ReadonlyArray<{ re: RegExp; label: string }> = [
   { re: /\bBearer\s+[A-Za-z0-9._-]{12,}/i, label: 'bearer token' },
 ];
 
-/**
- * Throws NoLeakError if `payload` contains a forbidden key (anywhere, including
- * nested) or a string value matching a secret/identity signature. Called BEFORE
- * any event is persisted.
- */
-export function assertNoLeak(payload: unknown, path = 'payload'): void {
-  if (payload === null || payload === undefined) return;
-
-  if (typeof payload === 'string') {
+/** Throws if any string value (recursively) matches a secret/identity signature. */
+export function assertNoLeak(value: unknown, path = 'value'): void {
+  if (value === null || value === undefined) return;
+  if (typeof value === 'string') {
     for (const { re, label } of SIGNATURES) {
-      if (re.test(payload)) {
+      if (re.test(value)) {
         throw new NoLeakError(`no-leak: value at ${path} matches forbidden ${label} signature`);
       }
     }
     return;
   }
-
-  if (typeof payload === 'number' || typeof payload === 'boolean') return;
-
-  if (Array.isArray(payload)) {
-    payload.forEach((v, i) => assertNoLeak(v, `${path}[${i}]`));
+  if (typeof value === 'number' || typeof value === 'boolean') return;
+  if (Array.isArray(value)) {
+    value.forEach((v, i) => assertNoLeak(v, `${path}[${i}]`));
     return;
   }
-
-  if (typeof payload === 'object') {
-    for (const [key, value] of Object.entries(payload as Record<string, unknown>)) {
-      if (!ALLOWED_PAYLOAD_KEYS.has(key)) {
-        throw new NoLeakError(`no-leak: forbidden payload key "${key}" at ${path}`);
-      }
-      assertNoLeak(value, `${path}.${key}`);
+  if (typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      assertNoLeak(v, `${path}.${k}`);
     }
     return;
   }
+  throw new NoLeakError(`no-leak: unsupported value type at ${path}`);
+}
 
-  throw new NoLeakError(`no-leak: unsupported payload type at ${path}`);
+// --- typed payload schemas --------------------------------------------------
+
+type FieldSpec =
+  | { kind: 'enum'; values: ReadonlySet<string>; pattern: RegExp }
+  | { kind: 'int'; min: number; max: number };
+
+const REF_TYPE_SET: ReadonlySet<string> = new Set(KNOWN_REF_TYPES);
+
+const PAYLOAD_SCHEMAS: Record<string, Record<string, FieldSpec>> = {
+  ItemAdded: {},
+  ItemForgotten: {},
+  ItemRestored: {},
+  ProviderRefAttached: {
+    op: { kind: 'enum', values: REF_TYPE_SET, pattern: /^[a-z0-9_]{1,32}$/ },
+  },
+  BehavioralSignal: {
+    weight: { kind: 'int', min: 1, max: 1000 },
+  },
+};
+
+/**
+ * Validates an event payload against its type's schema, then runs the signature
+ * scan as a backstop. Throws NoLeakError on any violation. Called before any
+ * event is persisted.
+ */
+export function validateEventPayload(type: string, payload: Record<string, unknown>): void {
+  if (!(type in EVENT_REGISTRY)) {
+    throw new NoLeakError(`no-leak: unknown event type "${type}"`);
+  }
+  const schema = PAYLOAD_SCHEMAS[type] ?? {};
+  const allowed = new Set(Object.keys(schema));
+
+  for (const key of Object.keys(payload)) {
+    if (!allowed.has(key)) {
+      throw new NoLeakError(`no-leak: forbidden payload key "${key}" for ${type}`);
+    }
+  }
+
+  for (const [key, spec] of Object.entries(schema)) {
+    const v = payload[key];
+    if (v === undefined) {
+      throw new NoLeakError(`no-leak: missing payload key "${key}" for ${type}`);
+    }
+    if (spec.kind === 'enum') {
+      if (typeof v !== 'string' || !spec.values.has(v) || !spec.pattern.test(v)) {
+        throw new NoLeakError(`no-leak: payload "${key}" for ${type} is not an allowed label`);
+      }
+    } else {
+      if (typeof v !== 'number' || !Number.isInteger(v) || v < spec.min || v > spec.max) {
+        throw new NoLeakError(`no-leak: payload "${key}" for ${type} out of range`);
+      }
+    }
+  }
+
+  // defense in depth: even within the schema, no string may carry a signature
+  assertNoLeak(payload, 'payload');
 }
