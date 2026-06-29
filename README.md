@@ -16,12 +16,17 @@ Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.
 
 ```bash
 docker compose up -d postgres                 # provision postgres:16
+docker compose logs -f postgres               # follow DB logs (Ctrl-C to stop)
+
 export ADMIN_DATABASE_URL=postgresql://postgres:postgres@localhost:5432/catalog
 export DATABASE_URL=postgresql://app:app@localhost:5432/catalog
 npm run ci
 
-# or run the suite fully inside containers:
-docker compose run --rm app
+# or run the suite fully inside containers, against the postgres service:
+docker compose run --rm app npm test          # or: npm run ci
+
+docker compose down                           # stop and remove containers
+docker compose down -v                        # also drop the postgres volume
 ```
 
 See `.env.example`. `ADMIN_DATABASE_URL` is the owner/migrator; `DATABASE_URL` is the

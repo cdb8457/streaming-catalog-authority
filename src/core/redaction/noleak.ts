@@ -88,30 +88,32 @@ const PAYLOAD_SCHEMAS: Record<string, Record<string, FieldSpec>> = {
  * event is persisted.
  */
 export function validateEventPayload(type: string, payload: Record<string, unknown>): void {
+  // Messages are deliberately generic: a rejected value or key must never be
+  // interpolated into an error string, or it would leak into logs.
   if (!(type in EVENT_REGISTRY)) {
-    throw new NoLeakError(`no-leak: unknown event type "${type}"`);
+    throw new NoLeakError('no-leak: unknown event type');
   }
   const schema = PAYLOAD_SCHEMAS[type] ?? {};
   const allowed = new Set(Object.keys(schema));
 
   for (const key of Object.keys(payload)) {
     if (!allowed.has(key)) {
-      throw new NoLeakError(`no-leak: forbidden payload key "${key}" for ${type}`);
+      throw new NoLeakError('no-leak: forbidden payload field for event');
     }
   }
 
   for (const [key, spec] of Object.entries(schema)) {
     const v = payload[key];
     if (v === undefined) {
-      throw new NoLeakError(`no-leak: missing payload key "${key}" for ${type}`);
+      throw new NoLeakError('no-leak: missing required payload field');
     }
     if (spec.kind === 'enum') {
       if (typeof v !== 'string' || !spec.values.has(v) || !spec.pattern.test(v)) {
-        throw new NoLeakError(`no-leak: payload "${key}" for ${type} is not an allowed label`);
+        throw new NoLeakError('no-leak: payload field is not an allowed value');
       }
     } else {
       if (typeof v !== 'number' || !Number.isInteger(v) || v < spec.min || v > spec.max) {
-        throw new NoLeakError(`no-leak: payload "${key}" for ${type} out of range`);
+        throw new NoLeakError('no-leak: payload field is out of range');
       }
     }
   }

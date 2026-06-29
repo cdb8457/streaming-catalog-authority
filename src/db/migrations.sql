@@ -11,8 +11,7 @@
 
 CREATE TABLE IF NOT EXISTS events (
   seq         BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  item_id     TEXT NOT NULL
-              CHECK (item_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+  item_id     TEXT NOT NULL,   -- opaque-uuid CHECK added below (idempotent, upgrade-safe)
   kind        TEXT NOT NULL CHECK (kind IN ('structural', 'behavioral')),
   type        TEXT NOT NULL,
   payload     JSONB NOT NULL DEFAULT '{}'::jsonb,
@@ -23,8 +22,7 @@ CREATE INDEX IF NOT EXISTS events_item_seq_idx ON events (item_id, seq);
 CREATE INDEX IF NOT EXISTS events_behavioral_ttl_idx ON events (expires_at) WHERE kind = 'behavioral';
 
 CREATE TABLE IF NOT EXISTS items (
-  id               TEXT PRIMARY KEY
-                   CHECK (id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+  id               TEXT PRIMARY KEY,   -- opaque-uuid CHECK added below (idempotent, upgrade-safe)
   present          BOOLEAN NOT NULL DEFAULT false,
   forgotten        BOOLEAN NOT NULL DEFAULT false,
   behavioral_score INTEGER NOT NULL DEFAULT 0,
@@ -41,6 +39,28 @@ CREATE TABLE IF NOT EXISTS provider_refs (
   ref_value  TEXT,                                   -- identity/secret (NULL after rebuild)
   PRIMARY KEY (item_id, ref_type)
 );
+
+-- --------------------------------------------- upgrade-safe migration steps --
+-- Opaque-id CHECKs added idempotently so an upgrade from an older schema (which
+-- created the tables without them) gains the constraints too.
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'items_id_uuid_chk') THEN
+    ALTER TABLE items ADD CONSTRAINT items_id_uuid_chk
+      CHECK (id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'events_item_id_uuid_chk') THEN
+    ALTER TABLE events ADD CONSTRAINT events_item_id_uuid_chk
+      CHECK (item_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$');
+  END IF;
+END;
+$$;
+
+-- Remove objects superseded by later schema versions. Critically, this closes
+-- the upgrade-path prune bypass: an older schema installed a bare, app-callable
+-- prune_expired_behavioral() that deleted events without rebuilding.
+DROP FUNCTION IF EXISTS prune_expired_behavioral(TIMESTAMPTZ);
+DROP FUNCTION IF EXISTS events_append_only();   -- legacy trigger fn, now unused
 
 -- ------------------------------------------------------- append-only guard ---
 
@@ -80,29 +100,31 @@ CREATE OR REPLACE FUNCTION cat_validate_payload(p_type TEXT, p_payload JSONB)
 RETURNS VOID LANGUAGE plpgsql IMMUTABLE AS $$
 DECLARE v_op TEXT; v_w NUMERIC;
 BEGIN
+  -- All messages are generic and value-free: a rejected payload value or event
+  -- type must NEVER be interpolated, or it leaks into the PostgreSQL log.
   IF p_type IN ('ItemAdded', 'ItemForgotten', 'ItemRestored') THEN
-    IF p_payload <> '{}'::jsonb THEN RAISE EXCEPTION 'no-leak: % requires empty payload', p_type; END IF;
+    IF p_payload <> '{}'::jsonb THEN RAISE EXCEPTION 'no-leak: payload not permitted for this event type'; END IF;
 
   ELSIF p_type = 'ProviderRefAttached' THEN
     IF (SELECT count(*) FROM jsonb_object_keys(p_payload)) <> 1 OR NOT (p_payload ? 'op') THEN
-      RAISE EXCEPTION 'no-leak: ProviderRefAttached payload must be exactly {op}';
+      RAISE EXCEPTION 'no-leak: provider ref payload shape is invalid';
     END IF;
     v_op := p_payload->>'op';
     IF v_op IS NULL OR v_op !~ '^[a-z0-9_]{1,32}$'
        OR v_op NOT IN ('infohash','tmdb','imdb','tvdb','tvmaze','anidb') THEN
-      RAISE EXCEPTION 'no-leak: "%" is not an allowed ref type', v_op;
+      RAISE EXCEPTION 'no-leak: provider ref type is not allowed';
     END IF;
 
   ELSIF p_type = 'BehavioralSignal' THEN
     IF (SELECT count(*) FROM jsonb_object_keys(p_payload)) <> 1 OR NOT (p_payload ? 'weight') THEN
-      RAISE EXCEPTION 'no-leak: BehavioralSignal payload must be exactly {weight}';
+      RAISE EXCEPTION 'no-leak: behavioral payload shape is invalid';
     END IF;
-    IF jsonb_typeof(p_payload->'weight') <> 'number' THEN RAISE EXCEPTION 'no-leak: weight must be a number'; END IF;
+    IF jsonb_typeof(p_payload->'weight') <> 'number' THEN RAISE EXCEPTION 'no-leak: behavioral weight is invalid'; END IF;
     v_w := (p_payload->>'weight')::numeric;
-    IF v_w <> floor(v_w) OR v_w < 1 OR v_w > 1000 THEN RAISE EXCEPTION 'no-leak: weight out of range'; END IF;
+    IF v_w <> floor(v_w) OR v_w < 1 OR v_w > 1000 THEN RAISE EXCEPTION 'no-leak: behavioral weight is invalid'; END IF;
 
   ELSE
-    RAISE EXCEPTION 'no-leak: unknown event type %', p_type;
+    RAISE EXCEPTION 'no-leak: unknown event type';
   END IF;
 END;
 $$;
@@ -179,7 +201,7 @@ BEGIN
   ELSIF p_type = 'ItemRestored' THEN
     IF NOT v_exists OR NOT v_forgotten THEN RAISE EXCEPTION 'restore requires a forgotten item'; END IF;
   ELSIF p_type IN ('ProviderRefAttached', 'BehavioralSignal') THEN
-    IF NOT v_exists OR v_forgotten OR NOT v_present THEN RAISE EXCEPTION '% requires a present item', p_type; END IF;
+    IF NOT v_exists OR v_forgotten OR NOT v_present THEN RAISE EXCEPTION 'event requires a present item'; END IF;
   END IF;
   -- ItemForgotten: always permitted; reduce creates/maintains the tombstone.
 

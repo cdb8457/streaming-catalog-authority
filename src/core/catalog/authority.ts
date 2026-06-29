@@ -90,11 +90,12 @@ export class CatalogAuthority {
   // --- helpers --------------------------------------------------------------
 
   private assertEnvelope(event: CatalogEvent): void {
+    // Generic messages — never interpolate a (possibly attacker-supplied) type.
     const spec = EVENT_REGISTRY[event.type];
-    if (!spec) throw new Error(`apply: unknown event type "${event.type}"`);
-    if (event.kind !== spec.kind) throw new Error(`apply: "${event.type}" must be ${spec.kind}`);
-    if (spec.ttl && event.expiresAt === null) throw new Error(`apply: "${event.type}" requires expiresAt`);
-    if (!spec.ttl && event.expiresAt !== null) throw new Error(`apply: "${event.type}" must not have expiresAt`);
+    if (!spec) throw new Error('apply: unknown event type');
+    if (event.kind !== spec.kind) throw new Error('apply: event has the wrong kind');
+    if (spec.ttl && event.expiresAt === null) throw new Error('apply: event requires expiresAt');
+    if (!spec.ttl && event.expiresAt !== null) throw new Error('apply: event must not have expiresAt');
   }
 
   private json(v: Record<string, unknown> | null | undefined): string | null {

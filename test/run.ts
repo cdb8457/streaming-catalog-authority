@@ -345,6 +345,63 @@ async function main(): Promise<void> {
     await assertThrows(() => admin.query(`TRUNCATE events`), 'owner TRUNCATE blocked');
   });
 
+  // 22. Rejected values never reach an error message (Codex 3rd pass #2) ------
+  await test('no-leak — rejected values never appear in error messages (DB + TS)', async () => {
+    await reset(admin);
+    const sensitive = 'Top Secret Movie';
+    const id = mintItemId();
+    let m1 = '';
+    try { await pool.query('SELECT cat_apply($1,$2,$3::jsonb,$4)', [id, 'ProviderRefAttached', JSON.stringify({ op: sensitive }), null]); }
+    catch (e) { m1 = (e as Error).message; }
+    assert(m1.length > 0 && !m1.includes(sensitive), `ref-type rejection leaked the value: ${m1}`);
+
+    let m2 = '';
+    try { await pool.query('SELECT cat_apply($1,$2,$3::jsonb,$4)', [id, 'WeirdSecretType', '{}', null]); }
+    catch (e) { m2 = (e as Error).message; }
+    assert(m2.length > 0 && !m2.includes('WeirdSecretType'), `unknown-type rejection leaked the value: ${m2}`);
+
+    let m3 = '';
+    try { validateEventPayload('ProviderRefAttached', { op: sensitive }); } catch (e) { m3 = (e as Error).message; }
+    assert(m3.length > 0 && !m3.includes(sensitive), `TS gate leaked the value: ${m3}`);
+  });
+
+  // 23. Upgrade path: legacy schema -> current migration (Codex 3rd pass #1,#3)
+  await test('upgrade path — applying current migration over a legacy schema closes the bypasses', async () => {
+    const legacySql = readFileSync(fileURLToPath(new URL('./fixtures/legacy-migrations.sql', import.meta.url)), 'utf8');
+    const currentSql = readFileSync(fileURLToPath(new URL('../src/db/migrations.sql', import.meta.url)), 'utf8');
+    await admin.query('DROP DATABASE IF EXISTS upgrade_test');
+    await admin.query('CREATE DATABASE upgrade_test');
+
+    const toUpgradeDb = (u: string) => u.replace(/\/catalog(\?|$)/, '/upgrade_test$1');
+    const ownerU = new Client({ connectionString: toUpgradeDb(adminUrl()) });
+    await ownerU.connect();
+    let appU: Client | null = null;
+    try {
+      await ownerU.query(legacySql);  // simulate an existing legacy deployment
+      // sanity: the legacy deployment HAS the bypass before upgrading
+      await ownerU.query('SELECT prune_expired_behavioral(now())');
+      await ownerU.query(currentSql); // apply the upgrade
+
+      appU = new Client({ connectionString: toUpgradeDb(process.env.DATABASE_URL!) });
+      await appU.connect();
+
+      // 1. the prune bypass is gone (function dropped)
+      await assertThrows(() => appU!.query('SELECT prune_expired_behavioral(now())'), 'legacy prune dropped', /does not exist/i);
+      // 2. the opaque-id CHECK now exists on the upgraded table
+      await assertThrows(() => ownerU.query(`INSERT INTO items (id, present) VALUES ('Top Secret Movie', true)`), 'uuid check added');
+      // 3. legacy app DML grants are revoked
+      await assertThrows(() => appU!.query(`INSERT INTO events (item_id,kind,type,payload) VALUES ('x','structural','ItemAdded','{}'::jsonb)`), 'app INSERT revoked');
+      await assertThrows(() => appU!.query(`UPDATE items SET title='x'`), 'app UPDATE revoked');
+      // 4. the upgraded DB is functional through the authority surface
+      const r = await appU!.query('SELECT cat_add_item($1,NULL,NULL,NULL,NULL,$2::jsonb) AS seq', [mintItemId(), '[]']);
+      assert(Number(r.rows[0].seq) > 0, 'authority works after upgrade');
+    } finally {
+      if (appU) await appU.end();
+      await ownerU.end();
+      await admin.query('DROP DATABASE IF EXISTS upgrade_test');
+    }
+  });
+
   // --- teardown -------------------------------------------------------------
   await admin.end();
   await closePool();

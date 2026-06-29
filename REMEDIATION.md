@@ -68,3 +68,22 @@ database** — all mutation is via `SECURITY DEFINER` functions; the app role ge
 
 Accepted: the logical-vs-physical erasure reframing stands; crypto-shredding remains the
 first Phase 2 design task.
+
+---
+
+# Third-pass remediation (Codex review #3)
+
+The fresh install was accepted; the remaining blockers were all about the **upgrade path**
+plus a log leak. Suite is now **23 passed, 0 failed**.
+
+| Finding | Fix | Proof |
+|---------|-----|-------|
+| Upgrade reopens the prune bypass: applying the old schema then the current migration left `prune_expired_behavioral()` installed and app-callable | Migration now `DROP FUNCTION IF EXISTS prune_expired_behavioral(timestamptz)` (and the legacy trigger fn). | Test 23 applies the real legacy schema (git `7503e7f`) then the current migration and asserts the function is gone (`/does not exist/`). |
+| Rejected identity leaks into PostgreSQL logs via interpolated error messages (`no-leak: "Top Secret Movie" is not an allowed ref type`) | All error messages — plpgsql and TS — are generic and value-free; no rejected value, key, or event type is interpolated. | Test 22 asserts the error strings (DB ref-type, DB unknown-type, TS gate) never contain the rejected value. |
+| `CREATE TABLE IF NOT EXISTS` doesn't add the UUID checks on upgrade (upgraded DB accepted `items.id='Top Secret Movie'`) | UUID checks moved out of `CREATE TABLE` into **idempotent named constraints** added via `DO`/`ALTER TABLE ADD CONSTRAINT` — applied on both fresh installs and upgrades. | Test 23 asserts the upgraded table rejects a non-UUID id. |
+| README missing exact compose commands | Added `docker compose logs -f`, `docker compose down` (+ `-v`), and `docker compose run --rm app npm test`. | README. |
+
+Note on parameter logging: rejected values now never appear in our messages. Identity is
+still passed to the DB as bind parameters (e.g. a real title on `addItem`); PostgreSQL does
+not log bind parameters on error by default (`log_parameter_max_length_on_error = 0`).
+Hardening that GUC in deployment is noted for Phase 2.
