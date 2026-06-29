@@ -1,0 +1,22 @@
+{
+  "name": "catalog-authority",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Phase 1 — event-sourced catalog authority core. No providers, HTTP, adapters, or Hermes.",
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "tsx test/run.ts",
+    "ci": "npm run typecheck && npm run test"
+  },
+  "dependencies": {
+    "pg": "^8.13.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/pg": "^8.11.10",
+    "embedded-postgres": "16.14.0-beta.17",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2"
+  }
+}
