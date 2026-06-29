@@ -97,7 +97,10 @@ problem one layer down. Options, strongest first:
   minimal retention and is `VACUUM`-driven. Weaker (WAL of the keystore still needs
   handling).
 
-The choice is the crux of the design and the main thing I want reviewed (O2).
+**Decision: (A).** The keystore lives outside the main DB (a KMS in production; an
+in-process keystore with the same destroy contract for dev/tests). So the main DB's
+backups contain no DEKs, and a restored backup cannot decrypt anything whose key was
+shredded. (B) is retained only as a documented dev-only fallback.
 
 ---
 
@@ -171,9 +174,10 @@ handoff. Proposed order:
 - **O1 — ciphertext layout:** per-column `BYTEA` vs a single per-item identity blob.
   Per-column allows selective reads; single blob is simpler and leaks less shape. Lean: single
   blob for `items` identity + per-ref ciphertext for `provider_refs.ref_value`.
-- **O2 — keystore location:** external KMS/keystore (A) vs in-Postgres with overwrite+exclude
-  (B). (A) is materially stronger for the backup threat; (B) is simpler to run locally.
-  Recommend (A), with (B) as a documented dev-only fallback.
+- **O2 — keystore location: DECIDED → (A).** External KMS/keystore, with an in-process
+  file/memory keystore implementing the same destroy contract as a documented dev/test-only
+  fallback. (Chosen for its strength against the backup threat; remaining review question is
+  whether the dev fallback can faithfully exercise the shred protocol — see O4.)
 - **O3 — crypto-shred atomicity:** the DEK lives outside the DB (if A), so "append
   ItemForgotten + clear projection + destroy DEK" spans two systems. Need a durable,
   idempotent shred protocol (e.g. mark-forgotten in DB first, then destroy key, with a
