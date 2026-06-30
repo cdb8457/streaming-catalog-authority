@@ -1,17 +1,18 @@
 import { readFileSync } from 'node:fs';
 import { Client, Pool } from 'pg';
+import { loadDbConfig } from '../config/env.js';
 
 let pool: Pool | undefined;
 
 /**
  * Runtime connection pool, using the least-privileged `app` role via
  * DATABASE_URL. The core is environment-agnostic: point it at any PostgreSQL 16.
+ * Config is resolved + validated lazily (so test harnesses can set env after import).
  */
 export function getPool(): Pool {
   if (!pool) {
-    const connectionString = process.env.DATABASE_URL;
-    if (!connectionString) throw new Error('DATABASE_URL is not set');
-    pool = new Pool({ connectionString, max: 60 });
+    const { databaseUrl } = loadDbConfig();
+    pool = new Pool({ connectionString: databaseUrl, max: 60 });
   }
   return pool;
 }
@@ -22,9 +23,7 @@ export function getPool(): Pool {
  * role cannot alter schema, disable triggers, or delete events.
  */
 export function adminUrl(): string {
-  const url = process.env.ADMIN_DATABASE_URL ?? process.env.DATABASE_URL;
-  if (!url) throw new Error('ADMIN_DATABASE_URL / DATABASE_URL is not set');
-  return url;
+  return loadDbConfig().adminDatabaseUrl;
 }
 
 /** Applies the schema and role grants as the owner. Idempotent. */
