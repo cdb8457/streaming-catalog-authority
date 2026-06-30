@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { Client } from 'pg';
+import { Client, Pool } from 'pg';
 import { startEmbedded } from './embedded-pg.js';
 import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
@@ -46,8 +46,8 @@ async function main(): Promise<void> {
     assertEq(state(r, 'db-owner-reachable'), 'pass', 'owner ok');
     assertEq(state(r, 'db-app-reachable'), 'pass', 'app ok');
     assertEq(state(r, 'schema-migrated'), 'pass', 'schema ok');
-    assertEq(state(r, 'app-least-privileged'), 'pass', 'app least-priv');
-    assertEq(state(r, 'app-cannot-touch-secret'), 'pass', 'secret not app-readable/settable');
+    assertEq(state(r, 'runtime-least-privileged'), 'pass', 'runtime least-priv');
+    assertEq(state(r, 'runtime-cannot-touch-secret'), 'pass', 'runtime cannot touch secret');
     assertEq(state(r, 'completion-secret'), 'pass', 'secret matches');
     assertEq(state(r, 'custodian-reachable'), 'pass', 'custodian ok');
     assertEq(state(r, 'keystore'), 'pass', 'keystore ok');
@@ -93,6 +93,28 @@ async function main(): Promise<void> {
     await runDoctor({ admin, pool, custodian: new FileCustodian(dir, secret, kek), completionSecret: secret, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
     assertEq(await count('SELECT count(*) AS c FROM events'), evBefore, 'events unchanged');
     assertEq(await count('SELECT count(*) AS c FROM items'), itBefore, 'items unchanged');
+  });
+
+  // 6. REGRESSION: a runtime pool pointing at the owner/admin role must FAIL ---
+  await test('doctor — FAILS when the runtime pool is the owner/admin (over-privileged), no mutation', async () => {
+    await admin.query("SET session_replication_role = 'replica'");
+    await admin.query('TRUNCATE events, provider_refs, items, item_key_control, aborted_operations RESTART IDENTITY CASCADE');
+    await admin.query("SET session_replication_role = 'origin'");
+    const ownerPool = new Pool({ connectionString: adminUrl() }); // DATABASE_URL misconfigured to the owner
+    try {
+      const dir = freshKeystore();
+      const evBefore = Number((await admin.query('SELECT count(*) AS c FROM events')).rows[0].c);
+      const secretBefore = (await admin.query('SELECT completion_secret FROM crypto_config WHERE id=1')).rows[0].completion_secret as string;
+      const r = await runDoctor({ admin, pool: ownerPool, custodian: new FileCustodian(dir, secret, kek), completionSecret: secret, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
+      assert(!r.ok, 'doctor must FAIL for an owner-backed runtime pool');
+      assertEq(state(r, 'runtime-least-privileged'), 'fail', 'over-privileged: can write the tables');
+      assertEq(state(r, 'runtime-cannot-touch-secret'), 'fail', 'over-privileged: can read/set the secret');
+      // the rollback-safe probes left NOTHING behind
+      assertEq(Number((await admin.query('SELECT count(*) AS c FROM events')).rows[0].c), evBefore, 'no events inserted by probes');
+      assertEq((await admin.query('SELECT completion_secret FROM crypto_config WHERE id=1')).rows[0].completion_secret, secretBefore, 'completion secret unchanged by probes');
+    } finally {
+      await ownerPool.end();
+    }
   });
 
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });

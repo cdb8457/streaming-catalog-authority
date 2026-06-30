@@ -75,7 +75,7 @@ async function main(): Promise<void> {
 
     const okReport = await runDoctor({ admin, pool, custodian, completionSecret: 'live-secret', custodianMode: 'file', appEnv: 'development', keystoreDir: dir });
     assertEq(state(okReport, 'completion-secret'), 'pass', 'doctor sees the matching rotated secret');
-    assertEq(state(okReport, 'app-cannot-touch-secret'), 'pass', 'app cannot read/set the secret');
+    assertEq(state(okReport, 'runtime-cannot-touch-secret'), 'pass', 'runtime role cannot read/set the secret');
     assertEq(state(okReport, 'schema-migrated'), 'pass', 'set_completion_secret counted in schema check');
 
     const pf = await restorePreflight({ admin, custodian, completionSecret: 'live-secret' });

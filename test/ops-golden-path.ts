@@ -99,7 +99,7 @@ async function main(): Promise<void> {
     const d1 = await runDoctor({ admin, pool, custodian: custodianNew, completionSecret: secret, custodianMode: 'file', appEnv: 'production', keystoreDir: keystore });
     assert(d1.ok, `doctor green at end (${d1.checks.filter((c) => c.state === 'fail').map((c) => c.name).join(',') || 'ok'})`);
     assertEq(doctorState(d1, 'completion-secret'), 'pass', 'secret still matches');
-    assertEq(doctorState(d1, 'app-cannot-touch-secret'), 'pass', 'app still cannot touch the secret');
+    assertEq(doctorState(d1, 'runtime-cannot-touch-secret'), 'pass', 'runtime role still cannot touch the secret');
   });
 
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
