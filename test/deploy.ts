@@ -1,0 +1,104 @@
+import { readFileSync, existsSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
+
+/**
+ * Phase 3 Stage 3.4 — static structural checks for the deployment artifacts.
+ *
+ * Dependency-free (no YAML lib, no Docker): asserts the compose topology, secret-file wiring, and
+ * the no-HTTP/no-ports CLI shape by inspecting the files. The REAL compose smoke test
+ * (`npm run smoke:compose`) is opt-in/manual and not part of CI, because this environment has no
+ * Docker (the suite uses embedded PostgreSQL). This keeps the topology verified regardless.
+ */
+
+let passed = 0;
+let failed = 0;
+const failures: Array<[string, unknown]> = [];
+
+function test(name: string, fn: () => void): void {
+  try { fn(); passed++; console.log(`  PASS  ${name}`); }
+  catch (err) { failed++; failures.push([name, err]); console.log(`  FAIL  ${name}: ${(err as Error).message}`); }
+}
+function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
+const read = (rel: string): string => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), 'utf8');
+const exists = (rel: string): boolean => existsSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)));
+
+console.log('Running Phase 3 deployment topology suite (Stage 3.4):\n');
+
+const compose = read('docker-compose.deploy.yml');
+const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string> };
+
+test('compose — defines postgres + one-shot ops services', () => {
+  assert(/^\s{2}postgres:/m.test(compose), 'postgres service');
+  assert(/^\s{2}ops:/m.test(compose), 'ops service');
+  assert(/entrypoint:\s*\["npm",\s*"run"\]/.test(compose), 'ops is a one-shot npm-run container');
+});
+
+test('compose — postgres has a pg_isready healthcheck', () => {
+  assert(/healthcheck:/.test(compose) && /pg_isready/.test(compose), 'pg_isready healthcheck present');
+});
+
+test('compose — keystore is a SEPARATE volume from pgdata and backups', () => {
+  for (const v of ['pgdata:', 'keystore:', 'backups:']) assert(compose.includes(v), `${v} volume declared`);
+  assert(compose.includes('/var/lib/postgresql/data'), 'pgdata mount path');
+  assert(compose.includes('/var/lib/catalog/keystore'), 'keystore mount path (distinct from pgdata)');
+});
+
+test('compose — secrets delivered via *_FILE (no inline secret values)', () => {
+  for (const v of ['POSTGRES_PASSWORD_FILE', 'ADMIN_DATABASE_URL_FILE', 'DATABASE_URL_FILE', 'COMPLETION_SECRET_FILE', 'CUSTODIAN_KEK_FILE']) {
+    assert(compose.includes(v), `${v} used`);
+  }
+  assert(/^secrets:/m.test(compose), 'top-level secrets section');
+  // no raw secret-looking assignments for the sensitive vars
+  assert(!/COMPLETION_SECRET:\s*\S/.test(compose), 'no inline COMPLETION_SECRET value');
+  assert(!/CUSTODIAN_KEK:\s*\S/.test(compose), 'no inline CUSTODIAN_KEK value');
+});
+
+test('compose — CLI pattern: no ports / no HTTP daemon', () => {
+  assert(!/ports:/.test(compose), 'no published ports (not an HTTP service)');
+  assert(!/(expose|EXPOSE)/.test(compose), 'no exposed port');
+});
+
+test('compose — `docker compose run ops` invocations must NOT double-prefix npm run', () => {
+  // With entrypoint ["npm","run"], `docker compose run ops <args>` already prepends `npm run`.
+  // So any `... run --rm ops npm run X` becomes `npm run npm run X` (broken). The script name
+  // must be passed directly: `... run --rm ops X`. Enforce that invariant everywhere it appears.
+  assert(/entrypoint:\s*\["npm",\s*"run"\]/.test(compose), 'entrypoint is ["npm","run"] (the assumed model)');
+  const doc = read('docs/PHASE_3_DEPLOYMENT.md');
+  const broken = /run\s+--rm\s+ops\s+npm\s+run\b/;
+  assert(!broken.test(compose), 'compose comments do not double-prefix npm run');
+  assert(!broken.test(doc), 'deployment doc does not double-prefix npm run');
+  assert(!broken.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke:compose does not double-prefix npm run');
+  assert(/run --rm ops ops:migrate\b/.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke:compose passes the script name directly');
+});
+
+test('package.json — ops + deploy scripts wired; no HTTP framework dep', () => {
+  for (const s of ['ops:migrate', 'ops:backup', 'test:backup-ops', 'test:deploy', 'smoke:compose']) {
+    assert(typeof pkg.scripts[s] === 'string', `script ${s} present`);
+  }
+  assert(/test\/backup-ops\.ts/.test(pkg.scripts.test ?? ''), 'backup-ops in the test chain');
+  assert(/test\/deploy\.ts/.test(pkg.scripts.test ?? ''), 'deploy in the test chain');
+  assert(/docker-compose\.deploy\.yml/.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke uses the deploy compose');
+  const deps = Object.keys(pkg.dependencies ?? {});
+  for (const banned of ['express', 'fastify', 'koa', 'http-server', 'age', 'aws-sdk', '@aws-sdk/client-kms']) {
+    assert(!deps.includes(banned), `no ${banned} dependency`);
+  }
+});
+
+test('ops entrypoints exist', () => {
+  assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
+  assert(exists('src/ops/backup-cli.ts'), 'backup-cli');
+});
+
+test('docs — PHASE_3_DEPLOYMENT covers Unraid, *_FILE, keystore separation, operator age', () => {
+  assert(exists('docs/PHASE_3_DEPLOYMENT.md'), 'deployment doc exists');
+  const doc = read('docs/PHASE_3_DEPLOYMENT.md');
+  for (const kw of ['Unraid', '_FILE', 'keystore', 'age', 'O4']) assert(doc.includes(kw), `doc mentions ${kw}`);
+  assert(/separate volume/i.test(doc), 'doc states keystore/pgdata separation');
+});
+
+console.log(`\n${passed} passed, ${failed} failed.`);
+if (failed > 0) {
+  console.log('\nFailures:');
+  for (const [name, err] of failures) console.log(`  - ${name}: ${(err as Error).stack ?? err}`);
+  process.exit(1);
+}
