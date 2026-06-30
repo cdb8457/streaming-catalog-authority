@@ -156,3 +156,19 @@ Stage 2a approved. Stage 2b adds `authority.reconcile()` and its tests. Suite is
 
 Remaining Phase 2 work: the production custodian adapter + integration suite (the in-process
 custodian proves protocol logic only — design O4), and the encrypted backup policy.
+
+---
+
+# Response to Stage 2b Code Review (TOCTOU)
+
+P0: orphan cleanup raced a live writer — `committedByOp` (read) then `destroy` were not
+atomic, and `listStaleProvisioning` had no lease. Fixed. Suite is **64 passed** (reconcile 9).
+
+| Finding | Fix | Proof |
+|---------|-----|-------|
+| **Reconciler-vs-live-writer TOCTOU** (reconciler reads "uncommitted", writer commits, reconciler destroys → DB active / custodian destroyed) | A durable **abort fence**: `cat_abort_provision(item, op)` runs **under the per-item lock** and aborts only if the op has not committed (records it in `aborted_operations`), returning whether it fenced. The reconciler destroys **only after** the fence commits; if the op had committed concurrently the fence returns false and the reconciler **promotes** instead. `cat_add_item_ct` / `cat_restore_ct` / `cat_hydrate_legacy_ct` **reject fenced ops under the same lock**, so a late writer for a fenced op fails rather than committing a destroyed key. | reconcile test "fence refuses to abort a now-committed op; the live key survives" and "fenced orphan is destroyed and a late writer for it is rejected". |
+| **`listStaleProvisioning` returned everything immediately; `ageMs` unused** | `reconcile({ staleMs })` applies a **staleness lease** (default 60s): a provisional key is not touched until it has aged past the lease, so an in-flight writer has time to commit. | reconcile test "staleness lease leaves a fresh provisional key untouched". |
+
+Two reconcilers racing remain idempotent (custodian ops + `cat_forget_complete` are idempotent;
+the per-item lock serializes DB writes). Remaining Phase 2 work unchanged: production custodian
+adapter + integration suite, and the encrypted backup policy.

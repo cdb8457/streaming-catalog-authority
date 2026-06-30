@@ -26,6 +26,15 @@ function assert(cond: unknown, msg: string): void {
 function assertEq(actual: unknown, expected: unknown, msg: string): void {
   if (actual !== expected) throw new Error(`${msg} (expected ${String(expected)}, got ${String(actual)})`);
 }
+async function assertThrows(fn: () => Promise<unknown> | unknown, msg: string, match?: RegExp): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    if (match && !match.test((e as Error).message)) throw new Error(`threw, message ${JSON.stringify((e as Error).message)} != ${match} (${msg})`);
+    return;
+  }
+  throw new Error(`expected to throw: ${msg}`);
+}
 const range = (n: number) => Array.from({ length: n }, (_, i) => i);
 
 async function main(): Promise<void> {
@@ -86,7 +95,7 @@ async function main(): Promise<void> {
     const keyId = await keyOf(id);
     assertEq(await custodian.status(keyId), 'provisional', 'provisional after lost ack');
     assert((await auth.readIdentity(id)) === null, 'read denied while provisional');
-    const r = await auth.reconcile();
+    const r = await auth.reconcile({ staleMs: 0 });
     assert(r.promoted >= 1, 'reconcile promoted the committed key');
     assertEq(await custodian.status(keyId), 'active', 'active after reconcile');
     assertEq((await auth.readIdentity(id))?.title, 'y', 'readable after promotion');
@@ -99,7 +108,7 @@ async function main(): Promise<void> {
     const id = mintItemId();
     const { keyId } = await custodian.provision('op-orphan', id, 0); // never written to the DB
     assertEq(await custodian.status(keyId), 'provisional', 'orphan provisional');
-    const r = await auth.reconcile();
+    const r = await auth.reconcile({ staleMs: 0 });
     assert(r.destroyed >= 1, 'orphan destroyed');
     assertEq(await custodian.status(keyId), 'destroyed', 'orphan destroyed');
   });
@@ -112,7 +121,7 @@ async function main(): Promise<void> {
     const { keyId } = await custodian.provision('op-x', id, 0); // provisional orphan
     const failingPool = { query: async () => { throw new Error('DB unavailable'); } } as unknown as Pool;
     const authFailing = new CatalogAuthority(failingPool, custodian);
-    const r = await authFailing.reconcile();
+    const r = await authFailing.reconcile({ staleMs: 0 });
     assertEq(r.destroyed, 0, 'nothing destroyed when the DB cannot be queried');
     assertEq(await custodian.status(keyId), 'provisional', 'orphan left intact (cannot confirm non-commit)');
   });
@@ -143,6 +152,49 @@ async function main(): Promise<void> {
     assertEq(await count(`SELECT count(*) AS c FROM item_key_control WHERE item_id=$1`, [id]), 1, 'exactly one lineage');
     assertEq((await custodian.listStaleProvisioning()).length, 0, 'no leftover provisional keys (losers destroyed theirs)');
     assertEq((await auth.readIdentity(id)) !== null, true, 'winner identity readable');
+  });
+
+  // 7. staleness lease — a fresh provisional key is NOT touched -------------
+  await test('reconcile — staleness lease leaves a fresh provisional key untouched', async () => {
+    await reset();
+    const { custodian, auth } = makeAuth();
+    const id = mintItemId();
+    const { keyId } = await custodian.provision('op-fresh', id, 0); // age ~0
+    const r = await auth.reconcile(); // default lease (60s) -> too fresh to act
+    assertEq(r.destroyed, 0, 'fresh key not destroyed under the lease');
+    assertEq(await custodian.status(keyId), 'provisional', 'fresh key untouched');
+  });
+
+  // 8. TOCTOU — abort fence refuses an op that committed (live writer wins) ---
+  await test('TOCTOU — fence refuses to abort a now-committed op; the live key survives', async () => {
+    await reset();
+    const { custodian } = makeAuth();
+    const id = mintItemId();
+    const op = `live-op-${mintItemId()}`;
+    // a live writer provisions then commits — simulating the commit landing before the
+    // reconciler (acting on a stale "uncommitted" observation) would have destroyed the key
+    const { keyId } = await custodian.provision(op, id, 0);
+    await pool.query('SELECT cat_add_item_ct($1,$2,$3,$4,$5,$6::jsonb)', [id, op, keyId, 0, Buffer.from([1, 2, 3]), '[]']);
+    await custodian.commitProvision(op);
+    const fenced = (await pool.query('SELECT cat_abort_provision($1,$2) AS fenced', [id, op])).rows[0].fenced;
+    assertEq(fenced, false, 'fence refuses to abort a committed operation');
+    assertEq(await custodian.status(keyId), 'active', 'the live-committed key survives');
+  });
+
+  // 9. TOCTOU — fenced orphan is destroyed; a late writer for it is rejected --
+  await test('TOCTOU — fenced orphan is destroyed and a late writer for it is rejected', async () => {
+    await reset();
+    const { custodian } = makeAuth();
+    const id = mintItemId();
+    const op = `orphan-op-${mintItemId()}`;
+    const { keyId } = await custodian.provision(op, id, 0); // never committed
+    const fenced = (await pool.query('SELECT cat_abort_provision($1,$2) AS fenced', [id, op])).rows[0].fenced;
+    assertEq(fenced, true, 'orphan is fenced');
+    await custodian.destroy(mintItemId(), keyId); // reconciler destroys after the fence commits
+    await assertThrows(
+      () => pool.query('SELECT cat_add_item_ct($1,$2,$3,$4,$5,$6::jsonb)', [id, op, keyId, 0, Buffer.from([9]), '[]']),
+      'a late writer using the fenced op is rejected', /aborted/i,
+    );
   });
 
   await admin.end();

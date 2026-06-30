@@ -104,6 +104,14 @@ INSERT INTO crypto_config (id, completion_secret)
 VALUES (1, 'dev-completion-secret-v1')
 ON CONFLICT (id) DO NOTHING;
 
+-- Durable abort fence: an operation_id recorded here can never commit a lineage. The
+-- reconciler fences an orphaned provisional key under the per-item lock (only if it has not
+-- committed), then destroys it — closing the reconciler-vs-live-writer TOCTOU.
+CREATE TABLE IF NOT EXISTS aborted_operations (
+  operation_id TEXT PRIMARY KEY,
+  aborted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- ------------------------------------------------------- append-only guard ---
 
 CREATE OR REPLACE FUNCTION events_no_update_delete() RETURNS trigger
@@ -266,6 +274,9 @@ RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, 
 DECLARE v_rows INTEGER; v_state TEXT; r JSONB;
 BEGIN
   PERFORM public.cat_lock_item(p_item_id);
+  IF EXISTS (SELECT 1 FROM public.aborted_operations WHERE operation_id = p_op_id) THEN
+    RAISE EXCEPTION 'operation was aborted';   -- reconciler fenced this provisional key
+  END IF;
   INSERT INTO public.item_key_control (item_id, key_id, cur_epoch, operation_id, shred_state)
   VALUES (p_item_id, p_key_id, p_epoch, p_op_id, 'active')
   ON CONFLICT (item_id) DO NOTHING;
@@ -332,6 +343,9 @@ RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pub
 DECLARE v_rows INTEGER; r JSONB;
 BEGIN
   PERFORM public.cat_lock_item(p_item_id);
+  IF EXISTS (SELECT 1 FROM public.aborted_operations WHERE operation_id = p_op_id) THEN
+    RAISE EXCEPTION 'operation was aborted';
+  END IF;
   UPDATE public.item_key_control
      SET key_id = p_key_id, cur_epoch = p_epoch, operation_id = p_op_id,
          shred_state = 'active', shred_op_id = NULL, shredded_at = NULL, shred_receipt = NULL,
@@ -427,6 +441,9 @@ RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, pub
 DECLARE r JSONB;
 BEGIN
   PERFORM public.cat_lock_item(p_item_id);
+  IF EXISTS (SELECT 1 FROM public.aborted_operations WHERE operation_id = p_op_id) THEN
+    RAISE EXCEPTION 'operation was aborted';
+  END IF;
   PERFORM 1 FROM public.items WHERE id = p_item_id AND present AND NOT forgotten;
   IF NOT FOUND THEN RAISE EXCEPTION 'legacy hydrate requires a present, non-forgotten item'; END IF;
   -- PK conflict here means a lineage already exists -> caller must use updateIdentity instead
@@ -440,6 +457,23 @@ BEGIN
     END LOOP;
   END IF;
   UPDATE public.items SET identity_ct = p_identity_ct WHERE id = p_item_id;
+END;
+$$;
+
+-- Atomically fence an orphaned provisional operation: under the per-item lock, abort it ONLY
+-- if it has not committed a lineage. Returns true if it was fenced (caller may now destroy the
+-- key), false if it had actually committed (caller should promote instead). Because writers
+-- (cat_add_item_ct / cat_restore_ct / cat_hydrate_legacy_ct) take the SAME lock and reject
+-- fenced operations, this closes the reconciler-vs-live-writer TOCTOU.
+CREATE OR REPLACE FUNCTION cat_abort_provision(p_item_id TEXT, p_op_id TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  PERFORM public.cat_lock_item(p_item_id);
+  IF EXISTS (SELECT 1 FROM public.item_key_control WHERE item_id = p_item_id AND operation_id = p_op_id) THEN
+    RETURN false;  -- the operation committed (possibly concurrently); do NOT abort/destroy
+  END IF;
+  INSERT INTO public.aborted_operations (operation_id) VALUES (p_op_id) ON CONFLICT DO NOTHING;
+  RETURN true;     -- fenced; the key is now safe to destroy
 END;
 $$;
 
@@ -494,6 +528,8 @@ $$;
 REVOKE ALL ON events, items, provider_refs, item_key_control FROM app;
 REVOKE ALL ON crypto_config FROM PUBLIC;
 REVOKE ALL ON crypto_config FROM app;   -- the completion secret is never app-readable
+REVOKE ALL ON aborted_operations FROM PUBLIC;
+REVOKE ALL ON aborted_operations FROM app;  -- written only via the SECURITY DEFINER fence
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs, item_key_control TO app;
 
@@ -518,6 +554,7 @@ REVOKE ALL ON FUNCTION
   cat_hydrate_legacy_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_forget_begin(TEXT),
   cat_forget_complete(TEXT, TEXT, TEXT, TEXT, TEXT),
+  cat_abort_provision(TEXT, TEXT),
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
   cat_prune_and_rebuild(TIMESTAMPTZ)
@@ -532,6 +569,7 @@ GRANT EXECUTE ON FUNCTION
   cat_hydrate_legacy_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_forget_begin(TEXT),
   cat_forget_complete(TEXT, TEXT, TEXT, TEXT, TEXT),
+  cat_abort_provision(TEXT, TEXT),
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
   cat_prune_and_rebuild(TIMESTAMPTZ)

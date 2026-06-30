@@ -258,7 +258,8 @@ export class CatalogAuthority {
    *    'destroyed' is re-driven through forget so the projection matches the tombstone.
    * A failure in any single item is swallowed so the rest still make progress.
    */
-  async reconcile(): Promise<{ completed: number; promoted: number; destroyed: number; healed: number }> {
+  async reconcile(opts: { staleMs?: number } = {}): Promise<{ completed: number; promoted: number; destroyed: number; healed: number }> {
+    const staleMs = opts.staleMs ?? 60_000; // lease: don't touch a key until it's been provisional this long
     let completed = 0, promoted = 0, destroyed = 0, healed = 0;
 
     // 1. pending shreds -> finish them
@@ -278,16 +279,20 @@ export class CatalogAuthority {
       stale = []; // custodian unreachable -> nothing
     }
     for (const s of stale) {
-      let committed: boolean;
+      if (s.ageMs < staleMs) continue; // lease not yet expired — a live writer may still commit
+      // Atomically (under the per-item lock) abort iff still uncommitted. This serializes with
+      // writers, so the stale "uncommitted" observation cannot race a concurrent commit.
+      let fenced: boolean;
       try {
-        committed = await this.committedByOp(s.itemId, s.operationId);
+        fenced = (await this.pool.query('SELECT cat_abort_provision($1,$2) AS fenced', [s.itemId, s.operationId])).rows[0].fenced === true;
       } catch {
-        continue; // DB unavailable -> NEVER destroy on uncertainty
+        continue; // DB unavailable -> NEVER act on uncertainty
       }
-      if (committed) {
-        try { await this.custodian.commitProvision(s.operationId); promoted++; } catch { /* retry */ }
-      } else {
+      if (fenced) {
         try { await this.custodian.destroy(randomUUID(), s.keyId); destroyed++; } catch { /* retry */ }
+      } else {
+        // it had actually committed (e.g. a lost commit ack) -> promote, never destroy
+        try { await this.custodian.commitProvision(s.operationId); promoted++; } catch { /* retry */ }
       }
     }
 
