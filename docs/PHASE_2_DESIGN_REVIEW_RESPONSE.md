@@ -59,3 +59,23 @@ three are in v4.
 
 Tests for all three added to the strategy (§11). Coordinator held until v4 sign-off; after
 that the design is implementation-ready (build order in §13).
+
+---
+
+# Response to Design Review #4 (v5)
+
+Review #4 found one correctness ambiguity (key lineage across ordinary updates) and asked to
+record several custodian invariants and refine the read recheck. All addressed; the reviewer
+approves the coordinator for implementation once the lineage rule is recorded — it now is.
+
+| Required item | Where addressed (v5) |
+|---|---|
+| Key lineage: fresh `key_id` only for initial create or post-shred re-supply; ordinary updates + rebuild rehydration reuse the active lineage/DEK with fresh nonces; rotation stays under one immutable lineage; forget destroys the whole lineage | §6 — explicit lineage rule; §7 — the winner-selection sequence is scoped to the NEW-LINEAGE path only, with a separate in-lineage update path that reuses `key_id`/DEK and never mints a new key. |
+| `destroyed` is terminal — delayed `commitProvision` can never reactivate | §2 — custodian invariant. |
+| Reusing an `operation_id` with different inputs must fail | §2 — custodian invariant. |
+| Ambiguous DB timeout resolved by querying the committed `operation_id`, never guessed | §2 + §7 failure matrix — query-the-DB resolution. |
+| Replace the remaining `unknown` with `not_found`/transport error | §2 — status is `provisional/active/destroyed/not_found`; failures throw; the "unknown" wording is gone. |
+| Define the read recheck as the read's linearization point (don't overclaim wall-clock) | §7.2 — recheck = linearization point; explicit that we do not claim "no response after wall-clock shred completion." |
+
+**Verdict captured:** with the lineage rule recorded, the crypto-shredding coordinator is
+approved for implementation (build order in design §13).
