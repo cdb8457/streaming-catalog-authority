@@ -38,10 +38,52 @@ interface KeyFile {
   state: 'provisional' | 'active';
   wrappedHex: string; // DEK encrypted under the KEK (never the raw DEK)
   createdAt: number;
+  kekVersion?: number; // which KEK generation wrapped this DEK; absent = legacy = 0 (Phase 4)
 }
 interface Tombstone { keyId: string; receiptId: string; destroyedAt: string; }
 interface OpFile { operationId: string; kind: 'provision' | 'destroy'; keyId: string; itemId?: string; epoch?: number; }
 interface Journal { keyId: string; receiptId: string; destroyedAt: string; }
+
+// --- KEK wrap/unwrap + atomic IO (module-level so the static KEK rewrap reuses the EXACT format/AAD) ---
+function wrapDek(kek: Buffer, dek: Buffer, keyId: string): string {
+  const nonce = randomBytes(12);
+  const c = createCipheriv('aes-256-gcm', kek, nonce);
+  c.setAAD(Buffer.from(keyId, 'utf8'));
+  const ct = Buffer.concat([c.update(dek), c.final()]);
+  return Buffer.concat([nonce, ct, c.getAuthTag()]).toString('hex');
+}
+function unwrapDek(kek: Buffer, wrappedHex: string, keyId: string): Buffer {
+  const b = Buffer.from(wrappedHex, 'hex');
+  const nonce = b.subarray(0, 12);
+  const tag = b.subarray(b.length - 16);
+  const ct = b.subarray(12, b.length - 16);
+  const d = createDecipheriv('aes-256-gcm', kek, nonce);
+  d.setAAD(Buffer.from(keyId, 'utf8'));
+  d.setAuthTag(tag);
+  return Buffer.concat([d.update(ct), d.final()]);
+}
+function fsyncDirBestEffort(dir: string): void {
+  let dfd: number;
+  try { dfd = openSync(dir, 'r'); }
+  catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EISDIR' || code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') return;
+    throw err;
+  }
+  try { fsyncSync(dfd); }
+  catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EISDIR' && code !== 'EPERM' && code !== 'EINVAL' && code !== 'ENOTSUP') throw err;
+  } finally { closeSync(dfd); }
+}
+function writeJsonAtomic(p: string, value: unknown): void {
+  const tmp = `${p}.${randomUUID()}.tmp`;
+  const fd = openSync(tmp, 'w', 0o600);
+  try { writeSync(fd, JSON.stringify(value)); fsyncSync(fd); }
+  finally { closeSync(fd); }
+  renameSync(tmp, p);
+  fsyncDirBestEffort(path.dirname(p)); // make the rename (directory entry) itself durable
+}
 
 export class FileCustodian implements KeyCustodian {
   private readonly root: string;
@@ -86,18 +128,7 @@ export class FileCustodian implements KeyCustodian {
     if (!existsSync(p)) return null;
     return JSON.parse(readFileSync(p, 'utf8')) as T;
   }
-  private writeAtomic(p: string, value: unknown): void {
-    const tmp = `${p}.${randomUUID()}.tmp`;
-    const fd = openSync(tmp, 'w', 0o600);
-    try {
-      writeSync(fd, JSON.stringify(value));
-      fsyncSync(fd);
-    } finally {
-      closeSync(fd);
-    }
-    renameSync(tmp, p);
-    this.fsyncDir(path.dirname(p)); // make the rename (directory entry) itself durable
-  }
+  private writeAtomic(p: string, value: unknown): void { writeJsonAtomic(p, value); }
 
   /**
    * fsync the containing directory so the rename — not just the file contents — survives a
@@ -111,43 +142,11 @@ export class FileCustodian implements KeyCustodian {
    * other error surface. Durable rename ordering is one more reason the production target (O4)
    * is a managed KMS, which does not depend on host filesystem directory-fsync semantics.
    */
-  private fsyncDir(dir: string): void {
-    let dfd: number;
-    try {
-      dfd = openSync(dir, 'r');
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code === 'EISDIR' || code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') return;
-      throw err;
-    }
-    try {
-      fsyncSync(dfd);
-    } catch (err) {
-      const code = (err as NodeJS.ErrnoException).code;
-      if (code !== 'EISDIR' && code !== 'EPERM' && code !== 'EINVAL' && code !== 'ENOTSUP') throw err;
-    } finally {
-      closeSync(dfd);
-    }
-  }
+  private fsyncDir(dir: string): void { fsyncDirBestEffort(dir); }
 
   // --- KEK wrap/unwrap (DEKs are never stored raw) --------------------------
-  private wrap(dek: Buffer, keyId: string): string {
-    const nonce = randomBytes(12);
-    const c = createCipheriv('aes-256-gcm', this.kek, nonce);
-    c.setAAD(Buffer.from(keyId, 'utf8'));
-    const ct = Buffer.concat([c.update(dek), c.final()]);
-    return Buffer.concat([nonce, ct, c.getAuthTag()]).toString('hex');
-  }
-  private unwrap(wrappedHex: string, keyId: string): Buffer {
-    const b = Buffer.from(wrappedHex, 'hex');
-    const nonce = b.subarray(0, 12);
-    const tag = b.subarray(b.length - 16);
-    const ct = b.subarray(12, b.length - 16);
-    const d = createDecipheriv('aes-256-gcm', this.kek, nonce);
-    d.setAAD(Buffer.from(keyId, 'utf8'));
-    d.setAuthTag(tag);
-    return Buffer.concat([d.update(ct), d.final()]);
-  }
+  private wrap(dek: Buffer, keyId: string): string { return wrapDek(this.kek, dek, keyId); }
+  private unwrap(wrappedHex: string, keyId: string): Buffer { return unwrapDek(this.kek, wrappedHex, keyId); }
 
   private attest(keyId: string, receiptId: string, destroyedAt: string): string {
     if (/\n/.test(keyId) || /\n/.test(receiptId) || /\n/.test(destroyedAt)) throw new Error('attestation field contains a separator');
@@ -199,7 +198,7 @@ export class FileCustodian implements KeyCustodian {
     do { keyId = `key_${randomUUID()}`; } while (existsSync(this.keyPath(keyId)) || existsSync(this.tombPath(keyId)));
     const dek = randomBytes(32);
     this.writeAtomic(this.keyPath(keyId), {
-      keyId, itemId, epoch, operationId, state: 'provisional', wrappedHex: this.wrap(dek, keyId), createdAt: this.clock(),
+      keyId, itemId, epoch, operationId, state: 'provisional', wrappedHex: this.wrap(dek, keyId), createdAt: this.clock(), kekVersion: 0,
     } satisfies KeyFile);
     this.writeAtomic(this.opPath(operationId), { operationId, kind: 'provision', keyId, itemId, epoch } satisfies OpFile);
     return { keyId, dek };
@@ -260,6 +259,53 @@ export class FileCustodian implements KeyCustodian {
       if (kf && kf.state === 'provisional') out.push({ operationId: kf.operationId, itemId: kf.itemId, keyId: kf.keyId, ageMs: now - kf.createdAt });
     }
     return out;
+  }
+
+  /**
+   * KEK rotation / rewrap (Phase 4 Stage 4.2, design O5). Re-wraps every LIVE wrapped DEK from
+   * `fromKek` to `toKek` in place. It NEVER touches identity ciphertext (that is under the per-item
+   * DEK, not the KEK) and NEVER touches tombstones (a destroyed key has no DEK file). Operate with
+   * the app quiesced (FileCustodian is single-writer).
+   *
+   * Properties:
+   *  - resumable + idempotent: a file already readable under `toKek` is skipped, so a re-run (or a
+   *    run after a crash mid-rotation) finishes the rest and a fully-rotated keystore is a no-op;
+   *  - per-file atomic (temp -> fsync -> rename -> fsync(dir)); a crash leaves each file wholly old
+   *    or wholly new;
+   *  - preserves keyId/itemId/epoch/operationId/state and the raw DEK value; only `wrappedHex` and
+   *    `kekVersion` change (legacy files with no `kekVersion` are treated as 0);
+   *  - fails closed: if a live file unwraps under NEITHER key (wrong previous KEK / corruption) it
+   *    throws WITHOUT mutating that file. The previous KEK is supplied only for this explicit
+   *    rotation; normal operation runs single-KEK.
+   * Errors never include key material.
+   */
+  static rewrapKeystore(rootDir: string, opts: { fromKek: Buffer; toKek: Buffer }): { rewrapped: number; skipped: number; total: number } {
+    if (opts.fromKek.length !== 32 || opts.toKek.length !== 32) throw new Error('rewrap KEKs must be 32 bytes');
+    const keysDir = path.join(path.resolve(rootDir), 'keys');
+    if (!existsSync(keysDir)) return { rewrapped: 0, skipped: 0, total: 0 };
+    let rewrapped = 0, skipped = 0, total = 0;
+    for (const f of readdirSync(keysDir)) {
+      if (!f.endsWith('.json')) continue;
+      total++;
+      const p = path.join(keysDir, f);
+      const kf = JSON.parse(readFileSync(p, 'utf8')) as KeyFile;
+      // already on the new KEK? (idempotent / resumable) — GCM auth makes this decisive.
+      try { unwrapDek(opts.toKek, kf.wrappedHex, kf.keyId).fill(0); skipped++; continue; } catch { /* not yet rewrapped */ }
+      let dek: Buffer;
+      try {
+        dek = unwrapDek(opts.fromKek, kf.wrappedHex, kf.keyId);
+      } catch {
+        throw new Error('KEK rewrap: a key file does not unwrap under the provided previous or new KEK (wrong previous KEK or corrupt keystore)');
+      }
+      try {
+        const next: KeyFile = { ...kf, wrappedHex: wrapDek(opts.toKek, dek, kf.keyId), kekVersion: (kf.kekVersion ?? 0) + 1 };
+        writeJsonAtomic(p, next);
+        rewrapped++;
+      } finally {
+        dek.fill(0);
+      }
+    }
+    return { rewrapped, skipped, total };
   }
 
   static wipe(rootDir: string): void {
