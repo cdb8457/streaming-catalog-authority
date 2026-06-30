@@ -1,0 +1,105 @@
+import { ConfigError, resolveVar, type Env } from '../../config/env.js';
+import type { KeyCustodian } from './custodian.js';
+import { InMemoryCustodian } from './custodian.js';
+import { FileCustodian } from './file-custodian.js';
+
+/**
+ * Phase 3 Stage 3.2 — custodian selection boundary.
+ *
+ * A single place that turns validated configuration into a `KeyCustodian`, using the Stage 3.1
+ * config patterns (`resolveVar` + aggregated `ConfigError`, `*_FILE` indirection, redaction-safe
+ * errors). The rest of the system depends only on the `KeyCustodian` interface, so swapping the
+ * production custodian is a config change, not a code change.
+ *
+ * Operator-facing config:
+ *   CUSTODIAN_MODE            memory | file                         (required)
+ *   COMPLETION_SECRET[_FILE]  HMAC attestation secret              (required; shared with the DB)
+ *   CUSTODIAN_KEYSTORE_DIR    keystore root                        (required for mode=file)
+ *   CUSTODIAN_KEK[_FILE]      base64-encoded 32-byte KEK           (required for mode=file)
+ *
+ * Scope (Stage 3.2): supported modes are `memory` (dev/test) and `file` (the FileCustodian
+ * reference harness). The KEK is resolved here from a base64 value / file — this is the seam
+ * where the planned **age-encrypted-file KEK** (Phase 3 decision) will later plug in (an
+ * age-wrapped source would decrypt to the same 32 bytes). That age integration is NOT built
+ * here. Unknown/unsupported modes fail closed (see {@link createCustodian}).
+ *
+ * Security note: `memory` and `file` are reference harnesses, not a managed KMS. The managed-KMS
+ * adapter (design O4) is still an open production deployment gate; it would add another mode here.
+ */
+
+export type CustodianMode = 'memory' | 'file';
+
+export type CustodianConfig =
+  | { mode: 'memory'; completionSecret: string }
+  | { mode: 'file'; completionSecret: string; keystoreDir: string; kek: Buffer };
+
+const SUPPORTED_MODES: readonly CustodianMode[] = ['memory', 'file'];
+
+/**
+ * Parse + validate custodian configuration from the environment. Aggregates every problem into
+ * one {@link ConfigError}; secret values (COMPLETION_SECRET, CUSTODIAN_KEK) never appear in error
+ * messages (only variable names), matching the Stage 3.1 redaction guarantee.
+ */
+export function loadCustodianConfig(env: Env = process.env): CustodianConfig {
+  const problems: string[] = [];
+
+  const secret = resolveVar(env, 'COMPLETION_SECRET');
+  if (secret.problem) problems.push(secret.problem);
+  else if (secret.value === undefined) problems.push('COMPLETION_SECRET is required (set COMPLETION_SECRET or COMPLETION_SECRET_FILE)');
+
+  const modeVar = resolveVar(env, 'CUSTODIAN_MODE');
+  if (modeVar.problem) problems.push(modeVar.problem);
+  else if (modeVar.value === undefined) problems.push(`CUSTODIAN_MODE is required (one of: ${SUPPORTED_MODES.join(', ')})`);
+  else if (!SUPPORTED_MODES.includes(modeVar.value as CustodianMode)) {
+    problems.push(`CUSTODIAN_MODE must be one of: ${SUPPORTED_MODES.join(', ')} (got "${modeVar.value}")`);
+  }
+
+  if (modeVar.value === 'file') {
+    const dir = resolveVar(env, 'CUSTODIAN_KEYSTORE_DIR');
+    if (dir.problem) problems.push(dir.problem);
+    else if (dir.value === undefined) problems.push('CUSTODIAN_KEYSTORE_DIR is required for CUSTODIAN_MODE=file');
+
+    // KEK resolution seam: a base64 32-byte key today; the planned age-encrypted-file KEK would
+    // decrypt to these same 32 bytes here, without changing anything downstream.
+    let kek: Buffer | undefined;
+    const kekVar = resolveVar(env, 'CUSTODIAN_KEK');
+    if (kekVar.problem) problems.push(kekVar.problem);
+    else if (kekVar.value === undefined) problems.push('CUSTODIAN_KEK is required for CUSTODIAN_MODE=file (base64-encoded 32 bytes; or CUSTODIAN_KEK_FILE)');
+    else {
+      const buf = Buffer.from(kekVar.value, 'base64');
+      if (buf.length !== 32) problems.push('CUSTODIAN_KEK must decode (base64) to exactly 32 bytes');
+      else kek = buf;
+    }
+
+    if (problems.length > 0) throw new ConfigError(problems);
+    return { mode: 'file', completionSecret: secret.value!, keystoreDir: dir.value!, kek: kek! };
+  }
+
+  if (problems.length > 0) throw new ConfigError(problems);
+  return { mode: 'memory', completionSecret: secret.value! };
+}
+
+/**
+ * Construct a `KeyCustodian` from validated config. Unknown/unsupported modes FAIL CLOSED with a
+ * {@link ConfigError} — a custodian is never silently defaulted (that could mask key material the
+ * operator believes is protected). `clock` is injectable for deterministic tests.
+ */
+export function createCustodian(config: CustodianConfig, clock: () => number = () => Date.now()): KeyCustodian {
+  switch (config.mode) {
+    case 'memory':
+      return new InMemoryCustodian(config.completionSecret, clock);
+    case 'file':
+      return new FileCustodian(config.keystoreDir, config.completionSecret, config.kek, clock);
+    default: {
+      // Exhaustiveness guard + runtime fail-closed for any future/unknown mode (e.g. a managed
+      // KMS or age-file variant added to the union before its adapter exists).
+      const unknown = config as { mode?: string };
+      throw new ConfigError([`unsupported custodian mode "${String(unknown.mode)}" (fail-closed; no adapter)`]);
+    }
+  }
+}
+
+/** Convenience: load from env and construct in one step. */
+export function custodianFromEnv(env: Env = process.env, clock?: () => number): KeyCustodian {
+  return createCustodian(loadCustodianConfig(env), clock);
+}
