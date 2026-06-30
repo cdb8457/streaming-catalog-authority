@@ -8,7 +8,7 @@ Hermes, job queues, or UI — by design. The core stands alone.
 ```bash
 npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
 npm run ci       # typecheck, then all suites: crypto (15) + authority (21) +
-                 # SecretStore (4) + crypto-shred (8) = 48 passed, 0 failed
+                 # SecretStore (4) + crypto-shred (15) + reconcile (6) = 61 passed
 ```
 
 Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.
@@ -81,10 +81,15 @@ the ciphertext (dead tuples, WAL, replicas, backups) is permanently undecryptabl
 fail closed when the custodian reports the key destroyed. `restore` after a completed shred
 begins a fresh lineage and re-supplies identity (the old identity is gone, by design).
 
-Status: Stage 2a (schema + command surface + forget coordinator + fail-closed reads) is built
-and tested with an in-process custodian. Stage 2b (reconciler, concurrent winner-selection
-races, old-backup self-heal) and the production custodian adapter + integration suite are
-pending. The in-process custodian proves protocol logic, not the production deletion guarantee.
+A reconciler completes interrupted shreds, promotes keys whose commit ack was lost, destroys
+confirmed-orphan provisional keys (doing **nothing** when the DB is unreachable), and
+self-heals an old-backup restore (a still-`active` row whose key is destroyed is re-driven
+through forget). Completion requires an unforgeable HMAC **attestation** from the custodian.
+
+Status: Stage 2a (schema + coordinator + reads) and Stage 2b (reconciler + concurrent
+winner-selection + old-backup self-heal) are built and tested with an in-process custodian.
+The production custodian adapter + integration suite and the backup policy are pending. The
+in-process custodian proves protocol logic, not the production deletion guarantee.
 
 ## Not in this slice
 

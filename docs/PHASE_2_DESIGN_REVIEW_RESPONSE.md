@@ -137,3 +137,22 @@ Note (honest scope): literal+escaped substring registration covers the common ca
 **structured-logging path is the robust one** (redacts before serialization) and is the
 recommended way to log identity. Stage 2b (reconciler, concurrent races, old-backup
 self-heal) remains.
+
+---
+
+# Stage 2b — reconciler + races + self-heal (built)
+
+Stage 2a approved. Stage 2b adds `authority.reconcile()` and its tests. Suite is **61 passed**
+(crypto 15, authority 21, SecretStore 4, crypto-shred 15, reconcile 6).
+
+| Capability | Behaviour | Proof |
+|---|---|---|
+| Pending-shred retry | Re-runs the idempotent custodian destroy and attests completion for any `shred_pending` row. | reconcile test "completes a shred left pending by a custodian outage". |
+| Lost-ack promotion | A key committed in the DB but left provisional (lost commit ack) is **promoted**, never destroyed. | reconcile test "promotes a key whose commit ack was lost". |
+| Orphan destroy | A provisional key with no committed DB row is destroyed. | reconcile test "destroys a provisional key with no committed DB row". |
+| DB-unavailable do-nothing | If the DB can't be queried, reconcile destroys nothing (never acts on uncertainty). | reconcile test "does NOTHING under DB unavailability". |
+| Old-backup self-heal | A still-`active` row whose custodian key is `destroyed` (restored backup) is re-driven through forget to `shred_complete`; reads fail closed throughout. | reconcile test "self-heals an old-backup restore". |
+| Winner selection | 20 concurrent adds → exactly one lineage; losers leave **no** provisional keys. | reconcile test "20 concurrent adds: one lineage, losers leave no provisional keys". |
+
+Remaining Phase 2 work: the production custodian adapter + integration suite (the in-process
+custodian proves protocol logic only — design O4), and the encrypted backup policy.

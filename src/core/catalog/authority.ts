@@ -248,6 +248,79 @@ export class CatalogAuthority {
     return Number(rows[0].n);
   }
 
+  /**
+   * Reconciler (design §5/§7.1/§8.1). Idempotent; safe to run on a schedule.
+   *  - completes pending shreds (retry the idempotent destroy, then attest completion);
+   *  - sweeps stale provisional keys: PROMOTE if committed (lost commit ack), DESTROY if
+   *    positively not committed, and DO NOTHING if the DB is unavailable (never destroy on
+   *    uncertainty);
+   *  - self-heals an old-backup restore: a DB row still 'active' whose custodian key is
+   *    'destroyed' is re-driven through forget so the projection matches the tombstone.
+   * A failure in any single item is swallowed so the rest still make progress.
+   */
+  async reconcile(): Promise<{ completed: number; promoted: number; destroyed: number; healed: number }> {
+    let completed = 0, promoted = 0, destroyed = 0, healed = 0;
+
+    // 1. pending shreds -> finish them
+    for (const p of await this.safeRows<{ item_id: string; key_id: string; shred_op_id: string }>(`SELECT item_id, key_id, shred_op_id FROM item_key_control WHERE shred_state = 'shred_pending'`)) {
+      try {
+        const receipt = await this.custodian.destroy(p.shred_op_id, p.key_id);
+        await this.pool.query('SELECT cat_forget_complete($1,$2,$3,$4,$5)', [p.item_id, p.shred_op_id, receipt.receiptId, receipt.destroyedAt, receipt.attestation]);
+        completed++;
+      } catch { /* transient; retry next run */ }
+    }
+
+    // 2. stale provisional keys -> promote (committed) or destroy (confirmed orphan)
+    let stale: Awaited<ReturnType<KeyCustodian['listStaleProvisioning']>>;
+    try {
+      stale = await this.custodian.listStaleProvisioning();
+    } catch {
+      stale = []; // custodian unreachable -> nothing
+    }
+    for (const s of stale) {
+      let committed: boolean;
+      try {
+        committed = await this.committedByOp(s.itemId, s.operationId);
+      } catch {
+        continue; // DB unavailable -> NEVER destroy on uncertainty
+      }
+      if (committed) {
+        try { await this.custodian.commitProvision(s.operationId); promoted++; } catch { /* retry */ }
+      } else {
+        try { await this.custodian.destroy(randomUUID(), s.keyId); destroyed++; } catch { /* retry */ }
+      }
+    }
+
+    // 3. old-backup self-heal: DB 'active' but custodian 'destroyed'
+    for (const a of await this.safeRows<{ item_id: string; key_id: string }>(`SELECT item_id, key_id FROM item_key_control WHERE shred_state = 'active'`)) {
+      let status: string;
+      try {
+        status = await this.custodian.status(a.key_id);
+      } catch {
+        continue; // custodian unreachable -> skip
+      }
+      if (status !== 'destroyed') continue;
+      try {
+        const begin = (await this.pool.query('SELECT key_id, shred_op_id, needs_destroy FROM cat_forget_begin($1)', [a.item_id])).rows[0];
+        if (begin.needs_destroy) {
+          const receipt = await this.custodian.destroy(begin.shred_op_id, a.key_id);
+          await this.pool.query('SELECT cat_forget_complete($1,$2,$3,$4,$5)', [a.item_id, begin.shred_op_id, receipt.receiptId, receipt.destroyedAt, receipt.attestation]);
+        }
+        healed++;
+      } catch { /* retry next run */ }
+    }
+
+    return { completed, promoted, destroyed, healed };
+  }
+
+  private async safeRows<T>(sql: string): Promise<T[]> {
+    try {
+      return (await this.pool.query(sql)).rows as T[];
+    } catch {
+      return []; // DB unavailable -> caller does nothing
+    }
+  }
+
   // --- helpers --------------------------------------------------------------
 
   private assertId(itemId: string): void {
