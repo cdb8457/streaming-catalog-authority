@@ -94,7 +94,7 @@ async function main(): Promise<void> {
   // --- custodian ------------------------------------------------------------
   let t = 1000;
   const clock = () => t;
-  const newCust = () => new InMemoryCustodian(clock);
+  const newCust = () => new InMemoryCustodian('test-completion-secret', clock);
 
   await test('custodian — provision is provisional; get denied until commit; then active', async () => {
     const c = newCust();

@@ -195,3 +195,25 @@ Honest scope: `FileCustodian` is a reference adapter — FS-level overwrite is b
 irreversibility and it is single-writer. A managed KMS / secrets service implementing the same
 `KeyCustodian` interface is the production target and provides the real deletion guarantee;
 swapping it is a constructor change. Remaining: the encrypted backup policy (Stage 3b).
+
+---
+
+# Response to Stage 3a Code Review (custodian P0s)
+
+Three P0s + durability gaps in the adapter. All fixed. Suite is **73 passed** (integration 9).
+
+| Finding | Fix | Proof |
+|---------|-----|-------|
+| **Default secret allows forged completion** (app could import `DEV_COMPLETION_SECRET`) | Removed the exported constant entirely; custodians require an explicit secret; the migration seeds a **random, unknowable** `crypto_config` secret; the harness/operator sets it out-of-band. App code has no constant to import. | integration "wrong completion secret cannot complete a shred" (a custodian without the DB's secret is stuck `shred_pending`) + "app role cannot read the completion secret". |
+| **Missing key falsely "destroyed"** | `destroy` **refuses an unknown key** (`not_found`) instead of fabricating a tombstone. | integration "destroy refuses an unknown key (no fabricated tombstone)". |
+| **Filesystem path traversal** | Ids are **SHA-256-hashed into filenames** with a resolved-path containment check. | integration "path-traversal ids cannot escape the keystore". |
+| Non-atomic / un-fsynced writes; raw DEKs | Atomic **temp → fsync → rename, mode 0600**; DEKs stored **wrapped under a KEK** (AES-256-GCM, AAD = keyId), never raw; **crash-recoverable destroy journal** (intent → overwrite+unlink → tombstone → clear, replayed on startup). | integration durability + irreversible-delete tests; `FileCustodian` recovers journaled destroys on construct. |
+| Requires explicit secret/KEK | Constructor rejects empty secret / non-32-byte KEK before touching disk. | integration "custodian requires an explicit secret and a 32-byte KEK". |
+
+**Accepted as still-open:** `FileCustodian` remains a **reference harness, not the production
+adapter** (it runs in-process, so the trust boundary is not enforced, and FS overwrite is only
+best-effort physical erasure). Design O4's production-adapter requirement is satisfied by a
+managed-KMS adapter implementing the same `KeyCustodian` interface, run outside the app trust
+boundary — that needs real infra and is a deployment task, not buildable/testable here.
+
+Remaining Phase 2: the encrypted backup policy (Stage 3b).

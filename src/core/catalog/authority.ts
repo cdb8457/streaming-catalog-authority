@@ -5,7 +5,7 @@ import { isOpaqueItemId } from './events.js';
 import {
   encrypt, decrypt, encryptUtf8, decryptUtf8, zeroize, SCHEMA_VERSION, type Aad,
 } from '../crypto/envelope.js';
-import { InMemoryCustodian, type KeyCustodian } from '../crypto/custodian.js';
+import type { KeyCustodian } from '../crypto/custodian.js';
 import { SecretStore } from '../secrets/secret-store.js';
 import { createRedactingLogger, type LogSink, type RedactingLogger } from '../redaction/logger.js';
 
@@ -39,9 +39,9 @@ export class CatalogAuthority {
   /** Runtime-only registry of in-flight DEKs and decrypted identity, for log redaction. */
   readonly secrets: SecretStore;
 
-  constructor(pool: Pool = getPool(), custodian: KeyCustodian = new InMemoryCustodian(), secrets: SecretStore = new SecretStore()) {
+  constructor(pool: Pool, custodian: KeyCustodian, secrets: SecretStore = new SecretStore()) {
     this.pool = pool;
-    this.custodian = custodian;
+    this.custodian = custodian; // required — no forgeable in-process default
     this.secrets = secrets;
   }
 

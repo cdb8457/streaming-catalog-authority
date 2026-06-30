@@ -93,15 +93,19 @@ DROP FUNCTION IF EXISTS cat_forget_complete(TEXT, TEXT, TEXT, TEXT);  -- op-boun
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
 
 -- Completion secret shared between the DB and the (production: external) custodian, never
--- the app. The app role has NO access to this table, so it cannot compute a valid
--- attestation and therefore cannot fabricate a shred completion.
--- DEV VALUE ONLY — production must replace it with an out-of-band secret.
+-- the app. The app role has NO access to this table, so it cannot compute a valid attestation
+-- and therefore cannot fabricate a shred completion.
+--
+-- Seeded with a RANDOM, unknowable value (not a constant an attacker could import). The
+-- operator MUST set this to the secret shared out-of-band with the external custodian
+-- (e.g. SELECT set_completion_secret('...')); until then, completion attestations cannot
+-- verify, so a shred can never be falsely marked complete.
 CREATE TABLE IF NOT EXISTS crypto_config (
   id                INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
   completion_secret TEXT NOT NULL
 );
 INSERT INTO crypto_config (id, completion_secret)
-VALUES (1, 'dev-completion-secret-v1')
+VALUES (1, gen_random_uuid()::text)
 ON CONFLICT (id) DO NOTHING;
 
 -- Durable abort fence: an operation_id recorded here can never commit a lineage. The

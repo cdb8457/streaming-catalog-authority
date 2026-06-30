@@ -7,8 +7,10 @@ import { Client, type Pool } from 'pg';
 import { startEmbedded } from './embedded-pg.js';
 import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
+import { InMemoryCustodian } from '../src/core/crypto/custodian.js';
 import { validateEventPayload } from '../src/core/redaction/noleak.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
+import { installCompletionSecret } from './crypto-setup.js';
 
 let passed = 0;
 let failed = 0;
@@ -88,7 +90,8 @@ async function main(): Promise<void> {
   const pool = getPool();
   const admin = new Client({ connectionString: adminUrl() });
   await admin.connect();
-  const auth = new CatalogAuthority();
+  const secret = await installCompletionSecret(admin);
+  const auth = new CatalogAuthority(pool, new InMemoryCustodian(secret));
   const FUTURE = new Date(Date.now() + 3_600_000);
 
   console.log('Running Phase 1/2 authority suite (encrypted identity):\n');
@@ -100,7 +103,7 @@ async function main(): Promise<void> {
     assert(offenders.length === 0, `TS files writing tables directly: ${offenders.join(', ')}`);
   });
   await test('core imports nothing about providers/HTTP/adapters/Hermes', () => {
-    const importRe = /import[^'"]*['"]([^'"]+)['"]/g;
+    const importRe = /\bfrom\s*['"]([^'"]+)['"]/g; // match real module specifiers, not comment apostrophes
     const forbidden = /(provider(?!_ref)|adapter|hermes|plex|jellyfin|torbox|debrid|axios|node-fetch|undici|express|fastify|\bgot\b|^https?$)/i;
     const bad: string[] = [];
     for (const file of walkTs(CORE_DIR)) for (const m of readFileSync(file, 'utf8').matchAll(importRe)) if (forbidden.test(m[1]!)) bad.push(`${path.basename(file)} -> ${m[1]}`);

@@ -4,6 +4,7 @@ import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
 import { InMemoryCustodian, CustodianTransportError } from '../src/core/crypto/custodian.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
+import { installCompletionSecret } from './crypto-setup.js';
 
 let passed = 0;
 let failed = 0;
@@ -47,8 +48,9 @@ async function main(): Promise<void> {
   const admin = new Client({ connectionString: adminUrl() });
   await admin.connect();
 
+  const secret = await installCompletionSecret(admin);
   // shared custodian so tests can inspect/fault-inject it
-  const custodian = new InMemoryCustodian();
+  const custodian = new InMemoryCustodian(secret);
   const auth = new CatalogAuthority(pool, custodian);
 
   async function reset(): Promise<void> {
@@ -179,7 +181,7 @@ async function main(): Promise<void> {
   // 10. P0 — a lost commit ack must NOT destroy the committed key ---------------
   await test('addItem — lost commit ack leaves the committed key intact (not destroyed)', async () => {
     await reset();
-    const c2 = new InMemoryCustodian();
+    const c2 = new InMemoryCustodian(secret);
     const a2 = new CatalogAuthority(pool, c2);
     const id = mintItemId();
     c2.setFault('commit', new CustodianTransportError('commit'));

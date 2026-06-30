@@ -4,6 +4,7 @@ import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
 import { InMemoryCustodian } from '../src/core/crypto/custodian.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
+import { installCompletionSecret } from './crypto-setup.js';
 
 let passed = 0;
 let failed = 0;
@@ -59,9 +60,10 @@ async function main(): Promise<void> {
   async function keyOf(id: string): Promise<string> {
     return (await pool.query('SELECT key_id FROM item_key_control WHERE item_id=$1', [id])).rows[0].key_id;
   }
+  const secret = await installCompletionSecret(admin);
   // fresh custodian per test so the shared pool can be reset without cross-test key state
   const makeAuth = () => {
-    const custodian = new InMemoryCustodian();
+    const custodian = new InMemoryCustodian(secret);
     return { custodian, auth: new CatalogAuthority(pool, custodian) };
   };
 
@@ -116,7 +118,7 @@ async function main(): Promise<void> {
   // 4. DB unavailable -> reconcile destroys nothing --------------------------
   await test('reconcile — does NOTHING under DB unavailability (never destroys on uncertainty)', async () => {
     await reset();
-    const custodian = new InMemoryCustodian();
+    const custodian = new InMemoryCustodian(secret);
     const id = mintItemId();
     const { keyId } = await custodian.provision('op-x', id, 0); // provisional orphan
     const failingPool = { query: async () => { throw new Error('DB unavailable'); } } as unknown as Pool;

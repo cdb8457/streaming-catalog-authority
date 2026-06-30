@@ -6,6 +6,7 @@ import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
+import { installCompletionSecret, testKek } from './crypto-setup.js';
 
 let passed = 0;
 let failed = 0;
@@ -30,9 +31,11 @@ async function main(): Promise<void> {
   const admin = new Client({ connectionString: adminUrl() });
   await admin.connect();
 
+  const secret = await installCompletionSecret(admin);
+  const kek = testKek();
   const keystore = path.join(process.cwd(), `.keystore-${process.argv[2] ?? '5437'}`);
   FileCustodian.wipe(keystore);
-  const custodian = new FileCustodian(keystore);
+  const custodian = new FileCustodian(keystore, secret, kek);
   const auth = new CatalogAuthority(pool, custodian);
 
   async function reset(): Promise<void> {
@@ -56,19 +59,16 @@ async function main(): Promise<void> {
   });
 
   // 2. forget: irreversible delete + DB verifies the custodian's attestation --
-  await test('integration — forget destroys the key file, leaves a tombstone, DB verifies attestation', async () => {
+  await test('integration — forget destroys the key, leaves a tombstone, DB verifies attestation', async () => {
     await reset();
     const id = mintItemId();
     await auth.addItem(id, { title: 'Erase Me' });
     const keyId = await keyOf(id);
-    const keyFile = path.join(keystore, 'keys', `${keyId}.json`);
-    const tombFile = path.join(keystore, 'tombstones', `${keyId}.json`);
-    assert(existsSync(keyFile), 'key file exists before forget');
+    assertEq(await custodian.status(keyId), 'active', 'key active before forget');
     const state = await auth.forget(id);
     assertEq(state, 'shred_complete', 'forget completed (DB verified the file custodian attestation)');
-    assert(!existsSync(keyFile), 'key file irreversibly removed');
-    assert(existsSync(tombFile), 'durable tombstone remains');
-    assertEq(await custodian.status(keyId), 'destroyed', 'status destroyed');
+    assertEq(await custodian.status(keyId), 'destroyed', 'status destroyed (tombstone-backed)');
+    await assertThrows(() => custodian.get(keyId, 0), 'key material irreversibly gone (get fails)');
     assert((await auth.readIdentity(id)) === null, 'identity unreadable');
     assertEq(await count(`SELECT count(*) AS c FROM item_key_control WHERE item_id=$1 AND shred_state='shred_complete'`, [id]), 1, 'DB shred_complete');
   });
@@ -83,7 +83,7 @@ async function main(): Promise<void> {
     const goneKey = await keyOf(gone);
     await auth.forget(gone);
     // simulate a process restart: a brand-new custodian reading the same directory
-    const custodian2 = new FileCustodian(keystore);
+    const custodian2 = new FileCustodian(keystore, secret, kek); // same secret + KEK, restarted
     const auth2 = new CatalogAuthority(pool, custodian2);
     assertEq((await auth2.readIdentity(live))?.title, 'Lives On', 'active key persisted; identity still readable');
     assertEq(await custodian2.status(goneKey), 'destroyed', 'tombstone persisted across restart');
@@ -106,6 +106,44 @@ async function main(): Promise<void> {
   // 5. the completion secret is not readable by the app role -----------------
   await test('integration — app role cannot read the completion secret', async () => {
     await assertThrows(() => pool.query('SELECT completion_secret FROM crypto_config'), 'app cannot read crypto_config');
+  });
+
+  // 6. P0: destroy refuses an unknown key (no fabricated tombstone) -----------
+  await test('integration — destroy refuses an unknown key (no fabricated tombstone)', async () => {
+    await assertThrows(() => custodian.destroy(mintItemId(), 'key_does-not-exist'), 'destroy(not_found) refused');
+    assertEq(await custodian.status('key_does-not-exist'), 'not_found', 'no tombstone fabricated for a missing key');
+  });
+
+  // 7. P0: path-traversal operation ids are contained (hashed filenames) ------
+  await test('integration — path-traversal ids cannot escape the keystore', async () => {
+    await reset();
+    const id = mintItemId();
+    const evilOp = '../../escaped-op';
+    const { keyId } = await custodian.provision(evilOp, id, 0); // hashed -> contained
+    assertEq(await custodian.status(keyId), 'provisional', 'evil-op key provisioned, contained');
+    assert(!existsSync(path.resolve(keystore, '..', '..', 'escaped-op.json')), 'no file written outside the keystore');
+    await custodian.commitProvision(evilOp);
+    assertEq(await custodian.status(keyId), 'active', 'evil-op key usable and contained');
+  });
+
+  // 8. P0: a custodian without the right secret cannot complete a shred -------
+  await test('integration — wrong completion secret cannot complete a shred', async () => {
+    await reset();
+    const wrongStore = path.join(process.cwd(), `.keystore-wrong-${process.argv[2] ?? '5437'}`);
+    FileCustodian.wipe(wrongStore);
+    const rogue = new CatalogAuthority(pool, new FileCustodian(wrongStore, 'a-different-secret', kek));
+    const id = mintItemId();
+    await rogue.addItem(id, { title: 'q' }); // rogue owns the key, but not the DB's secret
+    const state = await rogue.forget(id);
+    assertEq(state, 'shred_pending', 'completion rejected: wrong-secret attestation does not verify');
+    assertEq(await count(`SELECT count(*) AS c FROM item_key_control WHERE item_id=$1 AND shred_state='shred_pending'`, [id]), 1, 'row stuck pending, never falsely complete');
+    FileCustodian.wipe(wrongStore);
+  });
+
+  // 9. custodian requires an explicit secret + valid KEK ---------------------
+  await test('integration — custodian requires an explicit secret and a 32-byte KEK', async () => {
+    await assertThrows(() => { void new FileCustodian(keystore, '', kek); }, 'empty secret rejected');
+    await assertThrows(() => { void new FileCustodian(keystore, 's', Buffer.alloc(16)); }, 'short KEK rejected');
   });
 
   FileCustodian.wipe(keystore);

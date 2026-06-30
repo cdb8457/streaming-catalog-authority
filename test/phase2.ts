@@ -1,9 +1,12 @@
+import { Client } from 'pg';
 import { startEmbedded } from './embedded-pg.js';
 import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
+import { InMemoryCustodian } from '../src/core/crypto/custodian.js';
 import { SecretStore } from '../src/core/secrets/secret-store.js';
 import { createRedactingLogger } from '../src/core/redaction/logger.js';
-import { getPool, migrate, closePool } from '../src/db/pool.js';
+import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
+import { installCompletionSecret } from './crypto-setup.js';
 
 let passed = 0;
 let failed = 0;
@@ -34,7 +37,10 @@ async function main(): Promise<void> {
   }
   await migrate();
   const pool = getPool();
-  const auth = new CatalogAuthority();
+  const admin = new Client({ connectionString: adminUrl() });
+  await admin.connect();
+  const secret = await installCompletionSecret(admin);
+  const auth = new CatalogAuthority(pool, new InMemoryCustodian(secret));
 
   console.log('Running Phase 2 (SecretStore + log redaction) suite:\n');
 
@@ -94,6 +100,7 @@ async function main(): Promise<void> {
     assert(itm.rows[0].c === 0, 'secret not in any item row');
   });
 
+  await admin.end();
   await closePool();
   if (server) await server.stop();
 

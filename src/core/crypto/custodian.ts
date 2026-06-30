@@ -1,12 +1,9 @@
 import { createHmac, randomBytes, randomUUID } from 'node:crypto';
 
-/**
- * Dev/test completion secret. In production the custodian is EXTERNAL and shares this
- * secret out-of-band with the database ONLY (never with the app), so the app cannot forge a
- * destruction attestation. The in-process custodian uses a well-known dev value that the
- * migration also seeds into the owner-only crypto_config table.
- */
-export const DEV_COMPLETION_SECRET = 'dev-completion-secret-v1';
+// NOTE: there is deliberately NO exported default completion secret. A shared, importable
+// constant would let application code forge a destruction attestation. The secret is supplied
+// explicitly to the custodian and lives, out-of-band, only in the custodian and the owner-only
+// crypto_config row — never in application code.
 
 /**
  * Key custodian (design §2). Owns wrapping/rotation state and the DEK lifecycle.
@@ -102,9 +99,10 @@ export class InMemoryCustodian implements KeyCustodian {
   private readonly clock: () => number;
   private readonly completionSecret: string;
 
-  constructor(clock: () => number = () => Date.now(), completionSecret: string = DEV_COMPLETION_SECRET) {
-    this.clock = clock;
+  constructor(completionSecret: string, clock: () => number = () => Date.now()) {
+    if (!completionSecret) throw new Error('completionSecret is required');
     this.completionSecret = completionSecret;
+    this.clock = clock;
   }
 
   /**
