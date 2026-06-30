@@ -86,22 +86,27 @@ A dependency-free **structural** check of these deployment artifacts runs in CI 
 (asserts the services, healthcheck, separate volumes, `*_FILE` secrets, and the no-HTTP/no-ports
 shape) so the topology is verified even where Docker is unavailable.
 
-## Remaining production gates (open)
+## Production gates
 
-These are explicitly **open** and must be resolved (or formally accepted) before relying on this
-deployment in production:
+**Still open** (must be resolved or formally accepted before production):
 
 - **O4 — managed-KMS production custodian adapter (OPEN).** `FileCustodian` is a reference harness,
   not a managed KMS. The production custodian — a managed KMS implementing the `KeyCustodian`
   interface, run *outside* the app trust boundary — provides the real deletion/secrecy guarantee and
   is not built here; it would add a new `CUSTODIAN_MODE`.
-- **O5 — age KEK rotation / rewrap automation (OPEN).** The KEK arrives operator-side (age-decrypted
-  to `CUSTODIAN_KEK_FILE`). Versioned KEK rotation and the ciphertext rewrap workflow are not yet
-  automated; rotating the KEK is a manual operator procedure for now.
-- **`CUSTODIAN_MODE=memory` is dev/test ONLY — production guard OPEN.** The in-process memory
-  custodian loses all keys on restart and enforces no trust boundary. An explicit application-level
-  guard (refuse `memory` outside dev) or a firm operator prohibition is still open and applicable;
-  until then it is the operator's responsibility never to run `memory` in production.
+- **O5 — age KEK rotation *automation* (OPEN).** The rewrap **tooling exists** — `ops:rewrap-kek`
+  re-wraps every live DEK from `CUSTODIAN_KEK_PREVIOUS` to `CUSTODIAN_KEK` (resumable; identity
+  ciphertext untouched; see the runbook). What remains open is **automation / managed rotation**
+  (scheduling, age-key custody, zero-touch re-keying); rotating the KEK is still a manual operator
+  procedure today.
+
+**Closed / enforced** (no longer an open gate):
+
+- **`CUSTODIAN_MODE=memory` production guard — CLOSED (enforced, Phase 4).** The in-process memory
+  custodian is dev/test only (it loses all keys on restart and enforces no trust boundary).
+  `CUSTODIAN_MODE=memory` is now **refused in production** (`APP_ENV`/`NODE_ENV=production`) by
+  `loadCustodianConfig`; the only override is the explicit `CUSTODIAN_ALLOW_INSECURE_MEMORY=true`
+  (not recommended). `ops:doctor` also fails the durability check if `memory` is used in production.
 
 ## Out of scope (unchanged)
 
