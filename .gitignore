@@ -5,3 +5,7 @@ node_modules/
 dist/
 *.log
 .DS_Store
+.mcp.json
+.agentsroom/handoff-transcript-*.txt
+.agentsroom/handoff-summary-*.md
+.worktrees/
