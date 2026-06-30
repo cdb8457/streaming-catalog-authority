@@ -44,6 +44,7 @@ export interface EventSpec {
 export const EVENT_REGISTRY: Record<string, EventSpec> = {
   ItemAdded: { kind: 'structural', ttl: false },
   ProviderRefAttached: { kind: 'structural', ttl: false },
+  ProviderRefDetached: { kind: 'structural', ttl: false },
   ItemForgotten: { kind: 'structural', ttl: false },
   ItemRestored: { kind: 'structural', ttl: false },
   BehavioralSignal: { kind: 'behavioral', ttl: true },
@@ -55,6 +56,10 @@ export function itemAdded(itemId: string): CatalogEvent {
 export function providerRefAttached(itemId: string, refType: string): CatalogEvent {
   return { itemId, kind: 'structural', type: 'ProviderRefAttached', payload: { op: refType }, expiresAt: null };
 }
+export function providerRefDetached(itemId: string, refType: string): CatalogEvent {
+  return { itemId, kind: 'structural', type: 'ProviderRefDetached', payload: { op: refType }, expiresAt: null };
+}
+
 export function itemForgotten(itemId: string): CatalogEvent {
   return { itemId, kind: 'structural', type: 'ItemForgotten', payload: {}, expiresAt: null };
 }

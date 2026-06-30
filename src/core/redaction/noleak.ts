@@ -37,6 +37,19 @@ const SIGNATURES: ReadonlyArray<{ re: RegExp; label: string }> = [
   { re: /\bBearer\s+[A-Za-z0-9._-]{12,}/i, label: 'bearer token' },
 ];
 
+/**
+ * Returns `text` with every secret/identity signature replaced by a marker. The
+ * non-throwing counterpart of assertNoLeak, for log redaction (Phase 2).
+ */
+export function redactString(text: string): string {
+  let out = text;
+  for (const { re, label } of SIGNATURES) {
+    const g = new RegExp(re.source, re.flags.includes('g') ? re.flags : re.flags + 'g');
+    out = out.replace(g, `[redacted:${label}]`);
+  }
+  return out;
+}
+
 /** Throws if any string value (recursively) matches a secret/identity signature. */
 export function assertNoLeak(value: unknown, path = 'value'): void {
   if (value === null || value === undefined) return;
@@ -75,6 +88,9 @@ const PAYLOAD_SCHEMAS: Record<string, Record<string, FieldSpec>> = {
   ItemForgotten: {},
   ItemRestored: {},
   ProviderRefAttached: {
+    op: { kind: 'enum', values: REF_TYPE_SET, pattern: /^[a-z0-9_]{1,32}$/ },
+  },
+  ProviderRefDetached: {
     op: { kind: 'enum', values: REF_TYPE_SET, pattern: /^[a-z0-9_]{1,32}$/ },
   },
   BehavioralSignal: {

@@ -1,5 +1,7 @@
 node_modules/
 .pgdata/
+.pgdata-*/
+.keystore-*/
 dist/
 *.log
 .DS_Store

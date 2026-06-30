@@ -2,8 +2,10 @@ import { rmSync } from 'node:fs';
 import path from 'node:path';
 import EmbeddedPostgres from 'embedded-postgres';
 
-const PORT = 5433;
-const DATA_DIR = path.join(process.cwd(), '.pgdata');
+// Port + data dir are per-suite (argv[2]) so suites running back-to-back never collide on a
+// lingering server/data dir. Falls back to 5433/.pgdata when no arg is given.
+const PORT = Number(process.argv[2] ?? process.env.EMBEDDED_PG_PORT ?? 5433);
+const DATA_DIR = path.join(process.cwd(), `.pgdata-${PORT}`);
 
 /**
  * Boots a real, throwaway PostgreSQL 16 for the test run and sets:
