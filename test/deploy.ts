@@ -1,4 +1,4 @@
-import { readFileSync, existsSync } from 'node:fs';
+import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
@@ -21,6 +21,10 @@ function test(name: string, fn: () => void): void {
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
 const read = (rel: string): string => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), 'utf8');
 const exists = (rel: string): boolean => existsSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)));
+const opsFiles = (): Array<[string, string]> => {
+  const dir = fileURLToPath(new URL('../src/ops', import.meta.url));
+  return readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => [f, readFileSync(`${dir}/${f}`, 'utf8')]);
+};
 
 console.log('Running Phase 3 deployment topology suite (Stage 3.4):\n');
 
@@ -69,6 +73,8 @@ test('compose — `docker compose run ops` invocations must NOT double-prefix np
   assert(!broken.test(doc), 'deployment doc does not double-prefix npm run');
   assert(!broken.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke:compose does not double-prefix npm run');
   assert(/run --rm ops ops:migrate\b/.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke:compose passes the script name directly');
+  // ...and the same stale pattern must not reappear in src/ops/*.ts comments (Phase 5).
+  for (const [name, src] of opsFiles()) assert(!broken.test(src), `src/ops/${name} must not contain the "run --rm ops npm run" double-prefix`);
 });
 
 test('package.json — ops + deploy scripts wired; no HTTP framework dep', () => {
@@ -94,6 +100,23 @@ test('docs — PHASE_3_DEPLOYMENT covers Unraid, *_FILE, keystore separation, op
   const doc = read('docs/PHASE_3_DEPLOYMENT.md');
   for (const kw of ['Unraid', '_FILE', 'keystore', 'age', 'O4']) assert(doc.includes(kw), `doc mentions ${kw}`);
   assert(/separate volume/i.test(doc), 'doc states keystore/pgdata separation');
+});
+
+test('unraid template — one-shot, no ports, *_FILE secrets, separate keystore (Stage 5.3)', () => {
+  assert(exists('deploy/unraid-catalog-authority.xml'), 'unraid template exists');
+  const xml = read('deploy/unraid-catalog-authority.xml');
+  assert(/<Container/.test(xml) && /<\/Container>/.test(xml), 'is a Container template');
+  assert(/<WebUI\s*\/>/.test(xml), 'no web UI');
+  assert(!/Type="Port"/.test(xml) && !/<Config[^>]*Type="Port"/.test(xml), 'no published ports');
+  assert(xml.includes('/var/lib/catalog/keystore'), 'keystore path present');
+  for (const v of ['ADMIN_DATABASE_URL_FILE', 'DATABASE_URL_FILE', 'COMPLETION_SECRET_FILE', 'CUSTODIAN_KEK_FILE']) {
+    assert(xml.includes(v), `${v} wired via *_FILE`);
+  }
+  assert(/APP_ENV[\s\S]*production/.test(xml), 'APP_ENV=production');
+  assert(/CUSTODIAN_MODE[\s\S]*file/.test(xml), 'CUSTODIAN_MODE=file');
+  assert(/one-shot/i.test(xml) && /no web ui|no published ports/i.test(xml), 'documents the one-shot / no-HTTP shape');
+  // no secret VALUES baked into the template (only *_FILE paths)
+  assert(!/<Config Name="COMPLETION_SECRET"[^>]*>(?!\/run\/secrets)/.test(xml), 'no inline completion secret value');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

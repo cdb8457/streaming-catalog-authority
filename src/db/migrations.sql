@@ -108,6 +108,21 @@ INSERT INTO crypto_config (id, completion_secret)
 VALUES (1, gen_random_uuid()::text)
 ON CONFLICT (id) DO NOTHING;
 
+-- Owner-only setter for the completion secret (Phase 5). Operators provision/rotate the secret
+-- out-of-band with this instead of a raw UPDATE. SECURITY DEFINER + revoked from PUBLIC and the
+-- app role (below): the least-privileged runtime role can NEVER set it (and cannot read it), so it
+-- cannot fabricate a destruction attestation. Validates a non-empty value; touches only id = 1.
+CREATE OR REPLACE FUNCTION public.set_completion_secret(p_secret TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF p_secret IS NULL OR length(btrim(p_secret)) = 0 THEN
+    RAISE EXCEPTION 'completion secret must be non-empty';
+  END IF;
+  UPDATE public.crypto_config SET completion_secret = p_secret WHERE id = 1;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.set_completion_secret(TEXT) FROM PUBLIC;
+
 -- Durable abort fence: an operation_id recorded here can never commit a lineage. The
 -- reconciler fences an orphaned provisional key under the per-item lock (only if it has not
 -- committed), then destroys it — closing the reconciler-vs-live-writer TOCTOU.
@@ -566,8 +581,10 @@ REVOKE ALL ON FUNCTION
   cat_abort_provision(TEXT, TEXT),
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
-  cat_prune_and_rebuild(TIMESTAMPTZ)
+  cat_prune_and_rebuild(TIMESTAMPTZ),
+  set_completion_secret(TEXT)
 FROM PUBLIC;
+REVOKE ALL ON FUNCTION set_completion_secret(TEXT) FROM app;  -- app can never set the secret
 
 -- App gets the ciphertext command surface + maintenance. NOT cat_apply (raw lifecycle would
 -- bypass key-control/crypto-shred) and NOT the internal helpers.

@@ -134,6 +134,29 @@ the reconciler re-drives `forget`), and **expired behavioral events do not retur
 (cutoff-aware projection + prune mean a restored event past its `expires_at` neither scores nor
 survives a prune). See `docs/PHASE_2_BACKUP_POLICY.md`.
 
+## Self-hosting / Unraid (Phase 3–5)
+
+Deployment is **CLI/library only** — Postgres + on-demand one-shot ops containers, **no HTTP
+service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --rm ops <script>`):
+
+| Command | What it does |
+|---|---|
+| `ops:init` | first run: migrate + provision the completion secret + self-check |
+| `ops:doctor` | **read-only** production self-check (config, privileges, secret match, custodian, keystore); non-zero exit on any failure |
+| `ops:migrate` | apply schema + grants (owner), idempotent |
+| `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |
+| `ops:rewrap-kek` | rotate the KEK (rewrap wrapped DEKs; resumable; identity untouched) |
+
+- **Docker Compose:** `docker-compose.deploy.yml` (keystore on a volume separate from the DB and
+  backups; secrets via `*_FILE`; healthchecked Postgres).
+- **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
+  one-shot ops container; no ports/UI).
+- **Runbook:** `docs/PHASE_5_RUNBOOK.md` (backup/restore/rewrap, first-run, **disaster-recovery
+  matrix**, interrupted-operation recovery). Deployment details: `docs/PHASE_3_DEPLOYMENT.md`.
+
+Open production gates remain **O4** (managed-KMS adapter) and **O5** (age KEK rotation
+*automation*); `CUSTODIAN_MODE=memory` is refused in production.
+
 ## Not in this slice
 
 No provider adapter (mock or real), no Plex/Jellyfin/RD/TorBox, no Hermes, no HTTP, no
