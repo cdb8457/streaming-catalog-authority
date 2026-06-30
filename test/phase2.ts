@@ -87,7 +87,7 @@ async function main(): Promise<void> {
     // scan the entire durable store for the secret literal
     const evt = await pool.query(`SELECT count(*)::int AS c FROM events WHERE payload::text LIKE '%' || $1 || '%'`, [secret]);
     const itm = await pool.query(
-      `SELECT count(*)::int AS c FROM items WHERE coalesce(title,'')||coalesce(external_ids::text,'')||coalesce(metadata::text,'') LIKE '%' || $1 || '%'`,
+      `SELECT count(*)::int AS c FROM items WHERE coalesce(encode(identity_ct,'escape'),'') LIKE '%' || $1 || '%'`,
       [secret],
     );
     assert(evt.rows[0].c === 0, 'secret not in any event payload');

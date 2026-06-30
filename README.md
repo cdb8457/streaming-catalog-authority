@@ -7,7 +7,8 @@ Hermes, job queues, or UI — by design. The core stands alone.
 
 ```bash
 npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
-npm run ci       # typecheck, then the full Phase 1 suite -> "21 passed, 0 failed"
+npm run ci       # typecheck, then all suites: crypto (15) + authority (21) +
+                 # SecretStore (4) + crypto-shred (8) = 48 passed, 0 failed
 ```
 
 Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.
@@ -70,12 +71,20 @@ test/run.ts                  the Phase 1 suite (21 checks)
 - **Deterministic rebuild** with explicit cutoff; restores operational state only, identity
   NULL; proven by a genuine fresh-DB replay.
 
-## Erasure scope (important)
+## Erasure scope (Phase 2, crypto-shredding — Stage 2a)
 
-`forget` performs **logical erasure**: it removes all content identity from the live
-projection and keeps every event opaque. It does **not** by itself erase PostgreSQL's
-physical history (dead tuples, WAL, replicas, prior backups). True cryptographic erasure
-(per-item identity keys, key destruction on forget) is the **first Phase 2 design task**.
+Identity is now stored **only as ciphertext** (`items.identity_ct`, `provider_refs.ref_value_ct`),
+encrypted in-process under a **per-item key** held by a key custodian. `forget` is a
+coordinator: it clears the ciphertext and marks `shred_pending`, the custodian **irreversibly
+destroys the key lineage**, then it marks `shred_complete`. After that, any surviving copy of
+the ciphertext (dead tuples, WAL, replicas, backups) is permanently undecryptable — reads
+fail closed when the custodian reports the key destroyed. `restore` after a completed shred
+begins a fresh lineage and re-supplies identity (the old identity is gone, by design).
+
+Status: Stage 2a (schema + command surface + forget coordinator + fail-closed reads) is built
+and tested with an in-process custodian. Stage 2b (reconciler, concurrent winner-selection
+races, old-backup self-heal) and the production custodian adapter + integration suite are
+pending. The in-process custodian proves protocol logic, not the production deletion guarantee.
 
 ## Not in this slice
 
