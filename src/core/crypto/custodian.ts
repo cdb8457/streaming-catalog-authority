@@ -107,8 +107,17 @@ export class InMemoryCustodian implements KeyCustodian {
     this.completionSecret = completionSecret;
   }
 
-  private attest(keyId: string, operationId: string): string {
-    return createHmac('sha256', this.completionSecret).update(`${keyId}:${operationId}`).digest('hex');
+  /**
+   * Attest the DESTRUCTION STATEMENT (key_id, receipt_id, destroyed_at), NOT the operation id,
+   * so the receipt is stable and re-verifiable across idempotent re-destroys (old-backup
+   * self-heal). Newline-joined; all three fields are strictly formatted and contain no
+   * newline, so the encoding is unambiguous (asserted defensively).
+   */
+  private attest(keyId: string, receiptId: string, destroyedAt: string): string {
+    if (/\n/.test(keyId) || /\n/.test(receiptId) || /\n/.test(destroyedAt)) {
+      throw new Error('attestation field contains a separator');
+    }
+    return createHmac('sha256', this.completionSecret).update(`${keyId}\n${receiptId}\n${destroyedAt}`).digest('hex');
   }
 
   /**
@@ -194,12 +203,14 @@ export class InMemoryCustodian implements KeyCustodian {
       rec.dek.fill(0); // zeroize wrapped material before dropping
       rec.dek = null;
     }
+    const receiptId = this.freshId('rcpt_', (id) => this.receiptIds.has(id));
+    const destroyedAt = new Date(this.clock()).toISOString();
     rec.state = 'destroyed';
     rec.receipt = {
       keyId,
-      receiptId: this.freshId('rcpt_', (id) => this.receiptIds.has(id)),
-      destroyedAt: new Date(this.clock()).toISOString(),
-      attestation: this.attest(keyId, operationId),
+      receiptId,
+      destroyedAt,
+      attestation: this.attest(keyId, receiptId, destroyedAt),
     };
     this.receiptIds.add(rec.receipt.receiptId);
     this.ops.set(operationId, { operationId, kind: 'destroy', keyId });

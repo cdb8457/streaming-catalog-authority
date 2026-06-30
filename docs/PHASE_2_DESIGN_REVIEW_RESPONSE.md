@@ -102,3 +102,19 @@ logic, not the production deletion/attestation-secrecy guarantee (design O4).
 
 Stage 2b (reconciler, concurrent winner-selection races, old-backup self-heal) remains for
 the next stage.
+
+---
+
+# Response to Stage 2a Code Review #2
+
+Three newly-exposed blockers; all fixed. Suite is now **55 passed** (crypto 15, authority 21,
+SecretStore 4, crypto-shred 15).
+
+| Finding | Fix | Proof |
+|---------|-----|-------|
+| **P0 — reference removal is not event-sourced** (removed ref reappears `present=true` after rebuild) | New opaque **`ProviderRefDetached`** event (registry + typed payload + transition + reducer). `cat_update_identity_ct` now removes omitted refs by **authoring `ProviderRefDetached`** (reducer deactivates + clears ciphertext), so removal survives a rebuild. | shred test "ref removal is event-sourced and survives rebuild" — ref presence identical pre/post rebuild; detached ref stays absent. |
+| **P1 — SecretStore integration violated its own contract** (DEK stringified to hex; identity secrets deleted before the read resolved; externalIds/metadata never registered; spy test proved registration, not protection) | Dropped DEK-hex registration entirely (DEK stays a `Buffer`, zeroized). Added a scoped **`withIdentity(itemId, fn)`**: every identity string (title, ref values, **and** nested externalIds/metadata) is registered for the lifetime of `fn` only (deleted after — no long-lived cache); plaintext is not returned from the scope. | shred test "withIdentity — logging inside the scope is redacted" — title, external-id value, and ref value are all redacted via `createLogger()`; `secrets.size()===0` after. |
+| **P1 — attestation conflicts with idempotent receipts** (a new shred op on an already-destroyed key got the stable receipt attested to the original op → `invalid destruction attestation`, blocking self-heal) | Attestation now binds the **destruction statement** `(key_id, receipt_id, destroyed_at)`, not the operation id — stable across idempotent re-destroys. Canonical message is **newline-joined** over strictly-formatted, newline-free fields (no `:`-delimiter ambiguity), asserted defensively on both sides. `cat_forget_complete` takes `(item, shred_op_id, receipt_id, destroyed_at, attestation)`. | shred test "stable receipt verifies for a new shred op" — completion succeeds under a fresh operation on an already-destroyed key. |
+
+These unblock Stage 2b's old-backup self-heal. Stage 2b (reconciler, concurrent
+winner-selection races, old-backup self-heal) remains for the next stage.

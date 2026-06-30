@@ -3,7 +3,6 @@ import { startEmbedded } from './embedded-pg.js';
 import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
 import { InMemoryCustodian, CustodianTransportError } from '../src/core/crypto/custodian.js';
-import { SecretStore } from '../src/core/secrets/secret-store.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
 
 let passed = 0;
@@ -170,7 +169,7 @@ async function main(): Promise<void> {
     // begin the shred (marks pending, clears ciphertext) but do NOT actually destroy the key
     const begin = (await pool.query('SELECT key_id, shred_op_id, needs_destroy FROM cat_forget_begin($1)', [id])).rows[0];
     await assertThrows(
-      () => pool.query('SELECT cat_forget_complete($1,$2,$3,$4)', [id, begin.shred_op_id, 'fabricated-receipt', 'deadbeefdeadbeef']),
+      () => pool.query('SELECT cat_forget_complete($1,$2,$3,$4,$5)', [id, begin.shred_op_id, 'fabricated-receipt', '2026-01-01T00:00:00.000Z', 'deadbeefdeadbeef']),
       'fabricated attestation rejected', /invalid destruction attestation/i,
     );
     assertEq(await count(pool, `SELECT count(*) AS c FROM item_key_control WHERE item_id=$1 AND shred_state='shred_pending'`, [id]), 1, 'still pending, not completed');
@@ -215,20 +214,52 @@ async function main(): Promise<void> {
     assertEq(got?.providerRefs?.length, 1, 'only the retained ref is read back');
   });
 
-  // 13. gap — CatalogAuthority registers DEK + decrypted identity with SecretStore
-  await test('SecretStore — authority registers the in-flight DEK and decrypted identity', async () => {
+  // 13. gap — withIdentity scopes redaction to the plaintext lifetime --------
+  await test('withIdentity — logging inside the scope is redacted; nothing lingers after', async () => {
     await reset();
-    const recorded: string[] = [];
-    const spy = new SecretStore();
-    const origSet = spy.set.bind(spy);
-    spy.set = (name: string, value: string) => { recorded.push(value); origSet(name, value); };
-    const c3 = new InMemoryCustodian();
-    const a3 = new CatalogAuthority(pool, c3, spy);
     const id = mintItemId();
-    await a3.addItem(id, { title: 'SpyTitle' });
-    await a3.readIdentity(id);
-    assert(recorded.some((v) => /^[0-9a-f]{64}$/.test(v)), 'a DEK (32-byte hex) was registered');
-    assert(recorded.includes('SpyTitle'), 'the decrypted title was registered during the read');
+    await auth.addItem(id, { title: 'SecretTitle', externalIds: { tmdb: 'ext-secret-603' }, providerRefs: [{ type: 'imdb', value: 'tt-secret-1' }] });
+    const lines: string[] = [];
+    const log = auth.createLogger((l) => lines.push(l));
+    await auth.withIdentity(id, (identity) => {
+      log.info(`title=${identity!.title} ext=${JSON.stringify(identity!.externalIds)} ref=${identity!.providerRefs?.[0]?.value}`);
+    });
+    const blob = lines.join('\n');
+    assert(!blob.includes('SecretTitle'), 'title redacted inside scope');
+    assert(!blob.includes('ext-secret-603'), 'external id value redacted inside scope');
+    assert(!blob.includes('tt-secret-1'), 'ref value redacted inside scope');
+    assertEq(auth.secrets.size(), 0, 'no identity registrations linger after the scope');
+  });
+
+  // 14. ref removal is event-sourced (survives rebuild) ----------------------
+  await test('updateIdentity — ref removal is event-sourced and survives rebuild', async () => {
+    await reset();
+    const id = mintItemId();
+    await auth.addItem(id, { title: 'v1', providerRefs: [{ type: 'tmdb', value: '1' }, { type: 'infohash', value: 'a' }] });
+    await auth.updateIdentity(id, { title: 'v2', providerRefs: [{ type: 'tmdb', value: '2' }] });
+    const refsBefore = async () => JSON.stringify((await pool.query(
+      `SELECT ref_type, present FROM provider_refs WHERE item_id=$1 ORDER BY ref_type`, [id])).rows);
+    const before = await refsBefore();
+    await auth.rebuildProjection(new Date(Date.now() + 3_600_000));
+    assertEq(await refsBefore(), before, 'ref presence identical after rebuild');
+    assertEq(await count(pool, `SELECT count(*) AS c FROM provider_refs WHERE item_id=$1 AND ref_type='infohash' AND present`, [id]), 0, 'detached ref stays absent after rebuild');
+  });
+
+  // 15. attestation verifies for a NEW shred op on an already-destroyed key ----
+  await test('attestation — stable receipt verifies for a new shred op (unblocks self-heal)', async () => {
+    await reset();
+    const id = mintItemId();
+    await auth.addItem(id, { title: 'x' });
+    const keyId = (await pool.query(`SELECT key_id FROM item_key_control WHERE item_id=$1`, [id])).rows[0].key_id;
+    await auth.forget(id); // key destroyed, shred_complete
+    // simulate an old-backup restore: row back to active, then a NEW shred op begins
+    await admin.query(`UPDATE item_key_control SET shred_state='active', shred_op_id=NULL, shredded_at=NULL, shred_receipt=NULL WHERE item_id=$1`, [id]);
+    await admin.query(`UPDATE items SET present=true, forgotten=false WHERE id=$1`, [id]);
+    const begin = (await pool.query('SELECT key_id, shred_op_id, needs_destroy FROM cat_forget_begin($1)', [id])).rows[0];
+    const receipt = await custodian.destroy(begin.shred_op_id, keyId); // idempotent -> stable receipt
+    const done = (await pool.query('SELECT cat_forget_complete($1,$2,$3,$4,$5) AS done',
+      [id, begin.shred_op_id, receipt.receiptId, receipt.destroyedAt, receipt.attestation])).rows[0].done;
+    assertEq(done, true, 'completion succeeds with the stable attestation under a new operation');
   });
 
   await admin.end();

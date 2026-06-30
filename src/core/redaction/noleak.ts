@@ -90,6 +90,9 @@ const PAYLOAD_SCHEMAS: Record<string, Record<string, FieldSpec>> = {
   ProviderRefAttached: {
     op: { kind: 'enum', values: REF_TYPE_SET, pattern: /^[a-z0-9_]{1,32}$/ },
   },
+  ProviderRefDetached: {
+    op: { kind: 'enum', values: REF_TYPE_SET, pattern: /^[a-z0-9_]{1,32}$/ },
+  },
   BehavioralSignal: {
     weight: { kind: 'int', min: 1, max: 1000 },
   },

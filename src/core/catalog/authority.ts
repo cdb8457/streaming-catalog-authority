@@ -74,13 +74,11 @@ export class CatalogAuthority {
     const ctrl = await this.control(itemId);
     if (!ctrl || ctrl.shred_state !== 'active') throw new Error('no active identity lineage to update');
     const dek = await this.custodian.get(ctrl.key_id, ctrl.cur_epoch);
-    const dekName = this.trackDek(dek);
     try {
       const identityCt = this.encryptIdentity(dek, itemId, ctrl.cur_epoch, identity);
       const refs = this.encryptRefs(dek, itemId, ctrl.cur_epoch, identity);
       await this.pool.query('SELECT cat_update_identity_ct($1,$2,$3::jsonb)', [itemId, identityCt, JSON.stringify(refs)]);
     } finally {
-      this.secrets.delete(dekName);
       zeroize(dek);
     }
   }
@@ -98,7 +96,6 @@ export class CatalogAuthority {
     const opId = randomUUID();
     const epoch = 0;
     const { keyId, dek } = await this.custodian.provision(opId, itemId, epoch);
-    const dekName = this.trackDek(dek);
     let committed: boolean;
     try {
       const identityCt = this.encryptIdentity(dek, itemId, epoch, identity);
@@ -120,7 +117,6 @@ export class CatalogAuthority {
       await this.safeDestroy(keyId);
       throw dbErr;
     } finally {
-      this.secrets.delete(dekName);
       zeroize(dek);
     }
     if (committed) {
@@ -157,8 +153,6 @@ export class CatalogAuthority {
     } catch {
       return null;
     }
-    const dekName = this.trackDek(dek);
-    const secretNames: string[] = [dekName];
     try {
       const identity = this.decryptIdentity(dek, itemId, row.cur_epoch, row.identity_ct as Buffer);
       const refRows = (await this.pool.query(
@@ -170,10 +164,6 @@ export class CatalogAuthority {
         value: decryptUtf8(dek, r.ref_value_ct as Buffer, this.aad(itemId, row.cur_epoch, refField(r.ref_type))),
       }));
 
-      // register decrypted identity so any logging during this read is redacted (§7.2)
-      this.registerSecret(secretNames, identity.title);
-      for (const ref of providerRefs) this.registerSecret(secretNames, ref.value);
-
       // recheck-before-return (linearization point): status + DB shred_state still active
       let recheck: string;
       try { recheck = await this.custodian.status(row.key_id); } catch { return null; }
@@ -182,16 +172,31 @@ export class CatalogAuthority {
 
       return providerRefs.length ? { ...identity, providerRefs } : identity;
     } finally {
-      for (const n of secretNames) this.secrets.delete(n); // no long-lived cache (§7.2)
-      zeroize(dek);
+      zeroize(dek); // DEK is a Buffer, zeroized; it is never stringified (§7.2)
     }
   }
 
-  private registerSecret(names: string[], value: unknown): void {
-    if (typeof value === 'string' && value.length > 0) {
-      const name = `id:${randomUUID()}`;
-      this.secrets.set(name, value);
-      names.push(name);
+  /**
+   * Scoped, redaction-protected access to decrypted identity. Every identity string is
+   * registered with the SecretStore for the lifetime of `fn` ONLY (deleted afterwards — no
+   * long-lived cache), so logging via `createLogger()` inside `fn` is redacted. The plaintext
+   * is not returned to the caller; `fn`'s own return value is. Prefer this over `readIdentity`
+   * when the plaintext will be logged or passed around.
+   */
+  async withIdentity<T>(itemId: string, fn: (identity: ItemIdentity | null) => Promise<T> | T): Promise<T> {
+    const identity = await this.readIdentity(itemId);
+    const names: string[] = [];
+    if (identity) {
+      for (const value of collectIdentityStrings(identity)) {
+        const name = `id:${randomUUID()}`;
+        this.secrets.set(name, value);
+        names.push(name);
+      }
+    }
+    try {
+      return await fn(identity);
+    } finally {
+      for (const n of names) this.secrets.delete(n);
     }
   }
 
@@ -215,7 +220,8 @@ export class CatalogAuthority {
     if (!needs_destroy) return 'shred_complete'; // no key to destroy (tombstone only)
     try {
       const receipt = await this.custodian.destroy(shred_op_id, key_id);
-      await this.pool.query('SELECT cat_forget_complete($1,$2,$3,$4) AS done', [itemId, shred_op_id, receipt.receiptId, receipt.attestation]);
+      await this.pool.query('SELECT cat_forget_complete($1,$2,$3,$4,$5) AS done',
+        [itemId, shred_op_id, receipt.receiptId, receipt.destroyedAt, receipt.attestation]);
       return 'shred_complete';
     } catch {
       return 'shred_pending'; // reconciler (Stage 2b) will finish it
@@ -301,11 +307,19 @@ export class CatalogAuthority {
   private async tryPromote(opId: string): Promise<void> {
     try { await this.custodian.commitProvision(opId); } catch { /* reconciler will retry */ }
   }
+}
 
-  /** Register an in-flight DEK with the SecretStore so it can never be logged in the clear. */
-  private trackDek(dek: Buffer): string {
-    const name = `dek:${randomUUID()}`;
-    this.secrets.set(name, dek.toString('hex'));
-    return name;
-  }
+/** Collects every plaintext string in an identity (title, ref values, nested id/metadata). */
+function collectIdentityStrings(identity: ItemIdentity): string[] {
+  const out: string[] = [];
+  const walk = (v: unknown): void => {
+    if (typeof v === 'string') { if (v.length > 0) out.push(v); }
+    else if (Array.isArray(v)) v.forEach(walk);
+    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+  };
+  walk(identity.title);
+  walk(identity.externalIds);
+  walk(identity.metadata);
+  for (const ref of identity.providerRefs ?? []) walk(ref.value);
+  return out;
 }

@@ -86,7 +86,8 @@ DROP FUNCTION IF EXISTS events_append_only();
 DROP FUNCTION IF EXISTS cat_add_item(TEXT, TEXT, INTEGER, JSONB, JSONB, JSONB);
 DROP FUNCTION IF EXISTS cat_restore(TEXT, TEXT, INTEGER, JSONB, JSONB, JSONB);
 DROP FUNCTION IF EXISTS cat_forget(TEXT);
-DROP FUNCTION IF EXISTS cat_forget_complete(TEXT, TEXT, TEXT);  -- replaced by attested 4-arg form
+DROP FUNCTION IF EXISTS cat_forget_complete(TEXT, TEXT, TEXT);        -- pre-attestation form
+DROP FUNCTION IF EXISTS cat_forget_complete(TEXT, TEXT, TEXT, TEXT);  -- op-bound attestation form
 
 -- pgcrypto provides hmac() for verifying the custodian's destruction attestation.
 CREATE EXTENSION IF NOT EXISTS pgcrypto;
@@ -141,7 +142,7 @@ DECLARE v_op TEXT; v_w NUMERIC;
 BEGIN
   IF p_type IN ('ItemAdded', 'ItemForgotten', 'ItemRestored') THEN
     IF p_payload <> '{}'::jsonb THEN RAISE EXCEPTION 'no-leak: payload not permitted for this event type'; END IF;
-  ELSIF p_type = 'ProviderRefAttached' THEN
+  ELSIF p_type IN ('ProviderRefAttached', 'ProviderRefDetached') THEN
     IF (SELECT count(*) FROM jsonb_object_keys(p_payload)) <> 1 OR NOT (p_payload ? 'op') THEN
       RAISE EXCEPTION 'no-leak: provider ref payload shape is invalid';
     END IF;
@@ -181,6 +182,11 @@ BEGIN
     v_op := p_payload->>'op';
     INSERT INTO public.provider_refs (item_id, ref_type, present) VALUES (p_item_id, v_op, true)
     ON CONFLICT (item_id, ref_type) DO UPDATE SET present = true;
+    UPDATE public.items SET last_seq = GREATEST(last_seq, p_seq), updated_at = now() WHERE id = p_item_id;
+  ELSIF p_type = 'ProviderRefDetached' THEN
+    v_op := p_payload->>'op';
+    UPDATE public.provider_refs SET present = false, ref_value_ct = NULL
+     WHERE item_id = p_item_id AND ref_type = v_op;
     UPDATE public.items SET last_seq = GREATEST(last_seq, p_seq), updated_at = now() WHERE id = p_item_id;
   ELSIF p_type = 'ItemForgotten' THEN
     INSERT INTO public.items (id, present, forgotten, last_seq, updated_at)
@@ -223,7 +229,7 @@ BEGIN
     IF v_exists AND v_present THEN RAISE EXCEPTION 'item already present'; END IF;
   ELSIF p_type = 'ItemRestored' THEN
     IF NOT v_exists OR NOT v_forgotten THEN RAISE EXCEPTION 'restore requires a forgotten item'; END IF;
-  ELSIF p_type IN ('ProviderRefAttached', 'BehavioralSignal') THEN
+  ELSIF p_type IN ('ProviderRefAttached', 'ProviderRefDetached', 'BehavioralSignal') THEN
     IF NOT v_exists OR v_forgotten OR NOT v_present THEN RAISE EXCEPTION 'event requires a present item'; END IF;
   END IF;
   INSERT INTO public.events (item_id, kind, type, payload, expires_at)
@@ -291,7 +297,7 @@ $$;
 -- ciphertext changes (fresh nonces are produced app-side). No new key is provisioned.
 CREATE OR REPLACE FUNCTION cat_update_identity_ct(p_item_id TEXT, p_identity_ct BYTEA, p_refs JSONB)
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
-DECLARE v_state TEXT; r JSONB;
+DECLARE v_state TEXT; r JSONB; v_detach TEXT;
 BEGIN
   PERFORM public.cat_lock_item(p_item_id);
   SELECT shred_state INTO v_state FROM public.item_key_control WHERE item_id = p_item_id;
@@ -306,11 +312,16 @@ BEGIN
        WHERE item_id = p_item_id AND ref_type = r->>'type';
     END LOOP;
   END IF;
-  -- REPLACEMENT semantics: any provider ref NOT in the new set is deactivated and its
-  -- ciphertext cleared (an omitted ref is a removal, not an untouched patch).
-  UPDATE public.provider_refs SET present = false, ref_value_ct = NULL
-   WHERE item_id = p_item_id
-     AND ref_type NOT IN (SELECT x->>'type' FROM jsonb_array_elements(COALESCE(p_refs, '[]'::jsonb)) x);
+  -- REPLACEMENT semantics, EVENT-SOURCED: any currently-present ref NOT in the new set is
+  -- removed by authoring an opaque ProviderRefDetached event (so the removal survives a
+  -- projection rebuild), whose reducer deactivates the ref and clears its ciphertext.
+  FOR v_detach IN
+    SELECT ref_type FROM public.provider_refs
+     WHERE item_id = p_item_id AND present
+       AND ref_type NOT IN (SELECT x->>'type' FROM jsonb_array_elements(COALESCE(p_refs, '[]'::jsonb)) x)
+  LOOP
+    PERFORM public.cat_apply_internal(p_item_id, 'ProviderRefDetached', jsonb_build_object('op', v_detach), NULL, now());
+  END LOOP;
 END;
 $$;
 
@@ -373,8 +384,13 @@ $$;
 -- destruction attestation (HMAC over key_id:shred_op_id under the owner-only completion
 -- secret). The app cannot forge this, so it cannot fabricate erasure. Returns whether the
 -- row actually transitioned.
+-- The attestation binds the DESTRUCTION STATEMENT (key_id, receipt_id, destroyed_at), NOT the
+-- shred operation id — so a custodian destroy that is idempotent on key_id returns a stable,
+-- still-verifiable attestation even when a NEW shred operation (e.g. old-backup self-heal)
+-- drives completion. The canonical message is newline-joined; the three fields are strictly
+-- formatted (key_/rcpt_ + uuid, ISO-8601) and contain no newline, so it is unambiguous.
 CREATE OR REPLACE FUNCTION cat_forget_complete(
-  p_item_id TEXT, p_shred_op_id TEXT, p_receipt_id TEXT, p_attestation TEXT)
+  p_item_id TEXT, p_shred_op_id TEXT, p_receipt_id TEXT, p_destroyed_at TEXT, p_attestation TEXT)
 RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE v_key TEXT; v_state TEXT; v_op TEXT; v_secret TEXT; v_expected TEXT;
 BEGIN
@@ -386,13 +402,17 @@ BEGIN
   IF v_state <> 'shred_pending' OR v_op IS DISTINCT FROM p_shred_op_id THEN
     RAISE EXCEPTION 'forget completion does not match a pending shred';
   END IF;
+  IF p_receipt_id ~ E'\n' OR p_destroyed_at ~ E'\n' OR v_key ~ E'\n' THEN
+    RAISE EXCEPTION 'attestation field contains a separator';          -- defensive
+  END IF;
   SELECT completion_secret INTO v_secret FROM public.crypto_config WHERE id = 1;
-  v_expected := encode(public.hmac(v_key || ':' || p_shred_op_id, v_secret, 'sha256'), 'hex');
+  v_expected := encode(public.hmac(v_key || E'\n' || p_receipt_id || E'\n' || p_destroyed_at, v_secret, 'sha256'), 'hex');
   IF p_attestation IS DISTINCT FROM v_expected THEN
     RAISE EXCEPTION 'invalid destruction attestation';                -- forged / mismatched
   END IF;
   UPDATE public.item_key_control
-     SET shred_state = 'shred_complete', shredded_at = now(), shred_receipt = p_receipt_id, updated_at = now()
+     SET shred_state = 'shred_complete', shredded_at = p_destroyed_at::timestamptz,
+         shred_receipt = p_receipt_id, updated_at = now()
    WHERE item_id = p_item_id;
   RETURN true;
 END;
@@ -497,7 +517,7 @@ REVOKE ALL ON FUNCTION
   cat_restore_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_hydrate_legacy_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_forget_begin(TEXT),
-  cat_forget_complete(TEXT, TEXT, TEXT, TEXT),
+  cat_forget_complete(TEXT, TEXT, TEXT, TEXT, TEXT),
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
   cat_prune_and_rebuild(TIMESTAMPTZ)
@@ -511,7 +531,7 @@ GRANT EXECUTE ON FUNCTION
   cat_restore_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_hydrate_legacy_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_forget_begin(TEXT),
-  cat_forget_complete(TEXT, TEXT, TEXT, TEXT),
+  cat_forget_complete(TEXT, TEXT, TEXT, TEXT, TEXT),
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
   cat_prune_and_rebuild(TIMESTAMPTZ)
