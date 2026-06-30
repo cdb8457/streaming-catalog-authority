@@ -79,3 +79,26 @@ approves the coordinator for implementation once the lineage rule is recorded �
 
 **Verdict captured:** with the lineage rule recorded, the crypto-shredding coordinator is
 approved for implementation (build order in design §13).
+
+---
+
+# Response to Stage 2a Code Review
+
+Stage 2a (schema + coordinator + reads) review found three blockers + two gaps. All fixed;
+suite is now **53 passed** (crypto 15, authority 21, SecretStore 4, crypto-shred 13).
+
+| Finding | Fix | Proof |
+|---------|-----|-------|
+| **P0 — lost commit ack destroys the committed key** (DB active, custodian destroyed) | `addItem`/`restore`/`hydrateLegacy` share `provisionAndWrite`, which implements the approved failure matrix: on a DB error, confirm via `operation_id` whether it committed; promote if committed; destroy **only when non-commit is positively confirmed**; if it can't confirm, leave the key for the reconciler. A lost ack **after** a confirmed commit is swallowed (never destroys). | shred test "lost commit ack leaves the committed key intact" — key status ≠ destroyed, DB present. |
+| **P0 — shred completion can be fabricated** (app calls `cat_forget_complete` with any receipt) | The custodian now returns an HMAC **attestation** over `key_id:shred_op_id` under a completion secret in the owner-only `crypto_config` table (app has no access). `cat_forget_complete` verifies it via `pgcrypto.hmac` before transitioning, and returns whether it transitioned. The app cannot forge it. | shred test "app cannot fabricate shred completion" — forged attestation raises `invalid destruction attestation`; row stays pending; key stays active. |
+| **P1 — upgraded Phase 1 items cannot be rehydrated** | New `cat_hydrate_legacy_ct` + `authority.hydrateLegacy` establish a lineage + ciphertext for a present item with no key-control (does not append ItemAdded). | shred test "hydrateLegacy …" — plain add fails (`already present`), hydrate succeeds, identity readable. |
+| **Gap — `updateIdentity` left omitted refs behind** | Replacement semantics: `cat_update_identity_ct` deactivates + clears any provider ref not in the new set. | shred test "updateIdentity — replacement semantics remove omitted provider refs". |
+| **Gap — `CatalogAuthority` never used `SecretStore`** | The authority now registers each in-flight DEK (hex) and decrypted identity value with its `SecretStore` for the operation's duration (deleted in `finally`; no long-lived cache), and exposes `createLogger()` for redacted logging. | shred test "SecretStore — authority registers the in-flight DEK and decrypted identity". |
+
+Note: the dev completion secret is a well-known value seeded into `crypto_config` and shared
+by the in-process custodian. In production the custodian is external and shares the secret
+with the DB out-of-band; the app never holds it. The in-process custodian proves protocol
+logic, not the production deletion/attestation-secrecy guarantee (design O4).
+
+Stage 2b (reconciler, concurrent winner-selection races, old-backup self-heal) remains for
+the next stage.

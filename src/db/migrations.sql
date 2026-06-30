@@ -86,6 +86,22 @@ DROP FUNCTION IF EXISTS events_append_only();
 DROP FUNCTION IF EXISTS cat_add_item(TEXT, TEXT, INTEGER, JSONB, JSONB, JSONB);
 DROP FUNCTION IF EXISTS cat_restore(TEXT, TEXT, INTEGER, JSONB, JSONB, JSONB);
 DROP FUNCTION IF EXISTS cat_forget(TEXT);
+DROP FUNCTION IF EXISTS cat_forget_complete(TEXT, TEXT, TEXT);  -- replaced by attested 4-arg form
+
+-- pgcrypto provides hmac() for verifying the custodian's destruction attestation.
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
+
+-- Completion secret shared between the DB and the (production: external) custodian, never
+-- the app. The app role has NO access to this table, so it cannot compute a valid
+-- attestation and therefore cannot fabricate a shred completion.
+-- DEV VALUE ONLY — production must replace it with an out-of-band secret.
+CREATE TABLE IF NOT EXISTS crypto_config (
+  id                INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  completion_secret TEXT NOT NULL
+);
+INSERT INTO crypto_config (id, completion_secret)
+VALUES (1, 'dev-completion-secret-v1')
+ON CONFLICT (id) DO NOTHING;
 
 -- ------------------------------------------------------- append-only guard ---
 
@@ -290,6 +306,11 @@ BEGIN
        WHERE item_id = p_item_id AND ref_type = r->>'type';
     END LOOP;
   END IF;
+  -- REPLACEMENT semantics: any provider ref NOT in the new set is deactivated and its
+  -- ciphertext cleared (an omitted ref is a removal, not an untouched patch).
+  UPDATE public.provider_refs SET present = false, ref_value_ct = NULL
+   WHERE item_id = p_item_id
+     AND ref_type NOT IN (SELECT x->>'type' FROM jsonb_array_elements(COALESCE(p_refs, '[]'::jsonb)) x);
 END;
 $$;
 
@@ -348,15 +369,57 @@ BEGIN
 END;
 $$;
 
--- Forget coordinator, DB step 3: mark complete only after the custodian confirmed destruction.
-CREATE OR REPLACE FUNCTION cat_forget_complete(p_item_id TEXT, p_shred_op_id TEXT, p_receipt TEXT)
-RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+-- Forget coordinator, DB step 3: mark complete ONLY after verifying the custodian's
+-- destruction attestation (HMAC over key_id:shred_op_id under the owner-only completion
+-- secret). The app cannot forge this, so it cannot fabricate erasure. Returns whether the
+-- row actually transitioned.
+CREATE OR REPLACE FUNCTION cat_forget_complete(
+  p_item_id TEXT, p_shred_op_id TEXT, p_receipt_id TEXT, p_attestation TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE v_key TEXT; v_state TEXT; v_op TEXT; v_secret TEXT; v_expected TEXT;
 BEGIN
   PERFORM public.cat_lock_item(p_item_id);
+  SELECT key_id, shred_state, shred_op_id INTO v_key, v_state, v_op
+    FROM public.item_key_control WHERE item_id = p_item_id;
+  IF v_key IS NULL THEN RETURN false; END IF;
+  IF v_state = 'shred_complete' THEN RETURN false; END IF;             -- already done (idempotent)
+  IF v_state <> 'shred_pending' OR v_op IS DISTINCT FROM p_shred_op_id THEN
+    RAISE EXCEPTION 'forget completion does not match a pending shred';
+  END IF;
+  SELECT completion_secret INTO v_secret FROM public.crypto_config WHERE id = 1;
+  v_expected := encode(public.hmac(v_key || ':' || p_shred_op_id, v_secret, 'sha256'), 'hex');
+  IF p_attestation IS DISTINCT FROM v_expected THEN
+    RAISE EXCEPTION 'invalid destruction attestation';                -- forged / mismatched
+  END IF;
   UPDATE public.item_key_control
-     SET shred_state = 'shred_complete', shredded_at = now(), shred_receipt = p_receipt, updated_at = now()
-   WHERE item_id = p_item_id AND shred_op_id = p_shred_op_id AND shred_state = 'shred_pending';
-  -- idempotent: 0 rows if already complete
+     SET shred_state = 'shred_complete', shredded_at = now(), shred_receipt = p_receipt_id, updated_at = now()
+   WHERE item_id = p_item_id;
+  RETURN true;
+END;
+$$;
+
+-- Legacy hydration: establish a key lineage + ciphertext for an EXISTING present item that
+-- has no lineage (e.g. upgraded from a Phase 1 schema where its plaintext columns were
+-- dropped). Does not append ItemAdded (the item is already present).
+CREATE OR REPLACE FUNCTION cat_hydrate_legacy_ct(
+  p_item_id TEXT, p_op_id TEXT, p_key_id TEXT, p_epoch INTEGER, p_identity_ct BYTEA, p_refs JSONB)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE r JSONB;
+BEGIN
+  PERFORM public.cat_lock_item(p_item_id);
+  PERFORM 1 FROM public.items WHERE id = p_item_id AND present AND NOT forgotten;
+  IF NOT FOUND THEN RAISE EXCEPTION 'legacy hydrate requires a present, non-forgotten item'; END IF;
+  -- PK conflict here means a lineage already exists -> caller must use updateIdentity instead
+  INSERT INTO public.item_key_control (item_id, key_id, cur_epoch, operation_id, shred_state)
+  VALUES (p_item_id, p_key_id, p_epoch, p_op_id, 'active');
+  IF p_refs IS NOT NULL THEN
+    FOR r IN SELECT jsonb_array_elements(p_refs) LOOP
+      PERFORM public.cat_apply_internal(p_item_id, 'ProviderRefAttached', jsonb_build_object('op', r->>'type'), NULL, now());
+      UPDATE public.provider_refs SET ref_value_ct = decode(r->>'ct', 'hex')
+       WHERE item_id = p_item_id AND ref_type = r->>'type';
+    END LOOP;
+  END IF;
+  UPDATE public.items SET identity_ct = p_identity_ct WHERE id = p_item_id;
 END;
 $$;
 
@@ -409,6 +472,8 @@ END;
 $$;
 
 REVOKE ALL ON events, items, provider_refs, item_key_control FROM app;
+REVOKE ALL ON crypto_config FROM PUBLIC;
+REVOKE ALL ON crypto_config FROM app;   -- the completion secret is never app-readable
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs, item_key_control TO app;
 
@@ -430,8 +495,9 @@ REVOKE ALL ON FUNCTION
   cat_add_item_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_update_identity_ct(TEXT, BYTEA, JSONB),
   cat_restore_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
+  cat_hydrate_legacy_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_forget_begin(TEXT),
-  cat_forget_complete(TEXT, TEXT, TEXT),
+  cat_forget_complete(TEXT, TEXT, TEXT, TEXT),
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
   cat_prune_and_rebuild(TIMESTAMPTZ)
@@ -443,8 +509,9 @@ GRANT EXECUTE ON FUNCTION
   cat_add_item_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_update_identity_ct(TEXT, BYTEA, JSONB),
   cat_restore_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
+  cat_hydrate_legacy_ct(TEXT, TEXT, TEXT, INTEGER, BYTEA, JSONB),
   cat_forget_begin(TEXT),
-  cat_forget_complete(TEXT, TEXT, TEXT),
+  cat_forget_complete(TEXT, TEXT, TEXT, TEXT),
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
   cat_prune_and_rebuild(TIMESTAMPTZ)

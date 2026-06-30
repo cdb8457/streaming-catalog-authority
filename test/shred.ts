@@ -3,6 +3,7 @@ import { startEmbedded } from './embedded-pg.js';
 import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
 import { InMemoryCustodian, CustodianTransportError } from '../src/core/crypto/custodian.js';
+import { SecretStore } from '../src/core/secrets/secret-store.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
 
 let passed = 0;
@@ -25,6 +26,15 @@ function assert(cond: unknown, msg: string): void {
 }
 function assertEq(actual: unknown, expected: unknown, msg: string): void {
   if (actual !== expected) throw new Error(`${msg} (expected ${String(expected)}, got ${String(actual)})`);
+}
+async function assertThrows(fn: () => Promise<unknown> | unknown, msg: string, match?: RegExp): Promise<void> {
+  try {
+    await fn();
+  } catch (e) {
+    if (match && !match.test((e as Error).message)) throw new Error(`threw, message ${JSON.stringify((e as Error).message)} != ${match} (${msg})`);
+    return;
+  }
+  throw new Error(`expected to throw: ${msg}`);
 }
 
 async function main(): Promise<void> {
@@ -149,6 +159,76 @@ async function main(): Promise<void> {
     await auth.forget(a);
     assert((await auth.readIdentity(a)) === null, 'A shredded');
     assertEq((await auth.readIdentity(b))?.title, 'B', 'B still readable');
+  });
+
+  // 9. P0 — shred completion cannot be fabricated by the app -------------------
+  await test('forget — app cannot fabricate shred completion (attestation required)', async () => {
+    await reset();
+    const id = mintItemId();
+    await auth.addItem(id, { title: 'attested' });
+    const keyId = (await pool.query(`SELECT key_id FROM item_key_control WHERE item_id=$1`, [id])).rows[0].key_id;
+    // begin the shred (marks pending, clears ciphertext) but do NOT actually destroy the key
+    const begin = (await pool.query('SELECT key_id, shred_op_id, needs_destroy FROM cat_forget_begin($1)', [id])).rows[0];
+    await assertThrows(
+      () => pool.query('SELECT cat_forget_complete($1,$2,$3,$4)', [id, begin.shred_op_id, 'fabricated-receipt', 'deadbeefdeadbeef']),
+      'fabricated attestation rejected', /invalid destruction attestation/i,
+    );
+    assertEq(await count(pool, `SELECT count(*) AS c FROM item_key_control WHERE item_id=$1 AND shred_state='shred_pending'`, [id]), 1, 'still pending, not completed');
+    assertEq(await custodian.status(keyId), 'active', 'custodian key was never destroyed');
+  });
+
+  // 10. P0 — a lost commit ack must NOT destroy the committed key ---------------
+  await test('addItem — lost commit ack leaves the committed key intact (not destroyed)', async () => {
+    await reset();
+    const c2 = new InMemoryCustodian();
+    const a2 = new CatalogAuthority(pool, c2);
+    const id = mintItemId();
+    c2.setFault('commit', new CustodianTransportError('commit'));
+    await a2.addItem(id, { title: 'survivor' }); // commitProvision throws internally; must be swallowed
+    c2.setFault('commit', null);
+    const keyId = (await pool.query(`SELECT key_id FROM item_key_control WHERE item_id=$1`, [id])).rows[0].key_id;
+    assertEq(await count(pool, `SELECT count(*) AS c FROM items WHERE id=$1 AND present`, [id]), 1, 'DB committed/active');
+    assert((await c2.status(keyId)) !== 'destroyed', 'committed key was NOT destroyed by the lost ack');
+  });
+
+  // 11. P1 — upgraded Phase 1 item can be hydrated -----------------------------
+  await test('hydrateLegacy — an upgraded present item with no lineage gets encrypted identity', async () => {
+    await reset();
+    const id = mintItemId();
+    await admin.query(`INSERT INTO items (id, present, forgotten, last_seq) VALUES ($1, true, false, 1)`, [id]); // legacy row, no key-control
+    await assertThrows(() => auth.addItem(id, { title: 'x' }), 'plain add fails on a present legacy item', /already present/i);
+    await auth.hydrateLegacy(id, { title: 'Hydrated', providerRefs: [{ type: 'tmdb', value: '99' }] });
+    const got = await auth.readIdentity(id);
+    assertEq(got?.title, 'Hydrated', 'hydrated identity is readable');
+    assertEq(got?.providerRefs?.[0]?.value, '99', 'hydrated ref readable');
+  });
+
+  // 12. gap — updateIdentity replacement removes omitted refs ------------------
+  await test('updateIdentity — replacement semantics remove omitted provider refs', async () => {
+    await reset();
+    const id = mintItemId();
+    await auth.addItem(id, { title: 'v1', providerRefs: [{ type: 'tmdb', value: '1' }, { type: 'infohash', value: 'abc' }] });
+    await auth.updateIdentity(id, { title: 'v2', providerRefs: [{ type: 'tmdb', value: '2' }] });
+    assertEq(await count(pool, `SELECT count(*) AS c FROM provider_refs WHERE item_id=$1 AND present`, [id]), 1, 'one ref remains present');
+    assertEq(await count(pool, `SELECT count(*) AS c FROM provider_refs WHERE item_id=$1 AND ref_type='infohash' AND (present OR ref_value_ct IS NOT NULL)`, [id]), 0, 'omitted ref removed + cleared');
+    const got = await auth.readIdentity(id);
+    assertEq(got?.providerRefs?.length, 1, 'only the retained ref is read back');
+  });
+
+  // 13. gap — CatalogAuthority registers DEK + decrypted identity with SecretStore
+  await test('SecretStore — authority registers the in-flight DEK and decrypted identity', async () => {
+    await reset();
+    const recorded: string[] = [];
+    const spy = new SecretStore();
+    const origSet = spy.set.bind(spy);
+    spy.set = (name: string, value: string) => { recorded.push(value); origSet(name, value); };
+    const c3 = new InMemoryCustodian();
+    const a3 = new CatalogAuthority(pool, c3, spy);
+    const id = mintItemId();
+    await a3.addItem(id, { title: 'SpyTitle' });
+    await a3.readIdentity(id);
+    assert(recorded.some((v) => /^[0-9a-f]{64}$/.test(v)), 'a DEK (32-byte hex) was registered');
+    assert(recorded.includes('SpyTitle'), 'the decrypted title was registered during the read');
   });
 
   await admin.end();

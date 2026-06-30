@@ -6,6 +6,8 @@ import {
   encrypt, decrypt, encryptUtf8, decryptUtf8, zeroize, SCHEMA_VERSION, type Aad,
 } from '../crypto/envelope.js';
 import { InMemoryCustodian, type KeyCustodian } from '../crypto/custodian.js';
+import { SecretStore } from '../secrets/secret-store.js';
+import { createRedactingLogger, type LogSink, type RedactingLogger } from '../redaction/logger.js';
 
 /** Plaintext identity (client-side only — encrypted before it reaches the DB). */
 export interface ItemIdentity {
@@ -34,38 +36,36 @@ const refField = (type: string): string => `ref:${type}`;
 export class CatalogAuthority {
   private readonly pool: Pool;
   private readonly custodian: KeyCustodian;
+  /** Runtime-only registry of in-flight DEKs and decrypted identity, for log redaction. */
+  readonly secrets: SecretStore;
 
-  constructor(pool: Pool = getPool(), custodian: KeyCustodian = new InMemoryCustodian()) {
+  constructor(pool: Pool = getPool(), custodian: KeyCustodian = new InMemoryCustodian(), secrets: SecretStore = new SecretStore()) {
     this.pool = pool;
     this.custodian = custodian;
+    this.secrets = secrets;
+  }
+
+  /** A logger that redacts any in-flight DEK / decrypted identity this authority is handling. */
+  createLogger(sink?: LogSink): RedactingLogger {
+    return createRedactingLogger(this.secrets, sink);
   }
 
   /** Initial identity creation (new lineage). Idempotent if already present. */
   async addItem(itemId: string, identity: ItemIdentity = {}): Promise<void> {
     this.assertId(itemId);
-    const opId = randomUUID();
-    const epoch = 0;
-    const { keyId, dek } = await this.custodian.provision(opId, itemId, epoch);
-    try {
-      const identityCt = this.encryptIdentity(dek, itemId, epoch, identity);
-      const refs = this.encryptRefs(dek, itemId, epoch, identity);
-      const { rows } = await this.pool.query(
-        'SELECT cat_add_item_ct($1,$2,$3,$4,$5,$6::jsonb) AS committed',
-        [itemId, opId, keyId, epoch, identityCt, JSON.stringify(refs)],
-      );
-      if (rows[0].committed === true) {
-        await this.custodian.commitProvision(opId);
-      } else {
-        // lost the create race or already present: this provisional key is unused
-        await this.custodian.destroy(randomUUID(), keyId);
-      }
-    } catch (err) {
-      // DB rejected (e.g. forgotten tombstone): destroy the orphan provisional key
-      await this.safeDestroy(keyId);
-      throw err;
-    } finally {
-      zeroize(dek);
-    }
+    await this.provisionAndWrite(itemId, identity, (opId, keyId, epoch, identityCt, refs) =>
+      this.pool.query('SELECT cat_add_item_ct($1,$2,$3,$4,$5,$6::jsonb) AS committed', [itemId, opId, keyId, epoch, identityCt, refs])
+        .then((r) => r.rows[0].committed === true),
+    );
+  }
+
+  /** Hydrate an upgraded Phase 1 item (present, no lineage) with encrypted identity. */
+  async hydrateLegacy(itemId: string, identity: ItemIdentity = {}): Promise<void> {
+    this.assertId(itemId);
+    await this.provisionAndWrite(itemId, identity, (opId, keyId, epoch, identityCt, refs) =>
+      this.pool.query('SELECT cat_hydrate_legacy_ct($1,$2,$3,$4,$5,$6::jsonb)', [itemId, opId, keyId, epoch, identityCt, refs])
+        .then(() => true),
+    );
   }
 
   /** In-lineage identity update: reuses the active key/epoch, fresh nonces. */
@@ -74,12 +74,61 @@ export class CatalogAuthority {
     const ctrl = await this.control(itemId);
     if (!ctrl || ctrl.shred_state !== 'active') throw new Error('no active identity lineage to update');
     const dek = await this.custodian.get(ctrl.key_id, ctrl.cur_epoch);
+    const dekName = this.trackDek(dek);
     try {
       const identityCt = this.encryptIdentity(dek, itemId, ctrl.cur_epoch, identity);
       const refs = this.encryptRefs(dek, itemId, ctrl.cur_epoch, identity);
       await this.pool.query('SELECT cat_update_identity_ct($1,$2,$3::jsonb)', [itemId, identityCt, JSON.stringify(refs)]);
     } finally {
+      this.secrets.delete(dekName);
       zeroize(dek);
+    }
+  }
+
+  /**
+   * Shared provision -> encrypt -> DB write -> commit path with the approved failure matrix:
+   * a lost acknowledgement never destroys a committed key; the provisional key is destroyed
+   * only when non-commit is positively confirmed. `dbWrite` returns whether the row committed.
+   */
+  private async provisionAndWrite(
+    itemId: string,
+    identity: ItemIdentity,
+    dbWrite: (opId: string, keyId: string, epoch: number, identityCt: Buffer, refs: string) => Promise<boolean>,
+  ): Promise<void> {
+    const opId = randomUUID();
+    const epoch = 0;
+    const { keyId, dek } = await this.custodian.provision(opId, itemId, epoch);
+    const dekName = this.trackDek(dek);
+    let committed: boolean;
+    try {
+      const identityCt = this.encryptIdentity(dek, itemId, epoch, identity);
+      const refs = JSON.stringify(this.encryptRefs(dek, itemId, epoch, identity));
+      committed = await dbWrite(opId, keyId, epoch, identityCt, refs);
+    } catch (dbErr) {
+      // The DB call failed (a RAISE such as a forgotten tombstone, or an ambiguous timeout).
+      // Destroy the provisional key ONLY if we can positively confirm it did not commit.
+      let didCommit: boolean;
+      try {
+        didCommit = await this.committedByOp(itemId, opId);
+      } catch {
+        throw dbErr; // cannot confirm -> leave the key; the reconciler (Stage 2b) resolves it
+      }
+      if (didCommit) {
+        await this.tryPromote(opId); // committed despite the error -> promote, never destroy
+        return;
+      }
+      await this.safeDestroy(keyId);
+      throw dbErr;
+    } finally {
+      this.secrets.delete(dekName);
+      zeroize(dek);
+    }
+    if (committed) {
+      // A lost ack here leaves the custodian provisional while the DB is committed/active.
+      // Do NOT destroy — the reconciler retries the idempotent promotion.
+      try { await this.custodian.commitProvision(opId); } catch { /* reconciler will promote */ }
+    } else {
+      await this.safeDestroy(keyId); // loser of the create race / already present
     }
   }
 
@@ -108,6 +157,8 @@ export class CatalogAuthority {
     } catch {
       return null;
     }
+    const dekName = this.trackDek(dek);
+    const secretNames: string[] = [dekName];
     try {
       const identity = this.decryptIdentity(dek, itemId, row.cur_epoch, row.identity_ct as Buffer);
       const refRows = (await this.pool.query(
@@ -119,6 +170,10 @@ export class CatalogAuthority {
         value: decryptUtf8(dek, r.ref_value_ct as Buffer, this.aad(itemId, row.cur_epoch, refField(r.ref_type))),
       }));
 
+      // register decrypted identity so any logging during this read is redacted (§7.2)
+      this.registerSecret(secretNames, identity.title);
+      for (const ref of providerRefs) this.registerSecret(secretNames, ref.value);
+
       // recheck-before-return (linearization point): status + DB shred_state still active
       let recheck: string;
       try { recheck = await this.custodian.status(row.key_id); } catch { return null; }
@@ -127,30 +182,29 @@ export class CatalogAuthority {
 
       return providerRefs.length ? { ...identity, providerRefs } : identity;
     } finally {
+      for (const n of secretNames) this.secrets.delete(n); // no long-lived cache (§7.2)
       zeroize(dek);
+    }
+  }
+
+  private registerSecret(names: string[], value: unknown): void {
+    if (typeof value === 'string' && value.length > 0) {
+      const name = `id:${randomUUID()}`;
+      this.secrets.set(name, value);
+      names.push(name);
     }
   }
 
   /** Explicit restore after a completed shred: a fresh key lineage. */
   async restore(itemId: string, identity: ItemIdentity = {}): Promise<void> {
     this.assertId(itemId);
-    const opId = randomUUID();
-    const epoch = 0;
-    const { keyId, dek } = await this.custodian.provision(opId, itemId, epoch);
-    try {
-      const identityCt = this.encryptIdentity(dek, itemId, epoch, identity);
-      const refs = this.encryptRefs(dek, itemId, epoch, identity);
-      await this.pool.query('SELECT cat_restore_ct($1,$2,$3,$4,$5,$6::jsonb)', [itemId, opId, keyId, epoch, identityCt, JSON.stringify(refs)]);
-      await this.custodian.commitProvision(opId);
-    } catch (err) {
-      await this.safeDestroy(keyId);
-      throw err;
-    } finally {
-      zeroize(dek);
-    }
+    await this.provisionAndWrite(itemId, identity, (opId, keyId, epoch, identityCt, refs) =>
+      this.pool.query('SELECT cat_restore_ct($1,$2,$3,$4,$5,$6::jsonb)', [itemId, opId, keyId, epoch, identityCt, refs])
+        .then(() => true),
+    );
   }
 
-  /** Forget coordinator: DB mark + key destruction + completion. */
+  /** Forget coordinator: DB mark (pending) -> custodian destroy -> attested completion. */
   async forget(itemId: string): Promise<ForgetState> {
     this.assertId(itemId);
     const { rows } = await this.pool.query(
@@ -161,7 +215,7 @@ export class CatalogAuthority {
     if (!needs_destroy) return 'shred_complete'; // no key to destroy (tombstone only)
     try {
       const receipt = await this.custodian.destroy(shred_op_id, key_id);
-      await this.pool.query('SELECT cat_forget_complete($1,$2,$3)', [itemId, shred_op_id, receipt.receiptId]);
+      await this.pool.query('SELECT cat_forget_complete($1,$2,$3,$4) AS done', [itemId, shred_op_id, receipt.receiptId, receipt.attestation]);
       return 'shred_complete';
     } catch {
       return 'shred_pending'; // reconciler (Stage 2b) will finish it
@@ -233,5 +287,25 @@ export class CatalogAuthority {
     } catch {
       /* best-effort; reconciler (Stage 2b) sweeps orphans */
     }
+  }
+
+  /** True iff this operation_id established the current lineage row (positively committed). */
+  private async committedByOp(itemId: string, opId: string): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      'SELECT 1 FROM item_key_control WHERE item_id = $1 AND operation_id = $2',
+      [itemId, opId],
+    );
+    return rows.length > 0;
+  }
+
+  private async tryPromote(opId: string): Promise<void> {
+    try { await this.custodian.commitProvision(opId); } catch { /* reconciler will retry */ }
+  }
+
+  /** Register an in-flight DEK with the SecretStore so it can never be logged in the clear. */
+  private trackDek(dek: Buffer): string {
+    const name = `dek:${randomUUID()}`;
+    this.secrets.set(name, dek.toString('hex'));
+    return name;
   }
 }

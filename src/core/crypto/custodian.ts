@@ -1,4 +1,12 @@
-import { randomBytes, randomUUID } from 'node:crypto';
+import { createHmac, randomBytes, randomUUID } from 'node:crypto';
+
+/**
+ * Dev/test completion secret. In production the custodian is EXTERNAL and shares this
+ * secret out-of-band with the database ONLY (never with the app), so the app cannot forge a
+ * destruction attestation. The in-process custodian uses a well-known dev value that the
+ * migration also seeds into the owner-only crypto_config table.
+ */
+export const DEV_COMPLETION_SECRET = 'dev-completion-secret-v1';
 
 /**
  * Key custodian (design §2). Owns wrapping/rotation state and the DEK lifecycle.
@@ -25,6 +33,12 @@ export interface DestructionReceipt {
   keyId: string;
   receiptId: string;
   destroyedAt: string; // ISO timestamp (non-secret, durable)
+  /**
+   * HMAC over `${keyId}:${operationId}` under the completion secret. The DB verifies this
+   * before marking shred_complete, so the app cannot fabricate a completion (it does not
+   * hold the secret in production).
+   */
+  attestation: string;
 }
 
 export interface StaleProvisioning {
@@ -86,9 +100,15 @@ export class InMemoryCustodian implements KeyCustodian {
   private readonly receiptIds = new Set<string>();
   private readonly faults = new Map<string, Error>();
   private readonly clock: () => number;
+  private readonly completionSecret: string;
 
-  constructor(clock: () => number = () => Date.now()) {
+  constructor(clock: () => number = () => Date.now(), completionSecret: string = DEV_COMPLETION_SECRET) {
     this.clock = clock;
+    this.completionSecret = completionSecret;
+  }
+
+  private attest(keyId: string, operationId: string): string {
+    return createHmac('sha256', this.completionSecret).update(`${keyId}:${operationId}`).digest('hex');
   }
 
   /**
@@ -179,6 +199,7 @@ export class InMemoryCustodian implements KeyCustodian {
       keyId,
       receiptId: this.freshId('rcpt_', (id) => this.receiptIds.has(id)),
       destroyedAt: new Date(this.clock()).toISOString(),
+      attestation: this.attest(keyId, operationId),
     };
     this.receiptIds.add(rec.receipt.receiptId);
     this.ops.set(operationId, { operationId, kind: 'destroy', keyId });
