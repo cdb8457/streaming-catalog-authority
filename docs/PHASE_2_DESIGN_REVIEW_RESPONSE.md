@@ -43,3 +43,19 @@ pending/complete semantics, restore blocking, test strategy.
 
 **Build status:** SecretStore + log redaction (review-cleared) are being implemented now; the
 crypto-shredding coordinator is held until v3 is approved.
+
+---
+
+# Response to Design Review #3 (v4)
+
+Review #3 approved the v3 contracts and required three final ones before the coordinator. All
+three are in v4.
+
+| Required revision | Where addressed (v4) |
+|---|---|
+| 1. Correct the locking claim — an advisory lock cannot span external custodian calls. Allow concurrent provisional keys; DB-txn lock + operation_id/epoch CAS selects one winner; losers destroy their provisional keys; the DB function reports whether it committed | §7 — rewritten: provisional keys created with NO DB lock held; a short DB txn does the CAS on `cur_epoch` and **returns `committed`**; winner `commitProvision`s, every loser `destroy`s its own provisional key. The advisory lock guards only the in-DB CAS, never custodian I/O. |
+| 2. Strengthen custodian status (`provisional/active/destroyed/not_found`; service/network failure is a separate error, not `unknown`; reconciler never destroys a provisional key when the DB is unavailable; destroy idempotent by op id AND key id; persist `shredded_at` + receipt id/hash) | §2 — four-value status + thrown transport error; destroy idempotent on op id and key id with receipt. §4 — `shredded_at` + `shred_receipt`. §5 — recorded on completion. §7.1 — reconciler does nothing under DB unavailability. |
+| 3. Define unwrapped-DEK lifetime (no long-lived cache; short-lived Buffers not strings; zeroize in finally; cross-instance eviction; state recheck before returning decrypted identity; in-flight read semantics) | §7.2 — Buffer-only DEKs, zeroize in `finally`, no long-lived cache (cross-instance eviction required if ever added), **recheck-before-return** fails closed, explicit in-flight-read-during-forget semantics, DEKs registered with SecretStore/redaction. |
+
+Tests for all three added to the strategy (§11). Coordinator held until v4 sign-off; after
+that the design is implementation-ready (build order in §13).

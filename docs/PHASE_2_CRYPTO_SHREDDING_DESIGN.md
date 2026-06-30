@@ -1,6 +1,9 @@
-# Phase 2 — Crypto-Shredding Design (v3, post-review #2)
+# Phase 2 — Crypto-Shredding Design (v4, post-review #3)
 
-**Status:** design. v3 completes the protocol contracts review #2 required before the
+**Status:** design. v4 adds the final three contracts review #3 required (correct locking /
+winner selection, hardened custodian status + idempotent destroy + audit fields, and
+unwrapped-DEK lifetime). After v4 sign-off the design is implementation-ready for the
+coordinator. v3 completed the protocol contracts review #2 required before the
 crypto-shredding **coordinator** is implemented. Review #2 approved: DB-first shred ordering,
 `item_key_control` independent of the rebuildable projection, whole-old-lineage destruction,
 the no-FK key-control design, the ciphertext envelope, single-blob layout, pending/complete
@@ -50,13 +53,19 @@ get(key_id, epoch) -> dek
     // returns the DEK only while the generation is ACTIVE; denied if provisional or destroyed.
 destroy(operation_id, key_id) -> destruction_receipt
     // irreversibly deletes ALL wrapped key material for key_id (the whole lineage);
-    // idempotent on operation_id; leaves a durable NON-SECRET destruction tombstone.
-status(key_id) -> 'active' | 'destroyed' | 'unknown'
-    // 'destroyed' is backed by the durable tombstone; 'unknown' = no record (custodian failure
-    // vs genuinely-never-existed is distinguishable via listStaleProvisioning + DB state).
+    // IDEMPOTENT ON BOTH operation_id AND key_id (a retry, or a second destroy of an
+    // already-destroyed key, returns the same receipt and never errors);
+    // leaves a durable NON-SECRET destruction tombstone (receipt id/hash + destroyed_at).
+status(key_id) -> 'provisional' | 'active' | 'destroyed' | 'not_found'
+    // a definite state. 'destroyed' is tombstone-backed; 'not_found' = never existed.
+    // A service/network failure is a SEPARATE THROWN ERROR, never a status value — callers
+    // and reconcilers must distinguish "the custodian says X" from "the custodian is down".
 listStaleProvisioning() -> [{ operation_id, item_id, key_id, age }]
     // provisional generations never committed — input to the reconciler.
 ```
+
+**Status is never ambiguous-by-value.** There is no `unknown`; transport/service failure is
+an exception. This is what lets the reconciler refuse to act on uncertainty (§7).
 
 **Durability split:** wrapped key *material* is irreversibly deleted on `destroy`; a
 **non-secret tombstone** `(key_id, destroyed_at, receipt)` is retained durably. This is what
@@ -93,9 +102,14 @@ item_key_control (
   operation_id   TEXT NOT NULL,         -- the provisioning op that committed cur_epoch
   shred_state    TEXT NOT NULL CHECK (shred_state IN ('active','shred_pending','shred_complete')),
   shred_op_id    TEXT,                  -- the destroy operation id (idempotency)
+  shredded_at    TIMESTAMPTZ,           -- set when shred_complete (audit)
+  shred_receipt  TEXT,                  -- custodian receipt id/hash (audit, non-secret)
   updated_at     TIMESTAMPTZ NOT NULL DEFAULT now()
 )
 ```
+
+`shredded_at` + `shred_receipt` make a completed shred auditable from the DB alone, and pair
+with the custodian's tombstone (§2) for cross-checking during reconciliation.
 
 No `kek_version` here — the custodian is authoritative for it (revision #5). Identity
 ciphertext lives in `items` (rebuildable, cleared on rebuild, re-hydrated under the existing
@@ -116,9 +130,10 @@ active ──forget──▶ shred_pending ──destroy receipt──▶ shred_
    identity ciphertext; set `shred_state='shred_pending'`, `shred_op_id = <new op id>`,
    recording `key_id`.
 2. **Reads deny identity** from `shred_pending` onward.
-3. `destroy(shred_op_id, key_id)` — idempotent, destroys the **whole lineage** (§6), returns a
-   **destruction receipt**.
-4. **Only after the receipt**, set `shred_state='shred_complete'`.
+3. `destroy(shred_op_id, key_id)` — idempotent on both `shred_op_id` and `key_id`, destroys
+   the **whole lineage** (§6), returns a **destruction receipt**.
+4. **Only after the receipt**, set `shred_state='shred_complete'`, `shredded_at=now()`,
+   `shred_receipt=<receipt>` (audit).
 5. `forget()` returns `shred_pending` (or `forgetAndWait` blocks to `shred_complete`); it
    **never claims erasure before step 4**.
 6. **Reconciler** retries `destroy` for `shred_pending` rows and promotes on receipt.
@@ -143,31 +158,69 @@ what makes an old-backup restore safe (§8.1).
 
 ---
 
-## 7. Provisioning: explicit cross-system sequence (revision #2)
+## 7. Provisioning: winner selection without a lock across custodian calls (revision #1)
 
-The provisioning intent lives **in the custodian** as provisional state keyed by
-`operation_id` — not split across systems. Per-item advisory lock serializes concurrent
-attempts; `operation_id` makes every step retry-idempotent.
+**Correction (review #3):** a PostgreSQL advisory xact lock cannot span the external custodian
+calls — that would require holding an open DB transaction across network I/O, which we do
+**not** do. Instead, **provisional keys are created concurrently with no DB lock held**, and a
+short DB transaction selects exactly one winner via **compare-and-swap (CAS)** on
+`cur_epoch`. Losers destroy their own provisional keys. The DB function **reports whether the
+operation committed**.
 
 ```
-1. op_id = new id                                  (client, under per-item lock)
-2. custodian.provision(op_id, item_id, epoch)      -> { key_id, dek }   [PROVISIONAL]
+1. op_id = new id                                  (client; NO DB lock held here)
+2. custodian.provision(op_id, item_id, target_epoch) -> { key_id, dek }   [PROVISIONAL]
+       // concurrent callers may each hold a distinct provisional key_id — that's fine
 3. encrypt identity with dek (AAD-bound)
-4. DB txn: write ciphertext + item_key_control(key_id, cur_epoch=epoch, operation_id=op_id)
-           with optimistic check on expected cur_epoch
-5. custodian.commitProvision(op_id)                [PROVISIONAL -> ACTIVE]
+4. DB txn (short; per-item advisory lock taken and released INSIDE this txn; NO custodian
+   calls inside): CAS — iff item_key_control.cur_epoch = expected_prev_epoch, then write the
+   ciphertext + item_key_control(key_id, cur_epoch=target_epoch, operation_id=op_id) and
+   COMMIT. The function RETURNS committed = true/false.
+5a. committed = true  -> custodian.commitProvision(op_id)   [PROVISIONAL -> ACTIVE]
+5b. committed = false -> custodian.destroy(op_id, key_id)   // loser cleans up its provisional key
 ```
+
+The advisory lock now guards only the in-DB CAS (no external I/O inside the transaction).
+Concurrency is resolved by the CAS + `operation_id`/`epoch`, not by holding a lock across
+custodian calls. Reads never see a provisional generation (`get`/identity-read require ACTIVE).
 
 Failure matrix:
 
 | Failure | State | Recovery |
 |---|---|---|
-| provision ok, DB (4) fails | provisional key, no committed DB row | reconciler `listStaleProvisioning` → `destroy`; reads never saw it (provisional ⇒ `get` denied) |
-| DB ok, commit (5) ack fails | committed DB row, custodian still provisional | reconciler (or promote-on-read) retries idempotent `commitProvision`; until active, reads **fail closed** |
-| unknown timeout on any step | ambiguous | safe retry: `provision`/`commitProvision`/`destroy` are all idempotent on `operation_id` |
-| concurrent provisioning for one item | serialized by the per-item advisory lock; `operation_id` uniqueness + optimistic `cur_epoch` reject the loser |
+| provision ok, DB (4) fails / not committed | provisional key, no committed DB row | the caller `destroy`s its provisional key; the reconciler's `listStaleProvisioning` is the backstop |
+| DB committed, `commitProvision` (5a) ack fails | committed DB row, custodian still provisional | reconciler (or promote-on-read) retries idempotent `commitProvision`; until ACTIVE, reads **fail closed** |
+| unknown timeout on any step | ambiguous | safe retry: `provision`/`commitProvision`/`destroy` are idempotent on `operation_id` (destroy also on `key_id`) |
+| concurrent provisioning for one item | several provisional keys exist; the DB **CAS picks one winner**; every loser `destroy`s its own provisional key |
 
-No identity read is ever served from a provisional generation (`get` denies unless ACTIVE).
+### 7.1 Reconciler safety under DB unavailability (revision #2, #3)
+
+The reconciler may destroy a provisional key **only** when it can positively confirm, from an
+**available** DB, that no committed `item_key_control` row references that `operation_id`/
+`key_id`. If the DB is unavailable — or the custodian `status`/listing call throws — the
+reconciler **does nothing** for that key. "DB unavailable" is never treated as proof that a
+key is orphaned. A provisional key with an unreachable DB is left untouched until both sides
+are readable. (This is why `status` failures are exceptions, not a value — §2.)
+
+### 7.2 Unwrapped DEK lifetime in application processes (revision #3)
+
+Destroying the custodian record does not erase DEKs already unwrapped into app memory.
+Required handling:
+
+- **No long-lived DEK cache.** DEKs are fetched per encrypt/decrypt operation. (If a cache is
+  ever introduced it must support **eviction across every runtime instance** — e.g. a
+  pub/sub invalidation keyed by `key_id` — and is out of scope for the first implementation.)
+- **DEKs are `Buffer`, never `string`** (strings are immutable and linger in the heap); held
+  only for the duration of one operation.
+- **Best-effort zeroization in `finally`** (`buf.fill(0)`) after each use.
+- **Recheck-before-return (TOCTOU guard):** immediately before returning decrypted identity,
+  re-verify `custodian.status(key_id) === 'active'` (and DB `shred_state='active'`); if it is
+  `destroyed`/`provisional`/throws, **discard the plaintext and fail closed**.
+- **In-flight reads when forget begins:** a read that unwrapped a DEK before `forget` started
+  must still pass the recheck-before-return; if `forget` completed mid-read, the recheck sees
+  `destroyed` and the read fails closed, so no post-shred plaintext is ever returned.
+- DEKs and decrypted identity are registered with the `SecretStore`/redaction path so they can
+  never be logged.
 
 ---
 
@@ -235,7 +288,16 @@ fault-injecting custodian; **old-backup reconciliation** (§8.1: restored `activ
 `destroyed` → fail closed + self-heal, no auto-replacement key); races (restore blocked while
 pending; fresh `key_id` after complete); rebuild preserves key-control; DB-never-sees-plaintext
 scan; per-item isolation; KEK versioned rewrap changes no ciphertext; **production-adapter
-integration suite** gates production claims (O4). All 24 Phase 1 invariants carried forward.
+integration suite** gates production claims (O4).
+
+Review #3 additions: **winner selection** (N concurrent provisions for one item → exactly one
+committed via CAS, every loser's provisional key destroyed, the DB function's `committed` flag
+is correct); **reconciler safety** (with the DB made unavailable, the reconciler destroys
+nothing; a `status`/DB exception is never read as "orphaned"); **status semantics** (the four
+values plus a thrown transport error, exercised via the fault-injecting custodian);
+**DEK lifetime** (DEK is a `Buffer`, zeroized in `finally`; recheck-before-return fails closed
+when the key is destroyed mid-read; an in-flight read that began before `forget` returns no
+plaintext after completion). All 24 Phase 1 invariants carried forward.
 
 ---
 
@@ -252,7 +314,17 @@ integration suite** gates production claims (O4). All 24 Phase 1 invariants carr
   reconciliation defined (fail closed, no auto-replacement, tombstone-driven self-heal);
   destruction scope = whole old lineage; custodian authoritative for KEK state.
 
+Review #3 resolved: locking claim corrected — concurrent provisional keys + DB-side CAS winner
+selection with a `committed` result, losers self-destroy (no lock across custodian calls);
+custodian `status` is `provisional|active|destroyed|not_found` with transport failure as a
+thrown error; `destroy` idempotent on op id AND key id; `shredded_at`/`shred_receipt` audit
+fields; reconciler does nothing under DB unavailability; explicit unwrapped-DEK lifetime
+(Buffer-only, zeroize, recheck-before-return, in-flight read fail-closed, no long-lived cache).
+
 ## 13. Status
 
-Contracts complete pending review #2 sign-off. **SecretStore + log redaction are being built
-now** (review-cleared). The crypto-shredding coordinator remains held until this v3 is approved.
+**SecretStore + log redaction are implemented** (review-cleared; 4 tests green). The
+crypto-shredding **coordinator remains held** until this v4 is approved. After sign-off the
+design is implementation-ready; build order: custodian interface + in-process fault-injecting
+custodian → envelope → key-control + winner-selection provisioning → forget coordinator +
+reconciler → production adapter + integration suite → backup policy.
