@@ -214,20 +214,31 @@ async function main(): Promise<void> {
     assertEq(got?.providerRefs?.length, 1, 'only the retained ref is read back');
   });
 
-  // 13. gap — withIdentity scopes redaction to the plaintext lifetime --------
-  await test('withIdentity — logging inside the scope is redacted; nothing lingers after', async () => {
+  // 13. gap — withIdentity redaction survives JSON escaping + covers object keys
+  await test('withIdentity — redaction survives JSON escaping and covers object keys', async () => {
     await reset();
     const id = mintItemId();
-    await auth.addItem(id, { title: 'SecretTitle', externalIds: { tmdb: 'ext-secret-603' }, providerRefs: [{ type: 'imdb', value: 'tt-secret-1' }] });
+    const trickyTitle = 'Secret"Quote\\back\nline'; // contains quote, backslash, newline
+    await auth.addItem(id, {
+      title: trickyTitle,
+      externalIds: { secretKey: 'plain-val' }, // key is identifying too
+      metadata: { note: 'm\nval' },
+      providerRefs: [{ type: 'imdb', value: 'tt-secret-1' }],
+    });
     const lines: string[] = [];
     const log = auth.createLogger((l) => lines.push(l));
     await auth.withIdentity(id, (identity) => {
-      log.info(`title=${identity!.title} ext=${JSON.stringify(identity!.externalIds)} ref=${identity!.providerRefs?.[0]?.value}`);
+      log.info(`raw=${identity!.title} ref=${identity!.providerRefs?.[0]?.value}`); // raw interpolation
+      log.info(`json=${JSON.stringify(identity)}`);                                  // JSON-escaped in message
+      log.info('structured', { identity });                                          // structured (redact-before-serialize)
     });
     const blob = lines.join('\n');
-    assert(!blob.includes('SecretTitle'), 'title redacted inside scope');
-    assert(!blob.includes('ext-secret-603'), 'external id value redacted inside scope');
-    assert(!blob.includes('tt-secret-1'), 'ref value redacted inside scope');
+    assert(!blob.includes('Secret"Quote'), 'raw title masked');
+    assert(!blob.includes('Secret\\"Quote'), 'JSON-escaped title masked');
+    assert(!blob.includes('plain-val'), 'external id value masked');
+    assert(!blob.includes('secretKey'), 'object key masked');
+    assert(!blob.includes('tt-secret-1'), 'ref value masked');
+    assert(!blob.includes('m\nval') && !blob.includes('m\\nval'), 'metadata value (raw + escaped) masked');
     assertEq(auth.secrets.size(), 0, 'no identity registrations linger after the scope');
   });
 

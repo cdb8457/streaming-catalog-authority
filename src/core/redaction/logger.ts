@@ -3,22 +3,29 @@ import type { SecretStore } from '../secrets/secret-store.js';
 export type LogSink = (line: string) => void;
 
 export interface RedactingLogger {
-  info(message: string): void;
-  warn(message: string): void;
-  error(message: string): void;
+  info(message: string, fields?: Record<string, unknown>): void;
+  warn(message: string, fields?: Record<string, unknown>): void;
+  error(message: string, fields?: Record<string, unknown>): void;
 }
 
 /**
  * A logger that routes every line through the SecretStore's redaction before it
- * reaches the sink, so application logging cannot emit a URL/key/magnet/token or
- * any registered secret literal in the clear. This is the same no-leak scanner
- * used on event payloads, applied to logs (Phase 2 #2).
+ * reaches the sink (Phase 2 #2).
+ *
+ * Two layers: the message string is redacted by literal/signature scan; structured
+ * `fields` are redacted **before** serialization (`redactDeep`), so JSON escaping
+ * cannot bypass redaction. Prefer passing identity via `fields` over interpolating
+ * it into the message string.
  */
 export function createRedactingLogger(store: SecretStore, sink: LogSink = (l) => console.log(l)): RedactingLogger {
-  const emit = (level: string, message: string): void => sink(`[${level}] ${store.redact(message)}`);
+  const emit = (level: string, message: string, fields?: Record<string, unknown>): void => {
+    let line = `[${level}] ${store.redact(message)}`;
+    if (fields !== undefined) line += ` ${JSON.stringify(store.redactDeep(fields))}`;
+    sink(line);
+  };
   return {
-    info: (m) => emit('info', m),
-    warn: (m) => emit('warn', m),
-    error: (m) => emit('error', m),
+    info: (m, f) => emit('info', m, f),
+    warn: (m, f) => emit('warn', m, f),
+    error: (m, f) => emit('error', m, f),
   };
 }

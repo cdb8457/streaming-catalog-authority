@@ -188,9 +188,14 @@ export class CatalogAuthority {
     const names: string[] = [];
     if (identity) {
       for (const value of collectIdentityStrings(identity)) {
-        const name = `id:${randomUUID()}`;
-        this.secrets.set(name, value);
-        names.push(name);
+        // register the raw value AND its JSON-escaped form, so logging the value either
+        // directly or via JSON.stringify is redacted by the literal scan.
+        for (const variant of [value, JSON.stringify(value).slice(1, -1)]) {
+          if (variant.length === 0) continue;
+          const name = `id:${randomUUID()}`;
+          this.secrets.set(name, variant);
+          names.push(name);
+        }
       }
     }
     try {
@@ -309,13 +314,18 @@ export class CatalogAuthority {
   }
 }
 
-/** Collects every plaintext string in an identity (title, ref values, nested id/metadata). */
+/**
+ * Collects every plaintext string in an identity — title, ref values, and the nested
+ * VALUES *and KEYS* of externalIds/metadata (keys can themselves be identifying).
+ */
 function collectIdentityStrings(identity: ItemIdentity): string[] {
   const out: string[] = [];
   const walk = (v: unknown): void => {
     if (typeof v === 'string') { if (v.length > 0) out.push(v); }
     else if (Array.isArray(v)) v.forEach(walk);
-    else if (v && typeof v === 'object') Object.values(v).forEach(walk);
+    else if (v && typeof v === 'object') {
+      for (const [k, val] of Object.entries(v)) { if (k.length > 0) out.push(k); walk(val); }
+    }
   };
   walk(identity.title);
   walk(identity.externalIds);

@@ -6,11 +6,11 @@
   "description": "Phase 1 — event-sourced catalog authority core. No providers, HTTP, adapters, or Hermes.",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx test/crypto.ts && tsx test/run.ts && tsx test/phase2.ts && tsx test/shred.ts",
-    "test:phase1": "tsx test/run.ts",
-    "test:phase2": "tsx test/phase2.ts",
+    "test": "tsx test/crypto.ts && tsx test/run.ts 5433 && tsx test/phase2.ts 5434 && tsx test/shred.ts 5435",
+    "test:phase1": "tsx test/run.ts 5433",
+    "test:phase2": "tsx test/phase2.ts 5434",
     "test:crypto": "tsx test/crypto.ts",
-    "test:shred": "tsx test/shred.ts",
+    "test:shred": "tsx test/shred.ts 5435",
     "ci": "npm run typecheck && npm run test"
   },
   "dependencies": {

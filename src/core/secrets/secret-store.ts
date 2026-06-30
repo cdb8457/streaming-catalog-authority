@@ -48,4 +48,20 @@ export class SecretStore {
     }
     return out;
   }
+
+  /**
+   * Structured redaction: redacts string values (and object keys) BEFORE serialization, so a
+   * later JSON.stringify cannot bypass redaction via escaping. Returns a new structure.
+   */
+  redactDeep(value: unknown): unknown {
+    if (value === null || value === undefined) return value;
+    if (typeof value === 'string') return this.redact(value);
+    if (Array.isArray(value)) return value.map((v) => this.redactDeep(v));
+    if (typeof value === 'object') {
+      const out: Record<string, unknown> = {};
+      for (const [k, v] of Object.entries(value as Record<string, unknown>)) out[this.redact(k)] = this.redactDeep(v);
+      return out;
+    }
+    return value;
+  }
 }

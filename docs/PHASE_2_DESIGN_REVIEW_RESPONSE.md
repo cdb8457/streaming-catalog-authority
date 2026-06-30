@@ -118,3 +118,22 @@ SecretStore 4, crypto-shred 15).
 
 These unblock Stage 2b's old-backup self-heal. Stage 2b (reconciler, concurrent
 winner-selection races, old-backup self-heal) remains for the next stage.
+
+---
+
+# Response to Stage 2a Code Review #3
+
+One narrow blocker (scoped redaction bypassed by JSON escaping). Fixed. Suite is **55 passed**.
+
+| Finding | Fix | Proof |
+|---------|-----|-------|
+| **Scoped redaction bypassed by JSON escaping** (`Secret"Quote` ≠ its escaped form; object keys not collected) | (1) **Structured logging** — `createRedactingLogger` redacts `fields` via `redactDeep` **before** serialization (values *and* keys), so escaping can't bypass it. (2) Message path now registers each identity string **raw and JSON-escaped**. (3) `collectIdentityStrings` now also collects **object keys** of externalIds/metadata. | shred test "redaction survives JSON escaping and covers object keys" — fixtures with quote/backslash/newline; raw, JSON-escaped-in-message, and structured logging all redacted; `secrets.size()===0` after. |
+
+Also fixed test-harness flakiness: each DB-using suite now uses its own embedded-Postgres
+port + data dir (`tsx test/<suite>.ts <port>`), so back-to-back suites can't race on a
+lingering server. Two consecutive full runs exit 0.
+
+Note (honest scope): literal+escaped substring registration covers the common cases; the
+**structured-logging path is the robust one** (redacts before serialization) and is the
+recommended way to log identity. Stage 2b (reconciler, concurrent races, old-backup
+self-heal) remains.
