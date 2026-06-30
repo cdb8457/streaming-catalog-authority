@@ -21,3 +21,25 @@ versioned KEK re-wrapping now, rotation cadence deferred. **Sequencing:** log re
 to the same release gate as encryption (plaintext exists in-app before encryption).
 
 Open confirmations requested for review #2 are listed in §13.
+
+---
+
+# Response to Design Review #2 (v3)
+
+Review #2 approved most of v2 and required five more protocol contracts before the
+crypto-shredding coordinator; it also cleared SecretStore + log redaction to begin now. All
+five are in v3.
+
+| Required revision | Where addressed (v3) |
+|---|---|
+| 1. Expand the custodian contract (`provision`/`commitProvision`/`get`/`destroy`→receipt/`status`/`listStaleProvisioning`); keep durable non-secret destruction tombstones to distinguish "destroyed" from "missing" | §2 — full contract + durable non-secret tombstones/receipts; `status` backed by tombstone. |
+| 2. Make provisioning's cross-system sequence explicit (intent location; provision-ok/DB-fail; DB-ok/commit-fail; unknown-timeout retry; concurrent attempts); operation IDs + custodian provisional state | §7 — intent lives custodian-side keyed by `operation_id`; explicit 5-step sequence + a failure matrix covering all four cases; per-item lock + optimistic `cur_epoch` for concurrency. |
+| 3. Define old-backup reconciliation (restored `active` vs custodian `destroyed`; fail closed; no auto-replacement key; tombstone-driven self-heal) | §8.1 — fail-closed reads (also §5), no automatic replacement key for existing ciphertext, tombstone-driven re-application of the forgotten transition. |
+| 4. Resolve epoch wording (destroy the whole old lineage, since re-supply uses a fresh key_id) | §6 — destruction scope corrected to the **whole `key_id` lineage**; new identity = new `key_id`. |
+| 5. Keep KEK metadata authoritative in the custodian (no drift via PostgreSQL) | §2 + §4 — custodian owns `kek_version`/wrapping/rotation; `kek_version` removed from `item_key_control`. |
+
+Approved and unchanged: no-FK key-control, ciphertext envelope, single-blob layout,
+pending/complete semantics, restore blocking, test strategy.
+
+**Build status:** SecretStore + log redaction (review-cleared) are being implemented now; the
+crypto-shredding coordinator is held until v3 is approved.
