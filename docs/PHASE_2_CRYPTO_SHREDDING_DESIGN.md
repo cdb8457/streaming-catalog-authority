@@ -308,9 +308,18 @@ restore contract (operational + re-supply), rebuild (preserves key-control).
    custodian, envelope, key-control, forget coordinator + reconciler. *(Held until this doc is
    approved.)*
 3. **Production custodian adapter + integration suite** — required before any "production
-   shredding" claim (O4).
+   shredding" claim (O4). *Status: a durable **reference harness** (`FileCustodian`) + integration
+   suite is built (Stage 3a). **O4 remains OPEN as a production deployment gate**: the real
+   production adapter is a managed KMS implementing `KeyCustodian` outside the app trust boundary;
+   that needs live infra and is not buildable/testable in this repo.*
 4. **Backup policy** — encrypted main-DB backups excluding all key material; restore resurrects
-   neither expired behavioral events nor shredded identity.
+   neither expired behavioral events nor shredded identity. *Status: **built and tested** (Stage
+   3b) — `BackupPolicy` dumps ciphertext + key-control only, excluding the keystore, KEK, and
+   `crypto_config` completion secret. The dump is a single `REPEATABLE READ` snapshot (no torn
+   artifact) and restore runs a post-load integrity gate that rolls back a torn/tampered artifact.
+   `test/backup.ts` proves no resurrection of shredded identity or expired behavioral events,
+   exercises reconcile/self-heal after restore, and proves the consistency gate. KEK + completion
+   secret provisioning are documented external restore prerequisites (`docs/PHASE_2_BACKUP_POLICY.md`).*
 
 ---
 

@@ -187,14 +187,15 @@ reference adapter and an end-to-end integration suite. Suite is **69 passed** (i
 | Capability | Behaviour | Proof |
 |---|---|---|
 | Durable adapter | `FileCustodian` — filesystem-backed `KeyCustodian`: provisional/active key files, durable non-secret tombstones, op records for idempotency; survives a process restart by re-reading its directory. | integration "keys + tombstones survive a custodian restart". |
-| Irreversible delete | `destroy` overwrites the wrapped-key bytes then unlinks the file, leaving only the tombstone. | integration "forget destroys the key file, leaves a tombstone". |
+| Irreversible delete | `destroy` replaces the wrapped-key file with a zeroized blob (atomic rename) then unlinks it, leaving only the tombstone. The rename swaps in a new inode rather than scrubbing the old blocks in place, so this is best-effort — *not* a guaranteed physical overwrite; the guarantee is wrapped-only storage + keystore/KEK exclusion from backups. | integration "forget destroys the key file, leaves a tombstone". |
 | Attestation across the boundary | The custodian holds the completion secret in its own config (not the app DB); `forget` succeeds only because the DB verifies the custodian's HMAC. The app role cannot even read `crypto_config`. | integration "DB verifies attestation" + "app role cannot read the completion secret". |
 | Full lifecycle + self-heal | add/read/forget/reconcile all run end-to-end against the durable adapter. | integration "add/read round-trips" + "reconcile self-heals an old-backup restore". |
 
-Honest scope: `FileCustodian` is a reference adapter — FS-level overwrite is best-effort
-irreversibility and it is single-writer. A managed KMS / secrets service implementing the same
-`KeyCustodian` interface is the production target and provides the real deletion guarantee;
-swapping it is a constructor change. Remaining: the encrypted backup policy (Stage 3b).
+Honest scope: `FileCustodian` is a reference harness — FS-level deletion is best-effort
+irreversibility (the atomic rename does not physically overwrite the original inode's blocks)
+and it is single-writer. A managed KMS / secrets service implementing the same `KeyCustodian`
+interface is the production target and provides the real deletion guarantee; swapping it is a
+constructor change. Remaining: the encrypted backup policy (Stage 3b).
 
 ---
 
@@ -207,7 +208,7 @@ Three P0s + durability gaps in the adapter. All fixed. Suite is **73 passed** (i
 | **Default secret allows forged completion** (app could import `DEV_COMPLETION_SECRET`) | Removed the exported constant entirely; custodians require an explicit secret; the migration seeds a **random, unknowable** `crypto_config` secret; the harness/operator sets it out-of-band. App code has no constant to import. | integration "wrong completion secret cannot complete a shred" (a custodian without the DB's secret is stuck `shred_pending`) + "app role cannot read the completion secret". |
 | **Missing key falsely "destroyed"** | `destroy` **refuses an unknown key** (`not_found`) instead of fabricating a tombstone. | integration "destroy refuses an unknown key (no fabricated tombstone)". |
 | **Filesystem path traversal** | Ids are **SHA-256-hashed into filenames** with a resolved-path containment check. | integration "path-traversal ids cannot escape the keystore". |
-| Non-atomic / un-fsynced writes; raw DEKs | Atomic **temp → fsync → rename, mode 0600**; DEKs stored **wrapped under a KEK** (AES-256-GCM, AAD = keyId), never raw; **crash-recoverable destroy journal** (intent → overwrite+unlink → tombstone → clear, replayed on startup). | integration durability + irreversible-delete tests; `FileCustodian` recovers journaled destroys on construct. |
+| Non-atomic / un-fsynced writes; raw DEKs | Atomic **temp → fsync → rename → fsync(dir), mode 0600** (directory fsync is best-effort: a no-op on platforms such as Windows that cannot fsync a directory handle); DEKs stored **wrapped under a KEK** (AES-256-GCM, AAD = keyId), never raw; **crash-recoverable destroy journal** (intent → zeroize-replace+unlink → tombstone → clear, replayed on startup). | integration durability + irreversible-delete tests; `FileCustodian` recovers journaled destroys on construct (Stage 3b adds an explicit interrupted-journal recovery test). |
 | Requires explicit secret/KEK | Constructor rejects empty secret / non-32-byte KEK before touching disk. | integration "custodian requires an explicit secret and a 32-byte KEK". |
 
 **Accepted as still-open:** `FileCustodian` remains a **reference harness, not the production

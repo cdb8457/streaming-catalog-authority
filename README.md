@@ -8,7 +8,7 @@ Hermes, job queues, or UI — by design. The core stands alone.
 ```bash
 npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
 npm run ci       # typecheck, then all suites: crypto (15) + authority (21) + SecretStore (4)
-                 # + crypto-shred (15) + reconcile (9) + integration (9) = 73 passed
+                 # + crypto-shred (15) + reconcile (9) + integration (10) + backup (12) = 86 passed
 ```
 
 Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.
@@ -54,8 +54,11 @@ test/run.ts                  the Phase 1 suite (21 checks)
 
 ## Guarantees (all tested)
 
-- **Mutation only via the DB authority.** No TS writes the tables; the app role physically
-  cannot bypass `CatalogAuthority` (raw insert / projection write / prune all denied).
+- **Mutation only via the DB authority.** No app-path TS writes the tables; the app role
+  physically cannot bypass `CatalogAuthority` (raw insert / projection write / prune all denied).
+  The one documented exception is the owner-side backup **restore** (Stage 3b), which bypasses the
+  append-only authority by design and is reachable only over the superuser/owner connection — never
+  by the app role.
 - **Opaque ids.** `item_id` is a UUID, enforced in TS and by a DB `CHECK` — content cannot
   leak through the id channel.
 - **No-leak gate on the exact stored value.** Payloads are validated post-serialize, so a
@@ -87,14 +90,49 @@ self-heals an old-backup restore (a still-`active` row whose key is destroyed is
 through forget). Completion requires an unforgeable HMAC **attestation** from the custodian.
 
 The custodian is an interface. `InMemoryCustodian` is the dev/test impl; **`FileCustodian`** is
-a durable reference production adapter (survives restart; overwrite+unlink irreversible delete;
-durable non-secret tombstones; holds the completion secret outside the app DB). A managed KMS /
-secrets service implementing the same interface drops in for production — FS-level overwrite is
-only best-effort irreversibility; a managed KMS provides the real guarantee.
+a durable reference **harness, not the production adapter** (survives restart; zeroize-replace
++ unlink of the wrapped DEK — best-effort, *not* a guaranteed physical block scrub, see below;
+durable non-secret tombstones; holds the completion secret and KEK outside the app DB). A
+managed KMS / secrets service implementing the same `KeyCustodian` interface is the production
+target (design **O4**, still open) and provides the real deletion guarantee; swapping it in is a
+constructor change.
+
+The erasure guarantee does **not** depend on physically overwriting the DEK's disk blocks — an
+atomic rename swaps in a new inode rather than scrubbing the old one in place. It depends on the
+DEK being stored only **wrapped under the KEK**, the wrapped file being unlinked from the live
+keystore, and the **keystore + KEK + completion secret being excluded from every main-DB backup**
+(see Backup policy below). A surviving wrapped block is useless without the KEK.
 
 Status: Stage 2a (schema + coordinator + reads), Stage 2b (reconciler + winner-selection +
-old-backup self-heal), and Stage 3a (production custodian adapter + integration suite) are
-built and tested. The encrypted backup policy (Stage 3b) is pending.
+old-backup self-heal), Stage 3a (durable reference custodian harness + integration suite), and
+Stage 3b (encrypted backup/restore policy) are built and tested.
+
+## Backup policy (Stage 3b)
+
+Main-DB backups carry **ciphertext and key-control state only** — never decryptable key material.
+`BackupPolicy` (`src/core/backup/backup-policy.ts`) dumps `events`, `items`, `provider_refs`,
+`item_key_control`, and `aborted_operations`, and **deliberately excludes** the FileCustodian
+keystore (wrapped DEKs), the KEK, and `crypto_config` (the completion secret). The dump runs in a
+single `REPEATABLE READ` snapshot so the artifact is **point-in-time consistent** (a commit landing
+mid-dump cannot tear `items`/`item_key_control` against `events`), and `restore` runs a
+**post-load integrity gate** that **replays the events through the real reducer (`cat_rebuild`) and
+compares** the resulting structural projection to the loaded one — rolling back
+(`BackupIntegrityError`) if any item/provider-ref state is not derivable from the log. The backup
+artifact must additionally be **encrypted at rest by the operator** (storage-level or a
+`pg_dump | age`/`gpg` pipeline); confidentiality at rest is defense-in-depth, while the erasure
+guarantee comes from the key-material exclusion above.
+
+**External restore prerequisites (out-of-band, NOT in the backup):** restoring the main-DB
+backup alone yields a *fail-closed* system. Before it is usable an operator must independently
+(1) provision the **KEK** into the custodian and (2) set the **completion secret** into
+`crypto_config` (matching the external custodian). Until both are supplied, reads fail closed and
+shred completions cannot verify — by design.
+
+Two invariants are proven by `test/backup.ts`: a restored backup **cannot resurrect shredded
+identity** (the destroyed key's tombstone lives in the separate keystore; reads fail closed and
+the reconciler re-drives `forget`), and **expired behavioral events do not return** after restore
+(cutoff-aware projection + prune mean a restored event past its `expires_at` neither scores nor
+survives a prune). See `docs/PHASE_2_BACKUP_POLICY.md`.
 
 ## Not in this slice
 
