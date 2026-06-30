@@ -1,4 +1,5 @@
-import { existsSync } from 'node:fs';
+import { createHash, randomUUID } from 'node:crypto';
+import { existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { Client } from 'pg';
 import { startEmbedded } from './embedded-pg.js';
@@ -121,7 +122,20 @@ async function main(): Promise<void> {
     const evilOp = '../../escaped-op';
     const { keyId } = await custodian.provision(evilOp, id, 0); // hashed -> contained
     assertEq(await custodian.status(keyId), 'provisional', 'evil-op key provisioned, contained');
-    assert(!existsSync(path.resolve(keystore, '..', '..', 'escaped-op.json')), 'no file written outside the keystore');
+
+    // The op id flows into the ops/ filename. A NAIVE (non-hashing) custodian would have written
+    // path.join(<keystore>/ops, evilOp + '.json'), which resolves to <parent-of-keystore>/escaped-op.json
+    // — genuinely OUTSIDE the keystore. Assert the real escape target (not a path that could never
+    // be hit) is empty, and that the record actually landed at its hashed, contained path.
+    const opsDir = path.join(keystore, 'ops');
+    const root = path.resolve(keystore);
+    const naiveEscape = path.resolve(opsDir, `${evilOp}.json`);
+    assert(!naiveEscape.startsWith(root + path.sep), 'sanity: the naive-join target is genuinely outside the keystore');
+    assert(!existsSync(naiveEscape), 'no op file escaped to the traversal target outside the keystore');
+    const hashedOp = path.join(opsDir, `${createHash('sha256').update(evilOp).digest('hex')}.json`);
+    assert(existsSync(hashedOp), 'the op record landed at its hashed, contained path');
+    assert(path.resolve(hashedOp).startsWith(root + path.sep), 'sanity: the hashed op file is inside the keystore');
+
     await custodian.commitProvision(evilOp);
     assertEq(await custodian.status(keyId), 'active', 'evil-op key usable and contained');
   });
@@ -144,6 +158,36 @@ async function main(): Promise<void> {
   await test('integration — custodian requires an explicit secret and a 32-byte KEK', async () => {
     await assertThrows(() => { void new FileCustodian(keystore, '', kek); }, 'empty secret rejected');
     await assertThrows(() => { void new FileCustodian(keystore, 's', Buffer.alloc(16)); }, 'short KEK rejected');
+  });
+
+  // 10. interrupted destroy is completed by journal recovery on restart ------
+  await test('integration — a destroy interrupted after the journal fence is completed on restart', async () => {
+    const jrec = path.join(process.cwd(), `.keystore-jrec-${process.argv[2] ?? '5437'}`);
+    FileCustodian.wipe(jrec);
+    const c1 = new FileCustodian(jrec, secret, kek);
+    const { keyId } = await c1.provision('jrec-op', mintItemId(), 0);
+    await c1.commitProvision('jrec-op');
+    assertEq(await c1.status(keyId), 'active', 'key active before the simulated crash');
+
+    // Simulate a crash AFTER the destroy journal fence but BEFORE finishDestroy ran: the
+    // journal intent is on disk, the (still-present) key file was never overwritten/unlinked,
+    // and no tombstone exists. This is exactly the on-disk state the crash fence guarantees.
+    const receiptId = `rcpt_${randomUUID()}`;
+    const destroyedAt = new Date(0).toISOString();
+    const journalFile = path.join(jrec, 'journal', `${createHash('sha256').update(keyId).digest('hex')}.json`);
+    writeFileSync(journalFile, JSON.stringify({ keyId, receiptId, destroyedAt }), { mode: 0o600 });
+    assert(existsSync(path.join(jrec, 'keys', `${createHash('sha256').update(keyId).digest('hex')}.json`)), 'key file still present pre-recovery');
+
+    // Restart: a brand-new custodian over the same dir replays the journal in its constructor.
+    const c2 = new FileCustodian(jrec, secret, kek);
+    assertEq(await c2.status(keyId), 'destroyed', 'recovery finished the interrupted destroy (status destroyed)');
+    assert(!existsSync(path.join(jrec, 'keys', `${createHash('sha256').update(keyId).digest('hex')}.json`)), 'key file removed by recovery');
+    assert(existsSync(path.join(jrec, 'tombstones', `${createHash('sha256').update(keyId).digest('hex')}.json`)), 'tombstone written by recovery');
+    assert(!existsSync(journalFile), 'journal entry cleared after recovery');
+    // the recovered tombstone carries the JOURNALED receipt id (idempotent destroy returns it)
+    const r = await c2.destroy(randomUUID(), keyId);
+    assertEq(r.receiptId, receiptId, 'recovered tombstone preserves the journaled receipt id');
+    FileCustodian.wipe(jrec);
   });
 
   FileCustodian.wipe(keystore);

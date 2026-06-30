@@ -99,7 +99,17 @@ async function main(): Promise<void> {
   // 1-2. static boundary scans ----------------------------------------------
   await test('mutation boundary — no raw write SQL to the tables in TS', () => {
     const writeRe = /\b(INSERT INTO|UPDATE|DELETE FROM|TRUNCATE)\s+(events|items|provider_refs|item_key_control)\b/i;
-    const offenders = walkTs(SRC_DIR).filter((f) => writeRe.test(readFileSync(f, 'utf8'))).map((f) => path.basename(f));
+    // Allowed exception: the owner-side backup RESTORE path (Stage 3b). A restore must bypass the
+    // append-only authority by design (you cannot reload an event log through append-only command
+    // functions), so it does raw INSERT/TRUNCATE — but ONLY over the owner/superuser connection
+    // (it sets session_replication_role, superuser-only). The runtime app role still physically
+    // cannot write the tables; that privilege boundary is proven separately below. This is the
+    // same category of owner tooling as db/migrations.sql.
+    const OWNER_TOOLING = new Set(['backup-policy.ts']);
+    const offenders = walkTs(SRC_DIR)
+      .filter((f) => writeRe.test(readFileSync(f, 'utf8')))
+      .map((f) => path.basename(f))
+      .filter((name) => !OWNER_TOOLING.has(name));
     assert(offenders.length === 0, `TS files writing tables directly: ${offenders.join(', ')}`);
   });
   await test('core imports nothing about providers/HTTP/adapters/Hermes', () => {

@@ -10,14 +10,24 @@ import type { DestructionReceipt, KeyCustodian, KeyStatus, ProvisionResult, Stal
  *
  * Hardened: ids are hashed into filenames with resolved-path containment (no traversal);
  * DEKs are stored WRAPPED under a KEK (never raw); writes are atomic (temp -> fsync ->
- * rename, mode 0600); destroy is crash-recoverable via a journal and refuses an unknown key;
- * the completion secret and KEK are supplied explicitly (no importable default).
+ * rename -> fsync(dir), mode 0600); destroy is crash-recoverable via a journal and refuses
+ * an unknown key; the completion secret and KEK are supplied explicitly (no importable default).
+ *
+ * Irreversibility, stated precisely: destroy replaces the wrapped-DEK file with a zeroized
+ * blob (atomic rename) and then unlinks it. The atomic rename does NOT overwrite the original
+ * file's inode/blocks in place — it swaps in a new inode and drops the old one, whose blocks
+ * may linger (journaling / copy-on-write / SSD wear-levelling can retain them) until reused.
+ * So this is NOT a guaranteed physical scrub of the DEK bytes. The erasure guarantee does not
+ * rest on a physical overwrite: it rests on the DEK being stored only WRAPPED under the KEK,
+ * the wrapped file being removed from the live keystore, and the keystore + KEK being EXCLUDED
+ * from every main-DB backup (Stage 3b). A surviving wrapped-DEK block is useless without the
+ * KEK, which a destroy of the lineage never reproduces.
  *
  * It is still a REFERENCE harness, NOT the production adapter: it runs in-process (so the
  * trust boundary is not enforced — a real deployment runs the custodian as a separate
- * service / managed KMS holding the secret+KEK outside the app), and FS overwrite is only
- * best-effort physical irreversibility. The design O4 production target is a managed-KMS
- * implementation of this same KeyCustodian interface, not this class.
+ * service / managed KMS holding the secret+KEK outside the app), and FS-level deletion is only
+ * best-effort physical irreversibility (see above). The design O4 production target is a
+ * managed-KMS implementation of this same KeyCustodian interface, not this class.
  */
 
 interface KeyFile {
@@ -86,6 +96,38 @@ export class FileCustodian implements KeyCustodian {
       closeSync(fd);
     }
     renameSync(tmp, p);
+    this.fsyncDir(path.dirname(p)); // make the rename (directory entry) itself durable
+  }
+
+  /**
+   * fsync the containing directory so the rename — not just the file contents — survives a
+   * crash. Without it, POSIX permits the renamed entry to be lost on power failure even though
+   * the fsync'd file blocks are durable.
+   *
+   * Precise limitation: opening a directory for fsync is not portable. On Windows a directory
+   * handle cannot be fsync'd this way (openSync throws EISDIR/EPERM), so this is a BEST-EFFORT
+   * no-op there — a crash immediately after rename may still lose the directory entry on those
+   * platforms. We swallow only the "directories are not fsync-able here" errors and let any
+   * other error surface. Durable rename ordering is one more reason the production target (O4)
+   * is a managed KMS, which does not depend on host filesystem directory-fsync semantics.
+   */
+  private fsyncDir(dir: string): void {
+    let dfd: number;
+    try {
+      dfd = openSync(dir, 'r');
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code === 'EISDIR' || code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') return;
+      throw err;
+    }
+    try {
+      fsyncSync(dfd);
+    } catch (err) {
+      const code = (err as NodeJS.ErrnoException).code;
+      if (code !== 'EISDIR' && code !== 'EPERM' && code !== 'EINVAL' && code !== 'ENOTSUP') throw err;
+    } finally {
+      closeSync(dfd);
+    }
   }
 
   // --- KEK wrap/unwrap (DEKs are never stored raw) --------------------------
@@ -128,9 +170,14 @@ export class FileCustodian implements KeyCustodian {
     const kp = this.keyPath(j.keyId);
     if (existsSync(kp)) {
       const kf = this.read<KeyFile>(kp)!;
-      kf.wrappedHex = '0'.repeat(kf.wrappedHex.length); // overwrite wrapped bytes
+      // Replace the live wrapped-DEK with a zeroized blob, then unlink. NOTE: writeAtomic swaps
+      // in a NEW inode via rename — it does not scrub the original inode's blocks in place, so
+      // this is best-effort, not a guaranteed physical overwrite (see the class doc). The real
+      // guarantee is wrapped-only storage + keystore/KEK exclusion from backups.
+      kf.wrappedHex = '0'.repeat(kf.wrappedHex.length);
       this.writeAtomic(kp, kf);
       rmSync(kp, { force: true });
+      this.fsyncDir(this.keysDir); // make the unlink durable too
     }
     if (!existsSync(this.tombPath(j.keyId))) {
       this.writeAtomic(this.tombPath(j.keyId), { keyId: j.keyId, receiptId: j.receiptId, destroyedAt: j.destroyedAt } satisfies Tombstone);
@@ -192,7 +239,7 @@ export class FileCustodian implements KeyCustodian {
 
     const j: Journal = { keyId, receiptId: `rcpt_${randomUUID()}`, destroyedAt: new Date(this.clock()).toISOString() };
     this.writeAtomic(this.journalPath(keyId), j); // crash fence: intent recorded first
-    this.finishDestroy(j);                          // overwrite+unlink key, write tombstone, clear journal
+    this.finishDestroy(j);                          // zeroize-replace+unlink key, write tombstone, clear journal
     this.writeAtomic(this.opPath(operationId), { operationId, kind: 'destroy', keyId } satisfies OpFile);
     return this.receiptFor({ keyId, receiptId: j.receiptId, destroyedAt: j.destroyedAt });
   }
