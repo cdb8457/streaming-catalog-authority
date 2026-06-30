@@ -86,6 +86,23 @@ A dependency-free **structural** check of these deployment artifacts runs in CI 
 (asserts the services, healthcheck, separate volumes, `*_FILE` secrets, and the no-HTTP/no-ports
 shape) so the topology is verified even where Docker is unavailable.
 
+## Remaining production gates (open)
+
+These are explicitly **open** and must be resolved (or formally accepted) before relying on this
+deployment in production:
+
+- **O4 — managed-KMS production custodian adapter (OPEN).** `FileCustodian` is a reference harness,
+  not a managed KMS. The production custodian — a managed KMS implementing the `KeyCustodian`
+  interface, run *outside* the app trust boundary — provides the real deletion/secrecy guarantee and
+  is not built here; it would add a new `CUSTODIAN_MODE`.
+- **O5 — age KEK rotation / rewrap automation (OPEN).** The KEK arrives operator-side (age-decrypted
+  to `CUSTODIAN_KEK_FILE`). Versioned KEK rotation and the ciphertext rewrap workflow are not yet
+  automated; rotating the KEK is a manual operator procedure for now.
+- **`CUSTODIAN_MODE=memory` is dev/test ONLY — production guard OPEN.** The in-process memory
+  custodian loses all keys on restart and enforces no trust boundary. An explicit application-level
+  guard (refuse `memory` outside dev) or a firm operator prohibition is still open and applicable;
+  until then it is the operator's responsibility never to run `memory` in production.
+
 ## Out of scope (unchanged)
 
 No provider adapters / Real-Debrid / TorBox / Plex / Jellyfin, no scraping / downloading /
