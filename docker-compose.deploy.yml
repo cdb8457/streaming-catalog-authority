@@ -30,6 +30,7 @@ services:
   # One-shot ops/CLI container. No ports, no daemon — invoked via `docker compose run`.
   ops:
     build: .
+    restart: "no"   # one-shot: never auto-restart (run on demand via `docker compose run`)
     depends_on:
       postgres:
         condition: service_healthy

@@ -1,0 +1,42 @@
+<?xml version="1.0"?>
+<!--
+  Unraid Community-Applications template (Phase 5 Stage 5.3) for the Streaming Catalog Authority
+  OPS/CLI container. This is the catalog/privacy core only: a ONE-SHOT ops container, NOT a
+  long-running service. It has NO web UI and NO published ports. Run migrate / doctor / backup /
+  rewrap on demand (Unraid User Scripts or the container "Console").
+
+  PostgreSQL runs as a SEPARATE container (use the standard postgres:16 template). The custodian
+  keystore lives on its OWN share, separate from the DB data and from backups, so a DB backup
+  never contains key material. All secrets are delivered as FILES and read via the *_FILE config
+  indirection. The KEK is decrypted operator-side (age) before being placed in the secrets share.
+  See docs/PHASE_3_DEPLOYMENT.md and docs/PHASE_5_RUNBOOK.md.
+-->
+<Container version="2">
+  <Name>catalog-authority-ops</Name>
+  <Repository>localhost/catalog-authority:latest</Repository>
+  <Registry/>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support/>
+  <Overview>One-shot ops/CLI container for the Streaming Catalog Authority (catalog/privacy core). NOT a long-running service; no web UI; no published ports. Run ops:migrate / ops:init / ops:doctor / ops:backup / ops:rewrap-kek on demand. Postgres is a separate container. Keystore + secrets live on their own shares (separate from the DB and from backups); secrets are read via *_FILE.</Overview>
+  <Category>Tools: Utilities:</Category>
+  <WebUI/>
+  <Icon/>
+  <ExtraParams>--rm</ExtraParams>
+  <PostArgs>ops:doctor</PostArgs>
+  <Description>Self-hosted catalog/privacy authority operations. No providers, scraping, downloading, playback, or UI. Default command runs the read-only ops:doctor self-check; override PostArgs (e.g. ops:migrate, ops:init, "ops:backup -- dump /backups/cat.json") per run.</Description>
+
+  <!-- Volumes: keystore on its OWN share, distinct from DB data and from backups. -->
+  <Config Name="Keystore" Target="/var/lib/catalog/keystore" Default="/mnt/user/appdata/catalog/keystore" Mode="rw" Description="FileCustodian keystore (wrapped DEKs). Keep on a share that is NEVER part of the DB backup set." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/catalog/keystore</Config>
+  <Config Name="Backups" Target="/backups" Default="/mnt/user/appdata/catalog/backups" Mode="rw" Description="Backup artifacts (ciphertext only). Encrypt at rest." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/catalog/backups</Config>
+  <Config Name="Secrets" Target="/run/secrets" Default="/mnt/user/appdata/catalog/secrets" Mode="ro" Description="Operator-provided secret files (read via *_FILE): admin_database_url, database_url, completion_secret, custodian_kek (decrypted base64 KEK)." Type="Path" Display="always" Required="true" Mask="false">/mnt/user/appdata/catalog/secrets</Config>
+
+  <!-- Environment (no secret VALUES here; everything sensitive is *_FILE). -->
+  <Config Name="APP_ENV" Target="APP_ENV" Default="production" Mode="" Description="Deployment environment. Production refuses CUSTODIAN_MODE=memory." Type="Variable" Display="always" Required="true" Mask="false">production</Config>
+  <Config Name="CUSTODIAN_MODE" Target="CUSTODIAN_MODE" Default="file" Mode="" Description="file = durable FileCustodian reference harness." Type="Variable" Display="always" Required="true" Mask="false">file</Config>
+  <Config Name="CUSTODIAN_KEYSTORE_DIR" Target="CUSTODIAN_KEYSTORE_DIR" Default="/var/lib/catalog/keystore" Mode="" Description="Keystore path inside the container." Type="Variable" Display="always" Required="true" Mask="false">/var/lib/catalog/keystore</Config>
+  <Config Name="ADMIN_DATABASE_URL_FILE" Target="ADMIN_DATABASE_URL_FILE" Default="/run/secrets/admin_database_url" Mode="" Description="Owner/migrator connection string file." Type="Variable" Display="always" Required="true" Mask="false">/run/secrets/admin_database_url</Config>
+  <Config Name="DATABASE_URL_FILE" Target="DATABASE_URL_FILE" Default="/run/secrets/database_url" Mode="" Description="Least-privileged app connection string file." Type="Variable" Display="always" Required="true" Mask="false">/run/secrets/database_url</Config>
+  <Config Name="COMPLETION_SECRET_FILE" Target="COMPLETION_SECRET_FILE" Default="/run/secrets/completion_secret" Mode="" Description="HMAC attestation secret file (shared with the DB)." Type="Variable" Display="always" Required="true" Mask="false">/run/secrets/completion_secret</Config>
+  <Config Name="CUSTODIAN_KEK_FILE" Target="CUSTODIAN_KEK_FILE" Default="/run/secrets/custodian_kek" Mode="" Description="Base64 32-byte KEK file (operator decrypts the age-wrapped KEK before placing it here)." Type="Variable" Display="always" Required="true" Mask="false">/run/secrets/custodian_kek</Config>
+</Container>
