@@ -1,4 +1,4 @@
-import { ConfigError, resolveVar, type Env } from '../../config/env.js';
+import { ConfigError, resolveVar, resolveAppEnv, type Env } from '../../config/env.js';
 import type { KeyCustodian } from './custodian.js';
 import { InMemoryCustodian } from './custodian.js';
 import { FileCustodian } from './file-custodian.js';
@@ -52,6 +52,13 @@ export function loadCustodianConfig(env: Env = process.env): CustodianConfig {
   else if (modeVar.value === undefined) problems.push(`CUSTODIAN_MODE is required (one of: ${SUPPORTED_MODES.join(', ')})`);
   else if (!SUPPORTED_MODES.includes(modeVar.value as CustodianMode)) {
     problems.push(`CUSTODIAN_MODE must be one of: ${SUPPORTED_MODES.join(', ')} (got "${modeVar.value}")`);
+  }
+
+  // Phase 4 production guard: the in-process `memory` custodian loses keys on restart and enforces
+  // no trust boundary, so it is REFUSED in production. The only override is the exact, explicit
+  // value CUSTODIAN_ALLOW_INSECURE_MEMORY=true (intentionally loud; not recommended).
+  if (modeVar.value === 'memory' && resolveAppEnv(env) === 'production' && env.CUSTODIAN_ALLOW_INSECURE_MEMORY !== 'true') {
+    problems.push('CUSTODIAN_MODE=memory is refused in production (APP_ENV/NODE_ENV=production); configure a durable custodian (e.g. mode=file), or set CUSTODIAN_ALLOW_INSECURE_MEMORY=true to override (NOT recommended)');
   }
 
   if (modeVar.value === 'file') {

@@ -109,3 +109,18 @@ export function loadDbConfig(env: Env = process.env): DbConfig {
 export function loadConfig(env: Env = process.env): AppConfig {
   return { db: loadDbConfig(env) };
 }
+
+export type AppEnv = 'production' | 'development' | 'test';
+
+/**
+ * Resolve the deployment environment (Phase 4): `APP_ENV` takes precedence, falling back to
+ * `NODE_ENV`, then defaulting to `development` (so dev/test are never accidentally treated as
+ * production). Only an explicit `production`/`prod` is treated as production; `test` as test;
+ * everything else as development. Reads from the SAME `env` it is given (deterministic in tests).
+ */
+export function resolveAppEnv(env: Env = process.env): AppEnv {
+  const raw = (env.APP_ENV ?? env.NODE_ENV ?? 'development').trim().toLowerCase();
+  if (raw === 'production' || raw === 'prod') return 'production';
+  if (raw === 'test') return 'test';
+  return 'development';
+}
