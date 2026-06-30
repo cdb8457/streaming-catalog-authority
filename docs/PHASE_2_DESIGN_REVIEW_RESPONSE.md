@@ -172,3 +172,26 @@ atomic, and `listStaleProvisioning` had no lease. Fixed. Suite is **64 passed** 
 Two reconcilers racing remain idempotent (custodian ops + `cat_forget_complete` are idempotent;
 the per-item lock serializes DB writes). Remaining Phase 2 work unchanged: production custodian
 adapter + integration suite, and the encrypted backup policy.
+
+Also recorded Codex's pruning constraint: `aborted_operations` must not be pruned by age alone
+(a delayed writer could reopen the TOCTOU) — a comment in `migrations.sql` forbids it pending an
+enforced operation-expiry protocol.
+
+---
+
+# Stage 3a — production custodian adapter + integration suite (built)
+
+The in-process custodian proved protocol logic only (design O4). Stage 3a adds a durable
+reference adapter and an end-to-end integration suite. Suite is **69 passed** (integration 5).
+
+| Capability | Behaviour | Proof |
+|---|---|---|
+| Durable adapter | `FileCustodian` — filesystem-backed `KeyCustodian`: provisional/active key files, durable non-secret tombstones, op records for idempotency; survives a process restart by re-reading its directory. | integration "keys + tombstones survive a custodian restart". |
+| Irreversible delete | `destroy` overwrites the wrapped-key bytes then unlinks the file, leaving only the tombstone. | integration "forget destroys the key file, leaves a tombstone". |
+| Attestation across the boundary | The custodian holds the completion secret in its own config (not the app DB); `forget` succeeds only because the DB verifies the custodian's HMAC. The app role cannot even read `crypto_config`. | integration "DB verifies attestation" + "app role cannot read the completion secret". |
+| Full lifecycle + self-heal | add/read/forget/reconcile all run end-to-end against the durable adapter. | integration "add/read round-trips" + "reconcile self-heals an old-backup restore". |
+
+Honest scope: `FileCustodian` is a reference adapter — FS-level overwrite is best-effort
+irreversibility and it is single-writer. A managed KMS / secrets service implementing the same
+`KeyCustodian` interface is the production target and provides the real deletion guarantee;
+swapping it is a constructor change. Remaining: the encrypted backup policy (Stage 3b).

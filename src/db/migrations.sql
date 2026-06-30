@@ -107,6 +107,11 @@ ON CONFLICT (id) DO NOTHING;
 -- Durable abort fence: an operation_id recorded here can never commit a lineage. The
 -- reconciler fences an orphaned provisional key under the per-item lock (only if it has not
 -- committed), then destroys it — closing the reconciler-vs-live-writer TOCTOU.
+--
+-- WARNING: do NOT prune this table by age alone. A fence may only be forgotten once its
+-- operation can provably never arrive (an enforced operation-expiry protocol — e.g. a signed
+-- op deadline the writers also reject past). Age-pruning without that reopens the TOCTOU: a
+-- delayed writer whose fence was pruned could commit a key the reconciler already destroyed.
 CREATE TABLE IF NOT EXISTS aborted_operations (
   operation_id TEXT PRIMARY KEY,
   aborted_at   TIMESTAMPTZ NOT NULL DEFAULT now()

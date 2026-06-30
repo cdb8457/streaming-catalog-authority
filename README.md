@@ -7,8 +7,8 @@ Hermes, job queues, or UI — by design. The core stands alone.
 
 ```bash
 npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
-npm run ci       # typecheck, then all suites: crypto (15) + authority (21) +
-                 # SecretStore (4) + crypto-shred (15) + reconcile (6) = 61 passed
+npm run ci       # typecheck, then all suites: crypto (15) + authority (21) + SecretStore (4)
+                 # + crypto-shred (15) + reconcile (9) + integration (5) = 69 passed
 ```
 
 Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.
@@ -86,10 +86,15 @@ confirmed-orphan provisional keys (doing **nothing** when the DB is unreachable)
 self-heals an old-backup restore (a still-`active` row whose key is destroyed is re-driven
 through forget). Completion requires an unforgeable HMAC **attestation** from the custodian.
 
-Status: Stage 2a (schema + coordinator + reads) and Stage 2b (reconciler + concurrent
-winner-selection + old-backup self-heal) are built and tested with an in-process custodian.
-The production custodian adapter + integration suite and the backup policy are pending. The
-in-process custodian proves protocol logic, not the production deletion guarantee.
+The custodian is an interface. `InMemoryCustodian` is the dev/test impl; **`FileCustodian`** is
+a durable reference production adapter (survives restart; overwrite+unlink irreversible delete;
+durable non-secret tombstones; holds the completion secret outside the app DB). A managed KMS /
+secrets service implementing the same interface drops in for production — FS-level overwrite is
+only best-effort irreversibility; a managed KMS provides the real guarantee.
+
+Status: Stage 2a (schema + coordinator + reads), Stage 2b (reconciler + winner-selection +
+old-backup self-heal), and Stage 3a (production custodian adapter + integration suite) are
+built and tested. The encrypted backup policy (Stage 3b) is pending.
 
 ## Not in this slice
 
