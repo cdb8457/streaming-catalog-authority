@@ -32,7 +32,9 @@ async function assertThrows(fn: () => Promise<unknown> | unknown, msg: string, m
   throw new Error(`expected to throw: ${msg}`);
 }
 
-const aad = (over: Partial<Aad> = {}): Aad => ({ itemId: 'item-1', keyEpoch: 0, schemaVersion: SCHEMA_VERSION, field: 'identity', ...over });
+const UUID_A = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
+const UUID_B = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
+const aad = (over: Partial<Aad> = {}): Aad => ({ itemId: UUID_A, keyEpoch: 0, schemaVersion: SCHEMA_VERSION, field: 'identity', ...over });
 
 async function main(): Promise<void> {
   console.log('Running Phase 2 crypto suite (envelope + custodian):\n');
@@ -61,9 +63,9 @@ async function main(): Promise<void> {
 
   await test('envelope — AAD swap (field / item / epoch / schema) is detected', async () => {
     const dek = randomBytes(32);
-    const env = encryptUtf8(dek, 'secret', aad({ field: 'identity', itemId: 'item-1', keyEpoch: 0 }));
+    const env = encryptUtf8(dek, 'secret', aad({ field: 'identity', itemId: UUID_A, keyEpoch: 0 }));
     await assertThrows(() => decrypt(dek, env, aad({ field: 'ref:tmdb' })), 'field swap');
-    await assertThrows(() => decrypt(dek, env, aad({ itemId: 'item-2' })), 'item swap');
+    await assertThrows(() => decrypt(dek, env, aad({ itemId: UUID_B })), 'item swap');
     await assertThrows(() => decrypt(dek, env, aad({ keyEpoch: 1 })), 'epoch swap');
     await assertThrows(() => decrypt(dek, env, aad({ schemaVersion: 99 })), 'schema swap');
   });
@@ -79,6 +81,14 @@ async function main(): Promise<void> {
     const dek = randomBytes(32);
     zeroize(dek);
     assert(dek.every((b) => b === 0), 'buffer zeroized');
+  });
+
+  await test('envelope — AAD is validated & length-prefixed (no delimiter ambiguity)', async () => {
+    const dek = randomBytes(32);
+    await assertThrows(() => encryptUtf8(dek, 'x', aad({ itemId: 'a|1' })), 'non-uuid itemId rejected', /itemId/);
+    await assertThrows(() => encryptUtf8(dek, 'x', aad({ field: '3|x' })), 'bad field rejected', /field/);
+    await assertThrows(() => encryptUtf8(dek, 'x', aad({ keyEpoch: -1 })), 'negative epoch rejected', /keyEpoch/);
+    await assertThrows(() => encryptUtf8(dek, 'x', aad({ schemaVersion: 1.5 })), 'non-integer schema rejected', /schemaVersion/);
   });
 
   // --- custodian ------------------------------------------------------------
@@ -131,10 +141,45 @@ async function main(): Promise<void> {
   await test('custodian — listStaleProvisioning lists provisional, drops committed', async () => {
     const c = newCust();
     await c.provision('op1', 'item-1', 0);
-    const { } = await c.provision('op2', 'item-2', 0);
+    await c.provision('op2', 'item-2', 0);
     await c.commitProvision('op2');
     const stale = await c.listStaleProvisioning();
     assert(stale.length === 1 && stale[0]!.operationId === 'op1', 'only the uncommitted provisional is stale');
+  });
+
+  // --- lost-acknowledgement (mutation succeeds, response fails) --------------
+  await test('custodian — lost ack on provision: retry returns the same key', async () => {
+    const c = newCust();
+    c.setFault('provision', new Error('ack lost'), 'after');
+    await assertThrows(() => c.provision('op1', 'item-1', 0), 'provision after-fault throws');
+    c.setFault('provision', null, 'after');
+    const r = await c.provision('op1', 'item-1', 0); // idempotent retry
+    assert((await c.status(r.keyId)) === 'provisional', 'key persisted despite lost ack');
+    await c.commitProvision('op1');
+    assert((await c.status(r.keyId)) === 'active', 'commit works after lost-ack provision');
+  });
+
+  await test('custodian — lost ack on commit: retry reaches active', async () => {
+    const c = newCust();
+    const { keyId } = await c.provision('op1', 'item-1', 0);
+    c.setFault('commit', new Error('ack lost'), 'after');
+    await assertThrows(() => c.commitProvision('op1'), 'commit after-fault throws');
+    c.setFault('commit', null, 'after');
+    await c.commitProvision('op1'); // idempotent retry
+    assert((await c.status(keyId)) === 'active', 'active after retry');
+  });
+
+  await test('custodian — lost ack on destroy: retry returns same receipt; terminal', async () => {
+    const c = newCust();
+    const { keyId } = await c.provision('op1', 'item-1', 0);
+    await c.commitProvision('op1');
+    c.setFault('destroy', new Error('ack lost'), 'after');
+    await assertThrows(() => c.destroy('opd', keyId), 'destroy after-fault throws');
+    c.setFault('destroy', null, 'after');
+    const r = await c.destroy('opd', keyId); // idempotent retry
+    assert((await c.status(keyId)) === 'destroyed', 'terminal after lost-ack destroy');
+    const r2 = await c.destroy('opd', keyId);
+    assert(r.receiptId === r2.receiptId, 'same receipt across retries');
   });
 
   console.log(`\n${passed} passed, ${failed} failed.`);

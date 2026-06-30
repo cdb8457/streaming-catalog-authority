@@ -21,11 +21,40 @@ export interface Aad {
   itemId: string;
   keyEpoch: number;
   schemaVersion: number;
-  field: string; // e.g. 'identity' or 'ref:tmdb'
+  field: string; // closed format: 'identity' or 'ref:<ref_type>'
 }
 
+const ITEM_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const FIELD_RE = /^(identity|ref:[a-z0-9_]{1,32})$/;
+
+/** 4-byte big-endian length prefix + bytes — unambiguous concatenation. */
+function lp(buf: Buffer): Buffer {
+  const len = Buffer.alloc(4);
+  len.writeUInt32BE(buf.length, 0);
+  return Buffer.concat([len, buf]);
+}
+function u64(n: number): Buffer {
+  const b = Buffer.alloc(8);
+  b.writeBigUInt64BE(BigInt(n), 0);
+  return b;
+}
+
+/**
+ * Builds the AAD as a length-prefixed binary encoding of validated fields, so no
+ * choice of field values can be made to collide (a `|`-join cannot bind safely:
+ * {itemId:"a|1",epoch:2,...} would otherwise match {itemId:"a",epoch:1,...}).
+ */
 function aadBuffer(a: Aad): Buffer {
-  return Buffer.from(`${a.itemId}|${a.keyEpoch}|${a.schemaVersion}|${a.field}`, 'utf8');
+  if (!ITEM_ID_RE.test(a.itemId)) throw new Error('AAD: itemId must be an opaque uuid');
+  if (!Number.isSafeInteger(a.keyEpoch) || a.keyEpoch < 0) throw new Error('AAD: keyEpoch must be a nonnegative safe integer');
+  if (!Number.isSafeInteger(a.schemaVersion) || a.schemaVersion < 0) throw new Error('AAD: schemaVersion must be a nonnegative safe integer');
+  if (!FIELD_RE.test(a.field)) throw new Error('AAD: field must be "identity" or "ref:<ref_type>"');
+  return Buffer.concat([
+    lp(Buffer.from(a.itemId, 'utf8')),
+    lp(u64(a.keyEpoch)),
+    lp(u64(a.schemaVersion)),
+    lp(Buffer.from(a.field, 'utf8')),
+  ]);
 }
 
 export function encrypt(dek: Buffer, plaintext: Buffer, aad: Aad): Buffer {
@@ -57,7 +86,12 @@ export function encryptUtf8(dek: Buffer, text: string, aad: Aad): Buffer {
 }
 
 export function decryptUtf8(dek: Buffer, envelope: Buffer, aad: Aad): string {
-  return decrypt(dek, envelope, aad).toString('utf8');
+  const buf = decrypt(dek, envelope, aad);
+  try {
+    return buf.toString('utf8');
+  } finally {
+    buf.fill(0); // zeroize the temporary plaintext buffer (§7.2)
+  }
 }
 
 /** Best-effort zeroization of a DEK/plaintext Buffer (§7.2). */

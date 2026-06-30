@@ -1,4 +1,4 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 
 /**
  * Key custodian (design §2). Owns wrapping/rotation state and the DEK lifecycle.
@@ -77,9 +77,13 @@ interface OpRecord {
  *
  * `clock` is injectable so tests stay deterministic (no ambient Date.now()).
  */
+type FaultOp = 'provision' | 'commit' | 'get' | 'destroy' | 'status' | 'list';
+type FaultWhen = 'before' | 'after';
+
 export class InMemoryCustodian implements KeyCustodian {
   private readonly keys = new Map<string, KeyRecord>();
   private readonly ops = new Map<string, OpRecord>();
+  private readonly receiptIds = new Set<string>();
   private readonly faults = new Map<string, Error>();
   private readonly clock: () => number;
 
@@ -87,18 +91,31 @@ export class InMemoryCustodian implements KeyCustodian {
     this.clock = clock;
   }
 
-  /** Test hook: make the named op throw (simulate transport failure). */
-  setFault(op: 'provision' | 'commit' | 'get' | 'destroy' | 'status' | 'list', err: Error | null): void {
-    if (err) this.faults.set(op, err);
-    else this.faults.delete(op);
+  /**
+   * Test hook: make the named op throw. `when='before'` fails before any
+   * mutation; `when='after'` performs the mutation and then throws — simulating
+   * a lost acknowledgement, so a retry must observe the idempotent result.
+   */
+  setFault(op: FaultOp, err: Error | null, when: FaultWhen = 'before'): void {
+    const key = `${op}:${when}`;
+    if (err) this.faults.set(key, err);
+    else this.faults.delete(key);
   }
-  private trip(op: string): void {
-    const e = this.faults.get(op);
+  private trip(op: FaultOp, when: FaultWhen): void {
+    const e = this.faults.get(`${op}:${when}`);
     if (e) throw e;
   }
 
+  private freshId(prefix: string, taken: (id: string) => boolean): string {
+    let id: string;
+    do {
+      id = prefix + randomUUID(); // 128-bit
+    } while (taken(id));
+    return id;
+  }
+
   async provision(operationId: string, itemId: string, epoch: number): Promise<ProvisionResult> {
-    this.trip('provision');
+    this.trip('provision', 'before');
     const prior = this.ops.get(operationId);
     if (prior) {
       if (prior.kind !== 'provision' || prior.itemId !== itemId || prior.epoch !== epoch) {
@@ -108,27 +125,29 @@ export class InMemoryCustodian implements KeyCustodian {
       if (rec.state === 'destroyed') throw new Error('key is destroyed');
       return { keyId: rec.keyId, dek: Buffer.from(rec.dek!) }; // idempotent retry
     }
-    const keyId = 'key_' + randomBytes(8).toString('hex');
+    const keyId = this.freshId('key_', (id) => this.keys.has(id)); // 128-bit, collision-checked
     const dek = randomBytes(32);
     this.keys.set(keyId, {
       keyId, itemId, epoch, provisionOpId: operationId,
       state: 'provisional', dek, createdAt: this.clock(),
     });
     this.ops.set(operationId, { operationId, kind: 'provision', keyId, itemId, epoch });
+    this.trip('provision', 'after'); // mutation done; simulate lost ack
     return { keyId, dek: Buffer.from(dek) };
   }
 
   async commitProvision(operationId: string): Promise<void> {
-    this.trip('commit');
+    this.trip('commit', 'before');
     const op = this.ops.get(operationId);
     if (!op || op.kind !== 'provision') throw new Error('unknown provision operation');
     const rec = this.keys.get(op.keyId)!;
     if (rec.state === 'destroyed') throw new Error('destroyed is terminal; cannot reactivate');
     rec.state = 'active'; // idempotent if already active
+    this.trip('commit', 'after'); // state changed; simulate lost ack
   }
 
   async get(keyId: string, epoch: number): Promise<Buffer> {
-    this.trip('get');
+    this.trip('get', 'before');
     const rec = this.keys.get(keyId);
     if (!rec) throw new Error('not_found');
     if (rec.state !== 'active') throw new Error(`key not active (${rec.state})`);
@@ -137,7 +156,7 @@ export class InMemoryCustodian implements KeyCustodian {
   }
 
   async destroy(operationId: string, keyId: string): Promise<DestructionReceipt> {
-    this.trip('destroy');
+    this.trip('destroy', 'before');
     const prior = this.ops.get(operationId);
     if (prior) {
       if (prior.kind !== 'destroy' || prior.keyId !== keyId) {
@@ -158,22 +177,24 @@ export class InMemoryCustodian implements KeyCustodian {
     rec.state = 'destroyed';
     rec.receipt = {
       keyId,
-      receiptId: 'rcpt_' + randomBytes(8).toString('hex'),
+      receiptId: this.freshId('rcpt_', (id) => this.receiptIds.has(id)),
       destroyedAt: new Date(this.clock()).toISOString(),
     };
+    this.receiptIds.add(rec.receipt.receiptId);
     this.ops.set(operationId, { operationId, kind: 'destroy', keyId });
+    this.trip('destroy', 'after'); // destruction done; simulate lost receipt response
     return rec.receipt;
   }
 
   async status(keyId: string): Promise<KeyStatus> {
-    this.trip('status'); // transport failure is an exception, never a value
+    this.trip('status', 'before'); // transport failure is an exception, never a value
     const rec = this.keys.get(keyId);
     if (!rec) return 'not_found';
     return rec.state;
   }
 
   async listStaleProvisioning(): Promise<StaleProvisioning[]> {
-    this.trip('list');
+    this.trip('list', 'before');
     const now = this.clock();
     return [...this.keys.values()]
       .filter((r) => r.state === 'provisional')
