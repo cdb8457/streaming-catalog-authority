@@ -47,7 +47,7 @@ async function main(): Promise<void> {
     assertEq(state(r, 'db-app-reachable'), 'pass', 'app ok');
     assertEq(state(r, 'schema-migrated'), 'pass', 'schema ok');
     assertEq(state(r, 'app-least-privileged'), 'pass', 'app least-priv');
-    assertEq(state(r, 'app-cannot-read-secret'), 'pass', 'secret not app-readable');
+    assertEq(state(r, 'app-cannot-touch-secret'), 'pass', 'secret not app-readable/settable');
     assertEq(state(r, 'completion-secret'), 'pass', 'secret matches');
     assertEq(state(r, 'custodian-reachable'), 'pass', 'custodian ok');
     assertEq(state(r, 'keystore'), 'pass', 'keystore ok');

@@ -20,7 +20,7 @@ export interface DoctorCheck { name: string; state: CheckState; detail: string; 
 export interface DoctorReport { ok: boolean; checks: DoctorCheck[]; }
 
 const EXPECTED_TABLES = ['events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations'];
-const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild'];
+const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret'];
 
 export interface DoctorDeps {
   admin: Client;      // owner/migrator connection
@@ -69,11 +69,13 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       const r = (await deps.admin.query(
         `SELECT has_table_privilege('app','public.events','SELECT') AS sel,
                 has_table_privilege('app','public.events','INSERT') AS ins,
-                has_table_privilege('app','public.crypto_config','SELECT') AS read_secret`,
-      )).rows[0] as { sel: boolean; ins: boolean; read_secret: boolean };
+                has_table_privilege('app','public.crypto_config','SELECT') AS read_secret,
+                has_function_privilege('app','public.set_completion_secret(text)','EXECUTE') AS set_secret`,
+      )).rows[0] as { sel: boolean; ins: boolean; read_secret: boolean; set_secret: boolean };
       if (r.sel && !r.ins) add('app-least-privileged', 'pass', 'app can SELECT but not write the tables');
       else add('app-least-privileged', 'fail', 'app role is over-privileged (can write tables) or cannot read');
-      add('app-cannot-read-secret', r.read_secret ? 'fail' : 'pass', r.read_secret ? 'app role can read crypto_config (must be revoked)' : 'app cannot read the completion secret');
+      if (!r.read_secret && !r.set_secret) add('app-cannot-touch-secret', 'pass', 'app cannot read or set the completion secret');
+      else add('app-cannot-touch-secret', 'fail', 'app role can read or set crypto_config (must be revoked)');
     } catch { add('app-least-privileged', 'warn', 'could not introspect app-role privileges (role missing?)'); }
 
     // completion secret provisioned + matches --------------------------------------
