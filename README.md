@@ -194,7 +194,19 @@ field **names** only — never values; owner-managed, app writes via `SECURITY D
 item's published rows and a `RevocationAdapter` (fake) unpublishes each **opaque handle**, keeping
 failures visible/retryable. See `docs/PHASE_9_ERASURE_POLICY.md`.
 
+## Jellyfin publisher adapter (Phase 10 — fake/local only)
+
+The first concrete media publisher target, **Jellyfin**, as **collection curation keyed on provider
+refs** — a fake local client + config/redaction scaffolding, **no real network** (the real HTTP client
+is **deferred to Phase 11**). The adapter discloses exactly `title` (collection name) + `providerRefs`
+(match library items); the opaque **collection id** is the Phase 9 ledger handle. Deterministic
+no-match: all-unmatched → `skipped`/no ledger row; partial → matched-only publish with counts; a ledger
+row only when a handle is created. Revoke deletes the collection by opaque id (with documented limits —
+Jellyfin's own logs/exports are beyond reach). `JELLYFIN_*` is parser/redaction scaffolding only (api
+key redacted, never ledgered). A live publish still needs `PUBLISH_EXTERNAL_IDENTITY=allow`. See
+`docs/PHASE_10_JELLYFIN_ADAPTER.md`.
+
 ## Not in this slice
 
-No **real** provider or publisher adapter, no Plex/Jellyfin/RD/TorBox, no Hermes, no HTTP, no
-job queue, no frontend. (Phases 7–9 add the adapter *boundaries* + erasure policy + local fakes only.)
+No **real** Jellyfin HTTP client (Phase 11), no Plex, no RD/TorBox, no Hermes, no HTTP daemon, no
+job queue, no frontend. (Phases 7–10 add adapter *boundaries* + erasure policy + local fakes only.)
