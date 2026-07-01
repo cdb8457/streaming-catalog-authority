@@ -123,6 +123,25 @@ END;
 $$;
 REVOKE ALL ON FUNCTION public.set_completion_secret(TEXT) FROM PUBLIC;
 
+-- Schema/migration version (Phase 6). ops:migrate sets this to the app's MIGRATION_VERSION so
+-- ops:doctor can detect an un-migrated or version-mismatched deployment. Owner-only setter; the
+-- app role can never read or change it (privileges below). No down-migrations — the accepted
+-- rollback is restoring the pre-upgrade backup.
+CREATE TABLE IF NOT EXISTS schema_meta (
+  id      INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  version INTEGER NOT NULL DEFAULT 0
+);
+INSERT INTO schema_meta (id, version) VALUES (1, 0) ON CONFLICT (id) DO NOTHING;
+
+CREATE OR REPLACE FUNCTION public.set_schema_version(p_version INTEGER)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF p_version IS NULL OR p_version < 0 THEN RAISE EXCEPTION 'schema version must be a non-negative integer'; END IF;
+  UPDATE public.schema_meta SET version = p_version WHERE id = 1;
+END;
+$$;
+REVOKE ALL ON FUNCTION public.set_schema_version(INTEGER) FROM PUBLIC;
+
 -- Durable abort fence: an operation_id recorded here can never commit a lineage. The
 -- reconciler fences an orphaned provisional key under the per-item lock (only if it has not
 -- committed), then destroys it — closing the reconciler-vs-live-writer TOCTOU.
@@ -554,6 +573,8 @@ REVOKE ALL ON crypto_config FROM PUBLIC;
 REVOKE ALL ON crypto_config FROM app;   -- the completion secret is never app-readable
 REVOKE ALL ON aborted_operations FROM PUBLIC;
 REVOKE ALL ON aborted_operations FROM app;  -- written only via the SECURITY DEFINER fence
+REVOKE ALL ON schema_meta FROM PUBLIC;
+REVOKE ALL ON schema_meta FROM app;         -- migration version is owner-only (not app-readable)
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs, item_key_control TO app;
 
@@ -582,9 +603,11 @@ REVOKE ALL ON FUNCTION
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
   cat_prune_and_rebuild(TIMESTAMPTZ),
-  set_completion_secret(TEXT)
+  set_completion_secret(TEXT),
+  set_schema_version(INTEGER)
 FROM PUBLIC;
 REVOKE ALL ON FUNCTION set_completion_secret(TEXT) FROM app;  -- app can never set the secret
+REVOKE ALL ON FUNCTION set_schema_version(INTEGER) FROM app;  -- migration version is owner-only
 
 -- App gets the ciphertext command surface + maintenance. NOT cat_apply (raw lifecycle would
 -- bypass key-control/crypto-shred) and NOT the internal helpers.

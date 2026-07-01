@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Client, Pool } from 'pg';
 import { loadDbConfig } from '../config/env.js';
+import { MIGRATION_VERSION } from './schema-version.js';
 
 let pool: Pool | undefined;
 
@@ -33,6 +34,7 @@ export async function migrate(): Promise<void> {
   await client.connect();
   try {
     await client.query(sql);
+    await client.query('SELECT set_schema_version($1)', [MIGRATION_VERSION]); // record the applied version
   } finally {
     await client.end();
   }

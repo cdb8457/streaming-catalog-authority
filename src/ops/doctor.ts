@@ -1,6 +1,7 @@
 import type { Client, Pool, PoolClient } from 'pg';
 import { existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import type { KeyCustodian } from '../core/crypto/custodian.js';
+import { MIGRATION_VERSION } from '../db/schema-version.js';
 
 /**
  * Phase 5 Stage 5.1 — production self-check ("ops doctor").
@@ -20,7 +21,7 @@ export interface DoctorCheck { name: string; state: CheckState; detail: string; 
 export interface DoctorReport { ok: boolean; checks: DoctorCheck[]; }
 
 const EXPECTED_TABLES = ['events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations'];
-const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret'];
+const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret', 'set_schema_version'];
 
 /**
  * Attempt `sql` on the runtime connection inside a SAVEPOINT and roll it back. Returns 'denied'
@@ -91,6 +92,14 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       else if (dbSecret !== deps.completionSecret) add('completion-secret', 'fail', 'configured completion secret does not match crypto_config (shred completion would never verify)');
       else add('completion-secret', 'pass', 'configured completion secret matches crypto_config');
     } catch { add('completion-secret', 'fail', 'could not read crypto_config to verify the completion secret'); }
+
+    // schema/migration version matches what this build expects --------------------
+    try {
+      const v = (await deps.admin.query('SELECT version FROM schema_meta WHERE id = 1')).rows[0]?.version as number | undefined;
+      if (v === undefined) add('schema-version', 'fail', 'schema_meta is missing — run ops:migrate / ops:init');
+      else if (v !== MIGRATION_VERSION) add('schema-version', 'fail', `schema version mismatch (db ${v}, expected ${MIGRATION_VERSION}) — run ops:migrate`);
+      else add('schema-version', 'pass', `schema version ${v}`);
+    } catch { add('schema-version', 'fail', 'could not read schema_meta (run ops:migrate)'); }
   }
 
   // RUNTIME least-privilege — probe the ACTUAL connection behind DATABASE_URL (not a named role).
