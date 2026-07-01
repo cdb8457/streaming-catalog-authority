@@ -12,6 +12,7 @@ export interface JellyfinConfig {
   readonly baseUrl: string;
   readonly apiKey: string;   // SECRET — register via registerJellyfinSecret; never log or ledger it
   readonly userId?: string;
+  readonly timeoutMs?: number; // optional per-request HTTP timeout (Phase 11)
 }
 
 /**
@@ -22,8 +23,16 @@ export function loadJellyfinConfig(env: Env = process.env): JellyfinConfig | nul
   const base = resolveVar(env, 'JELLYFIN_BASE_URL');
   const key = resolveVar(env, 'JELLYFIN_API_KEY');
   const user = resolveVar(env, 'JELLYFIN_USER_ID');
+  const timeout = resolveVar(env, 'JELLYFIN_TIMEOUT_MS');
   const problems: string[] = [];
-  for (const v of [base, key, user]) if (v.problem) problems.push(v.problem);
+  for (const v of [base, key, user, timeout]) if (v.problem) problems.push(v.problem);
+
+  let timeoutMs: number | undefined;
+  if (timeout.value !== undefined && timeout.value.length > 0) {
+    const n = Number(timeout.value);
+    if (!Number.isInteger(n) || n <= 0) problems.push('JELLYFIN_TIMEOUT_MS must be a positive integer (milliseconds)');
+    else timeoutMs = n;
+  }
 
   const hasBase = base.value !== undefined && base.value.length > 0;
   const hasKey = key.value !== undefined && key.value.length > 0;
@@ -39,10 +48,12 @@ export function loadJellyfinConfig(env: Env = process.env): JellyfinConfig | nul
   }
   if (problems.length > 0) throw new ConfigError(problems); // never contains the api key value
 
-  const cfg: JellyfinConfig = user.value
-    ? { baseUrl: base.value!, apiKey: key.value!, userId: user.value }
-    : { baseUrl: base.value!, apiKey: key.value! };
-  return cfg;
+  return {
+    baseUrl: base.value!,
+    apiKey: key.value!,
+    ...(user.value ? { userId: user.value } : {}),
+    ...(timeoutMs !== undefined ? { timeoutMs } : {}),
+  };
 }
 
 /** Register the api key (a secret) with a SecretStore so it is redacted from logs while in use. */
