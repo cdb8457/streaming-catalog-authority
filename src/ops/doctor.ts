@@ -20,8 +20,8 @@ export type CheckState = 'pass' | 'warn' | 'fail';
 export interface DoctorCheck { name: string; state: CheckState; detail: string; }
 export interface DoctorReport { ok: boolean; checks: DoctorCheck[]; }
 
-const EXPECTED_TABLES = ['events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations'];
-const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret', 'set_schema_version'];
+const EXPECTED_TABLES = ['events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations', 'publish_ledger'];
+const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret', 'set_schema_version', 'cat_publish_record'];
 
 /**
  * Attempt `sql` on the runtime connection inside a SAVEPOINT and roll it back. Returns 'denied'
@@ -100,6 +100,18 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       else if (v !== MIGRATION_VERSION) add('schema-version', 'fail', `schema version mismatch (db ${v}, expected ${MIGRATION_VERSION}) — run ops:migrate`);
       else add('schema-version', 'pass', `schema version ${v}`);
     } catch { add('schema-version', 'fail', 'could not read schema_meta (run ops:migrate)'); }
+
+    // Unrevoked external copies (Phase 9): surface the revoke_pending backlog so an operator never
+    // loses track of a forgotten item's external copy. WARN (not fail) — it is operational state,
+    // not a health failure; ops:doctor --json makes it monitorable.
+    if (schemaOk) {
+      try {
+        const pending = (await deps.admin.query(`SELECT count(*)::int AS c FROM public.publish_ledger WHERE status = 'revoke_pending'`)).rows[0].c as number;
+        add('publish-revocations', pending === 0 ? 'pass' : 'warn',
+          pending === 0 ? 'no external copies awaiting revocation'
+                        : `${pending} external ${pending === 1 ? 'copy' : 'copies'} awaiting revocation — run publish reconciliation/revoke`);
+      } catch { add('publish-revocations', 'warn', 'could not read publish_ledger to count pending revocations'); }
+    }
   }
 
   // RUNTIME least-privilege — probe the ACTUAL connection behind DATABASE_URL (not a named role).

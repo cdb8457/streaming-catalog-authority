@@ -120,6 +120,24 @@ test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted'
   assert((pkg.scripts.test ?? '').includes('test/publisher-privacy.ts') && (pkg.scripts.test ?? '').includes('test/publisher-contract.ts'), 'publisher suites in the CI chain');
 });
 
+test('erasure policy — Phase 9 publish module clean; doc + suites wired', () => {
+  const dir = fileURLToPath(new URL('../src/core/publish', import.meta.url));
+  const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
+  assert(files.length >= 4, 'publish module present');
+  const network = /(from\s*['"]node:(http|https|net|tls|dns)['"]|from\s*['"](node-fetch|undici|axios|got|ws|puppeteer|cheerio)['"]|\bfetch\s*\()/;
+  const providers = /(real[-_ ]?debrid|torbox|\bplex\b|jellyfin|scrap(e|ing)|\bdownload\b|playback)/i;
+  for (const f of files) {
+    const src = readFileSync(`${dir}/${f}`, 'utf8');
+    assert(!network.test(src), `src/core/publish/${f} makes no network import/call`);
+    assert(!providers.test(src), `src/core/publish/${f} names no real provider / scraping / playback`);
+  }
+  assert(exists('docs/PHASE_9_ERASURE_POLICY.md'), 'erasure policy doc exists');
+  const doc = read('docs/PHASE_9_ERASURE_POLICY.md');
+  for (const kw of ['publish_ledger', 'PUBLISH_EXTERNAL_IDENTITY', 'revoke', 'forget', 'identity-free']) assert(doc.includes(kw), `doc covers ${kw}`);
+  assert(/crypto-shred|erasure/i.test(doc), 'doc states the erasure conflict');
+  assert((pkg.scripts.test ?? '').includes('test/publish-erasure.ts') && (pkg.scripts.test ?? '').includes('test/publish-consent.ts'), 'publish suites in the CI chain');
+});
+
 test('ops entrypoints exist', () => {
   assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');

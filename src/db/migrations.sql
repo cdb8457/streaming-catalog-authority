@@ -155,6 +155,30 @@ CREATE TABLE IF NOT EXISTS aborted_operations (
   aborted_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Publish ledger (Phase 9): an IDENTITY-FREE audit of external publishes and the driver for
+-- best-effort revocation on forget. It stores ONLY the opaque item_id (NO FK to items — the
+-- tombstone must SURVIVE forget so a revoke can be driven), a non-identity target name, the opaque
+-- external handle the publisher returned, and the NAMES of the fields that were disclosed. It NEVER
+-- stores title, ref values, externalIds, metadata, or ciphertext; the disclosed_fields CHECK
+-- rejects anything that is not one of the allowed field names, so a value can never be stored here.
+-- Owner-managed: the app writes it only through the cat_publish_* SECURITY DEFINER functions (SELECT
+-- only otherwise). Records LIVE publishes only — a dry-run creates no row.
+CREATE TABLE IF NOT EXISTS publish_ledger (
+  id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  item_id          TEXT NOT NULL CHECK (item_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+  target           TEXT NOT NULL CHECK (length(btrim(target)) > 0),
+  external_handle  TEXT NOT NULL CHECK (length(btrim(external_handle)) > 0),
+  disclosed_fields TEXT[] NOT NULL DEFAULT '{}'
+                     CHECK (disclosed_fields <@ ARRAY['title','year','providerRefs']::text[]),
+  status           TEXT NOT NULL DEFAULT 'published'
+                     CHECK (status IN ('published', 'revoke_pending', 'revoked')),
+  attempt_count    INTEGER NOT NULL DEFAULT 0,
+  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS publish_ledger_item_idx ON publish_ledger (item_id);
+CREATE INDEX IF NOT EXISTS publish_ledger_status_idx ON publish_ledger (status);
+
 -- ------------------------------------------------------- append-only guard ---
 
 CREATE OR REPLACE FUNCTION events_no_update_delete() RETURNS trigger
@@ -558,6 +582,61 @@ BEGIN
 END;
 $$;
 
+-- ----------------------------------------------------- publish ledger (Phase 9)
+
+-- Record a LIVE external publish. Identity-free by construction: only the opaque item_id, a target
+-- name, the opaque external handle, and the disclosed field NAMES (the table CHECK rejects any value
+-- that is not one of title/year/providerRefs). Returns the new ledger row id.
+CREATE OR REPLACE FUNCTION cat_publish_record(p_item_id TEXT, p_target TEXT, p_handle TEXT, p_fields TEXT[])
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE v_id BIGINT;
+BEGIN
+  INSERT INTO public.publish_ledger (item_id, target, external_handle, disclosed_fields)
+  VALUES (p_item_id, p_target, p_handle, COALESCE(p_fields, '{}'))
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END;
+$$;
+
+-- Reconciliation: mark every still-'published' ledger row whose item is now FORGOTTEN as
+-- 'revoke_pending'. This is how forget drives revocation WITHOUT being modified — forget only flips
+-- items.forgotten; this out-of-band step queues the external copies for unpublish. Returns the count.
+CREATE OR REPLACE FUNCTION cat_publish_reconcile_forgotten()
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.publish_ledger l
+     SET status = 'revoke_pending', updated_at = now()
+   WHERE l.status = 'published'
+     AND EXISTS (SELECT 1 FROM public.items i WHERE i.id = l.item_id AND i.forgotten);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END;
+$$;
+
+-- Mark a queued row REVOKED after the revoke adapter confirmed unpublish. Only transitions
+-- revoke_pending -> revoked. Returns whether it transitioned.
+CREATE OR REPLACE FUNCTION cat_publish_mark_revoked(p_id BIGINT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.publish_ledger SET status = 'revoked', updated_at = now()
+   WHERE id = p_id AND status = 'revoke_pending';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+-- Record a FAILED revoke attempt (adapter could not unpublish): bump attempt_count and KEEP the row
+-- revoke_pending so it stays visible + retryable. An unrevoked external copy is never silently dropped.
+CREATE OR REPLACE FUNCTION cat_publish_mark_attempt(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.publish_ledger SET attempt_count = attempt_count + 1, updated_at = now()
+   WHERE id = p_id AND status = 'revoke_pending';
+END;
+$$;
+
 -- ------------------------------------------------------------- privileges ----
 
 DO $$
@@ -575,8 +654,11 @@ REVOKE ALL ON aborted_operations FROM PUBLIC;
 REVOKE ALL ON aborted_operations FROM app;  -- written only via the SECURITY DEFINER fence
 REVOKE ALL ON schema_meta FROM PUBLIC;
 REVOKE ALL ON schema_meta FROM app;         -- migration version is owner-only (not app-readable)
+REVOKE ALL ON publish_ledger FROM PUBLIC;
+REVOKE ALL ON publish_ledger FROM app;      -- owner-managed; app mutates ONLY via cat_publish_* fns
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs, item_key_control TO app;
+GRANT SELECT ON publish_ledger TO app;      -- identity-free; app/ops read it for reconcile + reporting
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM app;
@@ -603,6 +685,10 @@ REVOKE ALL ON FUNCTION
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
   cat_prune_and_rebuild(TIMESTAMPTZ),
+  cat_publish_record(TEXT, TEXT, TEXT, TEXT[]),
+  cat_publish_reconcile_forgotten(),
+  cat_publish_mark_revoked(BIGINT),
+  cat_publish_mark_attempt(BIGINT),
   set_completion_secret(TEXT),
   set_schema_version(INTEGER)
 FROM PUBLIC;
@@ -621,5 +707,9 @@ GRANT EXECUTE ON FUNCTION
   cat_abort_provision(TEXT, TEXT),
   cat_record_signal(TEXT, INTEGER, BIGINT),
   cat_rebuild(TIMESTAMPTZ),
-  cat_prune_and_rebuild(TIMESTAMPTZ)
+  cat_prune_and_rebuild(TIMESTAMPTZ),
+  cat_publish_record(TEXT, TEXT, TEXT, TEXT[]),
+  cat_publish_reconcile_forgotten(),
+  cat_publish_mark_revoked(BIGINT),
+  cat_publish_mark_attempt(BIGINT)
 TO app;
