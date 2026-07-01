@@ -22,9 +22,9 @@ export function isJellyfinNetworkEnabled(env: Env = process.env): boolean {
  *   1. `JELLYFIN_ENABLE_NETWORK=true` (default off) — else {@link JellyfinNetworkDisabledError};
  *   2. `JELLYFIN_*` is fully configured — else {@link ConfigError}.
  *
- * `fetchImpl` is a REQUIRED parameter — there is NO implicit `globalThis.fetch` default here, so this
+ * `fetchImpl` is a REQUIRED parameter — there is NO implicit platform-fetch default here, so this
  * module cannot touch the network on its own; only an operator entrypoint that BOTH enabled the gate
- * AND passed a real `fetch` can. (Live publishing ALSO requires `PUBLISH_EXTERNAL_IDENTITY=allow`.)
+ * AND injected a real transport can. (Live publishing ALSO requires `PUBLISH_EXTERNAL_IDENTITY=allow`.)
  */
 export function createRealJellyfinClient(fetchImpl: FetchLike, env: Env = process.env): JellyfinHttpClient {
   if (!isJellyfinNetworkEnabled(env)) {

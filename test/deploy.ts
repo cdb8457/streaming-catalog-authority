@@ -158,6 +158,25 @@ test('jellyfin adapter — Phase 10 fake/local only: no network, no OTHER provid
   assert((pkg.scripts.test ?? '').includes('test/jellyfin-privacy.ts') && (pkg.scripts.test ?? '').includes('test/jellyfin-contract.ts'), 'jellyfin suites in the CI chain');
 });
 
+test('jellyfin HTTP (Phase 11) — injected-fetch only in core; gated; smoke opt-in + out of CI', () => {
+  const dir = fileURLToPath(new URL('../src/core/adapters/jellyfin', import.meta.url));
+  // the core adapter must NEVER reference a bare/global fetch — network only flows via the injected seam.
+  for (const f of readdirSync(dir).filter((x) => x.endsWith('.ts'))) {
+    const src = readFileSync(`${dir}/${f}`, 'utf8');
+    assert(!/globalThis\.fetch|\bwindow\.fetch\b|\bfetch\s*\(/.test(src), `src/core/adapters/jellyfin/${f} references no bare/global fetch`);
+  }
+  assert(read('src/core/adapters/jellyfin/http-client.ts').includes('this.fetchImpl'), 'http client calls the INJECTED transport');
+  assert(read('src/core/adapters/jellyfin/real-factory.ts').includes('JELLYFIN_ENABLE_NETWORK'), 'real factory is gated by the enable flag');
+  // globalThis.fetch may appear ONLY in the operator smoke entrypoint.
+  assert(exists('src/ops/jellyfin-smoke-cli.ts') && read('src/ops/jellyfin-smoke-cli.ts').includes('globalThis.fetch'), 'smoke CLI is the single network entrypoint');
+  assert(typeof pkg.scripts['smoke:jellyfin'] === 'string', 'smoke:jellyfin script present');
+  assert(!(pkg.scripts.test ?? '').includes('jellyfin-smoke') && !(pkg.scripts.test ?? '').includes('smoke:jellyfin'), 'smoke is NOT in the CI test chain');
+  assert((pkg.scripts.test ?? '').includes('test/jellyfin-http.ts'), 'jellyfin-http suite in the CI chain');
+  assert(exists('docs/PHASE_11_JELLYFIN_HTTP.md'), 'Phase 11 doc exists');
+  const doc = read('docs/PHASE_11_JELLYFIN_HTTP.md');
+  for (const kw of ['JELLYFIN_ENABLE_NETWORK', 'PROVISIONAL', 'injected', 'X-Emby-Token', 'smoke:jellyfin']) assert(doc.includes(kw), `doc covers ${kw}`);
+});
+
 test('ops entrypoints exist', () => {
   assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');
