@@ -67,6 +67,27 @@ test('verifyStructure — a dangling item_key_control is rejected', () => {
   assert(!r.ok && r.problems.some((p) => /item_key_control references a missing item GHOST/.test(p)), 'dangling key-control reported');
 });
 
+// --- malformed-but-parseable input must be REPORTED, never thrown (Codex regression) ---------
+function rejectsCleanly(name: string, input: unknown): void {
+  test(`verifyStructure — rejects (no throw): ${name}`, () => {
+    const r = BackupPolicy.verifyStructure(input as BackupArtifact); // must not throw
+    assertEq(r.ok, false, 'not ok');
+    assert(r.problems.length > 0, 'has a problem message');
+  });
+}
+
+rejectsCleanly('non-object artifact (string)', 'nope');
+rejectsCleanly('non-object artifact (null)', null);
+rejectsCleanly('array artifact', [1, 2, 3]);
+rejectsCleanly('tables is not an array', { version: 1, tables: 'not-an-array' });
+rejectsCleanly('a table entry is not an object', { version: 1, tables: [42] });
+rejectsCleanly('a table.table is not a string', { version: 1, tables: [{ table: 5, rows: [] }] });
+rejectsCleanly('a table.rows is not an array', (() => { const a = goodArtifact(); (tbl(a, 'events') as { rows: unknown }).rows = 'x'; return a; })());
+rejectsCleanly('duplicate table entry', (() => { const a = goodArtifact(); a.tables.push({ table: 'events', rows: [] }); return a; })());
+rejectsCleanly('malformed event row (missing seq)', (() => { const a = clone(goodArtifact()); (tbl(a, 'events').rows as unknown[]).push({ item_id: 'Z' }); return a; })());
+rejectsCleanly('malformed item row (last_seq not a number)', (() => { const a = clone(goodArtifact()); (tbl(a, 'items').rows as unknown[]).push({ id: 'Z', last_seq: 'oops' }); return a; })());
+rejectsCleanly('malformed provider_ref row (item_id not a string)', (() => { const a = clone(goodArtifact()); (tbl(a, 'provider_refs').rows as unknown[]).push({ item_id: 7 }); return a; })());
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
