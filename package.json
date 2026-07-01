@@ -6,7 +6,7 @@
   "description": "Phase 1 — event-sourced catalog authority core. No providers, HTTP, adapters, or Hermes.",
   "scripts": {
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "test": "tsx test/config.ts && tsx test/custodian-contract.ts && tsx test/custodian-guard.ts && tsx test/kek-rewrap.ts && tsx test/backup-verify.ts && tsx test/adapter-contract.ts && tsx test/publisher-contract.ts && tsx test/publish-consent.ts && tsx test/deploy.ts && tsx test/crypto.ts && tsx test/run.ts 5433 && tsx test/phase2.ts 5434 && tsx test/shred.ts 5435 && tsx test/reconcile.ts 5436 && tsx test/integration.ts 5437 && tsx test/backup.ts 5438 && tsx test/backup-ops.ts 5439 && tsx test/ops-doctor.ts 5440 && tsx test/ops-init.ts 5441 && tsx test/ops-golden-path.ts 5442 && tsx test/schema-version.ts 5443 && tsx test/ops-rehearse.ts 5444 && tsx test/adapter-privacy.ts 5445 && tsx test/publisher-privacy.ts 5446 && tsx test/publish-erasure.ts 5447",
+    "test": "tsx test/config.ts && tsx test/custodian-contract.ts && tsx test/custodian-guard.ts && tsx test/kek-rewrap.ts && tsx test/backup-verify.ts && tsx test/adapter-contract.ts && tsx test/publisher-contract.ts && tsx test/publish-consent.ts && tsx test/jellyfin-contract.ts && tsx test/deploy.ts && tsx test/crypto.ts && tsx test/run.ts 5433 && tsx test/phase2.ts 5434 && tsx test/shred.ts 5435 && tsx test/reconcile.ts 5436 && tsx test/integration.ts 5437 && tsx test/backup.ts 5438 && tsx test/backup-ops.ts 5439 && tsx test/ops-doctor.ts 5440 && tsx test/ops-init.ts 5441 && tsx test/ops-golden-path.ts 5442 && tsx test/schema-version.ts 5443 && tsx test/ops-rehearse.ts 5444 && tsx test/adapter-privacy.ts 5445 && tsx test/publisher-privacy.ts 5446 && tsx test/publish-erasure.ts 5447 && tsx test/jellyfin-privacy.ts 5448",
     "test:config": "tsx test/config.ts",
     "test:custodian-contract": "tsx test/custodian-contract.ts",
     "test:custodian-guard": "tsx test/custodian-guard.ts",
@@ -41,7 +41,9 @@
     "test:reconcile": "tsx test/reconcile.ts 5436",
     "test:integration": "tsx test/integration.ts 5437",
     "test:backup": "tsx test/backup.ts 5438",
-    "ci": "npm run typecheck && npm run test"
+    "ci": "npm run typecheck && npm run test",
+    "test:jellyfin-contract": "tsx test/jellyfin-contract.ts",
+    "test:jellyfin-privacy": "tsx test/jellyfin-privacy.ts 5448"
   },
   "dependencies": {
     "pg": "^8.13.1"
