@@ -2,17 +2,19 @@ import { Client } from 'pg';
 import { loadDbConfig, resolveAppEnv } from '../config/env.js';
 import { loadCustodianConfig, createCustodian } from '../core/crypto/custodian-factory.js';
 import { getPool, closePool } from '../db/pool.js';
-import { runDoctor, formatDoctorReport } from './doctor.js';
+import { runDoctor, formatDoctorReport, formatDoctorJson } from './doctor.js';
 
 /**
- * Phase 5 Stage 5.1 — production self-check CLI.
+ * Phase 5/6 — production self-check CLI.
  *
- *   tsx src/ops/doctor-cli.ts        (or: npm run ops:doctor)
+ *   tsx src/ops/doctor-cli.ts [--json]        (or: npm run ops:doctor -- --json)
  *
  * READ-ONLY. Loads + validates config (db + custodian, incl. the Phase 4 memory-in-prod guard),
- * connects, runs the checks, prints a redaction-safe report, and exits non-zero if any check
- * FAILED. Safe to run on a schedule / before serving traffic. Prints no secret values.
+ * connects, runs the checks, prints a redaction-safe report (text, or the stable JSON contract with
+ * `--json`), and exits non-zero if any check FAILED. Safe on a schedule / before serving traffic;
+ * the JSON form is the unattended Unraid/monitoring healthcheck contract. Prints no secret values.
  */
+const asJson = process.argv.slice(2).includes('--json');
 async function main(): Promise<number> {
   const db = loadDbConfig();
   const custodianConfig = loadCustodianConfig(); // throws (fail-closed) on bad/insecure config
@@ -30,7 +32,7 @@ async function main(): Promise<number> {
       appEnv: resolveAppEnv(),
       keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,
     });
-    console.log(formatDoctorReport(report));
+    console.log(asJson ? formatDoctorJson(report) : formatDoctorReport(report));
     return report.ok ? 0 : 1;
   } finally {
     await admin.end();

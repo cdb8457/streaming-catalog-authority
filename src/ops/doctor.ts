@@ -131,7 +131,10 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         reachable.length === 0 ? `runtime role "${who}" cannot read or set the completion secret` : `runtime role "${who}" CAN [${reachable.join(', ')}] — DATABASE_URL is over-privileged`);
     } catch {
       try { await client?.query('ROLLBACK'); } catch { /* ignore */ }
-      add('runtime-least-privileged', 'warn', 'could not run runtime-privilege probes on the app connection');
+      // Hardened (Phase 6): an UNEXPECTED inability to run the runtime-privilege probes is a hard
+      // FAIL, not a warning — a probe that cannot execute must never let an over-privileged
+      // runtime connection pass silently.
+      add('runtime-least-privileged', 'fail', 'could not run runtime-privilege probes on the app connection (fail-closed)');
     } finally {
       client?.release();
     }
@@ -162,4 +165,15 @@ export function formatDoctorReport(report: DoctorReport): string {
   const lines = report.checks.map((c) => `  ${icon(c.state)}  ${c.name}: ${c.detail}`);
   lines.push(`\n${report.ok ? 'doctor: OK' : 'doctor: FAILED (one or more checks failed)'}`);
   return lines.join('\n');
+}
+
+/**
+ * Stable machine-readable output contract for `ops:doctor --json` (Phase 6). Shape:
+ *   { "reportVersion": 1, "ok": boolean, "checks": [ { "name", "state": pass|warn|fail, "detail" } ] }
+ * `reportVersion` is bumped only on a breaking shape change. Redaction-safe — `detail` never
+ * contains a secret/KEK/connection value. Suitable for cron/Unraid healthchecks + monitoring.
+ */
+export const DOCTOR_REPORT_VERSION = 1;
+export function formatDoctorJson(report: DoctorReport): string {
+  return JSON.stringify({ reportVersion: DOCTOR_REPORT_VERSION, ok: report.ok, checks: report.checks });
 }
