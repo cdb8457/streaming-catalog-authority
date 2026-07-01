@@ -7,7 +7,8 @@ import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import { InMemoryCustodian, CustodianTransportError } from '../src/core/crypto/custodian.js';
-import { runDoctor, formatDoctorReport, type DoctorReport } from '../src/ops/doctor.js';
+import { runDoctor, formatDoctorReport, formatDoctorJson, DOCTOR_REPORT_VERSION, type DoctorReport } from '../src/ops/doctor.js';
+import type { Pool as PgPool } from 'pg';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
 import { installCompletionSecret, testKek } from './crypto-setup.js';
 
@@ -115,6 +116,32 @@ async function main(): Promise<void> {
     } finally {
       await ownerPool.end();
     }
+  });
+
+  // 7. --json output is a stable, redaction-safe contract (Stage 6.2) ---------
+  await test('doctor --json — stable shape { reportVersion, ok, checks[] }, redaction-safe', async () => {
+    const dir = freshKeystore();
+    const ok = await runDoctor({ admin, pool, custodian: new FileCustodian(dir, secret, kek), completionSecret: secret, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
+    const parsed = JSON.parse(formatDoctorJson(ok)) as { reportVersion: number; ok: boolean; checks: Array<{ name: string; state: string; detail: string }> };
+    assertEq(parsed.reportVersion, DOCTOR_REPORT_VERSION, 'report version present');
+    assertEq(typeof parsed.ok, 'boolean', 'ok is boolean');
+    assert(Array.isArray(parsed.checks) && parsed.checks.length > 0, 'checks array');
+    for (const c of parsed.checks) assert(typeof c.name === 'string' && ['pass', 'warn', 'fail'].includes(c.state) && typeof c.detail === 'string', 'each check well-formed');
+    // redaction on a failing (mismatch) report
+    const wrong = 'JSON-SECRET-SENTINEL';
+    const bad = await runDoctor({ admin, pool, custodian: new FileCustodian(freshKeystore(), wrong, kek), completionSecret: wrong, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
+    const badJson = formatDoctorJson(bad);
+    assert(!badJson.includes(wrong) && !badJson.includes(secret), 'no secret value in the JSON output');
+  });
+
+  // 8. HARDENING: an unexpected inability to probe the runtime role is a FAIL --
+  await test('doctor — runtime-privilege probe that cannot run is a hard FAIL (not warn)', async () => {
+    // pool answers `SELECT 1` (db-app-reachable passes) but connect() throws (probes cannot run).
+    const brokenPool = { query: async () => ({ rows: [{ c: 1, u: 'x' }] }), connect: async () => { throw new Error('probe conn down'); } } as unknown as PgPool;
+    const dir = freshKeystore();
+    const r = await runDoctor({ admin, pool: brokenPool, custodian: new FileCustodian(dir, secret, kek), completionSecret: secret, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
+    assertEq(state(r, 'runtime-least-privileged'), 'fail', 'probe-cannot-run is a hard fail');
+    assert(!r.ok, 'overall fail when probes cannot run (fail-closed)');
   });
 
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });

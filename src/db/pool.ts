@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { Client, Pool } from 'pg';
 import { loadDbConfig } from '../config/env.js';
+import { MIGRATION_VERSION } from './schema-version.js';
 
 let pool: Pool | undefined;
 
@@ -26,16 +27,22 @@ export function adminUrl(): string {
   return loadDbConfig().adminDatabaseUrl;
 }
 
-/** Applies the schema and role grants as the owner. Idempotent. */
-export async function migrate(): Promise<void> {
+/** Applies the schema and role grants as the owner against an explicit connection. Idempotent. */
+export async function migrateWith(connectionString: string): Promise<void> {
   const sql = readFileSync(new URL('./migrations.sql', import.meta.url), 'utf8');
-  const client = new Client({ connectionString: adminUrl() });
+  const client = new Client({ connectionString });
   await client.connect();
   try {
     await client.query(sql);
+    await client.query('SELECT set_schema_version($1)', [MIGRATION_VERSION]); // record the applied version
   } finally {
     await client.end();
   }
+}
+
+/** Applies the schema and role grants as the production owner (ADMIN_DATABASE_URL). Idempotent. */
+export async function migrate(): Promise<void> {
+  await migrateWith(adminUrl());
 }
 
 export async function closePool(): Promise<void> {

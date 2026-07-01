@@ -132,6 +132,22 @@ test('unraid template — one-shot, no ports, *_FILE secrets, separate keystore 
   assert(!/<Config Name="COMPLETION_SECRET"[^>]*>(?!\/run\/secrets)/.test(xml), 'no inline completion secret value');
 });
 
+test('ops lifecycle — Phase 6 CLIs + docs are wired (version/verify/rehearse/doctor --json)', () => {
+  for (const s of ['ops:version', 'ops:verify-backup', 'ops:rehearse-restore', 'ops:doctor']) {
+    assert(typeof pkg.scripts[s] === 'string', `script ${s} present`);
+  }
+  for (const t of ['test/schema-version.ts', 'test/backup-verify.ts', 'test/ops-rehearse.ts']) {
+    assert((pkg.scripts.test ?? '').includes(t), `${t} in the test chain`);
+  }
+  assert(exists('docs/PHASE_6_LIFECYCLE.md'), 'lifecycle doc exists');
+  assert(exists('docs/RELEASE_CHECKLIST.md'), 'release checklist exists');
+  const life = read('docs/PHASE_6_LIFECYCLE.md');
+  for (const kw of ['ops:version', 'ops:rehearse-restore', 'ops:doctor --json', 'REHEARSAL_ADMIN_DATABASE_URL']) {
+    assert(life.includes(kw), `lifecycle doc covers ${kw}`);
+  }
+  assert(/no down-migrations/i.test(life) && /restore the pre-upgrade backup/i.test(life), 'lifecycle doc states the rollback model');
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

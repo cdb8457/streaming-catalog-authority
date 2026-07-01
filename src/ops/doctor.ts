@@ -1,6 +1,7 @@
 import type { Client, Pool, PoolClient } from 'pg';
 import { existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import type { KeyCustodian } from '../core/crypto/custodian.js';
+import { MIGRATION_VERSION } from '../db/schema-version.js';
 
 /**
  * Phase 5 Stage 5.1 — production self-check ("ops doctor").
@@ -20,7 +21,7 @@ export interface DoctorCheck { name: string; state: CheckState; detail: string; 
 export interface DoctorReport { ok: boolean; checks: DoctorCheck[]; }
 
 const EXPECTED_TABLES = ['events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations'];
-const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret'];
+const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret', 'set_schema_version'];
 
 /**
  * Attempt `sql` on the runtime connection inside a SAVEPOINT and roll it back. Returns 'denied'
@@ -91,6 +92,14 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       else if (dbSecret !== deps.completionSecret) add('completion-secret', 'fail', 'configured completion secret does not match crypto_config (shred completion would never verify)');
       else add('completion-secret', 'pass', 'configured completion secret matches crypto_config');
     } catch { add('completion-secret', 'fail', 'could not read crypto_config to verify the completion secret'); }
+
+    // schema/migration version matches what this build expects --------------------
+    try {
+      const v = (await deps.admin.query('SELECT version FROM schema_meta WHERE id = 1')).rows[0]?.version as number | undefined;
+      if (v === undefined) add('schema-version', 'fail', 'schema_meta is missing — run ops:migrate / ops:init');
+      else if (v !== MIGRATION_VERSION) add('schema-version', 'fail', `schema version mismatch (db ${v}, expected ${MIGRATION_VERSION}) — run ops:migrate`);
+      else add('schema-version', 'pass', `schema version ${v}`);
+    } catch { add('schema-version', 'fail', 'could not read schema_meta (run ops:migrate)'); }
   }
 
   // RUNTIME least-privilege — probe the ACTUAL connection behind DATABASE_URL (not a named role).
@@ -122,7 +131,10 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
         reachable.length === 0 ? `runtime role "${who}" cannot read or set the completion secret` : `runtime role "${who}" CAN [${reachable.join(', ')}] — DATABASE_URL is over-privileged`);
     } catch {
       try { await client?.query('ROLLBACK'); } catch { /* ignore */ }
-      add('runtime-least-privileged', 'warn', 'could not run runtime-privilege probes on the app connection');
+      // Hardened (Phase 6): an UNEXPECTED inability to run the runtime-privilege probes is a hard
+      // FAIL, not a warning — a probe that cannot execute must never let an over-privileged
+      // runtime connection pass silently.
+      add('runtime-least-privileged', 'fail', 'could not run runtime-privilege probes on the app connection (fail-closed)');
     } finally {
       client?.release();
     }
@@ -153,4 +165,15 @@ export function formatDoctorReport(report: DoctorReport): string {
   const lines = report.checks.map((c) => `  ${icon(c.state)}  ${c.name}: ${c.detail}`);
   lines.push(`\n${report.ok ? 'doctor: OK' : 'doctor: FAILED (one or more checks failed)'}`);
   return lines.join('\n');
+}
+
+/**
+ * Stable machine-readable output contract for `ops:doctor --json` (Phase 6). Shape:
+ *   { "reportVersion": 1, "ok": boolean, "checks": [ { "name", "state": pass|warn|fail, "detail" } ] }
+ * `reportVersion` is bumped only on a breaking shape change. Redaction-safe — `detail` never
+ * contains a secret/KEK/connection value. Suitable for cron/Unraid healthchecks + monitoring.
+ */
+export const DOCTOR_REPORT_VERSION = 1;
+export function formatDoctorJson(report: DoctorReport): string {
+  return JSON.stringify({ reportVersion: DOCTOR_REPORT_VERSION, ok: report.ok, checks: report.checks });
 }

@@ -119,6 +119,68 @@ export class BackupPolicy {
   }
 
   /**
+   * OFFLINE structural verification of a backup artifact (Phase 6) — no DB required. Catches the
+   * torn/tampered/corrupt classes that would otherwise be caught at restore time: unsupported
+   * version, a missing backed-up table, an item projection head (`last_seq`) not backed by an event
+   * in the same artifact, and dangling `provider_refs` / `item_key_control` referencing a missing
+   * item. This is a fast pre-restore sanity check; the FULL replay-and-compare derivability proof
+   * requires a database — use `ops:rehearse-restore` for that. Never reads/needs any secret.
+   */
+  static verifyStructure(artifact: BackupArtifact): { ok: boolean; problems: string[] } {
+    const problems: string[] = [];
+    // --- shape validation (must never THROW on malformed-but-parseable input) ---
+    const a = artifact as unknown as { version?: unknown; tables?: unknown };
+    if (a === null || typeof a !== 'object') return { ok: false, problems: ['artifact is not an object'] };
+    if (a.version !== 1) return { ok: false, problems: ['unsupported or missing artifact version (expected 1)'] };
+    if (!Array.isArray(a.tables)) return { ok: false, problems: ['artifact.tables is not an array'] };
+
+    const byName = new Map<string, unknown[]>();
+    a.tables.forEach((t, i) => {
+      const e = t as { table?: unknown; rows?: unknown } | null;
+      if (e === null || typeof e !== 'object') { problems.push(`tables[${i}] is not an object`); return; }
+      if (typeof e.table !== 'string') { problems.push(`tables[${i}].table is not a string`); return; }
+      if (!Array.isArray(e.rows)) { problems.push(`table ${e.table}: rows is not an array`); return; }
+      if (byName.has(e.table)) { problems.push(`duplicate table entry: ${e.table}`); return; }
+      byName.set(e.table, e.rows);
+    });
+    for (const tbl of BACKED_UP_TABLES) if (!byName.has(tbl)) problems.push(`missing backed-up table: ${tbl}`);
+    if (problems.length > 0) return { ok: false, problems }; // shape prerequisites failed
+
+    // --- row-level validation (each row must carry the fields the checks read) ---
+    const haveEvent = new Set<string>();
+    byName.get('events')!.forEach((row, i) => {
+      const r = row as { item_id?: unknown; seq?: unknown } | null;
+      if (r === null || typeof r !== 'object' || typeof r.item_id !== 'string' || typeof r.seq !== 'number') { problems.push(`events[${i}] is malformed (needs string item_id + number seq)`); return; }
+      haveEvent.add(`${r.item_id}#${r.seq}`);
+    });
+    const itemIds = new Set<string>();
+    const itemHeads: Array<{ id: string; last_seq: number }> = [];
+    byName.get('items')!.forEach((row, i) => {
+      const r = row as { id?: unknown; last_seq?: unknown } | null;
+      if (r === null || typeof r !== 'object' || typeof r.id !== 'string' || typeof r.last_seq !== 'number') { problems.push(`items[${i}] is malformed (needs string id + number last_seq)`); return; }
+      itemIds.add(r.id);
+      itemHeads.push({ id: r.id, last_seq: r.last_seq });
+    });
+    // stop before referential checks if any rows were malformed (results would be unreliable).
+    if (problems.length > 0) return { ok: false, problems };
+
+    for (const h of itemHeads) {
+      if (h.last_seq > 0 && !haveEvent.has(`${h.id}#${h.last_seq}`)) problems.push(`item ${h.id}: head seq ${h.last_seq} is not backed by an event in the artifact (torn)`);
+    }
+    byName.get('provider_refs')!.forEach((row, i) => {
+      const r = row as { item_id?: unknown } | null;
+      if (r === null || typeof r !== 'object' || typeof r.item_id !== 'string') { problems.push(`provider_refs[${i}] is malformed (needs string item_id)`); return; }
+      if (!itemIds.has(r.item_id)) problems.push(`provider_refs references a missing item ${r.item_id}`);
+    });
+    byName.get('item_key_control')!.forEach((row, i) => {
+      const r = row as { item_id?: unknown } | null;
+      if (r === null || typeof r !== 'object' || typeof r.item_id !== 'string') { problems.push(`item_key_control[${i}] is malformed (needs string item_id)`); return; }
+      if (!itemIds.has(r.item_id)) problems.push(`item_key_control references a missing item ${r.item_id}`);
+    });
+    return { ok: problems.length === 0, problems };
+  }
+
+  /**
    * Restore a backup into the main DB, replacing the backed-up tables. crypto_config is left
    * untouched — the operator-provisioned completion secret is an external prerequisite, never
    * part of the backup. Runs in one transaction under `session_replication_role = replica` so
