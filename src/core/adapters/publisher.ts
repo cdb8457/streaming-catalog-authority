@@ -10,7 +10,7 @@
  *    `CatalogAuthority.withPublishableIdentity`).
  *  - output is an ADVISORY {@link PublishResult}; the core never persists it. DRY-RUN is the default.
  *
- * Phase 8 ships only LOCAL fakes — no real Plex/Jellyfin, no network, no credentials. Real external
+ * Phase 8 ships only LOCAL fakes — no real media servers, no network, no credentials. Real external
  * publishing conflicts with crypto-shredding (a copy escapes the erasure boundary) and is a
  * SEPARATE, deferred policy gate — see docs/PHASE_8_PUBLISHER_BOUNDARY.md.
  */

@@ -169,10 +169,21 @@ a privacy bridge + tests only** (no real providers, no network, no HTTP/UI). An 
 **only** an opaque `itemId` + one scoped `{ refType, refValue }` (never catalog identity) through
 `CatalogAuthority.withProviderRef()`, which decrypts a single ref, redacts it via the `SecretStore`
 for the call and clears it after, and is fail-closed. Adapter output is **advisory** — never written
-to the event log. `ADAPTER_MODE=fake|none` (unknown fails closed). Identity-consuming publisher
-adapters (Plex/Jellyfin) are a **deferred** gate. See `docs/PHASE_7_ADAPTER_BOUNDARY.md`.
+to the event log. `ADAPTER_MODE=fake|none` (unknown fails closed). See `docs/PHASE_7_ADAPTER_BOUNDARY.md`.
+
+## Publisher adapter boundary (Phase 8)
+
+The isolation layer for **future** identity-consuming publisher adapters (media-server sync) —
+**contracts + a local fake harness + a scoped-identity bridge + tests only** (no real Plex/Jellyfin,
+no network, no credentials, no persistence). A publisher **declares** the fields it needs and
+`CatalogAuthority.withPublishableIdentity()` yields **only** those minimized fields
+(`title`/`year`/`providerRefs` — never `externalIds`/`metadata`/ciphertext), redacted via the
+`SecretStore` and cleared after; it is fail-closed and TOCTOU-hardened (forget mid-bridge fails
+closed). **Dry-run is the default**; output is **advisory** (never persisted). `PUBLISHER_MODE=none|fake`.
+⚠️ **Real external publishing conflicts with crypto-shredding** (a copy escapes the erasure boundary)
+and is a **deferred policy gate**. See `docs/PHASE_8_PUBLISHER_BOUNDARY.md`.
 
 ## Not in this slice
 
-No **real** provider adapter, no Plex/Jellyfin/RD/TorBox, no Hermes, no HTTP, no
-job queue, no frontend. (Phase 7 adds the adapter *boundary* + a local fake only.)
+No **real** provider or publisher adapter, no Plex/Jellyfin/RD/TorBox, no Hermes, no HTTP, no
+job queue, no frontend. (Phases 7–8 add the adapter *boundaries* + local fakes only.)
