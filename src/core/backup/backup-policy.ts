@@ -119,6 +119,38 @@ export class BackupPolicy {
   }
 
   /**
+   * OFFLINE structural verification of a backup artifact (Phase 6) — no DB required. Catches the
+   * torn/tampered/corrupt classes that would otherwise be caught at restore time: unsupported
+   * version, a missing backed-up table, an item projection head (`last_seq`) not backed by an event
+   * in the same artifact, and dangling `provider_refs` / `item_key_control` referencing a missing
+   * item. This is a fast pre-restore sanity check; the FULL replay-and-compare derivability proof
+   * requires a database — use `ops:rehearse-restore` for that. Never reads/needs any secret.
+   */
+  static verifyStructure(artifact: BackupArtifact): { ok: boolean; problems: string[] } {
+    const problems: string[] = [];
+    if (!artifact || (artifact as { version?: unknown }).version !== 1) {
+      return { ok: false, problems: [`unsupported or missing artifact version (expected 1)`] };
+    }
+    const byName = new Map((artifact.tables ?? []).map((t) => [t.table, t.rows]));
+    for (const tbl of BACKED_UP_TABLES) if (!byName.has(tbl)) problems.push(`missing backed-up table: ${tbl}`);
+    if (problems.length > 0) return { ok: false, problems };
+
+    const events = byName.get('events') as Array<{ item_id: string; seq: number }>;
+    const items = byName.get('items') as Array<{ id: string; last_seq: number }>;
+    const refs = byName.get('provider_refs') as Array<{ item_id: string }>;
+    const keys = byName.get('item_key_control') as Array<{ item_id: string }>;
+    const haveEvent = new Set(events.map((e) => `${e.item_id}#${e.seq}`));
+    const itemIds = new Set(items.map((i) => i.id));
+
+    for (const i of items) {
+      if (i.last_seq > 0 && !haveEvent.has(`${i.id}#${i.last_seq}`)) problems.push(`item ${i.id}: head seq ${i.last_seq} is not backed by an event in the artifact (torn)`);
+    }
+    for (const r of refs) if (!itemIds.has(r.item_id)) problems.push(`provider_refs references a missing item ${r.item_id}`);
+    for (const k of keys) if (!itemIds.has(k.item_id)) problems.push(`item_key_control references a missing item ${k.item_id}`);
+    return { ok: problems.length === 0, problems };
+  }
+
+  /**
    * Restore a backup into the main DB, replacing the backed-up tables. crypto_config is left
    * untouched — the operator-provisioned completion secret is an external prerequisite, never
    * part of the backup. Runs in one transaction under `session_replication_role = replica` so
