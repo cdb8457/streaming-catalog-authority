@@ -138,6 +138,26 @@ test('erasure policy — Phase 9 publish module clean; doc + suites wired', () =
   assert((pkg.scripts.test ?? '').includes('test/publish-erasure.ts') && (pkg.scripts.test ?? '').includes('test/publish-consent.ts'), 'publish suites in the CI chain');
 });
 
+test('jellyfin adapter — Phase 10 fake/local only: no network, no OTHER providers; doc + suites wired', () => {
+  const dir = fileURLToPath(new URL('../src/core/adapters/jellyfin', import.meta.url));
+  const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
+  assert(files.length >= 5, 'jellyfin module present');
+  // CRITICAL for Phase 10: the fake-only module must make NO real network import/call (the real
+  // HTTP client is deferred to Phase 11). It may name "jellyfin" (that is the module), but not other providers.
+  const network = /(from\s*['"]node:(http|https|net|tls|dns)['"]|from\s*['"](node-fetch|undici|axios|got|ws|puppeteer|cheerio)['"]|\bfetch\s*\()/;
+  const otherProviders = /(real[-_ ]?debrid|torbox|\bplex\b|\bdownload\b|playback|scrap(e|ing))/i;
+  for (const f of files) {
+    const src = readFileSync(`${dir}/${f}`, 'utf8');
+    assert(!network.test(src), `src/core/adapters/jellyfin/${f} makes NO network import/call (Phase 11 defers the real client)`);
+    assert(!otherProviders.test(src), `src/core/adapters/jellyfin/${f} names no other provider / scraping / playback`);
+  }
+  assert(exists('docs/PHASE_10_JELLYFIN_ADAPTER.md'), 'jellyfin doc exists');
+  const doc = read('docs/PHASE_10_JELLYFIN_ADAPTER.md');
+  for (const kw of ['collection', 'providerRefs', 'PUBLISH_EXTERNAL_IDENTITY', 'Phase 11', 'no-match']) assert(doc.includes(kw), `doc covers ${kw}`);
+  assert(/deferred|defer/i.test(doc) && /limit/i.test(doc), 'doc states the real-client deferral + revoke limits');
+  assert((pkg.scripts.test ?? '').includes('test/jellyfin-privacy.ts') && (pkg.scripts.test ?? '').includes('test/jellyfin-contract.ts'), 'jellyfin suites in the CI chain');
+});
+
 test('ops entrypoints exist', () => {
   assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');
