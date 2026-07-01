@@ -8,4 +8,5 @@
  * Rollback model (accepted): there are no down-migrations — the supported rollback is to restore
  * the pre-upgrade backup (see docs/PHASE_6_LIFECYCLE.md / RELEASE_CHECKLIST.md).
  */
-export const MIGRATION_VERSION = 1;
+// v2 (Phase 9): adds the identity-free publish_ledger + cat_publish_* functions.
+export const MIGRATION_VERSION = 2;
