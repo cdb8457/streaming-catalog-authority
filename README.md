@@ -183,7 +183,18 @@ closed). **Dry-run is the default**; output is **advisory** (never persisted). `
 ⚠️ **Real external publishing conflicts with crypto-shredding** (a copy escapes the erasure boundary)
 and is a **deferred policy gate**. See `docs/PHASE_8_PUBLISHER_BOUNDARY.md`.
 
+## External-publishing erasure policy (Phase 9)
+
+Publishing identity externally copies it **outside** the crypto-shredding boundary, so `forget`
+can't reach it. Phase 9 makes future real publishing responsible (**fakes/local only**): a
+**fail-closed consent gate** (`PUBLISH_EXTERNAL_IDENTITY=allow|deny`, default deny; dry-run always
+allowed), an **identity-free `publish_ledger`** (opaque item id + target + opaque handle + disclosed
+field **names** only — never values; owner-managed, app writes via `SECURITY DEFINER` only), and a
+**best-effort revocation** flow: `forget` is unchanged, but a reconciliation queues a forgotten
+item's published rows and a `RevocationAdapter` (fake) unpublishes each **opaque handle**, keeping
+failures visible/retryable. See `docs/PHASE_9_ERASURE_POLICY.md`.
+
 ## Not in this slice
 
 No **real** provider or publisher adapter, no Plex/Jellyfin/RD/TorBox, no Hermes, no HTTP, no
-job queue, no frontend. (Phases 7–8 add the adapter *boundaries* + local fakes only.)
+job queue, no frontend. (Phases 7–9 add the adapter *boundaries* + erasure policy + local fakes only.)
