@@ -6,6 +6,7 @@ import {
   encrypt, decrypt, encryptUtf8, decryptUtf8, zeroize, SCHEMA_VERSION, type Aad,
 } from '../crypto/envelope.js';
 import type { KeyCustodian } from '../crypto/custodian.js';
+import type { AdapterRefView } from '../adapters/adapter.js';
 import { SecretStore } from '../secrets/secret-store.js';
 import { createRedactingLogger, type LogSink, type RedactingLogger } from '../redaction/logger.js';
 
@@ -202,6 +203,59 @@ export class CatalogAuthority {
       return await fn(identity);
     } finally {
       for (const n of names) this.secrets.delete(n);
+    }
+  }
+
+  /**
+   * Phase 7 — scoped provider-ref disclosure for the ADAPTER BOUNDARY. Decrypts EXACTLY ONE
+   * provider ref (NEVER the identity), registers the decrypted value with the SecretStore for the
+   * lifetime of `fn` ONLY (so logging via `createLogger()` inside `fn` is redacted; the
+   * registration is deleted afterwards), and yields an `AdapterRefView { itemId, refType, refValue }`.
+   * Fail-closed: returns null if the lineage is not active, the custodian reports the key not
+   * active, or the ref is absent; rechecks status at the linearization point like `readIdentity`.
+   * The value `fn` returns is handed back to the caller and is NEVER persisted — adapter outputs
+   * are advisory/non-authoritative (Phase 7).
+   */
+  async withProviderRef<T>(itemId: string, refType: string, fn: (view: AdapterRefView) => Promise<T> | T): Promise<T | null> {
+    this.assertId(itemId);
+    const ctrl = await this.control(itemId);
+    if (!ctrl || ctrl.shred_state !== 'active') return null; // fail closed
+    let status: string;
+    try { status = await this.custodian.status(ctrl.key_id); } catch { return null; }
+    if (status !== 'active') return null;
+
+    const refQuery = `SELECT ref_value_ct FROM provider_refs WHERE item_id = $1 AND ref_type = $2 AND present AND ref_value_ct IS NOT NULL`;
+    const { rows } = await this.pool.query(refQuery, [itemId, refType]);
+    if (!rows[0]) return null;
+    const originalCt = rows[0].ref_value_ct as Buffer;
+
+    let dek: Buffer;
+    try { dek = await this.custodian.get(ctrl.key_id, ctrl.cur_epoch); } catch { return null; }
+    const names: string[] = [];
+    try {
+      const refValue = decryptUtf8(dek, originalCt, this.aad(itemId, ctrl.cur_epoch, refField(refType)));
+      // register the disclosed value (raw + JSON-escaped) for redaction during this scope only.
+      for (const variant of [refValue, JSON.stringify(refValue).slice(1, -1)]) {
+        if (variant.length === 0) continue;
+        const name = `ref:${randomUUID()}`;
+        this.secrets.set(name, variant);
+        names.push(name);
+      }
+      // recheck-before-return (linearization point): still active in the custodian AND the DB.
+      let recheck: string;
+      try { recheck = await this.custodian.status(ctrl.key_id); } catch { return null; }
+      if (recheck !== 'active' || (await this.control(itemId))?.shred_state !== 'active') return null;
+      // ...AND the SPECIFIC ref row is still CURRENT — not detached/replaced since the initial read
+      // (updateIdentity can set present=false / ref_value_ct=NULL, or re-encrypt it). Comparing the
+      // exact ciphertext we decrypted fails closed on any change, so a stale ref is never disclosed.
+      const cur = (await this.pool.query(refQuery, [itemId, refType])).rows[0];
+      if (!cur || !(cur.ref_value_ct as Buffer).equals(originalCt)) return null;
+
+      const view: AdapterRefView = { itemId, refType, refValue };
+      return await fn(view); // adapter output is advisory — the bridge never persists it
+    } finally {
+      for (const n of names) this.secrets.delete(n);
+      zeroize(dek);
     }
   }
 

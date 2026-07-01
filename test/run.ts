@@ -112,12 +112,19 @@ async function main(): Promise<void> {
       .filter((name) => !OWNER_TOOLING.has(name));
     assert(offenders.length === 0, `TS files writing tables directly: ${offenders.join(', ')}`);
   });
-  await test('core imports nothing about providers/HTTP/adapters/Hermes', () => {
+  await test('core imports no EXTERNAL provider/HTTP/adapter/Hermes libraries', () => {
     const importRe = /\bfrom\s*['"]([^'"]+)['"]/g; // match real module specifiers, not comment apostrophes
     const forbidden = /(provider(?!_ref)|adapter|hermes|plex|jellyfin|torbox|debrid|axios|node-fetch|undici|express|fastify|\bgot\b|^https?$)/i;
     const bad: string[] = [];
-    for (const file of walkTs(CORE_DIR)) for (const m of readFileSync(file, 'utf8').matchAll(importRe)) if (forbidden.test(m[1]!)) bad.push(`${path.basename(file)} -> ${m[1]}`);
-    assert(bad.length === 0, `forbidden imports: ${bad.join(', ')}`);
+    // Only EXTERNAL (bare) specifiers are checked. The internal adapter BOUNDARY module
+    // (src/core/adapters, Phase 7) is our own code and may legitimately be named "adapter*";
+    // external provider/HTTP libraries (plex/jellyfin/debrid/axios/…) stay banned. A separate
+    // scope scan (test/deploy.ts) proves src/core/adapters makes no network imports/calls.
+    for (const file of walkTs(CORE_DIR)) for (const m of readFileSync(file, 'utf8').matchAll(importRe)) {
+      const spec = m[1]!;
+      if (!spec.startsWith('.') && forbidden.test(spec)) bad.push(`${path.basename(file)} -> ${spec}`);
+    }
+    assert(bad.length === 0, `forbidden external imports: ${bad.join(', ')}`);
   });
 
   // 3. no-leak gate ----------------------------------------------------------

@@ -162,7 +162,17 @@ Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open produc
 **O4** (managed-KMS adapter) and **O5** (age KEK rotation *automation*); `CUSTODIAN_MODE=memory` is
 refused in production.
 
+## Provider adapter boundary (Phase 7)
+
+The isolation layer for **future** provider/debrid adapters — **contracts + a local fake harness +
+a privacy bridge + tests only** (no real providers, no network, no HTTP/UI). An adapter receives
+**only** an opaque `itemId` + one scoped `{ refType, refValue }` (never catalog identity) through
+`CatalogAuthority.withProviderRef()`, which decrypts a single ref, redacts it via the `SecretStore`
+for the call and clears it after, and is fail-closed. Adapter output is **advisory** — never written
+to the event log. `ADAPTER_MODE=fake|none` (unknown fails closed). Identity-consuming publisher
+adapters (Plex/Jellyfin) are a **deferred** gate. See `docs/PHASE_7_ADAPTER_BOUNDARY.md`.
+
 ## Not in this slice
 
-No provider adapter (mock or real), no Plex/Jellyfin/RD/TorBox, no Hermes, no HTTP, no
-job queue, no frontend.
+No **real** provider adapter, no Plex/Jellyfin/RD/TorBox, no Hermes, no HTTP, no
+job queue, no frontend. (Phase 7 adds the adapter *boundary* + a local fake only.)

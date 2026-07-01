@@ -85,9 +85,27 @@ test('package.json — ops + deploy scripts wired; no HTTP framework dep', () =>
   assert(/test\/deploy\.ts/.test(pkg.scripts.test ?? ''), 'deploy in the test chain');
   assert(/docker-compose\.deploy\.yml/.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke uses the deploy compose');
   const deps = Object.keys(pkg.dependencies ?? {});
-  for (const banned of ['express', 'fastify', 'koa', 'http-server', 'age', 'aws-sdk', '@aws-sdk/client-kms']) {
+  for (const banned of ['express', 'fastify', 'koa', 'http-server', 'age', 'aws-sdk', '@aws-sdk/client-kms',
+    'node-fetch', 'undici', 'axios', 'got', 'puppeteer', 'cheerio', 'ws', 'plex-api', 'real-debrid', 'torbox']) {
     assert(!deps.includes(banned), `no ${banned} dependency`);
   }
+});
+
+test('adapter boundary — no network/provider leakage in src/core/adapters (Phase 7)', () => {
+  const dir = fileURLToPath(new URL('../src/core/adapters', import.meta.url));
+  const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
+  assert(files.length >= 3, 'adapter module present');
+  const network = /(from\s*['"]node:(http|https|net|tls|dns)['"]|from\s*['"](node-fetch|undici|axios|got|ws|puppeteer|cheerio)['"]|\bfetch\s*\()/;
+  const providers = /(real[-_ ]?debrid|torbox|\bplex\b|jellyfin|scrap(e|ing)|\bdownload\b|playback)/i;
+  for (const f of files) {
+    const src = readFileSync(`${dir}/${f}`, 'utf8');
+    assert(!network.test(src), `src/core/adapters/${f} makes no network import/call`);
+    assert(!providers.test(src), `src/core/adapters/${f} names no real provider / scraping / playback`);
+  }
+  assert(exists('docs/PHASE_7_ADAPTER_BOUNDARY.md'), 'adapter boundary doc exists');
+  const doc = read('docs/PHASE_7_ADAPTER_BOUNDARY.md');
+  for (const kw of ['AdapterRefView', 'withProviderRef', 'advisory', 'ADAPTER_MODE', 'deferred']) assert(doc.includes(kw), `doc covers ${kw}`);
+  assert((pkg.scripts.test ?? '').includes('test/adapter-privacy.ts') && (pkg.scripts.test ?? '').includes('test/adapter-contract.ts'), 'adapter suites in the CI chain');
 });
 
 test('ops entrypoints exist', () => {
