@@ -23,8 +23,28 @@ A **live real publish** requires BOTH:
 2. **`PUBLISH_EXTERNAL_IDENTITY=allow`** — the Phase 9 consent gate, unchanged.
 
 `createRealJellyfinClient(fetchImpl, env)` takes the transport as a **required parameter** — there is
-**no implicit `globalThis.fetch`** in the adapter, so nothing there can reach the network on its own.
-The only place `globalThis.fetch` is referenced is the operator entrypoint `src/ops/jellyfin-smoke-cli.ts`.
+**no implicit platform fetch** in the adapter, so nothing there can reach the network on its own.
+The only place the global transport is referenced is the operator entrypoint `src/ops/jellyfin-smoke-cli.ts`.
+
+## Live create is separately gated (orphan safety)
+
+A collection CREATE is non-idempotent and its outcome can be **ambiguous** (the server may create the
+collection but the response is malformed/lost, or the connection drops after the create) — which could
+leave an **unrevocable external collection with no Phase 9 ledger handle**. Two protections prevent that:
+
+1. **`JELLYFIN_ALLOW_LIVE_PUBLISH=true`** (default off, separate from `JELLYFIN_ENABLE_NETWORK`) —
+   `createCollection` throws `JellyfinPublishDisabledError` **before any POST** unless explicitly
+   enabled. So real create cannot happen until an operator has validated create/delete via
+   `smoke:jellyfin`. `findItemsByRefs` (read) and `deleteCollection` (revoke) work without it.
+2. **Ambiguous-outcome cleanup** — even when enabled, if a create is sent but no valid id is captured
+   (missing/malformed id, or a transport/timeout error after the request left), the client best-effort
+   **deletes any same-named collection** and then **fails closed** (`JellyfinAmbiguousCreateError`), so
+   the caller records no ledger row **and** no untracked external collection remains. (Caveat: cleanup
+   deletes by name; a pre-existing same-named collection could be removed — an acceptable trade vs an
+   unrevocable orphan, and only reachable once an operator opted into live publish.)
+
+So a live publish needs **three** switches: `JELLYFIN_ENABLE_NETWORK=true`,
+`JELLYFIN_ALLOW_LIVE_PUBLISH=true`, and `PUBLISH_EXTERNAL_IDENTITY=allow`.
 
 ## Injected fetch — how CI stays offline
 

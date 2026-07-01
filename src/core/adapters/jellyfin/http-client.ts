@@ -2,7 +2,8 @@ import type { JellyfinClient, JellyfinRef } from './client.js';
 import type { FetchLike, HttpResponseLike } from './transport.js';
 import {
   buildFindCandidatesRequest, matchItems, buildCreateCollectionRequest,
-  parseCreateCollectionResponse, buildDeleteCollectionRequest, type HttpRequestSpec,
+  parseCreateCollectionResponse, buildDeleteCollectionRequest,
+  buildFindCollectionsByNameRequest, matchCollectionIdsByName, type HttpRequestSpec,
 } from './mapping.js';
 
 /** Redaction-safe error: carries the operation + status only — NEVER the api key, url, or body. */
@@ -13,12 +14,24 @@ export class JellyfinHttpError extends Error {
   }
 }
 
+/** Live collection create is disabled — enable ONLY after `smoke:jellyfin` validates create/delete. */
+export class JellyfinPublishDisabledError extends Error {
+  constructor(message: string) { super(message); this.name = 'JellyfinPublishDisabledError'; }
+}
+
+/** A create whose outcome is ambiguous (created server-side but no handle captured). We attempt to
+ * clean up so nothing is orphaned, then FAIL CLOSED — the caller records no ledger row. */
+export class JellyfinAmbiguousCreateError extends Error {
+  constructor(message: string) { super(message); this.name = 'JellyfinAmbiguousCreateError'; }
+}
+
 export interface JellyfinHttpOptions {
   readonly baseUrl: string;
   readonly apiKey: string;
-  readonly fetch: FetchLike;    // INJECTED — the client never references a bare `fetch`
-  readonly timeoutMs?: number;  // per-request timeout (default 10000)
-  readonly maxRetries?: number; // extra attempts for IDEMPOTENT ops only (default 2); never for create
+  readonly fetch: FetchLike;         // INJECTED — the client never references a bare `fetch`
+  readonly timeoutMs?: number;       // per-request timeout (default 10000)
+  readonly maxRetries?: number;      // extra attempts for IDEMPOTENT ops only (default 2); never for create
+  readonly allowLivePublish?: boolean; // default FALSE — createCollection fails closed until enabled post-smoke
 }
 
 /**
@@ -36,6 +49,7 @@ export class JellyfinHttpClient implements JellyfinClient {
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
+  private readonly allowLivePublish: boolean;
 
   constructor(opts: JellyfinHttpOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
@@ -43,6 +57,7 @@ export class JellyfinHttpClient implements JellyfinClient {
     this.fetchImpl = opts.fetch;
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.maxRetries = Math.max(0, opts.maxRetries ?? 2);
+    this.allowLivePublish = opts.allowLivePublish ?? false;
   }
 
   async findItemsByRefs(refs: readonly JellyfinRef[]): Promise<string[]> {
@@ -51,9 +66,43 @@ export class JellyfinHttpClient implements JellyfinClient {
     return matchItems(refs, body);
   }
 
+  /**
+   * Create a collection and return its opaque handle. Two protections keep a live external copy from
+   * ever being ORPHANED (created but with no revocation handle → violates the Phase 9 invariant):
+   *  1. GATED default-off — throws {@link JellyfinPublishDisabledError} BEFORE any POST unless live
+   *     publish was explicitly enabled (post-smoke). So the risky POST cannot happen by default.
+   *  2. AMBIGUOUS-outcome cleanup — if the POST is sent but we cannot capture a valid id (malformed/
+   *     missing id, or a transport/timeout error AFTER the request left, so the server MAY have created
+   *     it), best-effort delete any same-named collection, then FAIL CLOSED with
+   *     {@link JellyfinAmbiguousCreateError}. The caller then records no ledger row AND no untracked
+   *     external collection remains.
+   */
   async createCollection(name: string, itemIds: readonly string[]): Promise<string> {
-    const body = await this.requestJson('createCollection', buildCreateCollectionRequest(name, itemIds), false); // NEVER retried
-    return parseCreateCollectionResponse(body);
+    if (!this.allowLivePublish) {
+      throw new JellyfinPublishDisabledError('jellyfin live publish is disabled: set JELLYFIN_ALLOW_LIVE_PUBLISH=true only after smoke:jellyfin validates create/delete');
+    }
+    let id: string | null = null;
+    try {
+      const body = await this.requestJson('createCollection', buildCreateCollectionRequest(name, itemIds), false); // NEVER retried
+      try { id = parseCreateCollectionResponse(body); } catch { id = null; }
+    } catch {
+      id = null; // transport/timeout error — the server may still have created the collection
+    }
+    if (id !== null) return id; // clean success: handle captured
+
+    // Ambiguous: best-effort clean up any collection we may have just created, then fail closed.
+    await this.cleanupOrphanCandidates(name);
+    throw new JellyfinAmbiguousCreateError('jellyfin createCollection: ambiguous outcome; attempted cleanup of same-named collections — verify none remain');
+  }
+
+  /** Best-effort: find same-named collections and delete them so an ambiguous create never orphans. Never throws. */
+  private async cleanupOrphanCandidates(name: string): Promise<void> {
+    try {
+      const body = await this.requestJson('cleanupFindCollections', buildFindCollectionsByNameRequest(name), true);
+      for (const cid of matchCollectionIdsByName(name, body)) {
+        try { await this.deleteCollection(cid); } catch { /* best-effort */ }
+      }
+    } catch { /* best-effort — surfaced by the thrown JellyfinAmbiguousCreateError */ }
   }
 
   async deleteCollection(collectionId: string): Promise<'deleted' | 'not_found'> {

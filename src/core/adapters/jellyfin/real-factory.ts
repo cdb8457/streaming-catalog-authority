@@ -17,6 +17,15 @@ export function isJellyfinNetworkEnabled(env: Env = process.env): boolean {
 }
 
 /**
+ * True ONLY when `JELLYFIN_ALLOW_LIVE_PUBLISH` is exactly `"true"`. Fail-closed default: OFF. This is a
+ * SEPARATE switch from network-enable: it gates the ambiguous, non-idempotent `createCollection`, so
+ * real live publishing stays off until an operator has validated create/delete via `smoke:jellyfin`.
+ */
+export function isJellyfinLivePublishAllowed(env: Env = process.env): boolean {
+  return resolveVar(env, 'JELLYFIN_ALLOW_LIVE_PUBLISH').value === 'true';
+}
+
+/**
  * Construct the REAL Jellyfin client over a CALLER-SUPPLIED transport. Two independent conditions must
  * hold or it FAILS CLOSED:
  *   1. `JELLYFIN_ENABLE_NETWORK=true` (default off) — else {@link JellyfinNetworkDisabledError};
@@ -38,6 +47,7 @@ export function createRealJellyfinClient(fetchImpl: FetchLike, env: Env = proces
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
     fetch: fetchImpl,
+    allowLivePublish: isJellyfinLivePublishAllowed(env), // default off — createCollection fails closed
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
   });
 }

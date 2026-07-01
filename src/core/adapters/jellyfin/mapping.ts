@@ -55,3 +55,20 @@ export function parseCreateCollectionResponse(body: unknown): string {
 export function buildDeleteCollectionRequest(collectionId: string): HttpRequestSpec {
   return { method: 'DELETE', path: `/Items/${encodeURIComponent(collectionId)}` };
 }
+
+/** GET BoxSet collections by name — used ONLY to clean up an AMBIGUOUS create (see http-client). */
+export function buildFindCollectionsByNameRequest(name: string): HttpRequestSpec {
+  return { method: 'GET', path: '/Items', query: { Recursive: 'true', IncludeItemTypes: 'BoxSet', SearchTerm: name, Fields: 'Name' } };
+}
+
+/** Parse a BoxSet search response and return the opaque ids whose Name EXACTLY equals `name`. */
+export function matchCollectionIdsByName(name: string, body: unknown): string[] {
+  const items = (body as { Items?: unknown })?.Items;
+  if (!Array.isArray(items)) return [];
+  const out: string[] = [];
+  for (const raw of items) {
+    const it = raw as { Id?: unknown; Name?: unknown };
+    if (typeof it.Id === 'string' && it.Name === name) out.push(it.Id);
+  }
+  return out;
+}
