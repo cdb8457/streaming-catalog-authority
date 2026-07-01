@@ -8,10 +8,12 @@ import { mintItemId } from '../src/core/catalog/events.js';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import { FakePublisherAdapter } from '../src/core/adapters/fake-publisher.js';
 import { FakeRevoker } from '../src/core/adapters/fake-revoker.js';
-import { PublishService } from '../src/core/publish/publish-service.js';
+import type { PublisherAdapter, PublishRequest, PublishResult } from '../src/core/adapters/publisher.js';
+import { PublishService, PublishLedgerError } from '../src/core/publish/publish-service.js';
 import { PublishConsentError } from '../src/core/publish/consent.js';
 import { runRevocation } from '../src/core/publish/reconcile.js';
-import { countRevokePending } from '../src/core/publish/ledger.js';
+import { countRevokePending, reconcileForgotten } from '../src/core/publish/ledger.js';
+import { runDoctor } from '../src/ops/doctor.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
 import { installCompletionSecret, testKek } from './crypto-setup.js';
 
@@ -33,6 +35,13 @@ const EXTID = 'tt-erasure-secret';
 const META = 'ERASURE-META-secret';
 const REFVAL = 'ERASURE-REF-77';
 
+/** A malformed publisher: reports a LIVE 'published' but omits the handle (contract violation). */
+class NoHandlePublisher implements PublisherAdapter {
+  readonly requires = ['title'] as const;
+  describe(): { name: string; kind: 'publisher' } { return { name: 'no-handle', kind: 'publisher' }; }
+  async publish(req: PublishRequest): Promise<PublishResult> { return { status: 'published', dryRun: req.dryRun }; }
+}
+
 async function main(): Promise<void> {
   let server: Awaited<ReturnType<typeof startEmbedded>> | null = null;
   if (!process.env.DATABASE_URL) { console.log('Booting embedded PostgreSQL 16 ...'); server = await startEmbedded(); }
@@ -41,7 +50,9 @@ async function main(): Promise<void> {
   const admin = new Client({ connectionString: adminUrl() });
   await admin.connect();
   const secret = await installCompletionSecret(admin);
-  const auth = new CatalogAuthority(pool, new FileCustodian(freshKeystore(), secret, testKek()));
+  const keystoreDir = freshKeystore();
+  const custodian = new FileCustodian(keystoreDir, secret, testKek());
+  const auth = new CatalogAuthority(pool, custodian);
   const publisher = () => new FakePublisherAdapter(['title', 'year', 'providerRefs']);
   const seed = async (): Promise<string> => {
     const id = mintItemId();
@@ -156,6 +167,33 @@ async function main(): Promise<void> {
     assertEq(await svc.publish(id, pub, { dryRun: false }), null, 'forgotten item -> null');
     assertEq(pub.seen.length, 0, 'publisher never invoked');
     assertEq(await ledgerCount(), before, 'no ledger row for a forgotten item');
+  });
+
+  // 8. a live 'published' WITHOUT a handle fails closed (no untracked external copy) -----------
+  await test('publish — a live published result with NO handle fails closed (no untracked copy)', async () => {
+    const id = await seed();
+    const before = await ledgerCount();
+    const svc = new PublishService(pool, auth, 'allow');
+    let threw = false;
+    try { await svc.publish(id, new NoHandlePublisher(), { dryRun: false }); } catch (e) { threw = e instanceof PublishLedgerError; }
+    assert(threw, 'a handle-less live publish throws PublishLedgerError');
+    assertEq(await ledgerCount(), before, 'no ledger row written for the malformed publish');
+  });
+
+  // 9. the revoke_pending backlog is surfaced via ops:doctor (operator-facing) -----------------
+  await test('doctor — surfaces the revoke_pending backlog as a warning (Phase 9)', async () => {
+    const id = await seed();
+    const svc = new PublishService(pool, auth, 'allow');
+    await svc.publish(id, publisher(), { dryRun: false });
+    await auth.forget(id);
+    await reconcileForgotten(pool); // queue it as revoke_pending WITHOUT revoking
+    assert((await countRevokePending(pool)) >= 1, 'there is a pending revocation to surface');
+    const report = await runDoctor({ admin, pool, custodian, completionSecret: secret, custodianMode: 'file', appEnv: 'test', keystoreDir });
+    const check = report.checks.find((c) => c.name === 'publish-revocations');
+    assert(check !== undefined, 'doctor emits a publish-revocations check');
+    assertEq(check!.state, 'warn', 'pending revocations surface as a warning');
+    assert(/awaiting revocation/.test(check!.detail), 'the detail describes the backlog');
+    assert(report.ok, 'a warn does not fail the overall doctor (operational state)');
   });
 
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });

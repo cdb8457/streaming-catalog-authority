@@ -4,6 +4,11 @@ import type { PublisherAdapter, PublishResult } from '../adapters/publisher.js';
 import { assertPublishAllowed, type PublishConsent } from './consent.js';
 import { recordPublish } from './ledger.js';
 
+/** Raised when a LIVE publish cannot be recorded as a revocable, identity-free ledger tombstone. */
+export class PublishLedgerError extends Error {
+  constructor(message: string) { super(message); this.name = 'PublishLedgerError'; }
+}
+
 /**
  * Phase 9 — consent-gated publish orchestration.
  *
@@ -30,9 +35,16 @@ export class PublishService {
     );
     if (result === null) return null; // not disclosable — fail closed
 
-    // Record ONLY a successful LIVE publish (an external copy now exists). Identity-free: the ledger
-    // gets the declared field NAMES, never values. A dry-run creates no row.
-    if (!result.dryRun && result.status === 'published' && result.handle) {
+    // A successful LIVE publish means an external copy now exists — it MUST be recorded as a
+    // revocable, identity-free tombstone (declared field NAMES only, never values). If the publisher
+    // reports 'published' without an external handle we cannot record a revocation target, so we
+    // FAIL CLOSED rather than leave an untracked external copy. A dry-run records nothing.
+    if (!result.dryRun && result.status === 'published') {
+      if (!result.handle) {
+        throw new PublishLedgerError(
+          'publisher reported a live publish with no external handle; refusing (cannot record a revocable ledger tombstone)',
+        );
+      }
       await recordPublish(this.pool, {
         itemId,
         target,
