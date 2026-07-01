@@ -3,7 +3,7 @@
 Phase 11 implements the **real** Jellyfin client that Phase 10 deferred — over an **injected `fetch`**,
 behind **two independent default-off gates**, with **no live server in CI** and **no new dependencies**.
 It does not weaken the Phase 8 minimization, the Phase 9 erasure ledger/consent, or the Phase 10
-adapter behavior — the same shared `JellyfinClient` contract passes for both the fake and the real client.
+adapter behavior — the shared `JellyfinClient` FIND contract passes for both the fake and the real client.
 
 ## ⚠️ The endpoint mapping is PROVISIONAL
 
@@ -15,47 +15,35 @@ validated against a real server ONLY by the **opt-in `smoke:jellyfin`** gate. **
 Jellyfin publishing works until that smoke passes** on your deployment (check the server-local Swagger
 at `/api-docs/swagger/index.html` if it doesn't).
 
-## Two default-off gates (defense in depth)
+## Network gate (default off)
 
-A **live real publish** requires BOTH:
-1. **`JELLYFIN_ENABLE_NETWORK=true`** — default off; `createRealJellyfinClient` throws
-   `JellyfinNetworkDisabledError` otherwise (and needs full `JELLYFIN_*` config, else `ConfigError`);
-2. **`PUBLISH_EXTERNAL_IDENTITY=allow`** — the Phase 9 consent gate, unchanged.
+Any real Jellyfin HTTP (find + revoke) requires **`JELLYFIN_ENABLE_NETWORK=true`** — default off;
+`createRealJellyfinClient` throws `JellyfinNetworkDisabledError` otherwise (and needs full `JELLYFIN_*`
+config, else `ConfigError`). Live **create** is disabled entirely (next section), so there is no
+real live-publish path in this release; `PUBLISH_EXTERNAL_IDENTITY=allow` remains the Phase 9 consent
+gate for when a durable live publisher lands (Phase 12).
 
 `createRealJellyfinClient(fetchImpl, env)` takes the transport as a **required parameter** — there is
 **no implicit platform fetch** in the adapter, so nothing there can reach the network on its own.
 The only place the global transport is referenced is the operator entrypoint `src/ops/jellyfin-smoke-cli.ts`.
 
-## Live create is separately gated (orphan safety)
+## Live create is DISABLED (deferred to Phase 12)
 
-A collection CREATE is non-idempotent and its outcome can be **ambiguous** (the server may create the
-collection but the response is malformed/lost, or the connection drops after the create) — which could
-leave an **unrevocable external collection with no Phase 9 ledger handle**. Two protections prevent that:
+This release ships real **find + revoke** only. Real collection **create is hard-disabled** —
+`JellyfinHttpClient.createCollection` **always** throws `JellyfinPublishDisabledError` **before any
+network call** (redaction-safe: no key/title).
 
-1. **`JELLYFIN_ALLOW_LIVE_PUBLISH=true`** (default off, separate from `JELLYFIN_ENABLE_NETWORK`) —
-   `createCollection` throws `JellyfinPublishDisabledError` **before any POST** unless explicitly
-   enabled. So real create cannot happen until an operator has validated create/delete via
-   `smoke:jellyfin`. `findItemsByRefs` (read) and `deleteCollection` (revoke) work without it.
-2. **Ambiguous-outcome cleanup + verify** — even when enabled, if a create is sent but no valid id is
-   captured (missing/malformed id, or a transport/timeout error after the request left), the client
-   **deletes any same-named collection and then re-checks that none remain**:
-   - verified gone → `JellyfinAmbiguousCreateError` (fail-closed, no orphan);
-   - **could NOT be verified** (the lookup/delete also failed) → `JellyfinOrphanError`, thrown **loudly
-     and never swallowed** so a possible orphan is visible for manual reconciliation. It is
-     redaction-safe (no title/name in the message).
+Why: a collection CREATE is non-idempotent and its outcome can be **ambiguous** (the server may create
+the collection but the response is malformed/lost, or the connection drops after the create). A client
+**cannot guarantee** it captured the revocation handle under sustained network failure, which could
+leave an **unrevocable external collection with no Phase 9 ledger row**. Rather than change the Phase 9
+guarantee from "no untracked external copy" to "loud failure with residual orphan risk", real create is
+deferred to **Phase 12's durable publish-intent outbox** (record-before-create keyed on the opaque item
+id + a reconciliation sweep), which makes live create orphan-safe by construction.
 
-   Either way the caller records **no ledger row**. Caveat: cleanup deletes by name, so a pre-existing
-   same-named collection could be removed — an acceptable trade vs an unrevocable orphan, and only
-   reachable once live publish is opted into.
-
-**Honest limit (no false guarantee):** the default gate makes orphaning **impossible** (no create
-happens). Once live publish is enabled, an orphan **cannot be fully eliminated client-side** under
-sustained network failure — the verify+loud-error surfaces it, but a durable publish-intent outbox
-(record-before-create keyed on the opaque item id) is a **future phase**. That residual risk is exactly
-why live create is gated default-off and smoke-validated.
-
-So a live publish needs **three** switches: `JELLYFIN_ENABLE_NETWORK=true`,
-`JELLYFIN_ALLOW_LIVE_PUBLISH=true`, and `PUBLISH_EXTERNAL_IDENTITY=allow`.
+**Invariant preserved:** no real create path exists in this release → **no orphan is possible**. Real
+`findItemsByRefs` (read-only) and `deleteCollection` (revoke by opaque handle) are both orphan-safe and
+gated by `JELLYFIN_ENABLE_NETWORK`. Dry-run publishing (which never calls create) also works.
 
 ## Injected fetch — how CI stays offline
 
@@ -90,8 +78,8 @@ Revoke deletes the collection (a BoxSet) by its opaque id via `DELETE /Items/{id
 2. Deliver it via a **Docker/Unraid secret file** and point `JELLYFIN_API_KEY_FILE` at it — **never**
    inline the key in compose/env.
 3. Set `JELLYFIN_BASE_URL` to the LAN address (e.g. `http://192.168.1.10:8096`).
-4. To actually publish: set **both** `JELLYFIN_ENABLE_NETWORK=true` and `PUBLISH_EXTERNAL_IDENTITY=allow`.
-5. Validate first: `JELLYFIN_ENABLE_NETWORK=true npm run smoke:jellyfin -- tmdb 603` (read-only).
+4. Enable real HTTP (find + revoke): set `JELLYFIN_ENABLE_NETWORK=true`. (Live create is disabled until Phase 12.)
+5. Validate: `JELLYFIN_ENABLE_NETWORK=true npm run smoke:jellyfin -- tmdb 603` (read-only find).
 
 ## Out of scope (unchanged)
 

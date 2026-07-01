@@ -206,15 +206,16 @@ Jellyfin's own logs/exports are beyond reach). `JELLYFIN_*` is parser/redaction 
 key redacted, never ledgered). A live publish still needs `PUBLISH_EXTERNAL_IDENTITY=allow`. See
 `docs/PHASE_10_JELLYFIN_ADAPTER.md`.
 
-## Real Jellyfin HTTP client (Phase 11 — gated, injected-fetch)
+## Real Jellyfin HTTP client (Phase 11 — gated, injected-fetch, find + revoke)
 
-The real Jellyfin client over an **injected `fetch`** (no new dep), behind **two default-off gates**:
-`JELLYFIN_ENABLE_NETWORK=true` **and** `PUBLISH_EXTERNAL_IDENTITY=allow`. The api key is header-only
-(`X-Emby-Token`), redacted, never in URL/log/ledger/error. Per-request timeout + **bounded** retry for
-idempotent search/delete (create is never retried), fail-closed. **No live server in CI** — every test
-injects a fake transport, and the same shared `JellyfinClient` contract passes for fake and real. The
-endpoint mapping is **provisional** (isolated in `mapping.ts`) and validated only by the opt-in
-`npm run smoke:jellyfin` (read-only, out of CI). See `docs/PHASE_11_JELLYFIN_HTTP.md`.
+The real Jellyfin client over an **injected `fetch`** (no new dep), gated by `JELLYFIN_ENABLE_NETWORK`
+(default off). It ships **real find + revoke** only; live collection **create is hard-disabled**
+(deferred to **Phase 12's** durable publish-intent outbox — a remote create can't guarantee a captured
+revocation handle under network failure, so allowing it could orphan an unrevocable external copy). The
+api key is header-only (`X-Emby-Token`), redacted, never in URL/log/ledger/error. Per-request timeout +
+**bounded** retry for idempotent search/delete, fail-closed. **No live server in CI** — every test injects
+a fake transport, and the shared FIND contract passes for fake and real. Mapping is **provisional**,
+validated only by the opt-in read-only `npm run smoke:jellyfin`. See `docs/PHASE_11_JELLYFIN_HTTP.md`.
 
 ## Not in this slice
 

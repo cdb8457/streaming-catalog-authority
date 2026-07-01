@@ -17,15 +17,6 @@ export function isJellyfinNetworkEnabled(env: Env = process.env): boolean {
 }
 
 /**
- * True ONLY when `JELLYFIN_ALLOW_LIVE_PUBLISH` is exactly `"true"`. Fail-closed default: OFF. This is a
- * SEPARATE switch from network-enable: it gates the ambiguous, non-idempotent `createCollection`, so
- * real live publishing stays off until an operator has validated create/delete via `smoke:jellyfin`.
- */
-export function isJellyfinLivePublishAllowed(env: Env = process.env): boolean {
-  return resolveVar(env, 'JELLYFIN_ALLOW_LIVE_PUBLISH').value === 'true';
-}
-
-/**
  * Construct the REAL Jellyfin client over a CALLER-SUPPLIED transport. Two independent conditions must
  * hold or it FAILS CLOSED:
  *   1. `JELLYFIN_ENABLE_NETWORK=true` (default off) — else {@link JellyfinNetworkDisabledError};
@@ -33,7 +24,8 @@ export function isJellyfinLivePublishAllowed(env: Env = process.env): boolean {
  *
  * `fetchImpl` is a REQUIRED parameter — there is NO implicit platform-fetch default here, so this
  * module cannot touch the network on its own; only an operator entrypoint that BOTH enabled the gate
- * AND injected a real transport can. (Live publishing ALSO requires `PUBLISH_EXTERNAL_IDENTITY=allow`.)
+ * AND injected a real transport can. The client ships real FIND + REVOKE only — live collection create
+ * is hard-disabled (deferred to Phase 12), so no real live-publish path exists in this release.
  */
 export function createRealJellyfinClient(fetchImpl: FetchLike, env: Env = process.env): JellyfinHttpClient {
   if (!isJellyfinNetworkEnabled(env)) {
@@ -47,7 +39,7 @@ export function createRealJellyfinClient(fetchImpl: FetchLike, env: Env = proces
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
     fetch: fetchImpl,
-    allowLivePublish: isJellyfinLivePublishAllowed(env), // default off — createCollection fails closed
+    // Real find + revoke only; live create is hard-disabled in the client (deferred to Phase 12).
     ...(config.timeoutMs !== undefined ? { timeoutMs: config.timeoutMs } : {}),
   });
 }

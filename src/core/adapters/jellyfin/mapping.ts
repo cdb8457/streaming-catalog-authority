@@ -39,36 +39,11 @@ export function matchItems(refs: readonly JellyfinRef[], body: unknown): string[
   return out;
 }
 
-/** POST a new collection named `name` over `itemIds`. */
-export function buildCreateCollectionRequest(name: string, itemIds: readonly string[]): HttpRequestSpec {
-  return { method: 'POST', path: '/Collections', query: { Name: name, Ids: [...itemIds].join(',') } };
-}
-
-/** Parse the create-collection response to the OPAQUE collection id (the handle). */
-export function parseCreateCollectionResponse(body: unknown): string {
-  const id = (body as { Id?: unknown })?.Id;
-  if (typeof id !== 'string' || id.length === 0) throw new Error('jellyfin: create collection returned no id');
-  return id;
-}
-
 /** DELETE a collection (a BoxSet item) by its opaque id. Requires a deletion-capable API key. */
 export function buildDeleteCollectionRequest(collectionId: string): HttpRequestSpec {
   return { method: 'DELETE', path: `/Items/${encodeURIComponent(collectionId)}` };
 }
 
-/** GET BoxSet collections by name — used ONLY to clean up an AMBIGUOUS create (see http-client). */
-export function buildFindCollectionsByNameRequest(name: string): HttpRequestSpec {
-  return { method: 'GET', path: '/Items', query: { Recursive: 'true', IncludeItemTypes: 'BoxSet', SearchTerm: name, Fields: 'Name' } };
-}
-
-/** Parse a BoxSet search response and return the opaque ids whose Name EXACTLY equals `name`. */
-export function matchCollectionIdsByName(name: string, body: unknown): string[] {
-  const items = (body as { Items?: unknown })?.Items;
-  if (!Array.isArray(items)) return [];
-  const out: string[] = [];
-  for (const raw of items) {
-    const it = raw as { Id?: unknown; Name?: unknown };
-    if (typeof it.Id === 'string' && it.Name === name) out.push(it.Id);
-  }
-  return out;
-}
+// NOTE: collection CREATE mapping (POST /Collections + response parse) and the ambiguous-create
+// cleanup helpers are intentionally OMITTED here — real live create is deferred to Phase 12's durable
+// publish-intent outbox (a remote create cannot guarantee a captured revocation handle under failure).

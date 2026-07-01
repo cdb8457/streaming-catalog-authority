@@ -1,5 +1,5 @@
 import { FakeJellyfinClient } from '../src/core/adapters/jellyfin/fake-client.js';
-import { runJellyfinClientContract, type ContractHarness } from './jellyfin-contract-kit.js';
+import { runJellyfinFindContract, runJellyfinCreateContract, type ContractHarness } from './jellyfin-contract-kit.js';
 
 let passed = 0;
 let failed = 0;
@@ -16,7 +16,8 @@ const h: ContractHarness = {
 
 async function main(): Promise<void> {
   console.log('Running Phase 11 shared JellyfinClient contract vs the fake (Stage 11.1):\n');
-  await runJellyfinClientContract('FakeJellyfinClient', h, (library) => new FakeJellyfinClient(library));
+  await runJellyfinFindContract('FakeJellyfinClient', h, (library) => new FakeJellyfinClient(library));
+  await runJellyfinCreateContract('FakeJellyfinClient', h, (library) => new FakeJellyfinClient(library));
 
   console.log(`\n${passed} passed, ${failed} failed.`);
   if (failed > 0) {
