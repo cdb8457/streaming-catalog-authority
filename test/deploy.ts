@@ -102,6 +102,19 @@ test('docs — PHASE_3_DEPLOYMENT covers Unraid, *_FILE, keystore separation, op
   assert(/separate volume/i.test(doc), 'doc states keystore/pgdata separation');
 });
 
+test('docs — production-gate wording is accurate (memory guard is CLOSED/enforced)', () => {
+  const doc = read('docs/PHASE_3_DEPLOYMENT.md');
+  // stale: the memory-mode guard must NOT be described as an open "guard ... OPEN" gate anymore.
+  assert(!/guard[^\n]*\bopen\b/i.test(doc), 'no stale "guard ... OPEN" wording (memory guard is enforced)');
+  assert(!/production guard open/i.test(doc), 'no "production guard OPEN" phrase');
+  // accurate: memory is refused in production (matches README + the Phase 4 guard).
+  assert(/CUSTODIAN_MODE=memory[\s\S]{0,200}refused/i.test(doc), 'doc ties CUSTODIAN_MODE=memory to "refused"');
+  assert(/refused in production/i.test(doc), 'doc states memory is refused in production');
+  // O4 still open; O5 open as automation while rewrap tooling exists.
+  assert(/O4[^\n]*OPEN/i.test(doc), 'O4 still open');
+  assert(/O5[^\n]*OPEN/i.test(doc) && /ops:rewrap-kek/.test(doc), 'O5 automation open but rewrap tooling documented');
+});
+
 test('unraid template — one-shot, no ports, *_FILE secrets, separate keystore (Stage 5.3)', () => {
   assert(exists('deploy/unraid-catalog-authority.xml'), 'unraid template exists');
   const xml = read('deploy/unraid-catalog-authority.xml');
