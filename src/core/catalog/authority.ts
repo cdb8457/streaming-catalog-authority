@@ -224,17 +224,16 @@ export class CatalogAuthority {
     try { status = await this.custodian.status(ctrl.key_id); } catch { return null; }
     if (status !== 'active') return null;
 
-    const { rows } = await this.pool.query(
-      `SELECT ref_value_ct FROM provider_refs WHERE item_id = $1 AND ref_type = $2 AND present AND ref_value_ct IS NOT NULL`,
-      [itemId, refType],
-    );
+    const refQuery = `SELECT ref_value_ct FROM provider_refs WHERE item_id = $1 AND ref_type = $2 AND present AND ref_value_ct IS NOT NULL`;
+    const { rows } = await this.pool.query(refQuery, [itemId, refType]);
     if (!rows[0]) return null;
+    const originalCt = rows[0].ref_value_ct as Buffer;
 
     let dek: Buffer;
     try { dek = await this.custodian.get(ctrl.key_id, ctrl.cur_epoch); } catch { return null; }
     const names: string[] = [];
     try {
-      const refValue = decryptUtf8(dek, rows[0].ref_value_ct as Buffer, this.aad(itemId, ctrl.cur_epoch, refField(refType)));
+      const refValue = decryptUtf8(dek, originalCt, this.aad(itemId, ctrl.cur_epoch, refField(refType)));
       // register the disclosed value (raw + JSON-escaped) for redaction during this scope only.
       for (const variant of [refValue, JSON.stringify(refValue).slice(1, -1)]) {
         if (variant.length === 0) continue;
@@ -246,6 +245,11 @@ export class CatalogAuthority {
       let recheck: string;
       try { recheck = await this.custodian.status(ctrl.key_id); } catch { return null; }
       if (recheck !== 'active' || (await this.control(itemId))?.shred_state !== 'active') return null;
+      // ...AND the SPECIFIC ref row is still CURRENT — not detached/replaced since the initial read
+      // (updateIdentity can set present=false / ref_value_ct=NULL, or re-encrypt it). Comparing the
+      // exact ciphertext we decrypted fails closed on any change, so a stale ref is never disclosed.
+      const cur = (await this.pool.query(refQuery, [itemId, refType])).rows[0];
+      if (!cur || !(cur.ref_value_ct as Buffer).equals(originalCt)) return null;
 
       const view: AdapterRefView = { itemId, refType, refValue };
       return await fn(view); // adapter output is advisory — the bridge never persists it

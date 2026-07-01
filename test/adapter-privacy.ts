@@ -6,6 +6,7 @@ import { startEmbedded } from './embedded-pg.js';
 import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
+import type { KeyCustodian, ProvisionResult, DestructionReceipt, KeyStatus, StaleProvisioning } from '../src/core/crypto/custodian.js';
 import { FakeProviderAdapter } from '../src/core/adapters/fake-adapter.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
 import { installCompletionSecret, testKek } from './crypto-setup.js';
@@ -25,6 +26,23 @@ const freshKeystore = (): string => { const d = mkdtempSync(path.join(tmpdir(), 
 
 const TITLE = 'SECRET-TITLE-do-not-leak';
 const HASH = 'HASHVALUE-123-scoped';
+
+/** Wraps a custodian and runs a hook on the SECOND status() call — used to inject a concurrent
+ * ref detach into the bridge's recheck window (TOCTOU regression). */
+class DetachOnRecheckCustodian implements KeyCustodian {
+  statusCalls = 0;
+  constructor(private readonly inner: KeyCustodian, private readonly onSecondStatus: () => Promise<void>) {}
+  provision(op: string, item: string, epoch: number): Promise<ProvisionResult> { return this.inner.provision(op, item, epoch); }
+  commitProvision(op: string): Promise<void> { return this.inner.commitProvision(op); }
+  get(keyId: string, epoch: number): Promise<Buffer> { return this.inner.get(keyId, epoch); }
+  destroy(op: string, keyId: string): Promise<DestructionReceipt> { return this.inner.destroy(op, keyId); }
+  listStaleProvisioning(): Promise<StaleProvisioning[]> { return this.inner.listStaleProvisioning(); }
+  async status(keyId: string): Promise<KeyStatus> {
+    this.statusCalls++;
+    if (this.statusCalls === 2) await this.onSecondStatus();
+    return this.inner.status(keyId);
+  }
+}
 
 async function main(): Promise<void> {
   let server: Awaited<ReturnType<typeof startEmbedded>> | null = null;
@@ -97,6 +115,27 @@ async function main(): Promise<void> {
     assertEq(await auth.withProviderRef(gone, 'infohash', () => 'called'), null, 'forgotten item -> null');
     assertEq(await auth.withProviderRef(id, 'tmdb', () => 'called'), null, 'missing ref type -> null');
     assertEq(auth.secrets.size(), 0, 'no lingering registrations after fail-closed paths');
+  });
+
+  // 6. TOCTOU: a ref detached/replaced DURING the bridge must fail closed (Codex regression) --
+  await test('withProviderRef — fail-closed if the ref is detached during the bridge (TOCTOU)', async () => {
+    const id2 = mintItemId();
+    const inner = new FileCustodian(freshKeystore(), secret, kek);
+    let auth2!: CatalogAuthority;
+    const custodian2 = new DetachOnRecheckCustodian(inner, async () => {
+      // a concurrent detach landing inside the bridge's status-recheck window
+      await auth2.updateIdentity(id2, { title: 'v2', providerRefs: [] });
+    });
+    auth2 = new CatalogAuthority(pool, custodian2);
+    await auth2.addItem(id2, { title: 'Detach Me', providerRefs: [{ type: 'infohash', value: 'DETACH-HASH' }] });
+
+    const adapter = new FakeProviderAdapter(new Set(['DETACH-HASH']));
+    const result = await auth2.withProviderRef(id2, 'infohash', (v) => adapter.resolveRef(v));
+    assertEq(result, null, 'stale/detached ref -> fail closed (null)');
+    assertEq(adapter.seen.length, 0, 'adapter NEVER received the detached ref');
+    assertEq(auth2.secrets.size(), 0, 'no lingering registrations after the fail-closed path');
+    const stillPresent = Number((await pool.query('SELECT count(*) AS c FROM provider_refs WHERE item_id=$1 AND ref_type=$2 AND present', [id2, 'infohash'])).rows[0].c);
+    assertEq(stillPresent, 0, 'sanity: the ref was actually detached mid-bridge');
   });
 
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });
