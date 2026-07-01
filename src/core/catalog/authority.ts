@@ -7,6 +7,7 @@ import {
 } from '../crypto/envelope.js';
 import type { KeyCustodian } from '../crypto/custodian.js';
 import type { AdapterRefView } from '../adapters/adapter.js';
+import type { PublishableIdentity, PublishableField } from '../adapters/publisher.js';
 import { SecretStore } from '../secrets/secret-store.js';
 import { createRedactingLogger, type LogSink, type RedactingLogger } from '../redaction/logger.js';
 
@@ -253,6 +254,74 @@ export class CatalogAuthority {
 
       const view: AdapterRefView = { itemId, refType, refValue };
       return await fn(view); // adapter output is advisory — the bridge never persists it
+    } finally {
+      for (const n of names) this.secrets.delete(n);
+      zeroize(dek);
+    }
+  }
+
+  /**
+   * Phase 8 — scoped identity disclosure for the PUBLISHER BOUNDARY. Decrypts the identity and
+   * yields a MINIMIZED `PublishableIdentity` containing ONLY the caller's declared `requires`
+   * fields (`title` / `year` / `providerRefs`) — never `externalIds`, `metadata`, or ciphertext.
+   * Disclosed strings are registered with the SecretStore for the lifetime of `fn` ONLY (logging
+   * inside is redacted) and deleted afterwards. Fail-closed: returns null if the lineage/key is not
+   * active OR the item is absent/forgotten/shredded. TOCTOU-hardened: at the linearization point it
+   * rechecks the item is still present + NOT forgotten + `identity_ct` UNCHANGED, so a forget/update
+   * landing mid-bridge fails closed. The value `fn` returns is advisory and is NEVER persisted.
+   */
+  async withPublishableIdentity<T>(itemId: string, requires: readonly PublishableField[], fn: (identity: PublishableIdentity) => Promise<T> | T): Promise<T | null> {
+    this.assertId(itemId);
+    const ctrl = await this.control(itemId);
+    if (!ctrl || ctrl.shred_state !== 'active') return null; // fail closed (forgotten/shredded)
+    let status: string;
+    try { status = await this.custodian.status(ctrl.key_id); } catch { return null; }
+    if (status !== 'active') return null;
+
+    const itemQuery = `SELECT present, forgotten, identity_ct FROM items WHERE id = $1`;
+    const item0 = (await this.pool.query(itemQuery, [itemId])).rows[0];
+    if (!item0 || !item0.present || item0.forgotten || !item0.identity_ct) return null;
+    const originalIdentityCt = item0.identity_ct as Buffer;
+
+    let dek: Buffer;
+    try { dek = await this.custodian.get(ctrl.key_id, ctrl.cur_epoch); } catch { return null; }
+    const names: string[] = [];
+    try {
+      const want = new Set(requires);
+      const full = this.decryptIdentity(dek, itemId, ctrl.cur_epoch, originalIdentityCt);
+      const minimal: { itemId: string; title?: string; year?: number | null; providerRefs?: Array<{ type: string; value: string }> } = { itemId };
+      const disclosed: string[] = [];
+      if (want.has('title') && full.title != null) { minimal.title = full.title; disclosed.push(full.title); }
+      if (want.has('year')) minimal.year = full.year ?? null;
+      if (want.has('providerRefs')) {
+        const refRows = (await this.pool.query(
+          `SELECT ref_type, ref_value_ct FROM provider_refs WHERE item_id = $1 AND present AND ref_value_ct IS NOT NULL`,
+          [itemId],
+        )).rows;
+        const refs = refRows.map((r) => {
+          const value = decryptUtf8(dek, r.ref_value_ct as Buffer, this.aad(itemId, ctrl.cur_epoch, refField(r.ref_type)));
+          disclosed.push(value);
+          return { type: r.ref_type as string, value };
+        });
+        if (refs.length > 0) minimal.providerRefs = refs;
+      }
+      // register every disclosed string (raw + JSON-escaped) for redaction during this scope only.
+      for (const val of disclosed) for (const variant of [val, JSON.stringify(val).slice(1, -1)]) {
+        if (variant.length === 0) continue;
+        const name = `pub:${randomUUID()}`;
+        this.secrets.set(name, variant);
+        names.push(name);
+      }
+      // recheck-before-return (linearization point): custodian active + DB shred_state active + the
+      // item still present, NOT forgotten, and identity_ct UNCHANGED — a forget/update mid-bridge
+      // fails closed so a stale or forgotten identity is never disclosed.
+      let recheck: string;
+      try { recheck = await this.custodian.status(ctrl.key_id); } catch { return null; }
+      if (recheck !== 'active' || (await this.control(itemId))?.shred_state !== 'active') return null;
+      const cur = (await this.pool.query(itemQuery, [itemId])).rows[0];
+      if (!cur || !cur.present || cur.forgotten || !cur.identity_ct || !(cur.identity_ct as Buffer).equals(originalIdentityCt)) return null;
+
+      return await fn(minimal); // advisory — the bridge never persists the result
     } finally {
       for (const n of names) this.secrets.delete(n);
       zeroize(dek);
