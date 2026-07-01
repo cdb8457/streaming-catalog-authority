@@ -36,12 +36,23 @@ leave an **unrevocable external collection with no Phase 9 ledger handle**. Two 
    `createCollection` throws `JellyfinPublishDisabledError` **before any POST** unless explicitly
    enabled. So real create cannot happen until an operator has validated create/delete via
    `smoke:jellyfin`. `findItemsByRefs` (read) and `deleteCollection` (revoke) work without it.
-2. **Ambiguous-outcome cleanup** — even when enabled, if a create is sent but no valid id is captured
-   (missing/malformed id, or a transport/timeout error after the request left), the client best-effort
-   **deletes any same-named collection** and then **fails closed** (`JellyfinAmbiguousCreateError`), so
-   the caller records no ledger row **and** no untracked external collection remains. (Caveat: cleanup
-   deletes by name; a pre-existing same-named collection could be removed — an acceptable trade vs an
-   unrevocable orphan, and only reachable once an operator opted into live publish.)
+2. **Ambiguous-outcome cleanup + verify** — even when enabled, if a create is sent but no valid id is
+   captured (missing/malformed id, or a transport/timeout error after the request left), the client
+   **deletes any same-named collection and then re-checks that none remain**:
+   - verified gone → `JellyfinAmbiguousCreateError` (fail-closed, no orphan);
+   - **could NOT be verified** (the lookup/delete also failed) → `JellyfinOrphanError`, thrown **loudly
+     and never swallowed** so a possible orphan is visible for manual reconciliation. It is
+     redaction-safe (no title/name in the message).
+
+   Either way the caller records **no ledger row**. Caveat: cleanup deletes by name, so a pre-existing
+   same-named collection could be removed — an acceptable trade vs an unrevocable orphan, and only
+   reachable once live publish is opted into.
+
+**Honest limit (no false guarantee):** the default gate makes orphaning **impossible** (no create
+happens). Once live publish is enabled, an orphan **cannot be fully eliminated client-side** under
+sustained network failure — the verify+loud-error surfaces it, but a durable publish-intent outbox
+(record-before-create keyed on the opaque item id) is a **future phase**. That residual risk is exactly
+why live create is gated default-off and smoke-validated.
 
 So a live publish needs **three** switches: `JELLYFIN_ENABLE_NETWORK=true`,
 `JELLYFIN_ALLOW_LIVE_PUBLISH=true`, and `PUBLISH_EXTERNAL_IDENTITY=allow`.

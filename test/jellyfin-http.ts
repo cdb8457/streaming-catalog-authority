@@ -1,4 +1,4 @@
-import { JellyfinHttpClient, JellyfinHttpError, JellyfinPublishDisabledError, JellyfinAmbiguousCreateError } from '../src/core/adapters/jellyfin/http-client.js';
+import { JellyfinHttpClient, JellyfinHttpError, JellyfinPublishDisabledError, JellyfinAmbiguousCreateError, JellyfinOrphanError } from '../src/core/adapters/jellyfin/http-client.js';
 import { createRealJellyfinClient, isJellyfinNetworkEnabled, JellyfinNetworkDisabledError } from '../src/core/adapters/jellyfin/real-factory.js';
 import { ConfigError, type Env } from '../src/config/env.js';
 import type { FetchLike, HttpResponseLike, HttpRequestInit } from '../src/core/adapters/jellyfin/transport.js';
@@ -135,20 +135,35 @@ async function main(): Promise<void> {
     assertEq(t.postCount(), 0, 'no POST was made'); assertEq(t.collectionCount(), 0, 'no external collection created');
   });
 
-  await test('orphan — create that returns a MISSING id cleans up + fails closed (no untracked collection)', async () => {
+  await test('orphan — create returning a MISSING id is cleaned up + VERIFIED gone (fail closed)', async () => {
     const t = new FakeTransport([], 'no-id'); // server creates the boxset but omits Id in the response
     const c = new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: KEY, fetch: t.fetch, allowLivePublish: true });
     let err: unknown; try { await c.createCollection('Orphan Me', ['a']); } catch (e) { err = e; }
-    assert(err instanceof JellyfinAmbiguousCreateError, 'ambiguous create -> JellyfinAmbiguousCreateError (fail closed)');
-    assertEq(t.collectionCount(), 0, 'the ambiguously-created collection was cleaned up (no untracked copy)');
+    assert(err instanceof JellyfinAmbiguousCreateError, 'cleanup confirmed -> JellyfinAmbiguousCreateError');
+    assertEq(t.collectionCount(), 0, 'the ambiguously-created collection was verified gone (no untracked copy)');
   });
 
-  await test('orphan — create whose connection DROPS after server-create is cleaned up + fails closed', async () => {
+  await test('orphan — connection DROPS after server-create; cleanup verifies removal (fail closed)', async () => {
     const t = new FakeTransport([], 'throw-after-create'); // created server-side, then the connection dies
     const c = new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: KEY, fetch: t.fetch, allowLivePublish: true, maxRetries: 0 });
     let err: unknown; try { await c.createCollection('Orphan Me', ['a']); } catch (e) { err = e; }
-    assert(err instanceof JellyfinAmbiguousCreateError, 'ambiguous create -> fail closed');
-    assertEq(t.collectionCount(), 0, 'the collection created before the drop was cleaned up');
+    assert(err instanceof JellyfinAmbiguousCreateError, 'cleanup confirmed -> fail closed');
+    assertEq(t.collectionCount(), 0, 'the collection created before the drop was verified gone');
+  });
+
+  await test('orphan — when cleanup CANNOT be confirmed, fail LOUDLY (distinct, redaction-safe) — never swallowed', async () => {
+    // POST creates the collection then drops; the cleanup lookup ALSO fails (network still down).
+    const TITLE = 'Orphan Me';
+    const dropThenFailCleanup: FetchLike = async (url, init) => {
+      const u = new URL(url);
+      if (init?.method === 'POST' && u.pathname === '/Collections') throw new Error('dropped after create');
+      if ((init?.method ?? 'GET') === 'GET' && u.searchParams.get('IncludeItemTypes') === 'BoxSet') throw new Error('cleanup lookup failed');
+      return stat(404);
+    };
+    const c = new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: KEY, fetch: dropThenFailCleanup, allowLivePublish: true, maxRetries: 0 });
+    let err: unknown; try { await c.createCollection(TITLE, ['a']); } catch (e) { err = e; }
+    assert(err instanceof JellyfinOrphanError, 'unconfirmed cleanup -> JellyfinOrphanError (loud, not swallowed)');
+    assert(!String((err as Error).message).includes(TITLE), 'the orphan error does NOT leak the collection name/title');
   });
 
   console.log(`\n${passed} passed, ${failed} failed.`);

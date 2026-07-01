@@ -19,10 +19,15 @@ export class JellyfinPublishDisabledError extends Error {
   constructor(message: string) { super(message); this.name = 'JellyfinPublishDisabledError'; }
 }
 
-/** A create whose outcome is ambiguous (created server-side but no handle captured). We attempt to
- * clean up so nothing is orphaned, then FAIL CLOSED — the caller records no ledger row. */
+/** An ambiguous create whose partial collection was cleaned up + CONFIRMED gone. Fail-closed, no orphan. */
 export class JellyfinAmbiguousCreateError extends Error {
   constructor(message: string) { super(message); this.name = 'JellyfinAmbiguousCreateError'; }
+}
+
+/** An ambiguous create whose cleanup could NOT be confirmed: a collection MAY remain in Jellyfin.
+ * Thrown LOUDLY (never swallowed) so the possible orphan is visible; redaction-safe (no title/name). */
+export class JellyfinOrphanError extends Error {
+  constructor(message: string) { super(message); this.name = 'JellyfinOrphanError'; }
 }
 
 export interface JellyfinHttpOptions {
@@ -67,15 +72,20 @@ export class JellyfinHttpClient implements JellyfinClient {
   }
 
   /**
-   * Create a collection and return its opaque handle. Two protections keep a live external copy from
-   * ever being ORPHANED (created but with no revocation handle → violates the Phase 9 invariant):
+   * Create a collection and return its opaque handle. Orphan safety (an external collection created
+   * with no revocation handle) has TWO layers:
    *  1. GATED default-off — throws {@link JellyfinPublishDisabledError} BEFORE any POST unless live
-   *     publish was explicitly enabled (post-smoke). So the risky POST cannot happen by default.
-   *  2. AMBIGUOUS-outcome cleanup — if the POST is sent but we cannot capture a valid id (malformed/
-   *     missing id, or a transport/timeout error AFTER the request left, so the server MAY have created
-   *     it), best-effort delete any same-named collection, then FAIL CLOSED with
-   *     {@link JellyfinAmbiguousCreateError}. The caller then records no ledger row AND no untracked
-   *     external collection remains.
+   *     publish was explicitly enabled (post-smoke). In the DEFAULT posture no create happens, so an
+   *     orphan is IMPOSSIBLE.
+   *  2. When enabled, an AMBIGUOUS create (no valid id captured — malformed/missing id, or a
+   *     transport/timeout error after the request left, so the server MAY have created it) triggers a
+   *     cleanup that DELETES same-named collections and then VERIFIES they are gone:
+   *       - verified gone → {@link JellyfinAmbiguousCreateError} (fail-closed, no orphan);
+   *       - NOT verifiable (lookup/delete failed) → {@link JellyfinOrphanError} — thrown LOUDLY so a
+   *         possible orphan is visible for operator reconciliation.
+   *     Either way the caller records no ledger row. NOTE: under sustained network failure an orphan
+   *     cannot be fully eliminated client-side — that residual risk is why live create is gated and
+   *     smoke-validated (a durable publish-intent outbox is a future phase).
    */
   async createCollection(name: string, itemIds: readonly string[]): Promise<string> {
     if (!this.allowLivePublish) {
@@ -90,19 +100,28 @@ export class JellyfinHttpClient implements JellyfinClient {
     }
     if (id !== null) return id; // clean success: handle captured
 
-    // Ambiguous: best-effort clean up any collection we may have just created, then fail closed.
-    await this.cleanupOrphanCandidates(name);
-    throw new JellyfinAmbiguousCreateError('jellyfin createCollection: ambiguous outcome; attempted cleanup of same-named collections — verify none remain');
+    // Ambiguous: clean up any collection we may have just created, and VERIFY it is gone.
+    const cleanup = await this.cleanupOrphanCandidates(name);
+    if (cleanup === 'confirmed') {
+      throw new JellyfinAmbiguousCreateError('jellyfin createCollection: ambiguous outcome; any partial collection was cleaned up (verified gone) — no ledger row written');
+    }
+    throw new JellyfinOrphanError('jellyfin createCollection: ambiguous outcome and cleanup could NOT be confirmed; a collection may remain in Jellyfin — reconcile manually');
   }
 
-  /** Best-effort: find same-named collections and delete them so an ambiguous create never orphans. Never throws. */
-  private async cleanupOrphanCandidates(name: string): Promise<void> {
+  /**
+   * Delete same-named collections and VERIFY removal. Returns 'confirmed' only when a follow-up lookup
+   * shows none remain; 'unconfirmed' if the lookup/delete failed or a collection still remains (so the
+   * caller can surface a possible orphan instead of silently swallowing the failure).
+   */
+  private async cleanupOrphanCandidates(name: string): Promise<'confirmed' | 'unconfirmed'> {
     try {
-      const body = await this.requestJson('cleanupFindCollections', buildFindCollectionsByNameRequest(name), true);
-      for (const cid of matchCollectionIdsByName(name, body)) {
-        try { await this.deleteCollection(cid); } catch { /* best-effort */ }
-      }
-    } catch { /* best-effort — surfaced by the thrown JellyfinAmbiguousCreateError */ }
+      const found = matchCollectionIdsByName(name, await this.requestJson('cleanupFind', buildFindCollectionsByNameRequest(name), true));
+      for (const cid of found) await this.deleteCollection(cid); // throws on a real delete error -> unconfirmed
+      const remaining = matchCollectionIdsByName(name, await this.requestJson('cleanupVerify', buildFindCollectionsByNameRequest(name), true));
+      return remaining.length === 0 ? 'confirmed' : 'unconfirmed';
+    } catch {
+      return 'unconfirmed'; // could not confirm removal — surface a possible orphan, do NOT swallow
+    }
   }
 
   async deleteCollection(collectionId: string): Promise<'deleted' | 'not_found'> {
