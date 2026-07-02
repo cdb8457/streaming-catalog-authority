@@ -160,7 +160,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
 **O4** (managed-KMS adapter) and **O5** (age KEK rotation *automation*); `CUSTODIAN_MODE=memory` is
-refused in production.
+refused in production. Phase 16 defines the external custodian acceptance boundary and O4 evidence
+requirements in `docs/PHASE_16_EXTERNAL_CUSTODIAN_READINESS.md`: `FileCustodian` is still a hardened
+reference harness, live external custodian validation is operator-run, and CI must not require a live
+KMS/cloud service.
 
 ## Provider adapter boundary (Phase 7)
 

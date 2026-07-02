@@ -93,7 +93,9 @@ shape) so the topology is verified even where Docker is unavailable.
 - **O4 — managed-KMS production custodian adapter (OPEN).** `FileCustodian` is a reference harness,
   not a managed KMS. The production custodian — a managed KMS implementing the `KeyCustodian`
   interface, run *outside* the app trust boundary — provides the real deletion/secrecy guarantee and
-  is not built here; it would add a new `CUSTODIAN_MODE`.
+  is not built here; it would add a new `CUSTODIAN_MODE`. Phase 16 narrows the acceptance boundary
+  and required redaction-safe evidence in `docs/PHASE_16_EXTERNAL_CUSTODIAN_READINESS.md`; live
+  external custodian validation remains operator-run and must not become a CI requirement.
 - **O5 — age KEK rotation *automation* (OPEN).** The rewrap **tooling exists** — `ops:rewrap-kek`
   re-wraps every live DEK from `CUSTODIAN_KEK_PREVIOUS` to `CUSTODIAN_KEK` (resumable; identity
   ciphertext untouched; see the runbook). What remains open is **automation / managed rotation**
