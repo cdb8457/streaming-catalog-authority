@@ -23,6 +23,9 @@ Self-hosted catalog/privacy core. One-shot CLIs only. Details: `docs/PHASE_6_LIF
       `docs/templates/PRODUCTION_READINESS_EVIDENCE.md` using
       `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md`; keep live evidence manual/operator-run and
       redaction-safe.
+- [ ] If recurring operations are being configured, use
+      `docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md` as operator-owned schedule/retention guidance;
+      do not add repo-owned cron, daemon, or default scheduling behavior.
 
 ## Rollback (if the new version misbehaves)
 - [ ] Redeploy the previous image.

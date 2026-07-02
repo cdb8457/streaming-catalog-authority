@@ -96,3 +96,5 @@ services, age tooling, production databases, or operator credentials.
 
 Use the release/upgrade checklist in `docs/RELEASE_CHECKLIST.md` to decide when to collect a fresh
 bundle, and use the template in `docs/templates/PRODUCTION_READINESS_EVIDENCE.md` for the report.
+For recurring operator cadence, retention, and alert triage examples, use
+`docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md`.

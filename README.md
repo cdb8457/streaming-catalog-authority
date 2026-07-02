@@ -158,6 +158,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   rehearsal, unattended healthcheck) · `docs/RELEASE_CHECKLIST.md` (operator checklist) ·
   `docs/PHASE_5_RUNBOOK.md` (backup/restore/rewrap + DR matrix) ·
   `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md` (redaction-safe evidence bundle) ·
+  `docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md` (operator-owned schedules/retention) ·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain

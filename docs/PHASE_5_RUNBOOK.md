@@ -105,6 +105,10 @@ bundle. The evidence set summarizes `ops:doctor --json`, offline backup verifica
 restore rehearsal, and `ops:rewrap-kek -- --plan --json`. It is manually collected by the operator,
 redaction-safe, and must not become a CI requirement.
 
+For recurring Unraid User Scripts or cron examples, retention guidance, and alert triage, see
+`docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md`. Those examples are operator-owned templates only,
+not repo-owned scheduling behavior.
+
 ## 6. Interrupted-operation recovery
 
 - **Interrupted shred** (custodian destroy crashed mid-way): the FileCustodian replays its

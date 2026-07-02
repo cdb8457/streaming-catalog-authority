@@ -21,12 +21,12 @@ npm run ops:doctor       # includes a schema-version check (FAIL on mismatch)
 2. `npm run ops:verify-backup -- /backups/pre-upgrade-...json`  — offline sanity.
 3. *(recommended)* `REHEARSAL_ADMIN_DATABASE_URL=... npm run ops:rehearse-restore -- /backups/pre-upgrade-...json` — prove it actually restores.
 4. Deploy the new image; `npm run ops:migrate` (idempotent; records the new `MIGRATION_VERSION`).
-5. `npm run ops:doctor` — must be green (schema-version, privileges, secret, custodian).
+5. `npm run ops:doctor` — must have no FAIL checks; review WARN checks.
 
 ### Rollback procedure (if the new version misbehaves)
 1. Redeploy the previous image.
 2. `npm run ops:backup -- restore /backups/pre-upgrade-...json` (preflight + integrity gate).
-3. `npm run ops:doctor` — confirm green.
+3. `npm run ops:doctor` — confirm no FAIL checks; review WARNs.
 
 ## Backup verification & restore rehearsal
 
@@ -44,6 +44,10 @@ For a shareable production-readiness evidence bundle, use
 `docs/templates/PRODUCTION_READINESS_EVIDENCE.md`. The bundle records doctor JSON, offline backup
 verification, restore rehearsal, and KEK rewrap-plan evidence without including secrets, raw
 identity, provider refs, key material, full env dumps, or production database URLs.
+
+For operator-owned Unraid User Scripts or cron cadence examples, retention guidance, and alert
+triage, use `docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md`. The repo does not install or run any
+scheduler.
 
 ## Unattended healthcheck (Unraid / cron)
 
@@ -69,7 +73,7 @@ Rehearse DR **before** you need it — on a schedule, against a throwaway DB:
 
 1. `ops:verify-backup` the latest artifact (offline).
 2. `ops:rehearse-restore` it into a fresh throwaway DB with the **real** KEK + completion secret.
-3. Confirm the rehearsal report is all-OK (migrate → provision-secret → restore → sample-read).
+3. Confirm the rehearsal report has no FAIL outcome (migrate → provision-secret → restore → sample-read).
 4. Drop the throwaway DB.
 
 If the rehearsal fails, the backup or the key material is not recoverable — fix it **now**. Keep the

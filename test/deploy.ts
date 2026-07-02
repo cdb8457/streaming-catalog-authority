@@ -337,6 +337,41 @@ test('production readiness evidence - Phase 19 doc + template are redaction-safe
   assert(readme.includes('PHASE_19_PRODUCTION_READINESS_EVIDENCE.md') && runbook.includes('PRODUCTION_READINESS_EVIDENCE.md') && checklist.includes('PRODUCTION_READINESS_EVIDENCE.md'), 'Phase 19 evidence docs linked from operator docs');
 });
 
+test('unraid operations schedule - Phase 20 doc is templates-only and redaction-safe', () => {
+  assert(exists('docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md'), 'Phase 20 schedule doc exists');
+  const doc = read('docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md');
+  const readme = read('README.md');
+  const runbook = read('docs/PHASE_5_RUNBOOK.md');
+  const life = read('docs/PHASE_6_LIFECYCLE.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+
+  for (const kw of [
+    'Unraid User Scripts',
+    'cron',
+    'ops:doctor --json',
+    'ops:doctor -- --json',
+    'ops:backup -- dump',
+    'ops:verify-backup',
+    'ops:rehearse-restore',
+    'ops:rewrap-kek -- --plan --json',
+  ]) assert(doc.includes(kw), `Phase 20 doc covers ${kw}`);
+  assert(/REHEARSAL_ADMIN_DATABASE_URL="?<throwaway-db-url>"?/.test(doc), 'Phase 20 doc covers throwaway rehearsal DB placeholder');
+  assert(/documentation only[\s\S]{0,160}no scheduler daemon/i.test(doc), 'Phase 20 doc is docs/templates only');
+  assert(/must not become CI requirements|must not become a CI requirement/i.test(doc), 'Phase 20 doc keeps schedules out of CI');
+  assert(/CI must not require Docker[\s\S]*network[\s\S]*live Jellyfin[\s\S]*live external custodian[\s\S]*cloud services/i.test(doc), 'Phase 20 doc forbids live-service CI requirements');
+  assert(/operator-owned templates only|examples only/i.test(runbook), 'runbook says schedules are operator-owned templates');
+  assert(/FAIL[\s\S]*page[\s\S]*Expected[\s\S]*WARN[\s\S]*not health failures[\s\S]*Other[\s\S]*WARN/i.test(doc), 'Phase 20 doc covers FAIL/WARN triage semantics');
+  assert(/no FAIL checks[\s\S]*WARN/.test(life), 'lifecycle preserves no-FAIL/WARN doctor semantics');
+  assert(/throwaway[\s\S]*must never be the production/i.test(doc), 'restore rehearsal must use throwaway DB and avoid production');
+  assert(/Plan mode is non-mutating[\s\S]*does not\s+close O5/i.test(doc), 'rewrap plan is non-mutating and does not close O5');
+  assert(/independent media[\s\S]*separate failure domains/i.test(doc), 'retention guidance requires separate media/failure domains');
+  assert(/Do not store the FileCustodian keystore, KEK, completion secret, or secret files in the same backup/i.test(doc), 'retention guidance separates key material from DB backups');
+  for (const forbidden of ['/mnt/user/', 'postgresql://', 'CUSTODIAN_KEK=', 'COMPLETION_SECRET=', 'API_KEY=', 'TOKEN=']) {
+    assert(!doc.includes(forbidden), `Phase 20 snippets avoid concrete secret/path pattern ${forbidden}`);
+  }
+  assert(readme.includes('PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md') && runbook.includes('PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md') && life.includes('PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md') && checklist.includes('PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md'), 'Phase 20 doc linked from operator docs');
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
