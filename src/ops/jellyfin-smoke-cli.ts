@@ -1,34 +1,45 @@
-import { createRealJellyfinClient, isJellyfinNetworkEnabled } from '../core/adapters/jellyfin/real-factory.js';
+import { createRealJellyfinClient, isJellyfinNetworkEnabled, isJellyfinLivePublishAllowed } from '../core/adapters/jellyfin/real-factory.js';
+import { runReadOnlySmoke, runWriteSmoke, formatSmokeReport } from '../core/adapters/jellyfin/smoke.js';
 import type { FetchLike } from '../core/adapters/jellyfin/transport.js';
 
 /**
- * Phase 11 — OPT-IN manual smoke against a REAL Jellyfin (NEVER run in CI). It is the validation gate
- * for the PROVISIONAL endpoint mapping: until this passes against your server, do not trust that real
- * Jellyfin publishing works.
+ * Phase 13 — OPT-IN manual smoke against a REAL Jellyfin (NEVER run in CI). Validates the PROVISIONAL
+ * endpoint mapping. Until this passes on your server, do not trust that real Jellyfin publishing works.
  *
- *   JELLYFIN_ENABLE_NETWORK=true JELLYFIN_BASE_URL=... JELLYFIN_API_KEY_FILE=... \
- *   npm run smoke:jellyfin -- <refType> <refValue>
+ *   read-only (safe):  JELLYFIN_ENABLE_NETWORK=true npm run smoke:jellyfin -- <refType> <refValue>
+ *   write   (DESTRUCTIVE, self-cleaning; needs BOTH the --write flag AND JELLYFIN_ALLOW_LIVE_PUBLISH):
+ *     JELLYFIN_ENABLE_NETWORK=true JELLYFIN_ALLOW_LIVE_PUBLISH=true \
+ *     npm run smoke:jellyfin -- --write <refType> <refValue>
  *
- * READ-ONLY: it only resolves how many library items match a provider ref (a GET) — it creates and
- * deletes nothing. This is the ONE place `globalThis.fetch` is used (the explicit operator entrypoint);
- * the core adapter never references a bare fetch.
+ * The write round-trip creates a token-tagged collection, finds it by token, deletes it, and VERIFIES it
+ * is gone — self-cleaning, and it reports LOUDLY if cleanup cannot be confirmed. Output is redaction-safe
+ * (opaque ids/counts only). This is the ONE place besides ops:publish-reconcile that uses the platform transport.
  */
 async function main(): Promise<number> {
   if (!isJellyfinNetworkEnabled()) {
     console.error('refusing: set JELLYFIN_ENABLE_NETWORK=true to run the Jellyfin smoke (default off)');
     return 2;
   }
-  const refType = process.argv[2];
-  const refValue = process.argv[3];
+  const args = process.argv.slice(2);
+  const write = args.includes('--write');
+  const [refType, refValue] = args.filter((a) => a !== '--write');
   if (!refType || !refValue) {
-    console.error('usage: smoke:jellyfin <refType> <refValue>   (read-only: reports how many library items match)');
+    console.error('usage: smoke:jellyfin [--write] <refType> <refValue>   (--write is DESTRUCTIVE + self-cleaning)');
     return 2;
   }
+  if (write && !isJellyfinLivePublishAllowed()) {
+    console.error('refusing --write: also set JELLYFIN_ALLOW_LIVE_PUBLISH=true (it creates + deletes a real collection)');
+    return 2;
+  }
+
   const client = createRealJellyfinClient(globalThis.fetch as unknown as FetchLike);
-  const matched = await client.findItemsByRefs([{ type: refType, value: refValue }]);
-  console.log(`jellyfin smoke: ${matched.length} library item(s) match ${refType}:${refValue}`);
-  console.log('(read-only; validates auth + base URL + the find mapping. Collection create/delete is a further manual step.)');
-  return 0;
+  const ref = { type: refType, value: refValue };
+  const report = write ? await runWriteSmoke(client, ref, { name: 'catalog smoke' }) : await runReadOnlySmoke(client, ref);
+
+  console.log(write ? 'jellyfin WRITE round-trip smoke (DESTRUCTIVE, self-cleaning):' : 'jellyfin read-only smoke:');
+  console.log(formatSmokeReport(report));
+  if (!write) console.log('\n(read-only; validates auth + base URL + the find mapping. Add --write for the full round-trip.)');
+  return report.ok ? 0 : 1;
 }
 
 main().then((code) => process.exit(code)).catch((err) => { console.error('jellyfin smoke failed:', (err as Error).message); process.exit(1); });
