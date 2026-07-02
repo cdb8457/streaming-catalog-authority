@@ -191,14 +191,20 @@ CREATE UNIQUE INDEX IF NOT EXISTS publish_ledger_token_uk ON publish_ledger (cor
 -- replace the old 3-value status CHECK with the 7-state one.
 ALTER TABLE publish_ledger ADD COLUMN IF NOT EXISTS correlation_token TEXT;
 ALTER TABLE publish_ledger ALTER COLUMN external_handle DROP NOT NULL;
+-- Drop the v2 status CHECK by its deterministic auto-name first (robust, no def-text matching)...
+ALTER TABLE publish_ledger DROP CONSTRAINT IF EXISTS publish_ledger_status_check;
 DO $$
 DECLARE c_name TEXT;
 BEGIN
+  -- ...then belt-and-suspenders: drop ANY remaining CHECK on `status` that predates v3 (identified by
+  -- NOT allowing 'planned' — only the v3 constraint does), so an upgraded DB can never reject the new
+  -- intent states. The other table CHECKs reference item_id/external_handle/disclosed_fields, not status.
   FOR c_name IN
     SELECT conname FROM pg_constraint
      WHERE conrelid = 'public.publish_ledger'::regclass AND contype = 'c'
        AND conname <> 'publish_ledger_status_chk'
-       AND pg_get_constraintdef(oid) ILIKE '%status%revoked%'
+       AND pg_get_constraintdef(oid) ILIKE '%status%'
+       AND pg_get_constraintdef(oid) NOT ILIKE '%planned%'
   LOOP EXECUTE format('ALTER TABLE public.publish_ledger DROP CONSTRAINT %I', c_name); END LOOP;
   IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'publish_ledger_status_chk' AND conrelid = 'public.publish_ledger'::regclass) THEN
     ALTER TABLE public.publish_ledger ADD CONSTRAINT publish_ledger_status_chk

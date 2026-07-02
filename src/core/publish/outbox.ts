@@ -88,11 +88,14 @@ export class OutboxService {
       if (!cur || !ACTIONABLE.has(cur.status)) { await client.query('COMMIT'); return 'stuck'; }
 
       // (1) durable-token recovery: if the artifact already exists, ADOPT its handle -> published.
-      let existing: string | null = null;
-      try { existing = await this.target.findByToken(token); } catch { existing = null; }
+      //     A lookup ERROR is NOT "not found": we cannot know whether the collection exists, so we must
+      //     NOT (re)create (that could duplicate the original). Leave the intent stuck and retry later.
+      let existing: string | null;
+      try { existing = await this.target.findByToken(token); }
+      catch { await client.query('COMMIT'); return 'stuck'; } // lookup failed -> unknown -> never create
       if (existing !== null) { await settleIntent(client, row.id, existing); await client.query('COMMIT'); return 'adopted'; }
 
-      // (2) not created yet: (re)create within the retry budget, else fail (surfaced by doctor).
+      // (2) lookup DEFINITIVELY found nothing -> safe to (re)create within the retry budget, else fail.
       if (Number(cur.attempt_count) >= MAX_ATTEMPTS) { await markFailed(client, row.id); await client.query('COMMIT'); return 'failed'; }
       await markInFlight(client, row.id);
       let handle: string | null = null;

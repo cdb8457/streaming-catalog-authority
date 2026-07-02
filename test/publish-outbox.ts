@@ -38,6 +38,7 @@ class FakeTarget implements OutboxTarget {
   createCalls = 0;
   seenIdentities: PublishableIdentity[] = [];
   mode: Mode = 'ok';
+  findMode: 'ok' | 'throw' = 'ok';
   async create(identity: PublishableIdentity, token: string): Promise<string> {
     this.createCalls++;
     this.seenIdentities.push(identity);
@@ -48,6 +49,7 @@ class FakeTarget implements OutboxTarget {
     return handle;
   }
   async findByToken(token: string): Promise<string | null> {
+    if (this.findMode === 'throw') throw new Error('token lookup failed (network down)');
     for (const [h, t] of this.collections) if (t === token) return h;
     return null;
   }
@@ -143,6 +145,34 @@ async function main(): Promise<void> {
     catch (e) { await client.query('ROLLBACK').catch(() => {}); denied = (e as { code?: string }).code === '42501'; }
     finally { client.release(); }
     assert(denied, 'direct UPDATE denied (42501)');
+  });
+
+  await test('reconcile — a findByToken ERROR is NOT treated as not-found: never creates a duplicate', async () => {
+    const id = await seed(); const t = new FakeTarget(); t.mode = 'create-then-throw';
+    await svc(t).publish(id, { dryRun: false }); // collection created + tagged, response lost -> ambiguous
+    assertEq(t.count(), 1, 'one collection exists');
+    t.mode = 'ok'; t.findMode = 'throw'; // the recovery lookup now fails (network still down)
+    const r1 = await new OutboxService(pool, auth, 'allow', t, REQUIRES).reconcile();
+    assertEq(r1.created, 0, 'did NOT create while the lookup was failing'); assertEq(t.count(), 1, 'NO duplicate collection'); assert(r1.stuck >= 1, 'left stuck for retry');
+    t.findMode = 'ok'; // lookup recovers
+    const r2 = await new OutboxService(pool, auth, 'allow', t, REQUIRES).reconcile();
+    assertEq(r2.adopted, 1, 'adopts by token once the lookup works'); assertEq(t.count(), 1, 'still exactly one collection');
+    assertEq((await rowFor(id)).status, 'published', 'settled -> published');
+  });
+
+  await test('migration — v2 status CHECK is upgraded to the v3 intent states (planned insert works)', async () => {
+    // simulate a v2-shaped DB: clear intent-state rows (so the 3-value check can be added), swap in the
+    // old auto-named constraint, then re-run the migration (the upgrade path).
+    await admin.query('DELETE FROM publish_ledger');
+    await admin.query('ALTER TABLE publish_ledger DROP CONSTRAINT publish_ledger_status_chk');
+    await admin.query(`ALTER TABLE publish_ledger ADD CONSTRAINT publish_ledger_status_check CHECK (status IN ('published','revoke_pending','revoked'))`);
+    await migrate(); // upgrade: must drop the old 3-value check and install the 7-state one
+    const id = mintItemId();
+    const intentId = (await pool.query('SELECT cat_publish_plan($1,$2,$3,$4) AS id', [id, 'jellyfin', 'tok-upgrade-' + id.slice(0, 8), ['title']])).rows[0].id;
+    assertEq((await pool.query('SELECT status FROM publish_ledger WHERE id=$1', [intentId])).rows[0].status, 'planned', 'a planned intent inserts on the upgraded DB');
+    // the old auto-named check must be gone
+    const leftover = Number((await admin.query(`SELECT count(*) AS c FROM pg_constraint WHERE conrelid='public.publish_ledger'::regclass AND contype='c' AND conname='publish_ledger_status_check'`)).rows[0].c);
+    assertEq(leftover, 0, 'the v2 status check was dropped');
   });
 
   await test('doctor — surfaces a stuck (ambiguous) publish intent (Phase 12)', async () => {
