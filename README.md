@@ -148,7 +148,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |
 | `ops:verify-backup -- <file>` | **offline** structural check of a backup artifact (no DB) |
 | `ops:rehearse-restore -- <file>` | restore rehearsal into a throwaway `REHEARSAL_ADMIN_DATABASE_URL` (hard-refuses production) |
-| `ops:rewrap-kek` | rotate the KEK (rewrap wrapped DEKs; resumable; identity untouched) |
+| `ops:rewrap-kek [-- --plan [--json]]` | plan or rotate the KEK (preflight counts; explicit rewrap is resumable; identity untouched) |
 
 - **Docker Compose:** `docker-compose.deploy.yml` (keystore on a volume separate from the DB and
   backups; secrets via `*_FILE`; healthchecked Postgres).
@@ -159,11 +159,12 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_5_RUNBOOK.md` (backup/restore/rewrap + DR matrix) · `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
-**O4** (managed-KMS adapter) and **O5** (age KEK rotation *automation*); `CUSTODIAN_MODE=memory` is
-refused in production. Phase 16 defines the external custodian acceptance boundary and O4 evidence
+**O4** (managed-KMS adapter) and **O5** (managed age KEK custody/scheduling); `CUSTODIAN_MODE=memory`
+is refused in production. Phase 16 defines the external custodian acceptance boundary and O4 evidence
 requirements in `docs/PHASE_16_EXTERNAL_CUSTODIAN_READINESS.md`: `FileCustodian` is still a hardened
 reference harness, live external custodian validation is operator-run, and CI must not require a live
-KMS/cloud service.
+KMS/cloud service. Phase 17 adds `ops:rewrap-kek -- --plan` for redaction-safe, non-mutating KEK
+rotation preflight; live rotation remains explicitly operator-run.
 
 ## Provider adapter boundary (Phase 7)
 

@@ -43,6 +43,11 @@ interface KeyFile {
 interface Tombstone { keyId: string; receiptId: string; destroyedAt: string; }
 interface OpFile { operationId: string; kind: 'provision' | 'destroy'; keyId: string; itemId?: string; epoch?: number; }
 interface Journal { keyId: string; receiptId: string; destroyedAt: string; }
+export interface RewrapPlan {
+  needsRewrap: number;
+  alreadyCurrent: number;
+  total: number;
+}
 
 // --- KEK wrap/unwrap + atomic IO (module-level so the static KEK rewrap reuses the EXACT format/AAD) ---
 function wrapDek(kek: Buffer, dek: Buffer, keyId: string): string {
@@ -306,6 +311,44 @@ export class FileCustodian implements KeyCustodian {
       }
     }
     return { rewrapped, skipped, total };
+  }
+
+  /**
+   * Non-mutating KEK rotation preflight. Scans the live wrapped-DEK files and classifies each file
+   * with the same unwrap checks as `rewrapKeystore`, but never writes key files. This lets operators
+   * rehearse/schedule the explicit rotation command without touching identity ciphertext or DEKs.
+   */
+  static planRewrapKeystore(rootDir: string, opts: { fromKek: Buffer; toKek: Buffer }): RewrapPlan {
+    if (opts.fromKek.length !== 32 || opts.toKek.length !== 32) throw new Error('rewrap KEKs must be 32 bytes');
+    const keysDir = path.join(path.resolve(rootDir), 'keys');
+    if (!existsSync(keysDir)) return { needsRewrap: 0, alreadyCurrent: 0, total: 0 };
+    let needsRewrap = 0, alreadyCurrent = 0, total = 0;
+    let files: string[];
+    try {
+      files = readdirSync(keysDir);
+    } catch {
+      throw new Error('KEK rewrap preflight: keystore could not be read');
+    }
+    for (const f of files) {
+      if (!f.endsWith('.json')) continue;
+      total++;
+      let kf: KeyFile;
+      try {
+        kf = JSON.parse(readFileSync(path.join(keysDir, f), 'utf8')) as KeyFile;
+      } catch {
+        throw new Error('KEK rewrap preflight: a key file could not be read');
+      }
+      try { unwrapDek(opts.toKek, kf.wrappedHex, kf.keyId).fill(0); alreadyCurrent++; continue; } catch { /* not yet rewrapped */ }
+      let dek: Buffer;
+      try {
+        dek = unwrapDek(opts.fromKek, kf.wrappedHex, kf.keyId);
+      } catch {
+        throw new Error('KEK rewrap preflight: a key file does not unwrap under the provided previous or new KEK (wrong previous/current KEK or corrupt keystore)');
+      }
+      dek.fill(0);
+      needsRewrap++;
+    }
+    return { needsRewrap, alreadyCurrent, total };
   }
 
   static wipe(rootDir: string): void {

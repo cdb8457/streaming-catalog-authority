@@ -98,9 +98,10 @@ shape) so the topology is verified even where Docker is unavailable.
   external custodian validation remains operator-run and must not become a CI requirement.
 - **O5 — age KEK rotation *automation* (OPEN).** The rewrap **tooling exists** — `ops:rewrap-kek`
   re-wraps every live DEK from `CUSTODIAN_KEK_PREVIOUS` to `CUSTODIAN_KEK` (resumable; identity
-  ciphertext untouched; see the runbook). What remains open is **automation / managed rotation**
-  (scheduling, age-key custody, zero-touch re-keying); rotating the KEK is still a manual operator
-  procedure today.
+  ciphertext untouched; see the runbook), and Phase 17 adds a non-mutating
+  `ops:rewrap-kek -- --plan` preflight with redaction-safe aggregate counts. What remains open is
+  **automation / managed rotation** (scheduling, age-key custody, zero-touch re-keying); rotating
+  the KEK is still an explicit manual operator procedure today.
 
 **Closed / enforced** (no longer an open gate):
 

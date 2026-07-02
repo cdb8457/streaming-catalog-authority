@@ -65,9 +65,19 @@ the replay-and-compare integrity gate and **rolls back** on any mismatch.
 
 ## 5. KEK rotation (rewrap)
 
-Quiesce the app (single-writer), then:
+First run a non-mutating preflight with the same config:
 ```bash
 # CUSTODIAN_KEK = NEW key, CUSTODIAN_KEK_PREVIOUS = OLD key (both base64 32 bytes; _FILE supported)
+npm run ops:rewrap-kek -- --plan
+npm run ops:rewrap-kek -- --plan --json   # stable aggregate counts for scripts
+```
+The plan validates config and scans live wrapped-DEK files without writing them. It reports only
+aggregate counts (`needsRewrap`, `alreadyCurrent`, `total`) and fails closed if a live file unwraps
+under neither the previous nor the new KEK. It must not print KEKs, DEKs, key ids, identity,
+provider refs, or secret file paths.
+
+If the plan succeeds, quiesce the app (single-writer), then run the explicit mutation:
+```bash
 npm run ops:rewrap-kek
 ```
 Re-wraps every live DEK from the old KEK to the new one **in place**; identity ciphertext is
@@ -99,5 +109,6 @@ construction (see Stage 3b), and `ops:doctor` warns if `memory` mode is used out
 
 ## Out of scope (unchanged)
 No provider adapters / Real-Debrid / TorBox / Plex / Jellyfin / Hermes, no scraping / downloading /
-playback, no web/mobile UI, no HTTP daemon, no cloud KMS SDK. Managed-KMS (**O4**) and age KEK
-rotation *automation* (**O5**) remain open production gates — see `docs/PHASE_3_DEPLOYMENT.md`.
+playback, no web/mobile UI, no HTTP daemon, no cloud KMS SDK. Managed-KMS (**O4**) and managed age
+KEK custody/scheduling (**O5**) remain open production gates; see `docs/PHASE_3_DEPLOYMENT.md` and
+`docs/PHASE_17_KEK_ROTATION_READINESS.md`.

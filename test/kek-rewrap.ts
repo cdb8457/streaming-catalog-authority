@@ -1,4 +1,5 @@
 import { createHash, randomBytes } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, readFileSync, writeFileSync, readdirSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -97,6 +98,85 @@ async function main(): Promise<void> {
     assertEq(res.rewrapped, 1, 'only the old-KEK file rewrapped'); assertEq(res.skipped, 2, 'two already current');
     const cTo = new FileCustodian(dir, secret, toKek);
     for (const k of [a.keyId, b.keyId, cKey.keyId]) assert((await cTo.get(k, 0)).length === 32, 'all readable under new KEK');
+  });
+
+  // 4b. non-mutating preflight classifies a mixed keystore -------------------------
+  await test('rewrap plan - mixed keystore reports counts without mutating files', async () => {
+    const dir = freshKeystore();
+    const fromKek = randomBytes(32), toKek = randomBytes(32);
+    const cFrom = new FileCustodian(dir, secret, fromKek);
+    const a = await cFrom.provision('opA', 'itm', 0); await cFrom.commitProvision('opA');
+    const b = await cFrom.provision('opB', 'itm', 0); await cFrom.commitProvision('opB');
+    FileCustodian.rewrapKeystore(dir, { fromKek, toKek });
+    const cFrom2 = new FileCustodian(dir, secret, fromKek);
+    const c = await cFrom2.provision('opC', 'itm', 0); await cFrom2.commitProvision('opC');
+    const before = new Map([a.keyId, b.keyId, c.keyId].map((keyId) => [keyId, JSON.stringify(readKf(dir, keyId))]));
+
+    const plan = FileCustodian.planRewrapKeystore(dir, { fromKek, toKek });
+
+    assertEq(plan.needsRewrap, 1, 'one still needs rewrap');
+    assertEq(plan.alreadyCurrent, 2, 'two already current');
+    assertEq(plan.total, 3, 'three live key files');
+    for (const keyId of [a.keyId, b.keyId, c.keyId]) assertEq(JSON.stringify(readKf(dir, keyId)), before.get(keyId), 'plan did not mutate key files');
+  });
+
+  await test('rewrap plan - wrong KEK fails closed without mutating key files', async () => {
+    const dir = freshKeystore();
+    const fromKek = randomBytes(32), toKek = randomBytes(32);
+    const c = new FileCustodian(dir, secret, fromKek);
+    const { keyId } = await c.provision('op1', 'itm', 0); await c.commitProvision('op1');
+    const before = JSON.stringify(readKf(dir, keyId));
+
+    await assertThrows(() => FileCustodian.planRewrapKeystore(dir, { fromKek: randomBytes(32), toKek }), 'wrong previous KEK', (e) => {
+      assert(/does not unwrap/.test(e.message), 'fail-closed message');
+      assert(!e.message.includes(keyId), 'does not leak key id');
+    });
+    assertEq(JSON.stringify(readKf(dir, keyId)), before, 'key file unchanged after failed plan');
+  });
+
+  await test('rewrap plan - wrong current KEK fails closed on already-current files', async () => {
+    const dir = freshKeystore();
+    const fromKek = randomBytes(32), toKek = randomBytes(32);
+    const c = new FileCustodian(dir, secret, fromKek);
+    const { keyId } = await c.provision('op1', 'itm', 0); await c.commitProvision('op1');
+    FileCustodian.rewrapKeystore(dir, { fromKek, toKek });
+    const before = JSON.stringify(readKf(dir, keyId));
+
+    await assertThrows(() => FileCustodian.planRewrapKeystore(dir, { fromKek, toKek: randomBytes(32) }), 'wrong current KEK', (e) => {
+      assert(/does not unwrap/.test(e.message), 'fail-closed message');
+      assert(!e.message.includes(keyId), 'does not leak key id');
+    });
+    assertEq(JSON.stringify(readKf(dir, keyId)), before, 'key file unchanged after failed plan');
+  });
+
+  await test('rewrap CLI --plan --json reports safe counts and does not mutate', async () => {
+    const dir = freshKeystore();
+    const fromKek = randomBytes(32), toKek = randomBytes(32);
+    const c = new FileCustodian(dir, secret, fromKek);
+    const { keyId } = await c.provision('op1', 'itm', 0); await c.commitProvision('op1');
+    const before = JSON.stringify(readKf(dir, keyId));
+    const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm';
+    const run = spawnSync(npm, ['run', '-s', 'ops:rewrap-kek', '--', '--plan', '--json'], {
+      cwd: process.cwd(),
+      encoding: 'utf8',
+      shell: process.platform === 'win32',
+      env: {
+        ...process.env,
+        CUSTODIAN_KEYSTORE_DIR: dir,
+        CUSTODIAN_KEK: toKek.toString('base64'),
+        CUSTODIAN_KEK_PREVIOUS: fromKek.toString('base64'),
+      },
+    });
+    assertEq(run.status, 0, `CLI exited successfully (${run.stderr})`);
+    const out = JSON.parse(run.stdout) as Record<string, unknown>;
+    assertEq(out.mode, 'plan', 'plan mode');
+    assertEq(out.mutates, false, 'reported non-mutating');
+    assertEq(out.needsRewrap, 1, 'one needs rewrap');
+    assertEq(out.alreadyCurrent, 0, 'none already current');
+    assertEq(out.total, 1, 'one total');
+    assert(!run.stdout.includes(keyId) && !run.stderr.includes(keyId), 'CLI output does not leak key id');
+    assert(!run.stdout.includes(dir) && !run.stderr.includes(dir), 'CLI output does not leak keystore path');
+    assertEq(JSON.stringify(readKf(dir, keyId)), before, 'CLI plan did not mutate key file');
   });
 
   // 5. wrong previous KEK: fails closed, no mutation -------------------------------
