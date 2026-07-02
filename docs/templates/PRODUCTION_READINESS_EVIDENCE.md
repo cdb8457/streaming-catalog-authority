@@ -80,6 +80,10 @@ media identity, full environment dumps, or unredacted logs.
 
 - O4 managed/external custodian status:
 - O4 evidence reviewed:
+- O4 live adapter name/version/commit:
+- O4 live acceptance command shape:
+- O4 live acceptance result:
+- O4 evidence confirms no CI dependency on live custodian/cloud/network: yes / no
 - O5 managed age KEK custody/scheduling status:
 - O5 evidence reviewed:
 - Accepted production readiness exceptions:

@@ -43,6 +43,11 @@ The Phase 18 production gate warnings must be interpreted explicitly:
 A production report with only these WARN checks and no FAIL checks can still be operationally
 healthy, but it is not evidence that O4/O5 are closed.
 
+For O4, include Phase 21 external-custodian acceptance evidence only when a real external/managed
+adapter has been validated manually. `npm run test:custodian-acceptance` is deterministic CI
+coverage for the acceptance harness mechanics; it is not live external-custodian evidence and does
+not close O4 by itself. See `docs/PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md`.
+
 ## Backup Verification Evidence
 
 `ops:verify-backup -- <artifact>` is offline structural evidence. It does not require a database,

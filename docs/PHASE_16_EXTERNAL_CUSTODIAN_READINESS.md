@@ -60,7 +60,7 @@ A production adapter must satisfy the same interface-level behavior as the refer
 Future adapters should import and run the shared conformance kit:
 
 ```ts
-import { runCustodianContract } from './test/custodian-contract.js';
+import { runCustodianContract } from './test/helpers/custodian-contract-kit.js';
 import type { KeyCustodian } from './src/core/crypto/custodian.js';
 
 await runCustodianContract('ExternalCustodian', () => makeFreshIsolatedCustodian());
@@ -74,6 +74,10 @@ deterministic: no live network, cloud account, real KMS, or operator credential 
 External-service validation is an operator-run gate, not an automated CI dependency. CI may run
 against a local fake/emulator only if the fake has no network or cloud dependency and does not weaken
 the `KeyCustodian` contract.
+
+Phase 21 adds `docs/PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md` and
+`test/custodian-acceptance.ts` as the deterministic acceptance harness for this path. That harness
+narrows O4 by making the test/evidence mechanics concrete; it does not close O4 by itself.
 
 ## Failure Semantics
 

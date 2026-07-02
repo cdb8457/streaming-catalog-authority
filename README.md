@@ -159,6 +159,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_5_RUNBOOK.md` (backup/restore/rewrap + DR matrix) ·
   `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md` (redaction-safe evidence bundle) ·
   `docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md` (operator-owned schedules/retention) ·
+  `docs/PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md` (external custodian acceptance harness) ·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -166,7 +167,10 @@ Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open produc
 is refused in production. Phase 16 defines the external custodian acceptance boundary and O4 evidence
 requirements in `docs/PHASE_16_EXTERNAL_CUSTODIAN_READINESS.md`: `FileCustodian` is still a hardened
 reference harness, live external custodian validation is operator-run, and CI must not require a live
-KMS/cloud service. Phase 17 adds `ops:rewrap-kek -- --plan` for redaction-safe, non-mutating KEK
+KMS/cloud service. Phase 21 adds the importable contract kit
+(`test/helpers/custodian-contract-kit.ts`) and deterministic local acceptance suite
+(`npm run test:custodian-acceptance`) for future adapters; it does not close O4. Phase 17 adds
+`ops:rewrap-kek -- --plan` for redaction-safe, non-mutating KEK
 rotation preflight; live rotation remains explicitly operator-run.
 `ops:doctor` surfaces this explicitly: production file-custodian deployments WARN that O4 remains
 open, and production deployments WARN that O5 managed KEK custody/scheduling remains open while

@@ -38,7 +38,7 @@ function walkTs(dir: string): string[] {
 console.log('Running Phase 3 deployment topology suite (Stage 3.4):\n');
 
 const compose = read('docker-compose.deploy.yml');
-const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string> };
+const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 
 test('compose — defines postgres + one-shot ops services', () => {
   assert(/^\s{2}postgres:/m.test(compose), 'postgres service');
@@ -370,6 +370,46 @@ test('unraid operations schedule - Phase 20 doc is templates-only and redaction-
     assert(!doc.includes(forbidden), `Phase 20 snippets avoid concrete secret/path pattern ${forbidden}`);
   }
   assert(readme.includes('PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md') && runbook.includes('PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md') && life.includes('PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md') && checklist.includes('PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md'), 'Phase 20 doc linked from operator docs');
+});
+
+test('external custodian acceptance - Phase 21 harness is local, wired, and keeps O4 open', () => {
+  assert(exists('docs/PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md'), 'Phase 21 acceptance doc exists');
+  assert(exists('test/helpers/custodian-contract-kit.ts'), 'importable custodian contract kit exists');
+  assert(exists('test/custodian-acceptance.ts'), 'Phase 21 local acceptance suite exists');
+  assert(typeof pkg.scripts['test:custodian-acceptance'] === 'string', 'test:custodian-acceptance script present');
+  assert((pkg.scripts.test ?? '').includes('test/custodian-acceptance.ts'), 'acceptance suite in deterministic CI chain');
+
+  const kit = read('test/helpers/custodian-contract-kit.ts');
+  const executable = read('test/custodian-contract.ts');
+  const acceptance = read('test/custodian-acceptance.ts');
+  const phase16 = read('docs/PHASE_16_EXTERNAL_CUSTODIAN_READINESS.md');
+  const phase19 = read('docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md');
+  const phase21 = read('docs/PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md');
+  const tpl = read('docs/templates/PRODUCTION_READINESS_EVIDENCE.md');
+  const readme = read('README.md');
+
+  assert(kit.includes('export async function runCustodianContract'), 'kit exports runCustodianContract');
+  assert(kit.includes('export type CustodianFactory'), 'kit exports documented factory type');
+  assert(!/main\(\)|Running Phase 3 custodian/.test(kit), 'kit has no executable suite side effects');
+  assert(executable.includes("from './helpers/custodian-contract-kit.js'"), 'executable suite imports the helper kit');
+  assert(phase16.includes('./test/helpers/custodian-contract-kit.js'), 'Phase 16 points future adapters at helper kit');
+  assert(acceptance.includes('LocalExternalCustodianHarness') && acceptance.includes('CustodianTransportError'), 'acceptance suite models external failures locally');
+
+  for (const doc of [phase16, phase19, phase21, tpl, readme]) {
+    assert(/O4[\s\S]{0,120}open/i.test(doc) || /does not close O4/i.test(doc), 'linked docs keep O4 open');
+  }
+  assert(/FileCustodian[\s\S]{0,160}reference harness/i.test(phase21), 'Phase 21 states FileCustodian is reference harness');
+  assert(/operator-run|manually/i.test(phase21), 'Phase 21 keeps live validation operator-run');
+  assert(/must not be wired into `npm run ci`/.test(phase21), 'Phase 21 keeps live validation out of CI');
+  assert(readme.includes('PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md') && readme.includes('test:custodian-acceptance'), 'README links Phase 21 doc and script');
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  for (const banned of [
+    'aws-sdk', '@aws-sdk/client-kms', '@google-cloud/kms', '@azure/keyvault-keys',
+    '@azure/identity', 'hashicorp-vault-client', 'node-vault', 'openbao', 'node-fetch',
+    'undici', 'axios', 'got',
+  ]) assert(!allDeps.includes(banned), `no external custodian/cloud/network SDK dependency ${banned}`);
+  assert(!/(docker compose|curl |http:\/\/|https:\/\/|fetch\(|globalThis\.fetch)/.test(pkg.scripts['test:custodian-acceptance'] ?? ''), 'acceptance script has no Docker/network command');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
