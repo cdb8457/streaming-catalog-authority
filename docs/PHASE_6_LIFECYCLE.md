@@ -39,6 +39,12 @@ npm run ops:doctor       # includes a schema-version check (FAIL on mismatch)
   `DATABASE_URL`). Use a genuinely separate database. `memory` custodian cannot decrypt in a
   rehearsal — use the `file` custodian (real keys).
 
+For a shareable production-readiness evidence bundle, use
+`docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md` and
+`docs/templates/PRODUCTION_READINESS_EVIDENCE.md`. The bundle records doctor JSON, offline backup
+verification, restore rehearsal, and KEK rewrap-plan evidence without including secrets, raw
+identity, provider refs, key material, full env dumps, or production database URLs.
+
 ## Unattended healthcheck (Unraid / cron)
 
 `ops:doctor --json` emits a stable contract (`{ reportVersion, ok, checks[] }`, redaction-safe) and

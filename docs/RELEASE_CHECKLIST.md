@@ -13,16 +13,21 @@ Self-hosted catalog/privacy core. One-shot CLIs only. Details: `docs/PHASE_6_LIF
 - [ ] Deploy the new image.
 - [ ] `ops:migrate` (idempotent; records the new schema version).
 - [ ] `ops:version` — db == expected.
-- [ ] `ops:doctor` — **all green** (schema-version, runtime least-privilege, secret match, custodian, keystore).
+- [ ] `ops:doctor` — no FAIL checks; review any WARN checks. Expected O4/O5 production WARNs
+      must be recorded in the readiness evidence bundle.
 
 ## Post-upgrade
 - [ ] `ops:doctor --json` wired into the unattended healthcheck (cron / Unraid User Scripts).
 - [ ] Smoke: read a known item; run a fresh `ops:backup -- dump`.
+- [ ] If production readiness is being reviewed, complete
+      `docs/templates/PRODUCTION_READINESS_EVIDENCE.md` using
+      `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md`; keep live evidence manual/operator-run and
+      redaction-safe.
 
 ## Rollback (if the new version misbehaves)
 - [ ] Redeploy the previous image.
 - [ ] `ops:backup -- restore /backups/pre-upgrade-YYYY-MM-DD.json` (preflight + integrity gate).
-- [ ] `ops:doctor` — confirm green.
+- [ ] `ops:doctor` — confirm no FAIL checks; review WARNs.
 
 > No down-migrations exist by design — **rollback = restore the pre-upgrade backup**. That is why
 > the pre-upgrade backup + rehearsal steps are mandatory.

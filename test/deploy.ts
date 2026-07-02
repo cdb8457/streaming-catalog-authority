@@ -284,6 +284,59 @@ test('ops lifecycle — Phase 6 CLIs + docs are wired (version/verify/rehearse/d
   assert(/no down-migrations/i.test(life) && /restore the pre-upgrade backup/i.test(life), 'lifecycle doc states the rollback model');
 });
 
+test('production readiness evidence - Phase 19 doc + template are redaction-safe and wired', () => {
+  assert(exists('docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md'), 'Phase 19 evidence doc exists');
+  assert(exists('docs/templates/PRODUCTION_READINESS_EVIDENCE.md'), 'production readiness template exists');
+  const doc = read('docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md');
+  const tpl = read('docs/templates/PRODUCTION_READINESS_EVIDENCE.md');
+  const readme = read('README.md');
+  const runbook = read('docs/PHASE_5_RUNBOOK.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+
+  for (const kw of [
+    'ops:doctor -- --json',
+    'ops:verify-backup',
+    'ops:rehearse-restore',
+    'ops:rewrap-kek -- --plan --json',
+    'production-gate-o4-external-custodian',
+    'production-gate-o5-managed-kek',
+    'throwaway database',
+  ]) assert(doc.includes(kw), `Phase 19 doc covers ${kw}`);
+  assert(/must not become a CI\s+requirement/.test(doc), 'Phase 19 doc keeps live evidence out of CI');
+  assert(/PASS[\s\S]*WARN[\s\S]*FAIL/.test(doc), 'Phase 19 doc explains doctor PASS/WARN/FAIL');
+  assert(/offline structural evidence/i.test(doc), 'backup verification described as offline evidence');
+  assert(/non-mutating KEK rotation preflight/i.test(doc), 'rewrap plan described as non-mutating');
+  assert(/does not close O5 by itself/i.test(doc), 'rewrap plan does not close O5');
+
+  for (const heading of [
+    'Environment / Build',
+    'Doctor Result',
+    'Backup Verification',
+    'Restore Rehearsal',
+    'KEK Rewrap Plan',
+    'Open Gate Status',
+    'Failures Observed',
+    'Operator / Reviewer Signoff',
+  ]) assert(tpl.includes(`## ${heading}`), `template has ${heading}`);
+  for (const kw of [
+    'Catalog Authority commit or build',
+    'production-gate-o4-external-custodian',
+    'production-gate-o5-managed-kek',
+    'O5 remains open after this plan alone',
+    'Throwaway database confirmed',
+    'Operator confirms no secret values or key material included',
+  ]) assert(tpl.includes(kw), `template covers ${kw}`);
+  for (const forbiddenField of ['KEK', 'DEK', 'Completion secret', 'API key', 'Token', 'Database URL', 'Raw identity', 'Provider ref', 'Media title']) {
+    assert(!new RegExp(`^- ${forbiddenField}:`, 'mi').test(tpl), `template does not request ${forbiddenField}`);
+  }
+  assert(/Do not include KEKs[\s\S]*raw identity[\s\S]*provider refs[\s\S]*media titles[\s\S]*secret file paths/i.test(tpl), 'template states omit/redact boundary');
+  assert(!/\ball green\b/i.test(checklist), 'release checklist does not use stale "all green" doctor wording');
+  assert(!/\bconfirm green\b/i.test(checklist), 'release checklist does not use stale "confirm green" doctor wording');
+  assert(/ops:doctor[\s\S]{0,120}no FAIL checks[\s\S]{0,120}WARN/i.test(checklist), 'upgrade checklist uses no-FAIL/WARN doctor semantics');
+  assert(/confirm no FAIL checks; review WARNs/i.test(checklist), 'rollback checklist uses no-FAIL/WARN doctor semantics');
+  assert(readme.includes('PHASE_19_PRODUCTION_READINESS_EVIDENCE.md') && runbook.includes('PRODUCTION_READINESS_EVIDENCE.md') && checklist.includes('PRODUCTION_READINESS_EVIDENCE.md'), 'Phase 19 evidence docs linked from operator docs');
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

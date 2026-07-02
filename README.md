@@ -156,7 +156,9 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   one-shot ops container; no ports/UI).
 - **Docs:** `docs/PHASE_6_LIFECYCLE.md` (upgrade/rollback, backup verification, restore + DR
   rehearsal, unattended healthcheck) · `docs/RELEASE_CHECKLIST.md` (operator checklist) ·
-  `docs/PHASE_5_RUNBOOK.md` (backup/restore/rewrap + DR matrix) · `docs/PHASE_3_DEPLOYMENT.md`.
+  `docs/PHASE_5_RUNBOOK.md` (backup/restore/rewrap + DR matrix) ·
+  `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md` (redaction-safe evidence bundle) ·
+  `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
 **O4** (managed-KMS adapter) and **O5** (managed age KEK custody/scheduling); `CUSTODIAN_MODE=memory`
@@ -168,6 +170,9 @@ rotation preflight; live rotation remains explicitly operator-run.
 `ops:doctor` surfaces this explicitly: production file-custodian deployments WARN that O4 remains
 open, and production deployments WARN that O5 managed KEK custody/scheduling remains open while
 pointing to `ops:rewrap-kek -- --plan`.
+For shareable production-readiness review, use
+`docs/templates/PRODUCTION_READINESS_EVIDENCE.md`; it captures doctor, backup verification, restore
+rehearsal, KEK rewrap-plan, and O4/O5 gate evidence without requesting secrets or raw identity.
 
 ## Provider adapter boundary (Phase 7)
 

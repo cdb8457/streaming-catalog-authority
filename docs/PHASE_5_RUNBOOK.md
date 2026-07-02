@@ -97,6 +97,14 @@ untouched. **Resumable + idempotent** (safe to re-run after an interruption). Af
 `CUSTODIAN_KEK_PREVIOUS` from the runtime config — normal operation uses only `CUSTODIAN_KEK`.
 The age-encrypted KEK files are decrypted operator-side **before** the rewrap.
 
+## 5a. Production readiness evidence
+
+Use `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md` and
+`docs/templates/PRODUCTION_READINESS_EVIDENCE.md` when preparing a shareable production-readiness
+bundle. The evidence set summarizes `ops:doctor --json`, offline backup verification, throwaway-DB
+restore rehearsal, and `ops:rewrap-kek -- --plan --json`. It is manually collected by the operator,
+redaction-safe, and must not become a CI requirement.
+
 ## 6. Interrupted-operation recovery
 
 - **Interrupted shred** (custodian destroy crashed mid-way): the FileCustodian replays its
