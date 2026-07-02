@@ -111,6 +111,13 @@ shape) so the topology is verified even where Docker is unavailable.
   `loadCustodianConfig`; the only override is the explicit `CUSTODIAN_ALLOW_INSECURE_MEMORY=true`
   (not recommended). `ops:doctor` also fails the durability check if `memory` is used in production.
 
+`ops:doctor` now makes the open O4/O5 gates visible to operators in text and `--json` output
+without making them hard failures. In production, `CUSTODIAN_MODE=file` emits
+`production-gate-o4-external-custodian` as WARN to state that `FileCustodian` is still a reference
+harness, and every production report emits `production-gate-o5-managed-kek` as WARN until managed
+age KEK custody/scheduling exists. The O5 warning points operators to the redaction-safe preflight
+path: `ops:rewrap-kek -- --plan`.
+
 ## Out of scope (unchanged)
 
 No provider adapters / Real-Debrid / TorBox / Plex / Jellyfin, no scraping / downloading /

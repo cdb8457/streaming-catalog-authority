@@ -59,3 +59,7 @@ The mutating rewrap remains explicitly operator-triggered. There is no backgroun
 implicit rotation during normal reads/writes, no new runtime dependency, and no change to encryption
 semantics: identity ciphertext is untouched, DEKs remain wrapped by KEK, and FileCustodian remains a
 hardened reference harness rather than the production KMS.
+
+`ops:doctor` reflects this production gate with the redaction-safe WARN check
+`production-gate-o5-managed-kek`, pointing operators to `ops:rewrap-kek -- --plan` while keeping
+managed age KEK custody/scheduling open.

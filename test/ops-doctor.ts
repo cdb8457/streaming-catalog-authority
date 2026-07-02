@@ -23,6 +23,7 @@ async function test(name: string, fn: () => Promise<void> | void): Promise<void>
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
 function assertEq(a: unknown, b: unknown, msg: string): void { if (a !== b) throw new Error(`${msg} (expected ${String(b)}, got ${String(a)})`); }
 const state = (r: DoctorReport, name: string): string => r.checks.find((c) => c.name === name)?.state ?? 'absent';
+const detail = (r: DoctorReport, name: string): string => r.checks.find((c) => c.name === name)?.detail ?? '';
 const tmpDirs: string[] = [];
 const freshKeystore = (): string => { const d = mkdtempSync(path.join(tmpdir(), 'doctor-')); tmpDirs.push(d); return d; };
 
@@ -39,8 +40,8 @@ async function main(): Promise<void> {
 
   console.log('Running Phase 5 ops:doctor suite (Stage 5.1):\n');
 
-  // 1. healthy deployment -> all green ----------------------------------------
-  await test('doctor — healthy deployment passes every check', async () => {
+  // 1. healthy deployment -> no failures, with explicit open production gates --
+  await test('doctor - healthy deployment passes health checks and warns on open production gates', async () => {
     const dir = freshKeystore();
     const r = await runDoctor({ admin, pool, custodian: new FileCustodian(dir, secret, kek), completionSecret: secret, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
     assert(r.ok, `doctor ok (states: ${r.checks.map((c) => `${c.name}=${c.state}`).join(', ')})`);
@@ -52,6 +53,10 @@ async function main(): Promise<void> {
     assertEq(state(r, 'completion-secret'), 'pass', 'secret matches');
     assertEq(state(r, 'custodian-reachable'), 'pass', 'custodian ok');
     assertEq(state(r, 'keystore'), 'pass', 'keystore ok');
+    assertEq(state(r, 'production-gate-o4-external-custodian'), 'warn', 'file custodian leaves O4 open');
+    assert(detail(r, 'production-gate-o4-external-custodian').includes('FileCustodian is a hardened reference harness'), 'O4 detail names reference harness boundary');
+    assertEq(state(r, 'production-gate-o5-managed-kek'), 'warn', 'managed KEK custody/scheduling leaves O5 open');
+    assert(detail(r, 'production-gate-o5-managed-kek').includes('ops:rewrap-kek -- --plan'), 'O5 detail points at preflight path');
   });
 
   // 2. completion-secret mismatch -> fail, redaction-safe ---------------------
@@ -78,6 +83,8 @@ async function main(): Promise<void> {
   await test('doctor — memory custodian in production fails the durability check', async () => {
     const r = await runDoctor({ admin, pool, custodian: new InMemoryCustodian(secret), completionSecret: secret, custodianMode: 'memory', appEnv: 'production' });
     assertEq(state(r, 'custodian-durability'), 'fail', 'memory-in-prod fail');
+    assertEq(state(r, 'production-gate-o4-external-custodian'), 'absent', 'file-specific O4 warning is not emitted for memory mode');
+    assertEq(state(r, 'production-gate-o5-managed-kek'), 'warn', 'O5 visibility still emitted in production');
     assert(!r.ok, 'overall fail');
   });
 
@@ -127,6 +134,8 @@ async function main(): Promise<void> {
     assertEq(typeof parsed.ok, 'boolean', 'ok is boolean');
     assert(Array.isArray(parsed.checks) && parsed.checks.length > 0, 'checks array');
     for (const c of parsed.checks) assert(typeof c.name === 'string' && ['pass', 'warn', 'fail'].includes(c.state) && typeof c.detail === 'string', 'each check well-formed');
+    assert(parsed.checks.some((c) => c.name === 'production-gate-o4-external-custodian' && c.state === 'warn' && c.detail.includes('O4 open')), 'JSON includes O4 production gate warning');
+    assert(parsed.checks.some((c) => c.name === 'production-gate-o5-managed-kek' && c.state === 'warn' && c.detail.includes('ops:rewrap-kek -- --plan')), 'JSON includes O5 production gate warning');
     // redaction on a failing (mismatch) report
     const wrong = 'JSON-SECRET-SENTINEL';
     const bad = await runDoctor({ admin, pool, custodian: new FileCustodian(freshKeystore(), wrong, kek), completionSecret: wrong, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
@@ -134,7 +143,18 @@ async function main(): Promise<void> {
     assert(!badJson.includes(wrong) && !badJson.includes(secret), 'no secret value in the JSON output');
   });
 
-  // 8. HARDENING: an unexpected inability to probe the runtime role is a FAIL --
+  // 8. text output surfaces gate visibility without changing exit semantics ----
+  await test('doctor text - includes production gate warnings without secrets', async () => {
+    const dir = freshKeystore();
+    const r = await runDoctor({ admin, pool, custodian: new FileCustodian(dir, secret, kek), completionSecret: secret, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
+    const text = formatDoctorReport(r);
+    assert(text.includes('WARN  production-gate-o4-external-custodian: O4 open'), 'text includes O4 warning');
+    assert(text.includes('WARN  production-gate-o5-managed-kek: O5 open'), 'text includes O5 warning');
+    assert(text.includes('doctor: OK'), 'warnings do not fail doctor');
+    assert(!text.includes(secret) && !text.includes(kek.toString('base64')) && !text.includes(dir), 'text does not leak secret values or keystore path');
+  });
+
+  // 9. HARDENING: an unexpected inability to probe the runtime role is a FAIL --
   await test('doctor — runtime-privilege probe that cannot run is a hard FAIL (not warn)', async () => {
     // pool answers `SELECT 1` (db-app-reachable passes) but connect() throws (probes cannot run).
     const brokenPool = { query: async () => ({ rows: [{ c: 1, u: 'x' }] }), connect: async () => { throw new Error('probe conn down'); } } as unknown as PgPool;

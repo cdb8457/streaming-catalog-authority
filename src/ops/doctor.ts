@@ -62,6 +62,14 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     add('custodian-durability', deps.appEnv === 'production' ? 'fail' : 'warn',
       'memory custodian is in-process and loses all keys on restart (dev/test only)');
   }
+  if (deps.appEnv === 'production' && deps.custodianMode === 'file') {
+    add('production-gate-o4-external-custodian', 'warn',
+      'O4 open: FileCustodian is a hardened reference harness, not external/managed production custodian evidence');
+  }
+  if (deps.appEnv === 'production') {
+    add('production-gate-o5-managed-kek', 'warn',
+      'O5 open: managed age KEK custody/scheduling is not built; use ops:rewrap-kek -- --plan for redaction-safe preflight');
+  }
 
   // DB reachability --------------------------------------------------------------
   let ownerOk = false;

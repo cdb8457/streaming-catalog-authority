@@ -41,6 +41,18 @@ Validates: not `memory` in production, DB owner+app reachable, schema migrated, 
 least-privileged** (cannot write tables, cannot read/set the secret), **completion secret matches**
 `crypto_config`, custodian reachable, keystore writable. Run it before serving and on a schedule.
 
+In production, `ops:doctor` also surfaces open production gates as WARN checks in both text and
+`--json` output:
+
+- `production-gate-o4-external-custodian`: emitted for `CUSTODIAN_MODE=file` because
+  `FileCustodian` is a hardened reference harness, not external/managed custodian evidence.
+- `production-gate-o5-managed-kek`: managed age KEK custody/scheduling remains open. The
+  redaction-safe operator preflight is `npm run ops:rewrap-kek -- --plan`.
+
+These WARN checks keep `doctor: OK` and exit 0 when no FAIL checks are present; they are production
+readiness visibility, not enforcement. `CUSTODIAN_MODE=memory` in production still FAILS unless the
+explicit insecure override has already allowed config loading.
+
 ## 3. Backup
 
 ```bash

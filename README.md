@@ -144,7 +144,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:init` | first run: migrate + provision the completion secret + self-check |
 | `ops:migrate` | apply schema + grants (owner), idempotent; records the schema version |
 | `ops:version` | db schema version vs this build (exit 1 on mismatch) |
-| `ops:doctor [--json]` | **read-only** production self-check (config, schema version, runtime least-privilege, secret match, custodian, keystore); `--json` is the stable unattended-healthcheck contract; non-zero exit on any failure |
+| `ops:doctor [--json]` | **read-only** production self-check (config, schema version, runtime least-privilege, secret match, custodian, keystore, O4/O5 production gate WARN visibility); `--json` is the stable unattended-healthcheck contract; non-zero exit on any failure |
 | `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |
 | `ops:verify-backup -- <file>` | **offline** structural check of a backup artifact (no DB) |
 | `ops:rehearse-restore -- <file>` | restore rehearsal into a throwaway `REHEARSAL_ADMIN_DATABASE_URL` (hard-refuses production) |
@@ -165,6 +165,9 @@ requirements in `docs/PHASE_16_EXTERNAL_CUSTODIAN_READINESS.md`: `FileCustodian`
 reference harness, live external custodian validation is operator-run, and CI must not require a live
 KMS/cloud service. Phase 17 adds `ops:rewrap-kek -- --plan` for redaction-safe, non-mutating KEK
 rotation preflight; live rotation remains explicitly operator-run.
+`ops:doctor` surfaces this explicitly: production file-custodian deployments WARN that O4 remains
+open, and production deployments WARN that O5 managed KEK custody/scheduling remains open while
+pointing to `ops:rewrap-kek -- --plan`.
 
 ## Provider adapter boundary (Phase 7)
 

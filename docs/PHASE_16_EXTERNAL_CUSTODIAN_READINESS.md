@@ -118,3 +118,7 @@ Minimum evidence before O4 can close:
   restored DB without custodian prerequisites fails closed.
 
 Until that evidence exists, O4 remains open.
+
+`ops:doctor` reflects this production gate: in production with `CUSTODIAN_MODE=file`, it emits the
+redaction-safe WARN check `production-gate-o4-external-custodian` rather than describing the
+reference harness as complete managed-KMS readiness.
