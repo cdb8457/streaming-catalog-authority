@@ -26,6 +26,8 @@ export async function runRevocation(pool: Pool, revoker: RevocationAdapter): Pro
   let revoked = 0;
   let failed = 0;
   for (const row of rows) {
+    // A revoke_pending row is always settled (has a handle); guard defensively for the nullable type.
+    if (row.externalHandle === null) { await markAttempt(pool, row.id); failed++; continue; }
     let ok = false;
     try {
       const status = (await revoker.revoke(row.externalHandle)).status;

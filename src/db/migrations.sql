@@ -163,21 +163,48 @@ CREATE TABLE IF NOT EXISTS aborted_operations (
 -- rejects anything that is not one of the allowed field names, so a value can never be stored here.
 -- Owner-managed: the app writes it only through the cat_publish_* SECURITY DEFINER functions (SELECT
 -- only otherwise). Records LIVE publishes only — a dry-run creates no row.
+-- Phase 12 extends this to a durable publish-intent OUTBOX (still identity-free): a `correlation_token`
+-- (opaque idempotency/recovery key — a durable pointer to the external collection, tagged with the same
+-- token) and a nullable `external_handle` (unknown until a create is confirmed), plus intent lifecycle
+-- states. The token — NOT an in-memory response handle — is the recovery source of truth: an ambiguous
+-- create is reconciled by searching the external system for the token (adopt the handle, or prove gone).
 CREATE TABLE IF NOT EXISTS publish_ledger (
-  id               BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-  item_id          TEXT NOT NULL CHECK (item_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
-  target           TEXT NOT NULL CHECK (length(btrim(target)) > 0),
-  external_handle  TEXT NOT NULL CHECK (length(btrim(external_handle)) > 0),
-  disclosed_fields TEXT[] NOT NULL DEFAULT '{}'
-                     CHECK (disclosed_fields <@ ARRAY['title','year','providerRefs']::text[]),
-  status           TEXT NOT NULL DEFAULT 'published'
-                     CHECK (status IN ('published', 'revoke_pending', 'revoked')),
-  attempt_count    INTEGER NOT NULL DEFAULT 0,
-  created_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
-  updated_at       TIMESTAMPTZ NOT NULL DEFAULT now()
+  id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  item_id           TEXT NOT NULL CHECK (item_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+  target            TEXT NOT NULL CHECK (length(btrim(target)) > 0),
+  external_handle   TEXT CHECK (external_handle IS NULL OR length(btrim(external_handle)) > 0), -- NULL until captured
+  correlation_token TEXT,                                                                       -- opaque; identity-free
+  disclosed_fields  TEXT[] NOT NULL DEFAULT '{}'
+                      CHECK (disclosed_fields <@ ARRAY['title','year','providerRefs']::text[]),
+  status            TEXT NOT NULL DEFAULT 'published'
+                      CONSTRAINT publish_ledger_status_chk
+                      CHECK (status IN ('planned', 'in_flight', 'ambiguous', 'published', 'revoke_pending', 'revoked', 'failed')),
+  attempt_count     INTEGER NOT NULL DEFAULT 0,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS publish_ledger_item_idx ON publish_ledger (item_id);
 CREATE INDEX IF NOT EXISTS publish_ledger_status_idx ON publish_ledger (status);
+CREATE UNIQUE INDEX IF NOT EXISTS publish_ledger_token_uk ON publish_ledger (correlation_token) WHERE correlation_token IS NOT NULL;
+
+-- v2 -> v3 upgrade (idempotent; no-ops on a fresh v3 table): add the token, allow a NULL handle, and
+-- replace the old 3-value status CHECK with the 7-state one.
+ALTER TABLE publish_ledger ADD COLUMN IF NOT EXISTS correlation_token TEXT;
+ALTER TABLE publish_ledger ALTER COLUMN external_handle DROP NOT NULL;
+DO $$
+DECLARE c_name TEXT;
+BEGIN
+  FOR c_name IN
+    SELECT conname FROM pg_constraint
+     WHERE conrelid = 'public.publish_ledger'::regclass AND contype = 'c'
+       AND conname <> 'publish_ledger_status_chk'
+       AND pg_get_constraintdef(oid) ILIKE '%status%revoked%'
+  LOOP EXECUTE format('ALTER TABLE public.publish_ledger DROP CONSTRAINT %I', c_name); END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'publish_ledger_status_chk' AND conrelid = 'public.publish_ledger'::regclass) THEN
+    ALTER TABLE public.publish_ledger ADD CONSTRAINT publish_ledger_status_chk
+      CHECK (status IN ('planned', 'in_flight', 'ambiguous', 'published', 'revoke_pending', 'revoked', 'failed'));
+  END IF;
+END $$;
 
 -- ------------------------------------------------------- append-only guard ---
 
@@ -637,6 +664,77 @@ BEGIN
 END;
 $$;
 
+-- --------------------------------------------- publish-intent outbox (Phase 12)
+
+-- Record a DURABLE publish intent BEFORE any external side effect. Identity-free: opaque item_id, a
+-- target, the disclosed field NAMES, and an opaque correlation_token (the recovery key — the external
+-- collection is tagged with the same token). Returns the new intent id. Status starts 'planned'.
+CREATE OR REPLACE FUNCTION cat_publish_plan(p_item_id TEXT, p_target TEXT, p_token TEXT, p_fields TEXT[])
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE v_id BIGINT;
+BEGIN
+  IF p_token IS NULL OR length(btrim(p_token)) = 0 THEN RAISE EXCEPTION 'publish intent requires a correlation token'; END IF;
+  INSERT INTO public.publish_ledger (item_id, target, correlation_token, disclosed_fields, status)
+  VALUES (p_item_id, p_target, p_token, COALESCE(p_fields, '{}'), 'planned')
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END;
+$$;
+
+-- Per-intent advisory lock (xact-scoped): serializes reconcilers so a single intent is acted on once
+-- (no duplicate external creates). Distinct hash namespace from cat_lock_item.
+CREATE OR REPLACE FUNCTION cat_publish_lock_intent(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('publish_intent:' || p_id::text, 0));
+END;
+$$;
+
+-- Mark an intent in_flight (bumping attempt_count) just before the external create. Only from a
+-- retry-eligible state. Returns whether it transitioned.
+CREATE OR REPLACE FUNCTION cat_publish_mark_in_flight(p_id BIGINT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.publish_ledger SET status = 'in_flight', attempt_count = attempt_count + 1, updated_at = now()
+   WHERE id = p_id AND status IN ('planned', 'ambiguous', 'failed');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+-- Mark an in_flight intent AMBIGUOUS (create sent, outcome unknown). Durable — recovery is by token.
+CREATE OR REPLACE FUNCTION cat_publish_mark_ambiguous(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.publish_ledger SET status = 'ambiguous', updated_at = now()
+   WHERE id = p_id AND status = 'in_flight';
+END;
+$$;
+
+-- Capture the external handle and settle the intent to 'published' (a revocable Phase 9 tombstone).
+-- Only from a non-terminal intent state; requires a non-empty handle. Returns whether it settled.
+CREATE OR REPLACE FUNCTION cat_publish_settle(p_id BIGINT, p_handle TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  IF p_handle IS NULL OR length(btrim(p_handle)) = 0 THEN RAISE EXCEPTION 'settle requires a non-empty external handle'; END IF;
+  UPDATE public.publish_ledger SET external_handle = p_handle, status = 'published', updated_at = now()
+   WHERE id = p_id AND status IN ('planned', 'in_flight', 'ambiguous');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+-- Mark an intent FAILED (retryable/terminal — bounded by the reconciler). Bumps attempt_count.
+CREATE OR REPLACE FUNCTION cat_publish_mark_failed(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.publish_ledger SET status = 'failed', updated_at = now()
+   WHERE id = p_id AND status IN ('planned', 'in_flight', 'ambiguous');
+END;
+$$;
+
 -- ------------------------------------------------------------- privileges ----
 
 DO $$
@@ -689,6 +787,12 @@ REVOKE ALL ON FUNCTION
   cat_publish_reconcile_forgotten(),
   cat_publish_mark_revoked(BIGINT),
   cat_publish_mark_attempt(BIGINT),
+  cat_publish_plan(TEXT, TEXT, TEXT, TEXT[]),
+  cat_publish_lock_intent(BIGINT),
+  cat_publish_mark_in_flight(BIGINT),
+  cat_publish_mark_ambiguous(BIGINT),
+  cat_publish_settle(BIGINT, TEXT),
+  cat_publish_mark_failed(BIGINT),
   set_completion_secret(TEXT),
   set_schema_version(INTEGER)
 FROM PUBLIC;
@@ -711,5 +815,11 @@ GRANT EXECUTE ON FUNCTION
   cat_publish_record(TEXT, TEXT, TEXT, TEXT[]),
   cat_publish_reconcile_forgotten(),
   cat_publish_mark_revoked(BIGINT),
-  cat_publish_mark_attempt(BIGINT)
+  cat_publish_mark_attempt(BIGINT),
+  cat_publish_plan(TEXT, TEXT, TEXT, TEXT[]),
+  cat_publish_lock_intent(BIGINT),
+  cat_publish_mark_in_flight(BIGINT),
+  cat_publish_mark_ambiguous(BIGINT),
+  cat_publish_settle(BIGINT, TEXT),
+  cat_publish_mark_failed(BIGINT)
 TO app;

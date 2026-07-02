@@ -1,5 +1,8 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { PublishableField } from '../adapters/publisher.js';
+
+/** Either a pool or a single pooled client (the outbox reconciler holds one client for a per-intent lock). */
+export type Db = Pool | PoolClient;
 
 /**
  * Phase 9 — the IDENTITY-FREE publish ledger (persistent audit + revocation driver).
@@ -13,13 +16,16 @@ import type { PublishableField } from '../adapters/publisher.js';
  * role has SELECT + EXECUTE only (never a raw INSERT/UPDATE on the table).
  */
 
-export type PublishLedgerStatus = 'published' | 'revoke_pending' | 'revoked';
+export type PublishLedgerStatus =
+  | 'planned' | 'in_flight' | 'ambiguous'   // Phase 12 outbox intent lifecycle
+  | 'published' | 'revoke_pending' | 'revoked' | 'failed';
 
 export interface PublishLedgerRow {
   id: string; // BIGINT as string
   itemId: string;
   target: string;
-  externalHandle: string;
+  externalHandle: string | null;   // NULL until a create is confirmed (Phase 12)
+  correlationToken: string | null; // opaque recovery key (Phase 12)
   disclosedFields: PublishableField[];
   status: PublishLedgerStatus;
   attemptCount: number;
@@ -43,13 +49,39 @@ export async function reconcileForgotten(pool: Pool): Promise<number> {
   return Number(rows[0].n);
 }
 
+const ROW_COLS = 'id, item_id, target, external_handle, correlation_token, disclosed_fields, status, attempt_count';
+
 /** Rows awaiting revocation (identity-free): id + opaque handle + target + attempt count. */
 export async function listRevokePending(pool: Pool): Promise<PublishLedgerRow[]> {
-  const { rows } = await pool.query(
-    `SELECT id, item_id, target, external_handle, disclosed_fields, status, attempt_count
-       FROM publish_ledger WHERE status = 'revoke_pending' ORDER BY id ASC`,
-  );
+  const { rows } = await pool.query(`SELECT ${ROW_COLS} FROM publish_ledger WHERE status = 'revoke_pending' ORDER BY id ASC`);
   return rows.map(toRow);
+}
+
+// --- Phase 12 publish-intent outbox accessors (identity-free; token is opaque) ---
+
+/** Write a durable 'planned' intent BEFORE any external side effect. Returns the intent id. */
+export async function planPublish(db: Db, args: { itemId: string; target: string; token: string; disclosedFields: readonly PublishableField[] }): Promise<string> {
+  const { rows } = await db.query('SELECT cat_publish_plan($1, $2, $3, $4) AS id', [args.itemId, args.target, args.token, [...args.disclosedFields]]);
+  return String(rows[0].id);
+}
+
+/** Take the xact-scoped per-intent advisory lock (call inside a transaction on the same client). */
+export async function lockIntent(db: Db, id: string): Promise<void> { await db.query('SELECT cat_publish_lock_intent($1)', [id]); }
+export async function markInFlight(db: Db, id: string): Promise<boolean> { return (await db.query('SELECT cat_publish_mark_in_flight($1) AS ok', [id])).rows[0].ok === true; }
+export async function markAmbiguous(db: Db, id: string): Promise<void> { await db.query('SELECT cat_publish_mark_ambiguous($1)', [id]); }
+export async function settleIntent(db: Db, id: string, handle: string): Promise<boolean> { return (await db.query('SELECT cat_publish_settle($1, $2) AS ok', [id, handle])).rows[0].ok === true; }
+export async function markFailed(db: Db, id: string): Promise<void> { await db.query('SELECT cat_publish_mark_failed($1)', [id]); }
+
+/** Actionable outbox intents for a target (planned/in_flight/ambiguous), oldest first. */
+export async function listActionableIntents(db: Db, target: string): Promise<PublishLedgerRow[]> {
+  const { rows } = await db.query(`SELECT ${ROW_COLS} FROM publish_ledger WHERE target = $1 AND status IN ('planned','in_flight','ambiguous') ORDER BY id ASC`, [target]);
+  return rows.map(toRow);
+}
+
+/** Count of stuck intents (in_flight/ambiguous) — surfaced by ops:doctor so they are never hidden. */
+export async function countStuckIntents(pool: Pool): Promise<number> {
+  const { rows } = await pool.query(`SELECT count(*) AS c FROM publish_ledger WHERE status IN ('in_flight','ambiguous')`);
+  return Number(rows[0].c);
 }
 
 /** Count of unrevoked external copies (revoke_pending) — surfaced by ops so it is never hidden. */
@@ -70,7 +102,7 @@ export async function markAttempt(pool: Pool, id: string): Promise<void> {
 }
 
 function toRow(r: {
-  id: string; item_id: string; target: string; external_handle: string;
+  id: string; item_id: string; target: string; external_handle: string | null; correlation_token: string | null;
   disclosed_fields: string[]; status: string; attempt_count: number;
 }): PublishLedgerRow {
   return {
@@ -78,6 +110,7 @@ function toRow(r: {
     itemId: r.item_id,
     target: r.target,
     externalHandle: r.external_handle,
+    correlationToken: r.correlation_token,
     disclosedFields: r.disclosed_fields as PublishableField[],
     status: r.status as PublishLedgerStatus,
     attemptCount: Number(r.attempt_count),

@@ -9,4 +9,6 @@
  * the pre-upgrade backup (see docs/PHASE_6_LIFECYCLE.md / RELEASE_CHECKLIST.md).
  */
 // v2 (Phase 9): adds the identity-free publish_ledger + cat_publish_* functions.
-export const MIGRATION_VERSION = 2;
+// v3 (Phase 12): extends publish_ledger into a durable publish-intent outbox (correlation_token,
+//                nullable external_handle, intent states) + cat_publish_plan/settle/etc.
+export const MIGRATION_VERSION = 3;
