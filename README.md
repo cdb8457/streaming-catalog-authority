@@ -7,8 +7,7 @@ Hermes, job queues, or UI — by design. The core stands alone.
 
 ```bash
 npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
-npm run ci       # typecheck, then all suites: crypto (15) + authority (21) + SecretStore (4)
-                 # + crypto-shred (15) + reconcile (9) + integration (10) + backup (12) = 86 passed
+npm run ci       # typecheck, then all suites (33 embedded-PostgreSQL suites) = 368 passed
 ```
 
 Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.
@@ -154,6 +153,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   backups; secrets via `*_FILE`; healthchecked Postgres).
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
   one-shot ops container; no ports/UI).
+- **Start here — the authoritative production readiness gate:**
+  **`docs/PHASE_22_PRODUCTION_READINESS_GATE.md`** — one consolidated checklist (9 criteria, each
+  marked met / operator-provided / deferred / blocked, with the in-repo evidence source). Read it before
+  claiming production readiness; the docs below are its underlying sources.
 - **Docs:** `docs/PHASE_6_LIFECYCLE.md` (upgrade/rollback, backup verification, restore + DR
   rehearsal, unattended healthcheck) · `docs/RELEASE_CHECKLIST.md` (operator checklist) ·
   `docs/PHASE_5_RUNBOOK.md` (backup/restore/rewrap + DR matrix) ·
