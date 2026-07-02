@@ -18,15 +18,17 @@ const KEY = 'SUPER-SECRET-API-KEY';
 class FakeSmokeClient implements SmokeClient {
   private readonly collections = new Map<string, string>(); // handle -> name(with marker)
   private counter = 0;
-  constructor(private readonly library: Record<string, string> = {}, private readonly faults: Partial<Record<'find' | 'create' | 'findByToken' | 'delete', boolean>> = {}, private readonly leaveDuplicate = false) {}
+  constructor(private readonly library: Record<string, string> = {}, private readonly faults: Partial<Record<'find' | 'create' | 'createThenThrow' | 'findByToken' | 'delete', boolean>> = {}, private readonly leaveDuplicate = false) {}
+  count(): number { return this.collections.size; }
   async findItemsByRefs(refs: readonly JellyfinRef[]): Promise<string[]> {
     if (this.faults.find) throw new Error(`boom ${KEY}`); // a leaky error message
     const out: string[] = []; for (const r of refs) { const id = this.library[`${r.type}:${r.value}`]; if (id) out.push(id); } return out;
   }
   async createTaggedCollection(name: string, _itemIds: readonly string[], _token: string): Promise<string> {
-    if (this.faults.create) throw new Error(`create boom ${KEY}`);
+    if (this.faults.create) throw new Error(`create boom ${KEY}`); // nothing created
     const h = `col-${++this.counter}`; this.collections.set(h, name);
     if (this.leaveDuplicate) this.collections.set(`col-${++this.counter}`, name); // a same-token duplicate remains
+    if (this.faults.createThenThrow) throw new Error(`create-then-drop ${KEY}`); // CREATED + tagged, then the response was lost
     return h;
   }
   async findCollectionByToken(token: string): Promise<string | null> {
@@ -74,6 +76,22 @@ async function main(): Promise<void> {
     // delete throws -> cleanup not confirmed
     const r = await runWriteSmoke(new TaggingClient({ 'tmdb:603': 'item-1' }, { delete: true }), REF, { newToken: tok });
     assert(!r.ok, 'report not ok'); assert(!step(r, 'verify-gone')!.ok && /CLEANUP NOT CONFIRMED/.test(step(r, 'verify-gone')!.detail), 'cleanup uncertainty surfaced');
+    assert(noSecret(r), 'no api key leaked in the cleanup error');
+  });
+
+  await test('write smoke — AMBIGUOUS create (created then response lost) is cleaned up BY TOKEN', async () => {
+    const c = new TaggingClient({ 'tmdb:603': 'item-1' }, { createThenThrow: true });
+    const r = await runWriteSmoke(c, REF, { newToken: tok });
+    assert(!step(r, 'create')!.ok, 'create reported failed'); assert(step(r, 'find-by-token') === undefined, 'no normal round-trip after the ambiguous create');
+    assert(step(r, 'verify-gone')!.ok && /cleaned up/.test(step(r, 'verify-gone')!.detail), 'the ambiguously-created collection was cleaned up by token');
+    assertEq(c.count(), 0, 'no collection left behind by the smoke');
+    assert(noSecret(r), 'no api key leaked');
+  });
+
+  await test('write smoke — ambiguous create where the cleanup lookup ALSO fails -> CLEANUP NOT CONFIRMED', async () => {
+    const c = new TaggingClient({ 'tmdb:603': 'item-1' }, { createThenThrow: true, findByToken: true });
+    const r = await runWriteSmoke(c, REF, { newToken: tok });
+    assert(!step(r, 'verify-gone')!.ok && /CLEANUP NOT CONFIRMED/.test(step(r, 'verify-gone')!.detail), 'cleanup uncertainty surfaced loudly');
     assert(noSecret(r), 'no api key leaked in the cleanup error');
   });
 

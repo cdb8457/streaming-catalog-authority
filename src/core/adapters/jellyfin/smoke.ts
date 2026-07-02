@@ -28,6 +28,24 @@ function redactErr(e: unknown): string {
 }
 const finalize = (steps: SmokeStep[]): SmokeReport => ({ ok: steps.every((s) => s.ok), steps });
 
+/**
+ * After an AMBIGUOUS create (the create call failed but the server may have created the collection),
+ * recover BY TOKEN and clean up: if find-by-token finds it → delete + verify gone; if it finds nothing →
+ * the create truly didn't happen (safe); if the lookup/delete cannot confirm → report CLEANUP NOT
+ * CONFIRMED loudly. Appends a `verify-gone` step. Never leaves a collection silently.
+ */
+async function cleanupByToken(client: SmokeClient, token: string, steps: SmokeStep[]): Promise<void> {
+  let found: string | null;
+  try { found = await client.findCollectionByToken(token); }
+  catch (e) { steps.push({ step: 'verify-gone', ok: false, detail: `CLEANUP NOT CONFIRMED (${redactErr(e)}) — the ambiguous create may have left a collection; delete it manually` }); return; }
+  if (found === null) { steps.push({ step: 'verify-gone', ok: true, detail: 'ambiguous create left no collection (nothing to clean)' }); return; }
+  try {
+    await client.deleteCollection(found);
+    const after = await client.findCollectionByToken(token);
+    steps.push({ step: 'verify-gone', ok: after === null, detail: after === null ? 'cleaned up the collection left by the ambiguous create' : 'CLEANUP NOT CONFIRMED — a same-token collection remains; delete it manually' });
+  } catch (e) { steps.push({ step: 'verify-gone', ok: false, detail: `CLEANUP NOT CONFIRMED (${redactErr(e)}) — a collection may remain; delete it manually` }); }
+}
+
 /** READ-ONLY: validate auth + base URL + the find mapping. No writes. */
 export async function runReadOnlySmoke(client: SmokeClient, ref: JellyfinRef): Promise<SmokeReport> {
   const steps: SmokeStep[] = [];
@@ -57,7 +75,13 @@ export async function runWriteSmoke(client: SmokeClient, ref: JellyfinRef, opts:
 
   let handle: string;
   try { handle = await client.createTaggedCollection(name, matched, token); steps.push({ step: 'create', ok: handle.length > 0, detail: `created a token-tagged collection (opaque handle length ${handle.length})` }); }
-  catch (e) { steps.push({ step: 'create', ok: false, detail: `create failed: ${redactErr(e)}` }); return finalize(steps); }
+  catch (e) {
+    steps.push({ step: 'create', ok: false, detail: `create failed: ${redactErr(e)}` });
+    // The server MAY have created the collection before the failure (response/transport lost). We know
+    // the token — recover + clean up by token so the smoke never orphans a collection it created.
+    await cleanupByToken(client, token, steps);
+    return finalize(steps);
+  }
 
   try {
     const found = await client.findCollectionByToken(token);
