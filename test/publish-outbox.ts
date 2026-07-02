@@ -9,6 +9,7 @@ import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import type { PublishableIdentity } from '../src/core/adapters/publisher.js';
 import { OutboxService, type OutboxTarget } from '../src/core/publish/outbox.js';
 import { PublishConsentError } from '../src/core/publish/consent.js';
+import { runDoctor } from '../src/ops/doctor.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
 import { installCompletionSecret, testKek } from './crypto-setup.js';
 
@@ -61,7 +62,9 @@ async function main(): Promise<void> {
   const admin = new Client({ connectionString: adminUrl() });
   await admin.connect();
   const secret = await installCompletionSecret(admin);
-  const auth = new CatalogAuthority(pool, new FileCustodian(freshKeystore(), secret, testKek()));
+  const keystoreDir = freshKeystore();
+  const custodian = new FileCustodian(keystoreDir, secret, testKek());
+  const auth = new CatalogAuthority(pool, custodian);
   const REQUIRES = ['title', 'providerRefs'] as const;
   const seed = async (): Promise<string> => { const id = mintItemId(); await auth.addItem(id, { title: TITLE, year: 2024, providerRefs: [{ type: 'tmdb', value: REFVAL }] }); return id; };
   const rowFor = async (id: string): Promise<{ status: string; handle: string | null; token: string | null }> => {
@@ -140,6 +143,16 @@ async function main(): Promise<void> {
     catch (e) { await client.query('ROLLBACK').catch(() => {}); denied = (e as { code?: string }).code === '42501'; }
     finally { client.release(); }
     assert(denied, 'direct UPDATE denied (42501)');
+  });
+
+  await test('doctor — surfaces a stuck (ambiguous) publish intent (Phase 12)', async () => {
+    const id = await seed(); const t = new FakeTarget(); t.mode = 'throw-before-create';
+    await svc(t).publish(id, { dryRun: false }); // leaves an 'ambiguous' intent
+    const report = await runDoctor({ admin, pool, custodian, completionSecret: secret, custodianMode: 'file', appEnv: 'test', keystoreDir });
+    const check = report.checks.find((c) => c.name === 'publish-intents');
+    assert(check !== undefined && check.state === 'warn', 'publish-intents surfaces as warn');
+    assert(/stuck publish intent/.test(check!.detail), 'detail describes stuck intents');
+    assert(report.ok, 'a warn does not fail the overall doctor (operational state)');
   });
 
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });

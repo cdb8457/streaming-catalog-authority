@@ -111,6 +111,15 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
           pending === 0 ? 'no external copies awaiting revocation'
                         : `${pending} external ${pending === 1 ? 'copy' : 'copies'} awaiting revocation — run publish reconciliation/revoke`);
       } catch { add('publish-revocations', 'warn', 'could not read publish_ledger to count pending revocations'); }
+
+      // Stuck publish INTENTS (Phase 12): in_flight/ambiguous outbox rows that need reconciliation to
+      // adopt-by-token or (re)create. Surfaced as WARN so they are never hidden (monitorable via --json).
+      try {
+        const stuck = (await deps.admin.query(`SELECT count(*)::int AS c FROM public.publish_ledger WHERE status IN ('in_flight', 'ambiguous')`)).rows[0].c as number;
+        add('publish-intents', stuck === 0 ? 'pass' : 'warn',
+          stuck === 0 ? 'no stuck publish intents'
+                      : `${stuck} stuck publish intent(s) (in_flight/ambiguous) — run ops:publish-reconcile`);
+      } catch { add('publish-intents', 'warn', 'could not read publish_ledger to count stuck intents'); }
     }
   }
 

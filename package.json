@@ -48,7 +48,8 @@
     "test:jellyfin-http": "tsx test/jellyfin-http.ts",
     "smoke:jellyfin": "tsx src/ops/jellyfin-smoke-cli.ts",
     "test:publish-outbox": "tsx test/publish-outbox.ts 5449",
-    "test:jellyfin-outbox": "tsx test/jellyfin-outbox.ts 5450"
+    "test:jellyfin-outbox": "tsx test/jellyfin-outbox.ts 5450",
+    "ops:publish-reconcile": "tsx src/ops/publish-reconcile-cli.ts"
   },
   "dependencies": {
     "pg": "^8.13.1"
