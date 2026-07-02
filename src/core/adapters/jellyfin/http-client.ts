@@ -2,8 +2,11 @@ import type { JellyfinClient, JellyfinRef } from './client.js';
 import type { FetchLike, HttpResponseLike } from './transport.js';
 import {
   buildFindCandidatesRequest, matchItems, buildDeleteCollectionRequest,
-  buildCreateTaggedRequest, parseCreatedId, buildFindByTokenRequest, matchIdByToken, type HttpRequestSpec,
+  buildCreateTaggedRequest, parseCreatedId, buildFindByTokenRequest, matchIdByToken, pageItems, type HttpRequestSpec,
 } from './mapping.js';
+
+const PAGE_LIMIT = 500;   // items per page
+const MAX_PAGES = 200;    // safety cap (<= 100k items scanned) — never loops unbounded
 
 /** Redaction-safe error: carries the operation + status only — NEVER the api key, url, or body. */
 export class JellyfinHttpError extends Error {
@@ -28,6 +31,7 @@ export interface JellyfinHttpOptions {
   readonly fetch: FetchLike;    // INJECTED — the client never references a bare `fetch`
   readonly timeoutMs?: number;  // per-request timeout (default 10000)
   readonly maxRetries?: number; // extra attempts for IDEMPOTENT ops only (default 2)
+  readonly pageLimit?: number;  // /Items page size (default 500)
 }
 
 /**
@@ -46,6 +50,7 @@ export class JellyfinHttpClient implements JellyfinClient {
   private readonly fetchImpl: FetchLike;
   private readonly timeoutMs: number;
   private readonly maxRetries: number;
+  private readonly pageLimit: number;
 
   constructor(opts: JellyfinHttpOptions) {
     this.baseUrl = opts.baseUrl.replace(/\/+$/, '');
@@ -53,12 +58,26 @@ export class JellyfinHttpClient implements JellyfinClient {
     this.fetchImpl = opts.fetch;
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.maxRetries = Math.max(0, opts.maxRetries ?? 2);
+    this.pageLimit = Math.max(1, opts.pageLimit ?? PAGE_LIMIT);
   }
 
   async findItemsByRefs(refs: readonly JellyfinRef[]): Promise<string[]> {
     if (refs.length === 0) return [];
-    const body = await this.requestJson('findItemsByRefs', buildFindCandidatesRequest(), true); // idempotent GET
-    return matchItems(refs, body);
+    const items = await this.getAllPages('findItemsByRefs', (start, limit) => buildFindCandidatesRequest(start, limit));
+    return matchItems(refs, items);
+  }
+
+  /** Walk `/Items` pages (StartIndex/Limit) and aggregate — a single unpaged fetch would miss matches
+   *  beyond Jellyfin's default page. Bounded by MAX_PAGES; stops on the first short page. */
+  private async getAllPages(op: string, build: (startIndex: number, limit: number) => HttpRequestSpec): Promise<unknown[]> {
+    const all: unknown[] = [];
+    for (let page = 0; page < MAX_PAGES; page++) {
+      const body = await this.requestJson(op, build(page * this.pageLimit, this.pageLimit), true); // idempotent GET
+      const items = pageItems(body);
+      all.push(...items);
+      if (items.length < this.pageLimit) break; // last (short) page
+    }
+    return all;
   }
 
   /**
@@ -83,8 +102,8 @@ export class JellyfinHttpClient implements JellyfinClient {
    *  Fetches BoxSets and filters by name LOCALLY (never trusts Jellyfin SearchTerm) so the bracketed
    *  marker can't be missed (a false "not found" would risk a duplicate create). */
   async findCollectionByToken(token: string): Promise<string | null> {
-    const body = await this.requestJson('findCollectionByToken', buildFindByTokenRequest(), true); // idempotent GET
-    return matchIdByToken(token, body);
+    const items = await this.getAllPages('findCollectionByToken', (start, limit) => buildFindByTokenRequest(start, limit));
+    return matchIdByToken(token, items);
   }
 
   async deleteCollection(collectionId: string): Promise<'deleted' | 'not_found'> {

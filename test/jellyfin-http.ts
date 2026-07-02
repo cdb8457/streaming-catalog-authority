@@ -127,6 +127,33 @@ async function main(): Promise<void> {
     assert(reqs.every((u) => !/SearchTerm/.test(u)), 'the request carries NO SearchTerm (local-filter only)');
   });
 
+  // --- pagination: matches beyond Jellyfin's default page must not be missed --
+  await test('pagination — findItemsByRefs walks /Items pages (StartIndex/Limit)', async () => {
+    const pages: Record<number, unknown[]> = {
+      0: [{ Id: 'i1', ProviderIds: { tmdb: '1' } }, { Id: 'i2', ProviderIds: { tmdb: '2' } }], // full page -> continue
+      2: [{ Id: 'i3', ProviderIds: { tmdb: '3' } }, { Id: 'target', ProviderIds: { Tmdb: '603' } }], // full page (match here) -> continue
+      4: [], // short page -> stop
+    };
+    const starts: number[] = [];
+    const fx: FetchLike = async (url) => { const u = new URL(url); starts.push(Number(u.searchParams.get('StartIndex') ?? '-1')); return ok({ Items: pages[Number(u.searchParams.get('StartIndex'))] ?? [] }); };
+    const c = new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: KEY, fetch: fx, pageLimit: 2 });
+    assertEq((await c.findItemsByRefs([{ type: 'tmdb', value: '603' }])).join(','), 'target', 'matched an item on a later page (case-insensitive provider key)');
+    assert(starts.includes(0) && starts.includes(2) && starts.includes(4), 'walked pages at StartIndex 0,2,4');
+  });
+
+  await test('pagination — findCollectionByToken walks BoxSet pages', async () => {
+    const TOKEN = 'tok-pg-1';
+    const pages: Record<number, unknown[]> = {
+      0: [{ Id: 'b1', Name: 'A' }, { Id: 'b2', Name: 'B' }],
+      2: [{ Id: 'b3', Name: 'C' }, { Id: 'b4', Name: `D [cat:${TOKEN}]` }], // match on page 2
+      4: [],
+    };
+    const fx: FetchLike = async (url) => { const u = new URL(url); return ok({ Items: pages[Number(u.searchParams.get('StartIndex'))] ?? [] }); };
+    const c = new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: KEY, fetch: fx, pageLimit: 2 });
+    assertEq(await c.findCollectionByToken(TOKEN), 'b4', 'found the token-tagged BoxSet on a later page');
+    assertEq(await c.findCollectionByToken('absent'), null, 'absent token across all pages -> null');
+  });
+
   // --- the network-enable gate (default off) ----------------------------------
   await test('gate — real client requires JELLYFIN_ENABLE_NETWORK=true AND full config (fail-closed)', () => {
     const fake: FetchLike = async () => ok({});
