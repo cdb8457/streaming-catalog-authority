@@ -216,6 +216,16 @@ test('jellyfin smoke — Phase 13 validation: doc + suite wired; globalThis.fetc
   assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|publish-reconcile-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
 });
 
+test('jellyfin mapping — Phase 14 pagination is present + bounded; doc wired', () => {
+  const map = read('src/core/adapters/jellyfin/mapping.ts');
+  assert(/StartIndex/.test(map) && /Limit/.test(map), 'find requests carry StartIndex + Limit (paginated)');
+  const hc = read('src/core/adapters/jellyfin/http-client.ts');
+  assert(hc.includes('getAllPages') && /MAX_PAGES/.test(hc), 'client walks pages with a bounded MAX_PAGES cap');
+  assert(exists('docs/PHASE_14_JELLYFIN_HARDENING.md'), 'Phase 14 hardening doc exists');
+  const doc = read('docs/PHASE_14_JELLYFIN_HARDENING.md');
+  for (const kw of ['pagination', 'StartIndex', 'MAX_PAGES', 'PROVISIONAL', '--write']) assert(doc.includes(kw), `doc covers ${kw}`);
+});
+
 test('ops entrypoints exist', () => {
   assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');

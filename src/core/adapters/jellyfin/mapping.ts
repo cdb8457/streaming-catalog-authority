@@ -16,17 +16,19 @@ export interface HttpRequestSpec {
   query?: Record<string, string>;
 }
 
-/** GET candidate items with their ProviderIds, for LOCAL matching (avoids unreliable server filters). */
-export function buildFindCandidatesRequest(): HttpRequestSpec {
-  return { method: 'GET', path: '/Items', query: { Recursive: 'true', Fields: 'ProviderIds', IncludeItemTypes: 'Movie,Series' } };
+/**
+ * GET one PAGE of candidate items with their ProviderIds, for LOCAL matching (avoids unreliable server
+ * filters). Jellyfin `GET /Items` paginates, so the client walks pages (StartIndex/Limit) and matches
+ * across all of them — a single unpaged fetch would silently miss items beyond the default page.
+ */
+export function buildFindCandidatesRequest(startIndex = 0, limit = 500): HttpRequestSpec {
+  return { method: 'GET', path: '/Items', query: { Recursive: 'true', Fields: 'ProviderIds', IncludeItemTypes: 'Movie,Series', StartIndex: String(startIndex), Limit: String(limit) } };
 }
 
-/** Parse a `/Items` response and return the OPAQUE item ids whose ProviderIds match ANY given ref. */
-export function matchItems(refs: readonly JellyfinRef[], body: unknown): string[] {
+/** From aggregated `/Items` rows (across pages), return the OPAQUE ids whose ProviderIds match ANY ref. */
+export function matchItems(refs: readonly JellyfinRef[], items: readonly unknown[]): string[] {
   const want = new Set(refs.map((r) => `${r.type.toLowerCase()}:${r.value}`));
   if (want.size === 0) return [];
-  const items = (body as { Items?: unknown })?.Items;
-  if (!Array.isArray(items)) return [];
   const out: string[] = [];
   for (const raw of items) {
     const it = raw as { Id?: unknown; ProviderIds?: unknown };
@@ -71,15 +73,19 @@ export function parseCreatedId(body: unknown): string {
  * `[cat:<token>]`, so relying on it risks a false "not found" → a duplicate create. We fetch names and
  * match locally in {@link matchIdByToken}, exactly as `findItemsByRefs` matches ProviderIds locally.
  */
-export function buildFindByTokenRequest(): HttpRequestSpec {
-  return { method: 'GET', path: '/Items', query: { Recursive: 'true', IncludeItemTypes: 'BoxSet', Fields: 'Name' } };
+export function buildFindByTokenRequest(startIndex = 0, limit = 500): HttpRequestSpec {
+  return { method: 'GET', path: '/Items', query: { Recursive: 'true', IncludeItemTypes: 'BoxSet', Fields: 'Name', StartIndex: String(startIndex), Limit: String(limit) } };
 }
 
-/** Return the opaque id of the (single) BoxSet whose Name contains the token marker, or null. */
-export function matchIdByToken(token: string, body: unknown): string | null {
-  const mark = tokenMark(token);
+/** Extract the `Items` array from a `/Items` page response (empty if malformed). */
+export function pageItems(body: unknown): unknown[] {
   const items = (body as { Items?: unknown })?.Items;
-  if (!Array.isArray(items)) return null;
+  return Array.isArray(items) ? items : [];
+}
+
+/** From aggregated BoxSet rows (across pages), return the opaque id whose Name contains the marker, or null. */
+export function matchIdByToken(token: string, items: readonly unknown[]): string | null {
+  const mark = tokenMark(token);
   for (const raw of items) {
     const it = raw as { Id?: unknown; Name?: unknown };
     if (typeof it.Id === 'string' && typeof it.Name === 'string' && it.Name.includes(mark)) return it.Id;
