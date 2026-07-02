@@ -65,12 +65,17 @@ export function parseCreatedId(body: unknown): string {
   return id;
 }
 
-/** GET BoxSets whose name carries the token marker (recovery/idempotency lookup). */
-export function buildFindByTokenRequest(token: string): HttpRequestSpec {
-  return { method: 'GET', path: '/Items', query: { Recursive: 'true', IncludeItemTypes: 'BoxSet', SearchTerm: tokenMark(token), Fields: 'Name' } };
+/**
+ * GET ALL BoxSets (with names) for a LOCAL name-marker filter — deliberately NOT `SearchTerm`.
+ * Jellyfin `SearchTerm` tokenizes/normalizes and does not reliably match the bracketed opaque marker
+ * `[cat:<token>]`, so relying on it risks a false "not found" → a duplicate create. We fetch names and
+ * match locally in {@link matchIdByToken}, exactly as `findItemsByRefs` matches ProviderIds locally.
+ */
+export function buildFindByTokenRequest(): HttpRequestSpec {
+  return { method: 'GET', path: '/Items', query: { Recursive: 'true', IncludeItemTypes: 'BoxSet', Fields: 'Name' } };
 }
 
-/** Return the opaque id of the collection whose Name contains the token marker, or null. */
+/** Return the opaque id of the (single) BoxSet whose Name contains the token marker, or null. */
 export function matchIdByToken(token: string, body: unknown): string | null {
   const mark = tokenMark(token);
   const items = (body as { Items?: unknown })?.Items;
