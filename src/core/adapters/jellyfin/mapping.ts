@@ -44,6 +44,40 @@ export function buildDeleteCollectionRequest(collectionId: string): HttpRequestS
   return { method: 'DELETE', path: `/Items/${encodeURIComponent(collectionId)}` };
 }
 
-// NOTE: collection CREATE mapping (POST /Collections + response parse) and the ambiguous-create
-// cleanup helpers are intentionally OMITTED here — real live create is deferred to Phase 12's durable
-// publish-intent outbox (a remote create cannot guarantee a captured revocation handle under failure).
+// --- Phase 12 outbox: token-tagged create + find-by-token (PROVISIONAL, smoke-gated) ---
+//
+// The opaque correlation token is embedded in the collection NAME as `[cat:<token>]` so a single
+// ATOMIC create is findable afterwards even if the response is lost (no separate tag call that could
+// fail after create). The token is opaque (a uuid), not identity. Reachable ONLY via the outbox.
+
+/** The opaque, findable marker embedded in a collection name for token-based recovery. */
+export const tokenMark = (token: string): string => `[cat:${token}]`;
+
+/** POST a collection whose name carries the opaque token marker (atomic + recoverable). */
+export function buildCreateTaggedRequest(name: string, itemIds: readonly string[], token: string): HttpRequestSpec {
+  return { method: 'POST', path: '/Collections', query: { Name: `${name} ${tokenMark(token)}`, Ids: [...itemIds].join(',') } };
+}
+
+/** Parse the create response to the OPAQUE collection id (the handle). */
+export function parseCreatedId(body: unknown): string {
+  const id = (body as { Id?: unknown })?.Id;
+  if (typeof id !== 'string' || id.length === 0) throw new Error('jellyfin: create returned no id');
+  return id;
+}
+
+/** GET BoxSets whose name carries the token marker (recovery/idempotency lookup). */
+export function buildFindByTokenRequest(token: string): HttpRequestSpec {
+  return { method: 'GET', path: '/Items', query: { Recursive: 'true', IncludeItemTypes: 'BoxSet', SearchTerm: tokenMark(token), Fields: 'Name' } };
+}
+
+/** Return the opaque id of the collection whose Name contains the token marker, or null. */
+export function matchIdByToken(token: string, body: unknown): string | null {
+  const mark = tokenMark(token);
+  const items = (body as { Items?: unknown })?.Items;
+  if (!Array.isArray(items)) return null;
+  for (const raw of items) {
+    const it = raw as { Id?: unknown; Name?: unknown };
+    if (typeof it.Id === 'string' && typeof it.Name === 'string' && it.Name.includes(mark)) return it.Id;
+  }
+  return null;
+}

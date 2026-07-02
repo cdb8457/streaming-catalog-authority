@@ -217,8 +217,20 @@ api key is header-only (`X-Emby-Token`), redacted, never in URL/log/ledger/error
 a fake transport, and the shared FIND contract passes for fake and real. Mapping is **provisional**,
 validated only by the opt-in read-only `npm run smoke:jellyfin`. See `docs/PHASE_11_JELLYFIN_HTTP.md`.
 
+## Durable publish-intent outbox (Phase 12 — orphan-safe live Jellyfin create)
+
+Live Jellyfin create is now safe to enable — **only through a durable outbox**. A durable intent (opaque
+`correlation_token`) is written **before** the create; the collection is **tagged with the token**; and
+recovery is **by token, not by the response handle** — `reconcile()` searches Jellyfin for the token and
+**adopts** the collection (or proves it gone), so every crash point ends tracked-or-gone (proven by a
+crash matrix incl. *server-creates-then-response-lost-then-state-discarded*). `publish_ledger` is extended
+(v3, still identity-free); `ops:doctor` surfaces stuck intents; `ops:publish-reconcile` repairs them. Live
+create is **triple-gated** (`JELLYFIN_ENABLE_NETWORK` + `JELLYFIN_ALLOW_LIVE_PUBLISH` +
+`PUBLISH_EXTERNAL_IDENTITY=allow`); the real endpoint mapping stays provisional/smoke-gated. See
+`docs/PHASE_12_PUBLISH_OUTBOX.md`.
+
 ## Not in this slice
 
 No Plex, no RD/TorBox, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
-automated tests**. (Phases 7–11 add adapter *boundaries* + erasure policy + Jellyfin; real network is
-strictly gated + smoke-validated.)
+automated tests**. (Phases 7–12 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox;
+real network is strictly gated + smoke-validated.)

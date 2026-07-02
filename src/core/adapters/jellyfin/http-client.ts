@@ -1,6 +1,9 @@
 import type { JellyfinClient, JellyfinRef } from './client.js';
 import type { FetchLike, HttpResponseLike } from './transport.js';
-import { buildFindCandidatesRequest, matchItems, buildDeleteCollectionRequest, type HttpRequestSpec } from './mapping.js';
+import {
+  buildFindCandidatesRequest, matchItems, buildDeleteCollectionRequest,
+  buildCreateTaggedRequest, parseCreatedId, buildFindByTokenRequest, matchIdByToken, type HttpRequestSpec,
+} from './mapping.js';
 
 /** Redaction-safe error: carries the operation + status only — NEVER the api key, url, or body. */
 export class JellyfinHttpError extends Error {
@@ -58,9 +61,28 @@ export class JellyfinHttpClient implements JellyfinClient {
     return matchItems(refs, body);
   }
 
-  /** DISABLED in this release — fail-closed BEFORE any network call. Redaction-safe (no identity). */
+  /**
+   * The unsafe bare create stays DISABLED — a create with no durable intent could orphan. Live create
+   * is available ONLY via the Phase 12 outbox (createTaggedCollection + findCollectionByToken below).
+   */
   async createCollection(_name: string, _itemIds: readonly string[]): Promise<string> {
-    throw new JellyfinPublishDisabledError('jellyfin live publish (collection create) is disabled in this release — deferred to Phase 12 (durable publish-intent outbox). Real find + revoke are available.');
+    throw new JellyfinPublishDisabledError('jellyfin bare create is disabled — live create is available ONLY through the Phase 12 publish-intent outbox (token-tagged, crash-recoverable).');
+  }
+
+  /**
+   * OUTBOX-ONLY: create a collection whose name carries the opaque `token` marker (atomic + findable),
+   * so an ambiguous create is recoverable by {@link findCollectionByToken}. NEVER retried. The token
+   * is opaque (not identity). Only the outbox target calls this, after writing a durable intent.
+   */
+  async createTaggedCollection(name: string, itemIds: readonly string[], token: string): Promise<string> {
+    const body = await this.requestJson('createTaggedCollection', buildCreateTaggedRequest(name, itemIds, token), false);
+    return parseCreatedId(body);
+  }
+
+  /** OUTBOX-ONLY recovery/idempotency: find a collection previously tagged with `token`; id or null. */
+  async findCollectionByToken(token: string): Promise<string | null> {
+    const body = await this.requestJson('findCollectionByToken', buildFindByTokenRequest(token), true); // idempotent GET
+    return matchIdByToken(token, body);
   }
 
   async deleteCollection(collectionId: string): Promise<'deleted' | 'not_found'> {
