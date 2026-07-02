@@ -25,6 +25,15 @@ const opsFiles = (): Array<[string, string]> => {
   const dir = fileURLToPath(new URL('../src/ops', import.meta.url));
   return readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => [f, readFileSync(`${dir}/${f}`, 'utf8')]);
 };
+function walkTs(dir: string): string[] {
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = `${dir}/${e.name}`;
+    if (e.isDirectory()) out.push(...walkTs(p));
+    else if (e.name.endsWith('.ts')) out.push(p);
+  }
+  return out;
+}
 
 console.log('Running Phase 3 deployment topology suite (Stage 3.4):\n');
 
@@ -170,7 +179,8 @@ test('jellyfin HTTP (Phase 11) — injected-fetch only in core; gated; smoke opt
   // globalThis.fetch may appear ONLY in the operator smoke entrypoint.
   assert(exists('src/ops/jellyfin-smoke-cli.ts') && read('src/ops/jellyfin-smoke-cli.ts').includes('globalThis.fetch'), 'smoke CLI is the single network entrypoint');
   assert(typeof pkg.scripts['smoke:jellyfin'] === 'string', 'smoke:jellyfin script present');
-  assert(!(pkg.scripts.test ?? '').includes('jellyfin-smoke') && !(pkg.scripts.test ?? '').includes('smoke:jellyfin'), 'smoke is NOT in the CI test chain');
+  // the network-hitting smoke CLI must not run in CI (the fake-transport report suite test/jellyfin-smoke.ts is fine).
+  assert(!(pkg.scripts.test ?? '').includes('jellyfin-smoke-cli') && !(pkg.scripts.test ?? '').includes('smoke:jellyfin'), 'the smoke CLI is NOT in the CI test chain');
   assert((pkg.scripts.test ?? '').includes('test/jellyfin-http.ts'), 'jellyfin-http suite in the CI chain');
   assert(exists('docs/PHASE_11_JELLYFIN_HTTP.md'), 'Phase 11 doc exists');
   const doc = read('docs/PHASE_11_JELLYFIN_HTTP.md');
@@ -188,6 +198,22 @@ test('publish outbox — Phase 12 doc + suites wired; create only via the outbox
   assert(hc.includes('createTaggedCollection'), 'outbox-only tagged create exists');
   assert(typeof pkg.scripts['ops:publish-reconcile'] === 'string', 'ops:publish-reconcile present');
   assert(!(pkg.scripts.test ?? '').includes('publish-reconcile'), 'the reconcile CLI is NOT in the CI chain');
+});
+
+test('jellyfin smoke — Phase 13 validation: doc + suite wired; globalThis.fetch limited to operator CLIs', () => {
+  assert(exists('docs/PHASE_13_JELLYFIN_VALIDATION.md'), 'validation doc exists');
+  const doc = read('docs/PHASE_13_JELLYFIN_VALIDATION.md');
+  for (const kw of ['--write', 'self-clean', 'find-by-token', 'SearchTerm', 'redaction-safe']) assert(doc.includes(kw), `doc covers ${kw}`);
+  assert((pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts'), 'smoke-report suite in the CI chain');
+  const cli = read('src/ops/jellyfin-smoke-cli.ts');
+  assert(cli.includes('--write') && cli.includes('runReadOnlySmoke') && cli.includes('runWriteSmoke'), 'smoke CLI has read-only + --write modes');
+  assert(cli.includes('isJellyfinLivePublishAllowed'), '--write gated by ALLOW_LIVE_PUBLISH');
+  // globalThis.fetch must live ONLY in the two explicit operator entrypoints.
+  const withFetch = walkTs(fileURLToPath(new URL('../src', import.meta.url)))
+    .filter((f) => readFileSync(f, 'utf8').includes('globalThis.fetch'))
+    .map((f) => f.replace(/\\/g, '/'));
+  assert(withFetch.length === 2, `exactly two src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
+  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|publish-reconcile-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
 });
 
 test('ops entrypoints exist', () => {
