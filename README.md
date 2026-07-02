@@ -237,7 +237,9 @@ The provisional Jellyfin mapping is validated by a **structured, opt-in smoke** 
 `find → create token-tagged → find-by-token → delete → verify-gone`, **self-cleans**, and reports **loudly
 if cleanup can't be confirmed**. `find-by-token` now filters BoxSet names **locally** (never trusts
 `SearchTerm`, which could miss the marker → duplicate). Reports are redaction-safe (opaque ids/counts).
-**Real publishing is not "proven" until the write smoke passes.** See `docs/PHASE_13_JELLYFIN_VALIDATION.md`.
+**Real publishing is not "proven" until the write smoke passes.** The find/lookup requests **paginate**
+(`StartIndex`/`Limit`, bounded) so matches beyond Jellyfin's first page are never missed
+(`docs/PHASE_14_JELLYFIN_HARDENING.md`). See `docs/PHASE_13_JELLYFIN_VALIDATION.md`.
 
 ## Not in this slice
 

@@ -10,10 +10,13 @@ mapping-robustness correction. **CI stays fake-transport only; real validation i
 
 | operation | request | matching |
 |---|---|---|
-| find items | `GET /Items?Recursive=true&Fields=ProviderIds&IncludeItemTypes=Movie,Series` | ProviderIds matched **locally** |
+| find items | `GET /Items?Recursive=true&Fields=ProviderIds&IncludeItemTypes=Movie,Series&StartIndex&Limit` | ProviderIds matched **locally**, **across all pages** (Phase 14) |
 | create | `POST /Collections?Name=<title> [cat:<token>]&Ids=<matched ids>` | atomic; token in the name |
-| find by token | `GET /Items?Recursive=true&IncludeItemTypes=BoxSet&Fields=Name` | name-contains-`[cat:<token>]` matched **locally** (NOT `SearchTerm`) |
+| find by token | `GET /Items?Recursive=true&IncludeItemTypes=BoxSet&Fields=Name&StartIndex&Limit` | name-contains-`[cat:<token>]` matched **locally, across all pages** (NOT `SearchTerm`) |
 | revoke | `DELETE /Items/<opaque collection id>` | — |
+
+> Phase 14 walks `/Items` pages (bounded) so a match beyond the first page is never missed. See
+> `docs/PHASE_14_JELLYFIN_HARDENING.md`.
 
 ### Why the `[cat:<token>]` name marker (not a Jellyfin Tag)
 
