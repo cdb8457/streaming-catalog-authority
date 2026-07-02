@@ -241,6 +241,15 @@ if cleanup can't be confirmed**. `find-by-token` now filters BoxSet names **loca
 (`StartIndex`/`Limit`, bounded) so matches beyond Jellyfin's first page are never missed
 (`docs/PHASE_14_JELLYFIN_HARDENING.md`). See `docs/PHASE_13_JELLYFIN_VALIDATION.md`.
 
+## Jellyfin validation evidence (Phase 15)
+
+Real Jellyfin validation evidence is an **operator-run** artifact, not a CI requirement. Phase 15 adds
+the reviewable runbook and redaction-safe report template for read-only and write-capable smoke runs:
+`docs/PHASE_15_JELLYFIN_VALIDATION_EVIDENCE.md` and
+`docs/templates/JELLYFIN_VALIDATION_EVIDENCE.md`. Write validation remains mutating/destructive unless
+cleanup is confirmed and requires both the explicit `--write` flag and
+`JELLYFIN_ALLOW_LIVE_PUBLISH=true`; live Jellyfin validation stays out of CI.
+
 ## Not in this slice
 
 No Plex, no RD/TorBox, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
