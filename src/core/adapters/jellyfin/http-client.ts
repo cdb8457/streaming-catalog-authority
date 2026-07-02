@@ -79,9 +79,11 @@ export class JellyfinHttpClient implements JellyfinClient {
     return parseCreatedId(body);
   }
 
-  /** OUTBOX-ONLY recovery/idempotency: find a collection previously tagged with `token`; id or null. */
+  /** OUTBOX-ONLY recovery/idempotency: find a collection previously tagged with `token`; id or null.
+   *  Fetches BoxSets and filters by name LOCALLY (never trusts Jellyfin SearchTerm) so the bracketed
+   *  marker can't be missed (a false "not found" would risk a duplicate create). */
   async findCollectionByToken(token: string): Promise<string | null> {
-    const body = await this.requestJson('findCollectionByToken', buildFindByTokenRequest(token), true); // idempotent GET
+    const body = await this.requestJson('findCollectionByToken', buildFindByTokenRequest(), true); // idempotent GET
     return matchIdByToken(token, body);
   }
 

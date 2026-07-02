@@ -111,6 +111,22 @@ async function main(): Promise<void> {
     assert(err instanceof JellyfinHttpError, 'timeout -> JellyfinHttpError (fail-closed)');
   });
 
+  // --- find-by-token: LOCAL BoxSet-name filter (never trusts SearchTerm) ------
+  await test('find-by-token — filters BoxSet names LOCALLY even when the server ignores SearchTerm', async () => {
+    const TOKEN = 'tok-abc-123';
+    const boxsets = [
+      { Id: 'other-1', Name: 'Unrelated Collection' },
+      { Id: 'target-1', Name: `My Movie [cat:${TOKEN}]` },
+      { Id: 'other-2', Name: 'Another [cat:different-token]' },
+    ];
+    const reqs: string[] = [];
+    const fx: FetchLike = async (url, init) => { reqs.push(url); if ((init?.method ?? 'GET') === 'GET' && new URL(url).pathname === '/Items') return ok({ Items: boxsets }); return stat(404); };
+    const c = new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: KEY, fetch: fx });
+    assertEq(await c.findCollectionByToken(TOKEN), 'target-1', 'matched the token-tagged BoxSet locally (not the others)');
+    assertEq(await c.findCollectionByToken('absent-token'), null, 'no marker match -> null');
+    assert(reqs.every((u) => !/SearchTerm/.test(u)), 'the request carries NO SearchTerm (local-filter only)');
+  });
+
   // --- the network-enable gate (default off) ----------------------------------
   await test('gate — real client requires JELLYFIN_ENABLE_NETWORK=true AND full config (fail-closed)', () => {
     const fake: FetchLike = async () => ok({});

@@ -229,8 +229,18 @@ create is **triple-gated** (`JELLYFIN_ENABLE_NETWORK` + `JELLYFIN_ALLOW_LIVE_PUB
 `PUBLISH_EXTERNAL_IDENTITY=allow`); the real endpoint mapping stays provisional/smoke-gated. See
 `docs/PHASE_12_PUBLISH_OUTBOX.md`.
 
+## Jellyfin endpoint validation (Phase 13)
+
+The provisional Jellyfin mapping is validated by a **structured, opt-in smoke** — never in CI. A
+**read-only** mode (`npm run smoke:jellyfin -- tmdb 603`) checks auth + the find mapping; a **destructive
+`--write`** round-trip (gated by the flag **and** `JELLYFIN_ALLOW_LIVE_PUBLISH`) runs
+`find → create token-tagged → find-by-token → delete → verify-gone`, **self-cleans**, and reports **loudly
+if cleanup can't be confirmed**. `find-by-token` now filters BoxSet names **locally** (never trusts
+`SearchTerm`, which could miss the marker → duplicate). Reports are redaction-safe (opaque ids/counts).
+**Real publishing is not "proven" until the write smoke passes.** See `docs/PHASE_13_JELLYFIN_VALIDATION.md`.
+
 ## Not in this slice
 
 No Plex, no RD/TorBox, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
-automated tests**. (Phases 7–12 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox;
-real network is strictly gated + smoke-validated.)
+automated tests**. (Phases 7–13 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox +
+smoke validation; real network is strictly gated + smoke-validated.)
