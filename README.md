@@ -204,7 +204,11 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_40_TORBOX_SMOKE_READINESS_PREFLIGHT.md`** /
   `ops:torbox-smoke-readiness-preflight` / `test:torbox-smoke-readiness-preflight` as a
   redaction-safe one-file descriptor preflight before any future TorBox operator smoke readiness
-  review; it does not authorize live smoke.
+  review; it does not authorize live smoke. Phase 41 adds
+  **`docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md`** / `test:torbox-endpoint-mapping` as a static
+  endpoint mapping review for the first future read-only live-smoke surface: official-source mapping
+  only, GET-only first-smoke cache/status/hoster routes, no live transport, no SDK, no env reads, no
+  provider mode, and no live-smoke authorization.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -302,7 +306,11 @@ future reviewed transports. It uses injected local fixtures only, does not add a
 transport, and does not prove real TorBox availability. Phase 40 adds
 `ops:torbox-smoke-readiness-preflight` as a static descriptor preflight for future operator smoke
 readiness review. It reads one JSON descriptor file, emits fixed redaction-safe findings, does not
-call TorBox, and does not authorize live smoke.
+call TorBox, and does not authorize live smoke. Phase 41 adds
+`docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md` as a static official-source endpoint mapping review for
+the first future read-only smoke surface. It allows only GET-first cache/status/hoster mapping for a
+later reviewed transport and keeps request-download-link, token-query, CDN/permalink URL, metadata
+lookup, user-data, downloading, and playback flows future-gated.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -393,4 +401,5 @@ fixture-transport read-only client only; Phase 35 adds operator-run TorBox smoke
 operator UI examples only; Phase 36 adds the future live-smoke acceptance contract only; Phase 37
 adds the refused-by-default TorBox smoke CLI shell only; Phase 38 adds deterministic local fixture
 execution only; Phase 39 adds deterministic local transport acceptance only; Phase 40 adds static
-TorBox smoke readiness descriptor preflight only; real network is strictly gated + smoke-validated.)
+TorBox smoke readiness descriptor preflight only; Phase 41 adds static TorBox endpoint mapping review
+only; real network is strictly gated + smoke-validated.)

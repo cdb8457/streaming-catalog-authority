@@ -77,3 +77,8 @@ authorized and reviewed future phase.
 
 O4 remains open/deferred. O5 remains open/deferred. `FileCustodian` remains a hardened reference
 harness, not production KMS.
+
+Phase 41 builds on this with a static TorBox endpoint mapping review for the first future live
+read-only smoke surface. That mapping review remains docs/tests only: no live TorBox calls, no real
+TorBox transport, no SDK dependency, no environment-variable reads, no `ADAPTER_MODE` wiring, and no
+live-smoke authorization.

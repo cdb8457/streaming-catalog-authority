@@ -726,6 +726,62 @@ test('TorBox smoke readiness preflight - Phase 40 is descriptor-only and non-liv
   assert(!(pkg.scripts['ops:torbox-smoke-readiness-preflight'] ?? '').includes('docker'), 'Phase 40 command does not invoke Docker');
 });
 
+test('TorBox endpoint mapping - Phase 41 is static review only and non-live', () => {
+  assert(exists('docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md'), 'Phase 41 endpoint mapping doc exists');
+  assert(typeof pkg.scripts['test:torbox-endpoint-mapping'] === 'string', 'test:torbox-endpoint-mapping script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-endpoint-mapping.ts'), 'TorBox endpoint mapping suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+
+  const doc = read('docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md');
+  const suite = read('test/torbox-endpoint-mapping.ts');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  const combined = `${doc}\n${suite}\n${read('README.md')}`;
+
+  for (const kw of [
+    'static review artifact only',
+    'https://api.torbox.app/openapi.json',
+    'https://api.torbox.app/docs',
+    'GeneralService.getUpStatus',
+    'TorrentsService.getTorrentCachedAvailability',
+    'WebDownloadsDebridService.getWebDownloadCachedAvailability',
+    'UsenetService.getUsenetCachedAvailability',
+    'WebDownloadsDebridService.getHosterList',
+    '/v1/api/torrents/checkcached',
+    '/v1/api/webdl/checkcached',
+    '/v1/api/usenet/checkcached',
+    '/v1/api/webdl/hosters',
+    'Authorization Bearer header',
+    'Query-string tokens are forbidden',
+    'no live TorBox calls',
+    'no real TorBox transport implementation',
+    'no `@torbox/torbox-api` dependency or import',
+    'no global fetch',
+    'environment-variable reads',
+    'no provider mode wiring',
+    'does not authorize live smoke',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference',
+  ]) assert(combined.includes(kw), `Phase 41 preserves ${kw}`);
+  assert(/Phase 41 allows `GET` only for the\s+first future live-smoke transport/.test(combined), 'Phase 41 preserves GET-only first live-smoke transport');
+
+  for (const gated of [
+    '/v1/api/torrents/requestdl',
+    '/v1/api/webdl/requestdl',
+    '/v1/api/usenet/requestdl',
+    'token query parameters',
+    'CDN/permalink URLs',
+    '/v1/api/torrents/torrentinfo',
+    'authenticated hoster-list user metrics',
+  ]) assert(doc.includes(gated), `Phase 41 future-gates ${gated}`);
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assert(!exists('src/ops/torbox-live-transport.ts'), 'no live TorBox transport exists');
+  assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'no adapter live TorBox transport exists');
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {
