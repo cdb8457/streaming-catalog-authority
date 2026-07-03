@@ -25,8 +25,9 @@ Coordinator merge/tag gates for future phases are in `docs/PHASE_24_COORDINATOR_
       `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md` and package it with
       `docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md`; keep live evidence manual/operator-run and
       redaction-safe.
-- [ ] Optional pre-review rehearsal: run `ops:readiness-plan` to confirm the Phase 22/23 artifact
-      labels and redaction boundaries before collecting real evidence.
+- [ ] Optional pre-review rehearsal: run `ops:readiness-plan` and `ops:evidence-rehearsal` to confirm
+      the Phase 22/23 artifact labels, package shape, and redaction boundaries before collecting real
+      evidence.
 - [ ] If recurring operations are being configured, use
       `docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md` as operator-owned schedule/retention guidance;
       do not add repo-owned cron, daemon, or default scheduling behavior.

@@ -8,6 +8,7 @@ Use it with:
 
 - `docs/PHASE_22_PRODUCTION_READINESS_GATE.md` - the authoritative nine-row readiness gate.
 - `docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md` - the redaction-safe artifact map.
+- `docs/PHASE_26_EVIDENCE_REHEARSAL.md` - the follow-on evidence package shape checklist.
 - `docs/templates/PRODUCTION_READINESS_EVIDENCE.md` - the shareable evidence report template.
 
 ## Command

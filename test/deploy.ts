@@ -413,6 +413,73 @@ test('readiness rehearsal - Phase 25 command, docs, and deterministic suite are 
   assert(checklist.includes('ops:readiness-plan'), 'release checklist mentions the rehearsal command');
 });
 
+test('operator evidence rehearsal - Phase 26 command, docs, and deterministic suite are wired', () => {
+  assert(exists('src/ops/evidence-rehearsal.ts'), 'evidence rehearsal module exists');
+  assert(exists('src/ops/evidence-rehearsal-cli.ts'), 'evidence rehearsal CLI exists');
+  assert(exists('test/evidence-rehearsal.ts'), 'evidence rehearsal suite exists');
+  assert(exists('docs/PHASE_26_EVIDENCE_REHEARSAL.md'), 'Phase 26 evidence rehearsal doc exists');
+
+  assert(typeof pkg.scripts['ops:evidence-rehearsal'] === 'string', 'ops:evidence-rehearsal script present');
+  assert(typeof pkg.scripts['test:evidence-rehearsal'] === 'string', 'test:evidence-rehearsal script present');
+  assert((pkg.scripts.test ?? '').includes('test/evidence-rehearsal.ts'), 'evidence rehearsal suite in the deterministic test chain');
+
+  const readme = read('README.md');
+  const gate = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
+  const packaging = read('docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md');
+  const phase25 = read('docs/PHASE_25_READINESS_REHEARSAL.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+  for (const source of [readme, gate, packaging, phase25]) {
+    assert(source.includes('PHASE_26_EVIDENCE_REHEARSAL.md'), 'Phase 26 doc is linked from readiness/operator docs');
+  }
+  assert(checklist.includes('ops:evidence-rehearsal'), 'release checklist mentions the evidence rehearsal command');
+});
+
+test('operator evidence rehearsal - Phase 26 preserves static-only scope and open production gates', () => {
+  const cli = read('src/ops/evidence-rehearsal-cli.ts');
+  const rehearsal = read('src/ops/evidence-rehearsal.ts');
+  const doc = read('docs/PHASE_26_EVIDENCE_REHEARSAL.md');
+  const combined = `${cli}\n${rehearsal}\n${doc}`;
+
+  for (const label of [
+    '01-deployment-unraid.redacted.md',
+    '02-external-custodian-o4.redacted.md',
+    '03-kek-rotation-o5.redacted.md',
+    '04-backup-restore-retention.redacted.md',
+    '05-doctor-warning-gates.redacted.json',
+    '06-scheduled-operator-tasks.redacted.md',
+    '07-jellyfin-validation.redacted.md',
+    '08-ci-test-expectations.redacted.md',
+    '09-privacy-redaction.redacted.md',
+  ]) assert(combined.includes(label), `Phase 26 includes artifact ${label}`);
+
+  assert(/O4 remains open\/deferred/.test(rehearsal) && /O5 remains open\/deferred/.test(rehearsal), 'Phase 26 keeps O4/O5 open/deferred');
+  assert(/FileCustodian is a hardened reference harness, not production KMS/.test(rehearsal), 'Phase 26 preserves FileCustodian boundary');
+  assert(/does not[\s\S]*inspect the filesystem for evidence[\s\S]*read evidence artifacts[\s\S]*connect to a database[\s\S]*call the network[\s\S]*run Docker[\s\S]*contact Jellyfin[\s\S]*contact a live custodian, cloud service, or KMS/i.test(doc), 'Phase 26 documents static-only non-requirements');
+  assert(!/closes O4|closes O5|production-ready as turnkey|turnkey production-ready/i.test(combined), 'Phase 26 does not close gates or overstate readiness');
+
+  for (const forbidden of [
+    "from 'pg'",
+    'from "pg"',
+    'node:fs',
+    'node:path',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'loadDbConfig',
+    'loadCustodianConfig',
+    'createCustodian',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+  ]) assert(!`${cli}\n${rehearsal}`.includes(forbidden), `evidence rehearsal CLI/module do not use ${forbidden}`);
+
+  assert(!(pkg.scripts['ops:evidence-rehearsal'] ?? '').includes('docker'), 'evidence rehearsal command does not invoke Docker');
+  assert(!(pkg.scripts['test:evidence-rehearsal'] ?? '').includes('docker'), 'evidence rehearsal test command does not invoke Docker');
+});
+
 test('readiness rehearsal - Phase 25 preserves static-only scope and open production gates', () => {
   const cli = read('src/ops/readiness-plan-cli.ts');
   const plan = read('src/ops/readiness-plan.ts');

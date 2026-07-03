@@ -6,11 +6,12 @@ provider integration, Jellyfin behavior, KMS adapter, or network requirement.
 
 Use this document with the authoritative gate in `docs/PHASE_22_PRODUCTION_READINESS_GATE.md` and the
 report template in `docs/templates/PRODUCTION_READINESS_EVIDENCE.md`. Before a real readiness review,
-operators can run `npm run ops:readiness-plan` (see `docs/PHASE_25_READINESS_REHEARSAL.md`) to rehearse
-the expected artifact labels, statuses, and redaction boundaries without reading or writing real
-evidence. Store only redacted summaries, status records, and operator conclusions. Keep raw command
-output, backup artifacts, key material, database URLs, secret file paths, full environments, and live
-service credentials out of the shareable evidence bundle.
+operators can run `npm run ops:readiness-plan` (see `docs/PHASE_25_READINESS_REHEARSAL.md`) and
+`npm run ops:evidence-rehearsal` (see `docs/PHASE_26_EVIDENCE_REHEARSAL.md`) to rehearse the expected
+artifact labels, statuses, and redaction boundaries without reading or writing real evidence. Store
+only redacted summaries, status records, and operator conclusions. Keep raw command output, backup
+artifacts, key material, database URLs, secret file paths, full environments, and live service
+credentials out of the shareable evidence bundle.
 
 ## Storage And Retention
 
