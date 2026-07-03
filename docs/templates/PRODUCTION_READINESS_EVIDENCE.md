@@ -20,6 +20,19 @@ media identity, full environment dumps, or unredacted logs.
 - `CUSTODIAN_MODE` mode name:
 - Evidence collected manually by operator: yes / no
 - CI or unattended automation required live services: no
+- Evidence package location, redacted label only:
+
+## Phase 22 Gate Row Summary
+
+- Row 1 Deployment / Unraid config: met / operator-provided / deferred / blocked; artifact label:
+- Row 2 External custodian / KMS (O4): met / operator-provided / deferred / blocked; artifact label:
+- Row 3 KEK rotation (O5): met / operator-provided / deferred / blocked; artifact label:
+- Row 4 Backup/restore + retention: met / operator-provided / deferred / blocked; artifact label:
+- Row 5 `ops:doctor` / warning gates: met / operator-provided / deferred / blocked; artifact label:
+- Row 6 Scheduled operator tasks: met / operator-provided / deferred / blocked; artifact label:
+- Row 7 Jellyfin validation evidence: met / operator-provided / deferred / blocked; artifact label:
+- Row 8 CI / test expectations: met / operator-provided / deferred / blocked; artifact label:
+- Row 9 Privacy / redaction: met / operator-provided / deferred / blocked; artifact label:
 
 ## Doctor Result
 

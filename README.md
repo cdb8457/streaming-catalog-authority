@@ -156,13 +156,15 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 - **Start here — the authoritative production readiness gate:**
   **`docs/PHASE_22_PRODUCTION_READINESS_GATE.md`** — one consolidated checklist (9 criteria, each
   marked met / operator-provided / deferred / blocked, with the in-repo evidence source). Read it before
-  claiming production readiness; the docs below are its underlying sources.
+  claiming production readiness. Package operator evidence with
+  **`docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md`**; the docs below are the gate's underlying sources.
 - **Docs:** `docs/PHASE_6_LIFECYCLE.md` (upgrade/rollback, backup verification, restore + DR
   rehearsal, unattended healthcheck) · `docs/RELEASE_CHECKLIST.md` (operator checklist) ·
   `docs/PHASE_5_RUNBOOK.md` (backup/restore/rewrap + DR matrix) ·
   `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md` (redaction-safe evidence bundle) ·
   `docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md` (operator-owned schedules/retention) ·
   `docs/PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md` (external custodian acceptance harness) ·
+  `docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md` (Phase 22 evidence packaging map) ·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain

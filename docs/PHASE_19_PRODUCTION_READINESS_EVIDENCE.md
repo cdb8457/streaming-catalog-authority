@@ -4,6 +4,8 @@ Phase 19 makes the production/privacy evidence set repeatable and safe to review
 new services, integrations, schedulers, cloud SDKs, or runtime behavior. Evidence is collected by an
 operator from existing commands and summarized with the template in
 `docs/templates/PRODUCTION_READINESS_EVIDENCE.md`.
+Use `docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md` when the reviewer needs a row-by-row Phase 22
+artifact map, retention location, and "never paste" boundary.
 
 The bundle is meant to answer one question: can a reviewer see the deployment health, backup
 recoverability, restore rehearsal, KEK rotation preflight, and open production gates without seeing

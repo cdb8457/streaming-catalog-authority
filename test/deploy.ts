@@ -245,6 +245,85 @@ test('production readiness gate — Phase 22 consolidates the 9 criteria + statu
   assert(!/Phase 18/.test(read('docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md')), 'the stale "Phase 18" label is gone');
 });
 
+test('operator evidence packaging - Phase 23 maps Phase 22 rows and preserves production gates', () => {
+  assert(exists('docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md'), 'Phase 23 evidence packaging doc exists');
+  const doc = read('docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md');
+  const readme = read('README.md');
+  const gate = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
+  const phase19 = read('docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+  const tpl = read('docs/templates/PRODUCTION_READINESS_EVIDENCE.md');
+
+  for (const source of [readme, gate, phase19, checklist]) {
+    assert(source.includes('PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md'), 'Phase 23 doc is linked from operator/readiness docs');
+  }
+  for (const row of [
+    'Deployment / Unraid config',
+    'External custodian / KMS (O4)',
+    'KEK rotation (O5)',
+    'Backup/restore + retention',
+    '`ops:doctor` / warning gates',
+    'Scheduled operator tasks',
+    'Jellyfin validation evidence',
+    'CI / test expectations',
+    'Privacy / redaction',
+  ]) {
+    assert(doc.includes(row), `Phase 23 maps row ${row}`);
+    assert(tpl.includes(row), `template summarizes row ${row}`);
+  }
+  for (const label of [
+    '01-deployment-unraid.redacted.md',
+    '02-external-custodian-o4.redacted.md',
+    '03-kek-rotation-o5.redacted.md',
+    '04-backup-restore-retention.redacted.md',
+    '05-doctor-warning-gates.redacted.json',
+    '06-scheduled-operator-tasks.redacted.md',
+    '07-jellyfin-validation.redacted.md',
+    '08-ci-test-expectations.redacted.md',
+    '09-privacy-redaction.redacted.md',
+  ]) assert(doc.includes(label), `Phase 23 suggests artifact ${label}`);
+  for (const kw of ['Command shape or evidence source', 'Retention location', 'Never paste or retain']) {
+    assert(doc.includes(kw), `Phase 23 table includes ${kw}`);
+  }
+  assert(/O4 remains open[\s\S]{0,180}real external\/managed custodian/i.test(doc), 'Phase 23 keeps O4 open unless separately proven');
+  assert(/O5 remains open[\s\S]{0,180}managed age\s+KEK custody/i.test(doc), 'Phase 23 keeps O5 open unless separately proven');
+  assert(/FileCustodian[\s\S]{0,120}reference harness[\s\S]{0,80}not a production KMS/i.test(doc), 'Phase 23 does not describe FileCustodian as production KMS');
+  assert(/production-gated pending operator evidence/i.test(doc), 'Phase 23 avoids turnkey production-ready claims');
+  assert(/adds no runtime behavior[\s\S]{0,160}scheduler[\s\S]{0,160}network requirement/i.test(doc), 'Phase 23 is docs/static only');
+  assert(/must not require Docker[\s\S]*network[\s\S]*live Jellyfin[\s\S]*live external\s+custodian[\s\S]*cloud services[\s\S]*age tooling[\s\S]*production databases[\s\S]*operator credentials/i.test(doc), 'Phase 23 forbids live-service CI requirements');
+});
+
+test('operator evidence packaging - Phase 23 redaction boundary avoids sensitive requested fields', () => {
+  const doc = read('docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md');
+  const tpl = read('docs/templates/PRODUCTION_READINESS_EVIDENCE.md');
+  const combined = `${doc}\n${tpl}`;
+
+  for (const forbiddenField of [
+    'KEK',
+    'DEK',
+    'Completion secret',
+    'HMAC secret',
+    'API key',
+    'Token',
+    'Credential',
+    'Private key',
+    'Database URL',
+    'Secret path',
+    'Raw identity',
+    'Provider ref',
+    'Media title',
+    'Jellyfin id',
+    'Jellyfin token',
+    'Artifact contents',
+    'Full environment',
+  ]) {
+    assert(!new RegExp(`^- ${forbiddenField}:`, 'mi').test(combined), `Phase 23/template do not request ${forbiddenField}`);
+  }
+  assert(/Never paste or retain[\s\S]*secret values[\s\S]*database URLs[\s\S]*Jellyfin tokens[\s\S]*artifact contents/i.test(doc), 'Phase 23 explicitly forbids sensitive evidence contents');
+  assert(!/paste (the )?(raw|full|complete) (command )?output/i.test(doc), 'Phase 23 does not ask operators to paste raw output');
+  assert(!/retain (the )?(raw|full|complete) (backup|artifact) contents/i.test(doc), 'Phase 23 does not ask operators to retain artifact contents in evidence');
+});
+
 test('ops entrypoints exist', () => {
   assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');

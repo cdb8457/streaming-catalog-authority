@@ -21,7 +21,8 @@ Self-hosted catalog/privacy core. One-shot CLIs only. Details: `docs/PHASE_6_LIF
 - [ ] Smoke: read a known item; run a fresh `ops:backup -- dump`.
 - [ ] If production readiness is being reviewed, complete
       `docs/templates/PRODUCTION_READINESS_EVIDENCE.md` using
-      `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md`; keep live evidence manual/operator-run and
+      `docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md` and package it with
+      `docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md`; keep live evidence manual/operator-run and
       redaction-safe.
 - [ ] If recurring operations are being configured, use
       `docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md` as operator-owned schedule/retention guidance;

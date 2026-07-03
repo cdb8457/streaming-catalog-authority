@@ -73,7 +73,9 @@ opt-in operator tools and are **not** in the CI chain.
 
 ## Redaction (applies to every row + all evidence)
 
-Fill the shareable bundle in `docs/templates/PRODUCTION_READINESS_EVIDENCE.md` (and the Jellyfin sheet in
+Use `docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md` to map each row above to a redaction-safe artifact
+label and retention location. Fill the shareable bundle in
+`docs/templates/PRODUCTION_READINESS_EVIDENCE.md` (and the Jellyfin sheet in
 `docs/templates/JELLYFIN_VALIDATION_EVIDENCE.md`). Record **only** statuses, counts, timestamps, and
 opaque ids **where the referenced template explicitly asks for them** — **never** API keys, KEKs/DEKs, the
 completion secret, database URLs, secret file paths, raw media titles, provider-ref values, or **Jellyfin
