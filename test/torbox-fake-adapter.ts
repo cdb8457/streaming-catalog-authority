@@ -205,6 +205,7 @@ async function main(): Promise<void> {
       'src/ops/torbox-smoke-readiness-preflight.ts',
       'src/ops/torbox-smoke-readiness-preflight-cli.ts',
       'src/ops/torbox-live-transport.ts',
+      'src/ops/torbox-live-smoke-runner.ts',
     ]);
     const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const path = `${dir}/${entry.name}`;

@@ -213,7 +213,11 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `test:torbox-live-transport` as the first live-capable, injected-fetch TorBox transport for a
   future operator smoke: GET-only reviewed endpoints, bearer-header cache auth, no SDK, no env/secret
   reads, no `globalThis.fetch` construction in the module, no `ADAPTER_MODE` wiring, no provider
-  mode, and no proof that TorBox works against a real account.
+  mode, and no proof that TorBox works against a real account. Phase 43 adds
+  **`docs/PHASE_43_TORBOX_LIVE_SMOKE_CLI.md`** / `test:torbox-live-smoke-cli` as the explicit
+  operator-run live smoke wiring for `smoke:torbox-readonly`: all preflight gates must pass, credentials
+  come only from `--credential-file`, evidence is redaction-safe fixed categories/counts only, and the
+  command remains absent from CI with no provider-mode, downloading, playback, or adapter-factory wiring.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -319,6 +323,10 @@ lookup, user-data, downloading, and playback flows future-gated. Phase 42 adds
 `src/ops/torbox-live-transport.ts` as a live-capable injected transport for that reviewed surface.
 It normalizes provider responses to fixed availability/categories, never returns raw provider
 payloads, does not read env or secret files, and remains detached from adapter factory/provider mode.
+Phase 43 wires that transport into the operator-only `smoke:torbox-readonly -- --live-smoke
+--live-transport ...` path after fail-closed preflight gates. The CLI reads one explicit credential
+file, attaches global fetch only there, keeps live smoke out of CI, and emits no credential values,
+credential file paths, raw refs, endpoint URLs, or provider response bodies.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -410,4 +418,4 @@ operator UI examples only; Phase 36 adds the future live-smoke acceptance contra
 adds the refused-by-default TorBox smoke CLI shell only; Phase 38 adds deterministic local fixture
 execution only; Phase 39 adds deterministic local transport acceptance only; Phase 40 adds static
 TorBox smoke readiness descriptor preflight only; Phase 41 adds static TorBox endpoint mapping review
-only; Phase 42 adds a live-capable injected TorBox transport only, with no CI live network, provider-mode integration, downloading, or playback; real network is strictly operator-gated + smoke-validated.)
+only; Phase 42 adds a live-capable injected TorBox transport only, with no CI live network, provider-mode integration, downloading, or playback; real network is strictly operator-gated + smoke-validated; Phase 43 adds the operator-only TorBox live smoke CLI wiring for that transport, still outside CI and still detached from provider mode, downloading, and playback.)

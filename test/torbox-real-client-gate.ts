@@ -261,6 +261,7 @@ test('TorBox source allowlist remains explicit', () => {
     'src/ops/torbox-smoke-readiness-preflight.ts',
     'src/ops/torbox-smoke-readiness-preflight-cli.ts',
     'src/ops/torbox-live-transport.ts',
+    'src/ops/torbox-live-smoke-runner.ts',
   ]);
   for (const [path, source] of walkTs('src')) {
     if (allowed.has(path)) continue;

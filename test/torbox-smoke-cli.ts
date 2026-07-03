@@ -67,7 +67,7 @@ test('default shell report refuses before live smoke and before TorBox contact',
   assertEq(report.liveSmokeAttempted, false, 'no live smoke attempted');
   assertEq(report.wouldContactTorBox, false, 'no TorBox contact');
   assertEq(report.category, 'not-authorized', 'first default block is authorization');
-  assert(report.gates.some((gate) => gate.name === 'local-fixture-transport-attached' && !gate.ok && gate.category === 'transport'), 'fixture transport gate blocks');
+  assert(report.gates.some((gate) => gate.name === 'smoke-transport-attached' && !gate.ok && gate.category === 'transport'), 'smoke transport gate blocks');
 });
 
 test('fully acknowledged shell still blocks because no live transport is attached', () => {
@@ -225,7 +225,9 @@ test('source has no SDK, network, env, DB, Docker, adapter-mode, or provider-wri
   for (const banned of ['@torbox/torbox-api', 'node-fetch', 'undici', 'axios', 'got', 'puppeteer', 'playwright']) {
     assert(!allDeps.includes(banned), `no ${banned} dependency`);
   }
-  const source = `${read('src/ops/torbox-smoke-shell.ts')}\n${read('src/ops/torbox-smoke-cli.ts')}`;
+  const shell = read('src/ops/torbox-smoke-shell.ts');
+  const cli = read('src/ops/torbox-smoke-cli.ts');
+  const source = `${shell}\n${cli}`;
   for (const forbidden of [
     '@torbox/torbox-api',
     "from 'pg'",
@@ -235,26 +237,26 @@ test('source has no SDK, network, env, DB, Docker, adapter-mode, or provider-wri
     'node:net',
     'node:tls',
     'node:dns',
-    'globalThis.fetch',
     'window.fetch',
-    'fetch(',
     'process.env',
-    'readFileSync',
     'readdirSync',
     'docker compose',
     'ADAPTER_MODE',
     'createAdapter',
-    'createTorBoxTransport',
-    'TorBoxLiveTransport',
     'requestDownloadLink',
     'create-download',
   ]) assert(!source.includes(forbidden), `Phase 37 source excludes ${forbidden}`);
+  for (const forbidden of ['globalThis.fetch', 'fetch(', 'readFileSync', 'node:fs']) {
+    assert(!shell.includes(forbidden), `Phase 37 shell excludes ${forbidden}`);
+  }
+  assert(cli.includes('globalThis.fetch'), 'Phase 43 operator CLI is the TorBox global fetch attachment point');
+  assert(cli.includes('openSync') && cli.includes('readSync') && !cli.includes('readFileSync'), 'Phase 43 CLI uses bounded credential file read');
 
   const torboxRuntime = walkTs('src')
-    .filter(([path]) => /src\/ops\/torbox-smoke-(shell|cli)\.ts$/.test(path) || /src\/core\/adapters\/torbox/.test(path))
+    .filter(([path]) => /src\/ops\/torbox-smoke-shell\.ts$/.test(path) || /src\/core\/adapters\/torbox/.test(path))
     .map(([path, text]) => `${path}\n${text}`)
     .join('\n');
-  assert(!torboxRuntime.includes('globalThis.fetch'), 'TorBox runtime has no global fetch');
+  assert(!torboxRuntime.includes('globalThis.fetch'), 'TorBox core/shell runtime has no global fetch');
   assert(!torboxRuntime.includes("from '@torbox/torbox-api'"), 'TorBox runtime has no SDK import');
 });
 

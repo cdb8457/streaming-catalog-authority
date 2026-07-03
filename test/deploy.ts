@@ -540,8 +540,8 @@ test('TorBox smoke CLI shell - Phase 37 is refused-by-default and non-network', 
     'no environment-variable reads',
     'no ADAPTER_MODE wiring',
     'no adapter-factory mode for TorBox',
-    'wouldContactTorBox: false',
-    'no-live-transport-attached',
+    'would-contact-torbox: false',
+    'smoke-transport-attached',
     'O4 remains open/deferred',
     'O5 remains open/deferred',
     'FileCustodian` remains a hardened reference harness',
@@ -554,16 +554,15 @@ test('TorBox smoke CLI shell - Phase 37 is refused-by-default and non-network', 
     'node:net',
     'node:tls',
     'node:dns',
-    'globalThis.fetch',
     'window.fetch',
-    'fetch(',
     'process.env',
-    'readFileSync',
     'readdirSync',
     'docker compose',
-    'createTorBoxTransport',
-    'TorBoxLiveTransport',
   ]) assert(!`${shell}\n${cli}`.includes(forbidden), `Phase 37 source excludes ${forbidden}`);
+  for (const forbidden of ['globalThis.fetch', 'fetch(', 'readFileSync', 'node:fs']) {
+    assert(!shell.includes(forbidden), `Phase 37 shell excludes ${forbidden}`);
+  }
+  assert(cli.includes('globalThis.fetch') && cli.includes('openSync') && cli.includes('readSync'), 'Phase 43 operator CLI contains the bounded live attachment point');
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
@@ -607,16 +606,15 @@ test('TorBox smoke fixture harness - Phase 38 is deterministic local-only output
     'node:net',
     'node:tls',
     'node:dns',
-    'globalThis.fetch',
     'window.fetch',
-    'fetch(',
     'process.env',
-    'readFileSync',
     'readdirSync',
     'docker compose',
-    'createTorBoxTransport',
-    'TorBoxLiveTransport',
   ]) assert(!`${shell}\n${cli}`.includes(forbidden), `Phase 38 source excludes ${forbidden}`);
+  for (const forbidden of ['globalThis.fetch', 'fetch(', 'readFileSync', 'node:fs']) {
+    assert(!shell.includes(forbidden), `Phase 38 shell excludes ${forbidden}`);
+  }
+  assert(cli.includes('globalThis.fetch') && cli.includes('openSync') && cli.includes('readSync'), 'Phase 43 operator CLI contains the bounded live attachment point');
 });
 
 test('TorBox transport acceptance - Phase 39 is deterministic local-only harnessing', () => {
@@ -844,6 +842,61 @@ test('TorBox live transport - Phase 42 is injected, GET-only, and still detached
   assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'no core adapter live transport exists');
 });
 
+test('TorBox live smoke CLI - Phase 43 is operator-run, redacted, and still detached from provider mode', () => {
+  assert(exists('src/ops/torbox-live-smoke-runner.ts'), 'Phase 43 live smoke runner exists');
+  assert(exists('docs/PHASE_43_TORBOX_LIVE_SMOKE_CLI.md'), 'Phase 43 live smoke CLI doc exists');
+  assert(typeof pkg.scripts['test:torbox-live-smoke-cli'] === 'string', 'test:torbox-live-smoke-cli script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-cli.ts'), 'TorBox live smoke CLI suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
+
+  const runner = read('src/ops/torbox-live-smoke-runner.ts');
+  const cli = read('src/ops/torbox-smoke-cli.ts');
+  const shell = read('src/ops/torbox-smoke-shell.ts');
+  const suite = read('test/torbox-live-smoke-cli.ts');
+  const doc = read('docs/PHASE_43_TORBOX_LIVE_SMOKE_CLI.md');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  const combined = `${runner}\n${cli}\n${shell}\n${suite}\n${doc}\n${read('README.md')}`;
+
+  for (const kw of [
+    'smoke:torbox-readonly',
+    '--live-transport',
+    '--credential-file',
+    'operator-run only',
+    'absent from `npm run test` / `npm run ci`',
+    'fixed categories',
+    'No credential values, credential file paths, raw refs, provider payloads, or endpoint URLs are emitted.',
+    'no provider mode',
+    'adapter-factory',
+    'downloads',
+    'playback',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference',
+  ]) assert(combined.includes(kw), `Phase 43 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    "from 'pg'",
+    'from "pg"',
+    'process.env',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'requestdl',
+    'requestDownloadLink',
+    'create-download',
+    'cdn-url',
+  ]) assert(!`${runner}\n${cli}\n${shell}`.includes(forbidden), `Phase 43 source excludes ${forbidden}`);
+
+  for (const forbidden of ['node:fs', 'globalThis.fetch', 'fetch(', 'readFileSync']) {
+    assert(!runner.includes(forbidden), `Phase 43 runner excludes ${forbidden}`);
+    assert(!shell.includes(forbidden), `Phase 43 shell excludes ${forbidden}`);
+  }
+  assert(cli.includes('globalThis.fetch'), 'operator CLI is TorBox fetch attachment point');
+  assert(cli.includes('openSync') && cli.includes('readSync') && !cli.includes('readFileSync'), 'operator CLI uses bounded credential file read');
+  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {
@@ -935,12 +988,12 @@ test('jellyfin smoke — Phase 13 validation: doc + suite wired; globalThis.fetc
   const cli = read('src/ops/jellyfin-smoke-cli.ts');
   assert(cli.includes('--write') && cli.includes('runReadOnlySmoke') && cli.includes('runWriteSmoke'), 'smoke CLI has read-only + --write modes');
   assert(cli.includes('isJellyfinLivePublishAllowed'), '--write gated by ALLOW_LIVE_PUBLISH');
-  // globalThis.fetch must live ONLY in the two explicit operator entrypoints.
+  // globalThis.fetch must live ONLY in the explicit operator entrypoints.
   const withFetch = walkTs(fileURLToPath(new URL('../src', import.meta.url)))
     .filter((f) => readFileSync(f, 'utf8').includes('globalThis.fetch'))
     .map((f) => f.replace(/\\/g, '/'));
-  assert(withFetch.length === 2, `exactly two src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
-  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|publish-reconcile-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
+  assert(withFetch.length === 3, `exactly three src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
+  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|publish-reconcile-cli|torbox-smoke-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
 });
 
 test('jellyfin mapping — Phase 14 pagination is present + bounded; doc wired', () => {

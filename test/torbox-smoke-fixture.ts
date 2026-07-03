@@ -148,7 +148,9 @@ test('docs preserve no-live boundaries and production gates', () => {
 test('Phase 38 source has no SDK, network, env, DB, Docker, or adapter-mode creep', () => {
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  const source = `${read('src/ops/torbox-smoke-shell.ts')}\n${read('src/ops/torbox-smoke-cli.ts')}`;
+  const shell = read('src/ops/torbox-smoke-shell.ts');
+  const cli = read('src/ops/torbox-smoke-cli.ts');
+  const source = `${shell}\n${cli}`;
   for (const forbidden of [
     '@torbox/torbox-api',
     "from 'pg'",
@@ -158,20 +160,20 @@ test('Phase 38 source has no SDK, network, env, DB, Docker, or adapter-mode cree
     'node:net',
     'node:tls',
     'node:dns',
-    'globalThis.fetch',
     'window.fetch',
-    'fetch(',
     'process.env',
-    'readFileSync',
     'readdirSync',
     'docker compose',
     'ADAPTER_MODE',
     'createAdapter',
-    'createTorBoxTransport',
-    'TorBoxLiveTransport',
     'requestDownloadLink',
     'create-download',
   ]) assert(!source.includes(forbidden), `Phase 38 source excludes ${forbidden}`);
+  for (const forbidden of ['globalThis.fetch', 'fetch(', 'readFileSync', 'node:fs']) {
+    assert(!shell.includes(forbidden), `Phase 38 shell excludes ${forbidden}`);
+  }
+  assert(cli.includes('globalThis.fetch'), 'Phase 43 operator CLI is the TorBox global fetch attachment point');
+  assert(cli.includes('openSync') && cli.includes('readSync') && !cli.includes('readFileSync'), 'Phase 43 CLI uses bounded credential file read');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
