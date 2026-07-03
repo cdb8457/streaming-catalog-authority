@@ -107,6 +107,7 @@ test('adapter boundary — no network/provider leakage in src/core/adapters (Pha
   const network = /(from\s*['"]node:(http|https|net|tls|dns)['"]|from\s*['"](node-fetch|undici|axios|got|ws|puppeteer|cheerio)['"]|\bfetch\s*\()/;
   const providers = /(real[-_ ]?debrid|torbox|\bplex\b|jellyfin|scrap(e|ing)|\bdownload\b|playback)/i;
   for (const f of files) {
+    if (f === 'torbox-boundary.ts') continue;
     const src = readFileSync(`${dir}/${f}`, 'utf8');
     assert(!network.test(src), `src/core/adapters/${f} makes no network import/call`);
     assert(!providers.test(src), `src/core/adapters/${f} names no real provider / scraping / playback`);
@@ -115,6 +116,46 @@ test('adapter boundary — no network/provider leakage in src/core/adapters (Pha
   const doc = read('docs/PHASE_7_ADAPTER_BOUNDARY.md');
   for (const kw of ['AdapterRefView', 'withProviderRef', 'advisory', 'ADAPTER_MODE', 'deferred']) assert(doc.includes(kw), `doc covers ${kw}`);
   assert((pkg.scripts.test ?? '').includes('test/adapter-privacy.ts') && (pkg.scripts.test ?? '').includes('test/adapter-contract.ts'), 'adapter suites in the CI chain');
+});
+
+test('torbox boundary - Phase 31 is static research only, no SDK/live provider mode', () => {
+  assert(exists('src/core/adapters/torbox-boundary.ts'), 'TorBox static boundary contract exists');
+  assert(exists('docs/PHASE_31_TORBOX_BOUNDARY.md'), 'Phase 31 TorBox boundary doc exists');
+  assert(typeof pkg.scripts['test:torbox-boundary'] === 'string', 'test:torbox-boundary script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-boundary.ts'), 'TorBox boundary suite in the CI chain');
+  const source = read('src/core/adapters/torbox-boundary.ts');
+  const suite = read('test/torbox-boundary.ts');
+  const doc = read('docs/PHASE_31_TORBOX_BOUNDARY.md');
+  const readme = read('README.md');
+
+  for (const kw of ['TorrentsService', 'WebDownloadsDebridService', 'UsenetService', 'GeneralService', 'hoster-list']) {
+    assert(`${source}\n${doc}`.includes(kw), `Phase 31 names official surface ${kw}`);
+  }
+  for (const kw of ['no live TorBox', 'no SDK dependency', 'no downloading', 'no playback', 'no provider mode', '@torbox/torbox-api']) {
+    assert(`${doc}\n${readme}`.includes(kw), `Phase 31 docs preserve ${kw}`);
+  }
+  assert(/local fake TorBox adapter contract[\s\S]*gated real client/i.test(doc), 'Phase 31 states fake-contract-before-real-client sequence');
+  assert(/O4 remains open\/deferred/.test(doc) && /O5 remains open\/deferred/.test(doc), 'Phase 31 keeps O4/O5 open');
+  assert(/FileCustodian`? remains a hardened reference\s+harness, not production KMS/.test(doc), 'Phase 31 preserves FileCustodian boundary');
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+  ]) assert(!source.includes(forbidden), `TorBox boundary source excludes ${forbidden}`);
+  assert(suite.includes('no runtime dependency, network, DB, Docker, env read, or provider behavior'), 'suite enforces static-only boundary');
 });
 
 test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {

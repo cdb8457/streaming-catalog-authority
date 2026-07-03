@@ -72,3 +72,11 @@ to cross the boundary — a fundamentally higher-risk disclosure than a single r
 No Real-Debrid/TorBox, no Plex/Jellyfin, no scraping, downloading, playback, no web/mobile UI, no
 HTTP daemon/framework, no real network calls, and **no new runtime dependencies**. Adapter
 implementations here are local reference fakes; a real adapter is a future, reviewed integration.
+
+## Phase 31 TorBox research addendum
+
+`docs/PHASE_31_TORBOX_BOUNDARY.md` and `src/core/adapters/torbox-boundary.ts` are a static contract
+only. They name the official TorBox docs/SDK surface (`@torbox/torbox-api`) so a future adapter can
+be reviewed against the Phase 7 privacy boundary, but they add no SDK dependency, no live TorBox, no
+network, no downloading, no playback, no provider mode, no factory mode, and no credential reads.
+The next approved step must be a local fake TorBox adapter contract before any gated real client.

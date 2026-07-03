@@ -170,7 +170,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md`** / `ops:custodian-evidence-preflight` to preflight
   one descriptor JSON file before evidence review; it also does not close O4. Phase 30 adds
   **`docs/PHASE_30_KEK_EVIDENCE_PREFLIGHT.md`** / `ops:kek-evidence-preflight` to preflight one
-  descriptor JSON file before O5 KEK custody/scheduling evidence review; it does not close O5. Rehearse the evidence package shape with
+  descriptor JSON file before O5 KEK custody/scheduling evidence review; it does not close O5. Phase 31 adds
+  **`docs/PHASE_31_TORBOX_BOUNDARY.md`** / `test:torbox-boundary` as static TorBox boundary research
+  only: no live TorBox, no SDK dependency, no downloading, no playback, no provider mode, and no
+  token/API-key handling. Rehearse the evidence package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
   real readiness review. The docs
   below are the gate's underlying sources.
@@ -222,6 +225,13 @@ a privacy bridge + tests only** (no real providers, no network, no HTTP/UI). An 
 `CatalogAuthority.withProviderRef()`, which decrypts a single ref, redacts it via the `SecretStore`
 for the call and clears it after, and is fail-closed. Adapter output is **advisory** — never written
 to the event log. `ADAPTER_MODE=fake|none` (unknown fails closed). See `docs/PHASE_7_ADAPTER_BOUNDARY.md`.
+
+Phase 31 adds `docs/PHASE_31_TORBOX_BOUNDARY.md` and `src/core/adapters/torbox-boundary.ts` as a
+static TorBox capability/redaction contract based on official TorBox docs/SDK surfaces. It names
+cache/status/hoster capabilities for later review and explicitly future-gates create-download and
+request-download-link flows. It is not a real TorBox adapter: no live TorBox, no SDK dependency, no
+downloading, no playback, no provider mode, no env secret reads, and no adapter factory mode. The
+next future phase is a local fake TorBox adapter contract, then a separately gated real client.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -304,6 +314,7 @@ cleanup is confirmed and requires both the explicit `--write` flag and
 
 ## Not in this slice
 
-No Plex, no RD/TorBox, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
+No Plex, no RD/TorBox live integration, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
 automated tests**. (Phases 7–13 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox +
-smoke validation; real network is strictly gated + smoke-validated.)
+smoke validation; Phase 31 adds TorBox boundary research only; real network is strictly gated +
+smoke-validated.)
