@@ -226,6 +226,25 @@ test('jellyfin mapping — Phase 14 pagination is present + bounded; doc wired',
   for (const kw of ['pagination', 'StartIndex', 'MAX_PAGES', 'PROVISIONAL', '--write']) assert(doc.includes(kw), `doc covers ${kw}`);
 });
 
+test('production readiness gate — Phase 22 consolidates the 9 criteria + statuses; no stale refs', () => {
+  assert(exists('docs/PHASE_22_PRODUCTION_READINESS_GATE.md'), 'readiness gate doc exists');
+  const gate = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
+  // all 9 readiness areas are covered
+  for (const area of ['Deployment', 'custodian', 'KEK rotation', 'ackup', 'doctor', 'Scheduled', 'Jellyfin', 'CI', 'redaction']) {
+    assert(gate.includes(area), `gate covers "${area}"`);
+  }
+  // the four status categories are defined + the open gates are visible (not hidden)
+  for (const kw of ['met', 'operator-provided', 'deferred', 'blocked', 'O4', 'O5']) assert(gate.includes(kw), `gate defines "${kw}"`);
+  // it must not overstate: it states what "production ready" requires and that nothing is hidden
+  assert(/production-gated|not.*turnkey|do not (advertise|overstate|claim)/i.test(gate), 'gate does not overstate production readiness');
+  assert(gate.includes('PRODUCTION_READINESS_EVIDENCE.md'), 'gate points to the evidence template');
+  // the README surfaces the gate for a new operator
+  assert(read('README.md').includes('PHASE_22_PRODUCTION_READINESS_GATE.md'), 'README points to the readiness gate');
+  // reconciled stale references must not reappear
+  assert(!/=\s*86 passed/.test(read('README.md')), 'the stale "86 passed" figure is gone');
+  assert(!/Phase 18/.test(read('docs/PHASE_19_PRODUCTION_READINESS_EVIDENCE.md')), 'the stale "Phase 18" label is gone');
+});
+
 test('ops entrypoints exist', () => {
   assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');
