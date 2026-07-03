@@ -35,6 +35,9 @@ export type TorBoxErrorCategory =
   | 'parse'
   | 'ambiguous-availability';
 
+export type TorBoxGateOperation = TorBoxOperation | 'client-construction' | 'invalid-operation';
+export type TorBoxGateErrorCategory = TorBoxErrorCategory | 'invalid-error-category';
+
 export interface TorBoxTransportRequest {
   readonly operation: TorBoxReadOnlyOperation;
   readonly method: 'GET';
@@ -117,23 +120,24 @@ export const TORBOX_REAL_CLIENT_TIMEOUT_BACKOFF_POLICY = {
 } as const;
 
 export class TorBoxRealClientGateError extends Error {
-  readonly operation: TorBoxOperation | 'client-construction';
+  readonly operation: TorBoxGateOperation;
   readonly status?: number;
-  readonly category: TorBoxErrorCategory;
+  readonly category: TorBoxGateErrorCategory;
 
   constructor(input: {
     readonly operation: TorBoxOperation | 'client-construction';
     readonly status?: number;
     readonly category: TorBoxErrorCategory;
   }) {
-    super(`TorBox real client gate closed: ${input.category}`);
+    const category = sanitizeTorBoxErrorCategory(input.category);
+    super(`TorBox real client gate closed: ${category}`);
     this.name = 'TorBoxRealClientGateError';
-    this.operation = input.operation;
-    this.status = input.status;
-    this.category = input.category;
+    this.operation = sanitizeTorBoxGateOperation(input.operation);
+    this.status = sanitizeTorBoxStatus(input.status);
+    this.category = category;
   }
 
-  toJSON(): { operation: TorBoxOperation | 'client-construction'; status?: number; category: TorBoxErrorCategory } {
+  toJSON(): { operation: TorBoxGateOperation; status?: number; category: TorBoxGateErrorCategory } {
     return this.status === undefined
       ? { operation: this.operation, category: this.category }
       : { operation: this.operation, status: this.status, category: this.category };
@@ -146,6 +150,34 @@ export function isTorBoxReadOnlyOperation(operation: string): operation is TorBo
 
 export function isTorBoxFutureGatedOperation(operation: string): operation is TorBoxFutureGatedOperation {
   return (TORBOX_REAL_CLIENT_FUTURE_GATED_OPERATIONS as readonly string[]).includes(operation);
+}
+
+export function isTorBoxErrorCategory(category: string): category is TorBoxErrorCategory {
+  return ([
+    'real-client-disabled',
+    'forbidden-operation',
+    'auth',
+    'quota',
+    'timeout',
+    'transport',
+    'parse',
+    'ambiguous-availability',
+  ] as readonly string[]).includes(category);
+}
+
+function sanitizeTorBoxGateOperation(operation: unknown): TorBoxGateOperation {
+  if (operation === 'client-construction') return operation;
+  return typeof operation === 'string' && (isTorBoxReadOnlyOperation(operation) || isTorBoxFutureGatedOperation(operation))
+    ? operation
+    : 'invalid-operation';
+}
+
+function sanitizeTorBoxErrorCategory(category: unknown): TorBoxGateErrorCategory {
+  return typeof category === 'string' && isTorBoxErrorCategory(category) ? category : 'invalid-error-category';
+}
+
+function sanitizeTorBoxStatus(status: unknown): number | undefined {
+  return typeof status === 'number' && Number.isInteger(status) && status >= 100 && status <= 599 ? status : undefined;
 }
 
 export function createTorBoxGateError(input: {

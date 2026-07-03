@@ -41,6 +41,7 @@ function walkTs(relDir: string): Array<[string, string]> {
 function assertNoLeak(blob: string, label: string): void {
   for (const forbidden of [
     'credential-leak-marker',
+    'token-leak-marker',
     'raw-ref-leak-marker',
     'private-title-leak-marker',
     '2026',
@@ -152,6 +153,27 @@ test('redaction-safe errors expose only operation, status, and category', () => 
   assertEq(err.message, 'TorBox real client gate closed: quota', 'fixed category-only message');
   assertEq(serialized, '{"operation":"torrent-cache-check","status":429,"category":"quota"}', 'JSON shape is minimal');
   assertNoLeak(`${err.name}\n${err.message}\n${serialized}\n${String(err)}`, 'gate error');
+});
+
+test('redaction-safe errors clamp hostile runtime operation and category values', () => {
+  const hostileInput = {
+    operation: 'raw-ref-leak-marker',
+    status: 'raw-response-body-leak-marker',
+    category: 'token-leak-marker',
+  } as any;
+
+  for (const [label, err] of [
+    ['helper', createTorBoxGateError(hostileInput)],
+    ['class', new TorBoxRealClientGateError(hostileInput)],
+  ] as const) {
+    const serialized = JSON.stringify(err);
+    assertEq(err.message, 'TorBox real client gate closed: invalid-error-category', `${label} message is clamped`);
+    assertEq(serialized, '{"operation":"invalid-operation","category":"invalid-error-category"}', `${label} JSON is clamped`);
+    assertEq(err.operation, 'invalid-operation', `${label} operation is clamped`);
+    assertEq(err.category, 'invalid-error-category', `${label} category is clamped`);
+    assertEq(err.status, undefined, `${label} invalid status is omitted`);
+    assertNoLeak(`${err.name}\n${err.message}\n${serialized}\n${String(err)}`, `${label} hostile error`);
+  }
 });
 
 test('allowed operations are cache/status/hoster only', () => {
