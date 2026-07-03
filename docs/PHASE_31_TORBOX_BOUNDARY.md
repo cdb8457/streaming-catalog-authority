@@ -14,7 +14,9 @@ no playback, no provider mode, no SDK dependency, and no runtime behavior.
   `TorrentsService`, `WebDownloadsDebridService`, `UsenetService`, and `GeneralService`.
 
 The static contract is in `src/core/adapters/torbox-boundary.ts`. It records the official surface
-without importing the SDK or creating an adapter.
+without importing the SDK or creating a real adapter. Phase 32 adds
+`docs/PHASE_32_FAKE_TORBOX_ADAPTER.md` and `test:torbox-fake-adapter` as a local fake contract only;
+it does not prove real TorBox works and does not change the no live provider boundary.
 
 ## Capability Map
 
@@ -66,8 +68,8 @@ not allowed in Phase 31.
 
 ## Future Sequence
 
-1. Local fake TorBox adapter contract: implement no-network fakes against this capability map and
-   the Phase 7 `AdapterRefView` shape.
+1. Local fake TorBox adapter contract: Phase 32 implements a no-network fake against this capability
+   map and the Phase 7 `AdapterRefView` shape.
 2. Gated real client design: decide SDK vs injected transport, timeout, backoff, redaction, and
    fail-closed behavior without enabling live CI.
 3. Operator-run smoke only: if a real client is later approved, live TorBox validation must be

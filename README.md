@@ -173,7 +173,9 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   descriptor JSON file before O5 KEK custody/scheduling evidence review; it does not close O5. Phase 31 adds
   **`docs/PHASE_31_TORBOX_BOUNDARY.md`** / `test:torbox-boundary` as static TorBox boundary research
   only: no live TorBox, no SDK dependency, no downloading, no playback, no provider mode, and no
-  token/API-key handling. Rehearse the evidence package shape with
+  token/API-key handling. Phase 32 adds **`docs/PHASE_32_FAKE_TORBOX_ADAPTER.md`** /
+  `test:torbox-fake-adapter` as a local fake contract only; it does not prove real TorBox works and
+  keeps the real client separately gated. Rehearse the evidence package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
   real readiness review. The docs
   below are the gate's underlying sources.
@@ -190,6 +192,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_27_RELEASE_GUARD.md` (advisory release-guard command) ·
   `docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md` (static production custodian descriptor contract) ·
   `docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md` (static O4 descriptor preflight command) Â·
+  `docs/PHASE_32_FAKE_TORBOX_ADAPTER.md` (local fake TorBox adapter contract) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -231,7 +234,12 @@ static TorBox capability/redaction contract based on official TorBox docs/SDK su
 cache/status/hoster capabilities for later review and explicitly future-gates create-download and
 request-download-link flows. It is not a real TorBox adapter: no live TorBox, no SDK dependency, no
 downloading, no playback, no provider mode, no env secret reads, and no adapter factory mode. The
-next future phase is a local fake TorBox adapter contract, then a separately gated real client.
+Phase 32 local fake contract now lives in `src/core/adapters/fake-torbox-adapter.ts` and
+`docs/PHASE_32_FAKE_TORBOX_ADAPTER.md`; it implements `ProviderAdapter` for direct tests only,
+supports scoped infohash/hash-digest/link-derived-digest/NZB-derived-digest refs, returns advisory
+available/unavailable/unknown results, and is not wired into `ADAPTER_MODE`. It does not prove real
+TorBox works. Create/download-link/token-query flows remain future-gated/high risk, and any real
+client remains a separately gated real client.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -316,5 +324,5 @@ cleanup is confirmed and requires both the explicit `--write` flag and
 
 No Plex, no RD/TorBox live integration, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
 automated tests**. (Phases 7–13 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox +
-smoke validation; Phase 31 adds TorBox boundary research only; real network is strictly gated +
-smoke-validated.)
+smoke validation; Phase 31 adds TorBox boundary research only; Phase 32 adds a local fake TorBox
+contract only; real network is strictly gated + smoke-validated.)

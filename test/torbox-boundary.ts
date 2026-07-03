@@ -114,9 +114,10 @@ test('docs preserve no live TorBox, no downloads/playback/provider mode, and no 
   assert(/`?FileCustodian`? remains a hardened reference\s+harness, not production KMS/i.test(doc), 'FileCustodian boundary preserved');
 });
 
-test('no accidental TorBox implementation appears outside the static boundary files', () => {
+test('no accidental TorBox implementation appears outside the static boundary and local fake contract files', () => {
   const allowed = new Set([
     'src/core/adapters/torbox-boundary.ts',
+    'src/core/adapters/fake-torbox-adapter.ts',
     'test/torbox-boundary.ts',
   ]);
   for (const [path, source] of srcFiles()) {

@@ -110,6 +110,7 @@ test('adapter boundary — no network/provider leakage in src/core/adapters (Pha
     if (f === 'torbox-boundary.ts') continue;
     const src = readFileSync(`${dir}/${f}`, 'utf8');
     assert(!network.test(src), `src/core/adapters/${f} makes no network import/call`);
+    if (f === 'fake-torbox-adapter.ts') continue;
     assert(!providers.test(src), `src/core/adapters/${f} names no real provider / scraping / playback`);
   }
   assert(exists('docs/PHASE_7_ADAPTER_BOUNDARY.md'), 'adapter boundary doc exists');
@@ -156,6 +157,66 @@ test('torbox boundary - Phase 31 is static research only, no SDK/live provider m
     'ProviderAdapter',
   ]) assert(!source.includes(forbidden), `TorBox boundary source excludes ${forbidden}`);
   assert(suite.includes('no runtime dependency, network, DB, Docker, env read, or provider behavior'), 'suite enforces static-only boundary');
+});
+
+test('fake TorBox adapter - Phase 32 is local contract only and fail-closed', () => {
+  assert(exists('src/core/adapters/fake-torbox-adapter.ts'), 'Phase 32 fake TorBox adapter exists');
+  assert(exists('docs/PHASE_32_FAKE_TORBOX_ADAPTER.md'), 'Phase 32 fake TorBox doc exists');
+  assert(typeof pkg.scripts['test:torbox-fake-adapter'] === 'string', 'test:torbox-fake-adapter script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-fake-adapter.ts'), 'fake TorBox suite in the CI chain');
+
+  const source = read('src/core/adapters/fake-torbox-adapter.ts');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  const suite = read('test/torbox-fake-adapter.ts');
+  const doc = read('docs/PHASE_32_FAKE_TORBOX_ADAPTER.md');
+  const readme = read('README.md');
+  const phase31 = read('docs/PHASE_31_TORBOX_BOUNDARY.md');
+
+  for (const kw of ['ProviderAdapter', 'AdapterRefView', 'available', 'unavailable', 'unknown', 'unsupported-ref-type']) {
+    assert(source.includes(kw), `Phase 32 fake adapter covers ${kw}`);
+  }
+  for (const kw of ['infohash', 'hash-digest', 'link-derived-digest', 'nzb-derived-digest']) {
+    assert(source.includes(kw), `Phase 32 supports scoped local ref ${kw}`);
+  }
+  for (const kw of [
+    'local fake contract only',
+    'does not prove real TorBox works',
+    'separately gated real client',
+    'Create/download-link/token-query flows remain future-gated/high risk',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(`${doc}\n${readme}\n${phase31}`.includes(kw), `Phase 32 docs preserve ${kw}`);
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  assert(!factory.includes('fake-torbox') && !factory.includes('FakeTorBoxAdapter'), 'TorBox fake is not wired into ADAPTER_MODE');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    "from 'pg'",
+    'from "pg"',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'node:child_process',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'readdirSync',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'requestDownloadLink',
+    'createTorrent',
+    'createWebDownload',
+    'createUsenetDownload',
+    'CDN URL',
+    'permalink URL',
+  ]) assert(!source.includes(forbidden), `Phase 32 fake source excludes ${forbidden}`);
+  assert(suite.includes('source has no SDK, network, env, DB, Docker, or provider-mode scope creep'), 'suite enforces Phase 32 static scope');
 });
 
 test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {
