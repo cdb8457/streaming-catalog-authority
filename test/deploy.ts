@@ -110,7 +110,7 @@ test('adapter boundary — no network/provider leakage in src/core/adapters (Pha
     if (f === 'torbox-boundary.ts') continue;
     const src = readFileSync(`${dir}/${f}`, 'utf8');
     assert(!network.test(src), `src/core/adapters/${f} makes no network import/call`);
-    if (f === 'fake-torbox-adapter.ts' || f === 'torbox-real-client-gate.ts') continue;
+    if (f === 'fake-torbox-adapter.ts' || f === 'torbox-real-client-gate.ts' || f === 'torbox-readonly-client.ts') continue;
     assert(!providers.test(src), `src/core/adapters/${f} names no real provider / scraping / playback`);
   }
   assert(exists('docs/PHASE_7_ADAPTER_BOUNDARY.md'), 'adapter boundary doc exists');
@@ -289,6 +289,82 @@ test('TorBox real-client gate - Phase 33 is static design only and fail-closed',
   assert(suite.includes('transport is injected-only and no TorBox transport implementation exists'), 'suite enforces injected-only transport');
   assert(suite.includes('gate is disabled by default and cannot be enabled from pure config'), 'suite enforces disabled-by-default gate');
   assert(suite.includes('redaction-safe errors expose only operation, status, and category'), 'suite enforces error redaction');
+});
+
+test('TorBox read-only fixture client - Phase 34 is injected transport only and fail-closed', () => {
+  assert(exists('src/core/adapters/torbox-readonly-client.ts'), 'Phase 34 TorBox read-only client exists');
+  assert(exists('docs/PHASE_34_TORBOX_READONLY_FIXTURE.md'), 'Phase 34 TorBox read-only fixture doc exists');
+  assert(typeof pkg.scripts['test:torbox-readonly-client'] === 'string', 'test:torbox-readonly-client script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-readonly-client.ts'), 'TorBox read-only fixture suite in the CI chain');
+
+  const source = read('src/core/adapters/torbox-readonly-client.ts');
+  const suite = read('test/torbox-readonly-client.ts');
+  const doc = read('docs/PHASE_34_TORBOX_READONLY_FIXTURE.md');
+  const readme = read('README.md');
+  const phase31 = read('docs/PHASE_31_TORBOX_BOUNDARY.md');
+  const phase32 = read('docs/PHASE_32_FAKE_TORBOX_ADAPTER.md');
+  const phase33 = read('docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+
+  for (const kw of [
+    'TorBoxReadOnlyClient',
+    'TorBoxTransport',
+    'AdapterRefView',
+    'AdapterResult',
+    'torrent-cache-check',
+    'webdl-cache-check',
+    'usenet-cache-check',
+    'status-check',
+    'hoster-list',
+    'ambiguous-availability',
+  ]) assert(source.includes(kw), `Phase 34 source covers ${kw}`);
+
+  for (const kw of [
+    'injected fake transport in tests only',
+    'not a live TorBox client',
+    'does not prove real TorBox works',
+    'Real transport and live smoke remain separately authorized and operator-run outside CI',
+    'Request-download-link, token-query, permalink, CDN, create, user, control, delete, and export flows remain future-gated',
+    'no ADAPTER_MODE wiring',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(`${doc}\n${readme}\n${phase31}\n${phase32}\n${phase33}`.includes(kw), `Phase 34 docs preserve ${kw}`);
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assert(!/class\s+\w*Transport\b/.test(source), 'no transport class implementation');
+  assert(!/implements\s+TorBoxTransport/.test(source), 'no TorBox transport implementation');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    "from 'pg'",
+    'from "pg"',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'node:child_process',
+    'globalThis.fetch',
+    'window.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'readdirSync',
+    'openSync',
+    'readSync',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'INSERT INTO',
+    'UPDATE ',
+    'DELETE FROM',
+    'TRUNCATE',
+  ]) assert(!source.includes(forbidden), `Phase 34 source excludes ${forbidden}`);
+  assert(suite.includes('request mapping from scoped refs to read-only operations and route ids is deterministic'), 'suite enforces request mapping');
+  assert(suite.includes('availability parser accepts clear hit, miss, and unknown only'), 'suite enforces strict fixture parsing');
+  assert(suite.includes('adapter factory remains closed and package test chain includes the suite'), 'suite enforces factory closure and test wiring');
 });
 
 test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {

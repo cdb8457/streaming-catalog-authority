@@ -198,6 +198,7 @@ async function main(): Promise<void> {
       'src/core/adapters/torbox-boundary.ts',
       'src/core/adapters/fake-torbox-adapter.ts',
       'src/core/adapters/torbox-real-client-gate.ts',
+      'src/core/adapters/torbox-readonly-client.ts',
     ]);
     const walk = (dir: string): string[] => readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
       const path = `${dir}/${entry.name}`;

@@ -21,6 +21,10 @@ Phase 33 adds `docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md`,
 `src/core/adapters/torbox-real-client-gate.ts`, and `test:torbox-real-client-gate` as a design gate,
 not a live client; it keeps injected transport only, no SDK dependency, no ADAPTER_MODE wiring, and
 a future real client must be separately authorized/reviewed.
+Phase 34 adds `docs/PHASE_34_TORBOX_READONLY_FIXTURE.md`,
+`src/core/adapters/torbox-readonly-client.ts`, and `test:torbox-readonly-client` as an executable
+injected-transport fixture only. It still makes no live TorBox calls, proves no real TorBox behavior,
+and keeps ADAPTER_MODE closed to TorBox.
 
 ## Capability Map
 
@@ -76,9 +80,11 @@ not allowed in Phase 31.
    map and the Phase 7 `AdapterRefView` shape.
 2. Gated real client design: Phase 33 records injected transport only, timeout, backoff, redaction,
    and fail-closed behavior without enabling a live client or live CI.
-3. Operator-run smoke only: if a real client is later approved, live TorBox validation must be
+3. Injected-transport fixture: Phase 34 executes the read-only request/parse/redaction contract
+   against an in-memory test transport only, without live enablement.
+4. Operator-run smoke only: if a real client is later approved, live TorBox validation must be
    opt-in and outside CI.
-4. Mutating/link flows only after durable orphan-safe design: create-download and
+5. Mutating/link flows only after durable orphan-safe design: create-download and
    request-download-link need a separate outbox/idempotency/revocation review before use.
 
 O4 remains open/deferred. O5 remains open/deferred. `FileCustodian` remains a hardened reference

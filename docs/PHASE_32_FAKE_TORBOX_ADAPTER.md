@@ -52,6 +52,10 @@ Phase 33 adds `docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md` and
 `src/core/adapters/torbox-real-client-gate.ts` as a design gate, not a live client. It keeps
 injected transport only, no SDK dependency, no ADAPTER_MODE wiring, and says any future real client
 must be separately authorized/reviewed.
+Phase 34 adds `docs/PHASE_34_TORBOX_READONLY_FIXTURE.md` and
+`src/core/adapters/torbox-readonly-client.ts` as an executable read-only fixture client over an
+in-memory injected test transport only. It is not a live client, does not prove real TorBox works,
+and does not add ADAPTER_MODE wiring.
 
 Create/download-link/token-query flows remain future-gated/high risk. They can create provider-side
 state or produce metered CDN/permalink/token-bearing URLs, so they require a separate durable

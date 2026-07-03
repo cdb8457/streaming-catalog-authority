@@ -254,6 +254,7 @@ test('TorBox source allowlist remains explicit', () => {
     'src/core/adapters/torbox-boundary.ts',
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',
+    'src/core/adapters/torbox-readonly-client.ts',
   ]);
   for (const [path, source] of walkTs('src')) {
     if (allowed.has(path)) continue;

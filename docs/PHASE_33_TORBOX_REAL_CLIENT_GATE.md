@@ -8,6 +8,11 @@ The static contract lives in `src/core/adapters/torbox-real-client-gate.ts`. It 
 transport only, bounded timeout/backoff policy data, allowed read-only operation names, future-gated
 operation names, and redaction-safe gate errors. It does not construct a network client.
 
+Phase 34 builds on this contract with `src/core/adapters/torbox-readonly-client.ts` and
+`test:torbox-readonly-client`, using an in-memory injected fixture transport only. That phase makes
+request mapping, strict fixture parsing, fail-closed behavior, and redaction executable without live
+TorBox enablement.
+
 ## Scope
 
 Included:
@@ -37,6 +42,8 @@ and fail-closed semantics.
 
 Live smoke must be operator-run outside CI. CI must remain deterministic and must not require TorBox
 credentials, network access, provider accounts, SDK installation, Docker, or browser automation.
+Phase 34 does not change this: real transport/smoke remains separately authorized and operator-run
+outside CI.
 
 ## Allowed Read-Only Operations
 
