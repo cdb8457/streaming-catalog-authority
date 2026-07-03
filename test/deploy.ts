@@ -410,6 +410,14 @@ test('external custodian acceptance - Phase 21 harness is local, wired, and keep
   assert(kit.includes('export async function runCustodianContract'), 'kit exports runCustodianContract');
   assert(kit.includes('export type CustodianFactory'), 'kit exports documented factory type');
   assert(!/main\(\)|Running Phase 3 custodian/.test(kit), 'kit has no executable suite side effects');
+  // Harness output must be REDACTION-SAFE by default (a real KMS error can embed secrets/endpoints/key ids):
+  assert(kit.includes('formatHarnessFailure'), 'kit has a redaction-safe failure formatter');
+  assert(/FAIL {2}\$\{name\}: \$\{formatHarnessFailure\(err\)\}/.test(kit), 'default FAIL line uses the redaction-safe formatter');
+  assert(!/\(err as Error\)\.(message|stack)/.test(kit), 'kit does not print raw (err as Error).message/.stack by default');
+  assert(kit.includes('CUSTODIAN_HARNESS_VERBOSE') && /debug\/non-evidence/.test(kit), 'raw debug output is gated behind CUSTODIAN_HARNESS_VERBOSE and labelled non-evidence');
+  assert(kit.includes('SAFE_ERROR_NAMES') && kit.includes("'UnknownError'"), 'error class/category is allowlisted (not a raw err.name that could carry secrets)');
+  assert((pkg.scripts.test ?? '').includes('test/custodian-harness-redaction.ts'), 'harness redaction regression is in the CI chain');
+  assert(/redaction-safe|redacted/i.test(phase21), 'Phase 21 doc states harness output is redaction-safe');
   assert(executable.includes("from './helpers/custodian-contract-kit.js'"), 'executable suite imports the helper kit');
   assert(phase16.includes('./test/helpers/custodian-contract-kit.js'), 'Phase 16 points future adapters at helper kit');
   assert(acceptance.includes('LocalExternalCustodianHarness') && acceptance.includes('CustodianTransportError'), 'acceptance suite models external failures locally');
