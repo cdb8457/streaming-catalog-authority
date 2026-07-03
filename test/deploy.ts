@@ -324,6 +324,75 @@ test('operator evidence packaging - Phase 23 redaction boundary avoids sensitive
   assert(!/retain (the )?(raw|full|complete) (backup|artifact) contents/i.test(doc), 'Phase 23 does not ask operators to retain artifact contents in evidence');
 });
 
+test('coordinator release gate - Phase 24 doc is linked and defines the three release phases', () => {
+  assert(exists('docs/PHASE_24_COORDINATOR_RELEASE_GATE.md'), 'Phase 24 coordinator gate doc exists');
+  const doc = read('docs/PHASE_24_COORDINATOR_RELEASE_GATE.md');
+  const readme = read('README.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+
+  assert(readme.includes('PHASE_24_COORDINATOR_RELEASE_GATE.md'), 'README links the coordinator gate');
+  assert(checklist.includes('PHASE_24_COORDINATOR_RELEASE_GATE.md'), 'release checklist links the coordinator gate');
+  for (const heading of [
+    '## Pre-Push / PR-GO Checks',
+    '## Pre-Merge GO Checks',
+    '## Post-Merge / Tag / Push Verification',
+  ]) assert(doc.includes(heading), `Phase 24 includes ${heading}`);
+  for (const cmd of [
+    'git diff --check <base>...HEAD',
+    'git diff --check origin/master...HEAD',
+    'git ls-remote --tags origin <phase-tag>',
+    'npm run test:deploy',
+    'npm run typecheck',
+    'npm run ci',
+  ]) assert(doc.includes(cmd), `Phase 24 command block includes ${cmd}`);
+});
+
+test('coordinator release gate - Phase 24 names reviewer, HOLD, Ask-Clint, and intake rules', () => {
+  const doc = read('docs/PHASE_24_COORDINATOR_RELEASE_GATE.md');
+
+  for (const heading of [
+    '## Builder Intake Requirements',
+    '## Reviewer-Required Conditions',
+    '## HOLD Conditions',
+    '## Ask-Clint Conditions',
+    '## Hard Scope Boundary Checklist',
+  ]) assert(doc.includes(heading), `Phase 24 includes ${heading}`);
+  for (const kw of [
+    'Branch name and exact base commit',
+    'Exact commit hash or hashes',
+    'Tests run with exact command names and outcomes',
+    'Residual risks and reviewer focus areas',
+    'Reviewer prompt must include',
+    'Stop and report the blocker',
+    'Ask Clint before proceeding',
+  ]) assert(doc.includes(kw), `Phase 24 covers ${kw}`);
+  assert(/Reviewer-Required Conditions[\s\S]*release gates[\s\S]*privacy\/redaction[\s\S]*operator evidence[\s\S]*CI expectations/i.test(doc), 'Reviewer-required conditions cover sensitive release areas');
+  assert(/HOLD Conditions[\s\S]*unexpectedly dirty[\s\S]*deterministic check fails[\s\S]*Reviewer reports a P0/i.test(doc), 'HOLD conditions cover dirty state, failed checks, and P0 findings');
+  assert(/Ask-Clint Conditions[\s\S]*product readiness wording[\s\S]*required gate cannot run[\s\S]*remote state differs/i.test(doc), 'Ask-Clint conditions cover readiness wording, skipped gates, and ref mismatch');
+});
+
+test('coordinator release gate - Phase 24 preserves scope boundaries and production gates', () => {
+  const doc = read('docs/PHASE_24_COORDINATOR_RELEASE_GATE.md');
+  const pkgText = read('package.json');
+
+  assert(/adds no runtime behavior[\s\S]*app code[\s\S]*scheduler daemon[\s\S]*GitHub automation[\s\S]*CI workflow/i.test(doc), 'Phase 24 states no runtime/app/scheduler/workflow behavior');
+  for (const forbidden of [
+    'provider/debrid/Plex/Jellyfin',
+    'scraping, downloading, playback',
+    'HTTP service, UI',
+    'real KMS/cloud SDK',
+    'live external custodian',
+    'network dependency',
+  ]) assert(doc.includes(forbidden), `Phase 24 forbids ${forbidden}`);
+  assert(/CI stays deterministic[\s\S]*does not require Docker[\s\S]*network[\s\S]*live Jellyfin[\s\S]*live external custodian[\s\S]*cloud services[\s\S]*age tooling[\s\S]*production database[\s\S]*operator credentials/i.test(doc), 'Phase 24 forbids live-service CI requirements');
+  assert(/O4 remains open\/deferred[\s\S]*separate operator evidence/i.test(doc), 'Phase 24 keeps O4 open/deferred unless separately proven');
+  assert(/O5 remains open\/deferred[\s\S]*managed age\s+KEK custody/i.test(doc), 'Phase 24 keeps O5 open/deferred unless separately proven');
+  assert(/FileCustodian`? remains a hardened reference harness, not production KMS/i.test(doc), 'Phase 24 preserves FileCustodian reference-harness boundary');
+  assert(/Scope statement[\s\S]*no runtime behavior was added/i.test(doc), 'release note template requires runtime scope statement');
+  assert(!/production-ready as turnkey|turnkey production-ready|closes O4|closes O5/i.test(doc), 'Phase 24 does not overstate production readiness or close O4/O5');
+  assert(!/PHASE_24_COORDINATOR_RELEASE_GATE/.test(pkgText), 'Phase 24 adds no package script/product wiring');
+});
+
 test('ops entrypoints exist', () => {
   assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');
