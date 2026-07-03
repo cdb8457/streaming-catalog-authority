@@ -25,6 +25,13 @@ function leakyError(): Error {
   return e;
 }
 
+/** An error whose NAME/category itself carries secret material (a real SDK could do this). */
+function secretNameError(): Error {
+  const e = new Error('boom');
+  e.name = `key_9999_tok_LIVE_sentinel_abcdef123456`;
+  return e;
+}
+
 /** Capture console.log output while running `fn`. */
 async function capture(fn: () => Promise<void> | void): Promise<string> {
   const orig = console.log;
@@ -38,11 +45,20 @@ const noSentinel = (s: string): boolean => SENTINELS.every((x) => !s.includes(x)
 async function main(): Promise<void> {
   console.log('Running custodian-harness redaction suite:\n');
 
-  await test('formatHarnessFailure — class/category only; no message, stack, or secret material', () => {
+  await test('formatHarnessFailure — allowlisted class only; no message, stack, or secret material', () => {
     const out = formatHarnessFailure(leakyError());
     assert(noSentinel(out), 'no sentinel secret in the formatted failure');
-    assert(out.includes('KmsClientError'), 'includes the safe error class');
+    // an untrusted adapter error name ("KmsClientError") is NOT allowlisted -> generic bucket
+    assert(out.includes('UnknownError') && !out.includes('KmsClientError'), 'untrusted class name is bucketed to UnknownError');
     assert(/redacted/i.test(out), 'states the message is redacted');
+  });
+
+  await test('a secret-laden Error.name is NOT emitted verbatim (allowlist buckets it)', () => {
+    const out = formatHarnessFailure(secretNameError());
+    assert(noSentinel(out) && !out.includes('key_9999') && !out.includes('tok_LIVE'), 'secret in err.name must not appear');
+    assert(out.includes('UnknownError'), 'a non-allowlisted name collapses to UnknownError');
+    // a built-in name IS allowlisted and safe to keep
+    assert(formatHarnessFailure(new TypeError('x')).includes('TypeError'), 'allowlisted built-in class is preserved');
   });
 
   await test('DEFAULT harness FAIL line — a leaky adapter error is redacted (no sentinel)', async () => {
@@ -50,16 +66,16 @@ async function main(): Promise<void> {
     resetCustodianContractResults();
     const out = await capture(() => runCustodianContractTest('leaky adapter', () => { throw leakyError(); }));
     assert(noSentinel(out), 'the default FAIL line must not leak any sentinel');
-    assert(/FAIL {2}leaky adapter/.test(out) && out.includes('KmsClientError'), 'redacted FAIL line present');
+    assert(/FAIL {2}leaky adapter/.test(out) && out.includes('UnknownError'), 'redacted FAIL line present');
   });
 
   await test('DEFAULT summary lines — redaction-safe (no sentinel)', async () => {
     delete process.env.CUSTODIAN_HARNESS_VERBOSE;
     resetCustodianContractResults();
-    await capture(() => runCustodianContractTest('leaky adapter', () => { throw leakyError(); }));
+    await capture(() => runCustodianContractTest('leaky adapter', () => { throw secretNameError(); }));
     const summary = custodianContractSummaryLines().join('\n');
-    assert(noSentinel(summary), 'the default summary must not leak any sentinel');
-    assert(summary.includes('1 failed') && summary.includes('KmsClientError'), 'redacted summary present');
+    assert(noSentinel(summary) && !summary.includes('key_9999'), 'the default summary must not leak any sentinel (incl. err.name)');
+    assert(summary.includes('1 failed') && summary.includes('UnknownError'), 'redacted summary present');
   });
 
   await test('non-string thrown value is also redacted (no raw dump)', async () => {

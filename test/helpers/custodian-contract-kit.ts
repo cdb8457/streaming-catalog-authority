@@ -14,12 +14,24 @@ const failures: Array<[string, unknown]> = [];
  */
 function harnessVerbose(): boolean { return process.env.CUSTODIAN_HARNESS_VERBOSE === '1'; }
 
-/** Safe error class/category: a code identifier only (sanitized), never a message/secret. */
+/**
+ * ALLOWLIST of error class/category names that are safe to emit verbatim (fixed code identifiers,
+ * never secret-bearing): the JS built-ins, Node's assert, and the harness's OWN modelled failure type.
+ * Anything else — including an arbitrary adapter/SDK `err.name` that could embed a key ID, request ID,
+ * token fragment, secret path, or endpoint — collapses to the generic `UnknownError` bucket.
+ */
+const SAFE_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'Error', 'TypeError', 'RangeError', 'ReferenceError', 'SyntaxError', 'EvalError', 'URIError',
+  'AggregateError', 'AssertionError', 'CustodianTransportError',
+]);
+
+/** Safe error class/category: an ALLOWLISTED name only — never the raw `err.name`, so a secret-laden
+ *  name cannot leak. Unknown/untrusted names bucket to `UnknownError`. */
 function safeClass(err: unknown): string {
   const raw = err instanceof Error ? (err.name || err.constructor?.name || 'Error')
-    : err && typeof err === 'object' ? ((err as { constructor?: { name?: string } }).constructor?.name ?? 'Object')
-    : typeof err;
-  return String(raw).replace(/[^A-Za-z0-9_]/g, '').slice(0, 64) || 'Error';
+    : err && typeof err === 'object' ? ((err as { constructor?: { name?: string } }).constructor?.name ?? '')
+    : '';
+  return SAFE_ERROR_NAMES.has(String(raw)) ? String(raw) : 'UnknownError';
 }
 
 /**
