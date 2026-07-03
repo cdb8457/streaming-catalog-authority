@@ -8,6 +8,10 @@ authorization gates, read-only probe boundary, redaction rules, evidence retenti
 operator dashboard examples. Real transport and live smoke remain a future separately authorized and
 reviewed phase.
 
+Phase 36 follows this with `docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md`, an acceptance contract for
+the future live smoke command. Phase 36 still adds no live transport, no operator CLI, no SDK
+dependency, and no provider mode.
+
 ## Scope
 
 Included:

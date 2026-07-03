@@ -447,6 +447,74 @@ test('TorBox smoke evidence - Phase 35 is docs/templates/static UI examples only
   assert(suite.includes('Phase 35 adds no production runtime module or transport implementation'), 'suite enforces no Phase 35 runtime module');
 });
 
+test('TorBox live smoke contract - Phase 36 is acceptance contract only', () => {
+  assert(exists('docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md'), 'Phase 36 live smoke contract doc exists');
+  assert(typeof pkg.scripts['test:torbox-live-smoke-contract'] === 'string', 'test:torbox-live-smoke-contract script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-contract.ts'), 'TorBox live smoke contract suite in the CI chain');
+
+  const doc = read('docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md');
+  const readme = read('README.md');
+  const suite = read('test/torbox-live-smoke-contract.ts');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  const combined = `${doc}\n${readme}`;
+
+  for (const kw of [
+    'not a live transport',
+    'not an operator command',
+    'no live TorBox calls',
+    'no real TorBox transport implementation',
+    'no operator smoke CLI',
+    'no `@torbox/torbox-api` dependency or import',
+    'no global fetch',
+    'no environment-variable reads',
+    'no ADAPTER_MODE wiring',
+    'no adapter-factory mode for TorBox',
+    'absent from `npm run test` and `npm run ci`',
+    'disabled unless a live-smoke flag and a read-only flag are both present',
+    'Execute read-only probes through an injected reviewed transport only',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference harness',
+  ]) assert(combined.includes(kw), `Phase 36 docs preserve ${kw}`);
+
+  for (const forbidden of [
+    'create-download',
+    'request-download-link',
+    'request-permalink',
+    'user list',
+    'user data',
+    'control',
+    'delete',
+    'export',
+    'CDN',
+    'permalink URL',
+    'playback',
+    'downloading',
+  ]) assert(combined.includes(forbidden), `Phase 36 docs explicitly forbid ${forbidden}`);
+
+  for (const category of [
+    'auth',
+    'quota',
+    'timeout',
+    'transport',
+    'parse',
+    'unsupported-ref',
+    'empty-ref',
+    'ambiguous-response',
+    'policy-block',
+    'redaction-block',
+    'not-authorized',
+    'not-read-only',
+  ]) assert(doc.includes(`\`${category}\``), `Phase 36 requires ${category} category`);
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assert(!exists('src/ops/torbox-smoke-cli.ts'), 'Phase 36 adds no TorBox smoke CLI');
+  assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'Phase 36 adds no live transport');
+  assert(suite.includes('required future execution order is explicit and fail-closed before network contact'), 'suite enforces pre-network order');
+});
+
 test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

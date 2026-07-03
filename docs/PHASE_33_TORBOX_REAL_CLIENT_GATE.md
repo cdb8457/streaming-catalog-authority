@@ -18,6 +18,10 @@ Phase 35 adds `docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md`,
 operator-run smoke evidence design and future UI-readiness examples only. It adds no live transport,
 SDK, provider mode, or UI runtime.
 
+Phase 36 adds `docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md` and
+`test:torbox-live-smoke-contract` as the acceptance contract for a future opt-in live smoke command.
+It still adds no live transport, operator CLI, SDK dependency, or provider mode.
+
 ## Scope
 
 Included:

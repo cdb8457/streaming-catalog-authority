@@ -8,6 +8,10 @@ Phase 35 follows this with operator-run smoke evidence design and future UI-read
 `docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md`. Phase 35 adds no live transport, SDK, provider mode, or UI
 runtime.
 
+Phase 36 follows with `docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md`, a non-live acceptance contract
+for the future opt-in live smoke command. It adds no transport, operator CLI, SDK dependency, or
+provider mode.
+
 The production module is `src/core/adapters/torbox-readonly-client.ts`. It accepts an explicit
 config object with an injected `TorBoxTransport`, maps a single scoped `AdapterRefView` to fixed
 Phase 33 read-only operation ids, and returns advisory `AdapterResult` statuses only:
