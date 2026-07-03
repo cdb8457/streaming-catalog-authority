@@ -45,6 +45,12 @@ The **core is production-ready in-repo**, but a full production deployment is **
 
 ## What "production ready" means for this system (do not overstate)
 
+Phase 28 adds `docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md`,
+`src/core/crypto/production-custodian-contract.ts`, and
+`npm run test:production-custodian-contract` as static O4 descriptor checks. These checks make future
+production custodian metadata machine-checkable, but they do not close O4. O4 and O5 remain
+open/deferred until separately accepted with the required operator evidence.
+
 A deployment may be described as **production-ready** only when **every** row is either **met** or has its
 **operator-provided evidence collected and retained**, AND the operator has explicitly accepted the two
 **deferred** gates (O4, O5) as understood residual risk (FileCustodian is a hardened *reference harness*,

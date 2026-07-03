@@ -162,8 +162,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   claiming production readiness. Package operator evidence with
   **`docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md`**; coordinators should use
   **`docs/PHASE_24_COORDINATOR_RELEASE_GATE.md`** for future phase release gates, with advisory support
-  from **`docs/PHASE_27_RELEASE_GUARD.md`** / `ops:release-guard`. Rehearse the evidence package shape
-  with **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
+  from **`docs/PHASE_27_RELEASE_GUARD.md`** / `ops:release-guard`. Phase 28 adds the static
+  **`docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md`** descriptor contract for future production
+  custodians; it is metadata-only and does not close O4. Rehearse the evidence package shape with
+  **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
   real readiness review. The docs
   below are the gate's underlying sources.
 - **Docs:** `docs/PHASE_6_LIFECYCLE.md` (upgrade/rollback, backup verification, restore + DR
@@ -177,6 +179,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_25_READINESS_REHEARSAL.md` (static readiness rehearsal command) ·
   `docs/PHASE_26_EVIDENCE_REHEARSAL.md` (static evidence package shape check) ·
   `docs/PHASE_27_RELEASE_GUARD.md` (advisory release-guard command) ·
+  `docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md` (static production custodian descriptor contract) ·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -186,7 +189,10 @@ requirements in `docs/PHASE_16_EXTERNAL_CUSTODIAN_READINESS.md`: `FileCustodian`
 reference harness, live external custodian validation is operator-run, and CI must not require a live
 KMS/cloud service. Phase 21 adds the importable contract kit
 (`test/helpers/custodian-contract-kit.ts`) and deterministic local acceptance suite
-(`npm run test:custodian-acceptance`) for future adapters; it does not close O4. Phase 17 adds
+(`npm run test:custodian-acceptance`) for future adapters; it does not close O4. Phase 28 adds
+`src/core/crypto/production-custodian-contract.ts` and `npm run test:production-custodian-contract`
+so future adapter metadata can be checked without secrets, live services, or claiming O4 closure.
+Phase 17 adds
 `ops:rewrap-kek -- --plan` for redaction-safe, non-mutating KEK
 rotation preflight; live rotation remains explicitly operator-run.
 `ops:doctor` surfaces this explicitly: production file-custodian deployments WARN that O4 remains

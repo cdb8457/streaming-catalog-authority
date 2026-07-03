@@ -79,6 +79,11 @@ Phase 21 adds `docs/PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md` and
 `test/custodian-acceptance.ts` as the deterministic acceptance harness for this path. That harness
 narrows O4 by making the test/evidence mechanics concrete; it does not close O4 by itself.
 
+Phase 28 adds `docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md` and
+`src/core/crypto/production-custodian-contract.ts` as a static descriptor contract for future
+production adapters. It validates metadata only, emits redaction-safe findings, and still reports
+O4/O5 as open/deferred.
+
 ## Failure Semantics
 
 Production adapters must fail closed:

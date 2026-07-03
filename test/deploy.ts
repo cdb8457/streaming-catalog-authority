@@ -535,6 +535,74 @@ test('release guard - Phase 27 is wired as advisory read-only coordinator suppor
   assert(!(pkg.scripts['test:release-guard'] ?? '').includes('docker'), 'release guard test command does not invoke Docker');
 });
 
+test('production custodian contract - Phase 28 is static, redaction-safe, and keeps O4/O5 open', () => {
+  assert(exists('docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md'), 'Phase 28 production custodian contract doc exists');
+  assert(exists('src/core/crypto/production-custodian-contract.ts'), 'Phase 28 contract module exists');
+  assert(exists('test/production-custodian-contract.ts'), 'Phase 28 contract suite exists');
+  assert(typeof pkg.scripts['test:production-custodian-contract'] === 'string', 'test:production-custodian-contract script present');
+  assert((pkg.scripts.test ?? '').includes('test/production-custodian-contract.ts'), 'Phase 28 suite in deterministic test chain');
+
+  const contract = read('src/core/crypto/production-custodian-contract.ts');
+  const suite = read('test/production-custodian-contract.ts');
+  const doc = read('docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md');
+  const readme = read('README.md');
+  const phase16 = read('docs/PHASE_16_EXTERNAL_CUSTODIAN_READINESS.md');
+  const phase21 = read('docs/PHASE_21_EXTERNAL_CUSTODIAN_ACCEPTANCE.md');
+  const phase22 = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+  const combined = `${contract}\n${doc}`;
+
+  for (const kw of [
+    'validateProductionCustodianDescriptor',
+    'requiredKeyCustodianInvariants',
+    'forbiddenBehaviors',
+    'evidenceRequirements',
+    'redactionRequirements',
+    'failClosedSemantics',
+    'trustBoundaryAssertions',
+    'REFERENCE_HARNESS_NOT_PRODUCTION_KMS',
+    'closesO4: false',
+  ]) assert(combined.includes(kw), `Phase 28 covers ${kw}`);
+
+  for (const source of [readme, phase16, phase21, phase22, checklist]) {
+    assert(source.includes('PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md') || source.includes('test:production-custodian-contract'), 'Phase 28 doc/script is linked from readiness docs');
+  }
+
+  assert(/O4 remains open\/deferred/.test(doc) && /O5 remains open\/deferred/.test(doc), 'Phase 28 doc keeps O4/O5 open/deferred');
+  assert(/FileCustodian` remains a hardened reference\s+harness, not production KMS/.test(doc), 'Phase 28 preserves FileCustodian boundary');
+  assert(/does not instantiate\s+adapters[\s\S]*read environment variables[\s\S]*connect to a database[\s\S]*call the network[\s\S]*run\s+Docker/i.test(doc), 'Phase 28 documents metadata-only static scope');
+  assert(/descriptor values are never echoed/i.test(doc), 'Phase 28 documents redaction-safe descriptor output');
+
+  for (const forbidden of [
+    "from 'pg'",
+    'from "pg"',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'loadDbConfig',
+    'loadCustodianConfig',
+    'createCustodian',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'execFileSync',
+    'docker compose',
+    'aws-sdk',
+    '@aws-sdk',
+    '@google-cloud',
+    '@azure',
+    'node-vault',
+    'openbao',
+  ]) assert(!contract.includes(forbidden), `Phase 28 contract module does not use ${forbidden}`);
+
+  assert(suite.includes('hostile descriptor strings'), 'Phase 28 suite covers hostile descriptor strings');
+  assert(!(pkg.scripts['test:production-custodian-contract'] ?? '').includes('docker'), 'Phase 28 test command does not invoke Docker');
+});
+
 test('readiness rehearsal - Phase 25 preserves static-only scope and open production gates', () => {
   const cli = read('src/ops/readiness-plan-cli.ts');
   const plan = read('src/ops/readiness-plan.ts');

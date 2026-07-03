@@ -3,6 +3,8 @@
 Self-hosted catalog/privacy core. One-shot CLIs only. Details: `docs/PHASE_6_LIFECYCLE.md`.
 Coordinator merge/tag gates for future phases are in `docs/PHASE_24_COORDINATOR_RELEASE_GATE.md`;
 `ops:release-guard` / `docs/PHASE_27_RELEASE_GUARD.md` provides advisory read-only support, not approval.
+Future production custodian adapter metadata must also satisfy the static Phase 28 contract in
+`docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md` / `npm run test:production-custodian-contract`.
 
 ## Before upgrading
 - [ ] **Backup** the current DB: `ops:backup -- dump /backups/pre-upgrade-YYYY-MM-DD.json`
@@ -17,6 +19,8 @@ Coordinator merge/tag gates for future phases are in `docs/PHASE_24_COORDINATOR_
 - [ ] `ops:version` — db == expected.
 - [ ] `ops:doctor` — no FAIL checks; review any WARN checks. Expected O4/O5 production WARNs
       must be recorded in the readiness evidence bundle.
+- [ ] O4/O5 remain visible: Phase 28 descriptor checks do not close O4, and managed KEK custody /
+      scheduling remains open/deferred until separately accepted.
 
 ## Post-upgrade
 - [ ] `ops:doctor --json` wired into the unattended healthcheck (cron / Unraid User Scripts).

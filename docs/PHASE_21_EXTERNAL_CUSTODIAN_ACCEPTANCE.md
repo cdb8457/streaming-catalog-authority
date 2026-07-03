@@ -9,6 +9,12 @@ O4 remains open. This phase narrows O4 by making the acceptance test and evidenc
 O4 can close only after a real external/managed adapter passes operator-run live validation and the
 redaction-safe evidence is reviewed.
 
+Phase 28 adds the static production-custodian descriptor contract in
+`docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md` /
+`src/core/crypto/production-custodian-contract.ts`. It can flag missing metadata and evidence labels
+for future adapters, but it does not instantiate adapters, contact services, or close O4. O5 managed
+KEK custody and scheduling remain open/deferred.
+
 `FileCustodian` remains a hardened reference harness. It is useful for durability, crash recovery,
 backup/restore policy, and local contract coverage, but it is not the production custodian/KMS.
 
