@@ -7,7 +7,7 @@ Hermes, job queues, or UI — by design. The core stands alone.
 
 ```bash
 npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
-npm run ci       # typecheck, then all suites (33 embedded-PostgreSQL suites) = 368 passed
+npm run ci       # typecheck, then all suites (33 embedded-PostgreSQL suites); a green run = 0 failures
 ```
 
 Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.

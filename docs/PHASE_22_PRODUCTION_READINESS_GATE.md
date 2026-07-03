@@ -54,15 +54,16 @@ operator-provided items are listed above precisely so they are **never hidden**.
 
 ## CI / test expectation (authoritative)
 
-`npm run ci` = `npm run typecheck` then `npm run test` (33 embedded-PostgreSQL suites) → **368 passed, 0
-failed** at `phase-21` (`ff1cd92`). No Docker, no live network, no live services in CI; the only runtime
-dependency is `pg`. `smoke:compose` and `smoke:jellyfin` are opt-in operator tools and are **not** in the
-CI chain.
+`npm run ci` = `npm run typecheck` then `npm run test` (33 embedded-PostgreSQL suites). The authoritative
+signal is a **green run with 0 failures** — not a fixed pass count (the total grows as suites/assertions
+are added; it was **369** at `phase-22`, up from 368 at the `phase-21` base). No Docker, no live network,
+no live services in CI; the only runtime dependency is `pg`. `smoke:compose` and `smoke:jellyfin` are
+opt-in operator tools and are **not** in the CI chain.
 
 ## Reconciled stale references (do not repeat these)
 
 - The `README.md` "86 passed" figure was the **Phase-1-era** breakdown; the current authoritative total is
-  **368** (33 suites). Updated in README as part of this phase.
+  a **green `npm run ci` with 0 failures** (33 suites; 369 at `phase-22`). Updated in README as part of this phase.
 - `docs/PHASE_19` referenced "the Phase 18 production gate warnings" — there is **no Phase 18 doc**; the
   gate warnings are the two `ops:doctor` checks `production-gate-o4-external-custodian` /
   `production-gate-o5-managed-kek`. Corrected as part of this phase.
@@ -73,9 +74,10 @@ CI chain.
 ## Redaction (applies to every row + all evidence)
 
 Fill the shareable bundle in `docs/templates/PRODUCTION_READINESS_EVIDENCE.md` (and the Jellyfin sheet in
-`docs/templates/JELLYFIN_VALIDATION_EVIDENCE.md`). Record **only** statuses, counts, opaque ids, and
-timestamps — **never** API keys, KEKs/DEKs, the completion secret, database URLs, secret file paths, raw
-media titles, provider-ref values, or Jellyfin ids/tokens.
+`docs/templates/JELLYFIN_VALIDATION_EVIDENCE.md`). Record **only** statuses, counts, timestamps, and
+opaque ids **where the referenced template explicitly asks for them** — **never** API keys, KEKs/DEKs, the
+completion secret, database URLs, secret file paths, raw media titles, provider-ref values, or **Jellyfin
+IDs / collection handles / tokens**.
 
 ## Out of scope (unchanged)
 
