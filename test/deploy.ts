@@ -603,6 +603,84 @@ test('production custodian contract - Phase 28 is static, redaction-safe, and ke
   assert(!(pkg.scripts['test:production-custodian-contract'] ?? '').includes('docker'), 'Phase 28 test command does not invoke Docker');
 });
 
+test('custodian evidence preflight - Phase 29 command/docs are redaction-safe and keep O4/O5 open', () => {
+  assert(exists('docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md'), 'Phase 29 preflight doc exists');
+  assert(exists('src/ops/custodian-evidence-preflight.ts'), 'Phase 29 pure preflight module exists');
+  assert(exists('src/ops/custodian-evidence-preflight-cli.ts'), 'Phase 29 preflight CLI exists');
+  assert(exists('test/custodian-evidence-preflight.ts'), 'Phase 29 preflight suite exists');
+  assert(typeof pkg.scripts['ops:custodian-evidence-preflight'] === 'string', 'ops:custodian-evidence-preflight script present');
+  assert(typeof pkg.scripts['test:custodian-evidence-preflight'] === 'string', 'test:custodian-evidence-preflight script present');
+  assert((pkg.scripts.test ?? '').includes('test/custodian-evidence-preflight.ts'), 'Phase 29 suite in deterministic test chain');
+
+  const preflight = read('src/ops/custodian-evidence-preflight.ts');
+  const cli = read('src/ops/custodian-evidence-preflight-cli.ts');
+  const suite = read('test/custodian-evidence-preflight.ts');
+  const doc = read('docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md');
+  const readme = read('README.md');
+  const phase22 = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
+  const phase28 = read('docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+  const source = `${preflight}\n${cli}`;
+
+  for (const kw of [
+    'validateProductionCustodianDescriptor',
+    'phase-29-custodian-evidence-preflight',
+    'descriptorValuesEchoed: false',
+    'closesO4: false',
+    'open/deferred',
+    'reference-harness-not-production-kms',
+    'DESCRIPTOR_JSON_MALFORMED',
+    'DESCRIPTOR_OBJECT_REQUIRED',
+    'DESCRIPTOR_FILE_READ_FAILED',
+    'DESCRIPTOR_FILE_TOO_LARGE',
+  ]) assert(`${source}\n${doc}`.includes(kw), `Phase 29 covers ${kw}`);
+
+  for (const linked of [readme, phase22, phase28, checklist]) {
+    assert(linked.includes('PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md') || linked.includes('ops:custodian-evidence-preflight'), 'Phase 29 doc/script is linked from readiness docs');
+  }
+
+  assert(/does not close O4/i.test(doc) && /O4 remains open\/deferred/.test(doc), 'Phase 29 doc keeps O4 open/deferred');
+  assert(/O5 remains open\/deferred/.test(doc), 'Phase 29 doc keeps O5 open/deferred');
+  assert(/FileCustodian` remains a hardened reference\s+harness, not production KMS/.test(doc), 'Phase 29 preserves FileCustodian boundary');
+  assert(/does not read environment values[\s\S]*scan directories[\s\S]*connect to a database[\s\S]*call the network[\s\S]*run Docker[\s\S]*contact a live custodian, KMS, cloud service, or vendor SDK/i.test(doc), 'Phase 29 documents descriptor-only static boundary');
+  assert(/never echoes descriptor paths[\s\S]*descriptor values[\s\S]*raw JSON[\s\S]*parse snippets/i.test(doc), 'Phase 29 documents redaction-safe output');
+
+  for (const forbidden of [
+    "from 'pg'",
+    'from "pg"',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'loadDbConfig',
+    'loadCustodianConfig',
+    'createCustodian',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'execFileSync',
+    'spawnSync',
+    'docker compose',
+    'aws-sdk',
+    '@aws-sdk',
+    '@google-cloud',
+    '@azure',
+    'node-vault',
+    'openbao',
+    'readdirSync',
+    'readFileSync',
+    'existsSync',
+  ]) assert(!source.includes(forbidden), `Phase 29 source does not include ${forbidden}`);
+
+  assert(cli.includes("from 'node:fs'") && cli.includes('openSync') && cli.includes('readSync'), 'Phase 29 CLI has explicit bounded descriptor file read');
+  assert(!preflight.includes("node:fs"), 'Phase 29 formatter module remains pure');
+  assert(suite.includes('hostile descriptor values'), 'Phase 29 suite covers hostile descriptor values');
+  assert(suite.includes('missing') && suite.includes('oversized') && suite.includes('DESCRIPTOR_FILE_READ_FAILED'), 'Phase 29 suite covers file failure modes');
+  assert(!(pkg.scripts['ops:custodian-evidence-preflight'] ?? '').includes('docker'), 'Phase 29 command does not invoke Docker');
+  assert(!(pkg.scripts['test:custodian-evidence-preflight'] ?? '').includes('docker'), 'Phase 29 test command does not invoke Docker');
+});
+
 test('readiness rehearsal - Phase 25 preserves static-only scope and open production gates', () => {
   const cli = read('src/ops/readiness-plan-cli.ts');
   const plan = read('src/ops/readiness-plan.ts');

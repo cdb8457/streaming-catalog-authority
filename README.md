@@ -150,6 +150,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:rewrap-kek [-- --plan [--json]]` | plan or rotate the KEK (preflight counts; explicit rewrap is resumable; identity untouched) |
 | `ops:readiness-plan [-- -- --json]` | static, redaction-safe rehearsal skeleton for the Phase 22/23 readiness evidence package; no live services or evidence scanning |
 | `ops:evidence-rehearsal [-- -- --json]` | static, redaction-safe checklist for the expected Phase 22/23 evidence artifact shape; advisory only |
+| `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
 - **Docker Compose:** `docker-compose.deploy.yml` (keystore on a volume separate from the DB and
@@ -164,7 +165,9 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_24_COORDINATOR_RELEASE_GATE.md`** for future phase release gates, with advisory support
   from **`docs/PHASE_27_RELEASE_GUARD.md`** / `ops:release-guard`. Phase 28 adds the static
   **`docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md`** descriptor contract for future production
-  custodians; it is metadata-only and does not close O4. Rehearse the evidence package shape with
+  custodians; it is metadata-only and does not close O4. Phase 29 adds
+  **`docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md`** / `ops:custodian-evidence-preflight` to preflight
+  one descriptor JSON file before evidence review; it also does not close O4. Rehearse the evidence package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
   real readiness review. The docs
   below are the gate's underlying sources.
@@ -180,6 +183,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_26_EVIDENCE_REHEARSAL.md` (static evidence package shape check) ·
   `docs/PHASE_27_RELEASE_GUARD.md` (advisory release-guard command) ·
   `docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md` (static production custodian descriptor contract) ·
+  `docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md` (static O4 descriptor preflight command) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -192,6 +196,8 @@ KMS/cloud service. Phase 21 adds the importable contract kit
 (`npm run test:custodian-acceptance`) for future adapters; it does not close O4. Phase 28 adds
 `src/core/crypto/production-custodian-contract.ts` and `npm run test:production-custodian-contract`
 so future adapter metadata can be checked without secrets, live services, or claiming O4 closure.
+Phase 29 adds `ops:custodian-evidence-preflight` for one-file descriptor JSON preflight before
+review; it is redaction-safe, descriptor-only, and also leaves O4 open/deferred.
 Phase 17 adds
 `ops:rewrap-kek -- --plan` for redaction-safe, non-mutating KEK
 rotation preflight; live rotation remains explicitly operator-run.

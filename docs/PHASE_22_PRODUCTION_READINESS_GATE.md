@@ -51,6 +51,11 @@ Phase 28 adds `docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md`,
 production custodian metadata machine-checkable, but they do not close O4. O4 and O5 remain
 open/deferred until separately accepted with the required operator evidence.
 
+Phase 29 adds `docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md` and
+`ops:custodian-evidence-preflight` as a redaction-safe one-file descriptor JSON preflight for that
+same O4 evidence path. It prepares evidence review only; it does not inspect artifacts, contact live
+services, prove production custody, or close O4.
+
 A deployment may be described as **production-ready** only when **every** row is either **met** or has its
 **operator-provided evidence collected and retained**, AND the operator has explicitly accepted the two
 **deferred** gates (O4, O5) as understood residual risk (FileCustodian is a hardened *reference harness*,

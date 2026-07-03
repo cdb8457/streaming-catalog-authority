@@ -49,6 +49,10 @@ The report is redaction-safe by construction:
 Complete metadata can show that an adapter descriptor is ready for separate reviewer/operator
 evidence review. It cannot close O4 by itself.
 
+Phase 29 adds `docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md` and
+`ops:custodian-evidence-preflight` for operator preflight of one descriptor JSON file against this
+contract. That preflight is redaction-safe and prepares evidence review only; it also cannot close O4.
+
 ## Required Evidence Before O4 Can Be Reviewed
 
 A future adapter descriptor must declare, and reviewers must separately verify:
