@@ -367,6 +367,86 @@ test('TorBox read-only fixture client - Phase 34 is injected transport only and 
   assert(suite.includes('adapter factory remains closed and package test chain includes the suite'), 'suite enforces factory closure and test wiring');
 });
 
+test('TorBox smoke evidence - Phase 35 is docs/templates/static UI examples only', () => {
+  assert(exists('docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md'), 'Phase 35 smoke evidence doc exists');
+  assert(exists('docs/templates/TORBOX_SMOKE_EVIDENCE.md'), 'Phase 35 smoke evidence template exists');
+  assert(exists('docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md'), 'Phase 35 future UI examples doc exists');
+  assert(typeof pkg.scripts['test:torbox-smoke-evidence'] === 'string', 'test:torbox-smoke-evidence script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-evidence.ts'), 'TorBox smoke evidence suite in the CI chain');
+
+  const doc = read('docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md');
+  const tpl = read('docs/templates/TORBOX_SMOKE_EVIDENCE.md');
+  const ui = read('docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md');
+  const suite = read('test/torbox-smoke-evidence.ts');
+  const readme = read('README.md');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  const combined = `${doc}\n${tpl}\n${ui}\n${readme}`;
+
+  for (const kw of [
+    'operator-run smoke design and evidence shape only',
+    'not a live TorBox transport',
+    'no `@torbox/torbox-api` dependency or import',
+    'no global fetch',
+    'no environment-variable reads',
+    'no ADAPTER_MODE wiring',
+    'no UI runtime',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(kw), `Phase 35 docs preserve ${kw}`);
+  assert(/DB\s+writes/.test(combined), 'Phase 35 docs preserve no DB writes');
+  assert(/adapter-factory\s+mode for TorBox/.test(combined), 'Phase 35 docs preserve no adapter-factory mode for TorBox');
+  assert(/Real transport and live smoke remain a future separately authorized and\s+reviewed phase/.test(combined), 'Phase 35 keeps live transport/smoke future-gated');
+
+  for (const forbidden of [
+    'create-download',
+    'request-download-link',
+    'request-permalink',
+    'user list',
+    'user data',
+    'control',
+    'delete',
+    'export',
+    'CDN',
+    'permalink',
+    'playback',
+    'downloading',
+  ]) assert(combined.includes(forbidden), `Phase 35 docs explicitly forbid ${forbidden}`);
+
+  for (const heading of [
+    'Build',
+    'Read-Only Confirmation',
+    'Explicit Gates Checked',
+    'Probe Summary',
+    'Failure Categories',
+    'Redaction Review Checklist',
+    'Operator / Reviewer Signoff',
+  ]) assert(tpl.includes(`## ${heading}`), `template includes ${heading}`);
+
+  for (const forbiddenField of ['Token', 'API key', 'Raw URL', 'Raw ref', 'Provider payload', 'Response body', 'Title', 'Item id', 'CDN URL', 'Permalink']) {
+    assert(!new RegExp(`^- ${forbiddenField}:`, 'mi').test(tpl), `template does not request ${forbiddenField}`);
+  }
+
+  for (const uiKw of [
+    'quiet utilitarian operations UI',
+    'dense tables',
+    'restrained colors',
+    '8px-or-less radius',
+    'should not look like an AI-generated dashboard',
+    'no hero section',
+    'Readiness Gates',
+    'TorBox Smoke',
+    'Catalog Privacy',
+    'Provider Availability',
+    'Phase 35 adds no frontend code',
+  ]) assert(ui.includes(uiKw), `UI examples cover ${uiKw}`);
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assert(suite.includes('Phase 35 adds no production runtime module or transport implementation'), 'suite enforces no Phase 35 runtime module');
+});
+
 test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

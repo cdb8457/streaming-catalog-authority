@@ -13,6 +13,11 @@ Phase 34 builds on this contract with `src/core/adapters/torbox-readonly-client.
 request mapping, strict fixture parsing, fail-closed behavior, and redaction executable without live
 TorBox enablement.
 
+Phase 35 adds `docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md`,
+`docs/templates/TORBOX_SMOKE_EVIDENCE.md`, and `docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md` as
+operator-run smoke evidence design and future UI-readiness examples only. It adds no live transport,
+SDK, provider mode, or UI runtime.
+
 ## Scope
 
 Included:
@@ -44,6 +49,8 @@ Live smoke must be operator-run outside CI. CI must remain deterministic and mus
 credentials, network access, provider accounts, SDK installation, Docker, or browser automation.
 Phase 34 does not change this: real transport/smoke remains separately authorized and operator-run
 outside CI.
+Phase 35 documents the evidence template for that future operator-run smoke, but still does not
+authorize or implement live smoke.
 
 ## Allowed Read-Only Operations
 

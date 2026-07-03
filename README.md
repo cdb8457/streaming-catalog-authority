@@ -181,7 +181,13 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   future real client must be separately authorized/reviewed. Phase 34 adds
   **`docs/PHASE_34_TORBOX_READONLY_FIXTURE.md`** / `test:torbox-readonly-client` as an injected
   in-memory fixture transport client only: no live TorBox calls, no SDK dependency, no ADAPTER_MODE
-  wiring, and no proof that real TorBox works. Rehearse the evidence package shape with
+  wiring, and no proof that real TorBox works. Phase 35 adds
+  **`docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md`**,
+  **`docs/templates/TORBOX_SMOKE_EVIDENCE.md`**,
+  **`docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md`**, and `test:torbox-smoke-evidence` as operator-run
+  smoke evidence design and future UI-readiness examples only: no live transport, no runtime UI, no
+  SDK dependency, no ADAPTER_MODE wiring, and O4/O5 remain open/deferred. Rehearse the evidence
+  package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
   real readiness review. The docs
   below are the gate's underlying sources.
@@ -201,6 +207,8 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_32_FAKE_TORBOX_ADAPTER.md` (local fake TorBox adapter contract) Â·
   `docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md` (TorBox real-client design gate; no live client) Â·
   `docs/PHASE_34_TORBOX_READONLY_FIXTURE.md` (TorBox injected-transport fixture; no live client) Â·
+  `docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md` (operator-run smoke evidence design; no live transport) Â·
+  `docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md` (future operator UI examples; no frontend code) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -255,7 +263,11 @@ future real client must be separately authorized/reviewed. Phase 34 adds
 `src/core/adapters/torbox-readonly-client.ts` and
 `docs/PHASE_34_TORBOX_READONLY_FIXTURE.md` as an injected-transport fixture client for read-only
 request mapping and fail-closed fixture parsing only. It uses an in-memory test transport, makes no
-live TorBox calls, does not prove real TorBox works, and adds no ADAPTER_MODE wiring.
+live TorBox calls, does not prove real TorBox works, and adds no ADAPTER_MODE wiring. Phase 35 adds
+`docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md`, `docs/templates/TORBOX_SMOKE_EVIDENCE.md`, and
+`docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md` as operator-run smoke evidence design and future
+operator-dashboard examples only. It adds no TorBox transport, SDK, provider mode, HTTP service,
+frontend runtime, playback, or download behavior.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -342,4 +354,5 @@ No Plex, no RD/TorBox live integration, no Hermes, no HTTP daemon, no job queue,
 automated tests**. (Phases 7–13 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox +
 smoke validation; Phase 31 adds TorBox boundary research only; Phase 32 adds a local fake TorBox
 contract only; Phase 33 adds a TorBox real-client design gate only; Phase 34 adds an injected
-fixture-transport read-only client only; real network is strictly gated + smoke-validated.)
+fixture-transport read-only client only; Phase 35 adds operator-run TorBox smoke evidence and future
+operator UI examples only; real network is strictly gated + smoke-validated.)

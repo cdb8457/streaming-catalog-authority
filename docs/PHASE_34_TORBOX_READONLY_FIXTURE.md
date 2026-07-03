@@ -3,6 +3,11 @@
 Phase 34 makes the Phase 33 injected transport contract executable against an in-memory fixture
 transport in tests. It is still not a live TorBox client.
 
+Phase 35 follows this with operator-run smoke evidence design and future UI-readiness examples only:
+`docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md`, `docs/templates/TORBOX_SMOKE_EVIDENCE.md`, and
+`docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md`. Phase 35 adds no live transport, SDK, provider mode, or UI
+runtime.
+
 The production module is `src/core/adapters/torbox-readonly-client.ts`. It accepts an explicit
 config object with an injected `TorBoxTransport`, maps a single scoped `AdapterRefView` to fixed
 Phase 33 read-only operation ids, and returns advisory `AdapterResult` statuses only:
@@ -64,6 +69,8 @@ not model or validate real TorBox response shapes.
 Real transport and live smoke remain separately authorized and operator-run outside CI. A future
 phase must review endpoint mapping, credential handling, timeout and retry behavior, rate limits,
 redaction, and fail-closed semantics before live enablement.
+Phase 35 provides the redaction-safe evidence template for that future operator-run smoke, without
+authorizing or implementing live smoke.
 
 Request-download-link, token-query, permalink, CDN, create, user, control, delete, and export flows remain future-gated.
 They are not callable through this fixture client.
