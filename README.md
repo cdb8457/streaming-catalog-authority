@@ -195,7 +195,11 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   preflight/reporting, stays out of CI, attaches no live transport, and exits before TorBox contact.
   Phase 38 adds **`docs/PHASE_38_TORBOX_SMOKE_FIXTURE_HARNESS.md`** / `test:torbox-smoke-fixture`
   as deterministic local fixture execution for that shell: no live transport, no SDK, no env reads,
-  no network, no provider mode, and no proof that real TorBox works.
+  no network, no provider mode, and no proof that real TorBox works. Phase 39 adds
+  **`docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md`** / `test:torbox-transport-acceptance`
+  as a deterministic transport acceptance harness for future reviewed transports: injected local
+  fixtures only, no live transport, no SDK, no env reads, no network, no provider mode, and no proof
+  that real TorBox works.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -287,7 +291,10 @@ operator-run only, not in CI, has no live transport, does not read env/secret fi
 fixed gates/categories/counts before exiting without TorBox contact.
 Phase 38 adds explicit `--fixture available|unavailable|unknown|auth|quota|timeout|parse|ambiguous-response`
 handling for deterministic local output. Fixture mode never contacts TorBox and does not prove real
-TorBox availability.
+TorBox availability. Phase 39 adds `src/ops/torbox-transport-acceptance.ts` and
+`docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md` as a deterministic transport acceptance harness for
+future reviewed transports. It uses injected local fixtures only, does not add a live TorBox
+transport, and does not prove real TorBox availability.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -377,5 +384,5 @@ contract only; Phase 33 adds a TorBox real-client design gate only; Phase 34 add
 fixture-transport read-only client only; Phase 35 adds operator-run TorBox smoke evidence and future
 operator UI examples only; Phase 36 adds the future live-smoke acceptance contract only; Phase 37
 adds the refused-by-default TorBox smoke CLI shell only; Phase 38 adds deterministic local fixture
-execution only; real network is strictly gated +
+execution only; Phase 39 adds deterministic local transport acceptance only; real network is strictly gated +
 smoke-validated.)

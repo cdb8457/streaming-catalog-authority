@@ -619,7 +619,56 @@ test('TorBox smoke fixture harness - Phase 38 is deterministic local-only output
   ]) assert(!`${shell}\n${cli}`.includes(forbidden), `Phase 38 source excludes ${forbidden}`);
 });
 
-test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {
+test('TorBox transport acceptance - Phase 39 is deterministic local-only harnessing', () => {
+  assert(exists('docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md'), 'Phase 39 transport acceptance doc exists');
+  assert(exists('src/ops/torbox-transport-acceptance.ts'), 'Phase 39 transport acceptance source exists');
+  assert(typeof pkg.scripts['test:torbox-transport-acceptance'] === 'string', 'test:torbox-transport-acceptance script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-transport-acceptance.ts'), 'TorBox transport acceptance suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+
+  const doc = read('docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md');
+  const source = read('src/ops/torbox-transport-acceptance.ts');
+  const suite = read('test/torbox-transport-acceptance.ts');
+  const combined = `${doc}\n${source}\n${suite}\n${read('README.md')}`;
+
+  for (const kw of [
+    'deterministic transport acceptance harness',
+    'does not add a live TorBox transport',
+    'no live TorBox calls',
+    'no real TorBox transport implementation',
+    'no `@torbox/torbox-api` dependency or import',
+    'no global fetch',
+    'no environment-variable reads',
+    'no ADAPTER_MODE wiring',
+    'no adapter-factory mode for TorBox',
+    'injected local fixtures only',
+    'ambiguous-response',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference',
+  ]) assert(combined.includes(kw), `Phase 39 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'window.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'readdirSync',
+    'docker compose',
+    'createTorBoxTransport',
+    'TorBoxLiveTransport',
+    'ADAPTER_MODE',
+  ]) assert(!source.includes(forbidden), `Phase 39 source excludes ${forbidden}`);
+});
+
+test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {
     assert(exists(f), `${f} exists`);

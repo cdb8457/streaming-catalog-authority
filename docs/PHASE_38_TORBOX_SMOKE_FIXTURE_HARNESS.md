@@ -62,5 +62,9 @@ Phase 38 proves only that operator-style TorBox smoke output can be rendered and
 fixtures. It does not prove live TorBox availability, downloading, playback, media-server sync, or
 production readiness.
 
+Phase 39 builds on this by adding a deterministic transport acceptance harness for future reviewed
+transports. That harness also remains local-only: no live TorBox calls, no real TorBox transport, no
+SDK, no environment-variable reads, no `ADAPTER_MODE` wiring, and no proof that real TorBox works.
+
 O4 remains open/deferred. O5 remains open/deferred. `FileCustodian` remains a hardened reference
 harness, not production KMS.
