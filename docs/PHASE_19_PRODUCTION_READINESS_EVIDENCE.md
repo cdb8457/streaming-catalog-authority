@@ -32,7 +32,8 @@ operator conclusions.
 - `WARN` means operator-visible readiness or operational state that does not make the command fail.
 - `FAIL` means the deployment is not healthy; the doctor exits non-zero.
 
-The Phase 18 production gate warnings must be interpreted explicitly:
+The production-gate warnings (the `ops:doctor` checks `production-gate-o4-external-custodian` and
+`production-gate-o5-managed-kek`) must be interpreted explicitly:
 
 - `production-gate-o4-external-custodian` WARN means `CUSTODIAN_MODE=file` is still using
   `FileCustodian`, a hardened reference harness. It does not prove external/managed custodian or KMS
