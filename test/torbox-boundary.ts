@@ -125,6 +125,7 @@ test('no accidental TorBox implementation appears outside the static boundary an
     'src/ops/torbox-transport-acceptance.ts',
     'src/ops/torbox-smoke-readiness-preflight.ts',
     'src/ops/torbox-smoke-readiness-preflight-cli.ts',
+    'src/ops/torbox-live-transport.ts',
     'test/torbox-boundary.ts',
   ]);
   for (const [path, source] of srcFiles()) {

@@ -208,7 +208,12 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md`** / `test:torbox-endpoint-mapping` as a static
   endpoint mapping review for the first future read-only live-smoke surface: official-source mapping
   only, GET-only first-smoke cache/status/hoster routes, no live transport, no SDK, no env reads, no
-  provider mode, and no live-smoke authorization.
+  provider mode, and no live-smoke authorization. Phase 42 adds
+  **`docs/PHASE_42_TORBOX_LIVE_TRANSPORT.md`** / `src/ops/torbox-live-transport.ts` /
+  `test:torbox-live-transport` as the first live-capable, injected-fetch TorBox transport for a
+  future operator smoke: GET-only reviewed endpoints, bearer-header cache auth, no SDK, no env/secret
+  reads, no `globalThis.fetch` construction in the module, no `ADAPTER_MODE` wiring, no provider
+  mode, and no proof that TorBox works against a real account.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -310,7 +315,10 @@ call TorBox, and does not authorize live smoke. Phase 41 adds
 `docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md` as a static official-source endpoint mapping review for
 the first future read-only smoke surface. It allows only GET-first cache/status/hoster mapping for a
 later reviewed transport and keeps request-download-link, token-query, CDN/permalink URL, metadata
-lookup, user-data, downloading, and playback flows future-gated.
+lookup, user-data, downloading, and playback flows future-gated. Phase 42 adds
+`src/ops/torbox-live-transport.ts` as a live-capable injected transport for that reviewed surface.
+It normalizes provider responses to fixed availability/categories, never returns raw provider
+payloads, does not read env or secret files, and remains detached from adapter factory/provider mode.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -393,7 +401,7 @@ cleanup is confirmed and requires both the explicit `--write` flag and
 
 ## Not in this slice
 
-No Plex, no RD/TorBox live integration, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
+No Plex, no RD provider integration, no TorBox provider-mode integration, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
 automated tests**. (Phases 7–13 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox +
 smoke validation; Phase 31 adds TorBox boundary research only; Phase 32 adds a local fake TorBox
 contract only; Phase 33 adds a TorBox real-client design gate only; Phase 34 adds an injected
@@ -402,4 +410,4 @@ operator UI examples only; Phase 36 adds the future live-smoke acceptance contra
 adds the refused-by-default TorBox smoke CLI shell only; Phase 38 adds deterministic local fixture
 execution only; Phase 39 adds deterministic local transport acceptance only; Phase 40 adds static
 TorBox smoke readiness descriptor preflight only; Phase 41 adds static TorBox endpoint mapping review
-only; real network is strictly gated + smoke-validated.)
+only; Phase 42 adds a live-capable injected TorBox transport only, with no CI live network, provider-mode integration, downloading, or playback; real network is strictly operator-gated + smoke-validated.)

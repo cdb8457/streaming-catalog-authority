@@ -778,8 +778,70 @@ test('TorBox endpoint mapping - Phase 41 is static review only and non-live', ()
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
   assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
-  assert(!exists('src/ops/torbox-live-transport.ts'), 'no live TorBox transport exists');
   assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'no adapter live TorBox transport exists');
+});
+
+test('TorBox live transport - Phase 42 is injected, GET-only, and still detached from provider mode', () => {
+  assert(exists('src/ops/torbox-live-transport.ts'), 'Phase 42 live transport source exists');
+  assert(exists('docs/PHASE_42_TORBOX_LIVE_TRANSPORT.md'), 'Phase 42 live transport doc exists');
+  assert(typeof pkg.scripts['test:torbox-live-transport'] === 'string', 'test:torbox-live-transport script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-live-transport.ts'), 'TorBox live transport suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+
+  const source = read('src/ops/torbox-live-transport.ts');
+  const suite = read('test/torbox-live-transport.ts');
+  const doc = read('docs/PHASE_42_TORBOX_LIVE_TRANSPORT.md');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  const combined = `${source}\n${suite}\n${doc}\n${read('README.md')}`;
+
+  for (const kw of [
+    'createTorBoxLiveTransport',
+    'injected-fetch',
+    'GET-only mapping',
+    'Authorization Bearer header',
+    '/v1/api/torrents/checkcached',
+    '/v1/api/webdl/checkcached',
+    '/v1/api/usenet/checkcached',
+    '/v1/api/webdl/hosters',
+    'format=object',
+    'list_files=false',
+    'never returns raw provider payloads',
+    'no TorBox SDK dependency or import',
+    'no `globalThis.fetch` construction in this module',
+    'no environment-variable reads',
+    'no request-download-link',
+    'token-query download route',
+    'no `ADAPTER_MODE` wiring',
+    'does not prove TorBox works against a real account',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference',
+  ]) assert(combined.includes(kw), `Phase 42 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    "from 'pg'",
+    'from "pg"',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'window.fetch',
+    'process.env',
+    'readFileSync',
+    'readdirSync',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'requestdl',
+  ]) assert(!source.includes(forbidden), `Phase 42 source excludes ${forbidden}`);
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'no core adapter live transport exists');
 });
 
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {

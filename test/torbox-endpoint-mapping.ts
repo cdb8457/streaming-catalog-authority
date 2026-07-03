@@ -126,7 +126,6 @@ test('Phase 41 is docs/static only with no SDK, live calls, env reads, or provid
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!exists('src/ops/torbox-live-transport.ts'), 'no live TorBox transport source exists');
   assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'no adapter live TorBox transport source exists');
   assert(!exists('src/core/adapters/torbox-endpoint-mapping.ts'), 'Phase 41 adds no runtime adapter mapping source');
 });

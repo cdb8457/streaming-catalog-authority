@@ -62,6 +62,7 @@ test('Phase 36 preserves non-live scope and forbids runtime implementation', () 
   ], 'Phase 36 non-live boundary');
 
   assert(exists('src/ops/torbox-smoke-cli.ts'), 'Phase 37 may add the refused-by-default smoke CLI shell');
+  assert(exists('src/ops/torbox-live-transport.ts'), 'Phase 42 may add the reviewed ops live transport');
 
   for (const forbiddenPath of [
     'src/ops/torbox-readonly-smoke-cli.ts',
