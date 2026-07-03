@@ -21,6 +21,7 @@ Treat these as starting points, not product defaults:
 | `ops:verify-backup` | after every backup | offline structural check of the artifact |
 | `ops:rehearse-restore` | monthly and before major upgrades | prove restore into a throwaway DB |
 | `ops:rewrap-kek -- --plan --json` | monthly and before planned KEK rotation | non-mutating KEK rewrap preflight |
+| `ops:kek-evidence-preflight -- -- <descriptor.json> --json` | before O5 evidence review | static descriptor check for KEK custody/scheduling evidence |
 
 Record results in `docs/templates/PRODUCTION_READINESS_EVIDENCE.md` when preparing shareable
 evidence. Do not store command environments, raw logs, or unredacted notifications in the report.
@@ -98,6 +99,12 @@ npm run --silent ops:rewrap-kek -- --plan --json
 Plan mode is non-mutating and redaction-safe: it reports aggregate counts and `mutates: false`.
 Running the plan on a schedule does not schedule KEK rotation, does not rotate the KEK, and does not
 close O5 managed custody/scheduling by itself.
+
+`docs/PHASE_30_KEK_EVIDENCE_PREFLIGHT.md` / `ops:kek-evidence-preflight` can be used before O5
+evidence review to check one redaction-safe descriptor JSON file for custody, schedule ownership,
+alerting, retention-boundary, and residual-risk metadata. It is descriptor-only: it does not read
+the rewrap output, inspect key files, invoke age, contact a scheduler API, install cron, rotate keys,
+or close O5.
 
 ## Retention Guidance
 

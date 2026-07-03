@@ -7,6 +7,9 @@ Future production custodian adapter metadata must also satisfy the static Phase 
 `docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md` / `npm run test:production-custodian-contract`.
 Use `docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md` / `ops:custodian-evidence-preflight` to preflight
 one redaction-safe descriptor JSON file before O4 evidence review; it does not close O4.
+Use `docs/PHASE_30_KEK_EVIDENCE_PREFLIGHT.md` / `ops:kek-evidence-preflight` to preflight one
+redaction-safe descriptor JSON file before O5 KEK custody/scheduling evidence review; it does not
+close O5.
 
 ## Before upgrading
 - [ ] **Backup** the current DB: `ops:backup -- dump /backups/pre-upgrade-YYYY-MM-DD.json`
@@ -26,6 +29,9 @@ one redaction-safe descriptor JSON file before O4 evidence review; it does not c
 - [ ] If a production custodian descriptor is being reviewed, run
       `ops:custodian-evidence-preflight -- -- <descriptor.json> --json` and retain only the
       redaction-safe report; confirm `closesO4:false`.
+- [ ] If O5 KEK custody/scheduling evidence is being reviewed, run
+      `ops:kek-evidence-preflight -- -- <descriptor.json> --json` and retain only the
+      redaction-safe report; confirm `closesO5:false`.
 
 ## Post-upgrade
 - [ ] `ops:doctor --json` wired into the unattended healthcheck (cron / Unraid User Scripts).

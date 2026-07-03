@@ -63,3 +63,8 @@ hardened reference harness rather than the production KMS.
 `ops:doctor` reflects this production gate with the redaction-safe WARN check
 `production-gate-o5-managed-kek`, pointing operators to `ops:rewrap-kek -- --plan` while keeping
 managed age KEK custody/scheduling open.
+
+Phase 30 adds `docs/PHASE_30_KEK_EVIDENCE_PREFLIGHT.md` and
+`ops:kek-evidence-preflight` for a one-file, redaction-safe descriptor preflight before O5 evidence
+review. It validates custody/scheduling evidence metadata only; it does not run age, inspect key
+files, rotate keys, install scheduling, or close O5.

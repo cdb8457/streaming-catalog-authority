@@ -681,6 +681,102 @@ test('custodian evidence preflight - Phase 29 command/docs are redaction-safe an
   assert(!(pkg.scripts['test:custodian-evidence-preflight'] ?? '').includes('docker'), 'Phase 29 test command does not invoke Docker');
 });
 
+test('KEK evidence preflight - Phase 30 command/docs are redaction-safe and keep O4/O5 open', () => {
+  assert(exists('docs/PHASE_30_KEK_EVIDENCE_PREFLIGHT.md'), 'Phase 30 preflight doc exists');
+  assert(exists('src/ops/kek-evidence-preflight.ts'), 'Phase 30 pure preflight module exists');
+  assert(exists('src/ops/kek-evidence-preflight-cli.ts'), 'Phase 30 preflight CLI exists');
+  assert(exists('test/kek-evidence-preflight.ts'), 'Phase 30 preflight suite exists');
+  assert(typeof pkg.scripts['ops:kek-evidence-preflight'] === 'string', 'ops:kek-evidence-preflight script present');
+  assert(typeof pkg.scripts['test:kek-evidence-preflight'] === 'string', 'test:kek-evidence-preflight script present');
+  assert((pkg.scripts.test ?? '').includes('test/kek-evidence-preflight.ts'), 'Phase 30 suite in deterministic test chain');
+
+  const preflight = read('src/ops/kek-evidence-preflight.ts');
+  const cli = read('src/ops/kek-evidence-preflight-cli.ts');
+  const suite = read('test/kek-evidence-preflight.ts');
+  const doc = read('docs/PHASE_30_KEK_EVIDENCE_PREFLIGHT.md');
+  const readme = read('README.md');
+  const phase17 = read('docs/PHASE_17_KEK_ROTATION_READINESS.md');
+  const phase20 = read('docs/PHASE_20_UNRAID_OPERATIONS_SCHEDULE.md');
+  const phase22 = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+  const source = `${preflight}\n${cli}`;
+
+  for (const kw of [
+    'phase-30-kek-evidence-preflight',
+    'prepare-o5-managed-kek-custody-and-scheduling-evidence-review',
+    'descriptorValuesEchoed: false',
+    'closesO5: false',
+    'open/deferred',
+    'reference-harness-not-production-kms',
+    'managedKekCustodyDocumented',
+    'rotationScheduleDocumented',
+    'operatorRunbookDocumented',
+    'alertTriageDocumented',
+    'independentSecretMediaDocumented',
+    'residualRiskAccepted',
+    'DESCRIPTOR_JSON_MALFORMED',
+    'DESCRIPTOR_OBJECT_REQUIRED',
+    'DESCRIPTOR_FILE_READ_FAILED',
+    'DESCRIPTOR_FILE_TOO_LARGE',
+  ]) assert(`${source}\n${doc}`.includes(kw), `Phase 30 covers ${kw}`);
+
+  for (const linked of [readme, phase17, phase20, phase22, checklist]) {
+    assert(linked.includes('PHASE_30_KEK_EVIDENCE_PREFLIGHT.md') || linked.includes('ops:kek-evidence-preflight'), 'Phase 30 doc/script is linked from O5 readiness docs');
+  }
+
+  assert(/does not[\s\S]*close O5/i.test(doc) && /O5 remains open\/deferred/.test(doc), 'Phase 30 doc keeps O5 open/deferred');
+  assert(/O4 remains open\/deferred/.test(doc), 'Phase 30 doc keeps O4 open/deferred');
+  assert(/FileCustodian` remains a hardened reference\s+harness, not production KMS/.test(doc), 'Phase 30 preserves FileCustodian boundary');
+  assert(/does not read environment values[\s\S]*scan directories[\s\S]*inspect evidence artifacts[\s\S]*inspect\s+key files[\s\S]*connect to a database[\s\S]*call the network[\s\S]*run\s+Docker[\s\S]*invoke age[\s\S]*contact a live custodian, KMS, cloud service, vendor SDK, scheduler API/i.test(doc), 'Phase 30 documents descriptor-only static boundary');
+  assert(/does not add a scheduler[\s\S]*cron installer[\s\S]*daemon[\s\S]*runtime default[\s\S]*key rotation automation[\s\S]*mutating rewrap[\s\S]*real KMS adapter[\s\S]*HTTP service[\s\S]*UI/i.test(doc), 'Phase 30 documents no runtime product behavior');
+  assert(/never echoes descriptor paths[\s\S]*descriptor values[\s\S]*raw JSON[\s\S]*parse snippets/i.test(doc), 'Phase 30 documents redaction-safe output');
+  assert(/ready-for-review[\s\S]*does not mean production-ready[\s\S]*does not close O5/i.test(doc), 'Phase 30 ready state cannot be O5 closure');
+
+  for (const forbidden of [
+    "from 'pg'",
+    'from "pg"',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'loadDbConfig',
+    'loadCustodianConfig',
+    'createCustodian',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'execFileSync',
+    'spawnSync',
+    'docker compose',
+    'aws-sdk',
+    '@aws-sdk',
+    '@google-cloud',
+    '@azure',
+    'node-vault',
+    'openbao',
+    'node:child_process',
+    'node:crypto',
+    'readdirSync',
+    'readFileSync',
+    'existsSync',
+    'watch(',
+    'setInterval',
+    'setTimeout',
+    'node-schedule',
+    'scheduleJob',
+    'CUSTODIAN_KEK_FILE',
+    'CUSTODIAN_KEYSTORE_DIR',
+  ]) assert(!source.includes(forbidden), `Phase 30 source does not include ${forbidden}`);
+
+  assert(cli.includes("from 'node:fs'") && cli.includes('openSync') && cli.includes('readSync'), 'Phase 30 CLI has explicit bounded descriptor file read');
+  assert(!preflight.includes("node:fs"), 'Phase 30 formatter module remains pure');
+  assert(suite.includes('hostile descriptor values'), 'Phase 30 suite covers hostile descriptor values');
+  assert(suite.includes('missing') && suite.includes('directory') && suite.includes('oversized') && suite.includes('DESCRIPTOR_FILE_READ_FAILED'), 'Phase 30 suite covers file failure modes');
+  assert(!(pkg.scripts['ops:kek-evidence-preflight'] ?? '').includes('docker'), 'Phase 30 command does not invoke Docker');
+  assert(!(pkg.scripts['test:kek-evidence-preflight'] ?? '').includes('docker'), 'Phase 30 test command does not invoke Docker');
+});
+
 test('readiness rehearsal - Phase 25 preserves static-only scope and open production gates', () => {
   const cli = read('src/ops/readiness-plan-cli.ts');
   const plan = read('src/ops/readiness-plan.ts');
