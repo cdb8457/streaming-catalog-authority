@@ -897,6 +897,66 @@ test('TorBox live smoke CLI - Phase 43 is operator-run, redacted, and still deta
   assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
 });
 
+test('TorBox live smoke evidence preflight - Phase 44 verifies saved reports without live contact', () => {
+  assert(exists('src/ops/torbox-live-smoke-evidence-preflight.ts'), 'Phase 44 pure preflight source exists');
+  assert(exists('src/ops/torbox-live-smoke-evidence-preflight-cli.ts'), 'Phase 44 preflight CLI exists');
+  assert(exists('docs/PHASE_44_TORBOX_LIVE_SMOKE_EVIDENCE_PREFLIGHT.md'), 'Phase 44 doc exists');
+  assert(typeof pkg.scripts['ops:torbox-live-smoke-evidence-preflight'] === 'string', 'ops script present');
+  assert(typeof pkg.scripts['test:torbox-live-smoke-evidence-preflight'] === 'string', 'test script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-evidence-preflight.ts'), 'Phase 44 suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
+
+  const preflight = read('src/ops/torbox-live-smoke-evidence-preflight.ts');
+  const cli = read('src/ops/torbox-live-smoke-evidence-preflight-cli.ts');
+  const suite = read('test/torbox-live-smoke-evidence-preflight.ts');
+  const doc = read('docs/PHASE_44_TORBOX_LIVE_SMOKE_EVIDENCE_PREFLIGHT.md');
+  const combined = `${preflight}\n${cli}\n${suite}\n${doc}\n${read('README.md')}`;
+
+  for (const kw of [
+    'phase-44-torbox-live-smoke-evidence-preflight',
+    'single-user-supplied-json-file',
+    'evidenceValuesEchoed: false',
+    'liveTorBoxContact: false',
+    'closesLiveSmokeReview: false',
+    'does not contact TorBox',
+    'does not echo evidence values',
+    'no live TorBox call',
+    'no credential-file',
+    'no provider mode',
+    'downloading',
+    'playback',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference',
+  ]) assert(combined.includes(kw), `Phase 44 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    "from 'pg'",
+    'from "pg"',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'requestdl',
+    'requestDownloadLink',
+    'create-download',
+    'cdn-url',
+    'readFileSync',
+  ]) assert(!`${preflight}\n${cli}`.includes(forbidden), `Phase 44 source excludes ${forbidden}`);
+  assert(cli.includes('openSync') && cli.includes('readSync'), 'Phase 44 CLI uses bounded file read');
+  assert(!preflight.includes("node:fs"), 'Phase 44 pure preflight module has no fs import');
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

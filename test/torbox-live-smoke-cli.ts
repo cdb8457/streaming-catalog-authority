@@ -229,6 +229,8 @@ await test('source keeps live capability confined to operator CLI and injected r
     'src/ops/torbox-smoke-readiness-preflight-cli.ts',
     'src/ops/torbox-live-transport.ts',
     'src/ops/torbox-live-smoke-runner.ts',
+    'src/ops/torbox-live-smoke-evidence-preflight.ts',
+    'src/ops/torbox-live-smoke-evidence-preflight-cli.ts',
   ]);
   for (const [path, source] of walkTs('src')) {
     if (allowed.has(path)) continue;
