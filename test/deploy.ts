@@ -393,6 +393,74 @@ test('coordinator release gate - Phase 24 preserves scope boundaries and product
   assert(!/PHASE_24_COORDINATOR_RELEASE_GATE/.test(pkgText), 'Phase 24 adds no package script/product wiring');
 });
 
+test('readiness rehearsal - Phase 25 command, docs, and deterministic suite are wired', () => {
+  assert(exists('src/ops/readiness-plan.ts'), 'readiness plan module exists');
+  assert(exists('src/ops/readiness-plan-cli.ts'), 'readiness plan CLI exists');
+  assert(exists('test/readiness-plan.ts'), 'readiness plan suite exists');
+  assert(exists('docs/PHASE_25_READINESS_REHEARSAL.md'), 'Phase 25 rehearsal doc exists');
+
+  assert(typeof pkg.scripts['ops:readiness-plan'] === 'string', 'ops:readiness-plan script present');
+  assert(typeof pkg.scripts['test:readiness-plan'] === 'string', 'test:readiness-plan script present');
+  assert((pkg.scripts.test ?? '').includes('test/readiness-plan.ts'), 'readiness suite in the deterministic test chain');
+
+  const readme = read('README.md');
+  const gate = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
+  const packaging = read('docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+  for (const source of [readme, gate, packaging]) {
+    assert(source.includes('PHASE_25_READINESS_REHEARSAL.md'), 'Phase 25 doc is linked from readiness/operator docs');
+  }
+  assert(checklist.includes('ops:readiness-plan'), 'release checklist mentions the rehearsal command');
+});
+
+test('readiness rehearsal - Phase 25 preserves static-only scope and open production gates', () => {
+  const cli = read('src/ops/readiness-plan-cli.ts');
+  const plan = read('src/ops/readiness-plan.ts');
+  const doc = read('docs/PHASE_25_READINESS_REHEARSAL.md');
+  const combined = `${cli}\n${plan}\n${doc}`;
+
+  for (const label of [
+    '01-deployment-unraid.redacted.md',
+    '02-external-custodian-o4.redacted.md',
+    '03-kek-rotation-o5.redacted.md',
+    '04-backup-restore-retention.redacted.md',
+    '05-doctor-warning-gates.redacted.json',
+    '06-scheduled-operator-tasks.redacted.md',
+    '07-jellyfin-validation.redacted.md',
+    '08-ci-test-expectations.redacted.md',
+    '09-privacy-redaction.redacted.md',
+  ]) assert(combined.includes(label), `Phase 25 includes artifact ${label}`);
+
+  for (const kw of ['met', 'operator-provided', 'deferred', 'blocked']) {
+    assert(plan.includes(kw), `Phase 25 includes status ${kw}`);
+  }
+  assert(/O4 remains open\/deferred/.test(plan) && /O5 remains open\/deferred/.test(plan), 'Phase 25 keeps O4/O5 open/deferred');
+  assert(/FileCustodian is a hardened reference harness, not production KMS/.test(plan), 'Phase 25 preserves FileCustodian boundary');
+  assert(/does not[\s\S]*connect to a database[\s\S]*scan evidence directories[\s\S]*read backup artifacts[\s\S]*call the network[\s\S]*run Docker[\s\S]*contact Jellyfin[\s\S]*contact a custodian, cloud service, or KMS/i.test(doc), 'Phase 25 documents static-only non-requirements');
+  assert(!/closes O4|closes O5|production-ready as turnkey|turnkey production-ready/i.test(combined), 'Phase 25 does not close gates or overstate readiness');
+
+  for (const forbidden of [
+    "from 'pg'",
+    'from "pg"',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'loadDbConfig',
+    'loadCustodianConfig',
+    'createCustodian',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+  ]) assert(!`${cli}\n${plan}`.includes(forbidden), `readiness CLI/module do not use ${forbidden}`);
+
+  assert(!(pkg.scripts['ops:readiness-plan'] ?? '').includes('docker'), 'readiness command does not invoke Docker');
+  assert(!(pkg.scripts['test:readiness-plan'] ?? '').includes('docker'), 'readiness test command does not invoke Docker');
+});
+
 test('ops entrypoints exist', () => {
   assert(exists('src/ops/migrate-cli.ts'), 'migrate-cli');
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');
