@@ -92,6 +92,21 @@ identity, full environment dumps, or unredacted logs.
 Full attestations should be omitted or redacted unless the deployment explicitly classifies them as
 non-secret and reviewer-safe.
 
+### Harness failure output is redaction-safe by default
+
+The importable kit's **default** failure output (`test/helpers/custodian-contract-kit.ts`) is
+**redaction-safe**: a failing test prints only the **test name** + the **error class/category** + a
+generic `[message redacted]` label via `formatHarnessFailure()`. It **never** prints the raw error
+message, stack, or thrown value — because a real external/KMS custodian error can embed request
+metadata, endpoints, key IDs, tokens, secret paths, DB URLs, or config values. This default output is
+what belongs in shareable acceptance evidence.
+
+Raw messages/stacks are available **only** in an explicitly-gated debug mode
+(`CUSTODIAN_HARNESS_VERBOSE=1`), which prints them on a clearly-labelled `[debug/non-evidence]` line for
+local debugging **only** — that output **must not** be pasted into readiness/acceptance evidence. A
+regression test (`test/custodian-harness-redaction.ts`) proves a leaky adapter error (sentinel secrets in
+message + stack) never reaches the default output.
+
 ## Static Boundary
 
 Phase 21 keeps CI deterministic:

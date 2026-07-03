@@ -6,6 +6,36 @@ let passed = 0;
 let failed = 0;
 const failures: Array<[string, unknown]> = [];
 
+/**
+ * Debug/NON-EVIDENCE mode. Default OFF. When `CUSTODIAN_HARNESS_VERBOSE=1`, the harness ALSO prints raw
+ * error messages/stacks on a clearly-labelled `[debug/non-evidence]` line — for local debugging ONLY.
+ * That raw output MUST NOT be pasted into shareable readiness/acceptance evidence. Read at print time
+ * (not import time) so it is testable. The DEFAULT (evidence) output is always redaction-safe.
+ */
+function harnessVerbose(): boolean { return process.env.CUSTODIAN_HARNESS_VERBOSE === '1'; }
+
+/** Safe error class/category: a code identifier only (sanitized), never a message/secret. */
+function safeClass(err: unknown): string {
+  const raw = err instanceof Error ? (err.name || err.constructor?.name || 'Error')
+    : err && typeof err === 'object' ? ((err as { constructor?: { name?: string } }).constructor?.name ?? 'Object')
+    : typeof err;
+  return String(raw).replace(/[^A-Za-z0-9_]/g, '').slice(0, 64) || 'Error';
+}
+
+/**
+ * REDACTION-SAFE failure descriptor for shareable evidence. Emits ONLY the error class/category + a
+ * stable generic label. NEVER the raw error message, stack, thrown value, tokens, secret paths, DB URLs,
+ * key IDs, endpoints, or adapter config — because a real external/KMS custodian error can embed those.
+ */
+export function formatHarnessFailure(err: unknown): string {
+  return `${safeClass(err)} [message redacted — set CUSTODIAN_HARNESS_VERBOSE=1 for non-evidence debug]`;
+}
+
+/** Raw detail — ONLY emitted in the gated non-evidence verbose mode. */
+function rawDebugDetail(err: unknown): string {
+  return (err instanceof Error ? (err.stack ?? err.message) : String(err)) || '(no detail)';
+}
+
 export async function runCustodianContractTest(name: string, fn: () => Promise<void> | void): Promise<void> {
   try {
     await fn();
@@ -14,7 +44,8 @@ export async function runCustodianContractTest(name: string, fn: () => Promise<v
   } catch (err) {
     failed++;
     failures.push([name, err]);
-    console.log(`  FAIL  ${name}: ${(err as Error).message}`);
+    console.log(`  FAIL  ${name}: ${formatHarnessFailure(err)}`);
+    if (harnessVerbose()) console.log(`        [debug/non-evidence] ${rawDebugDetail(err)}`);
   }
 }
 
@@ -157,11 +188,20 @@ export function custodianContractResults(): { passed: number; failed: number; fa
   return { passed, failed, failures: [...failures] };
 }
 
-export function reportCustodianContractResults(): void {
-  console.log(`\n${passed} passed, ${failed} failed.`);
+/** Redaction-safe summary lines (default/evidence mode). Verbose adds gated non-evidence debug lines. */
+export function custodianContractSummaryLines(): string[] {
+  const lines = [`\n${passed} passed, ${failed} failed.`];
   if (failed > 0) {
-    console.log('\nFailures:');
-    for (const [name, err] of failures) console.log(`  - ${name}: ${(err as Error).stack ?? err}`);
-    process.exit(1);
+    lines.push('\nFailures:');
+    for (const [name, err] of failures) {
+      lines.push(`  - ${name}: ${formatHarnessFailure(err)}`);
+      if (harnessVerbose()) lines.push(`      [debug/non-evidence] ${rawDebugDetail(err)}`);
+    }
   }
+  return lines;
+}
+
+export function reportCustodianContractResults(): void {
+  for (const line of custodianContractSummaryLines()) console.log(line);
+  if (failed > 0) process.exit(1);
 }
