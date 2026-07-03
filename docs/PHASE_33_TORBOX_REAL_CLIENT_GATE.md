@@ -22,6 +22,10 @@ Phase 36 adds `docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md` and
 `test:torbox-live-smoke-contract` as the acceptance contract for a future opt-in live smoke command.
 It still adds no live transport, operator CLI, SDK dependency, or provider mode.
 
+Phase 37 adds `docs/PHASE_37_TORBOX_SMOKE_CLI_SHELL.md` and `smoke:torbox-readonly` as a
+refused-by-default operator CLI shell. It performs local preflight/reporting only and still adds no
+live transport, SDK dependency, provider mode, or proof that real TorBox works.
+
 ## Scope
 
 Included:

@@ -54,7 +54,6 @@ test('Phase 36 preserves non-live scope and forbids runtime implementation', () 
     'not an SDK integration',
     'no live TorBox calls',
     'no real TorBox transport implementation',
-    'no operator smoke CLI',
     'no `@torbox/torbox-api` dependency or import',
     'no global fetch',
     'no environment-variable reads',
@@ -62,8 +61,9 @@ test('Phase 36 preserves non-live scope and forbids runtime implementation', () 
     'no adapter-factory mode for TorBox',
   ], 'Phase 36 non-live boundary');
 
+  assert(exists('src/ops/torbox-smoke-cli.ts'), 'Phase 37 may add the refused-by-default smoke CLI shell');
+
   for (const forbiddenPath of [
-    'src/ops/torbox-smoke-cli.ts',
     'src/ops/torbox-readonly-smoke-cli.ts',
     'src/core/adapters/torbox-live-transport.ts',
     'src/core/adapters/torbox-smoke-transport.ts',
@@ -227,7 +227,6 @@ test('repository still has no TorBox SDK, live network, browser, Docker, provide
     'window.fetch',
     'createTorBoxTransport',
     'TorBoxLiveTransport',
-    'smoke:torbox-readonly',
   ]) assert(!production.includes(forbidden), `production source excludes ${forbidden}`);
 });
 

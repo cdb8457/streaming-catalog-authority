@@ -463,7 +463,6 @@ test('TorBox live smoke contract - Phase 36 is acceptance contract only', () => 
     'not an operator command',
     'no live TorBox calls',
     'no real TorBox transport implementation',
-    'no operator smoke CLI',
     'no `@torbox/torbox-api` dependency or import',
     'no global fetch',
     'no environment-variable reads',
@@ -510,9 +509,66 @@ test('TorBox live smoke contract - Phase 36 is acceptance contract only', () => 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
   assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
-  assert(!exists('src/ops/torbox-smoke-cli.ts'), 'Phase 36 adds no TorBox smoke CLI');
+  assert(exists('src/ops/torbox-smoke-cli.ts'), 'Phase 37 adds the refused-by-default TorBox smoke CLI shell');
   assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'Phase 36 adds no live transport');
   assert(suite.includes('required future execution order is explicit and fail-closed before network contact'), 'suite enforces pre-network order');
+});
+
+test('TorBox smoke CLI shell - Phase 37 is refused-by-default and non-network', () => {
+  assert(exists('docs/PHASE_37_TORBOX_SMOKE_CLI_SHELL.md'), 'Phase 37 smoke CLI shell doc exists');
+  assert(exists('src/ops/torbox-smoke-shell.ts'), 'Phase 37 pure shell module exists');
+  assert(exists('src/ops/torbox-smoke-cli.ts'), 'Phase 37 CLI wrapper exists');
+  assert(typeof pkg.scripts['smoke:torbox-readonly'] === 'string', 'smoke:torbox-readonly script present');
+  assert(typeof pkg.scripts['test:torbox-smoke-cli'] === 'string', 'test:torbox-smoke-cli script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-cli.ts'), 'TorBox smoke CLI shell suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator TorBox smoke command is not in npm test');
+  assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator TorBox smoke command is not in ci script');
+
+  const doc = read('docs/PHASE_37_TORBOX_SMOKE_CLI_SHELL.md');
+  const shell = read('src/ops/torbox-smoke-shell.ts');
+  const cli = read('src/ops/torbox-smoke-cli.ts');
+  const suite = read('test/torbox-smoke-cli.ts');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  const combined = `${doc}\n${shell}\n${cli}\n${suite}\n${read('README.md')}`;
+
+  for (const kw of [
+    'refuses before provider contact',
+    'no live TorBox calls',
+    'no real TorBox transport implementation',
+    'no `@torbox/torbox-api` dependency or import',
+    'no global fetch',
+    'no environment-variable reads',
+    'no ADAPTER_MODE wiring',
+    'no adapter-factory mode for TorBox',
+    'wouldContactTorBox: false',
+    'no-live-transport-attached',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference harness',
+  ]) assert(combined.includes(kw), `Phase 37 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'window.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'readdirSync',
+    'docker compose',
+    'createTorBoxTransport',
+    'TorBoxLiveTransport',
+  ]) assert(!`${shell}\n${cli}`.includes(forbidden), `Phase 37 source excludes ${forbidden}`);
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assert(suite.includes('CLI emits parseable JSON refusal and never prints credential ref values'), 'suite covers CLI redaction');
 });
 
 test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {

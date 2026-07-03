@@ -12,6 +12,10 @@ Phase 36 follows this with `docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md`, an acc
 the future live smoke command. Phase 36 still adds no live transport, no operator CLI, no SDK
 dependency, and no provider mode.
 
+Phase 37 follows with `docs/PHASE_37_TORBOX_SMOKE_CLI_SHELL.md` and `smoke:torbox-readonly`, a
+refused-by-default operator CLI shell only. It performs local preflight/reporting and exits before
+TorBox contact because no live transport is attached.
+
 ## Scope
 
 Included:

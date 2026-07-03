@@ -124,6 +124,10 @@ Before the later live implementation can merge, Reviewer must confirm:
 Phase 36 does not prove TorBox works. It only defines the acceptance order for a later operator-run,
 read-only live smoke.
 
+Phase 37 follows this contract with `smoke:torbox-readonly`, a refused-by-default CLI shell that
+performs local preflight/reporting only. Phase 37 still does not add a live TorBox transport, SDK,
+provider mode, or proof that TorBox works.
+
 Even a future successful live smoke would not validate downloading, playback, media-server sync, or
 production readiness. O4 remains open/deferred until a production external custodian/KMS adapter is
 accepted. O5 remains open/deferred until managed KEK custody and scheduling evidence is accepted.

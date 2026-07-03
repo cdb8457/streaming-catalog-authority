@@ -190,6 +190,9 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md`** / `test:torbox-live-smoke-contract` as the
   acceptance contract for a future opt-in live smoke command: no live transport, no operator CLI, no
   SDK dependency, no ADAPTER_MODE wiring, no provider writes, and no CI/live-network requirement.
+  Phase 37 adds **`docs/PHASE_37_TORBOX_SMOKE_CLI_SHELL.md`** / `smoke:torbox-readonly` /
+  `test:torbox-smoke-cli` as a refused-by-default operator CLI shell only: it performs local
+  preflight/reporting, stays out of CI, attaches no live transport, and exits before TorBox contact.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -275,7 +278,10 @@ frontend runtime, playback, or download behavior. Phase 36 adds
 `docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md` as the required future live-smoke acceptance order:
 explicit authorization, out-of-CI opt-in, read-only confirmation, secret indirection, bounded
 timeouts, redaction, injected reviewed transport only, and Phase 35-shaped evidence before any
-later implementation may contact TorBox.
+later implementation may contact TorBox. Phase 37 adds `src/ops/torbox-smoke-cli.ts` and
+`src/ops/torbox-smoke-shell.ts` as a refused-by-default `smoke:torbox-readonly` shell. It is
+operator-run only, not in CI, has no live transport, does not read env/secret files, and reports only
+fixed gates/categories/counts before exiting without TorBox contact.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -363,5 +369,6 @@ automated tests**. (Phases 7–13 add adapter *boundaries* + erasure policy + Je
 smoke validation; Phase 31 adds TorBox boundary research only; Phase 32 adds a local fake TorBox
 contract only; Phase 33 adds a TorBox real-client design gate only; Phase 34 adds an injected
 fixture-transport read-only client only; Phase 35 adds operator-run TorBox smoke evidence and future
-operator UI examples only; Phase 36 adds the future live-smoke acceptance contract only; real
-network is strictly gated + smoke-validated.)
+operator UI examples only; Phase 36 adds the future live-smoke acceptance contract only; Phase 37
+adds the refused-by-default TorBox smoke CLI shell only; real network is strictly gated +
+smoke-validated.)

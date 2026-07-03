@@ -12,6 +12,10 @@ Phase 36 follows with `docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md`, a non-live 
 for the future opt-in live smoke command. It adds no transport, operator CLI, SDK dependency, or
 provider mode.
 
+Phase 37 follows with `docs/PHASE_37_TORBOX_SMOKE_CLI_SHELL.md` and a refused-by-default
+`smoke:torbox-readonly` shell. It still adds no live TorBox transport, SDK dependency, provider mode,
+or proof that real TorBox works.
+
 The production module is `src/core/adapters/torbox-readonly-client.ts`. It accepts an explicit
 config object with an injected `TorBoxTransport`, maps a single scoped `AdapterRefView` to fixed
 Phase 33 read-only operation ids, and returns advisory `AdapterResult` statuses only:
