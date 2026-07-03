@@ -193,6 +193,9 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   Phase 37 adds **`docs/PHASE_37_TORBOX_SMOKE_CLI_SHELL.md`** / `smoke:torbox-readonly` /
   `test:torbox-smoke-cli` as a refused-by-default operator CLI shell only: it performs local
   preflight/reporting, stays out of CI, attaches no live transport, and exits before TorBox contact.
+  Phase 38 adds **`docs/PHASE_38_TORBOX_SMOKE_FIXTURE_HARNESS.md`** / `test:torbox-smoke-fixture`
+  as deterministic local fixture execution for that shell: no live transport, no SDK, no env reads,
+  no network, no provider mode, and no proof that real TorBox works.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -282,6 +285,9 @@ later implementation may contact TorBox. Phase 37 adds `src/ops/torbox-smoke-cli
 `src/ops/torbox-smoke-shell.ts` as a refused-by-default `smoke:torbox-readonly` shell. It is
 operator-run only, not in CI, has no live transport, does not read env/secret files, and reports only
 fixed gates/categories/counts before exiting without TorBox contact.
+Phase 38 adds explicit `--fixture available|unavailable|unknown|auth|quota|timeout|parse|ambiguous-response`
+handling for deterministic local output. Fixture mode never contacts TorBox and does not prove real
+TorBox availability.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -370,5 +376,6 @@ smoke validation; Phase 31 adds TorBox boundary research only; Phase 32 adds a l
 contract only; Phase 33 adds a TorBox real-client design gate only; Phase 34 adds an injected
 fixture-transport read-only client only; Phase 35 adds operator-run TorBox smoke evidence and future
 operator UI examples only; Phase 36 adds the future live-smoke acceptance contract only; Phase 37
-adds the refused-by-default TorBox smoke CLI shell only; real network is strictly gated +
+adds the refused-by-default TorBox smoke CLI shell only; Phase 38 adds deterministic local fixture
+execution only; real network is strictly gated +
 smoke-validated.)

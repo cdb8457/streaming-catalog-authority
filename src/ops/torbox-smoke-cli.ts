@@ -28,7 +28,7 @@ function main(): number {
 
   const report = buildTorBoxSmokeShellReport(parsed);
   process.stdout.write(parsed.json ? formatTorBoxSmokeShellJson(report) : formatTorBoxSmokeShellText(report));
-  return 2;
+  return report.ok ? 0 : 2;
 }
 
 process.exit(main());

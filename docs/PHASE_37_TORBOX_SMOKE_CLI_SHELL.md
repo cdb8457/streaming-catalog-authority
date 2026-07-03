@@ -96,5 +96,9 @@ accept or print a raw ref value in Phase 37.
 Phase 37 does not prove TorBox works. It proves the operator command shell is fail-closed,
 redaction-safe, out of CI, detached from `ADAPTER_MODE`, and blocked before provider contact.
 
+Phase 38 follows with `docs/PHASE_38_TORBOX_SMOKE_FIXTURE_HARNESS.md` and deterministic
+`--fixture` output for the same shell. Phase 38 still adds no live TorBox transport, SDK dependency,
+provider mode, or proof that real TorBox works.
+
 O4 remains open/deferred. O5 remains open/deferred. `FileCustodian` remains a hardened reference
 harness, not production KMS.

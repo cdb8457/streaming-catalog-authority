@@ -571,6 +571,54 @@ test('TorBox smoke CLI shell - Phase 37 is refused-by-default and non-network', 
   assert(suite.includes('CLI emits parseable JSON refusal and never prints credential ref values'), 'suite covers CLI redaction');
 });
 
+test('TorBox smoke fixture harness - Phase 38 is deterministic local-only output', () => {
+  assert(exists('docs/PHASE_38_TORBOX_SMOKE_FIXTURE_HARNESS.md'), 'Phase 38 fixture harness doc exists');
+  assert(typeof pkg.scripts['test:torbox-smoke-fixture'] === 'string', 'test:torbox-smoke-fixture script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-fixture.ts'), 'TorBox fixture suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+
+  const doc = read('docs/PHASE_38_TORBOX_SMOKE_FIXTURE_HARNESS.md');
+  const shell = read('src/ops/torbox-smoke-shell.ts');
+  const cli = read('src/ops/torbox-smoke-cli.ts');
+  const suite = read('test/torbox-smoke-fixture.ts');
+  const combined = `${doc}\n${shell}\n${cli}\n${suite}\n${read('README.md')}`;
+
+  for (const kw of [
+    'never contacts TorBox',
+    'local deterministic fixture',
+    'no live TorBox calls',
+    'no real TorBox transport implementation',
+    'no `@torbox/torbox-api` dependency or import',
+    'no global fetch',
+    'no environment-variable reads',
+    'no ADAPTER_MODE wiring',
+    'no adapter-factory mode for TorBox',
+    'fixture-ok',
+    'ambiguous-response',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference',
+  ]) assert(combined.includes(kw), `Phase 38 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'window.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'readdirSync',
+    'docker compose',
+    'createTorBoxTransport',
+    'TorBoxLiveTransport',
+  ]) assert(!`${shell}\n${cli}`.includes(forbidden), `Phase 38 source excludes ${forbidden}`);
+});
+
 test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

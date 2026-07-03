@@ -67,7 +67,7 @@ test('default shell report refuses before live smoke and before TorBox contact',
   assertEq(report.liveSmokeAttempted, false, 'no live smoke attempted');
   assertEq(report.wouldContactTorBox, false, 'no TorBox contact');
   assertEq(report.category, 'not-authorized', 'first default block is authorization');
-  assert(report.gates.some((gate) => gate.name === 'no-live-transport-attached' && !gate.ok && gate.category === 'transport'), 'transport gate blocks');
+  assert(report.gates.some((gate) => gate.name === 'local-fixture-transport-attached' && !gate.ok && gate.category === 'transport'), 'fixture transport gate blocks');
 });
 
 test('fully acknowledged shell still blocks because no live transport is attached', () => {
@@ -167,7 +167,7 @@ test('CLI emits parseable JSON refusal and never prints credential ref values', 
   });
   assertEq(result.status, 2, 'CLI refuses with usage/preflight status');
   const parsed = JSON.parse(result.stdout) as ReturnType<typeof buildTorBoxSmokeShellReport>;
-  assertEq(parsed.report, 'phase-37-torbox-smoke-cli-shell', 'JSON report name');
+  assertEq(parsed.report, 'phase-38-torbox-smoke-cli-fixture-harness', 'JSON report name');
   assertEq(parsed.wouldContactTorBox, false, 'JSON says no TorBox contact');
   assertEq(parsed.category, 'transport', 'acknowledged command blocks on no transport');
   assert(!`${result.stdout}\n${result.stderr}`.includes('SECRET-CREDENTIAL-REF'), 'credential ref value not echoed');
@@ -190,7 +190,7 @@ test('CLI text refusal is redaction-safe and not live-network capable', () => {
     'torbox read-only smoke preflight shell',
     'would-contact-torbox: false',
     'BLOCK operator-authorization',
-    'No live TorBox transport is attached in Phase 37.',
+    'No live TorBox transport is attached in Phase 38.',
   ], 'text refusal');
 });
 
