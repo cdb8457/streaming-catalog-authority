@@ -80,3 +80,6 @@ only. They name the official TorBox docs/SDK surface (`@torbox/torbox-api`) so a
 be reviewed against the Phase 7 privacy boundary, but they add no SDK dependency, no live TorBox, no
 network, no downloading, no playback, no provider mode, no factory mode, and no credential reads.
 The next approved step must be a local fake TorBox adapter contract before any gated real client.
+Phase 32 adds that local fake contract for direct tests only. Phase 33 adds a TorBox real-client
+design gate only: injected transport only, no SDK dependency, no live client, no ADAPTER_MODE
+wiring, and a future real client must be separately authorized/reviewed.

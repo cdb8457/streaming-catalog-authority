@@ -110,7 +110,7 @@ test('adapter boundary — no network/provider leakage in src/core/adapters (Pha
     if (f === 'torbox-boundary.ts') continue;
     const src = readFileSync(`${dir}/${f}`, 'utf8');
     assert(!network.test(src), `src/core/adapters/${f} makes no network import/call`);
-    if (f === 'fake-torbox-adapter.ts') continue;
+    if (f === 'fake-torbox-adapter.ts' || f === 'torbox-real-client-gate.ts') continue;
     assert(!providers.test(src), `src/core/adapters/${f} names no real provider / scraping / playback`);
   }
   assert(exists('docs/PHASE_7_ADAPTER_BOUNDARY.md'), 'adapter boundary doc exists');
@@ -217,6 +217,78 @@ test('fake TorBox adapter - Phase 32 is local contract only and fail-closed', ()
     'permalink URL',
   ]) assert(!source.includes(forbidden), `Phase 32 fake source excludes ${forbidden}`);
   assert(suite.includes('source has no SDK, network, env, DB, Docker, or provider-mode scope creep'), 'suite enforces Phase 32 static scope');
+});
+
+test('TorBox real-client gate - Phase 33 is static design only and fail-closed', () => {
+  assert(exists('src/core/adapters/torbox-real-client-gate.ts'), 'Phase 33 TorBox real-client gate exists');
+  assert(exists('docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md'), 'Phase 33 TorBox real-client gate doc exists');
+  assert(typeof pkg.scripts['test:torbox-real-client-gate'] === 'string', 'test:torbox-real-client-gate script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-real-client-gate.ts'), 'TorBox real-client gate suite in the CI chain');
+
+  const source = read('src/core/adapters/torbox-real-client-gate.ts');
+  const suite = read('test/torbox-real-client-gate.ts');
+  const doc = read('docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md');
+  const readme = read('README.md');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+
+  for (const kw of [
+    'TorBoxTransport',
+    'createDisabledTorBoxRealClientPlan',
+    'assertTorBoxRealClientGateClosed',
+    'TORBOX_REAL_CLIENT_TIMEOUT_BACKOFF_POLICY',
+    'TorBoxRealClientGateError',
+  ]) assert(source.includes(kw), `Phase 33 source covers ${kw}`);
+
+  for (const kw of ['torrent-cache-check', 'webdl-cache-check', 'usenet-cache-check', 'status-check', 'hoster-list']) {
+    assert(source.includes(kw), `Phase 33 allows read-only operation ${kw}`);
+  }
+  for (const kw of ['create-download', 'request-download-link', 'user-list', 'user-data', 'control-item', 'delete-item', 'export-provider-data', 'cdn-url']) {
+    assert(source.includes(kw), `Phase 33 future-gates ${kw}`);
+  }
+
+  for (const kw of [
+    'design gate, not a live client',
+    'injected transport only',
+    'no SDK dependency',
+    'future real client must be separately authorized/reviewed',
+    'live smoke must be operator-run outside CI',
+    'no ADAPTER_MODE wiring',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(`${doc}\n${readme}`.includes(kw), `Phase 33 docs preserve ${kw}`);
+
+  const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
+  assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
+  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assert(!/class\s+\w*Transport\b/.test(source), 'no transport class implementation');
+  assert(!/implements\s+TorBoxTransport/.test(source), 'no TorBox transport implementation');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    "from 'pg'",
+    'from "pg"',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'node:child_process',
+    'globalThis.fetch',
+    'window.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'readdirSync',
+    'openSync',
+    'readSync',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+  ]) assert(!source.includes(forbidden), `Phase 33 source excludes ${forbidden}`);
+  assert(suite.includes('transport is injected-only and no TorBox transport implementation exists'), 'suite enforces injected-only transport');
+  assert(suite.includes('gate is disabled by default and cannot be enabled from pure config'), 'suite enforces disabled-by-default gate');
+  assert(suite.includes('redaction-safe errors expose only operation, status, and category'), 'suite enforces error redaction');
 });
 
 test('publisher boundary — Phase 8 doc + suites wired; erasure-conflict noted', () => {

@@ -175,7 +175,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   only: no live TorBox, no SDK dependency, no downloading, no playback, no provider mode, and no
   token/API-key handling. Phase 32 adds **`docs/PHASE_32_FAKE_TORBOX_ADAPTER.md`** /
   `test:torbox-fake-adapter` as a local fake contract only; it does not prove real TorBox works and
-  keeps the real client separately gated. Rehearse the evidence package shape with
+  keeps the real client separately gated. Phase 33 adds
+  **`docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md`** / `test:torbox-real-client-gate` as a design gate,
+  not a live client: injected transport only, no SDK dependency, no ADAPTER_MODE wiring, and any
+  future real client must be separately authorized/reviewed. Rehearse the evidence package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
   real readiness review. The docs
   below are the gate's underlying sources.
@@ -193,6 +196,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_28_PRODUCTION_CUSTODIAN_CONTRACT.md` (static production custodian descriptor contract) ·
   `docs/PHASE_29_CUSTODIAN_EVIDENCE_PREFLIGHT.md` (static O4 descriptor preflight command) Â·
   `docs/PHASE_32_FAKE_TORBOX_ADAPTER.md` (local fake TorBox adapter contract) Â·
+  `docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md` (TorBox real-client design gate; no live client) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -239,7 +243,11 @@ Phase 32 local fake contract now lives in `src/core/adapters/fake-torbox-adapter
 supports scoped infohash/hash-digest/link-derived-digest/NZB-derived-digest refs, returns advisory
 available/unavailable/unknown results, and is not wired into `ADAPTER_MODE`. It does not prove real
 TorBox works. Create/download-link/token-query flows remain future-gated/high risk, and any real
-client remains a separately gated real client.
+client remains a separately gated real client. Phase 33 adds
+`src/core/adapters/torbox-real-client-gate.ts` and
+`docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md` as a design gate, not a live client: injected transport
+only, no SDK dependency, no ADAPTER_MODE wiring, live smoke must be operator-run outside CI, and a
+future real client must be separately authorized/reviewed.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -325,4 +333,5 @@ cleanup is confirmed and requires both the explicit `--write` flag and
 No Plex, no RD/TorBox live integration, no Hermes, no HTTP daemon, no job queue, no frontend, and **no live network in
 automated tests**. (Phases 7–13 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox +
 smoke validation; Phase 31 adds TorBox boundary research only; Phase 32 adds a local fake TorBox
-contract only; real network is strictly gated + smoke-validated.)
+contract only; Phase 33 adds a TorBox real-client design gate only; real network is strictly gated +
+smoke-validated.)

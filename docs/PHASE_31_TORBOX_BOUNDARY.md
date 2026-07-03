@@ -17,6 +17,10 @@ The static contract is in `src/core/adapters/torbox-boundary.ts`. It records the
 without importing the SDK or creating a real adapter. Phase 32 adds
 `docs/PHASE_32_FAKE_TORBOX_ADAPTER.md` and `test:torbox-fake-adapter` as a local fake contract only;
 it does not prove real TorBox works and does not change the no live provider boundary.
+Phase 33 adds `docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md`,
+`src/core/adapters/torbox-real-client-gate.ts`, and `test:torbox-real-client-gate` as a design gate,
+not a live client; it keeps injected transport only, no SDK dependency, no ADAPTER_MODE wiring, and
+a future real client must be separately authorized/reviewed.
 
 ## Capability Map
 
@@ -70,8 +74,8 @@ not allowed in Phase 31.
 
 1. Local fake TorBox adapter contract: Phase 32 implements a no-network fake against this capability
    map and the Phase 7 `AdapterRefView` shape.
-2. Gated real client design: decide SDK vs injected transport, timeout, backoff, redaction, and
-   fail-closed behavior without enabling live CI.
+2. Gated real client design: Phase 33 records injected transport only, timeout, backoff, redaction,
+   and fail-closed behavior without enabling a live client or live CI.
 3. Operator-run smoke only: if a real client is later approved, live TorBox validation must be
    opt-in and outside CI.
 4. Mutating/link flows only after durable orphan-safe design: create-download and

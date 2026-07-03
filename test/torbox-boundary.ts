@@ -118,6 +118,7 @@ test('no accidental TorBox implementation appears outside the static boundary an
   const allowed = new Set([
     'src/core/adapters/torbox-boundary.ts',
     'src/core/adapters/fake-torbox-adapter.ts',
+    'src/core/adapters/torbox-real-client-gate.ts',
     'test/torbox-boundary.ts',
   ]);
   for (const [path, source] of srcFiles()) {

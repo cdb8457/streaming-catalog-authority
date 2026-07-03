@@ -48,6 +48,11 @@ A real TorBox client remains a separate future phase. That phase must choose SDK
 transport, add bounded timeouts, fail-closed network/auth/quota/parse behavior, redaction-safe
 errors, secret indirection, and live smoke validation outside CI.
 
+Phase 33 adds `docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md` and
+`src/core/adapters/torbox-real-client-gate.ts` as a design gate, not a live client. It keeps
+injected transport only, no SDK dependency, no ADAPTER_MODE wiring, and says any future real client
+must be separately authorized/reviewed.
+
 Create/download-link/token-query flows remain future-gated/high risk. They can create provider-side
 state or produce metered CDN/permalink/token-bearing URLs, so they require a separate durable
 outbox/idempotency/revocation review before any implementation.
