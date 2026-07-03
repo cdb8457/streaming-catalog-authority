@@ -480,6 +480,61 @@ test('operator evidence rehearsal - Phase 26 preserves static-only scope and ope
   assert(!(pkg.scripts['test:evidence-rehearsal'] ?? '').includes('docker'), 'evidence rehearsal test command does not invoke Docker');
 });
 
+test('release guard - Phase 27 is wired as advisory read-only coordinator support', () => {
+  assert(exists('docs/PHASE_27_RELEASE_GUARD.md'), 'Phase 27 release guard doc exists');
+  assert(exists('src/ops/release-guard.ts'), 'release guard module exists');
+  assert(exists('src/ops/release-guard-cli.ts'), 'release guard CLI exists');
+  assert(exists('test/release-guard.ts'), 'release guard suite exists');
+  assert(typeof pkg.scripts['ops:release-guard'] === 'string', 'ops:release-guard script present');
+  assert(typeof pkg.scripts['test:release-guard'] === 'string', 'test:release-guard script present');
+  assert((pkg.scripts.test ?? '').includes('test/release-guard.ts'), 'release guard suite in the deterministic test chain');
+
+  const cli = read('src/ops/release-guard-cli.ts');
+  const guard = read('src/ops/release-guard.ts');
+  const doc = read('docs/PHASE_27_RELEASE_GUARD.md');
+  const readme = read('README.md');
+  const phase24 = read('docs/PHASE_24_COORDINATOR_RELEASE_GATE.md');
+  const checklist = read('docs/RELEASE_CHECKLIST.md');
+  const combined = `${cli}\n${guard}\n${doc}`;
+
+  for (const kw of ['--base <ref>', '--mode pre-pr|pre-merge|post-merge', '--json', 'advisory']) {
+    assert(combined.includes(kw), `Phase 27 covers ${kw}`);
+  }
+  for (const source of [readme, phase24, checklist]) {
+    assert(source.includes('PHASE_27_RELEASE_GUARD.md') || source.includes('ops:release-guard'), 'Phase 27 command/doc is linked from release docs');
+  }
+  assert(/Coordinator, Reviewer,\s+and Clint still make GO\/HOLD decisions/.test(doc), 'doc preserves human GO/HOLD decision boundary');
+  assert(/O4 remains open\/deferred/.test(combined) && /O5 remains open\/deferred/.test(combined), 'Phase 27 keeps O4/O5 open/deferred');
+  assert(/FileCustodian remains a hardened reference harness, not production KMS/.test(combined), 'Phase 27 preserves FileCustodian boundary');
+  assert(/read-only local Git inspection/.test(combined), 'Phase 27 states read-only git inspection');
+  assert(!/\bis approval to (push|merge|tag)\b|\bapproves (push|merge|tag)\b/i.test(combined), 'Phase 27 does not claim approval authority');
+
+  for (const forbidden of [
+    "from 'pg'",
+    'from "pg"',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'docker compose',
+    'process.env.',
+    'readFileSync',
+    'loadDbConfig',
+    'loadCustodianConfig',
+    'createCustodian',
+  ]) assert(!`${cli}\n${guard}`.includes(forbidden), `release guard CLI/module do not use ${forbidden}`);
+
+  for (const mutating of ['git merge', 'git tag', 'git push', 'git checkout', 'git reset', 'branch -d', 'worktree remove']) {
+    assert(!`${cli}\n${guard}`.includes(mutating), `release guard implementation does not invoke ${mutating}`);
+  }
+  assert(!(pkg.scripts['ops:release-guard'] ?? '').includes('docker'), 'release guard command does not invoke Docker');
+  assert(!(pkg.scripts['test:release-guard'] ?? '').includes('docker'), 'release guard test command does not invoke Docker');
+});
+
 test('readiness rehearsal - Phase 25 preserves static-only scope and open production gates', () => {
   const cli = read('src/ops/readiness-plan-cli.ts');
   const plan = read('src/ops/readiness-plan.ts');

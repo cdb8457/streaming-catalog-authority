@@ -150,6 +150,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:rewrap-kek [-- --plan [--json]]` | plan or rotate the KEK (preflight counts; explicit rewrap is resumable; identity untouched) |
 | `ops:readiness-plan [-- -- --json]` | static, redaction-safe rehearsal skeleton for the Phase 22/23 readiness evidence package; no live services or evidence scanning |
 | `ops:evidence-rehearsal [-- -- --json]` | static, redaction-safe checklist for the expected Phase 22/23 evidence artifact shape; advisory only |
+| `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
 - **Docker Compose:** `docker-compose.deploy.yml` (keystore on a volume separate from the DB and
   backups; secrets via `*_FILE`; healthchecked Postgres).
@@ -160,9 +161,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   marked met / operator-provided / deferred / blocked, with the in-repo evidence source). Read it before
   claiming production readiness. Package operator evidence with
   **`docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md`**; coordinators should use
-  **`docs/PHASE_24_COORDINATOR_RELEASE_GATE.md`** for future phase release gates. Rehearse the evidence
-  package shape with **`docs/PHASE_25_READINESS_REHEARSAL.md`** and
-  **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a real readiness review. The docs
+  **`docs/PHASE_24_COORDINATOR_RELEASE_GATE.md`** for future phase release gates, with advisory support
+  from **`docs/PHASE_27_RELEASE_GUARD.md`** / `ops:release-guard`. Rehearse the evidence package shape
+  with **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
+  real readiness review. The docs
   below are the gate's underlying sources.
 - **Docs:** `docs/PHASE_6_LIFECYCLE.md` (upgrade/rollback, backup verification, restore + DR
   rehearsal, unattended healthcheck) · `docs/RELEASE_CHECKLIST.md` (operator checklist) ·
@@ -174,6 +176,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_24_COORDINATOR_RELEASE_GATE.md` (coordinator release gate) ·
   `docs/PHASE_25_READINESS_REHEARSAL.md` (static readiness rehearsal command) ·
   `docs/PHASE_26_EVIDENCE_REHEARSAL.md` (static evidence package shape check) ·
+  `docs/PHASE_27_RELEASE_GUARD.md` (advisory release-guard command) ·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain

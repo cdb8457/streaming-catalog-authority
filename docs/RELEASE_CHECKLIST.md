@@ -1,7 +1,8 @@
 # Release / Upgrade Checklist (operator)
 
 Self-hosted catalog/privacy core. One-shot CLIs only. Details: `docs/PHASE_6_LIFECYCLE.md`.
-Coordinator merge/tag gates for future phases are in `docs/PHASE_24_COORDINATOR_RELEASE_GATE.md`.
+Coordinator merge/tag gates for future phases are in `docs/PHASE_24_COORDINATOR_RELEASE_GATE.md`;
+`ops:release-guard` / `docs/PHASE_27_RELEASE_GUARD.md` provides advisory read-only support, not approval.
 
 ## Before upgrading
 - [ ] **Backup** the current DB: `ops:backup -- dump /backups/pre-upgrade-YYYY-MM-DD.json`

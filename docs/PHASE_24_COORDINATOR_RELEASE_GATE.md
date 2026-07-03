@@ -7,7 +7,18 @@ scraping, downloading, playback, HTTP service, UI, real KMS/cloud SDK, live exte
 network dependency.
 
 Use this with `docs/PHASE_22_PRODUCTION_READINESS_GATE.md`,
-`docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md`, and `docs/RELEASE_CHECKLIST.md`.
+`docs/PHASE_23_OPERATOR_EVIDENCE_PACKAGING.md`, `docs/PHASE_27_RELEASE_GUARD.md`, and
+`docs/RELEASE_CHECKLIST.md`.
+
+`ops:release-guard` can automate a local advisory report for several checks below:
+
+```powershell
+npm run ops:release-guard -- -- --base <base> --head HEAD --tag <phase-tag> --phase <n> --mode pre-pr
+```
+
+It is support for coordinator review only. It does not approve PR-GO, merge, tag, push, delete branches,
+edit remotes, read secrets or evidence artifacts, run Docker, call live services, or close O4/O5.
+Coordinator, Reviewer, and Clint still make GO/HOLD decisions.
 
 ## Hard Scope Boundary Checklist
 
@@ -53,6 +64,7 @@ git rev-parse <base>
 git merge-base --is-ancestor <base> HEAD
 git diff --check <base>...HEAD
 git diff --stat <base>...HEAD
+npm run ops:release-guard -- -- --base <base> --head HEAD --tag <phase-tag> --phase <n> --mode pre-pr
 npm run test:deploy
 npm run typecheck
 ```
@@ -93,6 +105,7 @@ git rev-parse master
 git rev-parse origin/master
 git merge-base --is-ancestor origin/master HEAD
 git diff --check origin/master...HEAD
+npm run ops:release-guard -- -- --base origin/master --head HEAD --tag <phase-tag> --phase <n> --mode pre-merge
 npm run test:deploy
 npm run typecheck
 npm run ci
@@ -119,6 +132,7 @@ git tag --points-at HEAD
 git rev-parse <phase-tag>
 git rev-parse origin/master
 git ls-remote --tags origin <phase-tag>
+npm run ops:release-guard -- -- --base origin/master --head HEAD --tag <phase-tag> --phase <n> --mode post-merge
 npm run test:deploy
 ```
 
