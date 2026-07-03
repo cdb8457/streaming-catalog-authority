@@ -123,6 +123,8 @@ test('no accidental TorBox implementation appears outside the static boundary an
     'src/ops/torbox-smoke-shell.ts',
     'src/ops/torbox-smoke-cli.ts',
     'src/ops/torbox-transport-acceptance.ts',
+    'src/ops/torbox-smoke-readiness-preflight.ts',
+    'src/ops/torbox-smoke-readiness-preflight-cli.ts',
     'test/torbox-boundary.ts',
   ]);
   for (const [path, source] of srcFiles()) {

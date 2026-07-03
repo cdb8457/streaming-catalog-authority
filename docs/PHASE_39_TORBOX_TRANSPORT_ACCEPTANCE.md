@@ -55,5 +55,10 @@ and proves that the public report does not expose them.
 Phase 39 is a safety gate, not live enablement. It does not prove live TorBox availability,
 downloading, playback, media-server sync, or production readiness.
 
+Phase 40 builds on this with a static `ops:torbox-smoke-readiness-preflight` descriptor check for
+future operator smoke readiness review. That preflight remains descriptor-only: no live TorBox calls,
+no real TorBox transport, no SDK, no environment-variable reads, no `ADAPTER_MODE` wiring, and no
+live-smoke authorization.
+
 O4 remains open/deferred. O5 remains open/deferred. `FileCustodian` remains a hardened reference
 harness, not production KMS.

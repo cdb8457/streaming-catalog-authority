@@ -668,6 +668,64 @@ test('TorBox transport acceptance - Phase 39 is deterministic local-only harness
   ]) assert(!source.includes(forbidden), `Phase 39 source excludes ${forbidden}`);
 });
 
+test('TorBox smoke readiness preflight - Phase 40 is descriptor-only and non-live', () => {
+  assert(exists('docs/PHASE_40_TORBOX_SMOKE_READINESS_PREFLIGHT.md'), 'Phase 40 smoke readiness preflight doc exists');
+  assert(exists('src/ops/torbox-smoke-readiness-preflight.ts'), 'Phase 40 pure preflight source exists');
+  assert(exists('src/ops/torbox-smoke-readiness-preflight-cli.ts'), 'Phase 40 CLI preflight source exists');
+  assert(typeof pkg.scripts['ops:torbox-smoke-readiness-preflight'] === 'string', 'ops:torbox-smoke-readiness-preflight script present');
+  assert(typeof pkg.scripts['test:torbox-smoke-readiness-preflight'] === 'string', 'test:torbox-smoke-readiness-preflight script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-readiness-preflight.ts'), 'TorBox smoke readiness preflight suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+
+  const doc = read('docs/PHASE_40_TORBOX_SMOKE_READINESS_PREFLIGHT.md');
+  const preflight = read('src/ops/torbox-smoke-readiness-preflight.ts');
+  const cli = read('src/ops/torbox-smoke-readiness-preflight-cli.ts');
+  const suite = read('test/torbox-smoke-readiness-preflight.ts');
+  const combined = `${doc}\n${preflight}\n${cli}\n${suite}\n${read('README.md')}`;
+
+  for (const kw of [
+    'static, redaction-safe descriptor preflight',
+    'does not add a live TorBox transport',
+    'no live TorBox calls',
+    'no real TorBox transport implementation',
+    'no `@torbox/torbox-api` dependency or import',
+    'no global fetch',
+    'no environment-variable reads',
+    'no ADAPTER_MODE wiring',
+    'no adapter-factory mode for TorBox',
+    'descriptorValuesEchoed: false',
+    'liveTorBoxContact: false',
+    'closesLiveSmokeReadiness: false',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference',
+  ]) assert(combined.includes(kw), `Phase 40 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'window.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    'readdirSync',
+    'docker compose',
+    'createTorBoxTransport',
+    'TorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'ADAPTER_MODE',
+  ]) assert(!`${preflight}\n${cli}`.includes(forbidden), `Phase 40 source excludes ${forbidden}`);
+
+  assert(cli.includes("from 'node:fs'") && cli.includes('openSync') && cli.includes('readSync'), 'Phase 40 CLI has explicit bounded descriptor file read');
+  assert(!preflight.includes("node:fs"), 'Phase 40 pure preflight module has no fs import');
+  assert(!(pkg.scripts['ops:torbox-smoke-readiness-preflight'] ?? '').includes('docker'), 'Phase 40 command does not invoke Docker');
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

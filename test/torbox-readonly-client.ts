@@ -324,6 +324,8 @@ async function main(): Promise<void> {
       'src/ops/torbox-smoke-shell.ts',
       'src/ops/torbox-smoke-cli.ts',
       'src/ops/torbox-transport-acceptance.ts',
+      'src/ops/torbox-smoke-readiness-preflight.ts',
+      'src/ops/torbox-smoke-readiness-preflight-cli.ts',
     ]);
     for (const [path, source] of walkTs('src')) {
       if (allowed.has(path)) continue;

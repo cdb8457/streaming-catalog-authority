@@ -152,6 +152,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:evidence-rehearsal [-- -- --json]` | static, redaction-safe checklist for the expected Phase 22/23 evidence artifact shape; advisory only |
 | `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
+| `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
 - **Docker Compose:** `docker-compose.deploy.yml` (keystore on a volume separate from the DB and
@@ -199,7 +200,11 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md`** / `test:torbox-transport-acceptance`
   as a deterministic transport acceptance harness for future reviewed transports: injected local
   fixtures only, no live transport, no SDK, no env reads, no network, no provider mode, and no proof
-  that real TorBox works.
+  that real TorBox works. Phase 40 adds
+  **`docs/PHASE_40_TORBOX_SMOKE_READINESS_PREFLIGHT.md`** /
+  `ops:torbox-smoke-readiness-preflight` / `test:torbox-smoke-readiness-preflight` as a
+  redaction-safe one-file descriptor preflight before any future TorBox operator smoke readiness
+  review; it does not authorize live smoke.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -294,7 +299,10 @@ handling for deterministic local output. Fixture mode never contacts TorBox and 
 TorBox availability. Phase 39 adds `src/ops/torbox-transport-acceptance.ts` and
 `docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md` as a deterministic transport acceptance harness for
 future reviewed transports. It uses injected local fixtures only, does not add a live TorBox
-transport, and does not prove real TorBox availability.
+transport, and does not prove real TorBox availability. Phase 40 adds
+`ops:torbox-smoke-readiness-preflight` as a static descriptor preflight for future operator smoke
+readiness review. It reads one JSON descriptor file, emits fixed redaction-safe findings, does not
+call TorBox, and does not authorize live smoke.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -384,5 +392,5 @@ contract only; Phase 33 adds a TorBox real-client design gate only; Phase 34 add
 fixture-transport read-only client only; Phase 35 adds operator-run TorBox smoke evidence and future
 operator UI examples only; Phase 36 adds the future live-smoke acceptance contract only; Phase 37
 adds the refused-by-default TorBox smoke CLI shell only; Phase 38 adds deterministic local fixture
-execution only; Phase 39 adds deterministic local transport acceptance only; real network is strictly gated +
-smoke-validated.)
+execution only; Phase 39 adds deterministic local transport acceptance only; Phase 40 adds static
+TorBox smoke readiness descriptor preflight only; real network is strictly gated + smoke-validated.)
