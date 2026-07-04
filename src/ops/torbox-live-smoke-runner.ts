@@ -2,6 +2,11 @@ import { TorBoxReadOnlyClient } from '../core/adapters/torbox-readonly-client.js
 import type { AdapterResult } from '../core/adapters/adapter.js';
 import type { TorBoxTransport } from '../core/adapters/torbox-real-client-gate.js';
 import type { TorBoxSmokeProbe, TorBoxSmokeShellOptions } from './torbox-smoke-shell.js';
+import {
+  torBoxLiveSmokeOperationForProbe,
+  type TorBoxLiveSmokeCategory,
+  type TorBoxLiveSmokeOperation,
+} from './torbox-live-smoke-labels.js';
 
 /**
  * Phase 43 - redaction-safe TorBox live smoke runner.
@@ -9,21 +14,6 @@ import type { TorBoxSmokeProbe, TorBoxSmokeShellOptions } from './torbox-smoke-s
  * This module accepts an injected transport. It does not read env, read files, construct fetch,
  * import the TorBox SDK, connect to a DB, or emit provider payloads.
  */
-
-export type TorBoxLiveSmokeCategory =
-  | 'live-smoke-ok'
-  | 'not-authorized'
-  | 'not-read-only'
-  | 'redaction-block'
-  | 'unsupported-ref'
-  | 'empty-ref'
-  | 'auth'
-  | 'quota'
-  | 'timeout'
-  | 'transport'
-  | 'parse'
-  | 'ambiguous-availability'
-  | 'unknown';
 
 export interface TorBoxLiveSmokeRunnerInput {
   readonly options: TorBoxSmokeShellOptions;
@@ -39,7 +29,7 @@ export interface TorBoxLiveSmokeReport {
   readonly command: 'smoke:torbox-readonly';
   readonly mode: 'live-transport-smoke';
   readonly probe: TorBoxSmokeProbe;
-  readonly operation: 'status-check' | 'hoster-list' | 'cache-availability';
+  readonly operation: TorBoxLiveSmokeOperation;
   readonly category: TorBoxLiveSmokeCategory;
   readonly evidence: {
     readonly statuses: readonly string[];
@@ -72,7 +62,7 @@ export async function runTorBoxLiveSmoke(input: TorBoxLiveSmokeRunnerInput): Pro
     command: 'smoke:torbox-readonly',
     mode: 'live-transport-smoke',
     probe: input.options.probe,
-    operation: operationFor(input.options.probe),
+    operation: torBoxLiveSmokeOperationForProbe(input.options.probe),
     category,
     evidence: {
       statuses: [result.status],
@@ -126,12 +116,6 @@ async function runProbe(client: TorBoxReadOnlyClient, options: TorBoxSmokeShellO
     refType: options.refType ?? '',
     refValue: options.scopedRefValue ?? '',
   });
-}
-
-function operationFor(probe: TorBoxSmokeProbe): TorBoxLiveSmokeReport['operation'] {
-  if (probe === 'service-status') return 'status-check';
-  if (probe === 'hoster-metadata') return 'hoster-list';
-  return 'cache-availability';
 }
 
 function categoryFor(result: AdapterResult): TorBoxLiveSmokeCategory {

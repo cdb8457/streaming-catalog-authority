@@ -1138,6 +1138,49 @@ test('TorBox live smoke summary pack - Phase 49 summarizes explicit redacted rep
   assert(cli.includes("from 'node:fs'") && cli.includes('openSync') && cli.includes('readSync'), 'CLI has bounded explicit file reads');
 });
 
+test('TorBox live smoke labels - Phase 50 keeps producer, preflight, and summary labels in lockstep', () => {
+  assert(exists('docs/PHASE_50_TORBOX_LIVE_SMOKE_LABEL_CONTRACT.md'), 'Phase 50 label contract doc exists');
+  assert(exists('src/ops/torbox-live-smoke-labels.ts'), 'Phase 50 shared label source exists');
+  assert(exists('test/torbox-live-smoke-labels.ts'), 'Phase 50 label suite exists');
+  assert(typeof pkg.scripts['test:torbox-live-smoke-labels'] === 'string', 'test script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-labels.ts'), 'Phase 50 suite in the CI chain');
+
+  const labels = read('src/ops/torbox-live-smoke-labels.ts');
+  const preflight = read('src/ops/torbox-live-smoke-evidence-preflight.ts');
+  const summary = read('src/ops/torbox-live-smoke-summary-pack.ts');
+  const runner = read('src/ops/torbox-live-smoke-runner.ts');
+  const shell = read('src/ops/torbox-smoke-shell.ts');
+  const suite = read('test/torbox-live-smoke-labels.ts');
+  const doc = read('docs/PHASE_50_TORBOX_LIVE_SMOKE_LABEL_CONTRACT.md');
+  const combined = `${labels}\n${preflight}\n${summary}\n${runner}\n${shell}\n${suite}\n${doc}\n${read('README.md')}`;
+
+  for (const kw of [
+    'TORBOX_LIVE_SMOKE_PROBES',
+    'TORBOX_LIVE_SMOKE_OPERATIONS',
+    'TORBOX_LIVE_SMOKE_CATEGORIES',
+    'torBoxLiveSmokeOperationForProbe',
+    'fixedTorBoxLiveSmokeProbe',
+    'fixedTorBoxLiveSmokeOperation',
+    'fixedTorBoxLiveSmokeCategory',
+    'Phase 43 report production, Phase 44 preflight, and Phase 49',
+    'O4 and O5 remain open/deferred',
+  ]) assert(combined.includes(kw), `Phase 50 preserves ${kw}`);
+
+  assert(!preflight.includes("const PROBES = ['service-status'"), 'Phase 44 local probe duplicate removed');
+  assert(!summary.includes("const PROBES = ['service-status'"), 'Phase 49 local probe duplicate removed');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+  ]) assert(!labels.includes(forbidden), `Phase 50 label source excludes ${forbidden}`);
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

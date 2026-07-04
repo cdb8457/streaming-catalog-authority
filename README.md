@@ -243,7 +243,9 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_49_TORBOX_LIVE_SMOKE_SUMMARY_PACK.md`** / `ops:torbox-live-smoke-summary-pack` /
   `test:torbox-live-smoke-summary-pack` to summarize explicit Phase 43 report files into fixed,
   redaction-safe review labels without echoing paths, credentials, raw refs, provider payloads, or
-  account/media details.
+  account/media details. Phase 50 adds **`docs/PHASE_50_TORBOX_LIVE_SMOKE_LABEL_CONTRACT.md`** /
+  `test:torbox-live-smoke-labels` so Phase 43 report production, Phase 44 preflight, and Phase 49
+  summaries share one fixed label contract.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -375,6 +377,8 @@ Phase 48 updates the static live-smoke operator plan command shapes to the copy/
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
 report files. It validates each report with Phase 44 rules and emits only fixed probe labels,
 categories, counts, readiness, and gate reminders.
+Phase 50 centralizes the fixed live-smoke `probe`, `operation`, and `category` labels so Phase 43,
+Phase 44, and Phase 49 cannot drift apart.
 
 ## Publisher adapter boundary (Phase 8)
 

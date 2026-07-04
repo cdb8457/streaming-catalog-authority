@@ -206,6 +206,7 @@ async function main(): Promise<void> {
       'src/ops/torbox-transport-acceptance.ts',
       'src/ops/torbox-smoke-readiness-preflight.ts',
       'src/ops/torbox-smoke-readiness-preflight-cli.ts',
+      'src/ops/torbox-live-smoke-labels.ts',
       'src/ops/torbox-live-transport.ts',
       'src/ops/torbox-live-smoke-runner.ts',
       'src/ops/torbox-live-smoke-evidence-preflight.ts',

@@ -4,6 +4,11 @@ import {
   type TorBoxLiveSmokeEvidencePreflightReport,
   type TorBoxLiveSmokeEvidenceSummary,
 } from './torbox-live-smoke-evidence-preflight.js';
+import {
+  fixedTorBoxLiveSmokeCategory,
+  fixedTorBoxLiveSmokeOperation,
+  fixedTorBoxLiveSmokeProbe,
+} from './torbox-live-smoke-labels.js';
 
 export type TorBoxLiveSmokeSummaryInputErrorCode =
   | 'SUMMARY_FILE_READ_FAILED'
@@ -64,24 +69,6 @@ export interface TorBoxLiveSmokeSummaryPack {
 
 export const TORBOX_LIVE_SMOKE_SUMMARY_MAX_INPUTS = 8;
 
-const PROBES = ['service-status', 'hoster-metadata', 'cache-availability'] as const;
-const OPERATIONS = ['status-check', 'hoster-list', 'cache-availability'] as const;
-const CATEGORIES = [
-  'live-smoke-ok',
-  'not-authorized',
-  'not-read-only',
-  'redaction-block',
-  'unsupported-ref',
-  'empty-ref',
-  'auth',
-  'quota',
-  'timeout',
-  'transport',
-  'parse',
-  'ambiguous-availability',
-  'unknown',
-] as const;
-
 export function buildTorBoxLiveSmokeSummaryPack(
   evidenceReports: readonly Record<string, unknown>[],
 ): TorBoxLiveSmokeSummaryPack {
@@ -98,9 +85,9 @@ export function buildTorBoxLiveSmokeSummaryPack(
 
   evidenceReports.forEach((report, index) => {
     const preflight = buildTorBoxLiveSmokeEvidencePreflightReport(report);
-    const probe = fixedLabel(report.probe, PROBES, 'invalid-probe');
-    const operation = fixedLabel(report.operation, OPERATIONS, 'invalid-operation');
-    const category = fixedLabel(report.category, CATEGORIES, 'invalid-category');
+    const probe = fixedTorBoxLiveSmokeProbe(report.probe);
+    const operation = fixedTorBoxLiveSmokeOperation(report.operation);
+    const category = fixedTorBoxLiveSmokeCategory(report.category);
     const key = `${probe}\0${operation}`;
     if (seen.has(key)) {
       findings.push(warn('DUPLICATE_PROBE_OPERATION', 'inputs', 'A duplicate probe/operation pair is present.'));
@@ -229,10 +216,6 @@ function fromFindings(
     aggregate,
     findings,
   };
-}
-
-function fixedLabel(value: unknown, allowed: readonly string[], fallback: string): string {
-  return typeof value === 'string' && allowed.includes(value) ? value : fallback;
 }
 
 function sum<T>(items: readonly T[], select: (item: T) => number): number {

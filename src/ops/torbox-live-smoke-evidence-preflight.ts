@@ -1,3 +1,9 @@
+import {
+  TORBOX_LIVE_SMOKE_CATEGORIES,
+  TORBOX_LIVE_SMOKE_OPERATIONS,
+  TORBOX_LIVE_SMOKE_PROBES,
+} from './torbox-live-smoke-labels.js';
+
 export type TorBoxLiveSmokeEvidenceInputErrorCode =
   | 'EVIDENCE_FILE_READ_FAILED'
   | 'EVIDENCE_FILE_TOO_LARGE'
@@ -62,23 +68,6 @@ const COUNT_KEYS = [
   'availabilityUnknown',
 ] as const;
 
-const PROBES = ['service-status', 'hoster-metadata', 'cache-availability'] as const;
-const OPERATIONS = ['status-check', 'hoster-list', 'cache-availability'] as const;
-const CATEGORIES = [
-  'live-smoke-ok',
-  'not-authorized',
-  'not-read-only',
-  'redaction-block',
-  'unsupported-ref',
-  'empty-ref',
-  'auth',
-  'quota',
-  'timeout',
-  'transport',
-  'parse',
-  'ambiguous-availability',
-  'unknown',
-] as const;
 const STATUSES = ['available', 'unavailable', 'unknown'] as const;
 
 export function buildTorBoxLiveSmokeEvidencePreflightReport(
@@ -93,9 +82,9 @@ export function buildTorBoxLiveSmokeEvidencePreflightReport(
   findings.push(...requiredLiteral(evidence, 'wouldContactTorBox', true, 'WOULD_CONTACT_TORBOX_TRUE'));
   findings.push(...requiredLiteral(evidence, 'command', 'smoke:torbox-readonly', 'COMMAND_VALID'));
   findings.push(...requiredLiteral(evidence, 'mode', 'live-transport-smoke', 'MODE_VALID'));
-  findings.push(enumFinding(evidence.probe, PROBES, 'probe', 'PROBE_VALID', 'PROBE_INVALID'));
-  findings.push(enumFinding(evidence.operation, OPERATIONS, 'operation', 'OPERATION_VALID', 'OPERATION_INVALID'));
-  findings.push(enumFinding(evidence.category, CATEGORIES, 'category', 'CATEGORY_VALID', 'CATEGORY_INVALID'));
+  findings.push(enumFinding(evidence.probe, TORBOX_LIVE_SMOKE_PROBES, 'probe', 'PROBE_VALID', 'PROBE_INVALID'));
+  findings.push(enumFinding(evidence.operation, TORBOX_LIVE_SMOKE_OPERATIONS, 'operation', 'OPERATION_VALID', 'OPERATION_INVALID'));
+  findings.push(enumFinding(evidence.category, TORBOX_LIVE_SMOKE_CATEGORIES, 'category', 'CATEGORY_VALID', 'CATEGORY_INVALID'));
 
   findings.push(noUnexpectedKeys(evidence, ROOT_KEYS, 'root'));
   findings.push(validateEvidenceBlock(evidence.evidence));

@@ -5,7 +5,14 @@
  * import a TorBox SDK, connect to a database, or construct a transport.
  */
 
-export type TorBoxSmokeProbe = 'service-status' | 'hoster-metadata' | 'cache-availability';
+import {
+  isTorBoxLiveSmokeProbe,
+  torBoxLiveSmokeOperationForProbe,
+  type TorBoxLiveSmokeOperation,
+  type TorBoxLiveSmokeProbe,
+} from './torbox-live-smoke-labels.js';
+
+export type TorBoxSmokeProbe = TorBoxLiveSmokeProbe;
 
 export type TorBoxSmokeCategory =
   | 'fixture-ok'
@@ -63,7 +70,7 @@ export interface TorBoxSmokeShellReport {
   readonly command: 'smoke:torbox-readonly';
   readonly mode: 'preflight-shell-only' | 'local-fixture-harness' | 'live-transport-smoke';
   readonly probe: TorBoxSmokeProbe;
-  readonly operation: 'status-check' | 'hoster-list' | 'cache-availability';
+  readonly operation: TorBoxLiveSmokeOperation;
   readonly gates: readonly TorBoxSmokeGate[];
   readonly category: TorBoxSmokeCategory;
   readonly evidence: {
@@ -199,11 +206,7 @@ export function buildTorBoxSmokeShellReport(options: TorBoxSmokeShellOptions): T
   gates.push(gate('smoke-transport-attached', fixture !== undefined || options.liveTransport, 'transport'));
   const failure = gates.find((item) => !item.ok);
   const category = failure?.category ?? fixtureCategory;
-  const operation = options.probe === 'service-status'
-    ? 'status-check'
-    : options.probe === 'hoster-metadata'
-      ? 'hoster-list'
-      : 'cache-availability';
+  const operation = torBoxLiveSmokeOperationForProbe(options.probe);
   const liveMode = options.liveTransport && fixture === undefined;
   const ok = failure === undefined && fixtureCategory === 'fixture-ok';
 
@@ -293,7 +296,7 @@ function gate(name: string, ok: boolean, category: TorBoxSmokeCategory): TorBoxS
 }
 
 function isTorBoxSmokeProbe(value: unknown): value is TorBoxSmokeProbe {
-  return value === 'service-status' || value === 'hoster-metadata' || value === 'cache-availability';
+  return isTorBoxLiveSmokeProbe(value);
 }
 
 function isTorBoxSmokeFixtureScenario(value: unknown): value is TorBoxSmokeFixtureScenario {
