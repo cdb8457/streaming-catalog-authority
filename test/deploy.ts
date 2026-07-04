@@ -1234,6 +1234,62 @@ test('TorBox live smoke review gate - Phase 51 verifies required summary probes 
   assert(cli.includes("from 'node:fs'") && cli.includes('openSync') && cli.includes('readSync'), 'CLI has bounded explicit file reads');
 });
 
+test('TorBox live smoke operator packet - Phase 52 packages run-save-review without live contact', () => {
+  assert(exists('docs/PHASE_52_TORBOX_LIVE_SMOKE_OPERATOR_PACKET.md'), 'Phase 52 operator packet doc exists');
+  assert(exists('src/ops/torbox-live-smoke-operator-packet.ts'), 'Phase 52 pure packet source exists');
+  assert(exists('src/ops/torbox-live-smoke-operator-packet-cli.ts'), 'Phase 52 packet CLI exists');
+  assert(exists('test/torbox-live-smoke-operator-packet.ts'), 'Phase 52 packet suite exists');
+  assert(typeof pkg.scripts['ops:torbox-live-smoke-operator-packet'] === 'string', 'ops script present');
+  assert(typeof pkg.scripts['test:torbox-live-smoke-operator-packet'] === 'string', 'test script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-operator-packet.ts'), 'Phase 52 suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
+
+  const packet = read('src/ops/torbox-live-smoke-operator-packet.ts');
+  const cli = read('src/ops/torbox-live-smoke-operator-packet-cli.ts');
+  const suite = read('test/torbox-live-smoke-operator-packet.ts');
+  const doc = read('docs/PHASE_52_TORBOX_LIVE_SMOKE_OPERATOR_PACKET.md');
+  const combined = `${packet}\n${cli}\n${suite}\n${doc}\n${read('README.md')}`;
+
+  for (const kw of [
+    'phase-52-torbox-live-smoke-operator-packet',
+    'static-operator-workflow-packet',
+    'service-status',
+    'hoster-metadata',
+    'cache-availability',
+    'ops:torbox-live-smoke-evidence-preflight',
+    'ops:torbox-live-smoke-summary-pack',
+    'ops:torbox-live-smoke-review-gate',
+    'summaryValuesEchoed: false',
+    'credentialPathsIncluded: false',
+    'rawRefsIncluded: false',
+    'providerPayloadsIncluded: false',
+    'liveTorBoxContact: false',
+    'commandExecution: false',
+    'does not close live-smoke review',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian',
+  ]) assert(combined.includes(kw), `Phase 52 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'node:fs'",
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'request-download-link',
+    'request-permalink',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'docker compose',
+  ]) assert(!`${packet}\n${cli}`.includes(forbidden), `Phase 52 source excludes ${forbidden}`);
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

@@ -252,6 +252,8 @@ await test('adapter factory remains injected-only and TorBox source allowlist is
     'src/ops/torbox-live-smoke-summary-pack-cli.ts',
     'src/ops/torbox-live-smoke-review-gate.ts',
     'src/ops/torbox-live-smoke-review-gate-cli.ts',
+    'src/ops/torbox-live-smoke-operator-packet.ts',
+    'src/ops/torbox-live-smoke-operator-packet-cli.ts',
     'src/ops/torbox-live-smoke-plan.ts',
     'src/ops/torbox-live-smoke-plan-cli.ts',
   ]);
