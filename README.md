@@ -324,6 +324,13 @@ to the event log. `ADAPTER_MODE=fake|none` from env (unknown fails closed); `tor
 available only through explicit injected transport configuration and fails closed if requested from
 env alone. See `docs/PHASE_7_ADAPTER_BOUNDARY.md`.
 
+Provider availability policy (Phase 55) now lives in
+`src/core/adapters/provider-availability-policy.ts`. It converts advisory adapter results into fixed
+redaction-safe routing decisions: `available` becomes `candidate`, `unavailable` becomes `skip`, and
+`unknown`/stale/invalid results become `hold`. The policy remains advisory-only, persists nothing,
+and never echoes provider locators, details, raw refs, URLs, credentials, item ids, or media identity.
+See `docs/PHASE_55_PROVIDER_AVAILABILITY_POLICY.md`.
+
 Phase 31 adds `docs/PHASE_31_TORBOX_BOUNDARY.md` and `src/core/adapters/torbox-boundary.ts` as a
 static TorBox capability/redaction contract based on official TorBox docs/SDK surfaces. It names
 cache/status/hoster capabilities for later review and explicitly future-gates create-download and
