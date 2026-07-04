@@ -134,6 +134,8 @@ test('no accidental TorBox implementation appears outside the static boundary an
     'src/ops/torbox-live-smoke-evidence-preflight-cli.ts',
     'src/ops/torbox-live-smoke-summary-pack.ts',
     'src/ops/torbox-live-smoke-summary-pack-cli.ts',
+    'src/ops/torbox-live-smoke-review-gate.ts',
+    'src/ops/torbox-live-smoke-review-gate-cli.ts',
     'src/ops/torbox-live-smoke-plan.ts',
     'src/ops/torbox-live-smoke-plan-cli.ts',
     'test/torbox-boundary.ts',

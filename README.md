@@ -155,6 +155,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
 | `ops:torbox-live-smoke-evidence-preflight -- -- <phase-43-report.json> [--json]` | static, redaction-safe Phase 43 live-smoke evidence report preflight; reads one report file only and does not contact TorBox |
 | `ops:torbox-live-smoke-summary-pack -- -- <phase-43-report.json>... [--json]` | static, redaction-safe Phase 43 live-smoke summary pack; reads explicit report files only and does not contact TorBox |
+| `ops:torbox-live-smoke-review-gate -- -- <phase-49-summary-pack.json> [--json]` | static, redaction-safe Phase 49 summary review gate; reads one summary file only and does not close live-smoke review |
 | `ops:torbox-live-smoke-plan [-- --json]` | static, redaction-safe TorBox live-smoke operator command plan; placeholders only, executes nothing |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
@@ -245,7 +246,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   redaction-safe review labels without echoing paths, credentials, raw refs, provider payloads, or
   account/media details. Phase 50 adds **`docs/PHASE_50_TORBOX_LIVE_SMOKE_LABEL_CONTRACT.md`** /
   `test:torbox-live-smoke-labels` so Phase 43 report production, Phase 44 preflight, and Phase 49
-  summaries share one fixed label contract.
+  summaries share one fixed label contract. Phase 51 adds
+  **`docs/PHASE_51_TORBOX_LIVE_SMOKE_REVIEW_GATE.md`** / `ops:torbox-live-smoke-review-gate` /
+  `test:torbox-live-smoke-review-gate` to verify a Phase 49 summary has the required service-status
+  and hoster-metadata ready probes without contacting TorBox or closing review.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -379,6 +383,9 @@ report files. It validates each report with Phase 44 rules and emits only fixed 
 categories, counts, readiness, and gate reminders.
 Phase 50 centralizes the fixed live-smoke `probe`, `operation`, and `category` labels so Phase 43,
 Phase 44, and Phase 49 cannot drift apart.
+Phase 51 adds `ops:torbox-live-smoke-review-gate`, a local review-prep command for one Phase 49
+summary pack. It checks required service-status and hoster-metadata readiness, keeps
+cache-availability optional, and does not close live-smoke review.
 
 ## Publisher adapter boundary (Phase 8)
 
