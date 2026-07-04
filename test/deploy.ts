@@ -957,6 +957,69 @@ test('TorBox live smoke evidence preflight - Phase 44 verifies saved reports wit
   assert(!preflight.includes("node:fs"), 'Phase 44 pure preflight module has no fs import');
 });
 
+test('TorBox live smoke operator plan - Phase 45 is static command planning only', () => {
+  assert(exists('src/ops/torbox-live-smoke-plan.ts'), 'Phase 45 pure plan source exists');
+  assert(exists('src/ops/torbox-live-smoke-plan-cli.ts'), 'Phase 45 plan CLI exists');
+  assert(exists('docs/PHASE_45_TORBOX_LIVE_SMOKE_OPERATOR_PLAN.md'), 'Phase 45 doc exists');
+  assert(typeof pkg.scripts['ops:torbox-live-smoke-plan'] === 'string', 'ops script present');
+  assert(typeof pkg.scripts['test:torbox-live-smoke-plan'] === 'string', 'test script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-plan.ts'), 'Phase 45 suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
+
+  const plan = read('src/ops/torbox-live-smoke-plan.ts');
+  const cli = read('src/ops/torbox-live-smoke-plan-cli.ts');
+  const suite = read('test/torbox-live-smoke-plan.ts');
+  const doc = read('docs/PHASE_45_TORBOX_LIVE_SMOKE_OPERATOR_PLAN.md');
+  const combined = `${plan}\n${cli}\n${suite}\n${doc}\n${read('README.md')}`;
+
+  for (const kw of [
+    'phase-45-torbox-live-smoke-operator-plan',
+    'ops:torbox-live-smoke-plan',
+    '<torbox-token-file>',
+    '<redacted-cache-ref>',
+    'commandExecution: false',
+    'liveTorBoxContact: false',
+    'credentialValuesIncluded: false',
+    'rawRefsIncluded: false',
+    'placeholder-only',
+    'executes nothing',
+    'no live network',
+    'provider mode',
+    'downloading',
+    'playback',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian` remains a hardened reference',
+  ]) assert(combined.includes(kw), `Phase 45 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    "from 'pg'",
+    'from "pg"',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'requestdl',
+    'requestDownloadLink',
+    'create-download',
+    'cdn-url',
+    'readFileSync',
+    'spawnSync',
+    'execFileSync',
+  ]) assert(!`${plan}\n${cli}`.includes(forbidden), `Phase 45 source excludes ${forbidden}`);
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

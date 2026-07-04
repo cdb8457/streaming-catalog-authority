@@ -158,6 +158,8 @@ await test('TorBox source allowlist includes Phase 39 explicitly and nothing acc
     'src/ops/torbox-live-smoke-runner.ts',
     'src/ops/torbox-live-smoke-evidence-preflight.ts',
     'src/ops/torbox-live-smoke-evidence-preflight-cli.ts',
+    'src/ops/torbox-live-smoke-plan.ts',
+    'src/ops/torbox-live-smoke-plan-cli.ts',
   ]);
   for (const [path, source] of walkTs('src')) {
     if (allowed.has(path)) continue;

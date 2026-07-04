@@ -241,6 +241,8 @@ await test('adapter factory remains closed and TorBox source allowlist is explic
     'src/ops/torbox-live-smoke-runner.ts',
     'src/ops/torbox-live-smoke-evidence-preflight.ts',
     'src/ops/torbox-live-smoke-evidence-preflight-cli.ts',
+    'src/ops/torbox-live-smoke-plan.ts',
+    'src/ops/torbox-live-smoke-plan-cli.ts',
   ]);
   for (const [path, source] of walkTs('src')) {
     if (allowed.has(path)) continue;

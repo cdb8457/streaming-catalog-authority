@@ -154,6 +154,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
 | `ops:torbox-live-smoke-evidence-preflight -- -- <phase-43-report.json> [--json]` | static, redaction-safe Phase 43 live-smoke evidence report preflight; reads one report file only and does not contact TorBox |
+| `ops:torbox-live-smoke-plan [-- --json]` | static, redaction-safe TorBox live-smoke operator command plan; placeholders only, executes nothing |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
 - **Docker Compose:** `docker-compose.deploy.yml` (keystore on a volume separate from the DB and
@@ -222,7 +223,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   Phase 44 adds **`docs/PHASE_44_TORBOX_LIVE_SMOKE_EVIDENCE_PREFLIGHT.md`** /
   `ops:torbox-live-smoke-evidence-preflight` / `test:torbox-live-smoke-evidence-preflight` as a
   static one-file verifier for saved Phase 43 JSON reports; it does not contact TorBox, read
-  credentials, or close live-smoke review.
+  credentials, or close live-smoke review. Phase 45 adds
+  **`docs/PHASE_45_TORBOX_LIVE_SMOKE_OPERATOR_PLAN.md`** / `ops:torbox-live-smoke-plan` /
+  `test:torbox-live-smoke-plan` as a deterministic placeholder-only operator command plan; it
+  executes nothing and adds no live network, credential reads, provider mode, downloading, or playback.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -335,6 +339,9 @@ credential file paths, raw refs, endpoint URLs, or provider response bodies.
 Phase 44 adds `ops:torbox-live-smoke-evidence-preflight` to verify one saved Phase 43 JSON report
 before retention or review. It is static and redaction-safe: no live TorBox call, no credential-file
 read, no env read, no provider mode, no downloading, and no playback.
+Phase 45 adds `ops:torbox-live-smoke-plan`, a static command plan for the operator sequence from
+readiness metadata through Phase 43 smoke and Phase 44 report preflight. It prints placeholders only
+and executes nothing.
 
 ## Publisher adapter boundary (Phase 8)
 
@@ -426,4 +433,4 @@ operator UI examples only; Phase 36 adds the future live-smoke acceptance contra
 adds the refused-by-default TorBox smoke CLI shell only; Phase 38 adds deterministic local fixture
 execution only; Phase 39 adds deterministic local transport acceptance only; Phase 40 adds static
 TorBox smoke readiness descriptor preflight only; Phase 41 adds static TorBox endpoint mapping review
-only; Phase 42 adds a live-capable injected TorBox transport only, with no CI live network, provider-mode integration, downloading, or playback; real network is strictly operator-gated + smoke-validated; Phase 43 adds the operator-only TorBox live smoke CLI wiring for that transport, still outside CI and still detached from provider mode, downloading, and playback; Phase 44 adds static saved-report evidence preflight only, with no live network or credential reads.)
+only; Phase 42 adds a live-capable injected TorBox transport only, with no CI live network, provider-mode integration, downloading, or playback; real network is strictly operator-gated + smoke-validated; Phase 43 adds the operator-only TorBox live smoke CLI wiring for that transport, still outside CI and still detached from provider mode, downloading, and playback; Phase 44 adds static saved-report evidence preflight only, with no live network or credential reads; Phase 45 adds a static placeholder-only operator command plan, with no command execution.)
