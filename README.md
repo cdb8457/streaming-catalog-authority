@@ -330,6 +330,11 @@ redaction-safe routing decisions: `available` becomes `candidate`, `unavailable`
 `unknown`/stale/invalid results become `hold`. The policy remains advisory-only, persists nothing,
 and never echoes provider locators, details, raw refs, URLs, credentials, item ids, or media identity.
 See `docs/PHASE_55_PROVIDER_AVAILABILITY_POLICY.md`.
+Provider availability bridge (Phase 56) now lives in
+`src/core/adapters/provider-availability-bridge.ts`. It wraps one scoped adapter lookup and returns
+only sanitized adapter status plus the Phase 55 policy decision; locator/detail payloads are not
+echoed, and the bridge remains non-persistent and advisory-only.
+See `docs/PHASE_56_PROVIDER_AVAILABILITY_BRIDGE.md`.
 
 Phase 31 adds `docs/PHASE_31_TORBOX_BOUNDARY.md` and `src/core/adapters/torbox-boundary.ts` as a
 static TorBox capability/redaction contract based on official TorBox docs/SDK surfaces. It names
@@ -396,6 +401,9 @@ Phase 47 adds `docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md` and `test:torbox-catalog-
 TorBox adapter through `CatalogAuthority.withProviderRef()` using encrypted persisted `infohash`
 refs and a local injected transport fixture. It is advisory-only, writes no catalog events or
 provider-ref rows, and keeps live validation operator-run.
+Phase 56 adds `src/core/adapters/provider-availability-bridge.ts` and
+`docs/PHASE_56_PROVIDER_AVAILABILITY_BRIDGE.md` so scoped adapter results are immediately classified
+through the Phase 55 policy and sanitized before future orchestration can inspect them.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -1457,6 +1457,51 @@ test('provider availability policy - Phase 55 keeps advisory provider results no
   ]) assert(!source.includes(forbidden), `Phase 55 source excludes ${forbidden}`);
 });
 
+test('provider availability bridge - Phase 56 classifies scoped adapter output without echoing provider detail', () => {
+  assert(exists('src/core/adapters/provider-availability-bridge.ts'), 'Phase 56 bridge source exists');
+  assert(exists('docs/PHASE_56_PROVIDER_AVAILABILITY_BRIDGE.md'), 'Phase 56 bridge doc exists');
+  assert(exists('test/provider-availability-bridge.ts'), 'Phase 56 bridge suite exists');
+  assert(typeof pkg.scripts['test:provider-availability-bridge'] === 'string', 'Phase 56 test script present');
+  assert((pkg.scripts.test ?? '').includes('test/provider-availability-bridge.ts'), 'Phase 56 suite in CI chain');
+
+  const source = read('src/core/adapters/provider-availability-bridge.ts');
+  const suite = read('test/torbox-catalog-bridge.ts');
+  const doc = read('docs/PHASE_56_PROVIDER_AVAILABILITY_BRIDGE.md');
+  const combined = `${source}\n${suite}\n${doc}\n${read('README.md')}`;
+  for (const kw of [
+    'Provider availability bridge (Phase 56)',
+    'resolveProviderAvailability',
+    'decideProviderAvailability',
+    'echoesAdapterLocator: false',
+    'echoesAdapterDetail: false',
+    'persisted: false',
+    'candidate',
+    'skip',
+    'hold',
+    'sanitized',
+    'no provider locator or detail echo',
+  ]) assert(combined.includes(kw), `Phase 56 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    "from 'node:fs'",
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'request-download-link',
+    'request-permalink',
+    'document.',
+    'window.',
+  ]) assert(!source.includes(forbidden), `Phase 56 source excludes ${forbidden}`);
+});
+
 test('erasure policy — Phase 9 publish module clean; doc + suites wired', () => {
   const dir = fileURLToPath(new URL('../src/core/publish', import.meta.url));
   const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));

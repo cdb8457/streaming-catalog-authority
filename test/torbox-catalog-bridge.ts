@@ -7,6 +7,7 @@ import { CatalogAuthority } from '../src/core/catalog/authority.js';
 import { mintItemId } from '../src/core/catalog/events.js';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import { createAdapter } from '../src/core/adapters/adapter-factory.js';
+import { resolveProviderAvailability } from '../src/core/adapters/provider-availability-bridge.js';
 import type { TorBoxTransport, TorBoxTransportRequest, TorBoxTransportResponse } from '../src/core/adapters/torbox-real-client-gate.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
 import { installCompletionSecret, testKek } from './crypto-setup.js';
@@ -74,12 +75,15 @@ async function main(): Promise<void> {
     const result = await auth.withProviderRef(id, 'infohash', async (view) => {
       const log = auth.createLogger((line) => logs.push(line));
       log.info(`operator bridge resolving ${view.refValue}`);
-      return adapter.resolveRef(view, { log: (line) => log.info(line) });
+      return resolveProviderAvailability(adapter, view, { log: (line) => log.info(line) });
     });
 
-    if (result === null) throw new Error('bridge returned an advisory result');
-    assertEq(result.status, 'available', 'available advisory result');
-    assertEq(result.detail, 'fixture-advisory-hit', 'fixed advisory detail');
+    if (result === null) throw new Error('bridge returned a policy report');
+    assertEq(result.adapterStatus, 'available', 'available advisory result');
+    assertEq(result.decision.action, 'candidate', 'available candidate decision');
+    assertEq(result.decision.persisted, false, 'policy decision is not persisted');
+    assertEq(result.echoesAdapterLocator, false, 'bridge does not echo locator');
+    assertEq(result.echoesAdapterDetail, false, 'bridge does not echo detail');
     assertEq(transport.requests.length, 1, 'one TorBox transport request');
     assertEq(transport.requests[0]!.operation, 'torrent-cache-check', 'infohash mapped to torrent cache check');
     assertEq(transport.requests[0]!.method, 'GET', 'GET only');
@@ -103,11 +107,11 @@ async function main(): Promise<void> {
     if (adapter === null) throw new Error('torbox adapter created');
 
     const missing = await auth.withProviderRef(id, 'infohash', (view) => adapter.resolveRef(view));
-    const unsupported = await auth.withProviderRef(id, 'tmdb', (view) => adapter.resolveRef(view));
+    const unsupported = await auth.withProviderRef(id, 'tmdb', (view) => resolveProviderAvailability(adapter, view));
 
     assertEq(missing, null, 'missing TorBox ref returns null before adapter call');
-    assert(unsupported !== null && unsupported.status === 'unknown', 'unsupported ref fails closed to unknown');
-    assertEq(unsupported?.detail, 'unsupported-ref-type', 'unsupported detail fixed');
+    assert(unsupported !== null && unsupported.adapterStatus === 'unknown', 'unsupported ref fails closed to unknown');
+    assertEq(unsupported?.decision.action, 'hold', 'unsupported policy holds');
     assertEq(transport.requests.length, 0, 'no transport requests for missing or unsupported refs');
     assertEq(auth.secrets.size(), 0, 'no lingering registrations after fail-closed paths');
   });
@@ -119,10 +123,11 @@ async function main(): Promise<void> {
     const adapter = createAdapter({ mode: 'torbox-readonly', transport });
     if (adapter === null) throw new Error('torbox adapter created');
 
-    const result = await auth.withProviderRef(id, 'infohash', (view) => adapter.resolveRef(view));
+    const result = await auth.withProviderRef(id, 'infohash', (view) => resolveProviderAvailability(adapter, view));
 
-    if (result === null) throw new Error('bridge returned an advisory result');
-    assertEq(result.status, 'unavailable', 'unavailable advisory result');
+    if (result === null) throw new Error('bridge returned a policy report');
+    assertEq(result.adapterStatus, 'unavailable', 'unavailable advisory result');
+    assertEq(result.decision.action, 'skip', 'unavailable policy skips');
     assertEq(transport.requests[0]!.operation, 'torrent-cache-check', 'torrent cache check only');
     const publicText = JSON.stringify({ result, request: { operation: transport.requests[0]!.operation, method: transport.requests[0]!.method } });
     for (const forbidden of ['create-download', 'request-download-link', 'request-permalink', 'cdn-url', 'playback']) {
