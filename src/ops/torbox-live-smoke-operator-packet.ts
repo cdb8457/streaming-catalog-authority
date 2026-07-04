@@ -83,7 +83,7 @@ export const TORBOX_LIVE_SMOKE_OPERATOR_PACKET: TorBoxLiveSmokeOperatorPacket = 
       phase: 'Phase 45',
       status: 'static-local',
       commandShapes: [
-        'npm run --silent ops:torbox-live-smoke-plan -- --json > <redacted-retention-folder>/torbox-live-smoke-plan.redacted.json',
+        'npm run --silent ops:torbox-live-smoke-plan -- -- --json > <redacted-retention-folder>/torbox-live-smoke-plan.redacted.json',
       ],
       retainAs: ['torbox-live-smoke-plan.redacted.json'],
       requires: ['sealed Phase 51 codebase', 'operator-controlled redacted retention folder'],

@@ -128,6 +128,10 @@ test('documented npm JSON invocation returns parseable JSON', () => {
   const parsed = JSON.parse(out.slice(jsonStart)) as TorBoxLiveSmokeOperatorPacket;
   assert(parsed.report === 'phase-52-torbox-live-smoke-operator-packet', 'parsed JSON report name');
   assert(parsed.liveTorBoxContact === false && parsed.commandExecution === false, 'parsed JSON is static');
+
+  const commandShapes = TORBOX_LIVE_SMOKE_OPERATOR_PACKET.steps.flatMap((step) => step.commandShapes);
+  assert(commandShapes.some((shape) => shape.includes('ops:torbox-live-smoke-plan -- -- --json')), 'embedded plan JSON command uses triple separator');
+  assert(!commandShapes.some((shape) => shape.includes('ops:torbox-live-smoke-plan -- --json')), 'old plan JSON shape is absent');
 });
 
 test('source has no filesystem, env, network, DB, Docker, adapter-mode, or execution creep', () => {
@@ -180,6 +184,7 @@ test('docs preserve the static redaction boundary', () => {
   for (const kw of [
     'phase-52-torbox-live-smoke-operator-packet',
     'ops:torbox-live-smoke-operator-packet',
+    'npm run ops:torbox-live-smoke-operator-packet -- -- --json',
     'service-status',
     'hoster-metadata',
     'cache-availability',

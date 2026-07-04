@@ -7,7 +7,7 @@ The fixed report id is `phase-52-torbox-live-smoke-operator-packet`.
 
 ```bash
 npm run ops:torbox-live-smoke-operator-packet
-npm run ops:torbox-live-smoke-operator-packet -- --json
+npm run ops:torbox-live-smoke-operator-packet -- -- --json
 ```
 
 The command prints placeholder command shapes only. It does not execute the commands.
