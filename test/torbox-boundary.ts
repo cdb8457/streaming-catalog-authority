@@ -120,6 +120,8 @@ test('no accidental TorBox implementation appears outside the static boundary an
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',
     'src/core/adapters/torbox-readonly-client.ts',
+    'src/core/adapters/torbox-provider-adapter.ts',
+    'src/core/adapters/adapter-factory.ts',
     'src/ops/torbox-smoke-shell.ts',
     'src/ops/torbox-smoke-cli.ts',
     'src/ops/torbox-transport-acceptance.ts',

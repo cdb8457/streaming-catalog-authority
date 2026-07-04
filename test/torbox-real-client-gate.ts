@@ -223,10 +223,13 @@ test('timeout and backoff policy is bounded data only', () => {
   assertEq(TORBOX_REAL_CLIENT_TIMEOUT_BACKOFF_POLICY.retry.mutatingRetry, 'forbidden-without-durable-outbox', 'mutating retry gated');
 });
 
-test('adapter factory remains closed to TorBox modes', () => {
+test('adapter factory TorBox mode remains injected read-only only', () => {
   const factory = read('src/core/adapters/adapter-factory.ts');
-  assert(!/torbox/i.test(factory), 'adapter factory does not mention TorBox');
-  assert(!/TorBox/.test(factory), 'adapter factory has no TorBox import or constructor');
+  assert(factory.includes("'torbox-readonly'"), 'adapter factory names read-only TorBox mode');
+  assert(/requires explicit injected transport/i.test(factory), 'env-only TorBox mode fails closed');
+  assert(!factory.includes('createTorBoxLiveTransport'), 'adapter factory does not construct live transport');
+  assert(!factory.includes('globalThis.fetch'), 'adapter factory has no global fetch');
+  assert(!factory.includes('process.env.TORBOX'), 'adapter factory has no TorBox env secret read');
 });
 
 test('Phase 33 docs preserve closed gate, O4/O5, and FileCustodian boundary', () => {
@@ -255,6 +258,8 @@ test('TorBox source allowlist remains explicit', () => {
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',
     'src/core/adapters/torbox-readonly-client.ts',
+    'src/core/adapters/torbox-provider-adapter.ts',
+    'src/core/adapters/adapter-factory.ts',
     'src/ops/torbox-smoke-shell.ts',
     'src/ops/torbox-smoke-cli.ts',
     'src/ops/torbox-transport-acceptance.ts',

@@ -21,6 +21,13 @@ function test(name: string, fn: () => void): void {
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
 const read = (rel: string): string => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), 'utf8');
 const exists = (rel: string): boolean => existsSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)));
+function assertTorBoxFactoryInjectedOnly(factory: string): void {
+  assert(factory.includes("'torbox-readonly'"), 'TorBox read-only adapter mode is explicit');
+  assert(/requires explicit injected transport/i.test(factory), 'TorBox env-only mode fails closed');
+  assert(!factory.includes('createTorBoxLiveTransport'), 'factory does not construct live TorBox transport');
+  assert(!factory.includes('globalThis.fetch'), 'factory has no global fetch');
+  assert(!factory.includes('process.env.TORBOX'), 'factory has no TorBox env secret read');
+}
 const opsFiles = (): Array<[string, string]> => {
   const dir = fileURLToPath(new URL('../src/ops', import.meta.url));
   return readdirSync(dir).filter((f) => f.endsWith('.ts')).map((f) => [f, readFileSync(`${dir}/${f}`, 'utf8')]);
@@ -110,7 +117,12 @@ test('adapter boundary — no network/provider leakage in src/core/adapters (Pha
     if (f === 'torbox-boundary.ts') continue;
     const src = readFileSync(`${dir}/${f}`, 'utf8');
     assert(!network.test(src), `src/core/adapters/${f} makes no network import/call`);
+    if (f === 'adapter-factory.ts') {
+      assertTorBoxFactoryInjectedOnly(src);
+      continue;
+    }
     if (f === 'fake-torbox-adapter.ts' || f === 'torbox-real-client-gate.ts' || f === 'torbox-readonly-client.ts') continue;
+    if (f === 'torbox-provider-adapter.ts') continue;
     assert(!providers.test(src), `src/core/adapters/${f} names no real provider / scraping / playback`);
   }
   assert(exists('docs/PHASE_7_ADAPTER_BOUNDARY.md'), 'adapter boundary doc exists');
@@ -260,7 +272,7 @@ test('TorBox real-client gate - Phase 33 is static design only and fail-closed',
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assertTorBoxFactoryInjectedOnly(factory);
   assert(!/class\s+\w*Transport\b/.test(source), 'no transport class implementation');
   assert(!/implements\s+TorBoxTransport/.test(source), 'no TorBox transport implementation');
   for (const forbidden of [
@@ -333,7 +345,7 @@ test('TorBox read-only fixture client - Phase 34 is injected transport only and 
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assertTorBoxFactoryInjectedOnly(factory);
   assert(!/class\s+\w*Transport\b/.test(source), 'no transport class implementation');
   assert(!/implements\s+TorBoxTransport/.test(source), 'no TorBox transport implementation');
   for (const forbidden of [
@@ -364,7 +376,7 @@ test('TorBox read-only fixture client - Phase 34 is injected transport only and 
   ]) assert(!source.includes(forbidden), `Phase 34 source excludes ${forbidden}`);
   assert(suite.includes('request mapping from scoped refs to read-only operations and route ids is deterministic'), 'suite enforces request mapping');
   assert(suite.includes('availability parser accepts clear hit, miss, and unknown only'), 'suite enforces strict fixture parsing');
-  assert(suite.includes('adapter factory remains closed and package test chain includes the suite'), 'suite enforces factory closure and test wiring');
+  assert(suite.includes('adapter factory remains injected-only and package test chain includes the suite'), 'suite enforces injected-only factory wiring');
 });
 
 test('TorBox smoke evidence - Phase 35 is docs/templates/static UI examples only', () => {
@@ -443,7 +455,7 @@ test('TorBox smoke evidence - Phase 35 is docs/templates/static UI examples only
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assertTorBoxFactoryInjectedOnly(factory);
   assert(suite.includes('Phase 35 adds no production runtime module or transport implementation'), 'suite enforces no Phase 35 runtime module');
 });
 
@@ -508,7 +520,7 @@ test('TorBox live smoke contract - Phase 36 is acceptance contract only', () => 
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assertTorBoxFactoryInjectedOnly(factory);
   assert(exists('src/ops/torbox-smoke-cli.ts'), 'Phase 37 adds the refused-by-default TorBox smoke CLI shell');
   assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'Phase 36 adds no live transport');
   assert(suite.includes('required future execution order is explicit and fail-closed before network contact'), 'suite enforces pre-network order');
@@ -566,7 +578,7 @@ test('TorBox smoke CLI shell - Phase 37 is refused-by-default and non-network', 
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assertTorBoxFactoryInjectedOnly(factory);
   assert(suite.includes('CLI emits parseable JSON refusal and never prints credential ref values'), 'suite covers CLI redaction');
 });
 
@@ -775,7 +787,7 @@ test('TorBox endpoint mapping - Phase 41 is static review only and non-live', ()
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assertTorBoxFactoryInjectedOnly(factory);
   assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'no adapter live TorBox transport exists');
 });
 
@@ -838,7 +850,7 @@ test('TorBox live transport - Phase 42 is injected, GET-only, and still detached
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assertTorBoxFactoryInjectedOnly(factory);
   assert(!exists('src/core/adapters/torbox-live-transport.ts'), 'no core adapter live transport exists');
 });
 
@@ -894,7 +906,7 @@ test('TorBox live smoke CLI - Phase 43 is operator-run, redacted, and still deta
   }
   assert(cli.includes('globalThis.fetch'), 'operator CLI is TorBox fetch attachment point');
   assert(cli.includes('openSync') && cli.includes('readSync') && !cli.includes('readFileSync'), 'operator CLI uses bounded credential file read');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assertTorBoxFactoryInjectedOnly(factory);
 });
 
 test('TorBox live smoke evidence preflight - Phase 44 verifies saved reports without live contact', () => {

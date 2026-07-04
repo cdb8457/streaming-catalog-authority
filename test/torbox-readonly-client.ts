@@ -278,7 +278,10 @@ async function main(): Promise<void> {
     const factory = read('src/core/adapters/adapter-factory.ts');
     const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
     assert(!allDeps.includes('@torbox/torbox-api'), 'no TorBox SDK dependency installed');
-    assert(!/torbox/i.test(factory), 'adapter factory stays closed to TorBox');
+    assert(factory.includes("'torbox-readonly'"), 'adapter factory exposes read-only TorBox mode');
+    assert(/requires explicit injected transport/i.test(factory), 'env-only TorBox mode fails closed');
+    assert(!factory.includes('createTorBoxLiveTransport'), 'adapter factory does not construct live transport');
+    assert(!factory.includes('globalThis.fetch'), 'adapter factory has no global fetch');
     for (const forbidden of [
       '@torbox/torbox-api',
       "from 'pg'",
@@ -307,10 +310,12 @@ async function main(): Promise<void> {
     ]) assert(!source.includes(forbidden), `read-only client source excludes ${forbidden}`);
   });
 
-  await test('adapter factory remains closed and package test chain includes the suite', () => {
+  await test('adapter factory remains injected-only and package test chain includes the suite', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     const factory = read('src/core/adapters/adapter-factory.ts');
-    assert(!/torbox/i.test(factory), 'adapter factory does not mention TorBox');
+    assert(factory.includes("'torbox-readonly'"), 'adapter factory mentions only read-only TorBox mode');
+    assert(/requires explicit injected transport/i.test(factory), 'env-only TorBox mode fails closed');
+    assert(!factory.includes('createTorBoxLiveTransport'), 'adapter factory does not construct live transport');
     assertEq(pkg.scripts['test:torbox-readonly-client'], 'tsx test/torbox-readonly-client.ts', 'focused script present');
     assert((pkg.scripts.test ?? '').includes('test/torbox-readonly-client.ts'), 'suite is in npm test chain');
   });
@@ -321,6 +326,8 @@ async function main(): Promise<void> {
       'src/core/adapters/fake-torbox-adapter.ts',
       'src/core/adapters/torbox-real-client-gate.ts',
       'src/core/adapters/torbox-readonly-client.ts',
+      'src/core/adapters/torbox-provider-adapter.ts',
+      'src/core/adapters/adapter-factory.ts',
       'src/ops/torbox-smoke-shell.ts',
       'src/ops/torbox-smoke-cli.ts',
       'src/ops/torbox-transport-acceptance.ts',

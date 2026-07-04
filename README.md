@@ -227,6 +227,11 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_45_TORBOX_LIVE_SMOKE_OPERATOR_PLAN.md`** / `ops:torbox-live-smoke-plan` /
   `test:torbox-live-smoke-plan` as a deterministic placeholder-only operator command plan; it
   executes nothing and adds no live network, credential reads, provider mode, downloading, or playback.
+  Phase 46 adds **`docs/PHASE_46_TORBOX_PROVIDER_READONLY_ADAPTER.md`** /
+  `src/core/adapters/torbox-provider-adapter.ts` / `test:torbox-provider-adapter` as the first
+  TorBox provider-mode wiring: read-only advisory availability only, explicit injected transport
+  only, no live transport construction in core, no env/credential reads, no SDK, no provider writes,
+  no downloading, and no playback.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -284,7 +289,9 @@ a privacy bridge + tests only** (no real providers, no network, no HTTP/UI). An 
 **only** an opaque `itemId` + one scoped `{ refType, refValue }` (never catalog identity) through
 `CatalogAuthority.withProviderRef()`, which decrypts a single ref, redacts it via the `SecretStore`
 for the call and clears it after, and is fail-closed. Adapter output is **advisory** — never written
-to the event log. `ADAPTER_MODE=fake|none` (unknown fails closed). See `docs/PHASE_7_ADAPTER_BOUNDARY.md`.
+to the event log. `ADAPTER_MODE=fake|none` from env (unknown fails closed); `torbox-readonly` is
+available only through explicit injected transport configuration and fails closed if requested from
+env alone. See `docs/PHASE_7_ADAPTER_BOUNDARY.md`.
 
 Phase 31 adds `docs/PHASE_31_TORBOX_BOUNDARY.md` and `src/core/adapters/torbox-boundary.ts` as a
 static TorBox capability/redaction contract based on official TorBox docs/SDK surfaces. It names
@@ -342,6 +349,11 @@ read, no env read, no provider mode, no downloading, and no playback.
 Phase 45 adds `ops:torbox-live-smoke-plan`, a static command plan for the operator sequence from
 readiness metadata through Phase 43 smoke and Phase 44 report preflight. It prints placeholders only
 and executes nothing.
+Phase 46 adds `src/core/adapters/torbox-provider-adapter.ts` and
+`docs/PHASE_46_TORBOX_PROVIDER_READONLY_ADAPTER.md` as read-only provider-mode wiring over the
+reviewed injected transport contract. The factory can create it only from explicit transport config;
+the env-only path fails closed, core constructs no live transport, and request-download-link,
+provider writes, UI, and playback remain blocked.
 
 ## Publisher adapter boundary (Phase 8)
 

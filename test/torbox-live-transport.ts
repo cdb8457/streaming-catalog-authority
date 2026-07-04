@@ -223,15 +223,21 @@ await test('configuration rejects unsafe defaults and source avoids SDK/env/DB/f
   ]) assert(!source.includes(forbidden), `live transport source excludes ${forbidden}`);
 });
 
-await test('adapter factory remains closed and TorBox source allowlist is explicit', () => {
+await test('adapter factory remains injected-only and TorBox source allowlist is explicit', () => {
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(read('src/core/adapters/adapter-factory.ts')), 'adapter factory remains closed');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  assert(factory.includes("'torbox-readonly'"), 'adapter factory exposes only the read-only TorBox mode');
+  assert(/requires explicit injected transport/i.test(factory), 'env-only TorBox mode fails closed');
+  assert(!factory.includes('createTorBoxLiveTransport'), 'adapter factory does not construct live transport');
+  assert(!factory.includes('globalThis.fetch'), 'adapter factory has no global fetch');
   const allowed = new Set([
     'src/core/adapters/torbox-boundary.ts',
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',
     'src/core/adapters/torbox-readonly-client.ts',
+    'src/core/adapters/torbox-provider-adapter.ts',
+    'src/core/adapters/adapter-factory.ts',
     'src/ops/torbox-smoke-shell.ts',
     'src/ops/torbox-smoke-cli.ts',
     'src/ops/torbox-transport-acceptance.ts',

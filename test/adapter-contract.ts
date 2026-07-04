@@ -1,6 +1,7 @@
 import type { ProviderAdapter, AdapterRefView } from '../src/core/adapters/adapter.js';
 import { FakeProviderAdapter } from '../src/core/adapters/fake-adapter.js';
 import { loadAdapterConfig, createAdapter, adapterFromEnv, type AdapterConfig } from '../src/core/adapters/adapter-factory.js';
+import type { TorBoxTransport } from '../src/core/adapters/torbox-real-client-gate.js';
 import { ConfigError, type Env } from '../src/config/env.js';
 
 let passed = 0;
@@ -14,6 +15,14 @@ async function test(name: string, fn: () => Promise<void> | void): Promise<void>
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
 function assertEq(a: unknown, b: unknown, msg: string): void { if (a !== b) throw new Error(`${msg} (expected ${String(b)}, got ${String(a)})`); }
 const view = (refValue: string, refType = 'infohash'): AdapterRefView => ({ itemId: '00000000-0000-0000-0000-000000000000', refType, refValue });
+const torboxTransport = (available: ReadonlySet<string>): TorBoxTransport => ({
+  async request(request) {
+    return {
+      status: 200,
+      body: { availability: request.scopedRef && available.has(request.scopedRef.refValue) ? 'available' : 'unavailable' },
+    };
+  },
+});
 
 /** Shared conformance kit — any ProviderAdapter must pass. `make(available)` returns a fresh adapter. */
 async function runAdapterContract(label: string, make: (available: ReadonlySet<string>) => ProviderAdapter): Promise<void> {
@@ -41,6 +50,7 @@ async function main(): Promise<void> {
 
   await runAdapterContract('FakeProviderAdapter', (avail) => new FakeProviderAdapter(avail));
   await runAdapterContract('factory(fake)', (avail) => createAdapter({ mode: 'fake', available: avail })!);
+  await runAdapterContract('factory(torbox-readonly)', (avail) => createAdapter({ mode: 'torbox-readonly', transport: torboxTransport(avail) })!);
 
   // --- factory config validation --------------------------------------------
   await test('factory — ADAPTER_MODE parses fake/none; unset defaults to none', () => {
@@ -52,6 +62,11 @@ async function main(): Promise<void> {
   await test('factory — unknown ADAPTER_MODE FAILS CLOSED (ConfigError)', () => {
     try { loadAdapterConfig({ ADAPTER_MODE: 'real-debrid' } as Env); assert(false, 'should throw'); }
     catch (e) { assert(e instanceof ConfigError, 'ConfigError'); assert(/ADAPTER_MODE must be one of/.test((e as Error).message), 'lists supported modes'); }
+  });
+
+  await test('factory — torbox-readonly ADAPTER_MODE requires explicit injected transport config', () => {
+    try { loadAdapterConfig({ ADAPTER_MODE: 'torbox-readonly' } as Env); assert(false, 'should throw'); }
+    catch (e) { assert(e instanceof ConfigError, 'ConfigError'); assert(/explicit injected transport/i.test((e as Error).message), 'transport required'); }
   });
 
   await test('factory — createAdapter(none) is null; unsupported mode fails closed', () => {

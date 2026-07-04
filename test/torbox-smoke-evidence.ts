@@ -69,7 +69,10 @@ test('Phase 35 docs preserve no-live, no-SDK, no-transport, and no-provider-mode
 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
-  assert(!/torbox/i.test(read('src/core/adapters/adapter-factory.ts')), 'TorBox remains absent from adapter factory');
+  const factory = read('src/core/adapters/adapter-factory.ts');
+  assert(factory.includes("'torbox-readonly'"), 'TorBox read-only factory mode is explicit');
+  assert(/requires explicit injected transport/i.test(factory), 'env-only TorBox mode fails closed');
+  assert(!factory.includes('createTorBoxLiveTransport'), 'factory does not construct live transport');
 });
 
 test('Phase 35 docs forbid download, playback, UI runtime, provider writes, and sensitive retention', () => {

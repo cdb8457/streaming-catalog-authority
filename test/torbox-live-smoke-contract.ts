@@ -210,7 +210,9 @@ test('repository still has no TorBox SDK, live network, browser, Docker, provide
   ]) assert(!allDeps.includes(banned), `no ${banned} dependency`);
 
   const factory = read('src/core/adapters/adapter-factory.ts');
-  assert(!/torbox/i.test(factory), 'TorBox remains absent from adapter factory');
+  assert(factory.includes("'torbox-readonly'"), 'TorBox read-only factory mode is explicit');
+  assert(/requires explicit injected transport/i.test(factory), 'env-only TorBox mode fails closed');
+  assert(!factory.includes('createTorBoxLiveTransport'), 'factory does not construct live transport');
 
   const production = walkTs('src')
     .filter(([path]) => /src\/core\/adapters\/(torbox-boundary|fake-torbox-adapter|torbox-real-client-gate|torbox-readonly-client)\.ts$/.test(path))

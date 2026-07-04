@@ -1,19 +1,30 @@
 import { ConfigError, resolveVar, type Env } from '../../config/env.js';
 import type { ProviderAdapter } from './adapter.js';
 import { FakeProviderAdapter } from './fake-adapter.js';
+import { TorBoxProviderAdapter } from './torbox-provider-adapter.js';
+import type { TorBoxTransport } from './torbox-real-client-gate.js';
 
 /**
- * Phase 7 — provider adapter selection (mirrors the custodian factory pattern).
+ * Provider adapter selection (mirrors the custodian factory pattern).
  *
- * `ADAPTER_MODE`: `fake` (the local reference harness) | `none` (no adapter configured; the
- * default when unset). Adapters are OPTIONAL — the catalog core works with none. Unknown modes
- * FAIL CLOSED (a `ConfigError`); an adapter is never silently defaulted to something unexpected.
- * No real providers, no network — Phase 7 ships only the local fake.
+ * `ADAPTER_MODE`: `fake` (the local reference harness) | `torbox-readonly` (requires explicit
+ * injected transport config) | `none` (no adapter configured; the default when unset). Adapters are
+ * OPTIONAL - the catalog core works with none. Unknown modes FAIL CLOSED (a `ConfigError`); an
+ * adapter is never silently defaulted to something unexpected. The factory never constructs live
+ * transport or reads provider credentials.
  */
-export type AdapterMode = 'fake' | 'none';
-export type AdapterConfig = { mode: 'none' } | { mode: 'fake'; available?: ReadonlySet<string> };
+export type AdapterMode = 'fake' | 'torbox-readonly' | 'none';
+export type AdapterConfig =
+  | { mode: 'none' }
+  | { mode: 'fake'; available?: ReadonlySet<string> }
+  | {
+      mode: 'torbox-readonly';
+      transport: TorBoxTransport;
+      timeoutMs?: number;
+      gateErrors?: 'return-unknown' | 'throw';
+    };
 
-const SUPPORTED_MODES: readonly AdapterMode[] = ['fake', 'none'];
+const SUPPORTED_MODES: readonly AdapterMode[] = ['fake', 'torbox-readonly', 'none'];
 
 /** Parse + validate `ADAPTER_MODE` (default `none`). Unknown values throw {@link ConfigError}. */
 export function loadAdapterConfig(env: Env = process.env): AdapterConfig {
@@ -25,7 +36,11 @@ export function loadAdapterConfig(env: Env = process.env): AdapterConfig {
     problems.push(`ADAPTER_MODE must be one of: ${SUPPORTED_MODES.join(', ')} (got "${mode}")`);
   }
   if (problems.length > 0) throw new ConfigError(problems);
-  return mode === 'fake' ? { mode: 'fake' } : { mode: 'none' };
+  if (mode === 'fake') return { mode: 'fake' };
+  if (mode === 'torbox-readonly') {
+    throw new ConfigError(['ADAPTER_MODE=torbox-readonly requires explicit injected transport configuration']);
+  }
+  return { mode: 'none' };
 }
 
 /**
@@ -38,6 +53,8 @@ export function createAdapter(config: AdapterConfig): ProviderAdapter | null {
       return null;
     case 'fake':
       return new FakeProviderAdapter(config.available);
+    case 'torbox-readonly':
+      return new TorBoxProviderAdapter(config);
     default: {
       const unknown = config as { mode?: string };
       throw new ConfigError([`unsupported adapter mode "${String(unknown.mode)}" (fail-closed; no adapter)`]);
