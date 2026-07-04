@@ -131,10 +131,24 @@ test('no accidental TorBox implementation appears outside the static boundary an
     'src/ops/torbox-live-smoke-runner.ts',
     'src/ops/torbox-live-smoke-evidence-preflight.ts',
     'src/ops/torbox-live-smoke-evidence-preflight-cli.ts',
+    'src/ops/torbox-live-smoke-summary-pack.ts',
+    'src/ops/torbox-live-smoke-summary-pack-cli.ts',
     'src/ops/torbox-live-smoke-plan.ts',
     'src/ops/torbox-live-smoke-plan-cli.ts',
     'test/torbox-boundary.ts',
   ]);
+  const phase49Summary = read('src/ops/torbox-live-smoke-summary-pack.ts');
+  const phase49Cli = read('src/ops/torbox-live-smoke-summary-pack-cli.ts');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'request-download-link',
+    'request-permalink',
+  ]) assert(!`${phase49Summary}\n${phase49Cli}`.includes(forbidden), `Phase 49 summary source excludes ${forbidden}`);
   for (const [path, source] of srcFiles()) {
     const rel = path.replace(fileURLToPath(new URL('../', import.meta.url)).replace(/\\/g, '/'), '');
     if (allowed.has(rel)) continue;

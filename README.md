@@ -154,6 +154,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
 | `ops:torbox-live-smoke-evidence-preflight -- -- <phase-43-report.json> [--json]` | static, redaction-safe Phase 43 live-smoke evidence report preflight; reads one report file only and does not contact TorBox |
+| `ops:torbox-live-smoke-summary-pack -- -- <phase-43-report.json>... [--json]` | static, redaction-safe Phase 43 live-smoke summary pack; reads explicit report files only and does not contact TorBox |
 | `ops:torbox-live-smoke-plan [-- --json]` | static, redaction-safe TorBox live-smoke operator command plan; placeholders only, executes nothing |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
@@ -238,7 +239,11 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   download, playback, UI, or provider-write path. Phase 48 adds
   **`docs/PHASE_48_TORBOX_SMOKE_COMMAND_PLAN_FIX.md`** as a static correction to the live-smoke
   command plan: generated smoke command shapes now use `npm run --silent ... -- -- ...` so npm does
-  not consume smoke flags or add headers to redirected JSON.
+  not consume smoke flags or add headers to redirected JSON. Phase 49 adds
+  **`docs/PHASE_49_TORBOX_LIVE_SMOKE_SUMMARY_PACK.md`** / `ops:torbox-live-smoke-summary-pack` /
+  `test:torbox-live-smoke-summary-pack` to summarize explicit Phase 43 report files into fixed,
+  redaction-safe review labels without echoing paths, credentials, raw refs, provider payloads, or
+  account/media details.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -367,6 +372,9 @@ refs and a local injected transport fixture. It is advisory-only, writes no cata
 provider-ref rows, and keeps live validation operator-run.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
+Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
+report files. It validates each report with Phase 44 rules and emits only fixed probe labels,
+categories, counts, readiness, and gate reminders.
 
 ## Publisher adapter boundary (Phase 8)
 

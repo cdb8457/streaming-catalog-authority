@@ -269,6 +269,8 @@ test('TorBox source allowlist remains explicit', () => {
     'src/ops/torbox-live-smoke-runner.ts',
     'src/ops/torbox-live-smoke-evidence-preflight.ts',
     'src/ops/torbox-live-smoke-evidence-preflight-cli.ts',
+    'src/ops/torbox-live-smoke-summary-pack.ts',
+    'src/ops/torbox-live-smoke-summary-pack-cli.ts',
     'src/ops/torbox-live-smoke-plan.ts',
     'src/ops/torbox-live-smoke-plan-cli.ts',
   ]);
