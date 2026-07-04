@@ -1032,6 +1032,41 @@ test('TorBox live smoke operator plan - Phase 45 is static command planning only
   ]) assert(!`${plan}\n${cli}`.includes(forbidden), `Phase 45 source excludes ${forbidden}`);
 });
 
+test('TorBox catalog bridge - Phase 47 proves encrypted infohash refs through injected adapter only', () => {
+  assert(exists('docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md'), 'Phase 47 catalog bridge doc exists');
+  assert(exists('test/torbox-catalog-bridge.ts'), 'Phase 47 catalog bridge suite exists');
+  assert(typeof pkg.scripts['test:torbox-catalog-bridge'] === 'string', 'test:torbox-catalog-bridge script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-catalog-bridge.ts 5451'), 'Phase 47 suite in the CI chain');
+
+  const doc = read('docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md');
+  const suite = read('test/torbox-catalog-bridge.ts');
+  const combined = `${doc}\n${suite}\n${read('README.md')}`;
+  for (const kw of [
+    'CatalogAuthority.withProviderRef()',
+    'createAdapter({ mode: \'torbox-readonly\', transport })',
+    'persisted `infohash` provider refs only',
+    'writes no events',
+    'no provider ref rows',
+    'no live TorBox calls',
+    'no SDK dependency',
+    'no env secret reads',
+    'no credential-file reads',
+    'no live transport construction in core',
+    'no download',
+    'playback',
+    'Live validation remains operator-run',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian` remains a hardened reference harness',
+  ]) assert(combined.includes(kw), `Phase 47 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'globalThis.fetch',
+    'process.env.TORBOX',
+    'createTorBoxLiveTransport',
+  ]) assert(!suite.includes(forbidden), `Phase 47 suite excludes ${forbidden}`);
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {

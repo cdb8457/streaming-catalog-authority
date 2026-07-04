@@ -231,7 +231,11 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `src/core/adapters/torbox-provider-adapter.ts` / `test:torbox-provider-adapter` as the first
   TorBox provider-mode wiring: read-only advisory availability only, explicit injected transport
   only, no live transport construction in core, no env/credential reads, no SDK, no provider writes,
-  no downloading, and no playback.
+  no downloading, and no playback. Phase 47 adds
+  **`docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md`** / `test:torbox-catalog-bridge` as deterministic
+  catalog-bridge acceptance for persisted `infohash` refs through `withProviderRef()` and the
+  injected TorBox adapter; it writes no events/provider refs and adds no live TorBox, credential,
+  download, playback, UI, or provider-write path.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -354,6 +358,10 @@ Phase 46 adds `src/core/adapters/torbox-provider-adapter.ts` and
 reviewed injected transport contract. The factory can create it only from explicit transport config;
 the env-only path fails closed, core constructs no live transport, and request-download-link,
 provider writes, UI, and playback remain blocked.
+Phase 47 adds `docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md` and `test:torbox-catalog-bridge` to prove the
+TorBox adapter through `CatalogAuthority.withProviderRef()` using encrypted persisted `infohash`
+refs and a local injected transport fixture. It is advisory-only, writes no catalog events or
+provider-ref rows, and keeps live validation operator-run.
 
 ## Publisher adapter boundary (Phase 8)
 
