@@ -169,6 +169,8 @@ await test('TorBox source allowlist includes Phase 39 explicitly and nothing acc
     'src/ops/torbox-live-smoke-operator-packet-cli.ts',
     'src/ops/torbox-live-smoke-packet-manifest.ts',
     'src/ops/torbox-live-smoke-packet-manifest-cli.ts',
+    'src/ops/torbox-live-smoke-acceptance-record.ts',
+    'src/ops/torbox-live-smoke-acceptance-record-cli.ts',
     'src/ops/torbox-live-smoke-plan.ts',
     'src/ops/torbox-live-smoke-plan-cli.ts',
   ]);

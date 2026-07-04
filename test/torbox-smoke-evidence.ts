@@ -216,6 +216,7 @@ test('Phase 35 adds no production runtime module or transport implementation', (
     if (/src\/ops\/torbox-live-smoke-review-gate(-cli)?\.ts$/.test(path)) continue;
     if (/src\/ops\/torbox-live-smoke-operator-packet(-cli)?\.ts$/.test(path)) continue;
     if (/src\/ops\/torbox-live-smoke-packet-manifest(-cli)?\.ts$/.test(path)) continue;
+    if (/src\/ops\/torbox-live-smoke-acceptance-record(-cli)?\.ts$/.test(path)) continue;
     if (/src\/ops\/torbox-live-smoke-plan(-cli)?\.ts$/.test(path)) continue;
     assert(!/phase\s*35|torbox-smoke|TorBoxSmoke|smoke evidence/i.test(source), `${path} has no Phase 35 runtime code`);
   }

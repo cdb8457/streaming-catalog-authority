@@ -158,6 +158,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:torbox-live-smoke-review-gate -- -- <phase-49-summary-pack.json> [--json]` | static, redaction-safe Phase 49 summary review gate; reads one summary file only and does not close live-smoke review |
 | `ops:torbox-live-smoke-operator-packet [-- -- --json]` | static, redaction-safe run/save/review packet for Phase 43, 44, 49, and 51 live-smoke artifacts; placeholders only, executes nothing |
 | `ops:torbox-live-smoke-packet-manifest -- -- <packet-manifest.json> [--json]` | static, redaction-safe Phase 53 retained-packet manifest preflight; reads one manifest file only and does not scan artifacts |
+| `ops:torbox-live-smoke-acceptance-record -- -- <acceptance-record.json> [--json]` | static, redaction-safe Phase 54 live-smoke acceptance-record preflight; records accepted/rejected/deferred without enabling provider mode |
 | `ops:torbox-live-smoke-plan [-- --json]` | static, redaction-safe TorBox live-smoke operator command plan; placeholders only, executes nothing |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
@@ -258,7 +259,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   redaction-safe operator packet without executing commands. Phase 53 adds
   **`docs/PHASE_53_TORBOX_LIVE_SMOKE_PACKET_MANIFEST.md`** /
   `ops:torbox-live-smoke-packet-manifest` / `test:torbox-live-smoke-packet-manifest` to preflight
-  one retained-packet manifest without reading artifact contents or scanning directories.
+  one retained-packet manifest without reading artifact contents or scanning directories. Phase 54 adds
+  **`docs/PHASE_54_TORBOX_LIVE_SMOKE_ACCEPTANCE_RECORD.md`** /
+  `ops:torbox-live-smoke-acceptance-record` / `test:torbox-live-smoke-acceptance-record` to record
+  accepted/rejected/deferred live-smoke review disposition without enabling provider mode.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -401,6 +405,9 @@ gate into a redaction-safe packet for independent review.
 Phase 53 adds `ops:torbox-live-smoke-packet-manifest`, a one-file retained-packet manifest preflight
 that checks required redacted artifact kinds and optional cache pairing without reading artifacts,
 scanning directories, or closing live-smoke review.
+Phase 54 adds `ops:torbox-live-smoke-acceptance-record`, a one-file acceptance-record preflight for
+recording independent-review disposition. It can mark TorBox live smoke accepted/rejected/deferred,
+but does not enable provider mode or close O4/O5.
 
 ## Publisher adapter boundary (Phase 8)
 

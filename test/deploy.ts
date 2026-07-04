@@ -1347,6 +1347,58 @@ test('TorBox live smoke packet manifest - Phase 53 preflights retained artifact 
   assert(cli.includes("from 'node:fs'") && cli.includes('openSync') && cli.includes('readSync'), 'CLI has bounded explicit file reads');
 });
 
+test('TorBox live smoke acceptance record - Phase 54 records review disposition without provider activation', () => {
+  assert(exists('docs/PHASE_54_TORBOX_LIVE_SMOKE_ACCEPTANCE_RECORD.md'), 'Phase 54 acceptance doc exists');
+  assert(exists('src/ops/torbox-live-smoke-acceptance-record.ts'), 'Phase 54 pure acceptance source exists');
+  assert(exists('src/ops/torbox-live-smoke-acceptance-record-cli.ts'), 'Phase 54 acceptance CLI exists');
+  assert(exists('test/torbox-live-smoke-acceptance-record.ts'), 'Phase 54 acceptance suite exists');
+  assert(typeof pkg.scripts['ops:torbox-live-smoke-acceptance-record'] === 'string', 'ops script present');
+  assert(typeof pkg.scripts['test:torbox-live-smoke-acceptance-record'] === 'string', 'test script present');
+  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-acceptance-record.ts'), 'Phase 54 suite in the CI chain');
+  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+
+  const source = read('src/ops/torbox-live-smoke-acceptance-record.ts');
+  const cli = read('src/ops/torbox-live-smoke-acceptance-record-cli.ts');
+  const suite = read('test/torbox-live-smoke-acceptance-record.ts');
+  const doc = read('docs/PHASE_54_TORBOX_LIVE_SMOKE_ACCEPTANCE_RECORD.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${read('README.md')}`;
+  for (const kw of [
+    'phase-54-torbox-live-smoke-acceptance-record',
+    'single-operator-supplied-acceptance-record-json-file',
+    'accepted',
+    'rejected',
+    'deferred',
+    'packetManifestPreflight',
+    'enablesProviderMode: false',
+    'credentialPathsIncluded: false',
+    'rawRefsIncluded: false',
+    'providerPayloadsIncluded: false',
+    'liveTorBoxContact: false',
+    'commandExecution: false',
+    'does not enable TorBox provider mode',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian',
+  ]) assert(combined.includes(kw), `Phase 54 preserves ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'request-download-link',
+    'request-permalink',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'docker compose',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 54 source excludes ${forbidden}`);
+  assert(!source.includes("from 'node:fs'"), 'pure acceptance module has no filesystem dependency');
+  assert(cli.includes("from 'node:fs'") && cli.includes('openSync') && cli.includes('readSync'), 'CLI has bounded explicit file reads');
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {
