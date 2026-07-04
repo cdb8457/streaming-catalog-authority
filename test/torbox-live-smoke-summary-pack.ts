@@ -124,7 +124,9 @@ test('invalid report shape blocks review without leaking hostile values', () => 
   ];
   const hostile = {
     ...phase43Report(),
-    probe: 'download-link',
+    probe: 'RAW-INFOHASH-SECRET',
+    operation: 'Private Movie Title 1999',
+    category: 'https://api.torbox.app/v1/api/torrents/checkcached?token=secret',
     extraPayload: sentinels.join('|'),
     notes: sentinels,
     evidence: {
@@ -138,6 +140,9 @@ test('invalid report shape blocks review without leaking hostile values', () => 
   const report = buildTorBoxLiveSmokeSummaryPack([hostile] as Record<string, unknown>[]);
   assert(report.reviewReadiness === 'not-ready-for-review', 'invalid report blocks review');
   assert(report.aggregate.failFindings > 0, 'fail findings counted');
+  assert(report.probes[0]?.probe === 'invalid-probe', 'hostile probe is canonicalized');
+  assert(report.probes[0]?.operation === 'invalid-operation', 'hostile operation is canonicalized');
+  assert(report.probes[0]?.category === 'invalid-category', 'hostile category is canonicalized');
   assertNoLeak(formatTorBoxLiveSmokeSummaryPackJson(report), sentinels);
   assertNoLeak(formatTorBoxLiveSmokeSummaryPackText(report), sentinels);
 });
