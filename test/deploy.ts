@@ -1587,6 +1587,49 @@ test('provider availability summary CLI - Phase 58 reads explicit bridge reports
   assert(cli.includes("from 'node:fs'") && cli.includes('openSync') && cli.includes('readSync'), 'CLI has bounded explicit file reads');
 });
 
+test('provider availability operator packet - Phase 59 packages count-only evidence review without execution', () => {
+  assert(exists('src/ops/provider-availability-operator-packet.ts'), 'Phase 59 packet source exists');
+  assert(exists('src/ops/provider-availability-operator-packet-cli.ts'), 'Phase 59 packet CLI exists');
+  assert(exists('docs/PHASE_59_PROVIDER_AVAILABILITY_OPERATOR_PACKET.md'), 'Phase 59 packet doc exists');
+  assert(exists('test/provider-availability-operator-packet.ts'), 'Phase 59 packet suite exists');
+  assert(typeof pkg.scripts['ops:provider-availability-operator-packet'] === 'string', 'Phase 59 ops script present');
+  assert(typeof pkg.scripts['test:provider-availability-operator-packet'] === 'string', 'Phase 59 test script present');
+  assert((pkg.scripts.test ?? '').includes('test/provider-availability-operator-packet.ts'), 'Phase 59 suite in CI chain');
+
+  const packet = read('src/ops/provider-availability-operator-packet.ts');
+  const cli = read('src/ops/provider-availability-operator-packet-cli.ts');
+  const doc = read('docs/PHASE_59_PROVIDER_AVAILABILITY_OPERATOR_PACKET.md');
+  const combined = `${packet}\n${cli}\n${doc}\n${read('README.md')}`;
+  for (const kw of [
+    'phase-59-provider-availability-operator-packet',
+    'Provider availability operator packet (Phase 59)',
+    'ops:provider-availability-operator-packet',
+    'sanitized Phase 56 bridge reports',
+    'Phase 58 count-only summary',
+    'does not enable provider mode',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian',
+  ]) assert(combined.includes(kw), `Phase 59 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'node:fs',
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'request-download-link',
+    'request-permalink',
+    'document.',
+    'window.',
+  ]) assert(!`${packet}\n${cli}`.includes(forbidden), `Phase 59 source excludes ${forbidden}`);
+});
+
 test('erasure policy — Phase 9 publish module clean; doc + suites wired', () => {
   const dir = fileURLToPath(new URL('../src/core/publish', import.meta.url));
   const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
