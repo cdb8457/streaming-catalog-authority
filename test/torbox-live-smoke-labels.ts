@@ -103,6 +103,23 @@ test('Phase 44 preflight and Phase 49 summary accept the same valid labels', () 
   }
 });
 
+test('Phase 44 and Phase 49 reject valid labels with an invalid probe-operation pair', () => {
+  const report = phase43Report({
+    probe: 'service-status',
+    operation: 'cache-availability',
+    category: 'live-smoke-ok',
+  });
+  const preflight = buildTorBoxLiveSmokeEvidencePreflightReport(report as unknown as Record<string, unknown>);
+  const summary = buildTorBoxLiveSmokeSummaryPack([report as unknown as Record<string, unknown>]);
+  assert(preflight.summary.fail > 0, 'mismatched pair fails preflight');
+  assert(preflight.reviewReadiness === 'not-ready-for-review', 'mismatched pair blocks preflight readiness');
+  assert(preflight.findings.some((finding) => finding.code === 'PROBE_OPERATION_PAIR_INVALID'), 'fixed pair failure code present');
+  assert(summary.aggregate.failFindings > 0, 'summary inherits pair failure');
+  assert(summary.reviewReadiness === 'not-ready-for-review', 'summary is not ready');
+  assert(summary.probes[0]?.probe === 'service-status', 'valid probe remains fixed label');
+  assert(summary.probes[0]?.operation === 'cache-availability', 'valid but mismatched operation remains fixed label');
+});
+
 test('invalid labels canonicalize without echoing hostile input', () => {
   const sentinels = [
     'RAW-INFOHASH-SECRET',

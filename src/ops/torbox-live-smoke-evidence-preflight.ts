@@ -1,7 +1,10 @@
 import {
+  isTorBoxLiveSmokeOperation,
+  isTorBoxLiveSmokeProbe,
   TORBOX_LIVE_SMOKE_CATEGORIES,
   TORBOX_LIVE_SMOKE_OPERATIONS,
   TORBOX_LIVE_SMOKE_PROBES,
+  torBoxLiveSmokeOperationForProbe,
 } from './torbox-live-smoke-labels.js';
 
 export type TorBoxLiveSmokeEvidenceInputErrorCode =
@@ -85,6 +88,7 @@ export function buildTorBoxLiveSmokeEvidencePreflightReport(
   findings.push(enumFinding(evidence.probe, TORBOX_LIVE_SMOKE_PROBES, 'probe', 'PROBE_VALID', 'PROBE_INVALID'));
   findings.push(enumFinding(evidence.operation, TORBOX_LIVE_SMOKE_OPERATIONS, 'operation', 'OPERATION_VALID', 'OPERATION_INVALID'));
   findings.push(enumFinding(evidence.category, TORBOX_LIVE_SMOKE_CATEGORIES, 'category', 'CATEGORY_VALID', 'CATEGORY_INVALID'));
+  findings.push(operationMatchesProbeFinding(evidence.probe, evidence.operation));
 
   findings.push(noUnexpectedKeys(evidence, ROOT_KEYS, 'root'));
   findings.push(validateEvidenceBlock(evidence.evidence));
@@ -215,6 +219,15 @@ function enumFinding(
   return inList(value, allowed)
     ? pass(passCode, field, `${field} is allowlisted.`)
     : fail(failCode, field, `${field} must be an allowlisted fixed value.`);
+}
+
+function operationMatchesProbeFinding(probe: unknown, operation: unknown): TorBoxLiveSmokeEvidenceFinding {
+  if (!isTorBoxLiveSmokeProbe(probe) || !isTorBoxLiveSmokeOperation(operation)) {
+    return fail('PROBE_OPERATION_PAIR_INVALID', 'operation', 'probe and operation must be allowlisted before pair validation.');
+  }
+  return torBoxLiveSmokeOperationForProbe(probe) === operation
+    ? pass('PROBE_OPERATION_PAIR_VALID', 'operation', 'operation matches the fixed probe mapping.')
+    : fail('PROBE_OPERATION_PAIR_INVALID', 'operation', 'operation must match the fixed probe mapping.');
 }
 
 function noUnexpectedKeys(
