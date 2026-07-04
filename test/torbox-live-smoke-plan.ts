@@ -75,6 +75,25 @@ test('text and JSON output contain placeholders but no concrete secret/path/ref 
   }
 });
 
+test('live smoke command shapes use copy-paste-safe npm separators and clean JSON mode', () => {
+  const commandShapes = TORBOX_LIVE_SMOKE_PLAN.steps.flatMap((step) => step.commandShapes);
+  const liveSmoke = commandShapes.filter((cmd) => cmd.includes('smoke:torbox-readonly'));
+  assert(liveSmoke.length === 3, 'three live smoke command shapes');
+  for (const cmd of liveSmoke) {
+    assert(cmd.startsWith('npm run --silent smoke:torbox-readonly -- -- --live-smoke'), 'live smoke command uses --silent and extra separator');
+    assert(cmd.includes('--live-transport --read-only --redacted --operator-authorized'), 'live smoke gates present');
+    assert(cmd.includes('--credential-file <torbox-token-file>'), 'credential placeholder only');
+    assert(cmd.endsWith('.json>') || cmd.includes('--json > <phase-43-'), 'redirects JSON to placeholder report');
+    assert(!cmd.includes('npm run smoke:torbox-readonly -- --live-smoke'), 'old npm-consuming shape absent');
+  }
+
+  const preflights = commandShapes.filter((cmd) => cmd.includes('ops:torbox-live-smoke-evidence-preflight'));
+  assert(preflights.length === 3, 'three evidence preflight command shapes');
+  for (const cmd of preflights) {
+    assert(cmd.startsWith('npm run --silent ops:torbox-live-smoke-evidence-preflight -- -- '), 'preflight command uses --silent');
+  }
+});
+
 test('CLI output is deterministic and ignores hostile environment values', () => {
   const env = {
     ...process.env,
@@ -157,6 +176,24 @@ test('source has no filesystem, env, network, DB, Docker, adapter-mode, or execu
     'readdirSync',
     'existsSync',
   ]) assert(!combined.includes(forbidden), `Phase 45 source excludes ${forbidden}`);
+});
+
+test('Phase 48 command plan fix doc is wired and preserves non-live scope', () => {
+  const doc = read('docs/PHASE_48_TORBOX_SMOKE_COMMAND_PLAN_FIX.md');
+  const readme = read('README.md');
+  const combined = `${doc}\n${readme}`;
+  for (const kw of [
+    'npm run --silent smoke:torbox-readonly -- -- --live-smoke',
+    'keeps redirected JSON clean',
+    'prevents npm from consuming smoke CLI flags',
+    'no live TorBox calls',
+    'no command execution from the plan command',
+    'no credential values',
+    'no downloads',
+    'playback',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian` remains a hardened reference harness',
+  ]) assert(combined.includes(kw), `Phase 48 docs include ${kw}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

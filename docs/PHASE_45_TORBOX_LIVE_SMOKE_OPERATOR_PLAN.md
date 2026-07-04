@@ -10,6 +10,11 @@ npm run ops:torbox-live-smoke-plan -- --json
 
 The command prints placeholder command shapes only. It does not execute the commands.
 
+Phase 48 corrects the generated live-smoke command shapes to use
+`npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`. The `--silent` flag keeps redirected
+JSON clean, and the extra `--` after the npm script separator prevents npm from consuming smoke CLI
+flags.
+
 ## Scope
 
 - Lists the intended operator sequence: readiness metadata preflight, service-status smoke,

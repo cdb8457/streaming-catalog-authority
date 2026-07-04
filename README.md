@@ -235,7 +235,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   **`docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md`** / `test:torbox-catalog-bridge` as deterministic
   catalog-bridge acceptance for persisted `infohash` refs through `withProviderRef()` and the
   injected TorBox adapter; it writes no events/provider refs and adds no live TorBox, credential,
-  download, playback, UI, or provider-write path.
+  download, playback, UI, or provider-write path. Phase 48 adds
+  **`docs/PHASE_48_TORBOX_SMOKE_COMMAND_PLAN_FIX.md`** as a static correction to the live-smoke
+  command plan: generated smoke command shapes now use `npm run --silent ... -- -- ...` so npm does
+  not consume smoke flags or add headers to redirected JSON.
   Rehearse the evidence
   package shape with
   **`docs/PHASE_25_READINESS_REHEARSAL.md`** and **`docs/PHASE_26_EVIDENCE_REHEARSAL.md`** before a
@@ -362,6 +365,8 @@ Phase 47 adds `docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md` and `test:torbox-catalog-
 TorBox adapter through `CatalogAuthority.withProviderRef()` using encrypted persisted `infohash`
 refs and a local injected transport fixture. It is advisory-only, writes no catalog events or
 provider-ref rows, and keeps live validation operator-run.
+Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
+`npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 
 ## Publisher adapter boundary (Phase 8)
 

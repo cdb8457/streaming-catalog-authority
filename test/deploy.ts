@@ -1067,6 +1067,27 @@ test('TorBox catalog bridge - Phase 47 proves encrypted infohash refs through in
   ]) assert(!suite.includes(forbidden), `Phase 47 suite excludes ${forbidden}`);
 });
 
+test('TorBox smoke command plan fix - Phase 48 keeps npm command shapes copy/paste safe', () => {
+  assert(exists('docs/PHASE_48_TORBOX_SMOKE_COMMAND_PLAN_FIX.md'), 'Phase 48 command plan fix doc exists');
+  const plan = read('src/ops/torbox-live-smoke-plan.ts');
+  const suite = read('test/torbox-live-smoke-plan.ts');
+  const doc = read('docs/PHASE_48_TORBOX_SMOKE_COMMAND_PLAN_FIX.md');
+  const combined = `${plan}\n${suite}\n${doc}\n${read('README.md')}`;
+
+  for (const kw of [
+    'npm run --silent smoke:torbox-readonly -- -- --live-smoke',
+    'npm run --silent ops:torbox-live-smoke-evidence-preflight -- --',
+    'copy-paste-safe npm separators',
+    'clean JSON',
+    'no live TorBox calls',
+    'no command execution from the plan command',
+    'O4 and O5 remain open/deferred',
+  ]) assert(combined.includes(kw), `Phase 48 preserves ${kw}`);
+
+  assert(!plan.includes('npm run smoke:torbox-readonly -- --live-smoke'), 'old npm-consuming live smoke shape removed');
+  assert(!plan.includes('npm run ops:torbox-live-smoke-evidence-preflight -- -- <'), 'old noisy preflight shape removed');
+});
+
 test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', () => {
   // the network/provider scope scan above already covers the publisher files under src/core/adapters.
   for (const f of ['src/core/adapters/publisher.ts', 'src/core/adapters/fake-publisher.ts', 'src/core/adapters/publisher-factory.ts']) {
