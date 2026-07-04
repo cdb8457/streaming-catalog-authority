@@ -160,6 +160,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:torbox-live-smoke-packet-manifest -- -- <packet-manifest.json> [--json]` | static, redaction-safe Phase 53 retained-packet manifest preflight; reads one manifest file only and does not scan artifacts |
 | `ops:torbox-live-smoke-acceptance-record -- -- <acceptance-record.json> [--json]` | static, redaction-safe Phase 54 live-smoke acceptance-record preflight; records accepted/rejected/deferred without enabling provider mode |
 | `ops:torbox-live-smoke-plan [-- --json]` | static, redaction-safe TorBox live-smoke operator command plan; placeholders only, executes nothing |
+| `ops:provider-availability-summary -- -- <bridge-report.json>... [--json]` | static, redaction-safe Phase 58 provider availability summary; reads explicit sanitized bridge reports only |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
 - **Docker Compose:** `docker-compose.deploy.yml` (keystore on a volume separate from the DB and
@@ -340,6 +341,11 @@ Provider availability summary (Phase 57) now lives in
 fixed counts and readiness labels only, with no item rows, provider detail, raw refs, credentials,
 URLs, media identity, persistence, or UI/runtime behavior.
 See `docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md`.
+Provider availability summary CLI (Phase 58) adds `ops:provider-availability-summary`, a bounded
+operator command that reads explicit bridge-report JSON files only and emits the same count-only
+summary without path, provider detail, raw ref, credential, URL, item, media identity, or payload
+echo.
+See `docs/PHASE_58_PROVIDER_AVAILABILITY_SUMMARY_CLI.md`.
 
 Phase 31 adds `docs/PHASE_31_TORBOX_BOUNDARY.md` and `src/core/adapters/torbox-boundary.ts` as a
 static TorBox capability/redaction contract based on official TorBox docs/SDK surfaces. It names
@@ -412,6 +418,8 @@ through the Phase 55 policy and sanitized before future orchestration can inspec
 Phase 57 adds `src/core/adapters/provider-availability-summary.ts` and
 `docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md` for count-only summaries of sanitized bridge
 decisions.
+Phase 58 adds `ops:provider-availability-summary` for explicit-file, count-only aggregation of
+sanitized bridge reports.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
