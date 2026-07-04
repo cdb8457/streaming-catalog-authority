@@ -335,6 +335,11 @@ Provider availability bridge (Phase 56) now lives in
 only sanitized adapter status plus the Phase 55 policy decision; locator/detail payloads are not
 echoed, and the bridge remains non-persistent and advisory-only.
 See `docs/PHASE_56_PROVIDER_AVAILABILITY_BRIDGE.md`.
+Provider availability summary (Phase 57) now lives in
+`src/core/adapters/provider-availability-summary.ts`. It aggregates sanitized bridge reports into
+fixed counts and readiness labels only, with no item rows, provider detail, raw refs, credentials,
+URLs, media identity, persistence, or UI/runtime behavior.
+See `docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md`.
 
 Phase 31 adds `docs/PHASE_31_TORBOX_BOUNDARY.md` and `src/core/adapters/torbox-boundary.ts` as a
 static TorBox capability/redaction contract based on official TorBox docs/SDK surfaces. It names
@@ -404,6 +409,9 @@ provider-ref rows, and keeps live validation operator-run.
 Phase 56 adds `src/core/adapters/provider-availability-bridge.ts` and
 `docs/PHASE_56_PROVIDER_AVAILABILITY_BRIDGE.md` so scoped adapter results are immediately classified
 through the Phase 55 policy and sanitized before future orchestration can inspect them.
+Phase 57 adds `src/core/adapters/provider-availability-summary.ts` and
+`docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md` for count-only summaries of sanitized bridge
+decisions.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -1502,6 +1502,52 @@ test('provider availability bridge - Phase 56 classifies scoped adapter output w
   ]) assert(!source.includes(forbidden), `Phase 56 source excludes ${forbidden}`);
 });
 
+test('provider availability summary - Phase 57 emits count-only provider decision summaries', () => {
+  assert(exists('src/core/adapters/provider-availability-summary.ts'), 'Phase 57 summary source exists');
+  assert(exists('docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md'), 'Phase 57 summary doc exists');
+  assert(exists('test/provider-availability-summary.ts'), 'Phase 57 summary suite exists');
+  assert(typeof pkg.scripts['test:provider-availability-summary'] === 'string', 'Phase 57 test script present');
+  assert((pkg.scripts.test ?? '').includes('test/provider-availability-summary.ts'), 'Phase 57 suite in CI chain');
+
+  const source = read('src/core/adapters/provider-availability-summary.ts');
+  const doc = read('docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md');
+  const combined = `${source}\n${doc}\n${read('README.md')}`;
+  for (const kw of [
+    'Provider availability summary (Phase 57)',
+    'phase-57-provider-availability-summary',
+    'sanitized-provider-availability-bridge-reports',
+    'candidate',
+    'skip',
+    'hold',
+    'available',
+    'unavailable',
+    'unknown',
+    'stale',
+    'invalid',
+    'count-only',
+    'no item rows',
+  ]) assert(combined.includes(kw), `Phase 57 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'readFileSync',
+    "from 'node:fs'",
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'createTorBoxLiveTransport',
+    'TorBoxReadOnlyClient',
+    'request-download-link',
+    'request-permalink',
+    'document.',
+    'window.',
+  ]) assert(!source.includes(forbidden), `Phase 57 source excludes ${forbidden}`);
+});
+
 test('erasure policy — Phase 9 publish module clean; doc + suites wired', () => {
   const dir = fileURLToPath(new URL('../src/core/publish', import.meta.url));
   const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
