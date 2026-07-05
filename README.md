@@ -293,6 +293,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_65_STATIC_UI_ARTIFACT_PACKAGING.md` (static operator UI artifact packaging) Â·
   `docs/PHASE_67_OPERATOR_UI_LAUNCH_READINESS.md` (operator UI launch readiness gate) Â·
   `docs/PHASE_68_OPERATOR_UI_RUNTIME_BOUNDARY.md` (local operator UI runtime boundary plan) Â·
+  `docs/PHASE_69_OPERATOR_UI_PACKET_SOURCE_CONTRACT.md` (sanitized local operator packet source contract) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -488,6 +489,21 @@ runtime UI, API route, browser JavaScript, DB read, env read, filesystem scan, n
 provider execution, playback/download control, scraping, media-server logic, credentials, or live
 packet ingestion. Provider availability remains packet/count/advisory only; O4 and O5 remain
 open/deferred; `FileCustodian` remains a hardened reference harness, not production KMS.
+Phase 69 adds `src/ops/operator-ui-packet-source-contract.ts`,
+`docs/PHASE_69_OPERATOR_UI_PACKET_SOURCE_CONTRACT.md`,
+`ops:operator-ui-packet-source-contract`, and `test:operator-ui-packet-source-contract` as a fixed
+synthetic Sanitized Local Operator Packet Source Contract. Future local read-only UI packet sources
+may only be immutable/read-only packet snapshots or an explicit sanitized local packet endpoint, and
+both remain not implemented. Any future packet producer must sit behind explicit sanitization and
+allowlist checks, emit only redaction-safe operator packets with synthetic labels, counts, and
+statuses, and preserve the Phase 61 allowlists. The exact JSON command is
+`npm run --silent ops:operator-ui-packet-source-contract -- -- --json`. The contract forbids direct
+UI DB reads, raw event payloads, raw provider refs, titles, external IDs, provider names/logos,
+infohashes, magnets, credentials, paths, artwork, user library data, provider/provider-mode direct
+consumption, playback/download controls, scraping, media-server logic, and live packet ingestion.
+Provider availability remains packet/count/advisory only; local read-only runtime remains blocked;
+live product launch remains not ready; O4 and O5 remain open/deferred; `FileCustodian` remains a
+hardened reference harness, not production KMS.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

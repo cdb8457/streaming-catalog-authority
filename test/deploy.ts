@@ -3164,6 +3164,97 @@ test('operator UI runtime boundary - Phase 68 is fixed, synthetic, and no-input'
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 68 source excludes ${forbidden}`);
 });
 
+test('operator UI packet source contract - Phase 69 is sanitized and no-input', () => {
+  assert(exists('src/ops/operator-ui-packet-source-contract.ts'), 'Phase 69 packet source contract source exists');
+  assert(exists('src/ops/operator-ui-packet-source-contract-cli.ts'), 'Phase 69 packet source contract CLI exists');
+  assert(exists('docs/PHASE_69_OPERATOR_UI_PACKET_SOURCE_CONTRACT.md'), 'Phase 69 packet source contract doc exists');
+  assert(exists('test/operator-ui-packet-source-contract.ts'), 'Phase 69 packet source contract suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-packet-source-contract'] === 'string', 'Phase 69 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-packet-source-contract'] === 'string', 'Phase 69 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-runtime-boundary.ts && tsx test/operator-ui-packet-source-contract.ts'),
+    'Phase 69 suite follows Phase 68 suite in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-packet-source-contract.ts');
+  const cli = read('src/ops/operator-ui-packet-source-contract-cli.ts');
+  const suite = read('test/operator-ui-packet-source-contract.ts');
+  const doc = read('docs/PHASE_69_OPERATOR_UI_PACKET_SOURCE_CONTRACT.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+  for (const kw of [
+    'Sanitized Local Operator Packet Source Contract',
+    'operator UI packet source contract',
+    'ops:operator-ui-packet-source-contract',
+    'test:operator-ui-packet-source-contract',
+    'npm run --silent ops:operator-ui-packet-source-contract -- -- --json',
+    'fixed-synthetic-packet-source-contract',
+    'immutable/read-only packet snapshots',
+    'explicit sanitized local packet endpoint',
+    'allowed-future-source/not-implemented',
+    'explicit sanitization and allowlist checks',
+    'redaction-safe operator packets',
+    'synthetic labels, counts, and statuses',
+    'Phase 61 operator UI packet descriptor allowlists',
+    'direct UI DB reads',
+    'raw event payloads',
+    'raw provider refs',
+    'infohashes',
+    'magnets',
+    'credentials',
+    'paths',
+    'artwork',
+    'user library data',
+    'Provider availability remains packet/count/advisory only',
+    'Local read-only runtime remains blocked/deferred',
+    'Live product launch remains not-ready',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 69 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'scraping',
+    'playback',
+    'download',
+    'writeFile',
+    'createWriteStream',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 69 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
