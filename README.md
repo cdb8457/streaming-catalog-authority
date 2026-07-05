@@ -547,6 +547,17 @@ refs, content titles, provider names/logos, raw refs, infohashes, magnets, crede
 data, poster art, streaming artwork, or raw event payloads. O4 and O5 remain open/deferred;
 `FileCustodian` remains a hardened reference harness, not production KMS. Provider availability
 remains packet/count/advisory only.
+Phase 73 adds `docs/PHASE_73_OPERATOR_UI_ACCESS_BOUNDARY.md` and
+`test:operator-ui-static-runtime-access-boundary` as an Operator Static Runtime Access Boundary over
+that same local static runtime. The manifest now states fixed no-input access metadata:
+`accessBoundary: loopback-only-fixture-preview`, `operatorAuth: not-implemented`,
+`remoteExposure: blocked`, and `futureDataSurfacesRequire: explicit-auth-access-phase`. This is not
+production auth and does not authorize reverse proxy or public exposure. It remains a loopback-only
+fixture preview with no auth/session/cookie/token mechanism, no API route, packet endpoint, DB read,
+provider integration, playback, download, scraping, media-server logic, TLS, or public bind. Future
+packet or data surfaces require an explicit auth/access phase. O4 and O5 remain open/deferred;
+`FileCustodian` remains a hardened reference harness, not production KMS. Provider availability
+remains packet/count/advisory only.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

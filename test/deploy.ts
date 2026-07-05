@@ -3530,6 +3530,115 @@ test('operator UI static runtime manifest - Phase 72 is fixed local metadata onl
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 72 source excludes ${forbidden}`);
 });
 
+test('operator UI static runtime access boundary - Phase 73 is explicit and fail-closed', () => {
+  assert(exists('docs/PHASE_73_OPERATOR_UI_ACCESS_BOUNDARY.md'), 'Phase 73 operator access boundary doc exists');
+  assert(exists('test/operator-ui-static-runtime-access-boundary.ts'), 'Phase 73 operator access boundary suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-static-runtime-access-boundary'] === 'string', 'Phase 73 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-manifest.ts && tsx test/operator-ui-static-runtime-access-boundary.ts'),
+    'Phase 73 suite follows Phase 72 manifest suite in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-static-runtime.ts');
+  const cli = read('src/ops/operator-ui-static-runtime-cli.ts');
+  const suite = read('test/operator-ui-static-runtime-access-boundary.ts');
+  const doc = read('docs/PHASE_73_OPERATOR_UI_ACCESS_BOUNDARY.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+
+  for (const kw of [
+    'Operator Static Runtime Access Boundary',
+    'test:operator-ui-static-runtime-access-boundary',
+    'accessBoundary',
+    'loopback-only-fixture-preview',
+    'operatorAuth',
+    'not-implemented',
+    'remoteExposure',
+    'blocked',
+    'futureDataSurfacesRequire',
+    'explicit-auth-access-phase',
+    'not production auth',
+    'does not authorize reverse proxy or public exposure',
+    'loopback-only fixture preview',
+    'no auth/session/cookie/token mechanism',
+    'no API route, packet endpoint, DB read, provider integration, playback, download, scraping, media-server logic, TLS, or public bind',
+    'packet or data surfaces require an explicit auth/access phase',
+    '/api/*',
+    '/packets',
+    '/login',
+    '/session',
+    '/auth',
+    '/token',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+    'Provider availability remains packet/count/advisory only',
+  ]) assert(combined.includes(kw), `Phase 73 covers ${kw}`);
+
+  assert(source.includes("from 'node:http'"), 'Phase 73 runtime remains Node built-in HTTP only');
+  assert(!source.includes('server.listen(0.0.0.0'), 'runtime has no remote listen literal');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    '/api/',
+    '/packets',
+    '/login',
+    '/session',
+    '/auth',
+    '/token',
+    'Set-Cookie',
+    'Cookie',
+    'cookie',
+    'session',
+    'Authorization',
+    'authorization',
+    'Bearer',
+    'bearer',
+    'Basic',
+    'basic',
+    'token',
+    'credential',
+    'password',
+    'DATABASE_URL',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 73 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

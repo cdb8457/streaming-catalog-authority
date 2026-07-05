@@ -45,6 +45,10 @@ const expectedManifest: OperatorUiStaticRuntimeManifest = {
   packetSource: 'not-implemented',
   localRuntime: 'static-preview-only',
   liveProduct: 'not-ready',
+  accessBoundary: 'loopback-only-fixture-preview',
+  operatorAuth: 'not-implemented',
+  remoteExposure: 'blocked',
+  futureDataSurfacesRequire: 'explicit-auth-access-phase',
   boundaries: [
     'no-db-read',
     'no-provider-call-or-integration',
@@ -195,6 +199,10 @@ async function main(): Promise<void> {
       'packetSource',
       'localRuntime',
       'liveProduct',
+      'accessBoundary',
+      'operatorAuth',
+      'remoteExposure',
+      'futureDataSurfacesRequire',
       'boundaries',
       'gates',
     ]), 'deterministic key ordering');

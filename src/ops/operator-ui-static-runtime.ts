@@ -71,6 +71,10 @@ export interface OperatorUiStaticRuntimeManifest {
   readonly packetSource: 'not-implemented';
   readonly localRuntime: 'static-preview-only';
   readonly liveProduct: 'not-ready';
+  readonly accessBoundary: 'loopback-only-fixture-preview';
+  readonly operatorAuth: 'not-implemented';
+  readonly remoteExposure: 'blocked';
+  readonly futureDataSurfacesRequire: 'explicit-auth-access-phase';
   readonly boundaries: readonly string[];
   readonly gates: readonly string[];
 }
@@ -84,6 +88,10 @@ const OPERATOR_UI_STATIC_RUNTIME_MANIFEST: OperatorUiStaticRuntimeManifest = {
   packetSource: 'not-implemented',
   localRuntime: 'static-preview-only',
   liveProduct: 'not-ready',
+  accessBoundary: 'loopback-only-fixture-preview',
+  operatorAuth: 'not-implemented',
+  remoteExposure: 'blocked',
+  futureDataSurfacesRequire: 'explicit-auth-access-phase',
   boundaries: [
     'no-db-read',
     'no-provider-call-or-integration',

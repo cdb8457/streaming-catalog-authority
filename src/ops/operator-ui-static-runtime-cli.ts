@@ -21,6 +21,7 @@ function usage(): string {
     'Operator UI Static Runtime Shell',
     '',
     'Boundary: local fixture-only static preview; no API, packet source, DB read, provider, playback, download, scraping, or media-server behavior.',
+    'Access: loopback-only fixture preview; operator auth not implemented; remote exposure blocked.',
     '',
     'Usage:',
     `  npm run ops:operator-ui-static-runtime -- --serve [--host ${OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST}] [--port ${OPERATOR_UI_STATIC_RUNTIME_DEFAULT_PORT}]`,
