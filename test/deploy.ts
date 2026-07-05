@@ -2844,6 +2844,82 @@ test('operator UI render allowlist - Phase 64 hardens static render boundary', (
   ]) assert(!source.includes(forbidden), `Phase 64 source excludes ${forbidden}`);
 });
 
+test('static operator UI artifact packaging - Phase 65 is allowlist-gated and fixture-only', () => {
+  assert(exists('src/ops/operator-ui-static-artifact.ts'), 'Phase 65 static artifact source exists');
+  assert(exists('src/ops/operator-ui-static-artifact-cli.ts'), 'Phase 65 static artifact CLI exists');
+  assert(exists('docs/PHASE_65_STATIC_UI_ARTIFACT_PACKAGING.md'), 'Phase 65 static artifact doc exists');
+  assert(exists('test/operator-ui-static-artifact.ts'), 'Phase 65 static artifact suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-static-artifact'] === 'string', 'Phase 65 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-static-artifact'] === 'string', 'Phase 65 ops script present');
+  assert((pkg.scripts.test ?? '').includes('test/operator-ui-render-allowlist.ts && tsx test/operator-ui-static-artifact.ts'), 'Phase 65 suite follows Phase 64 suite in CI chain');
+
+  const source = read('src/ops/operator-ui-static-artifact.ts');
+  const cli = read('src/ops/operator-ui-static-artifact-cli.ts');
+  const renderer = read('src/ops/operator-ui-static-prototype.ts');
+  const allowlist = read('src/ops/operator-ui-render-allowlist.ts');
+  const suite = read('test/operator-ui-static-artifact.ts');
+  const doc = read('docs/PHASE_65_STATIC_UI_ARTIFACT_PACKAGING.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${renderer}\n${allowlist}\n${suite}\n${doc}\n${readme}`;
+  for (const kw of [
+    'static operator UI artifact packaging',
+    'buildOperatorUiStaticArtifact',
+    'inspectOperatorUiRenderedHtml',
+    'OPERATOR_UI_STATIC_ARTIFACT_READY',
+    'operator-ui-static-prototype.html',
+    'ops:operator-ui-static-artifact',
+    'test:operator-ui-static-artifact',
+    'Phase 64 allowlist gate',
+    'fixture-only',
+    'metadata only',
+    'no React, Vite, Next, Express, frontend framework, bundler, HTTP route, API route, database read, provider adapter, network call, env read, file read, browser JavaScript, browser storage, external asset, remote font, provider control, playback, download, or streaming behavior',
+    'Provider availability remains advisory/count-only',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+    'Phase 66',
+  ]) assert(combined.includes(kw), `Phase 65 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'writeFile',
+    'writeFileSync',
+    'createWriteStream',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 65 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

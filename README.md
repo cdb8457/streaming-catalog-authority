@@ -290,6 +290,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md` (future operator UI examples; no frontend code) Â·
   `docs/PHASE_61_OPERATOR_UI_PACKET_CONTRACT.md` (static redaction-safe operator UI packet contract) Â·
   `docs/PHASE_63_STATIC_OPERATOR_UI_PROTOTYPE.md` (read-only static operator UI prototype) Â·
+  `docs/PHASE_65_STATIC_UI_ARTIFACT_PACKAGING.md` (static operator UI artifact packaging) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -447,6 +448,14 @@ Phase 64 adds `src/ops/operator-ui-render-allowlist.ts`,
 `docs/PHASE_64_RENDER_ALLOWLIST_HARDENING.md`, and `test:operator-ui-render-allowlist` as a static
 render allowlist evidence gate for that prototype. Rendered text must come only from Phase 61/62
 allowlists plus fixed safe chrome, failures use fixed redaction-safe codes, and the boundary remains:
+no React, Vite, Next, Express, frontend framework, bundler, HTTP route, API route, database read,
+provider adapter, network call, env read, file read, browser JavaScript, browser storage, external
+asset, remote font, provider control, playback, download, or streaming behavior.
+Phase 65 adds `src/ops/operator-ui-static-artifact.ts`,
+`docs/PHASE_65_STATIC_UI_ARTIFACT_PACKAGING.md`, `ops:operator-ui-static-artifact`, and
+`test:operator-ui-static-artifact` as static operator UI artifact packaging for
+`operator-ui-static-prototype.html`. It keeps the Phase 64 allowlist gate in front of packaging,
+emits HTML only through stdout, keeps JSON evidence metadata-only, and remains fixture-only with:
 no React, Vite, Next, Express, frontend framework, bundler, HTTP route, API route, database read,
 provider adapter, network call, env read, file read, browser JavaScript, browser storage, external
 asset, remote font, provider control, playback, download, or streaming behavior.
