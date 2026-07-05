@@ -1,6 +1,7 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
+import { createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { inspectOperatorUiRenderedHtml } from '../src/ops/operator-ui-render-allowlist.js';
 import { buildOperatorUiStaticArtifact } from '../src/ops/operator-ui-static-artifact.js';
@@ -59,6 +60,70 @@ function get(port: number, path: string, method = 'GET'): Promise<HttpResult> {
     req.on('error', reject);
     req.end();
   });
+}
+
+async function chooseLoopbackPort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer();
+    server.on('error', reject);
+    server.listen(0, OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST, () => {
+      const address = server.address();
+      if (address === null || typeof address === 'string') {
+        server.close(() => reject(new Error('unexpected test listener address')));
+        return;
+      }
+      const port = address.port;
+      server.close((err) => {
+        if (err) reject(err);
+        else resolve(port);
+      });
+    });
+  });
+}
+
+function wait(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function waitForHealth(port: number, child: ChildProcessWithoutNullStreams): Promise<HttpResult> {
+  const deadline = Date.now() + 10000;
+  let lastError: unknown;
+
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null) {
+      throw new Error(`runtime process exited before health probe succeeded: ${child.exitCode}`);
+    }
+
+    try {
+      const response = await get(port, '/healthz');
+      if (response.statusCode === 200) return response;
+    } catch (err) {
+      lastError = err;
+    }
+
+    await wait(100);
+  }
+
+  throw new Error(`timed out waiting for documented npm runtime health: ${(lastError as Error | undefined)?.message ?? 'no response'}`);
+}
+
+function stopSpawnedRuntime(child: ChildProcessWithoutNullStreams): void {
+  if (child.pid === undefined || child.exitCode !== null) return;
+
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/pid', String(child.pid), '/t', '/f'], { stdio: 'ignore' });
+    } catch {
+      child.kill();
+    }
+    return;
+  }
+
+  try {
+    process.kill(-child.pid, 'SIGTERM');
+  } catch {
+    child.kill('SIGTERM');
+  }
 }
 
 function assertRejects(fn: () => unknown, message: string): void {
@@ -170,6 +235,46 @@ async function main(): Promise<void> {
     assert(!output.includes('listening at'), 'does not start listener');
   });
 
+  await test('documented npm serve command starts runtime and returns fixed health JSON', async () => {
+    const port = await chooseLoopbackPort();
+    const child = spawn('npm', [
+      'run',
+      '--silent',
+      'ops:operator-ui-static-runtime',
+      '--',
+      '--serve',
+      '--host',
+      '127.0.0.1',
+      '--port',
+      String(port),
+    ], {
+      cwd: root,
+      detached: process.platform !== 'win32',
+      env: { ...process.env, SECRET_TOKEN_SENTINEL: 'must-not-leak' },
+      shell: process.platform === 'win32',
+      windowsHide: true,
+    });
+    let stdout = '';
+    let stderr = '';
+    child.stdout.on('data', (chunk: Buffer) => { stdout += chunk.toString('utf8'); });
+    child.stderr.on('data', (chunk: Buffer) => { stderr += chunk.toString('utf8'); });
+
+    try {
+      const response = await waitForHealth(port, child);
+      const parsed = JSON.parse(response.body) as { ok: boolean; code: string; status: string };
+      assert(parsed.ok === true, 'health ok');
+      assert(parsed.code === 'OPERATOR_UI_STATIC_RUNTIME_HEALTHY', 'fixed health code');
+      assert(parsed.status === 'fixture/static/local-only', 'fixed fixture/local status');
+      assert(!response.body.includes('must-not-leak'), 'health does not leak env sentinel');
+    } finally {
+      stopSpawnedRuntime(child);
+      await wait(250);
+    }
+
+    assert(!stdout.includes('unknown'), 'documented npm command is not rejected as unknown');
+    assert(!stderr.includes('refused unsafe config'), `documented npm command was accepted: ${stderr}`);
+  });
+
   await test('package scripts, docs, and deploy guard include Phase 70 runtime shell', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
     assert(pkg.scripts['ops:operator-ui-static-runtime'] === 'tsx src/ops/operator-ui-static-runtime-cli.ts', 'ops script');
@@ -185,7 +290,7 @@ async function main(): Promise<void> {
       'operator UI static runtime shell',
       'ops:operator-ui-static-runtime',
       'test:operator-ui-static-runtime',
-      'npm run ops:operator-ui-static-runtime -- -- --serve --host 127.0.0.1 --port 8787',
+      'npm run ops:operator-ui-static-runtime -- --serve --host 127.0.0.1 --port 8787',
       '127.0.0.1',
       'GET /',
       'GET /healthz',

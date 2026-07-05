@@ -510,7 +510,7 @@ Phase 70 adds `src/ops/operator-ui-static-runtime.ts`,
 `test:operator-ui-static-runtime` as a Local Static Operator UI Runtime Shell. It intentionally
 serves only the existing Phase 65 fixture-only static artifact over `127.0.0.1` after the Phase 64
 render allowlist and Phase 65 artifact packaging gates. The exact start command is
-`npm run ops:operator-ui-static-runtime -- -- --serve --host 127.0.0.1 --port 8787`. Without
+`npm run ops:operator-ui-static-runtime -- --serve --host 127.0.0.1 --port 8787`. Without
 `--serve`, the CLI prints boundary usage and starts no listener. Routes are fixed to `GET /` and
 `GET /healthz`, with safe `404`/`405` handling and restrictive no-store/nosniff/CSP headers. Phase
 68/69 boundaries remain visible: no live DB/provider/packet-source/API/playback/download/scraping/media-server behavior,

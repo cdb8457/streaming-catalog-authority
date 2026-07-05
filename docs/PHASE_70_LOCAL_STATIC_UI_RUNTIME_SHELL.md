@@ -27,7 +27,7 @@ default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; script-src 'none'
 The listener starts only with the explicit `--serve` flag:
 
 ```sh
-npm run ops:operator-ui-static-runtime -- -- --serve --host 127.0.0.1 --port 8787
+npm run ops:operator-ui-static-runtime -- --serve --host 127.0.0.1 --port 8787
 ```
 
 Without `--serve`, the CLI prints usage and boundary text and exits without starting a listener.

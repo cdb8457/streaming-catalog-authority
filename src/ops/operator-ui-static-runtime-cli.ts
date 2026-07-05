@@ -21,7 +21,7 @@ function usage(): string {
     'Boundary: local fixture-only static preview; no API, packet source, DB read, provider, playback, download, scraping, or media-server behavior.',
     '',
     'Usage:',
-    `  npm run ops:operator-ui-static-runtime -- -- --serve [--host ${OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST}] [--port ${OPERATOR_UI_STATIC_RUNTIME_DEFAULT_PORT}]`,
+    `  npm run ops:operator-ui-static-runtime -- --serve [--host ${OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST}] [--port ${OPERATOR_UI_STATIC_RUNTIME_DEFAULT_PORT}]`,
     '',
     `Allowed host: ${OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST}`,
     `Allowed CLI port range: ${OPERATOR_UI_STATIC_RUNTIME_MIN_CLI_PORT}-${OPERATOR_UI_STATIC_RUNTIME_MAX_PORT}`,

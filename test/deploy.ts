@@ -3278,7 +3278,7 @@ test('operator UI static runtime shell - Phase 70 is local fixture-only HTTP', (
     'operator UI static runtime shell',
     'ops:operator-ui-static-runtime',
     'test:operator-ui-static-runtime',
-    'npm run ops:operator-ui-static-runtime -- -- --serve --host 127.0.0.1 --port 8787',
+    'npm run ops:operator-ui-static-runtime -- --serve --host 127.0.0.1 --port 8787',
     'buildOperatorUiStaticArtifact',
     'OPERATOR_UI_STATIC_RUNTIME_HEALTHY',
     'fixture/static/local-only',
