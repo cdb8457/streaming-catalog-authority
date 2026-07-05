@@ -530,6 +530,23 @@ runtime command remains `npm run ops:operator-ui-static-runtime -- --serve --hos
 adds no API/data route, packet source, DB/provider/playback/download/scraping/media-server behavior.
 O4 and O5 remain open/deferred; `FileCustodian` remains a hardened reference harness, not production
 KMS.
+Phase 72 adds `docs/PHASE_72_STATIC_RUNTIME_MANIFEST.md` and
+`test:operator-ui-static-runtime-manifest` as a Local Static Runtime Manifest Endpoint over the same
+hardened local static runtime. The only new route is `GET /manifest.json`, which returns fixed
+deterministic JSON with `OPERATOR_UI_STATIC_RUNTIME_MANIFEST`, `local-static-fixture-preview`,
+`fixture-only`, `not-implemented`, `static-preview-only`, `not-ready`, the fixed route list
+`GET /`, `GET /healthz`, and `GET /manifest.json`, and boundary/gate strings for Phase 64, Phase
+65, Phase 68, Phase 69, Phase 71, O4/O5, FileCustodian, and provider availability. `HEAD
+/manifest.json` is rejected with `405`, `Allow: GET`, and an empty body; raw target bypass forms
+around the manifest remain fixed `404`. The manifest is not a packet source and not a data API: it
+adds no DB/provider/API data/playback/download/scraping/media-server/packet source behavior, no live
+data, no env/config read, no filesystem scan or artifact-file read, no outbound network, no provider
+call/integration, no credential handling, no sanitized packet endpoint, no frontend framework, and
+no browser JavaScript. It contains no host data, paths, ports, timestamps, package versions, git
+refs, content titles, provider names/logos, raw refs, infohashes, magnets, credentials, user library
+data, poster art, streaming artwork, or raw event payloads. O4 and O5 remain open/deferred;
+`FileCustodian` remains a hardened reference harness, not production KMS. Provider availability
+remains packet/count/advisory only.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -3436,6 +3436,100 @@ test('operator UI static runtime hardening - Phase 71 fails closed before new da
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 71 source excludes ${forbidden}`);
 });
 
+test('operator UI static runtime manifest - Phase 72 is fixed local metadata only', () => {
+  assert(exists('docs/PHASE_72_STATIC_RUNTIME_MANIFEST.md'), 'Phase 72 static runtime manifest doc exists');
+  assert(exists('test/operator-ui-static-runtime-manifest.ts'), 'Phase 72 static runtime manifest suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-static-runtime-manifest'] === 'string', 'Phase 72 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-hardening.ts && tsx test/operator-ui-static-runtime-manifest.ts'),
+    'Phase 72 suite follows Phase 71 hardening suite in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-static-runtime.ts');
+  const cli = read('src/ops/operator-ui-static-runtime-cli.ts');
+  const suite = read('test/operator-ui-static-runtime-manifest.ts');
+  const doc = read('docs/PHASE_72_STATIC_RUNTIME_MANIFEST.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+
+  for (const kw of [
+    'Local Static Runtime Manifest Endpoint',
+    'test:operator-ui-static-runtime-manifest',
+    'buildOperatorUiStaticRuntimeManifest',
+    'GET /manifest.json',
+    'OPERATOR_UI_STATIC_RUNTIME_MANIFEST',
+    'local-static-fixture-preview',
+    'fixture-only',
+    'packetSource',
+    'not-implemented',
+    'static-preview-only',
+    'not-ready',
+    'Content-Type: application/json; charset=utf-8',
+    'HEAD /manifest.json',
+    'Allow: GET',
+    'absolute-form',
+    'scheme-relative',
+    'encoded slash',
+    'encoded backslash',
+    'Phase 64',
+    'Phase 65',
+    'Phase 68',
+    'Phase 69',
+    'Phase 71',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+    'Provider availability remains packet/count/advisory only',
+    'no DB/provider/API data/playback/download/scraping/media-server/packet source behavior',
+  ]) assert(combined.includes(kw), `Phase 72 covers ${kw}`);
+
+  assert(source.includes("from 'node:http'"), 'Phase 72 runtime remains Node built-in HTTP only');
+  assert(!source.includes('new Date'), 'manifest has no timestamp construction');
+  assert(!source.includes('Date.now'), 'manifest has no dynamic clock read');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    '/api/',
+    'DATABASE_URL',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 72 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

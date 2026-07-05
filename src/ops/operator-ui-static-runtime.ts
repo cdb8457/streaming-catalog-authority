@@ -62,6 +62,66 @@ export interface StartedOperatorUiStaticRuntime {
   readonly close: () => Promise<void>;
 }
 
+export interface OperatorUiStaticRuntimeManifest {
+  readonly ok: true;
+  readonly code: 'OPERATOR_UI_STATIC_RUNTIME_MANIFEST';
+  readonly surface: 'local-static-fixture-preview';
+  readonly routes: readonly ['GET /', 'GET /healthz', 'GET /manifest.json'];
+  readonly dataMode: 'fixture-only';
+  readonly packetSource: 'not-implemented';
+  readonly localRuntime: 'static-preview-only';
+  readonly liveProduct: 'not-ready';
+  readonly boundaries: readonly string[];
+  readonly gates: readonly string[];
+}
+
+const OPERATOR_UI_STATIC_RUNTIME_MANIFEST: OperatorUiStaticRuntimeManifest = {
+  ok: true,
+  code: 'OPERATOR_UI_STATIC_RUNTIME_MANIFEST',
+  surface: 'local-static-fixture-preview',
+  routes: ['GET /', 'GET /healthz', 'GET /manifest.json'],
+  dataMode: 'fixture-only',
+  packetSource: 'not-implemented',
+  localRuntime: 'static-preview-only',
+  liveProduct: 'not-ready',
+  boundaries: [
+    'no-db-read',
+    'no-provider-call-or-integration',
+    'no-api-data-route',
+    'no-playback-control',
+    'no-download-control',
+    'no-scraping',
+    'no-media-server-logic',
+    'no-packet-source',
+    'no-live-packet-ingestion',
+    'no-secret-material',
+    'no-host-machine-data',
+    'no-filesystem-artifact-read',
+    'no-env-or-config-read',
+    'no-outbound-network',
+  ],
+  gates: [
+    'Phase 64 render allowlist remains enforced',
+    'Phase 65 in-process static artifact remains the root body',
+    'Phase 68 local runtime boundary remains blocked/deferred',
+    'Phase 69 packet source contract remains not implemented',
+    'Phase 71 raw target hardening remains enforced',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+    'Provider availability remains packet/count/advisory only',
+  ],
+};
+
+export function buildOperatorUiStaticRuntimeManifest(): OperatorUiStaticRuntimeManifest {
+  return {
+    ...OPERATOR_UI_STATIC_RUNTIME_MANIFEST,
+    routes: [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.routes] as OperatorUiStaticRuntimeManifest['routes'],
+    boundaries: [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.boundaries],
+    gates: [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.gates],
+  };
+}
+
 function isAllowedHost(host: string): host is typeof OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST {
   return host === OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST;
 }
@@ -100,6 +160,13 @@ function sendPlain(res: ServerResponse, statusCode: number, body: string, allow?
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
   if (allow) res.setHeader('Allow', allow);
   res.end(emptyBody ? '' : body);
+}
+
+function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
+  setSafeHeaders(res);
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(`${JSON.stringify(body)}\n`);
 }
 
 function rawRequestPath(req: IncomingMessage): string {
@@ -149,7 +216,7 @@ export function createOperatorUiStaticRuntimeServer(
       return;
     }
 
-    const isKnownPath = path === '/' || path === '/healthz';
+    const isKnownPath = path === '/' || path === '/healthz' || path === '/manifest.json';
 
     if (method === 'HEAD') {
       ignoreRequestBody(req);
@@ -173,14 +240,16 @@ export function createOperatorUiStaticRuntimeServer(
     }
 
     if (path === '/healthz') {
-      setSafeHeaders(res);
-      res.statusCode = 200;
-      res.setHeader('Content-Type', 'application/json; charset=utf-8');
-      res.end(`${JSON.stringify({
+      sendJson(res, 200, {
         ok: true,
         code: 'OPERATOR_UI_STATIC_RUNTIME_HEALTHY',
         status: 'fixture/static/local-only',
-      })}\n`);
+      });
+      return;
+    }
+
+    if (path === '/manifest.json') {
+      sendJson(res, 200, buildOperatorUiStaticRuntimeManifest());
       return;
     }
 
