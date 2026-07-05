@@ -443,6 +443,13 @@ Phase 63 adds `src/ops/operator-ui-static-prototype.ts`,
 `test:operator-ui-static-prototype` as a read-only static operator UI prototype generated from
 Phase 62 fixture packets only. It adds no live app, server, framework, DB read, file/env read,
 network call, provider control, playback, download, or streaming behavior.
+Phase 64 adds `src/ops/operator-ui-render-allowlist.ts`,
+`docs/PHASE_64_RENDER_ALLOWLIST_HARDENING.md`, and `test:operator-ui-render-allowlist` as a static
+render allowlist evidence gate for that prototype. Rendered text must come only from Phase 61/62
+allowlists plus fixed safe chrome, failures use fixed redaction-safe codes, and the boundary remains:
+no React, Vite, Next, Express, frontend framework, bundler, HTTP route, API route, database read,
+provider adapter, network call, env read, file read, browser JavaScript, browser storage, external
+asset, remote font, provider control, playback, download, or streaming behavior.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
