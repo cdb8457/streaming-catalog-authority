@@ -44,7 +44,7 @@ npm run --silent ops:operator-ui-launch-readiness
 JSON output:
 
 ```sh
-npm run --silent ops:operator-ui-launch-readiness -- --json
+npm run --silent ops:operator-ui-launch-readiness -- -- --json
 ```
 
 Both outputs are deterministic and parseable. The CLI has no inputs beyond the `--json` output

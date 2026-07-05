@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
@@ -21,6 +21,7 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8');
 const source = read('src/ops/operator-ui-launch-readiness.ts');
 const cliSource = read('src/ops/operator-ui-launch-readiness-cli.ts');
+const documentedNpmJsonCommand = 'npm run --silent ops:operator-ui-launch-readiness -- -- --json';
 
 console.log('Running Phase 67 operator UI launch readiness suite:\n');
 
@@ -104,6 +105,26 @@ test('--json CLI output is parseable and redaction-safe', () => {
   }
 });
 
+test('documented npm JSON command output is parseable and redaction-safe', () => {
+  const output = execSync(documentedNpmJsonCommand, {
+    cwd: root,
+    env: {
+      ...process.env,
+      TOKEN: 'SECRET_TOKEN_SENTINEL',
+      PRIVATE_TITLE: 'Private Movie Sentinel',
+      DATABASE_URL: 'postgres://user:pass@example.invalid/db',
+    },
+    encoding: 'utf8',
+  });
+  const parsed = JSON.parse(output) as OperatorUiLaunchReadinessReport;
+  assert(parsed.code === 'OPERATOR_UI_LAUNCH_READINESS_REPORTED', 'documented npm json code');
+  assert(parsed.surfaces.some((surface) => surface.id === 'static-preview' && surface.readiness === 'ready'), 'documented npm json static ready');
+  assert(parsed.surfaces.some((surface) => surface.id === 'live-product' && surface.readiness === 'not-ready'), 'documented npm json live not ready');
+  for (const sentinel of ['SECRET_TOKEN_SENTINEL', 'Private Movie Sentinel', 'postgres://', 'example.invalid']) {
+    assert(!output.includes(sentinel), `documented npm json omits hostile env ${sentinel}`);
+  }
+});
+
 test('text CLI output is parseable and deterministic', () => {
   const output = execFileSync('node', ['--import', 'tsx', 'src/ops/operator-ui-launch-readiness-cli.ts'], {
     cwd: root,
@@ -177,6 +198,7 @@ test('docs, README, and deploy guard mention Phase 67 launch readiness', () => {
     'operator UI launch readiness',
     'ops:operator-ui-launch-readiness',
     'test:operator-ui-launch-readiness',
+    documentedNpmJsonCommand,
     'static-preview',
     'local-readonly-ui',
     'live-product',
