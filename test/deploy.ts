@@ -2990,6 +2990,91 @@ test('static UI layout refinement - Phase 66 is allowlist-gated and fixture-only
   ]) assert(!renderer.includes(forbidden), `Phase 66 renderer source excludes ${forbidden}`);
 });
 
+test('operator UI launch readiness - Phase 67 is fixed, synthetic, and redaction-safe', () => {
+  assert(exists('src/ops/operator-ui-launch-readiness.ts'), 'Phase 67 launch readiness source exists');
+  assert(exists('src/ops/operator-ui-launch-readiness-cli.ts'), 'Phase 67 launch readiness CLI exists');
+  assert(exists('docs/PHASE_67_OPERATOR_UI_LAUNCH_READINESS.md'), 'Phase 67 launch readiness doc exists');
+  assert(exists('test/operator-ui-launch-readiness.ts'), 'Phase 67 launch readiness suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-launch-readiness'] === 'string', 'Phase 67 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-launch-readiness'] === 'string', 'Phase 67 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-static-layout.ts && tsx test/operator-ui-launch-readiness.ts'),
+    'Phase 67 suite follows Phase 66 suite in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-launch-readiness.ts');
+  const cli = read('src/ops/operator-ui-launch-readiness-cli.ts');
+  const suite = read('test/operator-ui-launch-readiness.ts');
+  const doc = read('docs/PHASE_67_OPERATOR_UI_LAUNCH_READINESS.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+  for (const kw of [
+    'Operator UI Launch Readiness Gate',
+    'operator UI launch readiness',
+    'ops:operator-ui-launch-readiness',
+    'test:operator-ui-launch-readiness',
+    'static-preview',
+    'local-readonly-ui',
+    'live-product',
+    'ready',
+    'blocked/deferred',
+    'not-ready',
+    'fixed-synthetic-readiness',
+    'fixture-only static preview can be generated/shared',
+    'local read-only UI is blocked/deferred',
+    'live product launch is not ready',
+    'Live UI/API/runtime is not implemented or authorized',
+    'Sanitized local packet source is not implemented',
+    'Auth/access boundary is not implemented',
+    'Phase 64 render allowlist and Phase 65 artifact packaging',
+    'Provider availability remains packet/count/advisory only',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 67 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'scraping',
+    'playback',
+    'download',
+    'writeFile',
+    'createWriteStream',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 67 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

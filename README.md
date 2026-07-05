@@ -291,6 +291,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_61_OPERATOR_UI_PACKET_CONTRACT.md` (static redaction-safe operator UI packet contract) Â·
   `docs/PHASE_63_STATIC_OPERATOR_UI_PROTOTYPE.md` (read-only static operator UI prototype) Â·
   `docs/PHASE_65_STATIC_UI_ARTIFACT_PACKAGING.md` (static operator UI artifact packaging) Â·
+  `docs/PHASE_67_OPERATOR_UI_LAUNCH_READINESS.md` (operator UI launch readiness gate) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -464,6 +465,16 @@ Phase 66 adds `docs/PHASE_66_STATIC_UI_LAYOUT_REFINEMENT.md` and
 artifact. It improves the Graphite + Muted Orange appliance structure, keeps the Phase 64 allowlist
 gate and Phase 65 artifact packaging gate required, and leaves any live or sanitized local packet
 connection behind a future decision gate.
+Phase 67 adds `src/ops/operator-ui-launch-readiness.ts`,
+`docs/PHASE_67_OPERATOR_UI_LAUNCH_READINESS.md`, `ops:operator-ui-launch-readiness`, and
+`test:operator-ui-launch-readiness` as a fixed synthetic operator UI launch readiness gate:
+`static-preview` is `ready`, `local-readonly-ui` is `blocked/deferred`, and `live-product` is
+`not-ready`. The fixture-only static preview can be generated/shared after Phase 64 and Phase 65
+pass; local read-only UI is blocked/deferred pending explicit future authorization and design; live
+product launch is not ready pending security/runtime/production gates. Live UI/API/runtime,
+sanitized local packet source, and auth/access boundary are not implemented or authorized. Provider
+availability remains packet/count/advisory only; O4 and O5 remain open/deferred; `FileCustodian`
+remains a hardened reference harness, not production KMS.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
