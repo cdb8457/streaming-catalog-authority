@@ -1,7 +1,7 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { request } from 'node:http';
-import { createServer } from 'node:net';
+import { connect, createServer } from 'node:net';
 import { fileURLToPath } from 'node:url';
 import { inspectOperatorUiRenderedHtml } from '../src/ops/operator-ui-render-allowlist.js';
 import {
@@ -62,6 +62,39 @@ function httpRequest(port: number, path: string, method = 'GET', body = ''): Pro
     req.on('error', reject);
     if (body.length > 0) req.write(body);
     req.end();
+  });
+}
+
+function rawHttpRequest(port: number, target: string, method = 'GET'): Promise<HttpResult> {
+  return new Promise((resolve, reject) => {
+    const socket = connect(port, OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST);
+    let raw = '';
+
+    socket.setEncoding('utf8');
+    socket.setTimeout(5000);
+    socket.on('connect', () => {
+      socket.write(`${method} ${target} HTTP/1.1\r\n`);
+      socket.write(`Host: ${OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST}:${port}\r\n`);
+      socket.write('Connection: close\r\n\r\n');
+    });
+    socket.on('data', (chunk: string) => { raw += chunk; });
+    socket.on('timeout', () => {
+      socket.destroy();
+      reject(new Error(`timed out waiting for raw response to ${target}`));
+    });
+    socket.on('error', reject);
+    socket.on('end', () => {
+      const [head = '', body = ''] = raw.split('\r\n\r\n');
+      const lines = head.split('\r\n');
+      const statusCode = Number(lines[0]?.split(' ')[1] ?? 0);
+      const headers: Record<string, string | string[] | undefined> = {};
+      for (const line of lines.slice(1)) {
+        const separator = line.indexOf(':');
+        if (separator === -1) continue;
+        headers[line.slice(0, separator).toLowerCase()] = line.slice(separator + 1).trim();
+      }
+      resolve({ statusCode, headers, body });
+    });
   });
 }
 
@@ -186,6 +219,35 @@ async function main(): Promise<void> {
         assert(response.statusCode === 404, `${path} status 404`);
         assert(response.body === 'not found\n', `${path} fixed 404 body`);
         assertSafeHeaders(response, 'text/plain; charset=utf-8');
+      }
+    } finally {
+      await runtime.close();
+    }
+  });
+
+  await test('raw request-target bypass forms are rejected before route matching', async () => {
+    const runtime = await startOperatorUiStaticRuntime({ host: '127.0.0.1', port: 0 });
+    try {
+      for (const target of [
+        '//evil/healthz',
+        'http://evil/healthz',
+        'https://evil/healthz',
+        '///healthz',
+        '//evil/',
+        '/%2e/healthz',
+        '/healthz%2f..',
+        '/healthz%5c..',
+        '/healthz\\..',
+      ]) {
+        const response = await rawHttpRequest(runtime.port, target);
+        assert(response.statusCode === 404, `${target} status 404`);
+        assert(response.body === 'not found\n', `${target} fixed 404 body`);
+        assertSafeHeaders(response, 'text/plain; charset=utf-8');
+      }
+
+      for (const target of ['/', '/healthz', '/?x=1', '/healthz?x=1']) {
+        const response = await rawHttpRequest(runtime.port, target);
+        assert(response.statusCode === 200, `${target} remains matched`);
       }
     } finally {
       await runtime.close();

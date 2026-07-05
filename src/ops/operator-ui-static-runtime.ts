@@ -102,21 +102,20 @@ function sendPlain(res: ServerResponse, statusCode: number, body: string, allow?
   res.end(emptyBody ? '' : body);
 }
 
-function requestPath(req: IncomingMessage): string | null {
-  try {
-    return new URL(req.url ?? '/', 'http://127.0.0.1').pathname;
-  } catch {
-    return null;
-  }
+function rawRequestPath(req: IncomingMessage): string {
+  const rawTarget = req.url ?? '/';
+  const queryIndex = rawTarget.indexOf('?');
+  return queryIndex === -1 ? rawTarget : rawTarget.slice(0, queryIndex);
 }
 
-function isTraversalLikeRequestTarget(req: IncomingMessage): boolean {
-  const rawPath = (req.url ?? '/').split('?', 1)[0]?.toLowerCase() ?? '/';
-  return rawPath.includes('..')
+function isUnsafeRawRequestPath(rawPath: string): boolean {
+  const lower = rawPath.toLowerCase();
+  return lower.startsWith('http://')
+    || lower.startsWith('https://')
+    || rawPath.startsWith('//')
+    || rawPath.includes('..')
     || rawPath.includes('\\')
-    || rawPath.includes('%2e')
-    || rawPath.includes('%2f')
-    || rawPath.includes('%5c');
+    || /%(?:2e|2f|5c)/i.test(rawPath);
 }
 
 function ignoreRequestBody(req: IncomingMessage): void {
@@ -143,16 +142,10 @@ export function createOperatorUiStaticRuntimeServer(
 ): Server {
   return hardenServer(createServer((req, res) => {
     const method = req.method ?? '';
-    if (isTraversalLikeRequestTarget(req)) {
+    const path = rawRequestPath(req);
+    if (isUnsafeRawRequestPath(path)) {
       ignoreRequestBody(req);
       sendPlain(res, 404, 'not found\n', undefined, method === 'HEAD');
-      return;
-    }
-
-    const path = requestPath(req);
-    if (path === null) {
-      ignoreRequestBody(req);
-      sendPlain(res, 400, 'bad request\n');
       return;
     }
 
