@@ -289,6 +289,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md` (operator-run smoke evidence design; no live transport) Â·
   `docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md` (future operator UI examples; no frontend code) Â·
   `docs/PHASE_61_OPERATOR_UI_PACKET_CONTRACT.md` (static redaction-safe operator UI packet contract) Â·
+  `docs/PHASE_63_STATIC_OPERATOR_UI_PROTOTYPE.md` (read-only static operator UI prototype) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -437,6 +438,11 @@ Phase 62 adds `src/ops/operator-ui-fixtures.ts`, `docs/PHASE_62_OPERATOR_UI_FIXT
 `test:operator-ui-fixtures` as deterministic operator UI fixture packets for those nine screens.
 They are static fixture data only, validate through the Phase 61 contract, render no UI, read no DB,
 files, env, or network, and preserve the same advisory/count-only provider availability boundary.
+Phase 63 adds `src/ops/operator-ui-static-prototype.ts`,
+`docs/PHASE_63_STATIC_OPERATOR_UI_PROTOTYPE.md`, `ops:operator-ui-static-prototype`, and
+`test:operator-ui-static-prototype` as a read-only static operator UI prototype generated from
+Phase 62 fixture packets only. It adds no live app, server, framework, DB read, file/env read,
+network call, provider control, playback, download, or streaming behavior.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
