@@ -3075,6 +3075,95 @@ test('operator UI launch readiness - Phase 67 is fixed, synthetic, and redaction
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 67 source excludes ${forbidden}`);
 });
 
+test('operator UI runtime boundary - Phase 68 is fixed, synthetic, and no-input', () => {
+  assert(exists('src/ops/operator-ui-runtime-boundary.ts'), 'Phase 68 runtime boundary source exists');
+  assert(exists('src/ops/operator-ui-runtime-boundary-cli.ts'), 'Phase 68 runtime boundary CLI exists');
+  assert(exists('docs/PHASE_68_OPERATOR_UI_RUNTIME_BOUNDARY.md'), 'Phase 68 runtime boundary doc exists');
+  assert(exists('test/operator-ui-runtime-boundary.ts'), 'Phase 68 runtime boundary suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-runtime-boundary'] === 'string', 'Phase 68 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-runtime-boundary'] === 'string', 'Phase 68 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-launch-readiness.ts && tsx test/operator-ui-runtime-boundary.ts'),
+    'Phase 68 suite follows Phase 67 suite in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-runtime-boundary.ts');
+  const cli = read('src/ops/operator-ui-runtime-boundary-cli.ts');
+  const suite = read('test/operator-ui-runtime-boundary.ts');
+  const doc = read('docs/PHASE_68_OPERATOR_UI_RUNTIME_BOUNDARY.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+  for (const kw of [
+    'Local Operator UI Runtime Boundary Plan',
+    'operator UI runtime boundary',
+    'ops:operator-ui-runtime-boundary',
+    'test:operator-ui-runtime-boundary',
+    'npm run --silent ops:operator-ui-runtime-boundary -- -- --json',
+    'fixed-synthetic-runtime-boundary',
+    'static-preview',
+    'local-readonly-runtime',
+    'live-product',
+    'ready',
+    'blocked/deferred',
+    'not-ready',
+    'local-only bind/access posture',
+    'operator access/auth boundary',
+    'read-only packet endpoint/source',
+    'direct UI DB access is forbidden',
+    'static preview remains the only ready surface',
+    'local read-only runtime remains blocked',
+    'Phase 69',
+    'Phase 64 render allowlist remains intact',
+    'Phase 65 static artifact packaging remains intact',
+    'Phase 67 launch readiness gate remains intact',
+    'Provider availability remains packet/count/advisory only',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 68 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'scraping',
+    'playback',
+    'download',
+    'writeFile',
+    'createWriteStream',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 68 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
