@@ -459,6 +459,11 @@ emits HTML only through stdout, keeps JSON evidence metadata-only, and remains f
 no React, Vite, Next, Express, frontend framework, bundler, HTTP route, API route, database read,
 provider adapter, network call, env read, file read, browser JavaScript, browser storage, external
 asset, remote font, provider control, playback, download, or streaming behavior.
+Phase 66 adds `docs/PHASE_66_STATIC_UI_LAYOUT_REFINEMENT.md` and
+`test:operator-ui-static-layout` as a static UI layout refinement over the same fixture-only HTML
+artifact. It improves the Graphite + Muted Orange appliance structure, keeps the Phase 64 allowlist
+gate and Phase 65 artifact packaging gate required, and leaves any live or sanitized local packet
+connection behind a future decision gate.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -2920,6 +2920,76 @@ test('static operator UI artifact packaging - Phase 65 is allowlist-gated and fi
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 65 source excludes ${forbidden}`);
 });
 
+test('static UI layout refinement - Phase 66 is allowlist-gated and fixture-only', () => {
+  assert(exists('docs/PHASE_66_STATIC_UI_LAYOUT_REFINEMENT.md'), 'Phase 66 static layout doc exists');
+  assert(exists('test/operator-ui-static-layout.ts'), 'Phase 66 static layout suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-static-layout'] === 'string', 'Phase 66 test script present');
+  assert((pkg.scripts.test ?? '').includes('test/operator-ui-static-artifact.ts && tsx test/operator-ui-static-layout.ts'), 'Phase 66 suite follows Phase 65 suite in CI chain');
+
+  const renderer = read('src/ops/operator-ui-static-prototype.ts');
+  const allowlist = read('src/ops/operator-ui-render-allowlist.ts');
+  const suite = read('test/operator-ui-static-layout.ts');
+  const doc = read('docs/PHASE_66_STATIC_UI_LAYOUT_REFINEMENT.md');
+  const readme = read('README.md');
+  const combined = `${renderer}\n${allowlist}\n${suite}\n${doc}\n${readme}`;
+  for (const kw of [
+    'static UI layout refinement',
+    'test:operator-ui-static-layout',
+    'overview-band',
+    'status-rail',
+    'table-frame',
+    'Static Surface',
+    'Allowlist Gate',
+    'Artifact Gate',
+    'Render Boundary',
+    'Phase 64 allowlist gate',
+    'Phase 65 artifact packaging',
+    'Graphite + Muted Orange',
+    'fixture-only',
+    'future decision gate',
+    'Provider availability remains advisory/count-only',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 66 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+  ]) assert(!renderer.includes(forbidden), `Phase 66 renderer source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
