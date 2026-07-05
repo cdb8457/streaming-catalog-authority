@@ -433,6 +433,10 @@ Phase 61 adds `src/ops/operator-ui-packet-contract.ts` and `test:operator-ui-pac
 static allowlisted packet contract for future operator UI screens. It renders no UI, reads no DB,
 files, env, or network, exposes only synthetic labels, and keeps provider availability advisory and
 count-only.
+Phase 62 adds `src/ops/operator-ui-fixtures.ts`, `docs/PHASE_62_OPERATOR_UI_FIXTURES.md`, and
+`test:operator-ui-fixtures` as deterministic operator UI fixture packets for those nine screens.
+They are static fixture data only, validate through the Phase 61 contract, render no UI, read no DB,
+files, env, or network, and preserve the same advisory/count-only provider availability boundary.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

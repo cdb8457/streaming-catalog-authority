@@ -2613,6 +2613,78 @@ test('operator UI packet contract - Phase 61 is static, allowlisted, and redacti
   ]) assert(source.includes(forbiddenCategory), `Phase 61 denylist includes ${forbiddenCategory}`);
 });
 
+test('operator UI fixture packets - Phase 62 is static, deterministic, and contract-backed', () => {
+  assert(exists('src/ops/operator-ui-fixtures.ts'), 'Phase 62 fixture source exists');
+  assert(exists('docs/PHASE_62_OPERATOR_UI_FIXTURES.md'), 'Phase 62 fixture doc exists');
+  assert(exists('test/operator-ui-fixtures.ts'), 'Phase 62 fixture suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-fixtures'] === 'string', 'Phase 62 test script present');
+  assert((pkg.scripts.test ?? '').includes('test/operator-ui-packet-contract.ts && tsx test/operator-ui-fixtures.ts'), 'Phase 62 suite follows Phase 61 suite in CI chain');
+
+  const source = read('src/ops/operator-ui-fixtures.ts');
+  const suite = read('test/operator-ui-fixtures.ts');
+  const doc = read('docs/PHASE_62_OPERATOR_UI_FIXTURES.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${suite}\n${doc}\n${readme}`;
+  for (const kw of [
+    'operator UI fixture packets',
+    'OPERATOR_UI_FIXTURE_PACKETS',
+    'validateOperatorUiFixturePackets',
+    'formatOperatorUiFixtureReport',
+    'validateOperatorUiPacketDescriptor',
+    'overview',
+    'catalog-authority',
+    'privacy-crypto-shredding',
+    'key-custodian-o4-status',
+    'reconciler',
+    'backup-restore',
+    'provider-availability-packets',
+    'audit-queue',
+    'settings-operator-configuration',
+    'Item A',
+    'Provider Count',
+    'Review Required',
+    'Phase 63',
+    'fixture packets only',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 62 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'React',
+    'Vite',
+    'Next',
+    'Express',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'document.',
+    'window.',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+  ]) assert(!source.includes(forbidden), `Phase 62 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
