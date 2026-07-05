@@ -288,6 +288,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_34_TORBOX_READONLY_FIXTURE.md` (TorBox injected-transport fixture; no live client) Â·
   `docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md` (operator-run smoke evidence design; no live transport) Â·
   `docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md` (future operator UI examples; no frontend code) Â·
+  `docs/PHASE_61_OPERATOR_UI_PACKET_CONTRACT.md` (static redaction-safe operator UI packet contract) Â·
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -428,6 +429,10 @@ Phase 58 adds `ops:provider-availability-summary` for explicit-file, count-only 
 sanitized bridge reports.
 Phase 59 adds `ops:provider-availability-operator-packet` for static evidence/review packaging
 before any future dashboard consumes provider availability counts.
+Phase 61 adds `src/ops/operator-ui-packet-contract.ts` and `test:operator-ui-packet-contract` as a
+static allowlisted packet contract for future operator UI screens. It renders no UI, reads no DB,
+files, env, or network, exposes only synthetic labels, and keeps provider availability advisory and
+count-only.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

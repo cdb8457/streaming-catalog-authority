@@ -2520,6 +2520,99 @@ test('external custodian acceptance - Phase 21 harness is local, wired, and keep
   assert(!/(docker compose|curl |http:\/\/|https:\/\/|fetch\(|globalThis\.fetch)/.test(pkg.scripts['test:custodian-acceptance'] ?? ''), 'acceptance script has no Docker/network command');
 });
 
+test('operator UI packet contract - Phase 61 is static, allowlisted, and redaction-safe', () => {
+  assert(exists('src/ops/operator-ui-packet-contract.ts'), 'Phase 61 contract source exists');
+  assert(exists('docs/PHASE_61_OPERATOR_UI_PACKET_CONTRACT.md'), 'Phase 61 contract doc exists');
+  assert(exists('test/operator-ui-packet-contract.ts'), 'Phase 61 contract suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-packet-contract'] === 'string', 'Phase 61 test script present');
+  assert((pkg.scripts.test ?? '').includes('test/operator-ui-packet-contract.ts'), 'Phase 61 suite in CI chain');
+
+  const source = read('src/ops/operator-ui-packet-contract.ts');
+  const suite = read('test/operator-ui-packet-contract.ts');
+  const doc = read('docs/PHASE_61_OPERATOR_UI_PACKET_CONTRACT.md');
+  const combined = `${source}\n${suite}\n${doc}\n${read('README.md')}`;
+  for (const kw of [
+    'operator UI packet contract',
+    'OPERATOR_UI_SCREEN_IDS',
+    'OPERATOR_UI_DISPLAY_FIELD_LABELS',
+    'OPERATOR_UI_FORBIDDEN_FIELD_CATEGORIES',
+    'validateOperatorUiPacketDescriptor',
+    'OPERATOR_UI_PACKET_REJECTED',
+    'overview',
+    'catalog-authority',
+    'privacy-crypto-shredding',
+    'key-custodian-o4-status',
+    'reconciler',
+    'backup-restore',
+    'provider-availability-packets',
+    'audit-queue',
+    'settings-operator-configuration',
+    'Item A',
+    'Provider Count',
+    'Review Required',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 61 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'React',
+    'Vite',
+    'Next',
+    'Express',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    "from 'pg'",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'document.',
+    'window.',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+  ]) assert(!source.includes(forbidden), `Phase 61 source excludes ${forbidden}`);
+
+  for (const forbiddenCategory of [
+    'title',
+    'externalId',
+    'providerRef',
+    'infohash',
+    'magnet',
+    'credential',
+    'token',
+    'secret',
+    'path',
+    'url',
+    'poster',
+    'artwork',
+    'providerName',
+    'providerLogo',
+    'rawPayload',
+    'rawLog',
+    'databaseUrl',
+    'playback',
+    'download',
+    'stream',
+  ]) assert(source.includes(forbiddenCategory), `Phase 61 denylist includes ${forbiddenCategory}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
