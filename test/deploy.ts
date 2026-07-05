@@ -3346,6 +3346,96 @@ test('operator UI static runtime shell - Phase 70 is local fixture-only HTTP', (
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 70 source excludes ${forbidden}`);
 });
 
+test('operator UI static runtime hardening - Phase 71 fails closed before new data surfaces', () => {
+  assert(exists('docs/PHASE_71_STATIC_RUNTIME_HARDENING.md'), 'Phase 71 static runtime hardening doc exists');
+  assert(exists('test/operator-ui-static-runtime-hardening.ts'), 'Phase 71 static runtime hardening suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-static-runtime-hardening'] === 'string', 'Phase 71 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime.ts && tsx test/operator-ui-static-runtime-hardening.ts'),
+    'Phase 71 suite follows Phase 70 suite in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-static-runtime.ts');
+  const cli = read('src/ops/operator-ui-static-runtime-cli.ts');
+  const suite = read('test/operator-ui-static-runtime-hardening.ts');
+  const doc = read('docs/PHASE_71_STATIC_RUNTIME_HARDENING.md');
+  const phase70 = read('docs/PHASE_70_LOCAL_STATIC_UI_RUNTIME_SHELL.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${phase70}\n${readme}`;
+
+  for (const kw of [
+    'Local Static Runtime Hardening',
+    'test:operator-ui-static-runtime-hardening',
+    'pre-listen self-check',
+    'Phase 64 allowlist inspection',
+    'buildPrecheckedOperatorUiStaticRuntimeArtifact',
+    'server.listen',
+    'HEAD',
+    'Allow: GET',
+    'query strings',
+    'graceful shutdown',
+    'SIGINT',
+    'SIGTERM',
+    'requestTimeout',
+    'headersTimeout',
+    'keepAliveTimeout',
+    'maxHeadersCount',
+    'Referrer-Policy',
+    'X-Frame-Options',
+    'npm run ops:operator-ui-static-runtime -- --serve --host 127.0.0.1 --port 8787',
+    'Still serves only the in-process Phase 65 static artifact behind the Phase 64 allowlist',
+    'no API/data route, packet source, DB/provider/playback/download/scraping/media-server behavior',
+    'Phase 68/69 boundaries remain visible',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 71 covers ${kw}`);
+
+  assert(source.includes("from 'node:http'"), 'Phase 71 runtime remains Node built-in HTTP only');
+  assert(!source.includes('buildOperatorUiStaticArtifact();\n      setSafeHeaders'), 'root handler does not rebuild artifact per request');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    '/api/',
+    'DATABASE_URL',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 71 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

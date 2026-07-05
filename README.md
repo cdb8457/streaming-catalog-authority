@@ -294,7 +294,8 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docs/PHASE_67_OPERATOR_UI_LAUNCH_READINESS.md` (operator UI launch readiness gate) Â·
   `docs/PHASE_68_OPERATOR_UI_RUNTIME_BOUNDARY.md` (local operator UI runtime boundary plan) Â·
   `docs/PHASE_69_OPERATOR_UI_PACKET_SOURCE_CONTRACT.md` (sanitized local operator packet source contract) Â·
-  `docs/PHASE_70_LOCAL_STATIC_UI_RUNTIME_SHELL.md` (local static operator UI runtime shell) -
+  `docs/PHASE_70_LOCAL_STATIC_UI_RUNTIME_SHELL.md` (local static operator UI runtime shell) ·
+  `docs/PHASE_71_STATIC_RUNTIME_HARDENING.md` (local static runtime hardening) -
   `docs/PHASE_3_DEPLOYMENT.md`.
 
 Rollback is **restore-the-pre-upgrade-backup** (no down-migrations). Open production gates remain
@@ -518,6 +519,17 @@ no frontend framework, no browser JavaScript, no file artifact read, no env/conf
 network call, and no sanitized packet endpoint implementation. Provider availability remains
 packet/count/advisory only; O4 and O5 remain open/deferred; `FileCustodian` remains a hardened
 reference harness, not production KMS.
+Phase 71 adds `docs/PHASE_71_STATIC_RUNTIME_HARDENING.md` and
+`test:operator-ui-static-runtime-hardening` as Local Static Runtime Hardening over that same shell.
+It adds a pre-listen self-check against the Phase 64 allowlist inspection, retains the checked Phase
+65 artifact in memory for repeated `/` responses, rejects `HEAD` with `Allow: GET`, keeps query
+strings from creating route behavior, applies fixed safe headers on all response paths, adds
+conservative server timeout/header limits, and closes the server on `SIGINT`/`SIGTERM`. The exact
+runtime command remains `npm run ops:operator-ui-static-runtime -- --serve --host 127.0.0.1 --port
+8787`. It still serves only the in-process Phase 65 static artifact behind the Phase 64 allowlist and
+adds no API/data route, packet source, DB/provider/playback/download/scraping/media-server behavior.
+O4 and O5 remain open/deferred; `FileCustodian` remains a hardened reference harness, not production
+KMS.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
@@ -620,7 +632,7 @@ cleanup is confirmed and requires both the explicit `--write` flag and
 ## Not in this slice
 
 No Plex, no RD provider integration, no TorBox provider-mode integration, no Hermes, no externally bound/live HTTP service, no job queue, no frontend, and **no live network in
-automated tests**. Phase 70 is the only HTTP exception: a `127.0.0.1` fixture-only static preview shell, not a dashboard, API, packet source, DB reader, provider surface, playback surface, download surface, scraping surface, or media-server surface. (Phases 7–13 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox +
+automated tests**. Phase 70/71 is the only HTTP exception: a hardened `127.0.0.1` fixture-only static preview shell, not a dashboard, API, packet source, DB reader, provider surface, playback surface, download surface, scraping surface, or media-server surface. (Phases 7–13 add adapter *boundaries* + erasure policy + Jellyfin find/revoke/outbox +
 smoke validation; Phase 31 adds TorBox boundary research only; Phase 32 adds a local fake TorBox
 contract only; Phase 33 adds a TorBox real-client design gate only; Phase 34 adds an injected
 fixture-transport read-only client only; Phase 35 adds operator-run TorBox smoke evidence and future
