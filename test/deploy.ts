@@ -5288,6 +5288,113 @@ test('Phase 88 launch candidate review checklist is static and approval-free', (
   ]) assert(!source.includes(forbidden) && !combined.includes(forbidden), `Phase 88 excludes approval or value allowance ${forbidden}`);
 });
 
+test('Phase 89 launch candidate review handoff is static and approval-free', () => {
+  assert(exists('docs/PHASE_89_LAUNCH_CANDIDATE_REVIEW_HANDOFF.md'), 'Phase 89 review handoff doc exists');
+  assert(exists('src/ops/launch-candidate-review-handoff.ts'), 'Phase 89 review handoff source exists');
+  assert(exists('src/ops/launch-candidate-review-handoff-cli.ts'), 'Phase 89 review handoff CLI exists');
+  assert(exists('test/launch-candidate-review-handoff.ts'), 'Phase 89 review handoff test exists');
+  assert(pkg.scripts['ops:launch-candidate-review-handoff'] === 'tsx src/ops/launch-candidate-review-handoff-cli.ts', 'Phase 89 ops script present');
+  assert(pkg.scripts['test:launch-candidate-review-handoff'] === 'tsx test/launch-candidate-review-handoff.ts', 'Phase 89 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-candidate-review-checklist.ts && tsx test/launch-candidate-review-handoff.ts'),
+    'Phase 89 aggregate test follows Phase 88',
+  );
+
+  const source = [
+    read('src/ops/launch-candidate-review-handoff.ts'),
+    read('src/ops/launch-candidate-review-handoff-cli.ts'),
+  ].join('\n');
+  const phase89Doc = read('docs/PHASE_89_LAUNCH_CANDIDATE_REVIEW_HANDOFF.md');
+  const combined = [
+    source,
+    phase89Doc,
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  const phase89Surface = `${source}\n${phase89Doc}`;
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 89 source excludes ${forbidden}`);
+
+  for (const required of [
+    'launchApproved: false',
+    'productionReady: false',
+    'releaseCandidateApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'awaiting-independent-review',
+    'phase-88-launch-candidate-review-checklist',
+    'phase-87-launch-candidate-metadata-packet',
+    'launch-candidate-metadata.redacted.json',
+    'reviewer-go-label',
+    'reviewer-hold-label',
+    'o4-decision-label',
+    'o5-decision-label',
+    'filecustodian-boundary-label',
+    'No launch approval.',
+    'No production-readiness approval.',
+    'No release-candidate approval.',
+    'No O4 closure.',
+    'No O5 closure.',
+    'No network calls or live service contact.',
+  ]) assert(source.includes(required), `Phase 89 source preserves ${required}`);
+
+  for (const forbidden of [
+    'phase-87-launch-candidate-metadata.redacted.json',
+    ['actual commit id is', 'allowed'].join(' '),
+    ['launchApproved:', 'true'].join(' '),
+    ['productionReady:', 'true'].join(' '),
+    ['releaseCandidateApproved:', 'true'].join(' '),
+    ['closesO4:', 'true'].join(' '),
+    ['closesO5:', 'true'].join(' '),
+  ]) assert(!combined.includes(forbidden), `Phase 89 excludes approval or value allowance ${forbidden}`);
+
+  for (const forbidden of [
+    ['closed', 'without'].join(' '),
+    ['residual-risk', 'acceptance'].join(' '),
+    ['separately reviewed', 'evidence'].join(' '),
+  ]) assert(!phase89Surface.includes(forbidden), `Phase 89 source/docs exclude O4/O5 exception ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

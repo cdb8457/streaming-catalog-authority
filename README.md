@@ -870,6 +870,26 @@ background runtime behavior. The JSON command is
 `npm run --silent ops:launch-candidate-review-checklist -- -- --json`. See
 `docs/PHASE_88_LAUNCH_CANDIDATE_REVIEW_CHECKLIST.md` and
 `test:launch-candidate-review-checklist`.
+Phase 89 adds `ops:launch-candidate-review-handoff`, a static no-input handoff
+for independent launch-candidate review. It reports
+`LAUNCH_CANDIDATE_REVIEW_HANDOFF_REPORTED`,
+`phase-88-launch-candidate-review-checklist`,
+`phase-87-launch-candidate-metadata-packet`, `launchApproved: false`,
+`productionReady: false`, `releaseCandidateApproved: false`, `closesO4:
+false`, and `closesO5: false`. It lists handoff section labels, source label
+names, reviewer question labels, hold trigger labels, required verdict labels,
+forbidden material, and explicit non-goals. It keeps the handoff label-only and
+does not retain actual commit ids, tag names, dates, verdicts, counts,
+conclusions, evidence values, secrets, provider payloads, raw refs, media
+identity, logs, or patch contents. It forbids launch approval,
+production-ready claims, release-candidate approval, O4/O5 closure, DB access,
+credential/environment reads, evidence/artifact/provider/raw-ref/media-identity
+reads, network calls, live service contact, provider/debrid/media-server/playback
+expansion, frontend/API framework work, schedulers, Docker changes, and
+background runtime behavior. The JSON command is
+`npm run --silent ops:launch-candidate-review-handoff -- -- --json`. See
+`docs/PHASE_89_LAUNCH_CANDIDATE_REVIEW_HANDOFF.md` and
+`test:launch-candidate-review-handoff`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
