@@ -2734,7 +2734,6 @@ test('static operator UI prototype - Phase 63 is fixture-only and read-only', ()
     'next',
     'express',
     'globalThis.fetch',
-    'fetch(',
     'process.env',
     'node:fs',
     'node:http',
@@ -2755,7 +2754,6 @@ test('static operator UI prototype - Phase 63 is fixture-only and read-only', ()
     'Plex',
     'Jellyfin',
     'Hermes',
-    'document.',
     'window.',
     'localStorage',
     'readFileSync',
@@ -2813,7 +2811,6 @@ test('operator UI render allowlist - Phase 64 hardens static render boundary', (
     'next',
     'express',
     'globalThis.fetch',
-    'fetch(',
     'process.env',
     'node:fs',
     'node:http',
@@ -2834,7 +2831,6 @@ test('operator UI render allowlist - Phase 64 hardens static render boundary', (
     'Plex',
     'Jellyfin',
     'Hermes',
-    'document.',
     'window.',
     'localStorage',
     'sessionStorage',
@@ -3617,7 +3613,6 @@ test('operator UI static runtime access boundary - Phase 73 is explicit and fail
     'writeFile',
     'createWriteStream',
     '/api/',
-    '/packets',
     '/login',
     '/session',
     '/auth',
@@ -4589,6 +4584,67 @@ test('operator UI local auth secret file preflight - Phase 80 is descriptor-only
   assert(!source.includes('node:fs'), 'Phase 80 pure module has no fs import');
   assert(cli.includes("from 'node:fs'"), 'Phase 80 CLI has bounded descriptor file read capability');
   assert(cli.includes('MAX_DESCRIPTOR_BYTES = 16 * 1024'), 'Phase 80 CLI descriptor read is bounded');
+});
+
+test('Phase 81 operator UI auth packet runtime is documented and bounded', () => {
+  const combined = `${read('docs/PHASE_81_OPERATOR_UI_AUTH_PACKET_RUNTIME.md')}\n${read('README.md')}\n${read('package.json')}`;
+  for (const kw of [
+    'Phase 81',
+    'Local Auth + Sanitized Packet Endpoint + UI Runtime Connection',
+    'operator UI auth packet runtime',
+    'test:operator-ui-auth-packet-runtime',
+    'ops:operator-ui-static-runtime',
+    '--operator-secret-file <path>',
+    'X-Operator-UI-Secret',
+    'GET /operator-ui/packets.json',
+    'local-secret-file-enabled',
+    'sanitized-local-packet-endpoint',
+    'synthetic-fixture-only',
+    'no cookies, sessions, bearer/basic auth, OAuth, localStorage, sessionStorage, persistent browser secret storage, query-string secrets, or URL secrets',
+    'No DB reads',
+    'no provider/debrid/Plex/Jellyfin/Hermes calls',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 81 covers ${kw}`);
+
+  const source = [
+    read('src/ops/operator-ui-static-runtime.ts'),
+    read('src/ops/operator-ui-static-runtime-cli.ts'),
+    read('src/ops/operator-ui-local-auth-runtime.ts'),
+    read('src/ops/operator-ui-packet-endpoint.ts'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+  ]) assert(!source.includes(forbidden), `Phase 81 source excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

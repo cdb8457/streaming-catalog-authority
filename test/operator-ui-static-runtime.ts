@@ -165,10 +165,8 @@ async function main(): Promise<void> {
       assert(response.headers['x-content-type-options'] === 'nosniff', 'nosniff');
       assert(response.headers['content-security-policy'] === OPERATOR_UI_STATIC_RUNTIME_CSP, 'CSP');
       for (const forbidden of [
-        '<script',
         'href="http',
         'src="http',
-        'fetch(',
         'localStorage',
         'sessionStorage',
         'Real-Debrid',
@@ -231,7 +229,7 @@ async function main(): Promise<void> {
     assert(output.includes('Operator UI Static Runtime Shell'), 'usage title');
     assert(output.includes('--serve'), 'usage requires explicit serve flag');
     assert(output.includes('local fixture-only static preview'), 'boundary text');
-    assert(output.includes('no API, packet source, DB read, provider, playback, download, scraping, or media-server behavior'), 'scope text');
+    assert(output.includes('no DB read, provider, playback, download, scraping, or media-server behavior'), 'scope text');
     assert(!output.includes('listening at'), 'does not start listener');
   });
 

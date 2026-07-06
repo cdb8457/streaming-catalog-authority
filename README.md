@@ -730,6 +730,20 @@ echo. Fixed input failure codes include `DESCRIPTOR_FILE_REQUIRED`,
 `DESCRIPTOR_JSON_MALFORMED`, `DESCRIPTOR_OBJECT_REQUIRED`, `DESCRIPTOR_FILE_IS_DIRECTORY`, and
 `DESCRIPTOR_FILE_TOO_LARGE`. Current static routes remain `GET /, GET /healthz, GET /manifest.json`;
 runtime auth remains blocked and no auth/runtime/route/provider/UI/data expansion is added.
+Phase 81 adds the guarded operator UI auth packet runtime. The existing
+`ops:operator-ui-static-runtime` command keeps static-only behavior unless
+started with `--operator-secret-file <path>`. With that explicit file, the
+runtime enables `GET /operator-ui/packets.json`, gated by
+`X-Operator-UI-Secret`, and the manifest reports `local-secret-file-enabled`
+and `sanitized-local-packet-endpoint`. The response is
+`synthetic-fixture-only` and uses existing fixture packet allowlists. The root
+UI includes a same-origin in-memory fetch control and no cookies, sessions,
+bearer/basic auth, OAuth, localStorage, sessionStorage, persistent browser
+secret storage, query-string secrets, or URL secrets. No DB reads, no
+provider/debrid/Plex/Jellyfin/Hermes calls, no scraping/downloading/playback,
+and no frontend/API framework are added. See
+`docs/PHASE_81_OPERATOR_UI_AUTH_PACKET_RUNTIME.md` and
+`test:operator-ui-auth-packet-runtime`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

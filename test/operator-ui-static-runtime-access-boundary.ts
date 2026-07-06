@@ -153,7 +153,6 @@ function assertNoCredentialParserSource(): void {
     "from 'pg'",
     'from "pg"',
     '/api/',
-    '/packets',
     '/login',
     '/session',
     '/auth',

@@ -1,10 +1,16 @@
+import { createHash } from 'node:crypto';
 import { OPERATOR_UI_FIXTURE_PACKETS, type OperatorUiFixturePacket } from './operator-ui-fixtures.js';
+import { OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT } from './operator-ui-render-allowlist.js';
 import type {
   OperatorUiCategoryLabel,
   OperatorUiPacketFieldDescriptor,
   OperatorUiScreenId,
   OperatorUiStatusLabel,
 } from './operator-ui-packet-contract.js';
+
+export const OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT_SHA256 = createHash('sha256')
+  .update(OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT, 'utf8')
+  .digest('base64');
 
 const SCREEN_TITLES: Record<OperatorUiScreenId, string> = {
   overview: 'Overview',
@@ -186,9 +192,16 @@ export function renderOperatorUiStaticPrototypeHtml(): string {
     '.activity-panel{padding:14px;}',
     '.activity-panel h2{font-size:16px;margin:0 0 10px;}',
     '.activity-row{display:grid;grid-template-columns:42px minmax(0,1fr) auto;gap:10px;align-items:center;border-top:1px solid #303238;padding:8px 0;font-size:13px;}',
+    '.auth-panel{background:#1A1B1E;border:1px solid #303238;border-radius:8px;padding:14px;display:grid;gap:10px;}',
+    '.auth-panel h2{font-size:16px;margin:0;}',
+    '.auth-control{display:grid;grid-template-columns:minmax(160px,1fr) auto;gap:8px;align-items:end;}',
+    '.auth-control label{display:grid;gap:5px;color:#A0A3A8;font-size:12px;text-transform:uppercase;letter-spacing:.08em;}',
+    '.auth-control input{width:100%;min-height:36px;border:1px solid #303238;border-radius:4px;background:#111214;color:#ECECEC;padding:7px 9px;font:inherit;}',
+    '.auth-control button{min-height:36px;border:1px solid #D18A3A;border-radius:4px;background:#232428;color:#ECECEC;padding:7px 10px;font:inherit;cursor:pointer;}',
+    '.packet-output{margin:0;min-height:72px;overflow:auto;border:1px solid #303238;border-radius:4px;background:#111214;color:#A0A3A8;padding:9px;font-size:12px;}',
     '@media (max-width:980px){.overview-band{grid-template-columns:1fr}.summary-grid{grid-template-columns:repeat(2,minmax(0,1fr))}}',
     '@media (max-width:900px){.shell{grid-template-columns:1fr}.sidebar{position:relative;height:auto}.top-strip{position:relative;align-items:flex-start;flex-direction:column}.nav-link{display:inline-flex;margin:3px 3px 3px 0}.panel-heading{align-items:stretch;flex-direction:column}.panel-state-stack{justify-content:flex-start}}',
-    '@media (max-width:560px){main{padding:12px}.summary-grid{grid-template-columns:1fr}.top-strip{padding:12px}.brand{padding-bottom:12px}table{min-width:520px}th:nth-child(4),td:nth-child(4){display:none}}',
+    '@media (max-width:560px){main{padding:12px}.summary-grid{grid-template-columns:1fr}.top-strip{padding:12px}.brand{padding-bottom:12px}.auth-control{grid-template-columns:1fr}table{min-width:520px}th:nth-child(4),td:nth-child(4){display:none}}',
     '</style>',
     '</head>',
     '<body>',
@@ -215,10 +228,21 @@ export function renderOperatorUiStaticPrototypeHtml(): string {
     '<section class="activity-panel" aria-label="Sanitized Activity"><h2>Sanitized Activity</h2>',
     renderActivityRows(packets),
     '</section>',
+    '<section class="auth-panel" aria-label="Local Packet Access">',
+    '<h2>Local Packet Access</h2>',
+    '<div class="auth-control">',
+    '<label for="operator-secret-input">Operator Secret<input id="operator-secret-input" type="password" autocomplete="off" spellcheck="false"></label>',
+    '<button id="packet-auth-control" type="button">Load Packets</button>',
+    '</div>',
+    '<div id="packet-auth-status" class="status-chip status-warning">Packet endpoint locked</div>',
+    '<h2>Runtime Packets</h2>',
+    '<pre id="runtime-packet-output" class="packet-output">No runtime packet snapshot loaded</pre>',
+    '</section>',
     panels,
     '</main>',
     '</div>',
     '</div>',
+    `<script>${OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT}</script>`,
     '</body>',
     '</html>',
   ].join('');

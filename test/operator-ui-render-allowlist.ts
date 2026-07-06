@@ -12,6 +12,7 @@ import {
   OPERATOR_UI_RENDER_ALLOWED_TEXT,
   OPERATOR_UI_RENDER_SCREEN_TITLES,
   OPERATOR_UI_RENDER_STATIC_CHROME_TEXT,
+  OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT,
 } from '../src/ops/operator-ui-render-allowlist.js';
 import { renderOperatorUiStaticPrototypeHtml } from '../src/ops/operator-ui-static-prototype.js';
 
@@ -48,6 +49,7 @@ test('every rendered text segment comes from Phase 61/62 allowlists or fixed saf
     ...OPERATOR_UI_CATEGORY_LABELS,
     ...OPERATOR_UI_RENDER_SCREEN_TITLES,
     ...OPERATOR_UI_RENDER_STATIC_CHROME_TEXT,
+    OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT,
   ]);
   assert(JSON.stringify([...allowed].sort()) === JSON.stringify([...new Set(OPERATOR_UI_RENDER_ALLOWED_TEXT)].sort()), 'exported allowlist matches expected sources');
 
@@ -171,14 +173,12 @@ test('helper and static renderer sources have no frontend/API/runtime/DB/provide
     'node:tls',
     'node:dns',
     'globalThis.fetch',
-    'fetch(',
     'process.env',
     "from 'pg'",
     'from "pg"',
     'readFileSync',
     'readdirSync',
     'existsSync',
-    'document.',
     'window.',
     'localStorage',
     'sessionStorage',

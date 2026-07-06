@@ -94,16 +94,21 @@ test('new visible chrome is fixed allowlisted text only', () => {
   assert(inspectOperatorUiRenderedHtml(html).ok, 'Phase 64 allowlist accepts refined render');
 });
 
-test('no browser JavaScript, external references, or interactive controls are introduced', () => {
+test('Phase 81 local control is fixed and external references/storage remain absent', () => {
   const html = renderOperatorUiStaticPrototypeHtml();
+  for (const required of [
+    '<script>',
+    'id="operator-secret-input"',
+    'id="packet-auth-control"',
+    '/operator-ui/packets.json',
+    'X-Operator-UI-Secret',
+  ]) assert(html.includes(required), `html includes ${required}`);
+
   for (const forbidden of [
-    '<script',
     '<link',
     '<img',
     '<iframe',
     '<form',
-    '<input',
-    '<button',
     ' href="http',
     " href='http",
     ' src=',
@@ -111,7 +116,6 @@ test('no browser JavaScript, external references, or interactive controls are in
     'localStorage',
     'sessionStorage',
     'window.',
-    'document.',
   ]) assert(!html.includes(forbidden), `html omits ${forbidden}`);
 });
 

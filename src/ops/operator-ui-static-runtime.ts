@@ -1,5 +1,14 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
+import {
+  OPERATOR_UI_LOCAL_AUTH_HEADER,
+  type OperatorUiLocalAuthRuntime,
+  OperatorUiLocalAuthRuntimeError,
+  loadOperatorUiLocalAuthRuntime,
+  verifyOperatorUiLocalAuthHeader,
+} from './operator-ui-local-auth-runtime.js';
+import { buildOperatorUiSanitizedPacketSnapshot } from './operator-ui-packet-endpoint.js';
 import { buildOperatorUiStaticArtifact, type OperatorUiStaticArtifact } from './operator-ui-static-artifact.js';
+import { OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT_SHA256 } from './operator-ui-static-prototype.js';
 import { inspectOperatorUiRenderedHtml } from './operator-ui-render-allowlist.js';
 
 export const OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST = '127.0.0.1';
@@ -15,8 +24,8 @@ export const OPERATOR_UI_STATIC_RUNTIME_CSP = [
   "default-src 'none'",
   "style-src 'unsafe-inline'",
   "img-src 'none'",
-  "script-src 'none'",
-  "connect-src 'none'",
+  `script-src 'sha256-${OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT_SHA256}'`,
+  "connect-src 'self'",
   "frame-ancestors 'none'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -25,11 +34,13 @@ export const OPERATOR_UI_STATIC_RUNTIME_CSP = [
 export interface OperatorUiStaticRuntimeConfigInput {
   readonly host?: string;
   readonly port?: number;
+  readonly operatorSecretFile?: string;
 }
 
 export interface OperatorUiStaticRuntimeConfig {
   readonly host: typeof OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST;
   readonly port: number;
+  readonly operatorSecretFile?: string;
 }
 
 export interface OperatorUiStaticRuntimeValidationOptions {
@@ -66,13 +77,13 @@ export interface OperatorUiStaticRuntimeManifest {
   readonly ok: true;
   readonly code: 'OPERATOR_UI_STATIC_RUNTIME_MANIFEST';
   readonly surface: 'local-static-fixture-preview';
-  readonly routes: readonly ['GET /', 'GET /healthz', 'GET /manifest.json'];
+  readonly routes: readonly string[];
   readonly dataMode: 'fixture-only';
-  readonly packetSource: 'not-implemented';
+  readonly packetSource: 'not-implemented' | 'sanitized-local-packet-endpoint';
   readonly localRuntime: 'static-preview-only';
   readonly liveProduct: 'not-ready';
   readonly accessBoundary: 'loopback-only-fixture-preview';
-  readonly operatorAuth: 'not-implemented';
+  readonly operatorAuth: 'not-implemented' | 'local-secret-file-enabled';
   readonly remoteExposure: 'blocked';
   readonly futureDataSurfacesRequire: 'explicit-auth-access-phase';
   readonly boundaries: readonly string[];
@@ -121,11 +132,25 @@ const OPERATOR_UI_STATIC_RUNTIME_MANIFEST: OperatorUiStaticRuntimeManifest = {
   ],
 };
 
-export function buildOperatorUiStaticRuntimeManifest(): OperatorUiStaticRuntimeManifest {
+export function buildOperatorUiStaticRuntimeManifest(
+  options: { readonly operatorAuthEnabled?: boolean } = {},
+): OperatorUiStaticRuntimeManifest {
+  const operatorAuthEnabled = options.operatorAuthEnabled === true;
+  const boundaries = operatorAuthEnabled
+    ? OPERATOR_UI_STATIC_RUNTIME_MANIFEST.boundaries.map((boundary) => {
+      if (boundary === 'no-api-data-route') return 'sanitized-local-packet-endpoint-auth-gated';
+      if (boundary === 'no-packet-source') return 'fixture-packet-source-only';
+      return boundary;
+    })
+    : [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.boundaries];
   return {
     ...OPERATOR_UI_STATIC_RUNTIME_MANIFEST,
-    routes: [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.routes] as OperatorUiStaticRuntimeManifest['routes'],
-    boundaries: [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.boundaries],
+    routes: operatorAuthEnabled
+      ? [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.routes, 'GET /operator-ui/packets.json']
+      : [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.routes],
+    packetSource: operatorAuthEnabled ? 'sanitized-local-packet-endpoint' : 'not-implemented',
+    operatorAuth: operatorAuthEnabled ? 'local-secret-file-enabled' : 'not-implemented',
+    boundaries,
     gates: [...OPERATOR_UI_STATIC_RUNTIME_MANIFEST.gates],
   };
 }
@@ -151,7 +176,7 @@ export function validateOperatorUiStaticRuntimeConfig(
   if (!isAllowedHost(host)) throw new OperatorUiStaticRuntimeConfigError();
   if (!isAllowedPort(port, allowEphemeralPort)) throw new OperatorUiStaticRuntimeConfigError();
 
-  return { host, port };
+  return input.operatorSecretFile === undefined ? { host, port } : { host, port, operatorSecretFile: input.operatorSecretFile };
 }
 
 function setSafeHeaders(res: ServerResponse): void {
@@ -175,6 +200,14 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
   res.statusCode = statusCode;
   res.setHeader('Content-Type', 'application/json; charset=utf-8');
   res.end(`${JSON.stringify(body)}\n`);
+}
+
+function sendUnauthorized(res: ServerResponse): void {
+  sendJson(res, 401, {
+    ok: false,
+    code: 'OPERATOR_UI_PACKET_ENDPOINT_UNAUTHORIZED',
+    message: 'Operator UI packet endpoint is unauthorized.',
+  });
 }
 
 function rawRequestPath(req: IncomingMessage): string {
@@ -214,6 +247,7 @@ function hardenServer(server: Server): Server {
 
 export function createOperatorUiStaticRuntimeServer(
   artifact: OperatorUiStaticArtifact = buildPrecheckedOperatorUiStaticRuntimeArtifact(),
+  auth?: OperatorUiLocalAuthRuntime,
 ): Server {
   return hardenServer(createServer((req, res) => {
     const method = req.method ?? '';
@@ -224,7 +258,11 @@ export function createOperatorUiStaticRuntimeServer(
       return;
     }
 
-    const isKnownPath = path === '/' || path === '/healthz' || path === '/manifest.json';
+    const packetEndpointEnabled = auth !== undefined;
+    const isKnownPath = path === '/'
+      || path === '/healthz'
+      || path === '/manifest.json'
+      || (packetEndpointEnabled && path === '/operator-ui/packets.json');
 
     if (method === 'HEAD') {
       ignoreRequestBody(req);
@@ -257,7 +295,19 @@ export function createOperatorUiStaticRuntimeServer(
     }
 
     if (path === '/manifest.json') {
-      sendJson(res, 200, buildOperatorUiStaticRuntimeManifest());
+      sendJson(res, 200, buildOperatorUiStaticRuntimeManifest({ operatorAuthEnabled: packetEndpointEnabled }));
+      return;
+    }
+
+    if (path === '/operator-ui/packets.json' && packetEndpointEnabled) {
+      const presented = req.headers[OPERATOR_UI_LOCAL_AUTH_HEADER];
+      if (!verifyOperatorUiLocalAuthHeader(auth, presented)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        return;
+      }
+
+      sendJson(res, 200, buildOperatorUiSanitizedPacketSnapshot());
       return;
     }
 
@@ -269,9 +319,16 @@ export function startOperatorUiStaticRuntime(
   input: OperatorUiStaticRuntimeConfigInput = {},
 ): Promise<StartedOperatorUiStaticRuntime> {
   const config = validateOperatorUiStaticRuntimeConfig(input, { allowEphemeralPort: true });
+  let auth: OperatorUiLocalAuthRuntime | undefined;
+  try {
+    auth = config.operatorSecretFile === undefined ? undefined : loadOperatorUiLocalAuthRuntime(config.operatorSecretFile);
+  } catch {
+    return Promise.reject(new OperatorUiLocalAuthRuntimeError());
+  }
+
   let server: Server;
   try {
-    server = createOperatorUiStaticRuntimeServer();
+    server = createOperatorUiStaticRuntimeServer(undefined, auth);
   } catch {
     return Promise.reject(new OperatorUiStaticRuntimeSelfCheckError());
   }

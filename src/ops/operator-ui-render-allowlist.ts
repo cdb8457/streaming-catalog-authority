@@ -77,7 +77,35 @@ export const OPERATOR_UI_RENDER_STATIC_CHROME_TEXT = [
   '07',
   '08',
   '09',
+  'Local Packet Access',
+  'Operator Secret',
+  'Load Packets',
+  'Packet endpoint locked',
+  'Runtime Packets',
+  'No runtime packet snapshot loaded',
 ] as const;
+
+export const OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT = [
+  'const control=document.getElementById("packet-auth-control");',
+  'const input=document.getElementById("operator-secret-input");',
+  'const status=document.getElementById("packet-auth-status");',
+  'const output=document.getElementById("runtime-packet-output");',
+  'control.addEventListener("click",async()=>{',
+  'const value=input.value;',
+  'input.value="";',
+  'status.textContent="Packet request pending";',
+  'output.textContent="No runtime packet snapshot loaded";',
+  'try{',
+  'const response=await fetch("/operator-ui/packets.json",{method:"GET",headers:{"X-Operator-UI-Secret":value},cache:"no-store"});',
+  'if(!response.ok){status.textContent="Packet endpoint locked";return;}',
+  'const payload=await response.json();',
+  'status.textContent="Packet snapshot loaded";',
+  'output.textContent=JSON.stringify({code:payload.code,dataMode:payload.dataMode,packetCount:payload.packetCount,screens:payload.screens},null,2);',
+  '}catch{',
+  'status.textContent="Packet endpoint locked";',
+  '}',
+  '});',
+].join('');
 
 export const OPERATOR_UI_RENDER_ALLOWED_CSS_TOKENS = [
   '#111214',
@@ -104,6 +132,7 @@ export const OPERATOR_UI_RENDER_ALLOWED_TEXT = [
   ...OPERATOR_UI_CATEGORY_LABELS,
   ...OPERATOR_UI_RENDER_SCREEN_TITLES,
   ...OPERATOR_UI_RENDER_STATIC_CHROME_TEXT,
+  OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT,
 ] as const;
 
 const ALLOWED_TEXT = new Set<string>(OPERATOR_UI_RENDER_ALLOWED_TEXT);
@@ -139,7 +168,8 @@ export function extractOperatorUiRenderedTextSegments(html: string): readonly st
 }
 
 function containsForbiddenMarkup(html: string): boolean {
-  return /<\s*(script|link|img|iframe|form|input|button)\b/i.test(html)
+  return /<\s*(link|img|iframe|form)\b/i.test(html)
+    || /<\s*script\b/i.test(stripAllowedInlineScript(html))
     || /\son[a-z]+\s*=/i.test(html);
 }
 
@@ -147,6 +177,15 @@ function containsExternalReference(html: string): boolean {
   return /\s(?:href|src)\s*=\s*(?:"\s*(?:https?:|data:|\/\/)|'\s*(?:https?:|data:|\/\/)|(?:https?:|data:|\/\/))/i.test(html)
     || /@import\s+(?:url\(\s*)?["']?\s*(?:https?:|data:|\/\/)/i.test(html)
     || /url\(\s*["']?\s*(?:https?:|data:|\/\/)/i.test(html);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function stripAllowedInlineScript(html: string): string {
+  const pattern = new RegExp(`<script>${escapeRegExp(OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT)}</script>`);
+  return html.replace(pattern, '');
 }
 
 export function inspectOperatorUiRenderedHtml(html: string): OperatorUiRenderInspectionReport {

@@ -34,7 +34,8 @@ test('renderer emits deterministic complete static HTML', () => {
   assert(first.startsWith('<!doctype html><html lang="en">'), 'complete document start');
   assert(first.endsWith('</html>'), 'complete document end');
   assert(first.includes('<style>') && first.includes('</style>'), 'inline CSS only');
-  assert(!first.includes('<script'), 'no script element');
+  assert(first.includes('<script>') && first.includes('</script>'), 'Phase 81 fixed inline script');
+  assert(first.includes('/operator-ui/packets.json'), 'Phase 81 local packet endpoint path');
   assert(!first.includes(' src=') && !first.includes(' rel="stylesheet"'), 'no external asset link');
 });
 
@@ -144,8 +145,7 @@ test('output omits unsafe identity, runtime, provider-control, and framework ter
     'infohash',
     'magnet',
     'credential',
-    'token',
-    'secret',
+    'token=',
     'databaseUrl',
     'postgres://',
     '/mnt/',
@@ -170,9 +170,7 @@ test('output omits unsafe identity, runtime, provider-control, and framework ter
     'Vite',
     'Next',
     'Express',
-    'fetch',
     'process.env',
-    'document.',
     'window.',
     'localStorage',
     'provider controls',
