@@ -4647,6 +4647,89 @@ test('Phase 81 operator UI auth packet runtime is documented and bounded', () =>
   ]) assert(!source.includes(forbidden), `Phase 81 source excludes ${forbidden}`);
 });
 
+test('Phase 82 operator UI auth packet acceptance evidence is documented and bounded', () => {
+  const combined = `${read('docs/PHASE_82_OPERATOR_UI_AUTH_PACKET_ACCEPTANCE.md')}\n${read('README.md')}\n${read('package.json')}`;
+  for (const kw of [
+    'Phase 82',
+    'Operator UI Auth Packet Acceptance Evidence',
+    'operator UI auth packet acceptance',
+    'ops:operator-ui-auth-packet-acceptance',
+    'test:operator-ui-auth-packet-acceptance',
+    'npm run --silent ops:operator-ui-auth-packet-acceptance -- --json',
+    'operator-ui-auth-packet-acceptance',
+    'phase-82.v1',
+    'OPERATOR_UI_AUTH_PACKET_ACCEPTANCE_REPORTED',
+    'accepted',
+    'blocked',
+    'local-loopback-fixture-only',
+    'local-secret-file-enabled',
+    'sanitized-local-packet-endpoint',
+    'synthetic-fixture-only',
+    'counts only',
+    'fixed 404',
+    'fixed 401',
+    'fixed 405',
+    'hash-pinned inline script',
+    'same-origin connect',
+    'No DB reads',
+    'no provider or debrid integrations',
+    'no live source, scraping, download, playback, or media-server behavior',
+    'No user-provided secret values or user-provided secret paths',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness only, not production KMS',
+  ]) assert(combined.includes(kw), `Phase 82 covers ${kw}`);
+
+  const source = [
+    read('src/ops/operator-ui-auth-packet-acceptance.ts'),
+    read('src/ops/operator-ui-auth-packet-acceptance-cli.ts'),
+  ].join('\n');
+  assert(source.includes("from 'node:http'"), 'Phase 82 uses built-in local HTTP probing');
+  assert(source.includes("from 'node:net'"), 'Phase 82 uses built-in raw loopback probing');
+  assert(source.includes("from 'node:fs'"), 'Phase 82 uses bounded temporary secret file handling');
+  assert(source.includes('mkdtempSync'), 'Phase 82 creates temporary secret file directory');
+  assert(source.includes('rmSync(context.tempDir'), 'Phase 82 removes temporary secret file directory');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'cookieParser',
+    'parseCookie',
+    '.headers.authorization',
+    "headers['authorization']",
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'createWriteStream',
+  ]) assert(!source.includes(forbidden), `Phase 82 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

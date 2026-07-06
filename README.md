@@ -744,6 +744,24 @@ provider/debrid/Plex/Jellyfin/Hermes calls, no scraping/downloading/playback,
 and no frontend/API framework are added. See
 `docs/PHASE_81_OPERATOR_UI_AUTH_PACKET_RUNTIME.md` and
 `test:operator-ui-auth-packet-runtime`.
+Phase 82 adds `ops:operator-ui-auth-packet-acceptance`, a redaction-safe
+operator UI auth packet acceptance evidence harness for Phase 81 runtime
+behavior. It generates its own temporary local secret file for local-loopback
+fixture probes, removes it after probing, and emits either text or
+`npm run --silent ops:operator-ui-auth-packet-acceptance -- --json`. The report
+is `operator-ui-auth-packet-acceptance` / `phase-82.v1` with
+`OPERATOR_UI_AUTH_PACKET_ACCEPTANCE_REPORTED`; it is `accepted` only when all
+checks pass and otherwise reports `blocked`. Evidence covers fixed 404, fixed
+401, fixed 405, `local-loopback-fixture-only`, `local-secret-file-enabled`,
+`sanitized-local-packet-endpoint`, `synthetic-fixture-only`, hash-pinned inline
+script CSP, and same-origin connect. It records counts only, with no user
+secret values, user secret paths, query values, packet contents, artifact
+contents, or HTML. No DB reads, no provider or debrid integrations, no live
+source, scraping, download, playback, or media-server behavior are added. O4
+and O5 remain open/deferred, and FileCustodian remains a hardened reference
+harness only, not production KMS. See
+`docs/PHASE_82_OPERATOR_UI_AUTH_PACKET_ACCEPTANCE.md` and
+`test:operator-ui-auth-packet-acceptance`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
