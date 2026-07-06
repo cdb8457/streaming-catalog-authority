@@ -152,6 +152,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:evidence-rehearsal [-- -- --json]` | static, redaction-safe checklist for the expected Phase 22/23 evidence artifact shape; advisory only |
 | `ops:launch-gate-audit [-- -- --json]` | static Phase 83 audit for launch steps 1-3: O4/O5 production gates, operator rehearsal, and real TorBox/Jellyfin validation; no live services or evidence scanning |
 | `ops:operator-acceptance-packet [-- -- --json]` | static Phase 84 operator-run acceptance packet for O4/O5, Unraid rehearsal, TorBox/Jellyfin validation, and launch-candidate decision; no live services or evidence scanning |
+| `ops:launch-decision-record -- -- <decision-record.json> [--json]` | static Phase 85 launch-decision record preflight; reads one metadata record only and never approves launch, closes O4/O5, scans evidence, or contacts live services |
 | `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
@@ -792,6 +793,20 @@ downloading, scraping, media-server writes, frontend/API framework, or web UI
 behavior. It does not approve launch, close O4, close O5, or close production
 readiness. See `docs/PHASE_84_OPERATOR_ACCEPTANCE_PACKET.md` and
 `test:operator-acceptance-packet`.
+Phase 85 adds `ops:launch-decision-record`, a one-file redaction-safe
+launch-decision record preflight for the Phase 84 operator acceptance packet.
+It reads a single operator-supplied metadata JSON record, emits fixed
+pass/warn/fail labels, and reports `phase-85-launch-decision-record-preflight`,
+`single-operator-supplied-launch-decision-record-json-file`, `launchApproved:
+false`, and `productionReady: false`. A `launch-candidate-requested`
+disposition can become `ready-for-review` only when reviewer `GO`, production
+security decision, Unraid rehearsal, and live validation labels are all present.
+It never approves launch, closes O4/O5, reads evidence contents, reads
+credentials, reads environment values, scans directories, contacts live
+services, executes other commands, or adds provider mode, playback,
+downloading, scraping, media-server writes, frontend/API framework, or web UI
+behavior. FileCustodian remains a hardened reference harness only. See
+`docs/PHASE_85_LAUNCH_DECISION_RECORD.md` and `test:launch-decision-record`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -4887,6 +4887,103 @@ test('Phase 84 operator acceptance packet is static and preserves launch blocker
   ]) assert(!source.includes(forbidden), `Phase 84 source excludes ${forbidden}`);
 });
 
+test('Phase 85 launch decision record preflight is bounded and never approves launch', () => {
+  const combined = `${read('docs/PHASE_85_LAUNCH_DECISION_RECORD.md')}\n${read('README.md')}\n${read('package.json')}\n${read('test/deploy.ts')}`;
+  for (const kw of [
+    'Phase 85',
+    'Launch Decision Record',
+    'ops:launch-decision-record',
+    'test:launch-decision-record',
+    'npm run --silent ops:launch-decision-record -- -- <decision-record.json> --json',
+    'phase-85-launch-decision-record',
+    'phase-85-launch-decision-record-preflight',
+    'single-operator-supplied-launch-decision-record-json-file',
+    'phase-84-operator-acceptance-packet',
+    'launchApproved: false',
+    'productionReady: false',
+    'O4',
+    'O5',
+    'FileCustodian',
+    'No launch approval',
+    'No evidence directory scanning',
+    'No credential, environment, or database reads',
+    'No network calls or live service contact',
+  ]) assert(combined.includes(kw), `Phase 85 covers ${kw}`);
+
+  assert(exists('docs/PHASE_85_LAUNCH_DECISION_RECORD.md'), 'Phase 85 launch decision doc exists');
+  assert(exists('src/ops/launch-decision-record.ts'), 'Phase 85 pure launch decision source exists');
+  assert(exists('src/ops/launch-decision-record-cli.ts'), 'Phase 85 launch decision CLI exists');
+  assert(exists('test/launch-decision-record.ts'), 'Phase 85 launch decision test exists');
+  assert(pkg.scripts['ops:launch-decision-record'] === 'tsx src/ops/launch-decision-record-cli.ts', 'Phase 85 ops script present');
+  assert(pkg.scripts['test:launch-decision-record'] === 'tsx test/launch-decision-record.ts', 'Phase 85 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-acceptance-packet.ts && tsx test/launch-decision-record.ts'),
+    'Phase 85 aggregate test follows Phase 84',
+  );
+
+  const pureSource = read('src/ops/launch-decision-record.ts');
+  const cliSource = read('src/ops/launch-decision-record-cli.ts');
+  const source = `${pureSource}\n${cliSource}`;
+  assert(!pureSource.includes("from 'node:fs'"), 'Phase 85 pure module has no filesystem dependency');
+  assert(cliSource.includes("from 'node:fs'"), 'Phase 85 CLI has explicit bounded file read dependency');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 85 source excludes ${forbidden}`);
+
+  for (const required of [
+    'launchApproved: false',
+    'productionReady: false',
+    'closesO4: false',
+    'closesO5: false',
+    'recordValuesEchoed: false',
+    'artifactContentsIncluded: false',
+    'credentialValuesIncluded: false',
+    'credentialPathsIncluded: false',
+    'rawRefsIncluded: false',
+    'providerPayloadsIncluded: false',
+    'liveServiceContact: false',
+    'commandExecution: false',
+  ]) assert(source.includes(required), `Phase 85 source preserves ${required}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
