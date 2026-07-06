@@ -890,6 +890,29 @@ background runtime behavior. The JSON command is
 `npm run --silent ops:launch-candidate-review-handoff -- -- --json`. See
 `docs/PHASE_89_LAUNCH_CANDIDATE_REVIEW_HANDOFF.md` and
 `test:launch-candidate-review-handoff`.
+Phase 90 adds `ops:final-launch-disposition`, a static no-input final
+launch-disposition template that combines the operator launch decision with
+explicit O4/O5 gate disposition labels. It reports
+`FINAL_LAUNCH_DISPOSITION_REPORTED`,
+`phase-89-launch-candidate-review-handoff`,
+`phase-88-launch-candidate-review-checklist`, `launchDecision: hold`,
+`launchApproved: false`, `productionReady: false`,
+`releaseCandidateApproved: false`, `closesO4: false`, and `closesO5: false`.
+The default decision is HOLD. A later human operator decision may request a
+launch candidate with O4/O5 accepted as deferred risk, but this packet still
+does not close O4 or O5 and does not claim production readiness. It requires
+`operator-final-decision-label`, `reviewer-go-or-hold-label`,
+`o4-disposition-label`, `o5-disposition-label`,
+`residual-risk-acceptance-label`, and `launch-candidate-target-label`. It
+forbids launch approval, production-ready claims, release-candidate approval,
+O4/O5 closure, DB access, credential/environment reads,
+evidence/artifact/provider/raw-ref/media-identity reads, network calls, live
+service contact, provider/debrid/media-server/playback expansion, frontend/API
+framework work, schedulers, Docker changes, and background runtime behavior.
+The JSON command is
+`npm run --silent ops:final-launch-disposition -- -- --json`. See
+`docs/PHASE_90_FINAL_LAUNCH_DISPOSITION.md` and
+`test:final-launch-disposition`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

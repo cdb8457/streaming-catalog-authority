@@ -5395,6 +5395,106 @@ test('Phase 89 launch candidate review handoff is static and approval-free', () 
   ]) assert(!phase89Surface.includes(forbidden), `Phase 89 source/docs exclude O4/O5 exception ${forbidden}`);
 });
 
+test('Phase 90 final launch disposition is static and approval-free', () => {
+  assert(exists('docs/PHASE_90_FINAL_LAUNCH_DISPOSITION.md'), 'Phase 90 final launch disposition doc exists');
+  assert(exists('src/ops/final-launch-disposition.ts'), 'Phase 90 final launch disposition source exists');
+  assert(exists('src/ops/final-launch-disposition-cli.ts'), 'Phase 90 final launch disposition CLI exists');
+  assert(exists('test/final-launch-disposition.ts'), 'Phase 90 final launch disposition test exists');
+  assert(pkg.scripts['ops:final-launch-disposition'] === 'tsx src/ops/final-launch-disposition-cli.ts', 'Phase 90 ops script present');
+  assert(pkg.scripts['test:final-launch-disposition'] === 'tsx test/final-launch-disposition.ts', 'Phase 90 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-candidate-review-handoff.ts && tsx test/final-launch-disposition.ts'),
+    'Phase 90 aggregate test follows Phase 89',
+  );
+
+  const source = [
+    read('src/ops/final-launch-disposition.ts'),
+    read('src/ops/final-launch-disposition-cli.ts'),
+  ].join('\n');
+  const phase90Doc = read('docs/PHASE_90_FINAL_LAUNCH_DISPOSITION.md');
+  const combined = [
+    source,
+    phase90Doc,
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 90 source excludes ${forbidden}`);
+
+  for (const required of [
+    "launchDecision: 'hold'",
+    'launchApproved: false',
+    'productionReady: false',
+    'releaseCandidateApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'closesGate: false',
+    'hold-pending-operator-decision',
+    'phase-89-launch-candidate-review-handoff',
+    'phase-88-launch-candidate-review-checklist',
+    'operator-final-decision-label',
+    'o4-disposition-label',
+    'o5-disposition-label',
+    'residual-risk-acceptance-label',
+    'No launch approval.',
+    'No production-readiness approval.',
+    'No release-candidate approval.',
+    'No O4 closure.',
+    'No O5 closure.',
+    'No network calls or live service contact.',
+  ]) assert(source.includes(required), `Phase 90 source preserves ${required}`);
+
+  for (const forbidden of [
+    ['launchApproved:', 'true'].join(' '),
+    ['productionReady:', 'true'].join(' '),
+    ['releaseCandidateApproved:', 'true'].join(' '),
+    ['closesO4:', 'true'].join(' '),
+    ['closesO5:', 'true'].join(' '),
+    ['closesGate:', 'true'].join(' '),
+    ['actual commit id is', 'allowed'].join(' '),
+  ]) assert(!combined.includes(forbidden), `Phase 90 excludes approval, closure, or value allowance ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
