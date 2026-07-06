@@ -4014,6 +4014,158 @@ test('operator UI packet endpoint limits - Phase 76 is contract-only and not-imp
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 76 source excludes ${forbidden}`);
 });
 
+test('operator UI packet endpoint evidence gate - Phase 77 is blocked evidence policy only', () => {
+  assert(exists('src/ops/operator-ui-packet-endpoint-evidence-gate.ts'), 'Phase 77 packet endpoint evidence gate source exists');
+  assert(exists('src/ops/operator-ui-packet-endpoint-evidence-gate-cli.ts'), 'Phase 77 packet endpoint evidence gate CLI exists');
+  assert(exists('docs/PHASE_77_OPERATOR_UI_PACKET_ENDPOINT_EVIDENCE_GATE.md'), 'Phase 77 packet endpoint evidence gate doc exists');
+  assert(exists('test/operator-ui-packet-endpoint-evidence-gate.ts'), 'Phase 77 packet endpoint evidence gate suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-packet-endpoint-evidence-gate'] === 'string', 'Phase 77 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-packet-endpoint-evidence-gate'] === 'string', 'Phase 77 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-limits.ts && tsx test/operator-ui-packet-endpoint-evidence-gate.ts'),
+    'Phase 77 suite follows Phase 76 packet endpoint limits in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-packet-endpoint-evidence-gate.ts');
+  const cli = read('src/ops/operator-ui-packet-endpoint-evidence-gate-cli.ts');
+  const suite = read('test/operator-ui-packet-endpoint-evidence-gate.ts');
+  const doc = read('docs/PHASE_77_OPERATOR_UI_PACKET_ENDPOINT_EVIDENCE_GATE.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+
+  for (const kw of [
+    'Packet Endpoint Evidence Gate',
+    'operator UI packet endpoint evidence gate',
+    'ops:operator-ui-packet-endpoint-evidence-gate',
+    'test:operator-ui-packet-endpoint-evidence-gate',
+    'npm run --silent ops:operator-ui-packet-endpoint-evidence-gate -- -- --json',
+    'operator-ui-packet-endpoint-evidence-gate',
+    'phase-77.v1',
+    'OPERATOR_UI_PACKET_ENDPOINT_EVIDENCE_GATE_REPORTED',
+    'blocked',
+    'evidence-required',
+    'endpointExposure',
+    'not-implemented',
+    'Phase 75 readiness remains not-ready',
+    'Phase 76 limits remain contract-only and not-implemented',
+    'static runtime route-surface regression evidence',
+    'only GET /, GET /healthz, and GET /manifest.json',
+    'reviewed local operator auth boundary',
+    'request target, header, body, response, packet, string, and array limits',
+    'GET-only initial endpoint',
+    'HEAD rejected unless explicitly reviewed',
+    'POST, PUT, PATCH, DELETE, OPTIONS, and OTHER receive fixed sanitized rejections',
+    'fixed 404, 405, 413, and 429',
+    'only a sanitized future packet producer may feed the endpoint',
+    'no direct DB, provider, or raw-ref source',
+    'fixtures and synthetic packets only',
+    'oversized target, header, body, response',
+    'method rejection',
+    'blocked route',
+    'raw-target bypass',
+    'redaction sentinel',
+    'independent reviewer GO',
+    'operator packet and review record',
+    'static-route-surface-regression-report',
+    'local-operator-auth-boundary-review',
+    'phase-76-limits-enforcement-test-report',
+    'method-rejection-matrix-report',
+    'failure-redaction-sentinel-report',
+    'sanitized-packet-source-boundary-review',
+    'synthetic-fixture-only-attestation',
+    'endpoint-redaction-sentinel-test-report',
+    'independent-reviewer-go-record',
+    'operator-acceptance-record',
+    'titles',
+    'external IDs',
+    'provider names/logos',
+    'raw refs',
+    'infohashes',
+    'magnets',
+    'URLs',
+    'credentials',
+    'tokens',
+    'cookies',
+    'DB URLs',
+    'DB errors',
+    'packet contents',
+    'artifact contents',
+    'no endpoint route handler',
+    'no runtime auth implementation',
+    'no API framework',
+    'no DB/env/fs reads',
+    'no network calls',
+    'no provider integration',
+    'no frontend or browser JavaScript',
+    'no packet ingestion',
+    'no playback/download/scraping/media-server behavior',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness only',
+    'Provider availability remains packet/count/advisory only',
+  ]) assert(combined.includes(kw), `Phase 77 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    'createServer',
+    'server.listen',
+    'req.headers',
+    'res.end',
+    'app.get',
+    'router.',
+    '.headers.authorization',
+    "headers['authorization']",
+    'getHeader',
+    'setHeader',
+    'parseCookie',
+    'cookieParser',
+    'Set-Cookie',
+    'Basic ',
+    'Bearer ',
+    'password=',
+    'token=',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 77 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

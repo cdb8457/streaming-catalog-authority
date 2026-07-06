@@ -626,6 +626,31 @@ safe headers retained, no browser JS/framework requirement, no direct DB read, n
 playback/download/scraping/media-server behavior, and no live packet ingestion. Phase 75 readiness
 remains not-ready until endpoint/auth implementation and evidence tests exist; no packet
 endpoint/runtime enforcement/auth/data/provider/UI expansion is added.
+Phase 77 adds `src/ops/operator-ui-packet-endpoint-evidence-gate.ts`,
+`docs/PHASE_77_OPERATOR_UI_PACKET_ENDPOINT_EVIDENCE_GATE.md`,
+`ops:operator-ui-packet-endpoint-evidence-gate`, and
+`test:operator-ui-packet-endpoint-evidence-gate` as a Packet Endpoint Evidence Gate. The operator UI
+packet endpoint evidence gate report is fixed, no-input, and blocked with report name
+`operator-ui-packet-endpoint-evidence-gate`, version `phase-77.v1`, code
+`OPERATOR_UI_PACKET_ENDPOINT_EVIDENCE_GATE_REPORTED`, status `blocked` / `evidence-required`, and
+`endpointExposure` `blocked` / `not-implemented`. The exact JSON command is
+`npm run --silent ops:operator-ui-packet-endpoint-evidence-gate -- -- --json`. Phase 75 readiness
+remains not-ready and Phase 76 limits remain contract-only and not-implemented. Future endpoint
+exposure requires static runtime route-surface regression evidence proving only `GET /`, `GET
+/healthz`, and `GET /manifest.json`; a reviewed local operator auth boundary; enforcement evidence
+for request target, header, body, response, packet, string, and array limits; GET-only initial
+endpoint behavior with HEAD rejected unless explicitly reviewed and POST, PUT, PATCH, DELETE,
+OPTIONS, and OTHER receive fixed sanitized rejections; fixed 404, 405, 413, and 429 redaction
+evidence; only a sanitized future packet producer may feed the endpoint with no direct DB,
+provider, or raw-ref source; fixtures and synthetic packets only; endpoint tests covering oversized
+target, header, body, response, method rejection, blocked route, raw-target bypass, and redaction
+sentinel cases; independent reviewer GO; and a redaction-safe operator packet and review record.
+Allowed future evidence artifacts are synthetic labels only, and forbidden evidence fields include
+titles, external IDs, provider names/logos, raw refs, infohashes, magnets, URLs, credentials,
+tokens, cookies, DB URLs, DB errors, request paths, query strings, headers, bodies, packet contents,
+and artifact contents. No endpoint route handler, runtime auth implementation, API framework,
+DB/env/fs reads, network calls, provider integration, frontend or browser JavaScript, packet
+ingestion, or playback/download/scraping/media-server behavior is added.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
