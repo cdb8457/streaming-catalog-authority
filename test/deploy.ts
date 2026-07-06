@@ -5188,6 +5188,106 @@ test('Phase 87 launch candidate metadata packet is static and approval-free', ()
   ]) assert(!source.includes(forbidden) && !combined.includes(forbidden), `Phase 87 excludes broad metadata allowance ${forbidden}`);
 });
 
+test('Phase 88 launch candidate review checklist is static and approval-free', () => {
+  assert(exists('docs/PHASE_88_LAUNCH_CANDIDATE_REVIEW_CHECKLIST.md'), 'Phase 88 review checklist doc exists');
+  assert(exists('src/ops/launch-candidate-review-checklist.ts'), 'Phase 88 review checklist source exists');
+  assert(exists('src/ops/launch-candidate-review-checklist-cli.ts'), 'Phase 88 review checklist CLI exists');
+  assert(exists('test/launch-candidate-review-checklist.ts'), 'Phase 88 review checklist test exists');
+  assert(pkg.scripts['ops:launch-candidate-review-checklist'] === 'tsx src/ops/launch-candidate-review-checklist-cli.ts', 'Phase 88 ops script present');
+  assert(pkg.scripts['test:launch-candidate-review-checklist'] === 'tsx test/launch-candidate-review-checklist.ts', 'Phase 88 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-candidate-metadata-packet.ts && tsx test/launch-candidate-review-checklist.ts'),
+    'Phase 88 aggregate test follows Phase 87',
+  );
+
+  const source = [
+    read('src/ops/launch-candidate-review-checklist.ts'),
+    read('src/ops/launch-candidate-review-checklist-cli.ts'),
+  ].join('\n');
+  const combined = [
+    source,
+    read('docs/PHASE_88_LAUNCH_CANDIDATE_REVIEW_CHECKLIST.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 88 source excludes ${forbidden}`);
+
+  for (const required of [
+    'launchApproved: false',
+    'productionReady: false',
+    'releaseCandidateApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'hold-pending-human-review',
+    'phase-87-launch-candidate-metadata-packet',
+    'launch-candidate-metadata.redacted.json',
+    'phase-86-launch-candidate-scope-freeze',
+    'commit-id-label',
+    'tag-name-label',
+    'o4-decision-label',
+    'o5-decision-label',
+    'filecustodian-boundary-label',
+    'packet-retains-actual-values',
+    'No launch approval.',
+    'No production-readiness approval.',
+    'No release-candidate approval.',
+    'No O4 closure.',
+    'No O5 closure.',
+    'No network calls or live service contact.',
+  ]) assert(source.includes(required), `Phase 88 source preserves ${required}`);
+
+  for (const forbidden of [
+    'phase-87-launch-candidate-metadata.redacted.json',
+    ['actual commit id is', 'allowed'].join(' '),
+    ['launchApproved:', 'true'].join(' '),
+    ['productionReady:', 'true'].join(' '),
+    ['releaseCandidateApproved:', 'true'].join(' '),
+    ['closesO4:', 'true'].join(' '),
+    ['closesO5:', 'true'].join(' '),
+  ]) assert(!source.includes(forbidden) && !combined.includes(forbidden), `Phase 88 excludes approval or value allowance ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

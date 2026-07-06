@@ -850,6 +850,26 @@ behavior. The JSON command is
 `npm run --silent ops:launch-candidate-metadata-packet -- -- --json`. See
 `docs/PHASE_87_LAUNCH_CANDIDATE_METADATA_PACKET.md` and
 `test:launch-candidate-metadata-packet`.
+Phase 88 adds `ops:launch-candidate-review-checklist`, a static no-input
+checklist for launch-candidate review. It reports
+`LAUNCH_CANDIDATE_REVIEW_CHECKLIST_REPORTED`,
+`phase-87-launch-candidate-metadata-packet`,
+`phase-86-launch-candidate-scope-freeze`, `launchApproved: false`,
+`productionReady: false`, `releaseCandidateApproved: false`, `closesO4:
+false`, and `closesO5: false`. It lists review row labels, source label names,
+pass condition labels, hold condition labels, allowed review material, forbidden
+material, and explicit non-goals. It keeps O4/O5 visible, keeps FileCustodian as
+a reference harness, and remains label-only. It does not retain actual commit
+ids, tag names, dates, verdicts, counts, conclusions, evidence values, secrets,
+provider payloads, raw refs, media identity, logs, or patch contents. It forbids
+launch approval, production-ready claims, release-candidate approval, O4/O5
+closure, DB access, credential/environment reads, evidence/artifact/provider/raw-ref/media-identity
+reads, network calls, live service contact, provider/debrid/media-server/playback
+expansion, frontend/API framework work, schedulers, Docker changes, and
+background runtime behavior. The JSON command is
+`npm run --silent ops:launch-candidate-review-checklist -- -- --json`. See
+`docs/PHASE_88_LAUNCH_CANDIDATE_REVIEW_CHECKLIST.md` and
+`test:launch-candidate-review-checklist`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
