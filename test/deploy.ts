@@ -4984,6 +4984,99 @@ test('Phase 85 launch decision record preflight is bounded and never approves la
   ]) assert(source.includes(required), `Phase 85 source preserves ${required}`);
 });
 
+test('Phase 86 launch candidate scope freeze is static and forbids runtime expansion', () => {
+  const combined = `${read('docs/PHASE_86_LAUNCH_CANDIDATE_SCOPE_FREEZE.md')}\n${read('README.md')}\n${read('package.json')}\n${read('test/deploy.ts')}`;
+  for (const kw of [
+    'Phase 86',
+    'Launch Candidate Scope Freeze',
+    'ops:launch-candidate-scope-freeze',
+    'test:launch-candidate-scope-freeze',
+    'npm run --silent ops:launch-candidate-scope-freeze -- -- --json',
+    'phase-86-launch-candidate-scope-freeze',
+    'LAUNCH_CANDIDATE_SCOPE_FREEZE_REPORTED',
+    'phase-85-launch-decision-record-preflight',
+    'phase-84-operator-acceptance-packet',
+    'launchApproved: false',
+    'productionReady: false',
+    'closesO4: false',
+    'closesO5: false',
+    'blocked-pending-operator-decision',
+    'No launch approval',
+    'No network calls or live service contact',
+    'FileCustodian',
+  ]) assert(combined.includes(kw), `Phase 86 covers ${kw}`);
+
+  assert(exists('docs/PHASE_86_LAUNCH_CANDIDATE_SCOPE_FREEZE.md'), 'Phase 86 launch candidate scope doc exists');
+  assert(exists('src/ops/launch-candidate-scope-freeze.ts'), 'Phase 86 scope freeze source exists');
+  assert(exists('src/ops/launch-candidate-scope-freeze-cli.ts'), 'Phase 86 scope freeze CLI exists');
+  assert(exists('test/launch-candidate-scope-freeze.ts'), 'Phase 86 scope freeze test exists');
+  assert(pkg.scripts['ops:launch-candidate-scope-freeze'] === 'tsx src/ops/launch-candidate-scope-freeze-cli.ts', 'Phase 86 ops script present');
+  assert(pkg.scripts['test:launch-candidate-scope-freeze'] === 'tsx test/launch-candidate-scope-freeze.ts', 'Phase 86 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-decision-record.ts && tsx test/launch-candidate-scope-freeze.ts'),
+    'Phase 86 aggregate test follows Phase 85',
+  );
+
+  const source = [
+    read('src/ops/launch-candidate-scope-freeze.ts'),
+    read('src/ops/launch-candidate-scope-freeze-cli.ts'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 86 source excludes ${forbidden}`);
+
+  for (const required of [
+    'launchApproved: false',
+    'productionReady: false',
+    'closesO4: false',
+    'closesO5: false',
+    'No launch approval.',
+    'No production-readiness approval.',
+    'No O4 closure.',
+    'No O5 closure.',
+    'No network calls or live service contact.',
+  ]) assert(source.includes(required), `Phase 86 source preserves ${required}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

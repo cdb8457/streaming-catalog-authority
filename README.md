@@ -153,6 +153,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:launch-gate-audit [-- -- --json]` | static Phase 83 audit for launch steps 1-3: O4/O5 production gates, operator rehearsal, and real TorBox/Jellyfin validation; no live services or evidence scanning |
 | `ops:operator-acceptance-packet [-- -- --json]` | static Phase 84 operator-run acceptance packet for O4/O5, Unraid rehearsal, TorBox/Jellyfin validation, and launch-candidate decision; no live services or evidence scanning |
 | `ops:launch-decision-record -- -- <decision-record.json> [--json]` | static Phase 85 launch-decision record preflight; reads one metadata record only and never approves launch, closes O4/O5, scans evidence, or contacts live services |
+| `ops:launch-candidate-scope-freeze [--json]` | static Phase 86 launch-candidate scope-freeze packet; no launch approval, production-ready claim, O4/O5 closure, evidence scanning, or runtime/provider/UI expansion |
 | `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
@@ -807,6 +808,24 @@ services, executes other commands, or adds provider mode, playback,
 downloading, scraping, media-server writes, frontend/API framework, or web UI
 behavior. FileCustodian remains a hardened reference harness only. See
 `docs/PHASE_85_LAUNCH_DECISION_RECORD.md` and `test:launch-decision-record`.
+Phase 86 adds `ops:launch-candidate-scope-freeze`, a static no-input packet
+that freezes the permitted shape of any later launch-candidate phase. It reports
+`LAUNCH_CANDIDATE_SCOPE_FREEZE_REPORTED`,
+`phase-85-launch-decision-record-preflight`,
+`phase-84-operator-acceptance-packet`, `launchApproved: false`,
+`productionReady: false`, `closesO4: false`, `closesO5: false`, and
+`status: blocked-pending-operator-decision`. It allows only static
+release-candidate metadata, existing command references, retained evidence
+labels, pass/warn/fail counts, reviewer verdicts, and reviewed conclusions. It
+forbids launch approval, production-ready claims, O4/O5 closure without separate
+reviewed evidence or explicit residual-risk acceptance, DB access, evidence
+scanning, credential/environment/artifact/provider/raw-ref/media-identity reads,
+network calls, live service contact, provider/debrid/media-server/playback
+expansion, frontend/API framework work, schedulers, Docker changes, and
+background runtime behavior. See
+`npm run --silent ops:launch-candidate-scope-freeze -- -- --json`. See
+`docs/PHASE_86_LAUNCH_CANDIDATE_SCOPE_FREEZE.md` and
+`test:launch-candidate-scope-freeze`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
