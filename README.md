@@ -679,6 +679,32 @@ remain `GET /, GET /healthz, GET /manifest.json`; `/api/packets`, `/packets`, `/
 `/token` remain forbidden current routes. Phase 75 readiness remains not-ready, Phase 76 limits
 remain contract-only and not-implemented, and Phase 77 evidence gate remains blocked and
 evidence-required. no endpoint/runtime/auth/provider/UI/data expansion is added.
+Phase 79 adds `src/ops/operator-ui-local-auth-boundary.ts`,
+`docs/PHASE_79_OPERATOR_UI_LOCAL_AUTH_BOUNDARY.md`, `ops:operator-ui-local-auth-boundary`, and
+`test:operator-ui-local-auth-boundary` as an operator UI local auth boundary selection report. The
+report is fixed, no-input, and contract-only with report name `operator-ui-local-auth-boundary`,
+version `phase-79.v1`, code `OPERATOR_UI_LOCAL_AUTH_BOUNDARY_REPORTED`, and status `blocked /
+auth-boundary-selection-only`; auth implementation remains `not-implemented`. Run it with
+`npm run --silent ops:operator-ui-local-auth-boundary -- -- --json`. The selected future boundary
+is `local-operator-secret-file-with-explicit-path-and-redacted-evidence` with status
+`selected-for-future-review/not-implemented`. The future shape requires an explicit
+operator-provided file path only in a later reviewed phase, no default secret path, no environment
+variable secret value, no CLI argument secret value, bounded file size in future implementation,
+e.g. <= 4096 bytes, trim one trailing newline only, reject empty or whitespace-only values, reject
+values below minimum entropy or length, constant-time comparison, never log, echo, persist,
+hash-output, or include the secret value in evidence, redaction-safe errors only, loopback-only use
+unless a later reviewed remote access model exists, and no browser storage, cookie/session token,
+bearer/basic auth, or OAuth/Sso in the first implementation. The first implementation rejects
+`reverse-proxy-forward-auth-attestation`, `mTLS-or-local-network-attestation`,
+`browser-cookie-session`, and `bearer-token-api` as `rejected-for-first-implementation`.
+`currentRuntimeExposure` remains `127.0.0.1 fixture preview only`, `remoteExposure` remains
+blocked, and current static runtime routes remain `GET /, GET /healthz, GET /manifest.json`.
+Forbidden current routes include `/login`, `/auth`, `/session`, `/token`, `/callback`, `/logout`,
+`/oauth`, `/sso`, `/admin`, `/api/packets`, `/packets`, `/packet`, and `/operator-packets`. Phase
+74 auth contract remains contract-only and not-implemented, Phase 75 readiness remains not-ready,
+Phase 76 limits remain contract-only and not-implemented, Phase 77 evidence gate remains blocked
+and evidence-required, and Phase 78 route dry-run remains blocked and dry-run-plan-only. no
+auth/runtime/route/provider/UI/data expansion is added.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

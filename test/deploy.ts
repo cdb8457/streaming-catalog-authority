@@ -4316,6 +4316,146 @@ test('operator UI packet endpoint route dry-run - Phase 78 is blocked plan-only'
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 78 source excludes ${forbidden}`);
 });
 
+test('operator UI local auth boundary - Phase 79 is selected contract-only and not-implemented', () => {
+  assert(exists('src/ops/operator-ui-local-auth-boundary.ts'), 'Phase 79 local auth boundary source exists');
+  assert(exists('src/ops/operator-ui-local-auth-boundary-cli.ts'), 'Phase 79 local auth boundary CLI exists');
+  assert(exists('docs/PHASE_79_OPERATOR_UI_LOCAL_AUTH_BOUNDARY.md'), 'Phase 79 local auth boundary doc exists');
+  assert(exists('test/operator-ui-local-auth-boundary.ts'), 'Phase 79 local auth boundary suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-local-auth-boundary'] === 'string', 'Phase 79 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-local-auth-boundary'] === 'string', 'Phase 79 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-route-dry-run.ts && tsx test/operator-ui-local-auth-boundary.ts'),
+    'Phase 79 suite follows Phase 78 packet endpoint route dry-run in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-local-auth-boundary.ts');
+  const cli = read('src/ops/operator-ui-local-auth-boundary-cli.ts');
+  const suite = read('test/operator-ui-local-auth-boundary.ts');
+  const doc = read('docs/PHASE_79_OPERATOR_UI_LOCAL_AUTH_BOUNDARY.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+
+  for (const kw of [
+    'Local Auth Boundary Selection',
+    'operator UI local auth boundary',
+    'ops:operator-ui-local-auth-boundary',
+    'test:operator-ui-local-auth-boundary',
+    'npm run --silent ops:operator-ui-local-auth-boundary -- -- --json',
+    'operator-ui-local-auth-boundary',
+    'phase-79.v1',
+    'OPERATOR_UI_LOCAL_AUTH_BOUNDARY_REPORTED',
+    'blocked',
+    'auth-boundary-selection-only',
+    'not-implemented',
+    'local-operator-secret-file-with-explicit-path-and-redacted-evidence',
+    'selected-for-future-review/not-implemented',
+    'reverse-proxy-forward-auth-attestation',
+    'mTLS-or-local-network-attestation',
+    'browser-cookie-session',
+    'bearer-token-api',
+    'rejected-for-first-implementation',
+    '127.0.0.1 fixture preview only',
+    'remoteExposure',
+    'explicit operator-provided file path only in a later reviewed phase',
+    'no default secret path',
+    'no environment variable secret value',
+    'no CLI argument secret value',
+    '<= 4096 bytes',
+    'trim one trailing newline only',
+    'reject empty or whitespace-only values',
+    'reject values below minimum entropy or length',
+    'constant-time comparison',
+    'never log, echo, persist, hash-output, or include the secret value in evidence',
+    'redaction-safe errors only',
+    'loopback-only use unless a later reviewed remote access model exists',
+    'no browser storage, cookie/session token, bearer/basic auth, or OAuth/Sso',
+    '/login',
+    '/auth',
+    '/session',
+    '/token',
+    '/callback',
+    '/logout',
+    '/oauth',
+    '/sso',
+    '/admin',
+    '/api/packets',
+    '/packets',
+    '/packet',
+    '/operator-packets',
+    'GET /, GET /healthz, GET /manifest.json',
+    'Phase 74 auth contract remains contract-only and not-implemented',
+    'Phase 75 readiness remains not-ready',
+    'Phase 76 limits remain contract-only and not-implemented',
+    'Phase 77 evidence gate remains blocked and evidence-required',
+    'Phase 78 route dry-run remains blocked and dry-run-plan-only',
+    'O4/O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness only',
+    'Provider availability remains packet/count/advisory only',
+    'no auth/runtime/route/provider/UI/data expansion is added',
+  ]) assert(combined.includes(kw), `Phase 79 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    'createServer',
+    'server.listen',
+    'req.headers',
+    'res.end',
+    'app.get',
+    'router.',
+    '.headers.authorization',
+    "headers['authorization']",
+    'getHeader',
+    'setHeader',
+    'parseCookie',
+    'cookieParser',
+    'Set-Cookie',
+    'Basic ',
+    'Bearer ',
+    'password=',
+    'token=',
+    'timingSafeEqual',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 79 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
