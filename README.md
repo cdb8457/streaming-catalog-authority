@@ -154,6 +154,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:operator-acceptance-packet [-- -- --json]` | static Phase 84 operator-run acceptance packet for O4/O5, Unraid rehearsal, TorBox/Jellyfin validation, and launch-candidate decision; no live services or evidence scanning |
 | `ops:launch-decision-record -- -- <decision-record.json> [--json]` | static Phase 85 launch-decision record preflight; reads one metadata record only and never approves launch, closes O4/O5, scans evidence, or contacts live services |
 | `ops:launch-candidate-scope-freeze [--json]` | static Phase 86 launch-candidate scope-freeze packet; no launch approval, production-ready claim, O4/O5 closure, evidence scanning, or runtime/provider/UI expansion |
+| `ops:launch-candidate-metadata-packet [--json]` | static Phase 87 launch-candidate metadata packet; retained labels and review questions only, with no approval, evidence reads, or runtime/provider/UI expansion |
 | `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
@@ -815,8 +816,8 @@ that freezes the permitted shape of any later launch-candidate phase. It reports
 `phase-84-operator-acceptance-packet`, `launchApproved: false`,
 `productionReady: false`, `closesO4: false`, `closesO5: false`, and
 `status: blocked-pending-operator-decision`. It allows only static
-release-candidate metadata, existing command references, retained evidence
-labels, pass/warn/fail counts, reviewer verdicts, and reviewed conclusions. It
+release-candidate label names, existing command references, and retained evidence
+label names. It
 forbids launch approval, production-ready claims, O4/O5 closure without separate
 reviewed evidence or explicit residual-risk acceptance, DB access, evidence
 scanning, credential/environment/artifact/provider/raw-ref/media-identity reads,
@@ -826,6 +827,29 @@ background runtime behavior. See
 `npm run --silent ops:launch-candidate-scope-freeze -- -- --json`. See
 `docs/PHASE_86_LAUNCH_CANDIDATE_SCOPE_FREEZE.md` and
 `test:launch-candidate-scope-freeze`.
+Phase 87 adds `ops:launch-candidate-metadata-packet`, a static no-input
+metadata packet for launch-candidate review. It reports
+`LAUNCH_CANDIDATE_METADATA_PACKET_REPORTED`,
+`phase-86-launch-candidate-scope-freeze`,
+`phase-85-launch-decision-record-preflight`, `launchApproved: false`,
+`productionReady: false`, `releaseCandidateApproved: false`, `closesO4:
+false`, and `closesO5: false`. It lists retained label names for commit/tag target,
+Phase 85/86 records, O4/O5 decision evidence, operator rehearsal evidence,
+TorBox/Jellyfin validation summaries, and Usenet/fallback decision. It allows
+only fixed label names such as `commit-id-label`, `tag-name-label`,
+`report-name-label`, `phase-number-label`, `reviewer-verdict-label`,
+`pass-warn-fail-count-label`, existing command names as references, and
+evidence artifact label names. It does not retain the actual commit id, tag
+name, report date, reviewer verdict, pass/warn/fail count, operator conclusion,
+or evidence value. It forbids launch approval, production-ready claims,
+release-candidate approval, O4/O5 closure, DB access, credential/environment
+reads, evidence/artifact/provider/raw-ref/media-identity reads, network calls,
+live service contact, provider/debrid/media-server/playback expansion,
+frontend/API framework work, schedulers, Docker changes, and background runtime
+behavior. The JSON command is
+`npm run --silent ops:launch-candidate-metadata-packet -- -- --json`. See
+`docs/PHASE_87_LAUNCH_CANDIDATE_METADATA_PACKET.md` and
+`test:launch-candidate-metadata-packet`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

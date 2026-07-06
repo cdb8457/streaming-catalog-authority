@@ -5077,6 +5077,117 @@ test('Phase 86 launch candidate scope freeze is static and forbids runtime expan
   ]) assert(source.includes(required), `Phase 86 source preserves ${required}`);
 });
 
+test('Phase 87 launch candidate metadata packet is static and approval-free', () => {
+  const combined = `${read('docs/PHASE_87_LAUNCH_CANDIDATE_METADATA_PACKET.md')}\n${read('README.md')}\n${read('package.json')}\n${read('test/deploy.ts')}`;
+  for (const kw of [
+    'Phase 87',
+    'Launch Candidate Metadata Packet',
+    'ops:launch-candidate-metadata-packet',
+    'test:launch-candidate-metadata-packet',
+    'npm run --silent ops:launch-candidate-metadata-packet -- -- --json',
+    'phase-87-launch-candidate-metadata-packet',
+    'LAUNCH_CANDIDATE_METADATA_PACKET_REPORTED',
+    'phase-86-launch-candidate-scope-freeze',
+    'phase-85-launch-decision-record-preflight',
+    'launchApproved: false',
+    'productionReady: false',
+    'releaseCandidateApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'No launch approval',
+    'No network calls or live service contact',
+    'FileCustodian',
+  ]) assert(combined.includes(kw), `Phase 87 covers ${kw}`);
+
+  assert(exists('docs/PHASE_87_LAUNCH_CANDIDATE_METADATA_PACKET.md'), 'Phase 87 metadata packet doc exists');
+  assert(exists('src/ops/launch-candidate-metadata-packet.ts'), 'Phase 87 metadata packet source exists');
+  assert(exists('src/ops/launch-candidate-metadata-packet-cli.ts'), 'Phase 87 metadata packet CLI exists');
+  assert(exists('test/launch-candidate-metadata-packet.ts'), 'Phase 87 metadata packet test exists');
+  assert(pkg.scripts['ops:launch-candidate-metadata-packet'] === 'tsx src/ops/launch-candidate-metadata-packet-cli.ts', 'Phase 87 ops script present');
+  assert(pkg.scripts['test:launch-candidate-metadata-packet'] === 'tsx test/launch-candidate-metadata-packet.ts', 'Phase 87 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-candidate-scope-freeze.ts && tsx test/launch-candidate-metadata-packet.ts'),
+    'Phase 87 aggregate test follows Phase 86',
+  );
+
+  const source = [
+    read('src/ops/launch-candidate-metadata-packet.ts'),
+    read('src/ops/launch-candidate-metadata-packet-cli.ts'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 87 source excludes ${forbidden}`);
+
+  for (const required of [
+    'launchApproved: false',
+    'productionReady: false',
+    'releaseCandidateApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'commit-id-label',
+    'tag-name-label',
+    'reviewer-verdict-label',
+    'pass-warn-fail-count-label',
+    'No launch approval.',
+    'No production-readiness approval.',
+    'No release-candidate approval.',
+    'No O4 closure.',
+    'No O5 closure.',
+    'No network calls or live service contact.',
+  ]) assert(source.includes(required), `Phase 87 source preserves ${required}`);
+
+  for (const forbidden of [
+    ['Allowed labels include commit', 'ids'].join(' '),
+    ['reviewer verdicts, and pass/warn/fail', 'counts'].join(' '),
+    ['reviewed', 'conclusions'].join(' '),
+    ['Retain only pass/warn/fail', 'counts'].join(' '),
+    ['validation', 'conclusions'].join(' '),
+    ['Record whether Usenet', 'fallback'].join('/'),
+    ['Record the exact master', 'commit'].join(' '),
+    ['Record whether O4 and O5 are', 'proven'].join(' '),
+    ['reviewer GO/HOLD', 'label'].join(' '),
+  ]) assert(!source.includes(forbidden) && !combined.includes(forbidden), `Phase 87 excludes broad metadata allowance ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
