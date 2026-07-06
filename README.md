@@ -150,6 +150,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:rewrap-kek [-- --plan [--json]]` | plan or rotate the KEK (preflight counts; explicit rewrap is resumable; identity untouched) |
 | `ops:readiness-plan [-- -- --json]` | static, redaction-safe rehearsal skeleton for the Phase 22/23 readiness evidence package; no live services or evidence scanning |
 | `ops:evidence-rehearsal [-- -- --json]` | static, redaction-safe checklist for the expected Phase 22/23 evidence artifact shape; advisory only |
+| `ops:launch-gate-audit [-- -- --json]` | static Phase 83 audit for launch steps 1-3: O4/O5 production gates, operator rehearsal, and real TorBox/Jellyfin validation; no live services or evidence scanning |
 | `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
@@ -762,6 +763,20 @@ and O5 remain open/deferred, and FileCustodian remains a hardened reference
 harness only, not production KMS. See
 `docs/PHASE_82_OPERATOR_UI_AUTH_PACKET_ACCEPTANCE.md` and
 `test:operator-ui-auth-packet-acceptance`.
+Phase 83 adds `ops:launch-gate-audit`, a static launch-gap audit for the first
+three launch work areas: production security gates, operator launch rehearsal,
+and real service validation. It reports `LAUNCH_GATE_AUDIT_REPORTED`,
+`steps-1-2-3-launch-gap-audit`, `launchReady: false`, and `status: blocked`
+until O4/O5 evidence is reviewed or explicitly accepted, real Unraid/operator
+rehearsal evidence is collected, and TorBox/Jellyfin live validation evidence is
+provided. The JSON command is
+`npm run --silent ops:launch-gate-audit -- -- --json`. It does not close O4 or
+O5, does not read descriptors/evidence/backups/env/credentials, does not contact
+DBs, TorBox, Jellyfin, Real-Debrid, Plex, Usenet, custodians, KMS, Docker, or
+live packet sources, and does not add provider mode, playback, downloading,
+scraping, frontend/API framework, or web UI behavior. FileCustodian remains a
+hardened reference harness only, not production KMS. See
+`docs/PHASE_83_LAUNCH_GATE_AUDIT.md` and `test:launch-gate-audit`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -4730,6 +4730,85 @@ test('Phase 82 operator UI auth packet acceptance evidence is documented and bou
   ]) assert(!source.includes(forbidden), `Phase 82 source excludes ${forbidden}`);
 });
 
+test('Phase 83 launch gate audit is static and preserves launch blockers', () => {
+  const combined = `${read('docs/PHASE_83_LAUNCH_GATE_AUDIT.md')}\n${read('README.md')}\n${read('package.json')}`;
+  for (const kw of [
+    'Phase 83',
+    'Launch Gate Audit',
+    'ops:launch-gate-audit',
+    'test:launch-gate-audit',
+    'npm run --silent ops:launch-gate-audit -- -- --json',
+    'LAUNCH_GATE_AUDIT_REPORTED',
+    'steps-1-2-3-launch-gap-audit',
+    'launchReady: false',
+    'status: blocked',
+    'O4',
+    'O5',
+    'production security gates',
+    'operator launch rehearsal',
+    'real service validation',
+    'TorBox',
+    'Jellyfin',
+    'Usenet',
+    'No DB reads',
+    'does not close O4 or O5',
+    'FileCustodian remains a hardened reference harness only',
+  ]) assert(combined.includes(kw), `Phase 83 covers ${kw}`);
+
+  assert(exists('src/ops/launch-gate-audit.ts'), 'Phase 83 launch gate audit source exists');
+  assert(exists('src/ops/launch-gate-audit-cli.ts'), 'Phase 83 launch gate audit CLI exists');
+  assert(exists('test/launch-gate-audit.ts'), 'Phase 83 launch gate audit test exists');
+  assert(pkg.scripts['ops:launch-gate-audit'] === 'tsx src/ops/launch-gate-audit-cli.ts', 'Phase 83 ops script present');
+  assert(pkg.scripts['test:launch-gate-audit'] === 'tsx test/launch-gate-audit.ts', 'Phase 83 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-auth-packet-acceptance.ts && tsx test/launch-gate-audit.ts'),
+    'Phase 83 aggregate test follows Phase 82',
+  );
+
+  const source = [
+    read('src/ops/launch-gate-audit.ts'),
+    read('src/ops/launch-gate-audit-cli.ts'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 83 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
