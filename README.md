@@ -933,6 +933,25 @@ behavior. The JSON command is
 `npm run --silent ops:production-time-decision -- -- --json`. See
 `docs/PHASE_91_PRODUCTION_TIME_DECISION.md` and
 `test:production-time-decision`.
+Phase 92 adds `ops:launch-candidate-seal`, a static no-input launch-candidate
+seal record for tagging the reviewed commit as `phase-92` and
+`launch-candidate-1`. It reports `LAUNCH_CANDIDATE_SEAL_RECORDED`,
+`phase-91-production-time-decision`, `phase-90-final-launch-disposition`,
+`phase-89-launch-candidate-review-handoff`, `launchCandidateSealed: true`,
+`launchApproved: false`, `productionReady: false`,
+`releaseCandidateApproved: false`, `releaseApproved: false`, `closesO4:
+false`, `closesO5: false`, and `residualRiskAccepted: true`. The allowed claim
+is `launch candidate sealed for review; O4/O5 deferred risk explicitly
+accepted`; the forbidden claim is `production release approved`. It preserves
+O4/O5 as open/deferred launch-candidate residual risk and keeps FileCustodian as
+a reference harness. It forbids launch approval, production-ready claims,
+release-candidate approval, production release approval, O4/O5 closure, DB
+access, credential/environment reads, evidence/artifact/provider/raw-ref/media-identity
+reads, network calls, live service contact, provider/debrid/media-server/playback
+expansion, frontend/API framework work, schedulers, Docker changes, and
+background runtime behavior. The JSON command is
+`npm run --silent ops:launch-candidate-seal -- -- --json`. See
+`docs/PHASE_92_LAUNCH_CANDIDATE_SEAL.md` and `test:launch-candidate-seal`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

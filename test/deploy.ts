@@ -5595,6 +5595,109 @@ test('Phase 91 production-time decision requests launch-candidate review without
   ]) assert(!source.includes(forbidden), `Phase 91 excludes approval or closure ${forbidden}`);
 });
 
+test('Phase 92 launch candidate seal is static and does not approve production release', () => {
+  assert(exists('docs/PHASE_92_LAUNCH_CANDIDATE_SEAL.md'), 'Phase 92 launch candidate seal doc exists');
+  assert(exists('src/ops/launch-candidate-seal.ts'), 'Phase 92 launch candidate seal source exists');
+  assert(exists('src/ops/launch-candidate-seal-cli.ts'), 'Phase 92 launch candidate seal CLI exists');
+  assert(exists('test/launch-candidate-seal.ts'), 'Phase 92 launch candidate seal test exists');
+  assert(pkg.scripts['ops:launch-candidate-seal'] === 'tsx src/ops/launch-candidate-seal-cli.ts', 'Phase 92 ops script present');
+  assert(pkg.scripts['test:launch-candidate-seal'] === 'tsx test/launch-candidate-seal.ts', 'Phase 92 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/production-time-decision.ts && tsx test/launch-candidate-seal.ts'),
+    'Phase 92 aggregate test follows Phase 91',
+  );
+
+  const source = [
+    read('src/ops/launch-candidate-seal.ts'),
+    read('src/ops/launch-candidate-seal-cli.ts'),
+  ].join('\n');
+  const phase92Doc = read('docs/PHASE_92_LAUNCH_CANDIDATE_SEAL.md');
+  const combined = [
+    source,
+    phase92Doc,
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 92 source excludes ${forbidden}`);
+
+  for (const required of [
+    'launchCandidateSealed: true',
+    'launchApproved: false',
+    'productionReady: false',
+    'releaseCandidateApproved: false',
+    'releaseApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'residualRiskAccepted: true',
+    'sealed-for-launch-candidate-review',
+    'phase-91-production-time-decision',
+    'phase-90-final-launch-disposition',
+    'phase-89-launch-candidate-review-handoff',
+    'launch-candidate-1',
+    'phase-92',
+    'production release approved',
+    'O4 still needs',
+    'O5 still needs',
+    'No launch approval.',
+    'No production-readiness approval.',
+    'No release-candidate approval.',
+    'No production release approval.',
+    'No O4 closure.',
+    'No O5 closure.',
+    'No network calls or live service contact.',
+  ]) assert(combined.includes(required), `Phase 92 surface preserves ${required}`);
+
+  for (const forbidden of [
+    ['launchApproved:', 'true'].join(' '),
+    ['productionReady:', 'true'].join(' '),
+    ['releaseCandidateApproved:', 'true'].join(' '),
+    ['releaseApproved:', 'true'].join(' '),
+    ['closesO4:', 'true'].join(' '),
+    ['closesO5:', 'true'].join(' '),
+  ]) assert(!source.includes(forbidden), `Phase 92 excludes approval or closure ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
