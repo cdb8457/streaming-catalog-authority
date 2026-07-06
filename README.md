@@ -579,6 +579,30 @@ packet source, playback, download, scraping, and media-server logic. `GET /manif
 the only manifest route; no runtime auth/data/provider/UI expansion is added. O4 and O5 remain
 open/deferred; `FileCustodian` remains a hardened reference harness, not production KMS. Provider
 availability remains packet/count/advisory only.
+Phase 75 adds `src/ops/operator-ui-packet-endpoint-readiness.ts`,
+`docs/PHASE_75_OPERATOR_UI_PACKET_ENDPOINT_READINESS.md`,
+`ops:operator-ui-packet-endpoint-readiness`, and `test:operator-ui-packet-endpoint-readiness` as a
+Sanitized Packet Endpoint Readiness Preflight. The operator UI packet endpoint readiness report is
+fixed, no-input, and preflight-only with report name `operator-ui-packet-endpoint-readiness`,
+version `phase-75.v1`, code `OPERATOR_UI_PACKET_ENDPOINT_READINESS_REPORTED`, and status
+`not-ready` / `preflight-only`. The exact JSON command is
+`npm run --silent ops:operator-ui-packet-endpoint-readiness -- -- --json`. Phase 69 packet source
+contract exists but endpoint is not implemented; Phase 74 auth/access contract exists but auth is
+not implemented; the static route surface remains only `GET /`, `GET /healthz`, and
+`GET /manifest.json`; sanitized local packet endpoint remains blocked; direct UI DB reads remain
+forbidden; Provider availability remains packet/count/advisory only; O4/O5 remain open/deferred
+unless separately proven; and FileCustodian remains reference harness only. A future endpoint still
+requires explicit Clint authorization and reviewer GO, auth/access implementation phase completed
+and reviewed, endpoint source must consume only sanitized redaction-safe operator packets, no real
+titles, external IDs, provider names/logos, raw refs, infohashes, magnets, credentials, paths,
+artwork, user library data, or raw event payloads, no provider calls,
+playback/download/scraping/media-server logic, direct DB access, or live packet ingestion,
+route/method/body/raw-target hardening retained, size/rate bounds defined before endpoint exists,
+and evidence/redaction tests added before any endpoint route is exposed. `/api/*`, `/packets`,
+`/packet`, `/operator-packets`, `/data`, `/events`, `/catalog`, `/items`, `/auth`, `/login`,
+`/session`, and `/token` remain forbidden, as do route handlers, API framework, DB/env/fs reads,
+fetch/network calls, provider integration, browser JS/framework, cookies/sessions/tokens, and
+runtime auth/data/provider/UI expansion.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
