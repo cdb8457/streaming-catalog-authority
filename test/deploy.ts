@@ -4166,6 +4166,156 @@ test('operator UI packet endpoint evidence gate - Phase 77 is blocked evidence p
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 77 source excludes ${forbidden}`);
 });
 
+test('operator UI packet endpoint route dry-run - Phase 78 is blocked plan-only', () => {
+  assert(exists('src/ops/operator-ui-packet-endpoint-route-dry-run.ts'), 'Phase 78 packet endpoint route dry-run source exists');
+  assert(exists('src/ops/operator-ui-packet-endpoint-route-dry-run-cli.ts'), 'Phase 78 packet endpoint route dry-run CLI exists');
+  assert(exists('docs/PHASE_78_OPERATOR_UI_PACKET_ENDPOINT_ROUTE_DRY_RUN.md'), 'Phase 78 packet endpoint route dry-run doc exists');
+  assert(exists('test/operator-ui-packet-endpoint-route-dry-run.ts'), 'Phase 78 packet endpoint route dry-run suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-packet-endpoint-route-dry-run'] === 'string', 'Phase 78 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-packet-endpoint-route-dry-run'] === 'string', 'Phase 78 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-evidence-gate.ts && tsx test/operator-ui-packet-endpoint-route-dry-run.ts'),
+    'Phase 78 suite follows Phase 77 packet endpoint evidence gate in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-packet-endpoint-route-dry-run.ts');
+  const cli = read('src/ops/operator-ui-packet-endpoint-route-dry-run-cli.ts');
+  const suite = read('test/operator-ui-packet-endpoint-route-dry-run.ts');
+  const doc = read('docs/PHASE_78_OPERATOR_UI_PACKET_ENDPOINT_ROUTE_DRY_RUN.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+
+  for (const kw of [
+    'Packet Endpoint Route Dry-Run Plan',
+    'operator UI packet endpoint route dry-run',
+    'ops:operator-ui-packet-endpoint-route-dry-run',
+    'test:operator-ui-packet-endpoint-route-dry-run',
+    'npm run --silent ops:operator-ui-packet-endpoint-route-dry-run -- -- --json',
+    'operator-ui-packet-endpoint-route-dry-run',
+    'phase-78.v1',
+    'OPERATOR_UI_PACKET_ENDPOINT_ROUTE_DRY_RUN_REPORTED',
+    'blocked',
+    'dry-run-plan-only',
+    'routeExposure',
+    'not-implemented',
+    'sanitized-local-packet-endpoint',
+    'future-local-packet-snapshot-route',
+    'planned route is local loopback only in a future phase and remains blocked now',
+    'GET only',
+    'HEAD remains rejected unless explicitly reviewed',
+    'POST, PUT, PATCH, DELETE, OPTIONS, and OTHER rejected with fixed sanitized responses',
+    'request body byte limit remains 0',
+    'request target max 2048 bytes',
+    'max header count 64',
+    'max response 262144 bytes',
+    'max packet count 64',
+    'max string field bytes 256',
+    'max array length 64',
+    '60 requests/min per operator runtime process',
+    'burst 10',
+    'loopback preview only',
+    'no remote/IP trust',
+    'no counters implemented now',
+    'fixed 404',
+    'fixed 405 with Allow GET only after endpoint exists',
+    'fixed 413',
+    'fixed 429',
+    'paths, query strings, headers, bodies, credentials, raw refs, packet contents, provider details, and DB errors',
+    'Phase 77 evidence gate must be satisfied and independently reviewed before implementation',
+    'method matrix',
+    'size matrix',
+    'rate preview',
+    'redaction sentinel',
+    'raw target bypass',
+    'blocked route',
+    'auth boundary',
+    'packet source boundary',
+    'operator acceptance',
+    'independent reviewer GO',
+    'GET /, GET /healthz, GET /manifest.json',
+    '/api/packets',
+    '/packets',
+    '/packet',
+    '/operator-packets',
+    '/data',
+    '/events',
+    '/catalog',
+    '/items',
+    '/auth',
+    '/login',
+    '/session',
+    '/token',
+    'Phase 75 readiness remains not-ready',
+    'Phase 76 limits remain contract-only and not-implemented',
+    'Phase 77 evidence gate remains blocked and evidence-required',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness only',
+    'Provider availability remains packet/count/advisory only',
+    'no endpoint/runtime/auth/provider/UI/data expansion is added',
+  ]) assert(combined.includes(kw), `Phase 78 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    'createServer',
+    'server.listen',
+    'req.headers',
+    'res.end',
+    'app.get',
+    'router.',
+    '.headers.authorization',
+    "headers['authorization']",
+    'getHeader',
+    'setHeader',
+    'parseCookie',
+    'cookieParser',
+    'Set-Cookie',
+    'Basic ',
+    'Bearer ',
+    'password=',
+    'token=',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 78 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

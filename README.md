@@ -651,6 +651,34 @@ tokens, cookies, DB URLs, DB errors, request paths, query strings, headers, bodi
 and artifact contents. No endpoint route handler, runtime auth implementation, API framework,
 DB/env/fs reads, network calls, provider integration, frontend or browser JavaScript, packet
 ingestion, or playback/download/scraping/media-server behavior is added.
+Phase 78 adds `src/ops/operator-ui-packet-endpoint-route-dry-run.ts`,
+`docs/PHASE_78_OPERATOR_UI_PACKET_ENDPOINT_ROUTE_DRY_RUN.md`,
+`ops:operator-ui-packet-endpoint-route-dry-run`, and
+`test:operator-ui-packet-endpoint-route-dry-run` as a Packet Endpoint Route Dry-Run Plan. The
+operator UI packet endpoint route dry-run report is fixed, no-input, and blocked with report name
+`operator-ui-packet-endpoint-route-dry-run`, version `phase-78.v1`, code
+`OPERATOR_UI_PACKET_ENDPOINT_ROUTE_DRY_RUN_REPORTED`, status `blocked` / `dry-run-plan-only`, and
+`routeExposure` `blocked` / `not-implemented`. The exact JSON command is
+`npm run --silent ops:operator-ui-packet-endpoint-route-dry-run -- -- --json`. The candidate endpoint
+is `sanitized-local-packet-endpoint` and the candidate route is the synthetic label
+`future-local-packet-snapshot-route`, not an implemented path. The planned route is local loopback
+only in a future phase and remains blocked now. GET only is the first planned method; HEAD remains
+rejected unless explicitly reviewed; POST, PUT, PATCH, DELETE, OPTIONS, and OTHER rejected with
+fixed sanitized responses. The dry-run plan keeps request body byte limit remains 0, request target
+max 2048 bytes, max header count 64, max response 262144 bytes, max packet count 64, max string
+field bytes 256, and max array length 64. The future rate preview is 60 requests/min per operator
+runtime process, burst 10, loopback preview only, no remote/IP trust, and no counters implemented
+now. Future failures require fixed 404, fixed 405 with Allow GET only after endpoint exists, fixed
+413, and fixed 429, with no echoing paths, query strings, headers, bodies, credentials, raw refs,
+packet contents, provider details, and DB errors. Phase 77 evidence gate must be satisfied and
+independently reviewed before implementation. The acceptance matrix covers method matrix, size
+matrix, rate preview, redaction sentinel, raw target bypass, blocked route, auth boundary, packet
+source boundary, operator acceptance, and independent reviewer GO. Current static runtime routes
+remain `GET /, GET /healthz, GET /manifest.json`; `/api/packets`, `/packets`, `/packet`,
+`/operator-packets`, `/data`, `/events`, `/catalog`, `/items`, `/auth`, `/login`, `/session`, and
+`/token` remain forbidden current routes. Phase 75 readiness remains not-ready, Phase 76 limits
+remain contract-only and not-implemented, and Phase 77 evidence gate remains blocked and
+evidence-required. no endpoint/runtime/auth/provider/UI/data expansion is added.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
