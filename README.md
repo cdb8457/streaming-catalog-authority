@@ -705,6 +705,31 @@ Forbidden current routes include `/login`, `/auth`, `/session`, `/token`, `/call
 Phase 76 limits remain contract-only and not-implemented, Phase 77 evidence gate remains blocked
 and evidence-required, and Phase 78 route dry-run remains blocked and dry-run-plan-only. no
 auth/runtime/route/provider/UI/data expansion is added.
+Phase 80 adds `src/ops/operator-ui-local-auth-secret-file-preflight.ts`,
+`docs/PHASE_80_OPERATOR_UI_LOCAL_AUTH_SECRET_FILE_PREFLIGHT.md`,
+`ops:operator-ui-local-auth-secret-file-preflight`, and
+`test:operator-ui-local-auth-secret-file-preflight` as an operator UI local auth secret-file
+preflight / acceptance contract for the Phase 79 boundary. Run it with
+`npm run --silent ops:operator-ui-local-auth-secret-file-preflight -- -- <descriptor.json> --json`.
+The report name is `operator-ui-local-auth-secret-file-preflight`, version `phase-80.v1`, code
+`OPERATOR_UI_LOCAL_AUTH_SECRET_FILE_PREFLIGHT_REPORTED`, with status
+`ready-for-review/preflight-only` for a complete descriptor or `blocked/preflight-only` for
+incomplete or invalid input; `authImplementation` remains `not-implemented` and runtime auth
+remains blocked. The selected boundary remains
+`local-operator-secret-file-with-explicit-path-and-redacted-evidence`. The CLI reads one single
+explicit operator JSON descriptor file only. The descriptor path is never echoed, descriptor values
+are never echoed, the future secret file path is not read, and the future secret path is not
+validated against the filesystem. Accepted fields are `boundaryId`, `operatorFilePathProvided`,
+`defaultPathDisabled`, `envSecretValueDisabled`, `cliSecretValueDisabled`, `maxSecretFileBytes`
+(`<= 4096`), `trimOneTrailingNewlineOnly`, `rejectEmptyOrWhitespace`,
+`rejectLowEntropyOrShort`, `constantTimeComparisonPlanned`, `secretNeverLoggedOrPersisted`,
+`redactionSafeErrors`, `loopbackOnly`, `browserStorageCookieSessionBearerBasicOAuthDisabled`,
+`reviewerGoRecorded`, and `operatorAcceptanceRecorded`. Forbidden fields such as `secretValue`,
+`secretPath`, `databaseUrl`, `packetContents`, and `artifactContents` fail closed without value
+echo. Fixed input failure codes include `DESCRIPTOR_FILE_REQUIRED`,
+`DESCRIPTOR_JSON_MALFORMED`, `DESCRIPTOR_OBJECT_REQUIRED`, `DESCRIPTOR_FILE_IS_DIRECTORY`, and
+`DESCRIPTOR_FILE_TOO_LARGE`. Current static routes remain `GET /, GET /healthz, GET /manifest.json`;
+runtime auth remains blocked and no auth/runtime/route/provider/UI/data expansion is added.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

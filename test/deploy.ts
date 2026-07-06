@@ -4456,6 +4456,141 @@ test('operator UI local auth boundary - Phase 79 is selected contract-only and n
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 79 source excludes ${forbidden}`);
 });
 
+test('operator UI local auth secret file preflight - Phase 80 is descriptor-only and not-implemented', () => {
+  assert(exists('src/ops/operator-ui-local-auth-secret-file-preflight.ts'), 'Phase 80 local auth secret file preflight source exists');
+  assert(exists('src/ops/operator-ui-local-auth-secret-file-preflight-cli.ts'), 'Phase 80 local auth secret file preflight CLI exists');
+  assert(exists('docs/PHASE_80_OPERATOR_UI_LOCAL_AUTH_SECRET_FILE_PREFLIGHT.md'), 'Phase 80 local auth secret file preflight doc exists');
+  assert(exists('test/operator-ui-local-auth-secret-file-preflight.ts'), 'Phase 80 local auth secret file preflight suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-local-auth-secret-file-preflight'] === 'string', 'Phase 80 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-local-auth-secret-file-preflight'] === 'string', 'Phase 80 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-local-auth-boundary.ts && tsx test/operator-ui-local-auth-secret-file-preflight.ts'),
+    'Phase 80 suite follows Phase 79 local auth boundary in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-local-auth-secret-file-preflight.ts');
+  const cli = read('src/ops/operator-ui-local-auth-secret-file-preflight-cli.ts');
+  const suite = read('test/operator-ui-local-auth-secret-file-preflight.ts');
+  const doc = read('docs/PHASE_80_OPERATOR_UI_LOCAL_AUTH_SECRET_FILE_PREFLIGHT.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+
+  for (const kw of [
+    'Local Auth Secret File Preflight',
+    'operator UI local auth secret-file preflight',
+    'ops:operator-ui-local-auth-secret-file-preflight',
+    'test:operator-ui-local-auth-secret-file-preflight',
+    'npm run --silent ops:operator-ui-local-auth-secret-file-preflight -- -- <descriptor.json> --json',
+    'operator-ui-local-auth-secret-file-preflight',
+    'phase-80.v1',
+    'OPERATOR_UI_LOCAL_AUTH_SECRET_FILE_PREFLIGHT_REPORTED',
+    'ready-for-review/preflight-only',
+    'blocked/preflight-only',
+    'authImplementation',
+    'not-implemented',
+    'runtime auth remains blocked',
+    'local-operator-secret-file-with-explicit-path-and-redacted-evidence',
+    'single explicit operator JSON descriptor file',
+    'descriptor path is never echoed',
+    'descriptor values are never echoed',
+    'future secret file path is not read',
+    'future secret path is not validated against the filesystem',
+    'operatorFilePathProvided',
+    'defaultPathDisabled',
+    'envSecretValueDisabled',
+    'cliSecretValueDisabled',
+    'maxSecretFileBytes',
+    '<= 4096',
+    'trimOneTrailingNewlineOnly',
+    'rejectEmptyOrWhitespace',
+    'rejectLowEntropyOrShort',
+    'constantTimeComparisonPlanned',
+    'secretNeverLoggedOrPersisted',
+    'redactionSafeErrors',
+    'loopbackOnly',
+    'browserStorageCookieSessionBearerBasicOAuthDisabled',
+    'reviewerGoRecorded',
+    'operatorAcceptanceRecorded',
+    'secretValue',
+    'secretPath',
+    'databaseUrl',
+    'packetContents',
+    'artifactContents',
+    'DESCRIPTOR_FILE_REQUIRED',
+    'DESCRIPTOR_FILE_READ_FAILED',
+    'DESCRIPTOR_JSON_MALFORMED',
+    'DESCRIPTOR_OBJECT_REQUIRED',
+    'DESCRIPTOR_FILE_IS_DIRECTORY',
+    'DESCRIPTOR_FILE_TOO_LARGE',
+    'GET /, GET /healthz, GET /manifest.json',
+    'no auth/runtime/route/provider/UI/data expansion is added',
+  ]) assert(combined.includes(kw), `Phase 80 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    'createServer',
+    'server.listen',
+    'req.headers',
+    'res.end',
+    'app.get',
+    'router.',
+    '.headers.authorization',
+    "headers['authorization']",
+    'getHeader',
+    'setHeader',
+    'parseCookie',
+    'cookieParser',
+    'Set-Cookie',
+    'Basic ',
+    'Bearer ',
+    'password=',
+    'token=',
+    'timingSafeEqual',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 80 source excludes ${forbidden}`);
+
+  assert(!source.includes('node:fs'), 'Phase 80 pure module has no fs import');
+  assert(cli.includes("from 'node:fs'"), 'Phase 80 CLI has bounded descriptor file read capability');
+  assert(cli.includes('MAX_DESCRIPTOR_BYTES = 16 * 1024'), 'Phase 80 CLI descriptor read is bounded');
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
