@@ -3639,6 +3639,126 @@ test('operator UI static runtime access boundary - Phase 73 is explicit and fail
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 73 source excludes ${forbidden}`);
 });
 
+test('operator UI auth/access contract - Phase 74 is contract-only and fail-closed', () => {
+  assert(exists('src/ops/operator-ui-auth-access-contract.ts'), 'Phase 74 auth/access contract source exists');
+  assert(exists('src/ops/operator-ui-auth-access-contract-cli.ts'), 'Phase 74 auth/access contract CLI exists');
+  assert(exists('docs/PHASE_74_OPERATOR_UI_AUTH_ACCESS_CONTRACT.md'), 'Phase 74 auth/access contract doc exists');
+  assert(exists('test/operator-ui-auth-access-contract.ts'), 'Phase 74 auth/access contract suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-auth-access-contract'] === 'string', 'Phase 74 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-auth-access-contract'] === 'string', 'Phase 74 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-access-boundary.ts && tsx test/operator-ui-auth-access-contract.ts'),
+    'Phase 74 suite follows Phase 73 access-boundary suite in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-auth-access-contract.ts');
+  const cli = read('src/ops/operator-ui-auth-access-contract-cli.ts');
+  const suite = read('test/operator-ui-auth-access-contract.ts');
+  const doc = read('docs/PHASE_74_OPERATOR_UI_AUTH_ACCESS_CONTRACT.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+
+  for (const kw of [
+    'Operator UI Auth/Access Contract Gate',
+    'operator UI auth/access contract',
+    'ops:operator-ui-auth-access-contract',
+    'test:operator-ui-auth-access-contract',
+    'npm run --silent ops:operator-ui-auth-access-contract -- -- --json',
+    'operator-ui-auth-access-contract',
+    'phase-74.v1',
+    'not-implemented',
+    'contract-only',
+    '127.0.0.1 fixture preview only',
+    'blocked until explicit future phase',
+    'operator-local-secret-file',
+    'reverse-proxy-forward-auth-attestation',
+    'mTLS-or-local-network-attestation',
+    'explicit Clint authorization and independent reviewer GO',
+    'no public bind without a reviewed deployment/auth model',
+    'no direct DB reads from UI runtime',
+    'Sanitized packet source only after Phase 69 contract and auth/access review',
+    'redaction-safe',
+    'No credentials/tokens/cookies/session values in logs, docs, or evidence',
+    'rate, size, method, and raw-target fail-closed behavior',
+    '/api/*',
+    '/packets',
+    '/login',
+    '/session',
+    '/auth',
+    '/token',
+    '/callback',
+    '/logout',
+    '/oauth',
+    '/sso',
+    '/admin',
+    'cookie/session/token/bearer/basic parsing',
+    'env/config/file secret reads',
+    'TLS/reverse-proxy/public-bind implementation',
+    'frontend framework/browser JavaScript',
+    'GET /manifest.json',
+    'O4 and O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness, not production KMS',
+    'Provider availability remains packet/count/advisory only',
+  ]) assert(combined.includes(kw), `Phase 74 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    'createServer',
+    'server.listen',
+    'req.headers',
+    '.headers.authorization',
+    "headers['authorization']",
+    'getHeader',
+    'setHeader',
+    'parseCookie',
+    'cookieParser',
+    'Set-Cookie',
+    'Basic ',
+    'Bearer ',
+    'password=',
+    'token=',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 74 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

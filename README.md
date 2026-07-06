@@ -558,6 +558,27 @@ provider integration, playback, download, scraping, media-server logic, TLS, or 
 packet or data surfaces require an explicit auth/access phase. O4 and O5 remain open/deferred;
 `FileCustodian` remains a hardened reference harness, not production KMS. Provider availability
 remains packet/count/advisory only.
+Phase 74 adds `src/ops/operator-ui-auth-access-contract.ts`,
+`docs/PHASE_74_OPERATOR_UI_AUTH_ACCESS_CONTRACT.md`, `ops:operator-ui-auth-access-contract`, and
+`test:operator-ui-auth-access-contract` as an operator UI auth/access contract gate. It is fixed,
+no-input, and contract-only with contract name `operator-ui-auth-access-contract`, version
+`phase-74.v1`, status `not-implemented` / `contract-only`, current runtime exposure allowed only as
+`127.0.0.1 fixture preview only`, and remote exposure `blocked until explicit future phase`. The
+exact JSON command is `npm run --silent ops:operator-ui-auth-access-contract -- -- --json`. Future
+review categories are labels only: `operator-local-secret-file`,
+`reverse-proxy-forward-auth-attestation`, and `mTLS-or-local-network-attestation`. Before any packet
+or data route, a future phase requires explicit Clint authorization and independent reviewer GO, no
+public bind without a reviewed deployment/auth model, no direct DB reads from UI runtime, Sanitized
+packet source only after Phase 69 contract and auth/access review, redaction-safe operator-facing
+outputs, No credentials/tokens/cookies/session values in logs, docs, or evidence, and retained rate,
+size, method, and raw-target fail-closed behavior. `/api/*`, `/packets`, `/login`, `/session`,
+`/auth`, `/token`, `/callback`, `/logout`, `/oauth`, `/sso`, and `/admin` remain forbidden, as do
+cookie/session/token/bearer/basic parsing, env/config/file secret reads,
+TLS/reverse-proxy/public-bind implementation, frontend framework/browser JavaScript, DB/provider,
+packet source, playback, download, scraping, and media-server logic. `GET /manifest.json` remains
+the only manifest route; no runtime auth/data/provider/UI expansion is added. O4 and O5 remain
+open/deferred; `FileCustodian` remains a hardened reference harness, not production KMS. Provider
+availability remains packet/count/advisory only.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
