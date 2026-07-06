@@ -271,6 +271,39 @@ async function main(): Promise<void> {
     }
   });
 
+  await test('packet endpoint rejects query-bearing raw targets before auth processing', async () => {
+    const tmp = mkdtempSync(join(tmpdir(), 'phase-81-query-'));
+    const secretFile = join(tmp, 'secret.txt');
+    writeFileSync(secretFile, `${validSecret}\n`, 'utf8');
+    const runtime = await startOperatorUiStaticRuntime({ host: '127.0.0.1', port: 0, operatorSecretFile: secretFile });
+    try {
+      for (const target of ['/operator-ui/packets.json?secret=SECRET_SENTINEL', '/operator-ui/packets.json?x=1']) {
+        const response = await httpRequest(runtime.port, target, 'GET', '', validSecret);
+        const transcript = `${JSON.stringify(response.headers)}\n${response.body}`;
+        assert(response.statusCode === 404, `${target} fixed 404`);
+        assert(response.body === 'not found\n', `${target} fixed body`);
+        assert(response.headers.allow === undefined, `${target} no Allow header`);
+        assert(response.headers['www-authenticate'] === undefined, `${target} no auth challenge`);
+        assert(!response.body.includes('OPERATOR_UI_SANITIZED_PACKET_SNAPSHOT'), `${target} omits snapshot code`);
+        assert(!response.body.includes('OPERATOR_UI_PACKET_ENDPOINT_UNAUTHORIZED'), `${target} omits auth failure code`);
+        assertNoLeak(transcript, [
+          validSecret,
+          'SECRET_SENTINEL',
+          target,
+          '/operator-ui/packets.json',
+          'operator-ui-fixture-packets',
+          'synthetic-fixture-only',
+          'packets',
+          secretFile,
+          tmp,
+        ]);
+      }
+    } finally {
+      await runtime.close();
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+
   await test('packet endpoint method and raw-target behavior is fixed and redaction-safe', async () => {
     const tmp = mkdtempSync(join(tmpdir(), 'phase-81-method-'));
     const secretFile = join(tmp, 'secret.txt');

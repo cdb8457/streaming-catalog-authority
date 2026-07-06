@@ -210,10 +210,17 @@ function sendUnauthorized(res: ServerResponse): void {
   });
 }
 
-function rawRequestPath(req: IncomingMessage): string {
-  const rawTarget = req.url ?? '/';
+function rawRequestTarget(req: IncomingMessage): string {
+  return req.url ?? '/';
+}
+
+function rawRequestPath(rawTarget: string): string {
   const queryIndex = rawTarget.indexOf('?');
   return queryIndex === -1 ? rawTarget : rawTarget.slice(0, queryIndex);
+}
+
+function isQueryBearingPacketEndpointRawTarget(rawTarget: string): boolean {
+  return rawTarget.startsWith('/operator-ui/packets.json?');
 }
 
 function isUnsafeRawRequestPath(rawPath: string): boolean {
@@ -251,8 +258,9 @@ export function createOperatorUiStaticRuntimeServer(
 ): Server {
   return hardenServer(createServer((req, res) => {
     const method = req.method ?? '';
-    const path = rawRequestPath(req);
-    if (isUnsafeRawRequestPath(path)) {
+    const rawTarget = rawRequestTarget(req);
+    const path = rawRequestPath(rawTarget);
+    if (isQueryBearingPacketEndpointRawTarget(rawTarget) || isUnsafeRawRequestPath(path)) {
       ignoreRequestBody(req);
       sendPlain(res, 404, 'not found\n', undefined, method === 'HEAD');
       return;
