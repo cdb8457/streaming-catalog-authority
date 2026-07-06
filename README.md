@@ -913,6 +913,26 @@ The JSON command is
 `npm run --silent ops:final-launch-disposition -- -- --json`. See
 `docs/PHASE_90_FINAL_LAUNCH_DISPOSITION.md` and
 `test:final-launch-disposition`.
+Phase 91 adds `ops:production-time-decision`, a static no-input production-time
+decision record for the operator direction to push through to launch-candidate
+review while keeping the security boundary honest. It reports
+`PRODUCTION_TIME_DECISION_RECORDED`, `phase-90-final-launch-disposition`,
+`phase-89-launch-candidate-review-handoff`, `phase-22-production-readiness-gate`,
+`launchCandidateRequested: true`, `launchApproved: false`,
+`productionReady: false`, `releaseCandidateApproved: false`, `closesO4:
+false`, `closesO5: false`, and `residualRiskAccepted: true`. The allowed claim
+is `launch candidate requested; O4/O5 deferred risk explicitly accepted`; the
+forbidden claim is `turnkey production ready`. It records O4 and O5 as
+operator-accepted deferred risks only and lists the evidence required to close
+them later. It forbids launch approval, production-ready claims,
+release-candidate approval, O4/O5 closure, DB access, credential/environment
+reads, evidence/artifact/provider/raw-ref/media-identity reads, network calls,
+live service contact, provider/debrid/media-server/playback expansion,
+frontend/API framework work, schedulers, Docker changes, and background runtime
+behavior. The JSON command is
+`npm run --silent ops:production-time-decision -- -- --json`. See
+`docs/PHASE_91_PRODUCTION_TIME_DECISION.md` and
+`test:production-time-decision`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
