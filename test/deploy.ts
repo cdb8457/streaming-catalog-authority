@@ -3888,6 +3888,132 @@ test('operator UI packet endpoint readiness - Phase 75 is static preflight-only 
   ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 75 source excludes ${forbidden}`);
 });
 
+test('operator UI packet endpoint limits - Phase 76 is contract-only and not-implemented', () => {
+  assert(exists('src/ops/operator-ui-packet-endpoint-limits.ts'), 'Phase 76 packet endpoint limits source exists');
+  assert(exists('src/ops/operator-ui-packet-endpoint-limits-cli.ts'), 'Phase 76 packet endpoint limits CLI exists');
+  assert(exists('docs/PHASE_76_OPERATOR_UI_PACKET_ENDPOINT_LIMITS.md'), 'Phase 76 packet endpoint limits doc exists');
+  assert(exists('test/operator-ui-packet-endpoint-limits.ts'), 'Phase 76 packet endpoint limits suite exists');
+  assert(typeof pkg.scripts['test:operator-ui-packet-endpoint-limits'] === 'string', 'Phase 76 test script present');
+  assert(typeof pkg.scripts['ops:operator-ui-packet-endpoint-limits'] === 'string', 'Phase 76 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-readiness.ts && tsx test/operator-ui-packet-endpoint-limits.ts'),
+    'Phase 76 suite follows Phase 75 packet endpoint readiness in CI chain',
+  );
+
+  const source = read('src/ops/operator-ui-packet-endpoint-limits.ts');
+  const cli = read('src/ops/operator-ui-packet-endpoint-limits-cli.ts');
+  const suite = read('test/operator-ui-packet-endpoint-limits.ts');
+  const doc = read('docs/PHASE_76_OPERATOR_UI_PACKET_ENDPOINT_LIMITS.md');
+  const readme = read('README.md');
+  const combined = `${source}\n${cli}\n${suite}\n${doc}\n${readme}`;
+
+  for (const kw of [
+    'Packet Endpoint Limits Contract',
+    'operator UI packet endpoint limits',
+    'ops:operator-ui-packet-endpoint-limits',
+    'test:operator-ui-packet-endpoint-limits',
+    'npm run --silent ops:operator-ui-packet-endpoint-limits -- -- --json',
+    'operator-ui-packet-endpoint-limits',
+    'phase-76.v1',
+    'OPERATOR_UI_PACKET_ENDPOINT_LIMITS_REPORTED',
+    'not-implemented',
+    'contract-only',
+    'sanitized-local-packet-endpoint',
+    'only GET may ever serve packet snapshots in the first implementation',
+    'HEAD remains rejected unless explicitly reviewed',
+    'POST, PUT, PATCH, DELETE, OPTIONS, and other methods rejected with fixed sanitized responses',
+    'request bodies ignored/rejected and never echoed',
+    'max request target bytes: 2048',
+    'max header count: 64',
+    'max request body bytes: 0',
+    'max response bytes: 262144',
+    'max packet count: 64',
+    'max string field bytes: 256',
+    'max array length per field: 64',
+    'loopback preview only',
+    'max requests per minute per operator/runtime process: 60',
+    'burst size: 10',
+    'no remote/IP-based trust yet',
+    'no persistence/counters implemented in this phase',
+    'fixed 404',
+    'fixed 405',
+    'Allow: GET',
+    'fixed 413',
+    'fixed 429',
+    'no echoing paths, query strings, headers, body snippets, credentials, raw refs, packet contents, provider details, or DB errors',
+    'raw target bypass closed',
+    'query strings cannot create behavior',
+    'safe headers retained',
+    'no browser JS/framework requirement',
+    'no direct DB read',
+    'no provider calls',
+    'no playback/download/scraping/media-server behavior',
+    'no live packet ingestion',
+    'Phase 75 readiness remains not-ready until endpoint/auth implementation and evidence tests exist',
+    'no packet endpoint/runtime enforcement/auth/data/provider/UI expansion is added',
+  ]) assert(combined.includes(kw), `Phase 76 covers ${kw}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'readFileSync',
+    'readdirSync',
+    'existsSync',
+    'document.',
+    'window.',
+    'localStorage',
+    'sessionStorage',
+    'docker compose',
+    'ADAPTER_MODE',
+    'createAdapter',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'Real-Debrid',
+    'TorBox',
+    'Plex',
+    'Jellyfin',
+    'Hermes',
+    'writeFile',
+    'createWriteStream',
+    'createServer',
+    'server.listen',
+    'req.headers',
+    'res.end',
+    'app.get',
+    'router.',
+    '.headers.authorization',
+    "headers['authorization']",
+    'getHeader',
+    'setHeader',
+    'parseCookie',
+    'cookieParser',
+    'Set-Cookie',
+    'Basic ',
+    'Bearer ',
+    'password=',
+    'token=',
+  ]) assert(!`${source}\n${cli}`.includes(forbidden), `Phase 76 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

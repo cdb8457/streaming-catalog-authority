@@ -603,6 +603,29 @@ and evidence/redaction tests added before any endpoint route is exposed. `/api/*
 `/session`, and `/token` remain forbidden, as do route handlers, API framework, DB/env/fs reads,
 fetch/network calls, provider integration, browser JS/framework, cookies/sessions/tokens, and
 runtime auth/data/provider/UI expansion.
+Phase 76 adds `src/ops/operator-ui-packet-endpoint-limits.ts`,
+`docs/PHASE_76_OPERATOR_UI_PACKET_ENDPOINT_LIMITS.md`,
+`ops:operator-ui-packet-endpoint-limits`, and `test:operator-ui-packet-endpoint-limits` as a
+Packet Endpoint Limits Contract. The operator UI packet endpoint limits report is fixed, no-input,
+and contract-only with report name `operator-ui-packet-endpoint-limits`, version `phase-76.v1`,
+code `OPERATOR_UI_PACKET_ENDPOINT_LIMITS_REPORTED`, and status `not-implemented` /
+`contract-only`. The exact JSON command is
+`npm run --silent ops:operator-ui-packet-endpoint-limits -- -- --json`.
+`sanitized-local-packet-endpoint` remains `not-implemented`. Only GET may ever serve packet
+snapshots in the first implementation; HEAD remains rejected unless explicitly reviewed; POST, PUT,
+PATCH, DELETE, OPTIONS, and other methods rejected with fixed sanitized responses; request bodies
+ignored/rejected and never echoed. Fixed limits are max request target bytes: 2048, max header count:
+64, max request body bytes: 0, max response bytes: 262144, max packet count: 64, max string field
+bytes: 256, and max array length per field: 64. Rate-limit contract data is loopback preview only,
+max requests per minute per operator/runtime process: 60, burst size: 10, no remote/IP-based trust
+yet, and no persistence/counters implemented in this phase. Future failures require fixed 404, fixed
+405 with `Allow: GET` only after endpoint exists, fixed 413, fixed 429, and no echoing paths, query
+strings, headers, body snippets, credentials, raw refs, packet contents, provider details, or DB
+errors. Retained hardening includes raw target bypass closed, query strings cannot create behavior,
+safe headers retained, no browser JS/framework requirement, no direct DB read, no provider calls, no
+playback/download/scraping/media-server behavior, and no live packet ingestion. Phase 75 readiness
+remains not-ready until endpoint/auth implementation and evidence tests exist; no packet
+endpoint/runtime enforcement/auth/data/provider/UI expansion is added.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
