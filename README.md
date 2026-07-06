@@ -151,6 +151,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:readiness-plan [-- -- --json]` | static, redaction-safe rehearsal skeleton for the Phase 22/23 readiness evidence package; no live services or evidence scanning |
 | `ops:evidence-rehearsal [-- -- --json]` | static, redaction-safe checklist for the expected Phase 22/23 evidence artifact shape; advisory only |
 | `ops:launch-gate-audit [-- -- --json]` | static Phase 83 audit for launch steps 1-3: O4/O5 production gates, operator rehearsal, and real TorBox/Jellyfin validation; no live services or evidence scanning |
+| `ops:operator-acceptance-packet [-- -- --json]` | static Phase 84 operator-run acceptance packet for O4/O5, Unraid rehearsal, TorBox/Jellyfin validation, and launch-candidate decision; no live services or evidence scanning |
 | `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
@@ -777,6 +778,20 @@ live packet sources, and does not add provider mode, playback, downloading,
 scraping, frontend/API framework, or web UI behavior. FileCustodian remains a
 hardened reference harness only, not production KMS. See
 `docs/PHASE_83_LAUNCH_GATE_AUDIT.md` and `test:launch-gate-audit`.
+Phase 84 adds `ops:operator-acceptance-packet`, a static operator-run acceptance
+packet that converts the Phase 83 audit into concrete redaction-safe run,
+retain, and review steps. It reports `OPERATOR_ACCEPTANCE_PACKET_REPORTED`,
+`operator-run-redaction-safe-launch-acceptance`, `launchReady: false`, and
+`status: blocked` until O4/O5 are proven or explicitly accepted, real Unraid
+rehearsal evidence is retained, TorBox/Jellyfin validation evidence is reviewed,
+and the Usenet/fallback decision is recorded. The JSON command is
+`npm run --silent ops:operator-acceptance-packet -- -- --json`. It does not read
+evidence files, credentials, environment values, descriptors, backups, or DBs;
+does not contact live services; and does not add provider mode, playback,
+downloading, scraping, media-server writes, frontend/API framework, or web UI
+behavior. It does not approve launch, close O4, close O5, or close production
+readiness. See `docs/PHASE_84_OPERATOR_ACCEPTANCE_PACKET.md` and
+`test:operator-acceptance-packet`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

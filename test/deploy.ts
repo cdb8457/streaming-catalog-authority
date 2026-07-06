@@ -4809,6 +4809,84 @@ test('Phase 83 launch gate audit is static and preserves launch blockers', () =>
   ]) assert(!source.includes(forbidden), `Phase 83 source excludes ${forbidden}`);
 });
 
+test('Phase 84 operator acceptance packet is static and preserves launch blockers', () => {
+  const combined = `${read('docs/PHASE_84_OPERATOR_ACCEPTANCE_PACKET.md')}\n${read('README.md')}\n${read('package.json')}`;
+  for (const kw of [
+    'Phase 84',
+    'Operator Acceptance Packet',
+    'ops:operator-acceptance-packet',
+    'test:operator-acceptance-packet',
+    'npm run --silent ops:operator-acceptance-packet -- -- --json',
+    'OPERATOR_ACCEPTANCE_PACKET_REPORTED',
+    'operator-run-redaction-safe-launch-acceptance',
+    'launchReady: false',
+    'status: blocked',
+    'O4',
+    'O5',
+    'FileCustodian',
+    'Unraid',
+    'TorBox',
+    'Jellyfin',
+    'Usenet',
+    'No DB reads',
+    'No launch approval',
+    'No network calls or live service contact',
+  ]) assert(combined.includes(kw), `Phase 84 covers ${kw}`);
+
+  assert(exists('src/ops/operator-acceptance-packet.ts'), 'Phase 84 operator acceptance packet source exists');
+  assert(exists('src/ops/operator-acceptance-packet-cli.ts'), 'Phase 84 operator acceptance packet CLI exists');
+  assert(exists('test/operator-acceptance-packet.ts'), 'Phase 84 operator acceptance packet test exists');
+  assert(pkg.scripts['ops:operator-acceptance-packet'] === 'tsx src/ops/operator-acceptance-packet-cli.ts', 'Phase 84 ops script present');
+  assert(pkg.scripts['test:operator-acceptance-packet'] === 'tsx test/operator-acceptance-packet.ts', 'Phase 84 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-gate-audit.ts && tsx test/operator-acceptance-packet.ts'),
+    'Phase 84 aggregate test follows Phase 83',
+  );
+
+  const source = [
+    read('src/ops/operator-acceptance-packet.ts'),
+    read('src/ops/operator-acceptance-packet-cli.ts'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 84 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
