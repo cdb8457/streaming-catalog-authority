@@ -748,7 +748,7 @@ Phase 82 adds `ops:operator-ui-auth-packet-acceptance`, a redaction-safe
 operator UI auth packet acceptance evidence harness for Phase 81 runtime
 behavior. It generates its own temporary local secret file for local-loopback
 fixture probes, removes it after probing, and emits either text or
-`npm run --silent ops:operator-ui-auth-packet-acceptance -- --json`. The report
+`npm run --silent ops:operator-ui-auth-packet-acceptance -- -- --json`. The report
 is `operator-ui-auth-packet-acceptance` / `phase-82.v1` with
 `OPERATOR_UI_AUTH_PACKET_ACCEPTANCE_REPORTED`; it is `accepted` only when all
 checks pass and otherwise reports `blocked`. Evidence covers fixed 404, fixed

@@ -15,7 +15,7 @@ npm run ops:operator-ui-auth-packet-acceptance
 JSON report:
 
 ```bash
-npm run --silent ops:operator-ui-auth-packet-acceptance -- --json
+npm run --silent ops:operator-ui-auth-packet-acceptance -- -- --json
 ```
 
 The harness does not accept user secret values or user secret paths. It creates

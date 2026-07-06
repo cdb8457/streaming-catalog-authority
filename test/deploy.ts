@@ -4655,7 +4655,7 @@ test('Phase 82 operator UI auth packet acceptance evidence is documented and bou
     'operator UI auth packet acceptance',
     'ops:operator-ui-auth-packet-acceptance',
     'test:operator-ui-auth-packet-acceptance',
-    'npm run --silent ops:operator-ui-auth-packet-acceptance -- --json',
+    'npm run --silent ops:operator-ui-auth-packet-acceptance -- -- --json',
     'operator-ui-auth-packet-acceptance',
     'phase-82.v1',
     'OPERATOR_UI_AUTH_PACKET_ACCEPTANCE_REPORTED',

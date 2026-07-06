@@ -4,7 +4,7 @@ import {
 } from './operator-ui-auth-packet-acceptance.js';
 
 async function main(): Promise<void> {
-  const args = process.argv.slice(2);
+  const args = process.argv.slice(2).filter((arg) => arg !== '--');
   if (args.length > 1 || (args.length === 1 && args[0] !== '--json')) {
     process.exitCode = 1;
     process.stderr.write('Operator UI auth packet acceptance accepts only --json.\n');

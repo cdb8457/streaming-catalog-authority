@@ -1,4 +1,4 @@
-import { execFileSync } from 'node:child_process';
+import { execFileSync, execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
@@ -187,6 +187,26 @@ async function main(): Promise<void> {
     assertRedactionSafe(output);
   });
 
+  await test('documented npm JSON command is parseable, accepted, and redaction-safe', () => {
+    const output = execSync('npm run --silent ops:operator-ui-auth-packet-acceptance -- -- --json', {
+      cwd: root,
+      env: {
+        ...process.env,
+        SECRET_HEADER_SENTINEL: 'SECRET_HEADER_SENTINEL',
+        SECRET_QUERY_SENTINEL: 'SECRET_QUERY_SENTINEL',
+        SECRET_BODY_SENTINEL: 'SECRET_BODY_SENTINEL',
+        SECRET_PATH_SENTINEL: 'SECRET_PATH_SENTINEL',
+        DATABASE_URL: 'postgres://DATABASE_URL_SENTINEL',
+        PRIVATE_TITLE: 'PRIVATE_TITLE_SENTINEL',
+        RAW_REF: 'RAW_REF_SENTINEL',
+      },
+      encoding: 'utf8',
+    });
+    const parsed = JSON.parse(output) as OperatorUiAuthPacketAcceptanceReport;
+    assertReportShape(parsed);
+    assertRedactionSafe(output);
+  });
+
   await test('CLI text output is accepted and redaction-safe', () => {
     const output = execFileSync(process.execPath, ['--import', 'tsx', 'src/ops/operator-ui-auth-packet-acceptance-cli.ts'], {
       cwd: root,
@@ -283,7 +303,7 @@ async function main(): Promise<void> {
       'operator UI auth packet acceptance',
       'ops:operator-ui-auth-packet-acceptance',
       'test:operator-ui-auth-packet-acceptance',
-      'npm run --silent ops:operator-ui-auth-packet-acceptance -- --json',
+      'npm run --silent ops:operator-ui-auth-packet-acceptance -- -- --json',
       'operator-ui-auth-packet-acceptance',
       'phase-82.v1',
       'OPERATOR_UI_AUTH_PACKET_ACCEPTANCE_REPORTED',
