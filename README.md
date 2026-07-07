@@ -952,6 +952,26 @@ expansion, frontend/API framework work, schedulers, Docker changes, and
 background runtime behavior. The JSON command is
 `npm run --silent ops:launch-candidate-seal -- -- --json`. See
 `docs/PHASE_92_LAUNCH_CANDIDATE_SEAL.md` and `test:launch-candidate-seal`.
+Phase 93 adds `ops:semi-launch-validation-packet`, a static no-input GO/HOLD
+validation packet for deciding whether `launch-candidate-1` is a real
+semi-launch candidate. It reports
+`SEMI_LAUNCH_VALIDATION_PACKET_RECORDED`,
+`phase-92-launch-candidate-seal`, `phase-91-production-time-decision`,
+`semiLaunchCandidateVerdict: hold`, `semiLaunchCandidateGo: false`,
+`launchApproved: false`, `productionReady: false`,
+`releaseCandidateApproved: false`, `releaseApproved: false`, `closesO4:
+false`, `closesO5: false`, `operatorEvidenceCollected: false`, and
+`independentReviewRequired: true`. The default status is HOLD pending operator
+evidence; it defines required ref checks, clean-checkout repo validation,
+operator evidence labels, hold triggers, and GO conditions. The allowed claim is
+`launch candidate is sealed; semi-launch GO is pending operator evidence
+review`; the forbidden claim is `semi-launch candidate approved`. It does not
+grant semi-launch GO, approve launch, claim production readiness, approve a
+release, close O4/O5, read evidence, run commands, contact live services, or
+add runtime behavior. The JSON command is
+`npm run --silent ops:semi-launch-validation-packet -- -- --json`. See
+`docs/PHASE_93_SEMI_LAUNCH_VALIDATION_PACKET.md` and
+`test:semi-launch-validation-packet`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

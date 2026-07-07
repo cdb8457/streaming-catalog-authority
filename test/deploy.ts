@@ -5698,6 +5698,110 @@ test('Phase 92 launch candidate seal is static and does not approve production r
   ]) assert(!source.includes(forbidden), `Phase 92 excludes approval or closure ${forbidden}`);
 });
 
+test('Phase 93 semi-launch validation packet is static and defaults to HOLD', () => {
+  assert(exists('docs/PHASE_93_SEMI_LAUNCH_VALIDATION_PACKET.md'), 'Phase 93 semi-launch validation packet doc exists');
+  assert(exists('src/ops/semi-launch-validation-packet.ts'), 'Phase 93 semi-launch validation packet source exists');
+  assert(exists('src/ops/semi-launch-validation-packet-cli.ts'), 'Phase 93 semi-launch validation packet CLI exists');
+  assert(exists('test/semi-launch-validation-packet.ts'), 'Phase 93 semi-launch validation packet test exists');
+  assert(pkg.scripts['ops:semi-launch-validation-packet'] === 'tsx src/ops/semi-launch-validation-packet-cli.ts', 'Phase 93 ops script present');
+  assert(pkg.scripts['test:semi-launch-validation-packet'] === 'tsx test/semi-launch-validation-packet.ts', 'Phase 93 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-candidate-seal.ts && tsx test/semi-launch-validation-packet.ts'),
+    'Phase 93 aggregate test follows Phase 92',
+  );
+
+  const source = [
+    read('src/ops/semi-launch-validation-packet.ts'),
+    read('src/ops/semi-launch-validation-packet-cli.ts'),
+  ].join('\n');
+  const phase93Doc = read('docs/PHASE_93_SEMI_LAUNCH_VALIDATION_PACKET.md');
+  const combined = [
+    source,
+    phase93Doc,
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 93 source excludes ${forbidden}`);
+
+  for (const required of [
+    'semiLaunchCandidateVerdict: hold',
+    'semiLaunchCandidateGo: false',
+    'launchApproved: false',
+    'productionReady: false',
+    'releaseCandidateApproved: false',
+    'releaseApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'operatorEvidenceCollected: false',
+    'independentReviewRequired: true',
+    'hold-pending-operator-evidence',
+    'phase-92-launch-candidate-seal',
+    'phase-91-production-time-decision',
+    'launch-candidate-1',
+    'phase-93',
+    'semi-launch candidate approved',
+    'No semi-launch GO.',
+    'No launch approval.',
+    'No production-readiness approval.',
+    'No release-candidate approval.',
+    'No production release approval.',
+    'No O4 closure.',
+    'No O5 closure.',
+    'No network calls or live service contact.',
+  ]) assert(combined.includes(required), `Phase 93 surface preserves ${required}`);
+
+  for (const forbidden of [
+    ['semiLaunchCandidateGo:', 'true'].join(' '),
+    ['launchApproved:', 'true'].join(' '),
+    ['productionReady:', 'true'].join(' '),
+    ['releaseCandidateApproved:', 'true'].join(' '),
+    ['releaseApproved:', 'true'].join(' '),
+    ['closesO4:', 'true'].join(' '),
+    ['closesO5:', 'true'].join(' '),
+  ]) assert(!source.includes(forbidden), `Phase 93 excludes GO, approval, or closure ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
