@@ -1066,6 +1066,17 @@ temporary local socket runtime only inside the test/evidence command, exercises
 false, httpApiAllowed: false, serviceInstallAllowed: false, liveValidationAllowed: false, and
 closesO4: false. It adds no HTTP API, LAN exposure, Docker topology, Unraid service install,
 provider/media-server workflow, UI, or O4/O5 closure.
+Phase 103/104 adds `docs/PHASE_103_104_DURABLE_SIDECAR_STATE_EVIDENCE.md`,
+`ops:sidecar-durable-state-evidence`, and `test:sidecar-durable-state-evidence` to run the local
+socket sidecar against sidecar-owned durable state. It proves restartPersistenceExercised: true,
+restoreFailClosedExercised: true, sidecarStateValuesEchoed: false, serviceInstallAllowed: false,
+and closesO4: false while preserving that FileCustodian remains a hardened reference harness.
+Phase 105 adds `docs/PHASE_105_SIDECAR_UNRAID_SERVICE_PLAN.md`,
+`ops:sidecar-unraid-service-plan`, and `test:sidecar-unraid-service-plan` as a static Unraid service
+wrapper plan. It defines appdata layout, owner-only sidecar directories, local socket readiness
+checks, blocked `/boot`/rc.d/service-install actions, and keeps serviceInstalled: false,
+serviceStarted: false, mutatesUnraid: false, tcpListenerAllowed: false, httpApiAllowed: false,
+lanExposureAllowed: false, and closesO4: false.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

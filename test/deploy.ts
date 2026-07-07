@@ -6414,6 +6414,112 @@ test('Phase 101/102 sidecar runtime prototype is local IPC only and evidence-saf
   ]) assert(!source.includes(forbidden), `Phase 101/102 source excludes ${forbidden}`);
 });
 
+test('Phase 103/104 durable sidecar state evidence preserves restart and restore fail-closed boundaries', () => {
+  assert(exists('docs/PHASE_103_104_DURABLE_SIDECAR_STATE_EVIDENCE.md'), 'Phase 103/104 durable sidecar evidence doc exists');
+  assert(exists('src/ops/sidecar-durable-state-evidence.ts'), 'Phase 103/104 durable sidecar evidence source exists');
+  assert(exists('src/ops/sidecar-durable-state-evidence-cli.ts'), 'Phase 103/104 durable sidecar evidence CLI exists');
+  assert(exists('test/sidecar-durable-state-evidence.ts'), 'Phase 103/104 durable sidecar evidence test exists');
+  assert(pkg.scripts['test:sidecar-durable-state-evidence'] === 'tsx test/sidecar-durable-state-evidence.ts', 'Phase 103/104 test script present');
+  assert(pkg.scripts['ops:sidecar-durable-state-evidence'] === 'tsx src/ops/sidecar-durable-state-evidence-cli.ts', 'Phase 103/104 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-runtime-prototype.ts && tsx test/sidecar-durable-state-evidence.ts'),
+    'Phase 103/104 aggregate test follows Phase 101/102 runtime prototype',
+  );
+
+  const source = `${read('src/ops/sidecar-durable-state-evidence.ts')}\n${read('src/ops/sidecar-durable-state-evidence-cli.ts')}`;
+  const combined = [
+    source,
+    read('docs/PHASE_103_104_DURABLE_SIDECAR_STATE_EVIDENCE.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+
+  for (const required of [
+    'phase-103-104-durable-sidecar-state-evidence',
+    'DURABLE_SIDECAR_STATE_EVIDENCE',
+    'restartPersistenceExercised: true',
+    'restoreFailClosedExercised: true',
+    'sidecarStateValuesEchoed: false',
+    'serviceInstallAllowed: false',
+    'closesO4: false',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 103/104 surface preserves ${required}`);
+
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    '@aws-sdk',
+    '@azure',
+    '@google-cloud',
+    'express',
+    'fastify',
+    'koa',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 103/104 source excludes ${forbidden}`);
+});
+
+test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid', () => {
+  assert(exists('docs/PHASE_105_SIDECAR_UNRAID_SERVICE_PLAN.md'), 'Phase 105 Unraid service plan doc exists');
+  assert(exists('src/ops/sidecar-unraid-service-plan.ts'), 'Phase 105 Unraid service plan source exists');
+  assert(exists('src/ops/sidecar-unraid-service-plan-cli.ts'), 'Phase 105 Unraid service plan CLI exists');
+  assert(exists('test/sidecar-unraid-service-plan.ts'), 'Phase 105 Unraid service plan test exists');
+  assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 105 aggregate test follows Phase 103/104 durable evidence',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-service-plan.ts')}\n${read('src/ops/sidecar-unraid-service-plan-cli.ts')}`;
+  const combined = [
+    source,
+    read('docs/PHASE_105_SIDECAR_UNRAID_SERVICE_PLAN.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+
+  for (const required of [
+    'phase-105-sidecar-unraid-service-plan',
+    'SIDECAR_UNRAID_SERVICE_PLAN',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'mutatesUnraid: false',
+    'tcpListenerAllowed: false',
+    'httpApiAllowed: false',
+    'lanExposureAllowed: false',
+    'closesO4: false',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 105 surface preserves ${required}`);
+
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose up',
+    'execSync',
+    'spawnSync',
+    'writeFile',
+    'chmodSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 105 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
