@@ -6353,6 +6353,67 @@ test('Phase 100 sidecar evidence harness packet is redaction-safe and does not c
   ]) assert(!source.includes(forbidden), `Phase 100 source excludes ${forbidden}`);
 });
 
+test('Phase 101/102 sidecar runtime prototype is local IPC only and evidence-safe', () => {
+  assert(exists('docs/PHASE_101_102_SIDECAR_RUNTIME_PROTOTYPE.md'), 'Phase 101/102 sidecar runtime prototype doc exists');
+  assert(exists('src/core/crypto/local-sidecar-runtime.ts'), 'Phase 101/102 sidecar runtime source exists');
+  assert(exists('src/ops/sidecar-runtime-evidence.ts'), 'Phase 101/102 sidecar runtime evidence source exists');
+  assert(exists('src/ops/sidecar-runtime-evidence-cli.ts'), 'Phase 101/102 sidecar runtime evidence CLI exists');
+  assert(exists('test/sidecar-runtime-prototype.ts'), 'Phase 101/102 sidecar runtime prototype test exists');
+  assert(pkg.scripts['test:sidecar-runtime-prototype'] === 'tsx test/sidecar-runtime-prototype.ts', 'Phase 101/102 test script present');
+  assert(pkg.scripts['ops:sidecar-runtime-evidence'] === 'tsx src/ops/sidecar-runtime-evidence-cli.ts', 'Phase 101/102 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-evidence-harness-packet.ts && tsx test/sidecar-runtime-prototype.ts'),
+    'Phase 101/102 aggregate test follows Phase 100 evidence harness',
+  );
+
+  const source = [
+    read('src/core/crypto/local-sidecar-runtime.ts'),
+    read('src/ops/sidecar-runtime-evidence.ts'),
+    read('src/ops/sidecar-runtime-evidence-cli.ts'),
+  ].join('\n');
+  const combined = [
+    source,
+    read('docs/PHASE_101_102_SIDECAR_RUNTIME_PROTOTYPE.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+
+  for (const required of [
+    'phase-101-102-sidecar-runtime-evidence',
+    'SIDECAR_RUNTIME_EVIDENCE_PACKET',
+    'startLocalSidecarRuntime',
+    'UnixSocketSidecarTransport',
+    'local socket',
+    'tcpListenerAllowed: false',
+    'httpApiAllowed: false',
+    'serviceInstallAllowed: false',
+    'liveValidationAllowed: false',
+    'providerContactAllowed: false',
+    'closesO4: false',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 101/102 surface preserves ${required}`);
+
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    '@aws-sdk',
+    '@azure',
+    '@google-cloud',
+    'express',
+    'fastify',
+    'koa',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 101/102 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

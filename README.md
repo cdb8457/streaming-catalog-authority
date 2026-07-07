@@ -1058,6 +1058,14 @@ manifestValuesEchoed: false harness requires labels for runtime design, contract
 failure-injection, attestation, redaction, backup/restore, operator acceptance, and reviewer
 acceptance, plus true fields such as restoreWithoutSidecarFailsClosed. It can mark evidence ready
 for review but never closes O4 or O5.
+Phase 101/102 adds `docs/PHASE_101_102_SIDECAR_RUNTIME_PROTOTYPE.md`,
+`src/core/crypto/local-sidecar-runtime.ts`, `ops:sidecar-runtime-evidence`, and
+`test:sidecar-runtime-prototype` as the first local IPC sidecar runtime prototype. It starts a
+temporary local socket runtime only inside the test/evidence command, exercises
+`UnixSocketSidecarTransport`, packages Phase 100 evidence labels, and keeps tcpListenerAllowed:
+false, httpApiAllowed: false, serviceInstallAllowed: false, liveValidationAllowed: false, and
+closesO4: false. It adds no HTTP API, LAN exposure, Docker topology, Unraid service install,
+provider/media-server workflow, UI, or O4/O5 closure.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
