@@ -6232,6 +6232,127 @@ test('Phase 98 local sidecar custodian prototype is offline and contract-shaped'
   ]) assert(!source.includes(forbidden), `Phase 98 source excludes ${forbidden}`);
 });
 
+test('Phase 99 sidecar runtime design packet is static and Unraid-scoped', () => {
+  assert(exists('docs/PHASE_99_SIDECAR_RUNTIME_DESIGN_PACKET.md'), 'Phase 99 sidecar runtime design doc exists');
+  assert(exists('src/ops/sidecar-runtime-design-packet.ts'), 'Phase 99 sidecar runtime design source exists');
+  assert(exists('src/ops/sidecar-runtime-design-packet-cli.ts'), 'Phase 99 sidecar runtime design CLI exists');
+  assert(exists('test/sidecar-runtime-design-packet.ts'), 'Phase 99 sidecar runtime design test exists');
+  assert(pkg.scripts['test:sidecar-runtime-design-packet'] === 'tsx test/sidecar-runtime-design-packet.ts', 'Phase 99 test script present');
+  assert(pkg.scripts['ops:sidecar-runtime-design-packet'] === 'tsx src/ops/sidecar-runtime-design-packet-cli.ts', 'Phase 99 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/local-sidecar-custodian.ts && tsx test/sidecar-runtime-design-packet.ts'),
+    'Phase 99 aggregate test follows Phase 98 sidecar prototype',
+  );
+
+  const source = `${read('src/ops/sidecar-runtime-design-packet.ts')}\n${read('src/ops/sidecar-runtime-design-packet-cli.ts')}`;
+  const combined = [
+    source,
+    read('docs/PHASE_99_SIDECAR_RUNTIME_DESIGN_PACKET.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+
+  for (const required of [
+    'phase-99-sidecar-runtime-design-packet',
+    'SIDECAR_RUNTIME_DESIGN_PACKET',
+    'Unix domain socket',
+    'owner-only filesystem permissions',
+    'external-self-hosted',
+    'runtimeImplemented: false',
+    'liveValidationAllowed: false',
+    'no daemon',
+    'no socket listener',
+    'no HTTP API',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 99 surface preserves ${required}`);
+
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    'docker compose',
+    'express',
+    'fastify',
+    'koa',
+    'listen(',
+    'createServer',
+    'setInterval',
+    'setTimeout',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 99 source excludes ${forbidden}`);
+});
+
+test('Phase 100 sidecar evidence harness packet is redaction-safe and does not close gates', () => {
+  assert(exists('docs/PHASE_100_SIDECAR_EVIDENCE_HARNESS_PACKET.md'), 'Phase 100 sidecar evidence harness doc exists');
+  assert(exists('src/ops/sidecar-evidence-harness-packet.ts'), 'Phase 100 sidecar evidence harness source exists');
+  assert(exists('src/ops/sidecar-evidence-harness-packet-cli.ts'), 'Phase 100 sidecar evidence harness CLI exists');
+  assert(exists('test/sidecar-evidence-harness-packet.ts'), 'Phase 100 sidecar evidence harness test exists');
+  assert(pkg.scripts['test:sidecar-evidence-harness-packet'] === 'tsx test/sidecar-evidence-harness-packet.ts', 'Phase 100 test script present');
+  assert(pkg.scripts['ops:sidecar-evidence-harness-packet'] === 'tsx src/ops/sidecar-evidence-harness-packet-cli.ts', 'Phase 100 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-runtime-design-packet.ts && tsx test/sidecar-evidence-harness-packet.ts'),
+    'Phase 100 aggregate test follows Phase 99 runtime design',
+  );
+
+  const source = `${read('src/ops/sidecar-evidence-harness-packet.ts')}\n${read('src/ops/sidecar-evidence-harness-packet-cli.ts')}`;
+  const combined = [
+    source,
+    read('docs/PHASE_100_SIDECAR_EVIDENCE_HARNESS_PACKET.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+
+  for (const required of [
+    'phase-100-sidecar-evidence-harness-packet',
+    'SIDECAR_EVIDENCE_HARNESS_PACKET',
+    'manifestValuesEchoed: false',
+    'requiredLabels',
+    'restoreWithoutSidecarFailsClosed',
+    'no daemon',
+    'no socket listener',
+    'no HTTP API',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+    'never closes O4 or O5',
+  ]) assert(combined.includes(required), `Phase 100 surface preserves ${required}`);
+
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    'docker compose',
+    'express',
+    'fastify',
+    'koa',
+    'listen(',
+    'createServer',
+    'setInterval',
+    'setTimeout',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 100 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

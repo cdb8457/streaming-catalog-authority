@@ -1046,6 +1046,18 @@ no env reads, no live service contact, provider/media-server work, or UI. The de
 and can be ready for review, but O4/O5 remain open/deferred until a real sidecar process,
 independent state/custody boundary, operator-run evidence, restore fail-closed proof, and
 reviewer/operator acceptance exist.
+Phase 99 adds `docs/PHASE_99_SIDECAR_RUNTIME_DESIGN_PACKET.md` and
+`ops:sidecar-runtime-design-packet` to select the Unraid self-hosted sidecar runtime shape: separate
+local process, Unix domain socket with owner-only filesystem permissions, independent appdata state,
+and sidecar-owned attestation. It is design-only: runtimeImplemented: false, liveValidationAllowed:
+false, no daemon, no socket listener, no HTTP API, no TCP listener, no Docker topology, no provider
+or media-server work, no UI, and no O4/O5 closure.
+Phase 100 adds `docs/PHASE_100_SIDECAR_EVIDENCE_HARNESS_PACKET.md` and
+`ops:sidecar-evidence-harness-packet` to define the redaction-safe sidecar evidence manifest. The
+manifestValuesEchoed: false harness requires labels for runtime design, contract kit,
+failure-injection, attestation, redaction, backup/restore, operator acceptance, and reviewer
+acceptance, plus true fields such as restoreWithoutSidecarFailsClosed. It can mark evidence ready
+for review but never closes O4 or O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
