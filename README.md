@@ -1105,6 +1105,12 @@ Phase 111 adds `docs/PHASE_111_SIDECAR_UNRAID_REVIEW_HANDOFF.md`,
 independent-review handoff packet. It reports awaiting-independent-review, productionReady: false,
 serviceInstallApproved: false, providerModeEnabled: false, closesO4: false, closesO5: false, and
 O4/O5 remain open/deferred.
+Phase 112 adds `docs/PHASE_112_SIDECAR_UNRAID_PRODUCTION_GATE_BLOCKERS.md`,
+`ops:sidecar-unraid-production-gate-blockers`, and `test:sidecar-unraid-production-gate-blockers`
+as a static blocker packet after the Phase 111 handoff. It enumerates the remaining O4 managed
+custodian, independent-review, O5 managed KEK custody, and Unraid service live-validation evidence
+labels while keeping productionReady: false, serviceInstallApproved: false, providerModeEnabled:
+false, commandExecution: false, closesO4: false, closesO5: false, and O4/O5 remain open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
