@@ -6172,6 +6172,66 @@ test('Phase 97 operator UI preview launch packet is static and loopback-only', (
   ]) assert(!source.includes(forbidden), `Phase 97 source excludes ${forbidden}`);
 });
 
+test('Phase 98 local sidecar custodian prototype is offline and contract-shaped', () => {
+  assert(exists('docs/PHASE_98_LOCAL_SIDECAR_CUSTODIAN_PROTOTYPE.md'), 'Phase 98 local sidecar prototype doc exists');
+  assert(exists('src/core/crypto/local-sidecar-custodian.ts'), 'Phase 98 local sidecar source exists');
+  assert(exists('test/local-sidecar-custodian.ts'), 'Phase 98 local sidecar test exists');
+  assert(pkg.scripts['test:local-sidecar-custodian'] === 'tsx test/local-sidecar-custodian.ts', 'Phase 98 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/custodian-acceptance.ts && tsx test/local-sidecar-custodian.ts'),
+    'Phase 98 aggregate test follows custodian acceptance',
+  );
+
+  const source = read('src/core/crypto/local-sidecar-custodian.ts');
+  const combined = [
+    source,
+    read('docs/PHASE_98_LOCAL_SIDECAR_CUSTODIAN_PROTOTYPE.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+
+  for (const required of [
+    'LocalSidecarCustodianClient',
+    'LocalSidecarCustodianTransport',
+    'dispatchLocalSidecarCustodianRequest',
+    'external-self-hosted',
+    'phase-98-prototype',
+    'injected transport',
+    'no sockets',
+    'no daemon',
+    'no live service contact',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+    'does not close O4',
+  ]) assert(combined.includes(required), `Phase 98 surface preserves ${required}`);
+
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'node:tls',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    'docker compose',
+    '@aws-sdk',
+    '@azure',
+    '@google-cloud',
+    'express',
+    'fastify',
+    'koa',
+    'setInterval',
+    'setTimeout',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 98 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

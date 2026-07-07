@@ -1038,6 +1038,14 @@ preview launch packet. It keeps `remoteExposureAllowed: false`, `liveDataAllowed
 tunnel shape for Unraid, and keeps the preview fixture-only. It does not add live DB reads,
 provider/media-server data, reverse-proxy exposure, auth/session behavior, production UI, launch
 approval, or O4/O5 closure.
+Phase 98 adds `docs/PHASE_98_LOCAL_SIDECAR_CUSTODIAN_PROTOTYPE.md`,
+`src/core/crypto/local-sidecar-custodian.ts`, and `test:local-sidecar-custodian` as an offline
+local-sidecar custodian prototype. It implements a `LocalSidecarCustodianClient` over an injected
+transport and runs the shared `KeyCustodian` contract kit with no sockets, no daemon, no Docker,
+no env reads, no live service contact, provider/media-server work, or UI. The descriptor uses `external-self-hosted`
+and can be ready for review, but O4/O5 remain open/deferred until a real sidecar process,
+independent state/custody boundary, operator-run evidence, restore fail-closed proof, and
+reviewer/operator acceptance exist.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
