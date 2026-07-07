@@ -1090,6 +1090,21 @@ Phase 108 adds `docs/PHASE_108_SIDECAR_UNRAID_REVIEW_GATE.md`,
 that explicit redacted bundle. It can return reviewReadiness ready-for-review, but keeps
 commandExecution: false, evidenceValuesEchoed: false, liveServiceContact: false,
 providerContactAllowed: false, closesO4: false, and O4/O5 open.
+Phase 109 adds `docs/PHASE_109_SIDECAR_UNRAID_REVIEW_SUMMARY.md`,
+`ops:sidecar-unraid-review-summary`, and `test:sidecar-unraid-review-summary` as a summary preflight
+for one redacted Phase 108 review-gate JSON file. It keeps inputValuesEchoed: false,
+commandExecution: false, serviceInstalled: false, providerContactAllowed: false, closesO4: false,
+closesO5: false, and O4/O5 remain open/deferred.
+Phase 110 adds `docs/PHASE_110_SIDECAR_UNRAID_ACCEPTANCE_RECORD.md`,
+`ops:sidecar-unraid-acceptance-record`, and `test:sidecar-unraid-acceptance-record` as a redaction-safe
+acceptance record preflight with fixed decision values. It keeps recordValuesEchoed: false,
+commandExecution: false, serviceInstalled: false, serviceStarted: false, providerContactAllowed:
+false, closesO4: false, closesO5: false, and O4/O5 remain open/deferred.
+Phase 111 adds `docs/PHASE_111_SIDECAR_UNRAID_REVIEW_HANDOFF.md`,
+`ops:sidecar-unraid-review-handoff`, and `test:sidecar-unraid-review-handoff` as a static
+independent-review handoff packet. It reports awaiting-independent-review, productionReady: false,
+serviceInstallApproved: false, providerModeEnabled: false, closesO4: false, closesO5: false, and
+O4/O5 remain open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

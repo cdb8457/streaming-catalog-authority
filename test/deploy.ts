@@ -6651,6 +6651,137 @@ test('Phase 108 sidecar Unraid review gate reads explicit evidence and closes no
   ]) assert(!source.includes(forbidden), `Phase 108 source excludes ${forbidden}`);
 });
 
+test('Phase 109 sidecar Unraid review summary reads explicit review output and closes no gates', () => {
+  assert(exists('docs/PHASE_109_SIDECAR_UNRAID_REVIEW_SUMMARY.md'), 'Phase 109 review summary doc exists');
+  assert(exists('src/ops/sidecar-unraid-review-summary.ts'), 'Phase 109 review summary source exists');
+  assert(exists('src/ops/sidecar-unraid-review-summary-cli.ts'), 'Phase 109 review summary CLI exists');
+  assert(exists('test/sidecar-unraid-review-summary.ts'), 'Phase 109 review summary test exists');
+  assert(pkg.scripts['test:sidecar-unraid-review-summary'] === 'tsx test/sidecar-unraid-review-summary.ts', 'Phase 109 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-review-summary'] === 'tsx src/ops/sidecar-unraid-review-summary-cli.ts', 'Phase 109 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-review-gate.ts && tsx test/sidecar-unraid-review-summary.ts'),
+    'Phase 109 aggregate test follows Phase 108 review gate',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-review-summary.ts')}\n${read('src/ops/sidecar-unraid-review-summary-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_109_SIDECAR_UNRAID_REVIEW_SUMMARY.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-109-sidecar-unraid-review-summary',
+    'SIDECAR_UNRAID_REVIEW_SUMMARY',
+    'single-redacted-phase-108-review-gate-json-file',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'serviceInstalled: false',
+    'providerContactAllowed: false',
+    'closesO4: false',
+    'closesO5: false',
+    'O4/O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 109 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 109 source excludes ${forbidden}`);
+});
+
+test('Phase 110 sidecar Unraid acceptance record is redaction-safe and approval-free', () => {
+  assert(exists('docs/PHASE_110_SIDECAR_UNRAID_ACCEPTANCE_RECORD.md'), 'Phase 110 acceptance record doc exists');
+  assert(exists('src/ops/sidecar-unraid-acceptance-record.ts'), 'Phase 110 acceptance record source exists');
+  assert(exists('src/ops/sidecar-unraid-acceptance-record-cli.ts'), 'Phase 110 acceptance record CLI exists');
+  assert(exists('test/sidecar-unraid-acceptance-record.ts'), 'Phase 110 acceptance record test exists');
+  assert(pkg.scripts['test:sidecar-unraid-acceptance-record'] === 'tsx test/sidecar-unraid-acceptance-record.ts', 'Phase 110 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-acceptance-record'] === 'tsx src/ops/sidecar-unraid-acceptance-record-cli.ts', 'Phase 110 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-review-summary.ts && tsx test/sidecar-unraid-acceptance-record.ts'),
+    'Phase 110 aggregate test follows Phase 109 summary',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-acceptance-record.ts')}\n${read('src/ops/sidecar-unraid-acceptance-record-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_110_SIDECAR_UNRAID_ACCEPTANCE_RECORD.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-110-sidecar-unraid-acceptance-record',
+    'phase-110-sidecar-unraid-acceptance-preflight',
+    'single-operator-supplied-sidecar-unraid-acceptance-record-json-file',
+    'recordValuesEchoed: false',
+    'commandExecution: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'closesO4: false',
+    'closesO5: false',
+    'O4/O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 110 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 110 source excludes ${forbidden}`);
+});
+
+test('Phase 111 sidecar Unraid review handoff is static and approval-free', () => {
+  assert(exists('docs/PHASE_111_SIDECAR_UNRAID_REVIEW_HANDOFF.md'), 'Phase 111 review handoff doc exists');
+  assert(exists('src/ops/sidecar-unraid-review-handoff.ts'), 'Phase 111 review handoff source exists');
+  assert(exists('src/ops/sidecar-unraid-review-handoff-cli.ts'), 'Phase 111 review handoff CLI exists');
+  assert(exists('test/sidecar-unraid-review-handoff.ts'), 'Phase 111 review handoff test exists');
+  assert(pkg.scripts['test:sidecar-unraid-review-handoff'] === 'tsx test/sidecar-unraid-review-handoff.ts', 'Phase 111 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-review-handoff'] === 'tsx src/ops/sidecar-unraid-review-handoff-cli.ts', 'Phase 111 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-acceptance-record.ts && tsx test/sidecar-unraid-review-handoff.ts'),
+    'Phase 111 aggregate test follows Phase 110 acceptance record',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-review-handoff.ts')}\n${read('src/ops/sidecar-unraid-review-handoff-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_111_SIDECAR_UNRAID_REVIEW_HANDOFF.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-111-sidecar-unraid-review-handoff',
+    'SIDECAR_UNRAID_REVIEW_HANDOFF',
+    'awaiting-independent-review',
+    'productionReady: false',
+    'serviceInstallApproved: false',
+    'providerModeEnabled: false',
+    'closesO4: false',
+    'closesO5: false',
+    'O4/O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 111 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'process.env',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 111 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
