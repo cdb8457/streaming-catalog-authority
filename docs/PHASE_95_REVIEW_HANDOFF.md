@@ -23,6 +23,8 @@ harness, not production KMS.
   - O5 KEK custody runbook, rotation cadence, alert triage labels, and manual approval boundary.
 - `docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md`
   - Required operator decision record and hold conditions before any implementation can start.
+- `docs/PHASE_95_IMPLEMENTATION_DECISION_TEMPLATE.md`
+  - Redaction-safe HOLD-by-default decision template for the next operator decision.
 
 ## Local Evidence Notes
 

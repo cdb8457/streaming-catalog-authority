@@ -28,6 +28,10 @@ Before any implementation branch starts, the operator decision must name:
 - `reviewerLabel`: reviewer/operator label required before O4 or O5 can be considered for closure;
 - `residualRiskLabel`: accepted, rejected, or pending residual risk label.
 
+Use `docs/PHASE_95_IMPLEMENTATION_DECISION_TEMPLATE.md` as the starting point for the decision
+record. The template defaults to HOLD and is invalid as implementation approval until all required
+fields are deliberately filled.
+
 The decision record must not include keys, passphrases, credentials, service URLs, account IDs,
 tenant IDs, secret paths, database URLs, raw logs, command output blobs, receipt values, backup
 contents, ciphertext, provider refs, media titles, or artifact contents.

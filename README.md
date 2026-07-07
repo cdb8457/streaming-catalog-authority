@@ -1012,7 +1012,8 @@ scheduling, or rotation automation. Phase 95.4 adds the implementation
 authorization gate in `docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md`;
 it defines the redaction-safe operator decision record and hold conditions
 required before any real O4/O5 implementation can begin. The review handoff is
-`docs/PHASE_95_REVIEW_HANDOFF.md`.
+`docs/PHASE_95_REVIEW_HANDOFF.md`; the HOLD-by-default decision template is
+`docs/PHASE_95_IMPLEMENTATION_DECISION_TEMPLATE.md`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -5913,6 +5913,7 @@ test('Phase 95 O4/O5 hardening plan is docs-only and does not close gates', () =
   assert(exists('docs/PHASE_95_3_O5_MANAGED_KEK_CUSTODY_RUNBOOK.md'), 'Phase 95.3 O5 managed KEK custody runbook doc exists');
   assert(exists('docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md'), 'Phase 95.4 implementation authorization gate doc exists');
   assert(exists('docs/PHASE_95_REVIEW_HANDOFF.md'), 'Phase 95 review handoff doc exists');
+  assert(exists('docs/PHASE_95_IMPLEMENTATION_DECISION_TEMPLATE.md'), 'Phase 95 implementation decision template doc exists');
   assert(!exists('src/ops/o4-o5-hardening-plan.ts'), 'Phase 95 has no O4/O5 hardening implementation module');
   assert(!exists('src/ops/o4-o5-hardening-plan-cli.ts'), 'Phase 95 has no O4/O5 hardening CLI');
   assert(!exists('src/ops/o4-o5-evidence-packet.ts'), 'Phase 95.1 has no O4/O5 evidence packet implementation module');
@@ -5936,9 +5937,10 @@ test('Phase 95 O4/O5 hardening plan is docs-only and does not close gates', () =
   const phase953Doc = read('docs/PHASE_95_3_O5_MANAGED_KEK_CUSTODY_RUNBOOK.md');
   const phase954Doc = read('docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md');
   const phase95ReviewHandoff = read('docs/PHASE_95_REVIEW_HANDOFF.md');
+  const phase95DecisionTemplate = read('docs/PHASE_95_IMPLEMENTATION_DECISION_TEMPLATE.md');
   const readme = read('README.md');
-  const combined = `${phase95Doc}\n${phase951Doc}\n${phase952Doc}\n${phase953Doc}\n${phase954Doc}\n${phase95ReviewHandoff}\n${readme}`;
-  const phase95Surface = `${phase95Doc}\n${phase951Doc}\n${phase952Doc}\n${phase953Doc}\n${phase954Doc}\n${phase95ReviewHandoff}`;
+  const combined = `${phase95Doc}\n${phase951Doc}\n${phase952Doc}\n${phase953Doc}\n${phase954Doc}\n${phase95ReviewHandoff}\n${phase95DecisionTemplate}\n${readme}`;
+  const phase95Surface = `${phase95Doc}\n${phase951Doc}\n${phase952Doc}\n${phase953Doc}\n${phase954Doc}\n${phase95ReviewHandoff}\n${phase95DecisionTemplate}`;
 
   for (const required of [
     'Phase 95 is a planning-only phase',
@@ -5960,6 +5962,7 @@ test('Phase 95 O4/O5 hardening plan is docs-only and does not close gates', () =
     'docs/PHASE_95_3_O5_MANAGED_KEK_CUSTODY_RUNBOOK.md',
     'docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md',
     'docs/PHASE_95_REVIEW_HANDOFF.md',
+    'docs/PHASE_95_IMPLEMENTATION_DECISION_TEMPLATE.md',
     'custodianPreflightReportLabel',
     'kekPreflightReportLabel',
     'rewrapPlanEvidenceLabel',
@@ -5980,6 +5983,10 @@ test('Phase 95 O4/O5 hardening plan is docs-only and does not close gates', () =
     'Phase 95 is a planning-only O4/O5 hardening package',
     'Post-Review Next Step',
     'operator decision record under Phase 95.4',
+    'Default state is HOLD',
+    'decisionStatus',
+    'no-implementation-authorized',
+    'Until a valid decision record exists, continue planning or review only.',
     '"closesO4": false',
     '"closesO5": false',
     'Reviewer readiness does not mean:',
