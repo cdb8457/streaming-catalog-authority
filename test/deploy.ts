@@ -6520,6 +6520,137 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   ]) assert(!source.includes(forbidden), `Phase 105 source excludes ${forbidden}`);
 });
 
+test('Phase 106 sidecar Unraid operator script packet is copy-paste only and non-executing', () => {
+  assert(exists('docs/PHASE_106_SIDECAR_UNRAID_OPERATOR_SCRIPT_PACKET.md'), 'Phase 106 operator script packet doc exists');
+  assert(exists('src/ops/sidecar-unraid-operator-script-packet.ts'), 'Phase 106 operator script packet source exists');
+  assert(exists('src/ops/sidecar-unraid-operator-script-packet-cli.ts'), 'Phase 106 operator script packet CLI exists');
+  assert(exists('test/sidecar-unraid-operator-script-packet.ts'), 'Phase 106 operator script packet test exists');
+  assert(pkg.scripts['test:sidecar-unraid-operator-script-packet'] === 'tsx test/sidecar-unraid-operator-script-packet.ts', 'Phase 106 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-operator-script-packet'] === 'tsx src/ops/sidecar-unraid-operator-script-packet-cli.ts', 'Phase 106 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-service-plan.ts && tsx test/sidecar-unraid-operator-script-packet.ts'),
+    'Phase 106 aggregate test follows Phase 105 service plan',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-operator-script-packet.ts')}\n${read('src/ops/sidecar-unraid-operator-script-packet-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_106_SIDECAR_UNRAID_OPERATOR_SCRIPT_PACKET.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-106-sidecar-unraid-operator-script-packet',
+    'SIDECAR_UNRAID_OPERATOR_SCRIPT_PACKET',
+    'commandExecution: false',
+    'operatorRunRequired: true',
+    'mutatesUnraidNow: false',
+    'serviceInstalled: false',
+    'tcpListenerAllowed: false',
+    'httpApiAllowed: false',
+    'closesO4: false',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 106 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'execSync',
+    'spawnSync',
+    'writeFile',
+    'chmodSync',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 106 source excludes ${forbidden}`);
+});
+
+test('Phase 107 sidecar Unraid evidence capture defines redacted bundle only', () => {
+  assert(exists('docs/PHASE_107_SIDECAR_UNRAID_EVIDENCE_CAPTURE.md'), 'Phase 107 evidence capture doc exists');
+  assert(exists('src/ops/sidecar-unraid-evidence-capture.ts'), 'Phase 107 evidence capture source exists');
+  assert(exists('src/ops/sidecar-unraid-evidence-capture-cli.ts'), 'Phase 107 evidence capture CLI exists');
+  assert(exists('test/sidecar-unraid-evidence-capture.ts'), 'Phase 107 evidence capture test exists');
+  assert(pkg.scripts['test:sidecar-unraid-evidence-capture'] === 'tsx test/sidecar-unraid-evidence-capture.ts', 'Phase 107 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-evidence-capture'] === 'tsx src/ops/sidecar-unraid-evidence-capture-cli.ts', 'Phase 107 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-operator-script-packet.ts && tsx test/sidecar-unraid-evidence-capture.ts'),
+    'Phase 107 aggregate test follows Phase 106 script packet',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-evidence-capture.ts')}\n${read('src/ops/sidecar-unraid-evidence-capture-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_107_SIDECAR_UNRAID_EVIDENCE_CAPTURE.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-107-sidecar-unraid-evidence-capture-packet',
+    'SIDECAR_UNRAID_EVIDENCE_CAPTURE_PACKET',
+    'single-redacted-sidecar-unraid-evidence-json-file',
+    'evidenceValuesEchoed: false',
+    'commandExecution: false',
+    'serviceInstalled: false',
+    'closesO4: false',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 107 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'execSync',
+    'spawnSync',
+    'writeFile',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 107 source excludes ${forbidden}`);
+});
+
+test('Phase 108 sidecar Unraid review gate reads explicit evidence and closes no gates', () => {
+  assert(exists('docs/PHASE_108_SIDECAR_UNRAID_REVIEW_GATE.md'), 'Phase 108 review gate doc exists');
+  assert(exists('src/ops/sidecar-unraid-review-gate.ts'), 'Phase 108 review gate source exists');
+  assert(exists('src/ops/sidecar-unraid-review-gate-cli.ts'), 'Phase 108 review gate CLI exists');
+  assert(exists('test/sidecar-unraid-review-gate.ts'), 'Phase 108 review gate test exists');
+  assert(pkg.scripts['test:sidecar-unraid-review-gate'] === 'tsx test/sidecar-unraid-review-gate.ts', 'Phase 108 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-review-gate'] === 'tsx src/ops/sidecar-unraid-review-gate-cli.ts', 'Phase 108 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-evidence-capture.ts && tsx test/sidecar-unraid-review-gate.ts'),
+    'Phase 108 aggregate test follows Phase 107 evidence capture',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-review-gate.ts')}\n${read('src/ops/sidecar-unraid-review-gate-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_108_SIDECAR_UNRAID_REVIEW_GATE.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-108-sidecar-unraid-review-gate',
+    'SIDECAR_UNRAID_REVIEW_GATE',
+    'single-redacted-sidecar-unraid-evidence-json-file',
+    'commandExecution: false',
+    'evidenceValuesEchoed: false',
+    'reviewReadiness',
+    'closesO4: false',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 108 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 108 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

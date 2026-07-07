@@ -1077,6 +1077,19 @@ wrapper plan. It defines appdata layout, owner-only sidecar directories, local s
 checks, blocked `/boot`/rc.d/service-install actions, and keeps serviceInstalled: false,
 serviceStarted: false, mutatesUnraid: false, tcpListenerAllowed: false, httpApiAllowed: false,
 lanExposureAllowed: false, and closesO4: false.
+Phase 106 adds `docs/PHASE_106_SIDECAR_UNRAID_OPERATOR_SCRIPT_PACKET.md`,
+`ops:sidecar-unraid-operator-script-packet`, and `test:sidecar-unraid-operator-script-packet` as
+copy/paste-safe operator script shapes. The packet keeps commandExecution: false,
+operatorRunRequired: true, mutatesUnraidNow: false, serviceInstalled: false, and closesO4: false.
+Phase 107 adds `docs/PHASE_107_SIDECAR_UNRAID_EVIDENCE_CAPTURE.md`,
+`ops:sidecar-unraid-evidence-capture`, and `test:sidecar-unraid-evidence-capture` to define the
+single-redacted-sidecar-unraid-evidence-json-file bundle expected from an operator run. It keeps
+evidenceValuesEchoed: false, commandExecution: false, serviceInstalled: false, and closesO4: false.
+Phase 108 adds `docs/PHASE_108_SIDECAR_UNRAID_REVIEW_GATE.md`,
+`ops:sidecar-unraid-review-gate`, and `test:sidecar-unraid-review-gate` as a static review gate for
+that explicit redacted bundle. It can return reviewReadiness ready-for-review, but keeps
+commandExecution: false, evidenceValuesEchoed: false, liveServiceContact: false,
+providerContactAllowed: false, closesO4: false, and O4/O5 open.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
