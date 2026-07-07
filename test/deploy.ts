@@ -5802,6 +5802,110 @@ test('Phase 93 semi-launch validation packet is static and defaults to HOLD', ()
   ]) assert(!source.includes(forbidden), `Phase 93 excludes GO, approval, or closure ${forbidden}`);
 });
 
+test('Phase 94 operator validation run sheet is static and requires Clint validation', () => {
+  assert(exists('docs/PHASE_94_OPERATOR_VALIDATION_RUN_SHEET.md'), 'Phase 94 operator validation run sheet doc exists');
+  assert(exists('src/ops/operator-validation-run-sheet.ts'), 'Phase 94 operator validation run sheet source exists');
+  assert(exists('src/ops/operator-validation-run-sheet-cli.ts'), 'Phase 94 operator validation run sheet CLI exists');
+  assert(exists('test/operator-validation-run-sheet.ts'), 'Phase 94 operator validation run sheet test exists');
+  assert(pkg.scripts['ops:operator-validation-run-sheet'] === 'tsx src/ops/operator-validation-run-sheet-cli.ts', 'Phase 94 ops script present');
+  assert(pkg.scripts['test:operator-validation-run-sheet'] === 'tsx test/operator-validation-run-sheet.ts', 'Phase 94 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/semi-launch-validation-packet.ts && tsx test/operator-validation-run-sheet.ts'),
+    'Phase 94 aggregate test follows Phase 93',
+  );
+
+  const source = [
+    read('src/ops/operator-validation-run-sheet.ts'),
+    read('src/ops/operator-validation-run-sheet-cli.ts'),
+  ].join('\n');
+  const phase94Doc = read('docs/PHASE_94_OPERATOR_VALIDATION_RUN_SHEET.md');
+  const combined = [
+    source,
+    phase94Doc,
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:dns',
+    'node:fs',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    "from \"pg\"",
+    'INSERT ',
+    'UPDATE ',
+    'DELETE ',
+    'TRUNCATE',
+    'readFile',
+    'writeFile',
+    'createWriteStream',
+    'readdirSync',
+    'existsSync',
+    'execFileSync',
+    'spawnSync',
+    'localStorage',
+    'sessionStorage',
+    'Set-Cookie',
+    'Authorization',
+    'Bearer',
+    'Basic',
+    'OAuth',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+  ]) assert(!source.includes(forbidden), `Phase 94 source excludes ${forbidden}`);
+
+  for (const required of [
+    'operatorActionRequired: true',
+    'semiLaunchCandidateGo: false',
+    'operatorEvidenceCollected: false',
+    'independentReviewRequired: true',
+    'launchApproved: false',
+    'productionReady: false',
+    'releaseCandidateApproved: false',
+    'releaseApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'ready-for-operator-validation',
+    'phase-93-semi-launch-validation-packet',
+    'launch-candidate-1',
+    'operator validation complete',
+    'No operator evidence collection by this command.',
+    'No semi-launch GO.',
+    'No launch approval.',
+    'No production-readiness approval.',
+    'No release-candidate approval.',
+    'No production release approval.',
+    'No O4 closure.',
+    'No O5 closure.',
+    'No network calls or live service contact.',
+  ]) assert(combined.includes(required), `Phase 94 surface preserves ${required}`);
+
+  for (const forbidden of [
+    ['semiLaunchCandidateGo:', 'true'].join(' '),
+    ['operatorEvidenceCollected:', 'true'].join(' '),
+    ['launchApproved:', 'true'].join(' '),
+    ['productionReady:', 'true'].join(' '),
+    ['releaseCandidateApproved:', 'true'].join(' '),
+    ['releaseApproved:', 'true'].join(' '),
+    ['closesO4:', 'true'].join(' '),
+    ['closesO5:', 'true'].join(' '),
+  ]) assert(!source.includes(forbidden), `Phase 94 excludes GO, evidence completion, approval, or closure ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
