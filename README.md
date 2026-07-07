@@ -990,6 +990,29 @@ commands, contact services, or add runtime behavior. The JSON command is
 `npm run --silent ops:operator-validation-run-sheet -- -- --json`. See
 `docs/PHASE_94_OPERATOR_VALIDATION_RUN_SHEET.md` and
 `test:operator-validation-run-sheet`.
+Phase 95 adds a planning-only O4/O5 hardening plan. It sequences future work for
+managed/external custodian readiness and managed KEK custody/rotation
+automation, based on the existing Phase 16/21/28/29 and Phase 17/30 scaffolding.
+It does not add a real custodian adapter, cloud/vendor SDK, HTTP service,
+provider adapter, media-server integration, UI, scheduler, live service call, or
+runtime behavior. It does not close O4 or O5. See
+`docs/PHASE_95_O4_O5_HARDENING_PLAN.md`. Phase 95.1 adds the docs-only
+O4/O5 evidence packet shape in
+`docs/PHASE_95_1_O4_O5_EVIDENCE_PACKET.md`; it indexes redaction-safe evidence
+labels only and still does not close O4 or O5. Phase 95.2 adds the design-only
+external custodian adapter boundary in
+`docs/PHASE_95_2_EXTERNAL_CUSTODIAN_ADAPTER_DESIGN.md`; it compares local
+sidecar versus managed/external custody directions, records failure modes and
+evidence labels, and still does not implement a custodian or close O4. Phase
+95.3 adds the design-only O5 managed KEK custody runbook in
+`docs/PHASE_95_3_O5_MANAGED_KEK_CUSTODY_RUNBOOK.md`; it documents custody
+options, rotation cadence, alert triage, descriptor labels, and the manual
+approval boundary for mutating rewrap without implementing managed custody,
+scheduling, or rotation automation. Phase 95.4 adds the implementation
+authorization gate in `docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md`;
+it defines the redaction-safe operator decision record and hold conditions
+required before any real O4/O5 implementation can begin. The review handoff is
+`docs/PHASE_95_REVIEW_HANDOFF.md`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

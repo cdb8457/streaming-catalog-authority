@@ -5906,6 +5906,121 @@ test('Phase 94 operator validation run sheet is static and requires Clint valida
   ]) assert(!source.includes(forbidden), `Phase 94 excludes GO, evidence completion, approval, or closure ${forbidden}`);
 });
 
+test('Phase 95 O4/O5 hardening plan is docs-only and does not close gates', () => {
+  assert(exists('docs/PHASE_95_O4_O5_HARDENING_PLAN.md'), 'Phase 95 O4/O5 hardening plan doc exists');
+  assert(exists('docs/PHASE_95_1_O4_O5_EVIDENCE_PACKET.md'), 'Phase 95.1 O4/O5 evidence packet doc exists');
+  assert(exists('docs/PHASE_95_2_EXTERNAL_CUSTODIAN_ADAPTER_DESIGN.md'), 'Phase 95.2 external custodian adapter design doc exists');
+  assert(exists('docs/PHASE_95_3_O5_MANAGED_KEK_CUSTODY_RUNBOOK.md'), 'Phase 95.3 O5 managed KEK custody runbook doc exists');
+  assert(exists('docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md'), 'Phase 95.4 implementation authorization gate doc exists');
+  assert(exists('docs/PHASE_95_REVIEW_HANDOFF.md'), 'Phase 95 review handoff doc exists');
+  assert(!exists('src/ops/o4-o5-hardening-plan.ts'), 'Phase 95 has no O4/O5 hardening implementation module');
+  assert(!exists('src/ops/o4-o5-hardening-plan-cli.ts'), 'Phase 95 has no O4/O5 hardening CLI');
+  assert(!exists('src/ops/o4-o5-evidence-packet.ts'), 'Phase 95.1 has no O4/O5 evidence packet implementation module');
+  assert(!exists('src/ops/o4-o5-evidence-packet-cli.ts'), 'Phase 95.1 has no O4/O5 evidence packet CLI');
+  assert(!exists('src/core/crypto/external-custodian-adapter.ts'), 'Phase 95.2 has no external custodian adapter implementation');
+  assert(!exists('src/ops/external-custodian-adapter-cli.ts'), 'Phase 95.2 has no external custodian adapter CLI');
+  assert(!exists('src/ops/managed-kek-custody.ts'), 'Phase 95.3 has no managed KEK custody implementation module');
+  assert(!exists('src/ops/managed-kek-custody-cli.ts'), 'Phase 95.3 has no managed KEK custody CLI');
+  assert(pkg.scripts['ops:o4-o5-hardening-plan'] === undefined, 'Phase 95 has no ops script');
+  assert(pkg.scripts['test:o4-o5-hardening-plan'] === undefined, 'Phase 95 has no dedicated test script');
+  assert(pkg.scripts['ops:o4-o5-evidence-packet'] === undefined, 'Phase 95.1 has no ops script');
+  assert(pkg.scripts['test:o4-o5-evidence-packet'] === undefined, 'Phase 95.1 has no dedicated test script');
+  assert(pkg.scripts['ops:external-custodian-adapter'] === undefined, 'Phase 95.2 has no ops script');
+  assert(pkg.scripts['test:external-custodian-adapter'] === undefined, 'Phase 95.2 has no dedicated test script');
+  assert(pkg.scripts['ops:managed-kek-custody'] === undefined, 'Phase 95.3 has no ops script');
+  assert(pkg.scripts['test:managed-kek-custody'] === undefined, 'Phase 95.3 has no dedicated test script');
+
+  const phase95Doc = read('docs/PHASE_95_O4_O5_HARDENING_PLAN.md');
+  const phase951Doc = read('docs/PHASE_95_1_O4_O5_EVIDENCE_PACKET.md');
+  const phase952Doc = read('docs/PHASE_95_2_EXTERNAL_CUSTODIAN_ADAPTER_DESIGN.md');
+  const phase953Doc = read('docs/PHASE_95_3_O5_MANAGED_KEK_CUSTODY_RUNBOOK.md');
+  const phase954Doc = read('docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md');
+  const phase95ReviewHandoff = read('docs/PHASE_95_REVIEW_HANDOFF.md');
+  const readme = read('README.md');
+  const combined = `${phase95Doc}\n${phase951Doc}\n${phase952Doc}\n${phase953Doc}\n${phase954Doc}\n${phase95ReviewHandoff}\n${readme}`;
+  const phase95Surface = `${phase95Doc}\n${phase951Doc}\n${phase952Doc}\n${phase953Doc}\n${phase954Doc}\n${phase95ReviewHandoff}`;
+
+  for (const required of [
+    'Phase 95 is a planning-only phase',
+    'Phase 95.1 defines a docs-only O4/O5 readiness packet shape',
+    'Phase 95.2 designs the first production external-custodian adapter boundary without implementing it',
+    'Phase 95.3 designs managed KEK custody and rotation operations without changing runtime defaults',
+    'Phase 95.4 defines the minimum operator decision required before any real O4/O5 implementation can',
+    'It does not close O4 or O5.',
+    'This packet does not close O4 or O5.',
+    'This phase does not close O4 or O5.',
+    'This phase does not close O5.',
+    'This phase does not add a real custodian adapter',
+    'This phase does not add a real custodian adapter, cloud SDK, vendor SDK, HTTP service, daemon',
+    'Phase 95 must not introduce:',
+    'cloud/KMS SDKs, vendor SDKs, real network clients, or live service calls',
+    'The packet references existing preflight semantics rather than creating a new validator',
+    'docs/PHASE_95_1_O4_O5_EVIDENCE_PACKET.md',
+    'docs/PHASE_95_2_EXTERNAL_CUSTODIAN_ADAPTER_DESIGN.md',
+    'docs/PHASE_95_3_O5_MANAGED_KEK_CUSTODY_RUNBOOK.md',
+    'docs/PHASE_95_4_IMPLEMENTATION_AUTHORIZATION_GATE.md',
+    'docs/PHASE_95_REVIEW_HANDOFF.md',
+    'custodianPreflightReportLabel',
+    'kekPreflightReportLabel',
+    'rewrapPlanEvidenceLabel',
+    'Direction A - Local Custodian Sidecar',
+    'Direction B - Managed KMS or External Custodian Service',
+    'Failure-Mode Matrix',
+    'runCustodianContract',
+    'No Unraid topology is selected in this phase',
+    'Mutating rewrap must never be implied by:',
+    'Option A - Operator-Held Secret Media',
+    'Option B - Managed Secret Store',
+    'Option C - External Custodian-Owned KEK',
+    'Runbook readiness does not mean:',
+    'Required Decision Record',
+    'Hold Conditions',
+    'This gate authorizes implementation only',
+    'Do not start implementation by inference',
+    'Phase 95 is a planning-only O4/O5 hardening package',
+    'Post-Review Next Step',
+    'operator decision record under Phase 95.4',
+    '"closesO4": false',
+    '"closesO5": false',
+    'Reviewer readiness does not mean:',
+    'Stage 95.4 - Minimal Implementation Authorization Gate',
+    'Before any real adapter or automation code is written, require a new explicit operator decision',
+    'O4 and O5 are still described as open/deferred until live/operator evidence is reviewed',
+    'FileCustodian remains a reference harness',
+    'Phase 95 adds a planning-only O4/O5 hardening plan',
+    '`docs/PHASE_95_O4_O5_HARDENING_PLAN.md`',
+  ]) assert(combined.includes(required), `Phase 95 surface preserves ${required}`);
+
+  for (const forbidden of [
+    '@aws-sdk/',
+    '@azure/',
+    '@google-cloud/',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:tls',
+    'globalThis.fetch',
+    'fetch(',
+    '@torbox/torbox-api',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+    'node-cron',
+    'cron.schedule',
+    'setInterval(',
+    ['closesO4:', 'true'].join(' '),
+    ['closesO5:', 'true'].join(' '),
+    '"closesO4": true',
+    '"closesO5": true',
+    'O4 closed',
+    'O5 closed',
+  ]) assert(!phase95Surface.includes(forbidden), `Phase 95 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
