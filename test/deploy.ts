@@ -6874,6 +6874,56 @@ test('Phase 113 sidecar Unraid custodian boundary preflight is redaction-safe an
   ]) assert(!source.includes(forbidden), `Phase 113 source excludes ${forbidden}`);
 });
 
+test('Phase 114 sidecar Unraid custodian review verdict is redaction-safe and closure-gated', () => {
+  assert(exists('docs/PHASE_114_SIDECAR_UNRAID_CUSTODIAN_REVIEW_VERDICT.md'), 'Phase 114 custodian review verdict doc exists');
+  assert(exists('src/ops/sidecar-unraid-custodian-review-verdict.ts'), 'Phase 114 custodian review verdict source exists');
+  assert(exists('src/ops/sidecar-unraid-custodian-review-verdict-cli.ts'), 'Phase 114 custodian review verdict CLI exists');
+  assert(exists('test/sidecar-unraid-custodian-review-verdict.ts'), 'Phase 114 custodian review verdict test exists');
+  assert(pkg.scripts['test:sidecar-unraid-custodian-review-verdict'] === 'tsx test/sidecar-unraid-custodian-review-verdict.ts', 'Phase 114 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-custodian-review-verdict'] === 'tsx src/ops/sidecar-unraid-custodian-review-verdict-cli.ts', 'Phase 114 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-custodian-boundary-preflight.ts && tsx test/sidecar-unraid-custodian-review-verdict.ts'),
+    'Phase 114 aggregate test follows Phase 113 boundary preflight',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-custodian-review-verdict.ts')}\n${read('src/ops/sidecar-unraid-custodian-review-verdict-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_114_SIDECAR_UNRAID_CUSTODIAN_REVIEW_VERDICT.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-114-sidecar-unraid-custodian-review-verdict',
+    'phase-114-sidecar-unraid-custodian-review-verdict-preflight',
+    'single-redacted-sidecar-custodian-review-verdict-json-file',
+    'phase-113-sidecar-unraid-custodian-boundary-preflight',
+    'GO',
+    'HOLD',
+    'REJECTED',
+    'verdictValuesEchoed: false',
+    'rawReviewerNotesIncluded: false',
+    'commandExecution: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'productionReady: false',
+    'closesO4: false',
+    'closesO5: false',
+    'O4/O5 remain open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 114 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 114 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

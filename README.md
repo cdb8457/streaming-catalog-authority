@@ -1118,6 +1118,13 @@ boundary descriptor preflight. It reads one `single-redacted-sidecar-custodian-b
 requires the `managed-custodian-sidecar-boundary-attestation-redacted` source blocker label, and
 keeps descriptorValuesEchoed: false, commandExecution: false, productionReady: false, closesO4:
 false, closesO5: false, and O4/O5 remain open/deferred.
+Phase 114 adds `docs/PHASE_114_SIDECAR_UNRAID_CUSTODIAN_REVIEW_VERDICT.md`,
+`ops:sidecar-unraid-custodian-review-verdict`, and
+`test:sidecar-unraid-custodian-review-verdict` as a redaction-safe independent-review verdict
+preflight for the Phase 113 O4 sidecar custodian boundary packet. It reads one
+`single-redacted-sidecar-custodian-review-verdict-json-file`, accepts fixed verdicts `GO`, `HOLD`,
+or `REJECTED`, and keeps verdictValuesEchoed: false, rawReviewerNotesIncluded: false,
+productionReady: false, closesO4: false, closesO5: false, and O4/O5 remain open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
