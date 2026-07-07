@@ -1111,6 +1111,13 @@ as a static blocker packet after the Phase 111 handoff. It enumerates the remain
 custodian, independent-review, O5 managed KEK custody, and Unraid service live-validation evidence
 labels while keeping productionReady: false, serviceInstallApproved: false, providerModeEnabled:
 false, commandExecution: false, closesO4: false, closesO5: false, and O4/O5 remain open/deferred.
+Phase 113 adds `docs/PHASE_113_SIDECAR_UNRAID_CUSTODIAN_BOUNDARY_PREFLIGHT.md`,
+`ops:sidecar-unraid-custodian-boundary-preflight`, and
+`test:sidecar-unraid-custodian-boundary-preflight` as a redaction-safe O4 sidecar custodian
+boundary descriptor preflight. It reads one `single-redacted-sidecar-custodian-boundary-json-file`,
+requires the `managed-custodian-sidecar-boundary-attestation-redacted` source blocker label, and
+keeps descriptorValuesEchoed: false, commandExecution: false, productionReady: false, closesO4:
+false, closesO5: false, and O4/O5 remain open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
