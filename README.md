@@ -157,6 +157,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:launch-candidate-metadata-packet [--json]` | static Phase 87 launch-candidate metadata packet; retained labels and review questions only, with no approval, evidence reads, or runtime/provider/UI expansion |
 | `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
+| `ops:o4-o5-evidence-decision -- -- --decision <decision.json> --custodian <o4-descriptor.json> --kek <o5-descriptor.json> [--json]` | static Phase 96 O4/O5 evidence decision packet; reads three explicit JSON files, authorizes only the offline contract-harness evidence slice, never contacts live services, and does not close O4/O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
 | `ops:torbox-live-smoke-evidence-preflight -- -- <phase-43-report.json> [--json]` | static, redaction-safe Phase 43 live-smoke evidence report preflight; reads one report file only and does not contact TorBox |
 | `ops:torbox-live-smoke-summary-pack -- -- <phase-43-report.json>... [--json]` | static, redaction-safe Phase 43 live-smoke summary pack; reads explicit report files only and does not contact TorBox |
@@ -484,6 +485,12 @@ product launch is not ready pending security/runtime/production gates. Live UI/A
 sanitized local packet source, and auth/access boundary are not implemented or authorized. Provider
 availability remains packet/count/advisory only; O4 and O5 remain open/deferred; `FileCustodian`
 remains a hardened reference harness, not production KMS.
+Phase 97 adds `src/ops/operator-ui-preview-launch-packet.ts`,
+`docs/PHASE_97_OPERATOR_UI_PREVIEW_LAUNCH_PACKET.md`,
+`ops:operator-ui-preview-launch-packet`, and `test:operator-ui-preview-launch-packet` as a static
+launch packet for the fixture-only preview. It keeps `remoteExposureAllowed: false`,
+`liveDataAllowed: false`, and `providerContactAllowed: false`, documents local loopback preview plus
+an operator-controlled SSH tunnel shape for Unraid, and blocks reverse-proxy/LAN exposure.
 Phase 68 adds `src/ops/operator-ui-runtime-boundary.ts`,
 `docs/PHASE_68_OPERATOR_UI_RUNTIME_BOUNDARY.md`, `ops:operator-ui-runtime-boundary`, and
 `test:operator-ui-runtime-boundary` as a fixed synthetic Local Operator UI Runtime Boundary Plan.
@@ -1014,6 +1021,23 @@ it defines the redaction-safe operator decision record and hold conditions
 required before any real O4/O5 implementation can begin. The review handoff is
 `docs/PHASE_95_REVIEW_HANDOFF.md`; the HOLD-by-default decision template is
 `docs/PHASE_95_IMPLEMENTATION_DECISION_TEMPLATE.md`.
+Phase 96 adds `docs/PHASE_96_O4_O5_EVIDENCE_DECISION_PACKET.md`,
+`docs/PHASE_96_IMPLEMENTATION_DECISION_RECORD.redacted.json`,
+`ops:o4-o5-evidence-decision`, and `test:o4-o5-evidence-decision` as the first
+authorized O4/O5 evidence-contract slice. It accepts exactly one redaction-safe
+decision record plus one O4 descriptor and one O5 descriptor, authorizes only
+`contract-harness-expansion-without-live-service-contact`, sets
+`runtimeImplementationAuthorized: false`, `liveServiceContactAllowed: false`,
+`closesO4: false`, and `closesO5: false`, and keeps O4/O5 open/deferred. No
+provider, media-server, playback, download, scraping, live custodian/KMS contact,
+managed secret-store client, scheduler, HTTP service, or UI expansion is added.
+Phase 97 adds `docs/PHASE_97_OPERATOR_UI_PREVIEW_LAUNCH_PACKET.md`,
+`ops:operator-ui-preview-launch-packet`, and `test:operator-ui-preview-launch-packet` as a static
+preview launch packet. It keeps `remoteExposureAllowed: false`, `liveDataAllowed: false`, and
+`providerContactAllowed: false`, documents local loopback preview and an operator-controlled SSH
+tunnel shape for Unraid, and keeps the preview fixture-only. It does not add live DB reads,
+provider/media-server data, reverse-proxy exposure, auth/session behavior, production UI, launch
+approval, or O4/O5 closure.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -3079,8 +3079,8 @@ test('operator UI runtime boundary - Phase 68 is fixed, synthetic, and no-input'
   assert(typeof pkg.scripts['test:operator-ui-runtime-boundary'] === 'string', 'Phase 68 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-runtime-boundary'] === 'string', 'Phase 68 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-launch-readiness.ts && tsx test/operator-ui-runtime-boundary.ts'),
-    'Phase 68 suite follows Phase 67 suite in CI chain',
+    (pkg.scripts.test ?? '').includes('test/operator-ui-preview-launch-packet.ts && tsx test/operator-ui-runtime-boundary.ts'),
+    'Phase 68 suite follows the Phase 97 preview launch packet in CI chain',
   );
 
   const source = read('src/ops/operator-ui-runtime-boundary.ts');
@@ -6026,6 +6026,150 @@ test('Phase 95 O4/O5 hardening plan is docs-only and does not close gates', () =
     'O4 closed',
     'O5 closed',
   ]) assert(!phase95Surface.includes(forbidden), `Phase 95 docs exclude ${forbidden}`);
+});
+
+test('Phase 96 O4/O5 evidence decision packet authorizes only offline contract evidence', () => {
+  assert(exists('docs/PHASE_96_O4_O5_EVIDENCE_DECISION_PACKET.md'), 'Phase 96 O4/O5 evidence decision packet doc exists');
+  assert(exists('docs/PHASE_96_IMPLEMENTATION_DECISION_RECORD.redacted.json'), 'Phase 96 redacted decision record exists');
+  assert(exists('src/ops/o4-o5-evidence-decision.ts'), 'Phase 96 evidence decision source exists');
+  assert(exists('src/ops/o4-o5-evidence-decision-cli.ts'), 'Phase 96 evidence decision CLI exists');
+  assert(exists('test/o4-o5-evidence-decision.ts'), 'Phase 96 evidence decision test exists');
+  assert(pkg.scripts['ops:o4-o5-evidence-decision'] === 'tsx src/ops/o4-o5-evidence-decision-cli.ts', 'Phase 96 ops script present');
+  assert(pkg.scripts['test:o4-o5-evidence-decision'] === 'tsx test/o4-o5-evidence-decision.ts', 'Phase 96 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/kek-evidence-preflight.ts && tsx test/o4-o5-evidence-decision.ts'),
+    'Phase 96 aggregate test follows O4/O5 descriptor preflights',
+  );
+
+  const source = [
+    read('src/ops/o4-o5-evidence-decision.ts'),
+    read('src/ops/o4-o5-evidence-decision-cli.ts'),
+  ].join('\n');
+  const combined = [
+    source,
+    read('docs/PHASE_96_O4_O5_EVIDENCE_DECISION_PACKET.md'),
+    read('docs/PHASE_96_IMPLEMENTATION_DECISION_RECORD.redacted.json'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+
+  for (const required of [
+    'phase-96-o4-o5-evidence-decision-packet',
+    'contract-harness-expansion-without-live-service-contact',
+    'runtimeImplementationAuthorized: false',
+    'liveServiceContactAllowed: false',
+    'closesO4: false',
+    'closesO5: false',
+    '"closesO4": false',
+    '"closesO5": false',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+    'No live service contact',
+    'No provider, media-server, playback, download, scraping, or UI expansion',
+    'This phase does not add a real custodian adapter',
+    'runtimeImplementationAuthorized: false',
+    'liveServiceContactAllowed: false',
+  ]) assert(combined.includes(required), `Phase 96 surface preserves ${required}`);
+
+  for (const forbidden of [
+    '@aws-sdk/',
+    '@azure/',
+    '@google-cloud/',
+    'express',
+    'fastify',
+    'koa',
+    'node:https',
+    'node:http',
+    'node:net',
+    'node:tls',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'process.env',
+    'docker compose',
+    '@torbox/torbox-api',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'createRealJellyfinClient',
+    'createRealTorBox',
+    'node-cron',
+    'cron.schedule',
+    'setInterval(',
+    ['closesO4:', 'true'].join(' '),
+    ['closesO5:', 'true'].join(' '),
+    '"closesO4": true',
+    '"closesO5": true',
+    'O4 closed',
+    'O5 closed',
+  ]) assert(!source.includes(forbidden), `Phase 96 source excludes ${forbidden}`);
+});
+
+test('Phase 97 operator UI preview launch packet is static and loopback-only', () => {
+  assert(exists('docs/PHASE_97_OPERATOR_UI_PREVIEW_LAUNCH_PACKET.md'), 'Phase 97 preview launch packet doc exists');
+  assert(exists('src/ops/operator-ui-preview-launch-packet.ts'), 'Phase 97 preview launch packet source exists');
+  assert(exists('src/ops/operator-ui-preview-launch-packet-cli.ts'), 'Phase 97 preview launch packet CLI exists');
+  assert(exists('test/operator-ui-preview-launch-packet.ts'), 'Phase 97 preview launch packet test exists');
+  assert(pkg.scripts['ops:operator-ui-preview-launch-packet'] === 'tsx src/ops/operator-ui-preview-launch-packet-cli.ts', 'Phase 97 ops script present');
+  assert(pkg.scripts['test:operator-ui-preview-launch-packet'] === 'tsx test/operator-ui-preview-launch-packet.ts', 'Phase 97 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-launch-readiness.ts && tsx test/operator-ui-preview-launch-packet.ts'),
+    'Phase 97 aggregate test follows launch readiness',
+  );
+
+  const source = [
+    read('src/ops/operator-ui-preview-launch-packet.ts'),
+    read('src/ops/operator-ui-preview-launch-packet-cli.ts'),
+  ].join('\n');
+  const combined = [
+    source,
+    read('docs/PHASE_97_OPERATOR_UI_PREVIEW_LAUNCH_PACKET.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+
+  for (const required of [
+    'phase-97-operator-ui-preview-launch-packet',
+    'remoteExposureAllowed: false',
+    'liveDataAllowed: false',
+    'providerContactAllowed: false',
+    'loopback-only',
+    'fixture-only',
+    'Unraid fixture preview through SSH tunnel',
+    'Remote exposure remains blocked',
+    'O4 remains open/deferred',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+    'Binding the runtime to `0.0.0.0`',
+    'provider/media-server data',
+  ]) assert(combined.includes(required), `Phase 97 surface preserves ${required}`);
+
+  for (const forbidden of [
+    'react',
+    'vite',
+    'next',
+    'express',
+    'fastify',
+    'koa',
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    'process.env',
+    "from 'pg'",
+    'docker compose',
+    'ADAPTER_MODE',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'writeFile',
+    'createWriteStream',
+    ['remoteExposureAllowed:', 'true'].join(' '),
+    ['liveDataAllowed:', 'true'].join(' '),
+    ['providerContactAllowed:', 'true'].join(' '),
+  ]) assert(!source.includes(forbidden), `Phase 97 source excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

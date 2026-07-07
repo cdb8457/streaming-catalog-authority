@@ -1,0 +1,22 @@
+{
+  "decisionLabel": "phase-96-contract-harness-expansion-redacted",
+  "decisionStatus": "authorize-one-slice",
+  "o4CustodianDirection": "defer",
+  "o5CustodyDirection": "defer",
+  "unraidDeploymentMode": "catalog-one-shot-ops-bind-mounted",
+  "liveServiceContactAllowed": false,
+  "implementationScopeLabel": "contract-harness-expansion-without-live-service-contact",
+  "requiredEvidenceLabels": [
+    "phase-95-review-handoff",
+    "production-custodian-contract-existing",
+    "custodian-acceptance-harness-existing",
+    "custodian-preflight-report-redacted",
+    "kek-preflight-report-redacted",
+    "kek-rewrap-plan-redacted",
+    "redaction-review-required"
+  ],
+  "reviewerLabel": "reviewer-required-before-o4-o5-closure",
+  "residualRiskLabel": "o4-o5-residual-risk-pending",
+  "closesO4": false,
+  "closesO5": false
+}

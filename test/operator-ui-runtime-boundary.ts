@@ -143,8 +143,8 @@ test('helper and CLI source has no runtime UI/API/network/DB/env/file/provider e
   assert(pkg.scripts['test:operator-ui-runtime-boundary'] === 'tsx test/operator-ui-runtime-boundary.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-runtime-boundary'] === 'tsx src/ops/operator-ui-runtime-boundary-cli.ts', 'ops script');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-launch-readiness.ts && tsx test/operator-ui-runtime-boundary.ts'),
-    'suite follows Phase 67',
+    (pkg.scripts.test ?? '').includes('test/operator-ui-preview-launch-packet.ts && tsx test/operator-ui-runtime-boundary.ts'),
+    'suite follows Phase 97 preview launch packet',
   );
 
   const combined = `${source}\n${cliSource}`;
