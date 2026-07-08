@@ -7628,6 +7628,57 @@ test('Phase 130 Unraid production switch runbook is runbook-only', () => {
   ]) assert(!source.includes(forbidden), `Phase 130 source excludes ${forbidden}`);
 });
 
+test('Phase 131 Unraid switch evidence capture is capture-only', () => {
+  assert(exists('docs/PHASE_131_UNRAID_SWITCH_EVIDENCE_CAPTURE.md'), 'Phase 131 switch evidence capture doc exists');
+  assert(exists('src/ops/unraid-switch-evidence-capture.ts'), 'Phase 131 switch evidence capture source exists');
+  assert(exists('src/ops/unraid-switch-evidence-capture-cli.ts'), 'Phase 131 switch evidence capture CLI exists');
+  assert(exists('test/unraid-switch-evidence-capture.ts'), 'Phase 131 switch evidence capture test exists');
+  assert(pkg.scripts['test:unraid-switch-evidence-capture'] === 'tsx test/unraid-switch-evidence-capture.ts', 'Phase 131 test script present');
+  assert(pkg.scripts['ops:unraid-switch-evidence-capture'] === 'tsx src/ops/unraid-switch-evidence-capture-cli.ts', 'Phase 131 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-production-switch-runbook.ts && tsx test/unraid-switch-evidence-capture.ts'),
+    'Phase 131 aggregate test follows Phase 130 production switch runbook',
+  );
+
+  const source = `${read('src/ops/unraid-switch-evidence-capture.ts')}\n${read('src/ops/unraid-switch-evidence-capture-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_131_UNRAID_SWITCH_EVIDENCE_CAPTURE.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-131-unraid-switch-evidence-capture',
+    'phase-130-unraid-production-switch-runbook',
+    'phase-129-unraid-final-human-approval-record-preflight',
+    'ready-for-explicit-operator-window',
+    'ready-for-operator-capture-after-switch',
+    'unraid-live-operating-test-2026-07-08.redacted.md',
+    'docker-compose.unraid-bind.yml',
+    'post-switch-doctor-redacted-json',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 131 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 131 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

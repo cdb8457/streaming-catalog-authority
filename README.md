@@ -1225,6 +1225,15 @@ Phase 129 preflight, references `unraid-live-operating-test-2026-07-08.redacted.
 productionReady: false, launchApproved: false, commandExecution: false, scriptGenerated: false,
 serviceInstalled: false, serviceStarted: false, providerModeEnabled: false, and FileCustodian
 remains a hardened reference harness.
+Phase 131 adds `docs/PHASE_131_UNRAID_SWITCH_EVIDENCE_CAPTURE.md`,
+`ops:unraid-switch-evidence-capture`, and `test:unraid-switch-evidence-capture` as a
+redaction-safe capture packet for evidence after an explicit operator switch. It reports
+phase-131-unraid-switch-evidence-capture, points to phase-130-unraid-production-switch-runbook,
+requires ready-for-explicit-operator-window, references `unraid-live-operating-test-2026-07-08.redacted.md`,
+and defines post-switch-doctor-redacted-json while keeping productionReady: false,
+launchApproved: false, commandExecution: false, scriptGenerated: false, serviceInstalled: false,
+serviceStarted: false, providerModeEnabled: false, and FileCustodian remains a hardened reference
+harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
