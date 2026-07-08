@@ -1137,6 +1137,11 @@ redaction-safe final authorization record over the Phase 115 closure gate. It ca
 authorizationStatus: o4-authorized, o4Status: closed/authorized, and O4 closure for the
 o4-managed-custodian-boundary-only scope while keeping inputValuesEchoed: false, commandExecution:
 false, productionReady: false, closesO5: false, and O5 remains open/deferred.
+Phase 117 adds `docs/PHASE_117_O5_KEK_REVIEW_VERDICT.md`, `ops:o5-kek-review-verdict`, and
+`test:o5-kek-review-verdict` as a redaction-safe independent-review verdict preflight for the
+Phase 30 O5 KEK evidence preflight. It accepts fixed verdicts `GO`, `HOLD`, or `REJECTED`, can
+report ready-for-o5-closure-gate, and keeps verdictValuesEchoed: false, rawReviewerNotesIncluded:
+false, productionReady: false, closesO4: false, closesO5: false, and O5 remains open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -7019,6 +7019,57 @@ test('Phase 116 sidecar Unraid O4 final authorization closes only O4', () => {
   ]) assert(!source.includes(forbidden), `Phase 116 source excludes ${forbidden}`);
 });
 
+test('Phase 117 O5 KEK review verdict is redaction-safe and closure-gated', () => {
+  assert(exists('docs/PHASE_117_O5_KEK_REVIEW_VERDICT.md'), 'Phase 117 O5 KEK review verdict doc exists');
+  assert(exists('src/ops/o5-kek-review-verdict.ts'), 'Phase 117 O5 KEK review verdict source exists');
+  assert(exists('src/ops/o5-kek-review-verdict-cli.ts'), 'Phase 117 O5 KEK review verdict CLI exists');
+  assert(exists('test/o5-kek-review-verdict.ts'), 'Phase 117 O5 KEK review verdict test exists');
+  assert(pkg.scripts['test:o5-kek-review-verdict'] === 'tsx test/o5-kek-review-verdict.ts', 'Phase 117 test script present');
+  assert(pkg.scripts['ops:o5-kek-review-verdict'] === 'tsx src/ops/o5-kek-review-verdict-cli.ts', 'Phase 117 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-o4-final-authorization.ts && tsx test/o5-kek-review-verdict.ts'),
+    'Phase 117 aggregate test follows Phase 116 O4 final authorization',
+  );
+
+  const source = `${read('src/ops/o5-kek-review-verdict.ts')}\n${read('src/ops/o5-kek-review-verdict-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_117_O5_KEK_REVIEW_VERDICT.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-117-o5-kek-review-verdict',
+    'phase-117-o5-kek-review-verdict-preflight',
+    'single-redacted-o5-kek-review-verdict-json-file',
+    'phase-30-kek-evidence-preflight',
+    'ready-for-o5-closure-gate',
+    'GO',
+    'HOLD',
+    'REJECTED',
+    'verdictValuesEchoed: false',
+    'rawReviewerNotesIncluded: false',
+    'commandExecution: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'productionReady: false',
+    'closesO4: false',
+    'closesO5: false',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 117 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 117 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
