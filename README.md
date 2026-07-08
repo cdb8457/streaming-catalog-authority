@@ -1177,6 +1177,14 @@ readyForInstallAuthorization: true while keeping inputValuesEchoed: false, rawRe
 false, commandExecution: false, scriptGenerated: false, serviceInstallApproved: false,
 serviceInstalled: false, serviceStarted: false, productionReady: false, closesO4: false,
 closesO5: false, and FileCustodian remains a hardened reference harness.
+Phase 123 adds `docs/PHASE_123_UNRAID_SERVICE_INSTALL_AUTHORIZATION.md`,
+`ops:unraid-service-install-authorization`, and `test:unraid-service-install-authorization` as a
+redaction-safe final authorization record over the Phase 122 approval gate. A valid authorization can
+report installAuthorizationStatus: install-window-authorized and serviceInstallApproved: true while
+keeping inputValuesEchoed: false, rawAuthorizationNotesIncluded: false, commandExecution: false,
+scriptGenerated: false, serviceInstalled: false, serviceStarted: false, productionReady: false,
+launchApproved: false, closesO4: false, closesO5: false, and FileCustodian remains a hardened
+reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
