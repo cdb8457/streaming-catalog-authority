@@ -1201,6 +1201,14 @@ productionReadinessDecisionStatus: ready-for-final-human-production-approval whi
 productionReady: false, launchApproved: false, commandExecution: false, scriptGenerated: false,
 serviceInstalled: false, serviceStarted: false, providerModeEnabled: false, and FileCustodian
 remains a hardened reference harness.
+Phase 128 adds `docs/PHASE_128_UNRAID_FINAL_HUMAN_APPROVAL_TEMPLATE.md`,
+`ops:unraid-final-human-approval-template`, and `test:unraid-final-human-approval-template` as a
+redaction-safe template for the explicit final human production approval record. It reports
+UNRAID_FINAL_HUMAN_APPROVAL_TEMPLATE, finalHumanApprovalStatus: awaiting-explicit-human-approval,
+and required record phase-128-unraid-final-human-production-approval-record while keeping
+productionReady: false, launchApproved: false, commandExecution: false, scriptGenerated: false,
+serviceInstalled: false, serviceStarted: false, providerModeEnabled: false, and FileCustodian
+remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

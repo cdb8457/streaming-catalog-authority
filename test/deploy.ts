@@ -7486,6 +7486,54 @@ test('Phases 125-127 Unraid production gates are evidence/review/decision only',
   ]) assert(!source.includes(forbidden), `Phase 125-127 source excludes ${forbidden}`);
 });
 
+test('Phase 128 Unraid final human approval template is approval-template-only', () => {
+  assert(exists('docs/PHASE_128_UNRAID_FINAL_HUMAN_APPROVAL_TEMPLATE.md'), 'Phase 128 approval template doc exists');
+  assert(exists('src/ops/unraid-final-human-approval-template.ts'), 'Phase 128 approval template source exists');
+  assert(exists('src/ops/unraid-final-human-approval-template-cli.ts'), 'Phase 128 approval template CLI exists');
+  assert(exists('test/unraid-final-human-approval-template.ts'), 'Phase 128 approval template test exists');
+  assert(pkg.scripts['test:unraid-final-human-approval-template'] === 'tsx test/unraid-final-human-approval-template.ts', 'Phase 128 test script present');
+  assert(pkg.scripts['ops:unraid-final-human-approval-template'] === 'tsx src/ops/unraid-final-human-approval-template-cli.ts', 'Phase 128 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-production-gates.ts && tsx test/unraid-final-human-approval-template.ts'),
+    'Phase 128 aggregate test follows Phase 125-127 production gates',
+  );
+
+  const source = `${read('src/ops/unraid-final-human-approval-template.ts')}\n${read('src/ops/unraid-final-human-approval-template-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_128_UNRAID_FINAL_HUMAN_APPROVAL_TEMPLATE.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-128-unraid-final-human-approval-template',
+    'UNRAID_FINAL_HUMAN_APPROVAL_TEMPLATE',
+    'phase-128-unraid-final-human-production-approval-record',
+    'phase-127-unraid-production-readiness-decision',
+    'awaiting-explicit-human-approval',
+    'productionReady: false',
+    'launchApproved: false',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 128 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 128 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
