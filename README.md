@@ -1148,6 +1148,12 @@ preflight report and Phase 117 review verdict report. It can report ready-for-fi
 and closure-ready-pending-final-authorization, but keeps inputValuesEchoed: false, commandExecution:
 false, productionReady: false, closesO4: false, closesO5: false, and O5 remains open until final
 authorization.
+Phase 119 adds `docs/PHASE_119_O5_KEK_FINAL_AUTHORIZATION.md`, `ops:o5-kek-final-authorization`,
+and `test:o5-kek-final-authorization` as a redaction-safe final authorization record over the Phase
+118 closure gate. It can report authorizationStatus: o5-authorized, o5Status: closed/authorized,
+and O5 closure for the o5-managed-kek-custody-only scope while keeping inputValuesEchoed: false,
+commandExecution: false, productionReady: false, closesO4: false, and FileCustodian remains a
+hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

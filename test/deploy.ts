@@ -7117,6 +7117,53 @@ test('Phase 118 O5 KEK closure gate is redaction-safe and final-authorization-on
   ]) assert(!source.includes(forbidden), `Phase 118 source excludes ${forbidden}`);
 });
 
+test('Phase 119 O5 KEK final authorization closes only O5', () => {
+  assert(exists('docs/PHASE_119_O5_KEK_FINAL_AUTHORIZATION.md'), 'Phase 119 O5 final authorization doc exists');
+  assert(exists('src/ops/o5-kek-final-authorization.ts'), 'Phase 119 O5 final authorization source exists');
+  assert(exists('src/ops/o5-kek-final-authorization-cli.ts'), 'Phase 119 O5 final authorization CLI exists');
+  assert(exists('test/o5-kek-final-authorization.ts'), 'Phase 119 O5 final authorization test exists');
+  assert(pkg.scripts['test:o5-kek-final-authorization'] === 'tsx test/o5-kek-final-authorization.ts', 'Phase 119 test script present');
+  assert(pkg.scripts['ops:o5-kek-final-authorization'] === 'tsx src/ops/o5-kek-final-authorization-cli.ts', 'Phase 119 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/o5-kek-closure-gate.ts && tsx test/o5-kek-final-authorization.ts'),
+    'Phase 119 aggregate test follows Phase 118 O5 closure gate',
+  );
+
+  const source = `${read('src/ops/o5-kek-final-authorization.ts')}\n${read('src/ops/o5-kek-final-authorization-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_119_O5_KEK_FINAL_AUTHORIZATION.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-119-o5-kek-final-authorization',
+    'phase-119-o5-kek-final-authorization-record',
+    'phase-118-o5-kek-closure-gate-preflight',
+    'o5-managed-kek-custody-only',
+    'o5-authorized',
+    'closed/authorized',
+    'enabled O5 closure flag',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'productionReady: false',
+    'closesO4: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 119 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 119 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
