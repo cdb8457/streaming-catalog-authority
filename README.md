@@ -1185,6 +1185,14 @@ keeping inputValuesEchoed: false, rawAuthorizationNotesIncluded: false, commandE
 scriptGenerated: false, serviceInstalled: false, serviceStarted: false, productionReady: false,
 launchApproved: false, closesO4: false, closesO5: false, and FileCustodian remains a hardened
 reference harness.
+Phase 124 adds `docs/PHASE_124_UNRAID_INSTALL_EVIDENCE_MANIFEST.md`,
+`ops:unraid-install-evidence-manifest`, and `test:unraid-install-evidence-manifest` as a
+redaction-safe manifest for evidence captured after the authorized operator-run install window. It
+reports UNRAID_INSTALL_EVIDENCE_MANIFEST, evidenceManifestStatus: ready-for-operator-capture, and
+serviceInstallApproved: true while keeping inputValuesEchoed: false, commandExecution: false,
+scriptGenerated: false, serviceInstalled: false, serviceStarted: false, providerModeEnabled: false,
+productionReady: false, launchApproved: false, closesO4: false, closesO5: false, and FileCustodian
+remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

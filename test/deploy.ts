@@ -7374,6 +7374,58 @@ test('Phase 123 Unraid service install authorization approves window only', () =
   ]) assert(!source.includes(forbidden), `Phase 123 source excludes ${forbidden}`);
 });
 
+test('Phase 124 Unraid install evidence manifest is capture-only and mutation-free', () => {
+  assert(exists('docs/PHASE_124_UNRAID_INSTALL_EVIDENCE_MANIFEST.md'), 'Phase 124 evidence manifest doc exists');
+  assert(exists('src/ops/unraid-install-evidence-manifest.ts'), 'Phase 124 evidence manifest source exists');
+  assert(exists('src/ops/unraid-install-evidence-manifest-cli.ts'), 'Phase 124 evidence manifest CLI exists');
+  assert(exists('test/unraid-install-evidence-manifest.ts'), 'Phase 124 evidence manifest test exists');
+  assert(pkg.scripts['test:unraid-install-evidence-manifest'] === 'tsx test/unraid-install-evidence-manifest.ts', 'Phase 124 test script present');
+  assert(pkg.scripts['ops:unraid-install-evidence-manifest'] === 'tsx src/ops/unraid-install-evidence-manifest-cli.ts', 'Phase 124 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-service-install-authorization.ts && tsx test/unraid-install-evidence-manifest.ts'),
+    'Phase 124 aggregate test follows Phase 123 install authorization',
+  );
+
+  const source = `${read('src/ops/unraid-install-evidence-manifest.ts')}\n${read('src/ops/unraid-install-evidence-manifest-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_124_UNRAID_INSTALL_EVIDENCE_MANIFEST.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-124-unraid-install-evidence-manifest',
+    'UNRAID_INSTALL_EVIDENCE_MANIFEST',
+    'phase-123-unraid-service-install-authorization',
+    'define-redacted-evidence-required-after-authorized-operator-install-window',
+    'ready-for-operator-capture',
+    'serviceInstallApproved: true',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'mutatesUnraid: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 124 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 124 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
