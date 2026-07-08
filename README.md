@@ -1131,6 +1131,12 @@ O4 closure gate preflight over the Phase 113 boundary report and Phase 114 revie
 It can report ready-for-final-o4-authorization and closure-ready-pending-final-authorization, but
 keeps inputValuesEchoed: false, commandExecution: false, productionReady: false, closesO4: false,
 closesO5: false, and O5 remains open/deferred.
+Phase 116 adds `docs/PHASE_116_SIDECAR_UNRAID_O4_FINAL_AUTHORIZATION.md`,
+`ops:sidecar-unraid-o4-final-authorization`, and `test:sidecar-unraid-o4-final-authorization` as a
+redaction-safe final authorization record over the Phase 115 closure gate. It can report
+authorizationStatus: o4-authorized, o4Status: closed/authorized, and O4 closure for the
+o4-managed-custodian-boundary-only scope while keeping inputValuesEchoed: false, commandExecution:
+false, productionReady: false, closesO5: false, and O5 remains open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

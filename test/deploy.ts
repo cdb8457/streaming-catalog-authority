@@ -6971,6 +6971,54 @@ test('Phase 115 sidecar Unraid O4 closure gate is redaction-safe and final-autho
   ]) assert(!source.includes(forbidden), `Phase 115 source excludes ${forbidden}`);
 });
 
+test('Phase 116 sidecar Unraid O4 final authorization closes only O4', () => {
+  assert(exists('docs/PHASE_116_SIDECAR_UNRAID_O4_FINAL_AUTHORIZATION.md'), 'Phase 116 O4 final authorization doc exists');
+  assert(exists('src/ops/sidecar-unraid-o4-final-authorization.ts'), 'Phase 116 O4 final authorization source exists');
+  assert(exists('src/ops/sidecar-unraid-o4-final-authorization-cli.ts'), 'Phase 116 O4 final authorization CLI exists');
+  assert(exists('test/sidecar-unraid-o4-final-authorization.ts'), 'Phase 116 O4 final authorization test exists');
+  assert(pkg.scripts['test:sidecar-unraid-o4-final-authorization'] === 'tsx test/sidecar-unraid-o4-final-authorization.ts', 'Phase 116 test script present');
+  assert(pkg.scripts['ops:sidecar-unraid-o4-final-authorization'] === 'tsx src/ops/sidecar-unraid-o4-final-authorization-cli.ts', 'Phase 116 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-o4-closure-gate.ts && tsx test/sidecar-unraid-o4-final-authorization.ts'),
+    'Phase 116 aggregate test follows Phase 115 closure gate',
+  );
+
+  const source = `${read('src/ops/sidecar-unraid-o4-final-authorization.ts')}\n${read('src/ops/sidecar-unraid-o4-final-authorization-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_116_SIDECAR_UNRAID_O4_FINAL_AUTHORIZATION.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-116-sidecar-unraid-o4-final-authorization',
+    'phase-116-sidecar-unraid-o4-final-authorization-record',
+    'phase-115-sidecar-unraid-o4-closure-gate-preflight',
+    'o4-managed-custodian-boundary-only',
+    'o4-authorized',
+    'closed/authorized',
+    'enabled O4 closure flag',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'productionReady: false',
+    'closesO5: false',
+    'O5 remains open/deferred',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 116 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 116 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
