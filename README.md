@@ -1154,6 +1154,13 @@ and `test:o5-kek-final-authorization` as a redaction-safe final authorization re
 and O5 closure for the o5-managed-kek-custody-only scope while keeping inputValuesEchoed: false,
 commandExecution: false, productionReady: false, closesO4: false, and FileCustodian remains a
 hardened reference harness.
+Phase 120 adds `docs/PHASE_120_UNRAID_OPERATOR_READINESS_BUNDLE.md`,
+`ops:unraid-operator-readiness-bundle`, and `test:unraid-operator-readiness-bundle` as a
+redaction-safe Unraid planning bundle over the authorized O4/O5 evidence. It reports
+UNRAID_OPERATOR_READINESS_BUNDLE, o4Status: closed/authorized, o5Status: closed/authorized, and
+remaining redacted production gates while keeping commandExecution: false, serviceInstallApproved:
+false, providerModeEnabled: false, productionReady: false, closesO4: false, closesO5: false, and
+FileCustodian remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

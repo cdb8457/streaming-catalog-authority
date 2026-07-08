@@ -7164,6 +7164,58 @@ test('Phase 119 O5 KEK final authorization closes only O5', () => {
   ]) assert(!source.includes(forbidden), `Phase 119 source excludes ${forbidden}`);
 });
 
+test('Phase 120 Unraid operator readiness bundle is offline planning only', () => {
+  assert(exists('docs/PHASE_120_UNRAID_OPERATOR_READINESS_BUNDLE.md'), 'Phase 120 operator bundle doc exists');
+  assert(exists('src/ops/unraid-operator-readiness-bundle.ts'), 'Phase 120 operator bundle source exists');
+  assert(exists('src/ops/unraid-operator-readiness-bundle-cli.ts'), 'Phase 120 operator bundle CLI exists');
+  assert(exists('test/unraid-operator-readiness-bundle.ts'), 'Phase 120 operator bundle test exists');
+  assert(pkg.scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'Phase 120 test script present');
+  assert(pkg.scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'Phase 120 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    'Phase 120 aggregate test follows Phase 119 O5 final authorization',
+  );
+
+  const source = `${read('src/ops/unraid-operator-readiness-bundle.ts')}\n${read('src/ops/unraid-operator-readiness-bundle-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_120_UNRAID_OPERATOR_READINESS_BUNDLE.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-120-unraid-operator-readiness-bundle',
+    'UNRAID_OPERATOR_READINESS_BUNDLE',
+    'phase-116-sidecar-unraid-o4-final-authorization',
+    'phase-119-o5-kek-final-authorization',
+    'summarize-closed-o4-o5-evidence-for-unraid-deployment-planning',
+    'o4Status: closed/authorized',
+    'o5Status: closed/authorized',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'serviceInstallApproved: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 120 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:fs',
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 120 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
