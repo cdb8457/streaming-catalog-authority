@@ -7426,6 +7426,66 @@ test('Phase 124 Unraid install evidence manifest is capture-only and mutation-fr
   ]) assert(!source.includes(forbidden), `Phase 124 source excludes ${forbidden}`);
 });
 
+test('Phases 125-127 Unraid production gates are evidence/review/decision only', () => {
+  assert(exists('docs/PHASE_125_127_UNRAID_PRODUCTION_GATES.md'), 'Phase 125-127 production gates doc exists');
+  for (const rel of [
+    'src/ops/unraid-install-evidence-capture-gate.ts',
+    'src/ops/unraid-install-evidence-capture-gate-cli.ts',
+    'src/ops/unraid-post-install-validation-review.ts',
+    'src/ops/unraid-post-install-validation-review-cli.ts',
+    'src/ops/unraid-production-readiness-decision.ts',
+    'src/ops/unraid-production-readiness-decision-cli.ts',
+    'test/unraid-production-gates.ts',
+  ]) assert(exists(rel), `${rel} exists`);
+  assert(pkg.scripts['test:unraid-production-gates'] === 'tsx test/unraid-production-gates.ts', 'Phase 125-127 test script present');
+  assert(pkg.scripts['ops:unraid-install-evidence-capture-gate'] === 'tsx src/ops/unraid-install-evidence-capture-gate-cli.ts', 'Phase 125 ops script present');
+  assert(pkg.scripts['ops:unraid-post-install-validation-review'] === 'tsx src/ops/unraid-post-install-validation-review-cli.ts', 'Phase 126 ops script present');
+  assert(pkg.scripts['ops:unraid-production-readiness-decision'] === 'tsx src/ops/unraid-production-readiness-decision-cli.ts', 'Phase 127 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-install-evidence-manifest.ts && tsx test/unraid-production-gates.ts'),
+    'Phase 125-127 aggregate test follows Phase 124 evidence manifest',
+  );
+
+  const source = [
+    'src/ops/unraid-install-evidence-capture-gate.ts',
+    'src/ops/unraid-install-evidence-capture-gate-cli.ts',
+    'src/ops/unraid-post-install-validation-review.ts',
+    'src/ops/unraid-post-install-validation-review-cli.ts',
+    'src/ops/unraid-production-readiness-decision.ts',
+    'src/ops/unraid-production-readiness-decision-cli.ts',
+  ].map(read).join('\n');
+  const combined = [source, read('docs/PHASE_125_127_UNRAID_PRODUCTION_GATES.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-125-unraid-install-evidence-capture-gate',
+    'phase-126-unraid-post-install-validation-review',
+    'phase-127-unraid-production-readiness-decision',
+    'complete-ready-for-post-install-review',
+    'ready-for-production-readiness-decision',
+    'ready-for-final-human-production-approval',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 125-127 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 125-127 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

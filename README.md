@@ -1193,6 +1193,14 @@ serviceInstallApproved: true while keeping inputValuesEchoed: false, commandExec
 scriptGenerated: false, serviceInstalled: false, serviceStarted: false, providerModeEnabled: false,
 productionReady: false, launchApproved: false, closesO4: false, closesO5: false, and FileCustodian
 remains a hardened reference harness.
+Phases 125-127 add `docs/PHASE_125_127_UNRAID_PRODUCTION_GATES.md`,
+`ops:unraid-install-evidence-capture-gate`, `ops:unraid-post-install-validation-review`,
+`ops:unraid-production-readiness-decision`, and `test:unraid-production-gates` as the final
+redaction-safe Unraid evidence/review/decision gate chain. Phase 127 can report
+productionReadinessDecisionStatus: ready-for-final-human-production-approval while keeping
+productionReady: false, launchApproved: false, commandExecution: false, scriptGenerated: false,
+serviceInstalled: false, serviceStarted: false, providerModeEnabled: false, and FileCustodian
+remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
