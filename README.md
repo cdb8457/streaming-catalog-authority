@@ -1161,6 +1161,14 @@ UNRAID_OPERATOR_READINESS_BUNDLE, o4Status: closed/authorized, o5Status: closed/
 remaining redacted production gates while keeping commandExecution: false, serviceInstallApproved:
 false, providerModeEnabled: false, productionReady: false, closesO4: false, closesO5: false, and
 FileCustodian remains a hardened reference harness.
+Phase 121 adds `docs/PHASE_121_UNRAID_SERVICE_INSTALL_RUNBOOK.md`,
+`ops:unraid-service-install-runbook`, and `test:unraid-service-install-runbook` as a redaction-safe
+draft install and rollback runbook over the Phase 120 readiness bundle. It reports
+UNRAID_SERVICE_INSTALL_RUNBOOK, runbookReviewStatus: draft-pending-operator-review,
+o4Status: closed/authorized, and o5Status: closed/authorized while keeping inputValuesEchoed:
+false, commandExecution: false, scriptGenerated: false, serviceInstallApproved: false,
+serviceInstalled: false, serviceStarted: false, productionReady: false, closesO4: false,
+closesO5: false, and FileCustodian remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
