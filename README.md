@@ -1250,6 +1250,14 @@ ready-for-final-production-disposition, service-evidence-present, and can report
 ready-for-launch-readiness-decision for verdict: GO while keeping productionReady: false,
 launchApproved: false, commandExecution: false, scriptGenerated: false, providerModeEnabled: false,
 and FileCustodian remains a hardened reference harness.
+Phase 134 adds `docs/PHASE_134_UNRAID_LAUNCH_READINESS_DECISION.md`,
+`ops:unraid-launch-readiness-decision`, and `test:unraid-launch-readiness-decision` as a
+redaction-safe launch-readiness gate for one Phase 133 production disposition JSON file. It reports
+phase-134-unraid-launch-readiness-decision, requires phase-133-unraid-production-disposition,
+verdict: GO, and ready-for-launch-readiness-decision, and can report
+ready-for-final-launch-approval-record while keeping productionReady: false, launchApproved: false,
+commandExecution: false, scriptGenerated: false, providerModeEnabled: false, and FileCustodian
+remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

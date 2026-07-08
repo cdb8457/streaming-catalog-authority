@@ -7773,6 +7773,51 @@ test('Phase 133 Unraid production disposition is disposition-only', () => {
   ]) assert(!source.includes(forbidden), `Phase 133 source excludes ${forbidden}`);
 });
 
+test('Phase 134 Unraid launch readiness decision is launch-readiness-only', () => {
+  assert(exists('docs/PHASE_134_UNRAID_LAUNCH_READINESS_DECISION.md'), 'Phase 134 launch readiness decision doc exists');
+  assert(exists('src/ops/unraid-launch-readiness-decision.ts'), 'Phase 134 launch readiness decision source exists');
+  assert(exists('src/ops/unraid-launch-readiness-decision-cli.ts'), 'Phase 134 launch readiness decision CLI exists');
+  assert(exists('test/unraid-launch-readiness-decision.ts'), 'Phase 134 launch readiness decision test exists');
+  assert(pkg.scripts['test:unraid-launch-readiness-decision'] === 'tsx test/unraid-launch-readiness-decision.ts', 'Phase 134 test script present');
+  assert(pkg.scripts['ops:unraid-launch-readiness-decision'] === 'tsx src/ops/unraid-launch-readiness-decision-cli.ts', 'Phase 134 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-production-disposition.ts && tsx test/unraid-launch-readiness-decision.ts'),
+    'Phase 134 aggregate test follows Phase 133 production disposition',
+  );
+
+  const source = `${read('src/ops/unraid-launch-readiness-decision.ts')}\n${read('src/ops/unraid-launch-readiness-decision-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_134_UNRAID_LAUNCH_READINESS_DECISION.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-134-unraid-launch-readiness-decision',
+    'phase-133-unraid-production-disposition',
+    'single-operator-supplied-unraid-production-disposition-json-file',
+    'ready-for-launch-readiness-decision',
+    'ready-for-final-launch-approval-record',
+    'decisionValuesEchoed: false',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 134 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 134 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
