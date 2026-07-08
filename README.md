@@ -1234,6 +1234,14 @@ and defines post-switch-doctor-redacted-json while keeping productionReady: fals
 launchApproved: false, commandExecution: false, scriptGenerated: false, serviceInstalled: false,
 serviceStarted: false, providerModeEnabled: false, and FileCustodian remains a hardened reference
 harness.
+Phase 132 adds `docs/PHASE_132_UNRAID_SWITCH_EVIDENCE_REVIEW.md`,
+`ops:unraid-switch-evidence-review`, and `test:unraid-switch-evidence-review` as a redaction-safe
+review gate for one operator-supplied switch evidence JSON file. It reports
+phase-132-unraid-switch-evidence-review, requires phase-132-unraid-switch-evidence-record,
+phase-131-unraid-switch-evidence-capture, and phase-130-unraid-production-switch-runbook, and can
+report service-evidence-present plus ready-for-final-production-disposition while keeping
+productionReady: false, launchApproved: false, commandExecution: false, scriptGenerated: false,
+providerModeEnabled: false, and FileCustodian remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
