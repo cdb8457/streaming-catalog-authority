@@ -1125,6 +1125,12 @@ preflight for the Phase 113 O4 sidecar custodian boundary packet. It reads one
 `single-redacted-sidecar-custodian-review-verdict-json-file`, accepts fixed verdicts `GO`, `HOLD`,
 or `REJECTED`, and keeps verdictValuesEchoed: false, rawReviewerNotesIncluded: false,
 productionReady: false, closesO4: false, closesO5: false, and O4/O5 remain open/deferred.
+Phase 115 adds `docs/PHASE_115_SIDECAR_UNRAID_O4_CLOSURE_GATE.md`,
+`ops:sidecar-unraid-o4-closure-gate`, and `test:sidecar-unraid-o4-closure-gate` as a redaction-safe
+O4 closure gate preflight over the Phase 113 boundary report and Phase 114 review verdict report.
+It can report ready-for-final-o4-authorization and closure-ready-pending-final-authorization, but
+keeps inputValuesEchoed: false, commandExecution: false, productionReady: false, closesO4: false,
+closesO5: false, and O5 remains open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
