@@ -1169,6 +1169,14 @@ o4Status: closed/authorized, and o5Status: closed/authorized while keeping input
 false, commandExecution: false, scriptGenerated: false, serviceInstallApproved: false,
 serviceInstalled: false, serviceStarted: false, productionReady: false, closesO4: false,
 closesO5: false, and FileCustodian remains a hardened reference harness.
+Phase 122 adds `docs/PHASE_122_UNRAID_SERVICE_RUNBOOK_APPROVAL_GATE.md`,
+`ops:unraid-service-runbook-approval-gate`, and `test:unraid-service-runbook-approval-gate` as a
+redaction-safe approval gate over the Phase 121 draft runbook and one explicit review record. A GO
+review can report runbookApprovalStatus: ready-for-future-install-authorization and
+readyForInstallAuthorization: true while keeping inputValuesEchoed: false, rawReviewerNotesIncluded:
+false, commandExecution: false, scriptGenerated: false, serviceInstallApproved: false,
+serviceInstalled: false, serviceStarted: false, productionReady: false, closesO4: false,
+closesO5: false, and FileCustodian remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

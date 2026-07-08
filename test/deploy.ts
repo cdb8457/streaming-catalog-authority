@@ -7269,6 +7269,59 @@ test('Phase 121 Unraid service install runbook is draft-only and mutation-free',
   ]) assert(!source.includes(forbidden), `Phase 121 source excludes ${forbidden}`);
 });
 
+test('Phase 122 Unraid service runbook approval gate is review-only and install-free', () => {
+  assert(exists('docs/PHASE_122_UNRAID_SERVICE_RUNBOOK_APPROVAL_GATE.md'), 'Phase 122 approval gate doc exists');
+  assert(exists('src/ops/unraid-service-runbook-approval-gate.ts'), 'Phase 122 approval gate source exists');
+  assert(exists('src/ops/unraid-service-runbook-approval-gate-cli.ts'), 'Phase 122 approval gate CLI exists');
+  assert(exists('test/unraid-service-runbook-approval-gate.ts'), 'Phase 122 approval gate test exists');
+  assert(pkg.scripts['test:unraid-service-runbook-approval-gate'] === 'tsx test/unraid-service-runbook-approval-gate.ts', 'Phase 122 test script present');
+  assert(pkg.scripts['ops:unraid-service-runbook-approval-gate'] === 'tsx src/ops/unraid-service-runbook-approval-gate-cli.ts', 'Phase 122 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-service-install-runbook.ts && tsx test/unraid-service-runbook-approval-gate.ts'),
+    'Phase 122 aggregate test follows Phase 121 service install runbook',
+  );
+
+  const source = `${read('src/ops/unraid-service-runbook-approval-gate.ts')}\n${read('src/ops/unraid-service-runbook-approval-gate-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_122_UNRAID_SERVICE_RUNBOOK_APPROVAL_GATE.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-122-unraid-service-runbook-approval-gate',
+    'phase-122-unraid-service-runbook-approval-record',
+    'phase-121-unraid-service-install-runbook',
+    'gate-redacted-runbook-review-before-future-service-install-authorization',
+    'ready-for-future-install-authorization',
+    'readyForInstallAuthorization: true',
+    'inputValuesEchoed: false',
+    'rawReviewerNotesIncluded: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'serviceInstallApproved: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'mutatesUnraid: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: false',
+    'closesO4: false',
+    'closesO5: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 122 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'spawnSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 122 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
