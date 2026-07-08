@@ -1217,6 +1217,14 @@ ready-for-operator-production-switch only when the supplied record has verdict: 
 productionReady: false, launchApproved: false, commandExecution: false, scriptGenerated: false,
 serviceInstalled: false, serviceStarted: false, providerModeEnabled: false, and FileCustodian
 remains a hardened reference harness.
+Phase 130 adds `docs/PHASE_130_UNRAID_PRODUCTION_SWITCH_RUNBOOK.md`,
+`ops:unraid-production-switch-runbook`, and `test:unraid-production-switch-runbook` as a
+redaction-safe runbook packet for the explicit operator production switch window. It consumes a
+Phase 129 preflight, references `unraid-live-operating-test-2026-07-08.redacted.md`, uses
+`docker-compose.unraid-bind.yml`, and can report ready-for-explicit-operator-window while keeping
+productionReady: false, launchApproved: false, commandExecution: false, scriptGenerated: false,
+serviceInstalled: false, serviceStarted: false, providerModeEnabled: false, and FileCustodian
+remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

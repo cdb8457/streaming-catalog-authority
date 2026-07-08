@@ -7582,6 +7582,52 @@ test('Phase 129 Unraid final human approval record is preflight-only', () => {
   ]) assert(!source.includes(forbidden), `Phase 129 source excludes ${forbidden}`);
 });
 
+test('Phase 130 Unraid production switch runbook is runbook-only', () => {
+  assert(exists('docs/PHASE_130_UNRAID_PRODUCTION_SWITCH_RUNBOOK.md'), 'Phase 130 production switch runbook doc exists');
+  assert(exists('src/ops/unraid-production-switch-runbook.ts'), 'Phase 130 production switch runbook source exists');
+  assert(exists('src/ops/unraid-production-switch-runbook-cli.ts'), 'Phase 130 production switch runbook CLI exists');
+  assert(exists('test/unraid-production-switch-runbook.ts'), 'Phase 130 production switch runbook test exists');
+  assert(pkg.scripts['test:unraid-production-switch-runbook'] === 'tsx test/unraid-production-switch-runbook.ts', 'Phase 130 test script present');
+  assert(pkg.scripts['ops:unraid-production-switch-runbook'] === 'tsx src/ops/unraid-production-switch-runbook-cli.ts', 'Phase 130 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-final-human-approval-record.ts && tsx test/unraid-production-switch-runbook.ts'),
+    'Phase 130 aggregate test follows Phase 129 final human approval record',
+  );
+
+  const source = `${read('src/ops/unraid-production-switch-runbook.ts')}\n${read('src/ops/unraid-production-switch-runbook-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_130_UNRAID_PRODUCTION_SWITCH_RUNBOOK.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-130-unraid-production-switch-runbook',
+    'phase-129-unraid-final-human-approval-record-preflight',
+    'ready-for-explicit-operator-window',
+    'unraid-live-operating-test-2026-07-08.redacted.md',
+    'docker-compose.unraid-bind.yml',
+    'recordValuesEchoed: false',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 130 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'execSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 130 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
