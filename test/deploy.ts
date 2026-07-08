@@ -7534,6 +7534,54 @@ test('Phase 128 Unraid final human approval template is approval-template-only',
   ]) assert(!source.includes(forbidden), `Phase 128 source excludes ${forbidden}`);
 });
 
+test('Phase 129 Unraid final human approval record is preflight-only', () => {
+  assert(exists('docs/PHASE_129_UNRAID_FINAL_HUMAN_APPROVAL_RECORD.md'), 'Phase 129 final approval record doc exists');
+  assert(exists('src/ops/unraid-final-human-approval-record.ts'), 'Phase 129 final approval record source exists');
+  assert(exists('src/ops/unraid-final-human-approval-record-cli.ts'), 'Phase 129 final approval record CLI exists');
+  assert(exists('test/unraid-final-human-approval-record.ts'), 'Phase 129 final approval record test exists');
+  assert(pkg.scripts['test:unraid-final-human-approval-record'] === 'tsx test/unraid-final-human-approval-record.ts', 'Phase 129 test script present');
+  assert(pkg.scripts['ops:unraid-final-human-approval-record'] === 'tsx src/ops/unraid-final-human-approval-record-cli.ts', 'Phase 129 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-final-human-approval-template.ts && tsx test/unraid-final-human-approval-record.ts'),
+    'Phase 129 aggregate test follows Phase 128 approval template',
+  );
+
+  const source = `${read('src/ops/unraid-final-human-approval-record.ts')}\n${read('src/ops/unraid-final-human-approval-record-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_129_UNRAID_FINAL_HUMAN_APPROVAL_RECORD.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-129-unraid-final-human-approval-record-preflight',
+    'phase-128-unraid-final-human-production-approval-record',
+    'phase-128-unraid-final-human-approval-template',
+    'phase-127-unraid-production-readiness-decision',
+    'ready-for-operator-production-switch',
+    'single-operator-supplied-final-human-approval-record-json-file',
+    'recordValuesEchoed: false',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'serviceInstalled: false',
+    'serviceStarted: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 129 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 129 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
