@@ -1275,6 +1275,16 @@ ready-for-real-unraid-production-switch while keeping productionReady: false,
 commandExecution: false, scriptGenerated: false, mutatesUnraid: false, serviceInstalled: false,
 serviceStarted: false, providerModeEnabled: false, and FileCustodian remains a hardened reference
 harness.
+Phase 137 adds `docs/PHASE_137_UNRAID_POST_SWITCH_EVIDENCE_REVIEW.md`,
+`ops:unraid-post-switch-evidence-review`, and `test:unraid-post-switch-evidence-review` as a
+redaction-safe review of the live Unraid switch evidence. It requires
+phase-136-unraid-production-switch-execution-packet, ready-for-real-unraid-production-switch,
+deployed commit `7e2db7c8b6b9ac68272e01ee51e6c63399fc0ef3`, healthy `repo-postgres-1`, no
+published ports, APP_ENV production, and a post-switch doctor with 12 pass, 2 warn, and 0 fail. It
+reports service-running-with-open-hardening-warnings with serviceInstalled: true,
+serviceStarted: true, launchApproved: true, o4Status: open-warning, and o5Status: open-warning
+while keeping productionReady: false, commandExecution: false, scriptGenerated: false,
+providerModeEnabled: false, and FileCustodian remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
