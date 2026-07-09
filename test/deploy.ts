@@ -7940,6 +7940,49 @@ test('Phase 137 Unraid post-switch evidence review records operational service w
   ]) assert(!source.includes(forbidden), `Phase 137 source excludes ${forbidden}`);
 });
 
+test('Phase 138 Unraid post-switch maintenance review records maintenance evidence', () => {
+  assert(exists('docs/PHASE_138_UNRAID_POST_SWITCH_MAINTENANCE_REVIEW.md'), 'Phase 138 maintenance review doc exists');
+  assert(exists('src/ops/unraid-post-switch-maintenance-review.ts'), 'Phase 138 maintenance review source exists');
+  assert(exists('src/ops/unraid-post-switch-maintenance-review-cli.ts'), 'Phase 138 maintenance review CLI exists');
+  assert(exists('test/unraid-post-switch-maintenance-review.ts'), 'Phase 138 maintenance review test exists');
+  assert(pkg.scripts['test:unraid-post-switch-maintenance-review'] === 'tsx test/unraid-post-switch-maintenance-review.ts', 'Phase 138 test script present');
+  assert(pkg.scripts['ops:unraid-post-switch-maintenance-review'] === 'tsx src/ops/unraid-post-switch-maintenance-review-cli.ts', 'Phase 138 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-post-switch-evidence-review.ts && tsx test/unraid-post-switch-maintenance-review.ts'),
+    'Phase 138 aggregate test follows Phase 137 post-switch evidence review',
+  );
+
+  const source = `${read('src/ops/unraid-post-switch-maintenance-review.ts')}\n${read('src/ops/unraid-post-switch-maintenance-review-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_138_UNRAID_POST_SWITCH_MAINTENANCE_REVIEW.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-138-unraid-post-switch-maintenance-review',
+    'phase-137-unraid-post-switch-evidence-review',
+    'post-switch-maintenance-evidence-accepted',
+    'serviceInstalled: true',
+    'serviceStarted: true',
+    'launchApproved: true',
+    'productionReady: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 138 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 138 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

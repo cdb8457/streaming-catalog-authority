@@ -1285,6 +1285,17 @@ reports service-running-with-open-hardening-warnings with serviceInstalled: true
 serviceStarted: true, launchApproved: true, o4Status: open-warning, and o5Status: open-warning
 while keeping productionReady: false, commandExecution: false, scriptGenerated: false,
 providerModeEnabled: false, and FileCustodian remains a hardened reference harness.
+Phase 138 adds `docs/PHASE_138_UNRAID_POST_SWITCH_MAINTENANCE_REVIEW.md`,
+`ops:unraid-post-switch-maintenance-review`, and
+`test:unraid-post-switch-maintenance-review` as a redaction-safe review of post-switch maintenance
+evidence. It requires phase-137-unraid-post-switch-evidence-review,
+service-running-with-open-hardening-warnings, patched User Scripts that preserve persistent
+`repo-postgres-1`, completed doctor/backup-verify/KEK-plan scripts, zero plaintext backup
+candidates, no published ports, and healthy service state after maintenance. It reports
+post-switch-maintenance-evidence-accepted with serviceInstalled: true, serviceStarted: true, and
+launchApproved: true while keeping productionReady: false, commandExecution: false,
+scriptGenerated: false, providerModeEnabled: false, and FileCustodian remains a hardened reference
+harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
