@@ -170,10 +170,11 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:provider-availability-operator-packet [-- --json]` | static, redaction-safe Phase 59 provider availability evidence/review packet; executes nothing |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
-- **Docker Compose:** `docker-compose.unraid.yml` is the single canonical Unraid stack file
-  (Postgres + one-shot ops, appdata bind mounts, no published ports). `docker-compose.deploy.yml`
-  remains the generic/local deployment topology; Unraid operators should not need layered compose
-  files.
+- **Docker Compose:** `docker-compose.unraid.yml` is the repository-clone Unraid stack file
+  (Postgres + one-shot ops, appdata bind mounts, no published ports, local `build: .`).
+  `docker-compose.unraid.runtime.yml` is the Arcane/launcher runtime variant that uses
+  `image: repo-ops:latest` instead of a build context. `docker-compose.deploy.yml` remains the
+  generic/local deployment topology.
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
   one-shot ops container; no ports/UI).
 - **Start here — the authoritative production readiness gate:**
@@ -1322,6 +1323,11 @@ single canonical Unraid Compose file. It merges the hardened deploy topology wit
 bind mounts and secret-file paths so normal Unraid operations use one command shape:
 `docker compose -f docker-compose.unraid.yml ...`. It publishes no ports and does not install
 Arcane/DockHand controls or start a new UI.
+Phase 142 adds `docs/PHASE_142_UNRAID_LAUNCHER_RUNTIME_COMPOSE.md` and
+`docker-compose.unraid.runtime.yml` for Arcane/launcher deployments that cannot use the repository
+directory as a Docker build context. The runtime file uses `image: repo-ops:latest`, keeps the same
+Unraid appdata binds and secrets, publishes no ports, and documents that `ops` is a one-shot
+container expected to exit after commands complete.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

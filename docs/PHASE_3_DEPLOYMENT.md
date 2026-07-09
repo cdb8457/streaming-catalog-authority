@@ -2,9 +2,9 @@
 
 Catalog/privacy core only. **CLI/library model — no HTTP server, no long-running app daemon.**
 Deployment is Postgres + on-demand one-shot ops containers (`migrate`, `backup`). Artifacts:
-`docker-compose.deploy.yml`, `docker-compose.unraid.yml`, the `ops:*` npm scripts, and the
-`*_FILE` secret indirection from Stage 3.1/3.2. For Unraid, `docker-compose.unraid.yml`
-is the single canonical compose file; operators should not need layered `-f` compose files.
+`docker-compose.deploy.yml`, `docker-compose.unraid.yml`, `docker-compose.unraid.runtime.yml`, the
+`ops:*` npm scripts, and the `*_FILE` secret indirection from Stage 3.1/3.2. For Unraid, operators
+choose one file for their launch path; they should not need layered `-f` compose files.
 
 ## Topology
 
@@ -19,12 +19,19 @@ docker compose -f docker-compose.deploy.yml run --rm ops ops:backup -- dump    /
 docker compose -f docker-compose.deploy.yml run --rm ops ops:backup -- restore /backups/cat.json
 ```
 
-On Unraid, use the single merged stack file:
+On Unraid from a cloned repository, use the single merged stack file:
 
 ```bash
 cd /mnt/user/appdata/catalog/repo
 docker compose -f docker-compose.unraid.yml ps -a
 docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json
+```
+
+For Arcane or other launchers that cannot use the repository directory as a build context, use the
+runtime variant instead:
+
+```bash
+docker compose -f docker-compose.unraid.runtime.yml up -d postgres
 ```
 
 ## Volume mappings (keep key material separate)
@@ -71,7 +78,9 @@ key-material exclusion, not artifact encryption.
 
 ## Unraid notes
 
-- Use **`docker-compose.unraid.yml`** as the one compose file for the Unraid deployment.
+- Use **`docker-compose.unraid.yml`** when running from a cloned repo on Unraid.
+- Use **`docker-compose.unraid.runtime.yml`** for Arcane/launcher paste-in flows where `build: .`
+  would fail because the launcher cannot see the repo path.
 - It maps `pgdata` to `/mnt/user/appdata/catalog/pgdata`.
 - It maps the keystore to `/mnt/user/appdata/catalog/keystore`, separate from DB data and backups.
 - It maps backups to `/mnt/user/appdata/catalog/backups`.

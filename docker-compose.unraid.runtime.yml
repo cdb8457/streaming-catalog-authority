@@ -1,0 +1,65 @@
+# Launcher/runtime Unraid stack for Catalog Authority.
+#
+# Use this file when a launcher such as Arcane cannot use the repository directory as a Docker
+# build context. It expects the ops image to already exist locally, or to be replaced later with
+# a published image name.
+#
+# Runtime steady state:
+#   postgres stays running
+#   ops is a one-shot command container and exits after the command completes
+
+name: catalogauthority
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - /mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  ops:
+    image: repo-ops:latest
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+    volumes:
+      - /mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore
+      - /mnt/user/appdata/catalog/backups:/backups
+    secrets:
+      - admin_database_url
+      - database_url
+      - completion_secret
+      - custodian_kek
+    entrypoint: ["npm", "run"]
+    command: ["ops:migrate"]
+
+secrets:
+  postgres_password:
+    file: /mnt/user/appdata/catalog/secrets/postgres_password
+  admin_database_url:
+    file: /mnt/user/appdata/catalog/secrets/admin_database_url
+  database_url:
+    file: /mnt/user/appdata/catalog/secrets/database_url
+  completion_secret:
+    file: /mnt/user/appdata/catalog/secrets/completion_secret
+  custodian_kek:
+    file: /mnt/user/appdata/catalog/secrets/custodian_kek

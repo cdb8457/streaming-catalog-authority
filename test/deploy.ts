@@ -46,6 +46,7 @@ console.log('Running Phase 3 deployment topology suite (Stage 3.4):\n');
 
 const compose = read('docker-compose.deploy.yml');
 const unraidCompose = read('docker-compose.unraid.yml');
+const unraidRuntimeCompose = read('docker-compose.unraid.runtime.yml');
 const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 
 test('compose — defines postgres + one-shot ops services', () => {
@@ -96,6 +97,28 @@ test('unraid compose — single canonical file with production binds and no publ
   ]) assert(unraidCompose.includes(secret), `Unraid secret file ${secret}`);
   assert(!/ports:/.test(unraidCompose), 'Unraid compose publishes no ports');
   assert(!/(expose|EXPOSE)/.test(unraidCompose), 'Unraid compose exposes no ports');
+});
+
+test('unraid runtime compose — launcher-ready image mode with no build context', () => {
+  assert(exists('docker-compose.unraid.runtime.yml'), 'Unraid runtime compose exists');
+  assert(/^name:\s*catalogauthority/m.test(unraidRuntimeCompose), 'runtime compose has stable launcher project name');
+  assert(/^\s{2}postgres:/m.test(unraidRuntimeCompose), 'runtime postgres service');
+  assert(/^\s{2}ops:/m.test(unraidRuntimeCompose), 'runtime ops service');
+  assert(unraidRuntimeCompose.includes('image: repo-ops:latest'), 'runtime ops uses prebuilt image');
+  assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'runtime compose has no build context');
+  assert(unraidRuntimeCompose.includes('APP_ENV: production'), 'runtime ops uses production environment');
+  assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data'), 'runtime pgdata bind mount');
+  assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore'), 'runtime keystore bind mount');
+  assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/backups:/backups'), 'runtime backups bind mount');
+  for (const secret of [
+    '/mnt/user/appdata/catalog/secrets/postgres_password',
+    '/mnt/user/appdata/catalog/secrets/admin_database_url',
+    '/mnt/user/appdata/catalog/secrets/database_url',
+    '/mnt/user/appdata/catalog/secrets/completion_secret',
+    '/mnt/user/appdata/catalog/secrets/custodian_kek',
+  ]) assert(unraidRuntimeCompose.includes(secret), `runtime secret file ${secret}`);
+  assert(!/ports:/.test(unraidRuntimeCompose), 'runtime compose publishes no ports');
+  assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'runtime compose exposes no ports');
 });
 
 test('compose — `docker compose run ops` invocations must NOT double-prefix npm run', () => {
@@ -8090,6 +8113,33 @@ test('Phase 140 control surface Compose boundary stops before Compose changes', 
     'TorBoxReadOnlyClient',
     'JellyfinHttpClient',
   ]) assert(!source.includes(forbidden), `Phase 140 source excludes ${forbidden}`);
+});
+
+test('Phase 142 Unraid launcher runtime compose is image-mode and no-port', () => {
+  assert(exists('docs/PHASE_142_UNRAID_LAUNCHER_RUNTIME_COMPOSE.md'), 'Phase 142 launcher runtime doc exists');
+  assert(exists('docker-compose.unraid.runtime.yml'), 'Phase 142 runtime compose exists');
+
+  const combined = [
+    unraidRuntimeCompose,
+    read('docs/PHASE_142_UNRAID_LAUNCHER_RUNTIME_COMPOSE.md'),
+    read('docs/PHASE_3_DEPLOYMENT.md'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'docker-compose.unraid.runtime.yml',
+    'image: repo-ops:latest',
+    'Launcher/runtime path',
+    'Arcane',
+    'cannot use the repository directory as a build context',
+    'catalogauthority-postgres-1',
+    'catalogauthority-ops-1',
+    'one-shot',
+    'expected to exit',
+    'publishes no ports',
+  ]) assert(combined.includes(required), `Phase 142 surface preserves ${required}`);
+  assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 142 runtime compose has no build context');
+  assert(!/ports:/.test(unraidRuntimeCompose), 'Phase 142 runtime compose publishes no ports');
+  assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 142 runtime compose exposes no ports');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

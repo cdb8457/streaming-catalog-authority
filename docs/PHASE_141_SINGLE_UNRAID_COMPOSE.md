@@ -1,6 +1,7 @@
 # Phase 141 - Single Unraid Compose File
 
-Phase 141 makes `docker-compose.unraid.yml` the single canonical Compose file for the Unraid deployment.
+Phase 141 makes `docker-compose.unraid.yml` the single canonical Compose file for the Unraid
+repository-clone deployment path.
 
 The file merges the generic production topology with the Unraid appdata bind mounts:
 
@@ -18,3 +19,6 @@ docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json
 ```
 
 This does not add provider mode, publish ports, install Arcane/DockHand controls, or start a new UI. It only removes the need to layer `docker-compose.deploy.yml` with an Unraid override for normal Unraid operations.
+
+Phase 142 adds `docker-compose.unraid.runtime.yml` as a launcher/runtime companion for tools that
+cannot use the repository directory as a build context.
