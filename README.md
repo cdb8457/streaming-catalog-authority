@@ -1296,6 +1296,17 @@ post-switch-maintenance-evidence-accepted with serviceInstalled: true, serviceSt
 launchApproved: true while keeping productionReady: false, commandExecution: false,
 scriptGenerated: false, providerModeEnabled: false, and FileCustodian remains a hardened reference
 harness.
+Phase 139 adds `docs/PHASE_139_UNRAID_RESTART_PERSISTENCE_REVIEW.md`,
+`ops:unraid-restart-persistence-review`, and `test:unraid-restart-persistence-review` as a
+redaction-safe review of live Unraid restart persistence evidence. It requires
+phase-138-unraid-post-switch-maintenance-review, post-switch-maintenance-evidence-accepted,
+deployed commit `8ddf3f3`, a Compose-level restart of `repo-postgres-1`, healthy service state
+before and after restart, post-restart doctor ok: true, schema version 3, persisted
+completion-secret match, and custodian reachability after restart. It reports
+restart-persistence-evidence-accepted with serverRebooted: false, serviceInstalled: true,
+serviceStarted: true, and launchApproved: true while keeping productionReady: false,
+commandExecution: false, scriptGenerated: false, providerModeEnabled: false, and FileCustodian
+remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
