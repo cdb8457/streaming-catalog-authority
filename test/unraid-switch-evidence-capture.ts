@@ -24,7 +24,7 @@ function assertShape(packet: UnraidSwitchEvidenceCapturePacket): void {
   assert(packet.sourceRunbook === 'phase-130-unraid-production-switch-runbook', 'source runbook');
   assert(packet.requiredApprovalPreflight === 'phase-129-unraid-final-human-approval-record-preflight', 'approval preflight');
   assert(packet.requiredLiveEvidence === 'unraid-live-operating-test-2026-07-08.redacted.md', 'live evidence');
-  assert(packet.composeOverrideFile === 'docker-compose.unraid-bind.yml', 'compose override');
+  assert(packet.composeFile === 'docker-compose.unraid.yml', 'compose file');
   assert(packet.captureReadiness === 'ready-for-operator-capture-after-switch', 'capture readiness');
   assert(packet.redactionSafe === true && packet.inputValuesEchoed === false, 'redaction boundary');
   assert(packet.commandExecution === false && packet.scriptGenerated === false && packet.mutatesUnraid === false, 'no execution');
@@ -61,7 +61,7 @@ test('source and docs preserve capture-only boundary', () => {
     'ready-for-explicit-operator-window',
     'ready-for-operator-capture-after-switch',
     'unraid-live-operating-test-2026-07-08.redacted.md',
-    'docker-compose.unraid-bind.yml',
+    'docker-compose.unraid.yml',
     'post-switch-doctor-redacted-json',
     'productionReady: false',
     'launchApproved: false',

@@ -2,8 +2,9 @@
 
 Catalog/privacy core only. **CLI/library model — no HTTP server, no long-running app daemon.**
 Deployment is Postgres + on-demand one-shot ops containers (`migrate`, `backup`). Artifacts:
-`docker-compose.deploy.yml`, the `ops:*` npm scripts, and the `*_FILE` secret indirection from
-Stage 3.1/3.2.
+`docker-compose.deploy.yml`, `docker-compose.unraid.yml`, the `ops:*` npm scripts, and the
+`*_FILE` secret indirection from Stage 3.1/3.2. For Unraid, `docker-compose.unraid.yml`
+is the single canonical compose file; operators should not need layered `-f` compose files.
 
 ## Topology
 
@@ -16,6 +17,14 @@ Stage 3.1/3.2.
 docker compose -f docker-compose.deploy.yml run --rm ops ops:migrate
 docker compose -f docker-compose.deploy.yml run --rm ops ops:backup -- dump    /backups/cat.json
 docker compose -f docker-compose.deploy.yml run --rm ops ops:backup -- restore /backups/cat.json
+```
+
+On Unraid, use the single merged stack file:
+
+```bash
+cd /mnt/user/appdata/catalog/repo
+docker compose -f docker-compose.unraid.yml ps -a
+docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json
 ```
 
 ## Volume mappings (keep key material separate)
@@ -62,14 +71,12 @@ key-material exclusion, not artifact encryption.
 
 ## Unraid notes
 
-- Add the **Postgres** container (Community Apps) with its `pgdata` mapped to
-  `/mnt/user/appdata/catalog/pgdata`.
-- Map the **keystore** to a **distinct** share path, e.g. `/mnt/user/appdata/catalog/keystore`
-  (never the same dataset you back up the DB to).
-- Put the secret files under a protected path (e.g. `/mnt/user/appdata/catalog/secrets/…`) and
-  point the `*_FILE` env vars at them.
-- The `ops` container is a **User Script / one-shot** invocation (migrate, scheduled backup), not
-  an always-on container — there is no HTTP port to expose.
+- Use **`docker-compose.unraid.yml`** as the one compose file for the Unraid deployment.
+- It maps `pgdata` to `/mnt/user/appdata/catalog/pgdata`.
+- It maps the keystore to `/mnt/user/appdata/catalog/keystore`, separate from DB data and backups.
+- It maps backups to `/mnt/user/appdata/catalog/backups`.
+- It reads secret files from `/mnt/user/appdata/catalog/secrets/...`.
+- The `ops` container is a **User Script / one-shot** invocation (migrate, scheduled backup), not an always-on container; there is no HTTP port to expose.
 
 ## Compose smoke test (opt-in / manual)
 

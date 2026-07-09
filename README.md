@@ -170,8 +170,10 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:provider-availability-operator-packet [-- --json]` | static, redaction-safe Phase 59 provider availability evidence/review packet; executes nothing |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
-- **Docker Compose:** `docker-compose.deploy.yml` (keystore on a volume separate from the DB and
-  backups; secrets via `*_FILE`; healthchecked Postgres).
+- **Docker Compose:** `docker-compose.unraid.yml` is the single canonical Unraid stack file
+  (Postgres + one-shot ops, appdata bind mounts, no published ports). `docker-compose.deploy.yml`
+  remains the generic/local deployment topology; Unraid operators should not need layered compose
+  files.
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
   one-shot ops container; no ports/UI).
 - **Start here — the authoritative production readiness gate:**
@@ -1221,7 +1223,7 @@ Phase 130 adds `docs/PHASE_130_UNRAID_PRODUCTION_SWITCH_RUNBOOK.md`,
 `ops:unraid-production-switch-runbook`, and `test:unraid-production-switch-runbook` as a
 redaction-safe runbook packet for the explicit operator production switch window. It consumes a
 Phase 129 preflight, references `unraid-live-operating-test-2026-07-08.redacted.md`, uses
-`docker-compose.unraid-bind.yml`, and can report ready-for-explicit-operator-window while keeping
+`docker-compose.unraid.yml`, and can report ready-for-explicit-operator-window while keeping
 productionReady: false, launchApproved: false, commandExecution: false, scriptGenerated: false,
 serviceInstalled: false, serviceStarted: false, providerModeEnabled: false, and FileCustodian
 remains a hardened reference harness.
@@ -1315,6 +1317,11 @@ requiresHumanLoopBeforeCompose: true while keeping composeStarted: false, arcane
 dockhandControlsInstalled: false, commandExecution: false, scriptGenerated: false,
 mutatesUnraid: false, providerModeEnabled: false, productionReady: false, and FileCustodian
 remains a hardened reference harness.
+Phase 141 adds `docs/PHASE_141_SINGLE_UNRAID_COMPOSE.md` and `docker-compose.unraid.yml` as the
+single canonical Unraid Compose file. It merges the hardened deploy topology with Unraid appdata
+bind mounts and secret-file paths so normal Unraid operations use one command shape:
+`docker compose -f docker-compose.unraid.yml ...`. It publishes no ports and does not install
+Arcane/DockHand controls or start a new UI.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

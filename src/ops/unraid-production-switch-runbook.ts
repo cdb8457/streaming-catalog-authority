@@ -20,7 +20,7 @@ export interface UnraidProductionSwitchRunbook {
   readonly sourceApprovalPreflight: 'phase-129-unraid-final-human-approval-record-preflight';
   readonly requiredApprovalRecordStatus: 'ready-for-operator-production-switch';
   readonly requiredLiveEvidence: 'unraid-live-operating-test-2026-07-08.redacted.md';
-  readonly composeOverrideFile: 'docker-compose.unraid-bind.yml';
+  readonly composeFile: 'docker-compose.unraid.yml';
   readonly redactionSafe: true;
   readonly recordValuesEchoed: false;
   readonly inputValuesEchoed: false;
@@ -114,7 +114,7 @@ export function formatUnraidProductionSwitchRunbookText(packet: UnraidProduction
   const lines = [
     'Phase 130 Unraid production switch runbook',
     `Switch readiness: ${packet.switchReadiness}`,
-    `Compose override: ${packet.composeOverrideFile}`,
+    `Compose file: ${packet.composeFile}`,
     `Command execution: ${packet.commandExecution ? 'true' : 'false'}`,
     `Service installed: ${packet.serviceInstalled ? 'true' : 'false'}`,
     `Service started: ${packet.serviceStarted ? 'true' : 'false'}`,
@@ -155,7 +155,7 @@ function fromFindings(findings: readonly UnraidProductionSwitchRunbookFinding[])
     sourceApprovalPreflight: 'phase-129-unraid-final-human-approval-record-preflight',
     requiredApprovalRecordStatus: 'ready-for-operator-production-switch',
     requiredLiveEvidence: 'unraid-live-operating-test-2026-07-08.redacted.md',
-    composeOverrideFile: 'docker-compose.unraid-bind.yml',
+    composeFile: 'docker-compose.unraid.yml',
     redactionSafe: true,
     recordValuesEchoed: false,
     inputValuesEchoed: false,
@@ -174,16 +174,16 @@ function fromFindings(findings: readonly UnraidProductionSwitchRunbookFinding[])
     operatorChecklist: [
       'Confirm Phase 129 approvalRecordStatus is ready-for-operator-production-switch.',
       'Confirm live Unraid evidence note unraid-live-operating-test-2026-07-08.redacted.md is retained locally.',
-      'Confirm deployed compose override is docker-compose.unraid-bind.yml.',
+      'Confirm deployed compose file is docker-compose.unraid.yml.',
       'Confirm no provider, media server, scraping, downloading, playback, API framework, or UI scope is being opened.',
       'Confirm rollback command is visible before starting any persistent service.',
     ],
     commandPlan: {
-      preflightDoctor: 'docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml run --rm ops ops:doctor -- --json',
+      preflightDoctor: 'docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json',
       installOrStartService: 'operator-run-only: install/start persistent catalog service from approved Unraid service script packet',
-      postStartDoctor: 'docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml run --rm ops ops:doctor -- --json',
+      postStartDoctor: 'docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json',
       rollbackStop: 'operator-run-only: stop and disable persistent catalog service, then run docker compose down --remove-orphans',
-      cleanupCheck: 'docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml ps -a',
+      cleanupCheck: 'docker compose -f docker-compose.unraid.yml ps -a',
     },
     evidencePlan: [
       'Record redacted preflight doctor result.',

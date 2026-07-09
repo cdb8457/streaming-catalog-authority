@@ -58,7 +58,7 @@ test('GO Phase 129 preflight yields an operator-window runbook without mutation'
   const packet = buildUnraidProductionSwitchRunbook(phase129());
   assert(packet.report === 'phase-130-unraid-production-switch-runbook', 'report');
   assert(packet.switchReadiness === 'ready-for-explicit-operator-window', 'ready');
-  assert(packet.composeOverrideFile === 'docker-compose.unraid-bind.yml', 'override file');
+  assert(packet.composeFile === 'docker-compose.unraid.yml', 'compose file');
   assert(packet.commandExecution === false && packet.mutatesUnraid === false, 'no execution/mutation');
   assert(packet.serviceInstalled === false && packet.serviceStarted === false, 'no service install/start');
   assert(packet.productionReady === false && packet.launchApproved === false, 'no approval flip');
@@ -110,7 +110,7 @@ test('source and docs preserve runbook-only boundary', () => {
     'phase-129-unraid-final-human-approval-record-preflight',
     'ready-for-explicit-operator-window',
     'unraid-live-operating-test-2026-07-08.redacted.md',
-    'docker-compose.unraid-bind.yml',
+    'docker-compose.unraid.yml',
     'productionReady: false',
     'launchApproved: false',
     'commandExecution: false',

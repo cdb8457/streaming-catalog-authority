@@ -158,11 +158,11 @@ function fromFindings(findings: readonly UnraidProductionSwitchExecutionPacketFi
       ? 'ready-for-real-unraid-production-switch'
       : 'not-ready-for-real-unraid-production-switch',
     commandPlan: {
-      preflightDoctor: 'docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml run --rm ops ops:doctor -- --json',
+      preflightDoctor: 'docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json',
       startService: 'operator-run-only: start approved persistent catalog service on Unraid',
-      postStartDoctor: 'docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml run --rm ops ops:doctor -- --json',
+      postStartDoctor: 'docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json',
       rollbackStop: 'operator-run-only: stop persistent catalog service and run docker compose down --remove-orphans',
-      finalStatusCheck: 'docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml ps -a',
+      finalStatusCheck: 'docker compose -f docker-compose.unraid.yml ps -a',
     },
     evidencePlan: [
       'Capture redacted preflight doctor JSON before service start.',

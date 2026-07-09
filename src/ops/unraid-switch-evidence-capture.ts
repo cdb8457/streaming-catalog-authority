@@ -7,7 +7,7 @@ export interface UnraidSwitchEvidenceCapturePacket {
   readonly requiredSwitchReadiness: 'ready-for-explicit-operator-window';
   readonly requiredApprovalPreflight: 'phase-129-unraid-final-human-approval-record-preflight';
   readonly requiredLiveEvidence: 'unraid-live-operating-test-2026-07-08.redacted.md';
-  readonly composeOverrideFile: 'docker-compose.unraid-bind.yml';
+  readonly composeFile: 'docker-compose.unraid.yml';
   readonly redactionSafe: true;
   readonly inputValuesEchoed: false;
   readonly commandExecution: false;
@@ -38,7 +38,7 @@ export function buildUnraidSwitchEvidenceCapturePacket(): UnraidSwitchEvidenceCa
     requiredSwitchReadiness: 'ready-for-explicit-operator-window',
     requiredApprovalPreflight: 'phase-129-unraid-final-human-approval-record-preflight',
     requiredLiveEvidence: 'unraid-live-operating-test-2026-07-08.redacted.md',
-    composeOverrideFile: 'docker-compose.unraid-bind.yml',
+    composeFile: 'docker-compose.unraid.yml',
     redactionSafe: true,
     inputValuesEchoed: false,
     commandExecution: false,
@@ -83,7 +83,7 @@ export function buildUnraidSwitchEvidenceCapturePacket(): UnraidSwitchEvidenceCa
     ],
     postSwitchChecks: [
       'Confirm the persistent service status label is captured after the operator switch.',
-      'Run a redacted post-switch doctor check with docker-compose.unraid-bind.yml.',
+      'Run a redacted post-switch doctor check with docker-compose.unraid.yml.',
       'Capture compose ps -a labels without raw secrets.',
       'If rollback is used, capture stop/disable status and cleanup check labels.',
       'Keep productionReady and launchApproved false until a separate reviewed launch disposition.',
@@ -104,7 +104,7 @@ export function formatUnraidSwitchEvidenceCaptureText(
     'Phase 131 Unraid switch evidence capture',
     `sourceRunbook: ${packet.sourceRunbook}`,
     `captureReadiness: ${packet.captureReadiness}`,
-    `composeOverrideFile: ${packet.composeOverrideFile}`,
+    `composeFile: ${packet.composeFile}`,
     `commandExecution: ${packet.commandExecution ? 'true' : 'false'}`,
     `serviceInstalled: ${packet.serviceInstalled ? 'true' : 'false'}`,
     `serviceStarted: ${packet.serviceStarted ? 'true' : 'false'}`,

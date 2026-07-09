@@ -1,0 +1,64 @@
+# Canonical Unraid stack for Catalog Authority.
+#
+# This is the single-file Unraid deployment entrypoint. It intentionally merges the generic deploy
+# topology with the Unraid appdata bind mounts so operators do not need multiple compose files.
+#
+# Run ops on demand:
+#   docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json
+#   docker compose -f docker-compose.unraid.yml run --rm ops ops:backup -- dump /backups/cat.json
+#   docker compose -f docker-compose.unraid.yml run --rm ops ops:rewrap-kek -- --plan --json
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - /mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot ops/CLI container. No ports, no daemon; invoked via `docker compose run`.
+  ops:
+    build: .
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+    volumes:
+      - /mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore
+      - /mnt/user/appdata/catalog/backups:/backups
+    secrets:
+      - admin_database_url
+      - database_url
+      - completion_secret
+      - custodian_kek
+    entrypoint: ["npm", "run"]
+    command: ["ops:migrate"]
+
+secrets:
+  postgres_password:
+    file: /mnt/user/appdata/catalog/secrets/postgres_password
+  admin_database_url:
+    file: /mnt/user/appdata/catalog/secrets/admin_database_url
+  database_url:
+    file: /mnt/user/appdata/catalog/secrets/database_url
+  completion_secret:
+    file: /mnt/user/appdata/catalog/secrets/completion_secret
+  custodian_kek:
+    file: /mnt/user/appdata/catalog/secrets/custodian_kek

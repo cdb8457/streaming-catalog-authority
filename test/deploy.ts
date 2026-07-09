@@ -45,6 +45,7 @@ function walkTs(dir: string): string[] {
 console.log('Running Phase 3 deployment topology suite (Stage 3.4):\n');
 
 const compose = read('docker-compose.deploy.yml');
+const unraidCompose = read('docker-compose.unraid.yml');
 const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 
 test('compose — defines postgres + one-shot ops services', () => {
@@ -76,6 +77,25 @@ test('compose — secrets delivered via *_FILE (no inline secret values)', () =>
 test('compose — CLI pattern: no ports / no HTTP daemon', () => {
   assert(!/ports:/.test(compose), 'no published ports (not an HTTP service)');
   assert(!/(expose|EXPOSE)/.test(compose), 'no exposed port');
+});
+
+test('unraid compose — single canonical file with production binds and no published ports', () => {
+  assert(exists('docker-compose.unraid.yml'), 'canonical Unraid compose exists');
+  assert(/^\s{2}postgres:/m.test(unraidCompose), 'Unraid postgres service');
+  assert(/^\s{2}ops:/m.test(unraidCompose), 'Unraid ops service');
+  assert(unraidCompose.includes('APP_ENV: production'), 'Unraid ops uses production environment');
+  assert(unraidCompose.includes('/mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data'), 'Unraid pgdata bind mount');
+  assert(unraidCompose.includes('/mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore'), 'Unraid keystore bind mount');
+  assert(unraidCompose.includes('/mnt/user/appdata/catalog/backups:/backups'), 'Unraid backups bind mount');
+  for (const secret of [
+    '/mnt/user/appdata/catalog/secrets/postgres_password',
+    '/mnt/user/appdata/catalog/secrets/admin_database_url',
+    '/mnt/user/appdata/catalog/secrets/database_url',
+    '/mnt/user/appdata/catalog/secrets/completion_secret',
+    '/mnt/user/appdata/catalog/secrets/custodian_kek',
+  ]) assert(unraidCompose.includes(secret), `Unraid secret file ${secret}`);
+  assert(!/ports:/.test(unraidCompose), 'Unraid compose publishes no ports');
+  assert(!/(expose|EXPOSE)/.test(unraidCompose), 'Unraid compose exposes no ports');
 });
 
 test('compose — `docker compose run ops` invocations must NOT double-prefix npm run', () => {
@@ -7588,7 +7608,7 @@ test('Phase 130 Unraid production switch runbook is runbook-only', () => {
     'phase-129-unraid-final-human-approval-record-preflight',
     'ready-for-explicit-operator-window',
     'unraid-live-operating-test-2026-07-08.redacted.md',
-    'docker-compose.unraid-bind.yml',
+    'docker-compose.unraid.yml',
     'recordValuesEchoed: false',
     'inputValuesEchoed: false',
     'commandExecution: false',
@@ -7636,7 +7656,7 @@ test('Phase 131 Unraid switch evidence capture is capture-only', () => {
     'ready-for-explicit-operator-window',
     'ready-for-operator-capture-after-switch',
     'unraid-live-operating-test-2026-07-08.redacted.md',
-    'docker-compose.unraid-bind.yml',
+    'docker-compose.unraid.yml',
     'post-switch-doctor-redacted-json',
     'inputValuesEchoed: false',
     'commandExecution: false',

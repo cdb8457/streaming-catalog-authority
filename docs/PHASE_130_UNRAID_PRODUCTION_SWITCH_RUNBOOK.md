@@ -10,17 +10,17 @@ Run:
 npm run --silent ops:unraid-production-switch-runbook -- -- path/to/phase-129-preflight.json --json
 ```
 
-The packet reports `phase-130-unraid-production-switch-runbook`, uses `docker-compose.unraid-bind.yml`, and can report `switchReadiness: ready-for-explicit-operator-window`.
+The packet reports `phase-130-unraid-production-switch-runbook`, uses `docker-compose.unraid.yml`, and can report `switchReadiness: ready-for-explicit-operator-window`.
 
 This is still a runbook/preflight only. It keeps `productionReady: false`, `launchApproved: false`, `commandExecution: false`, `scriptGenerated: false`, `serviceInstalled: false`, `serviceStarted: false`, `providerContactAllowed: false`, `providerModeEnabled: false`, and FileCustodian remains a hardened reference harness.
 
 The documented operator command plan includes:
 
-- preflight doctor: `docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml run --rm ops ops:doctor -- --json`
+- preflight doctor: `docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json`
 - install/start: operator-run-only from the approved Unraid service script packet
-- post-start doctor: `docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml run --rm ops ops:doctor -- --json`
+- post-start doctor: `docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json`
 - rollback: operator-run-only stop/disable persistent service, then `docker compose down --remove-orphans`
-- cleanup check: `docker compose -f docker-compose.deploy.yml -f docker-compose.unraid-bind.yml ps -a`
+- cleanup check: `docker compose -f docker-compose.unraid.yml ps -a`
 
 Non-goals:
 
