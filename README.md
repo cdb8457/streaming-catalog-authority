@@ -1307,6 +1307,14 @@ restart-persistence-evidence-accepted with serverRebooted: false, serviceInstall
 serviceStarted: true, and launchApproved: true while keeping productionReady: false,
 commandExecution: false, scriptGenerated: false, providerModeEnabled: false, and FileCustodian
 remains a hardened reference harness.
+Phase 140 adds `docs/PHASE_140_CONTROL_SURFACE_COMPOSE_BOUNDARY.md`,
+`ops:control-surface-compose-boundary`, and `test:control-surface-compose-boundary` as the static
+stop line before the Arcane/DockHand control-surface Compose section. It requires
+phase-139-unraid-restart-persistence-review and reports readyForComposeSection: true plus
+requiresHumanLoopBeforeCompose: true while keeping composeStarted: false, arcaneSelected: false,
+dockhandControlsInstalled: false, commandExecution: false, scriptGenerated: false,
+mutatesUnraid: false, providerModeEnabled: false, productionReady: false, and FileCustodian
+remains a hardened reference harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

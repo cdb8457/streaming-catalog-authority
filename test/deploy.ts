@@ -8027,6 +8027,51 @@ test('Phase 139 Unraid restart persistence review records restart evidence', () 
   ]) assert(!source.includes(forbidden), `Phase 139 source excludes ${forbidden}`);
 });
 
+test('Phase 140 control surface Compose boundary stops before Compose changes', () => {
+  assert(exists('docs/PHASE_140_CONTROL_SURFACE_COMPOSE_BOUNDARY.md'), 'Phase 140 control surface Compose boundary doc exists');
+  assert(exists('src/ops/control-surface-compose-boundary.ts'), 'Phase 140 control surface Compose boundary source exists');
+  assert(exists('src/ops/control-surface-compose-boundary-cli.ts'), 'Phase 140 control surface Compose boundary CLI exists');
+  assert(exists('test/control-surface-compose-boundary.ts'), 'Phase 140 control surface Compose boundary test exists');
+  assert(pkg.scripts['test:control-surface-compose-boundary'] === 'tsx test/control-surface-compose-boundary.ts', 'Phase 140 test script present');
+  assert(pkg.scripts['ops:control-surface-compose-boundary'] === 'tsx src/ops/control-surface-compose-boundary-cli.ts', 'Phase 140 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-restart-persistence-review.ts && tsx test/control-surface-compose-boundary.ts'),
+    'Phase 140 aggregate test follows Phase 139 restart persistence review',
+  );
+
+  const source = `${read('src/ops/control-surface-compose-boundary.ts')}\n${read('src/ops/control-surface-compose-boundary-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_140_CONTROL_SURFACE_COMPOSE_BOUNDARY.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-140-control-surface-compose-boundary',
+    'phase-139-unraid-restart-persistence-review',
+    'readyForComposeSection: true',
+    'requiresHumanLoopBeforeCompose: true',
+    'composeStarted: false',
+    'arcaneSelected: false',
+    'dockhandControlsInstalled: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'mutatesUnraid: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 140 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 140 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
