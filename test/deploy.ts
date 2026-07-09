@@ -47,6 +47,7 @@ console.log('Running Phase 3 deployment topology suite (Stage 3.4):\n');
 const compose = read('docker-compose.deploy.yml');
 const unraidCompose = read('docker-compose.unraid.yml');
 const unraidRuntimeCompose = read('docker-compose.unraid.runtime.yml');
+const unraidOpsLauncher = read('deploy/unraid-ops-launcher.sh');
 const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 
 test('compose — defines postgres + one-shot ops services', () => {
@@ -8140,6 +8141,40 @@ test('Phase 142 Unraid launcher runtime compose is image-mode and no-port', () =
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 142 runtime compose has no build context');
   assert(!/ports:/.test(unraidRuntimeCompose), 'Phase 142 runtime compose publishes no ports');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 142 runtime compose exposes no ports');
+});
+
+test('Phase 143 Unraid ops launcher wraps runtime compose commands', () => {
+  assert(exists('docs/PHASE_143_UNRAID_OPS_LAUNCHERS.md'), 'Phase 143 ops launcher doc exists');
+  assert(exists('deploy/unraid-ops-launcher.sh'), 'Phase 143 ops launcher script exists');
+
+  const combined = [
+    unraidOpsLauncher,
+    read('docs/PHASE_143_UNRAID_OPS_LAUNCHERS.md'),
+    read('docs/PHASE_3_DEPLOYMENT.md'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'docker-compose.unraid.runtime.yml',
+    'start-postgres',
+    'status',
+    'migrate',
+    'doctor',
+    'backup',
+    'rewrap-plan',
+    'ops:doctor -- --json',
+    'ops:backup -- dump',
+    'ops:rewrap-kek -- --plan --json',
+    'CUSTODIAN_KEK_PREVIOUS_FILE',
+    'custodian_kek_previous',
+    '-v "$PREVIOUS_KEK_FILE:/run/secrets/custodian_kek_previous:ro"',
+    'one-shot',
+    'catalogauthority-postgres-1',
+    'catalogauthority-ops-1',
+  ]) assert(combined.includes(required), `Phase 143 surface preserves ${required}`);
+  assert(unraidOpsLauncher.includes('docker compose -f "$COMPOSE_FILE"'), 'launcher uses configured runtime compose file');
+  assert(!unraidOpsLauncher.includes('docker run'), 'launcher does not hand-build docker run commands');
+  assert(!/ports:/.test(unraidOpsLauncher), 'launcher publishes no ports');
+  assert(!/(node:http|node:https|globalThis\.fetch|fetch\()/.test(unraidOpsLauncher), 'launcher has no network/provider implementation');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

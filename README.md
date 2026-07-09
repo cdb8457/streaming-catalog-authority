@@ -175,6 +175,9 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
   `docker-compose.unraid.runtime.yml` is the Arcane/launcher runtime variant that uses
   `image: repo-ops:latest` instead of a build context. `docker-compose.deploy.yml` remains the
   generic/local deployment topology.
+- **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
+  commands for `start-postgres`, `status`, `migrate`, `doctor`, `backup`, and `rewrap-plan` using
+  the runtime compose file.
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
   one-shot ops container; no ports/UI).
 - **Start here — the authoritative production readiness gate:**
@@ -1328,6 +1331,10 @@ Phase 142 adds `docs/PHASE_142_UNRAID_LAUNCHER_RUNTIME_COMPOSE.md` and
 directory as a Docker build context. The runtime file uses `image: repo-ops:latest`, keeps the same
 Unraid appdata binds and secrets, publishes no ports, and documents that `ops` is a one-shot
 container expected to exit after commands complete.
+Phase 143 adds `docs/PHASE_143_UNRAID_OPS_LAUNCHERS.md` and
+`deploy/unraid-ops-launcher.sh` so Arcane custom commands and Unraid User Scripts can run short
+runtime-compose-backed commands for doctor, migrate, backup, KEK rewrap planning, status, and
+starting Postgres without hand-pasting long `docker run` commands.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

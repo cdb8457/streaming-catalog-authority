@@ -1,0 +1,84 @@
+#!/usr/bin/env sh
+set -eu
+
+# Catalog Authority Unraid ops launcher.
+#
+# Designed for Arcane custom commands and Unraid User Scripts. It uses the runtime compose file so
+# launchers do not need the repository directory as a Docker build context.
+
+REPO_DIR="${CATALOG_AUTHORITY_REPO_DIR:-/mnt/user/appdata/catalog/repo}"
+COMPOSE_FILE="${CATALOG_AUTHORITY_COMPOSE_FILE:-$REPO_DIR/docker-compose.unraid.runtime.yml}"
+BACKUP_DIR="${CATALOG_AUTHORITY_BACKUP_DIR:-/mnt/user/appdata/catalog/backups}"
+PREVIOUS_KEK_FILE="${CATALOG_AUTHORITY_PREVIOUS_KEK_FILE:-/mnt/user/appdata/catalog/secrets/custodian_kek_previous}"
+
+cd "$REPO_DIR"
+
+compose() {
+  docker compose -f "$COMPOSE_FILE" "$@"
+}
+
+run_ops() {
+  compose run --rm ops "$@"
+}
+
+run_rewrap_plan() {
+  compose run --rm \
+    -e CUSTODIAN_KEK_PREVIOUS_FILE=/run/secrets/custodian_kek_previous \
+    -v "$PREVIOUS_KEK_FILE:/run/secrets/custodian_kek_previous:ro" \
+    ops ops:rewrap-kek -- --plan --json
+}
+
+usage() {
+  cat <<'EOF'
+Catalog Authority Unraid ops launcher
+
+Usage:
+  unraid-ops-launcher.sh start-postgres
+  unraid-ops-launcher.sh status
+  unraid-ops-launcher.sh migrate
+  unraid-ops-launcher.sh doctor
+  unraid-ops-launcher.sh backup [output-file]
+  unraid-ops-launcher.sh rewrap-plan
+
+Notes:
+  postgres is the long-running service.
+  ops is a one-shot command container and exits after each command.
+  rewrap-plan requires a temporary previous KEK file at:
+    /mnt/user/appdata/catalog/secrets/custodian_kek_previous
+EOF
+}
+
+case "${1:-}" in
+  start-postgres)
+    compose up -d postgres
+    ;;
+  status)
+    compose ps -a
+    ;;
+  migrate)
+    run_ops ops:migrate
+    ;;
+  doctor)
+    run_ops ops:doctor -- --json
+    ;;
+  backup)
+    target="${2:-$BACKUP_DIR/catalog-$(date -u +%Y%m%dT%H%M%SZ).json}"
+    run_ops ops:backup -- dump "$target"
+    ;;
+  rewrap-plan)
+    if [ ! -s "$PREVIOUS_KEK_FILE" ]; then
+      echo "Missing previous KEK file for rewrap-plan: $PREVIOUS_KEK_FILE" >&2
+      echo "Create it only for the planned KEK rotation window, then remove it after review." >&2
+      exit 2
+    fi
+    run_rewrap_plan
+    ;;
+  ""|-h|--help|help)
+    usage
+    ;;
+  *)
+    echo "Unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

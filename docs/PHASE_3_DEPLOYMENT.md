@@ -34,6 +34,15 @@ runtime variant instead:
 docker compose -f docker-compose.unraid.runtime.yml up -d postgres
 ```
 
+Arcane custom commands or Unraid User Scripts can call the bundled launcher:
+
+```bash
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh start-postgres
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh doctor
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh backup
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh rewrap-plan
+```
+
 ## Volume mappings (keep key material separate)
 
 | Volume | Mounted at | Holds | Backed up by `BackupPolicy`? |
@@ -85,7 +94,11 @@ key-material exclusion, not artifact encryption.
 - It maps the keystore to `/mnt/user/appdata/catalog/keystore`, separate from DB data and backups.
 - It maps backups to `/mnt/user/appdata/catalog/backups`.
 - It reads secret files from `/mnt/user/appdata/catalog/secrets/...`.
+- `custodian_kek_previous` is not part of the steady-state compose file. The launcher mounts it only
+  for `rewrap-plan` / KEK rotation windows; remove the file after review or rotation.
 - The `ops` container is a **User Script / one-shot** invocation (migrate, scheduled backup), not an always-on container; there is no HTTP port to expose.
+- Use `deploy/unraid-ops-launcher.sh` for short Arcane/User Scripts commands backed by
+  `docker-compose.unraid.runtime.yml`.
 
 ## Compose smoke test (opt-in / manual)
 
