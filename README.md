@@ -1258,6 +1258,23 @@ verdict: GO, and ready-for-launch-readiness-decision, and can report
 ready-for-final-launch-approval-record while keeping productionReady: false, launchApproved: false,
 commandExecution: false, scriptGenerated: false, providerModeEnabled: false, and FileCustodian
 remains a hardened reference harness.
+Phase 135 adds `docs/PHASE_135_UNRAID_FINAL_LAUNCH_APPROVAL_RECORD.md`,
+`ops:unraid-final-launch-approval-record`, and `test:unraid-final-launch-approval-record` as a
+redaction-safe final approval record gate. It requires phase-134-unraid-launch-readiness-decision,
+ready-for-final-launch-approval-record, verdict: GO, APPROVE_UNRAID_PRODUCTION_SWITCH, and
+approvedByHuman: true, then reports ready-for-production-switch-execution-packet with
+launchApproved: true while keeping productionReady: false, commandExecution: false,
+scriptGenerated: false, serviceInstalled: false, serviceStarted: false, providerModeEnabled: false,
+and FileCustodian remains a hardened reference harness.
+Phase 136 adds `docs/PHASE_136_UNRAID_PRODUCTION_SWITCH_EXECUTION_PACKET.md`,
+`ops:unraid-production-switch-execution-packet`, and
+`test:unraid-production-switch-execution-packet` as the redaction-safe final execution packet for
+the real Unraid switch. It requires phase-135-unraid-final-launch-approval-record,
+ready-for-production-switch-execution-packet, and launchApproved: true, then reports
+ready-for-real-unraid-production-switch while keeping productionReady: false,
+commandExecution: false, scriptGenerated: false, mutatesUnraid: false, serviceInstalled: false,
+serviceStarted: false, providerModeEnabled: false, and FileCustodian remains a hardened reference
+harness.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

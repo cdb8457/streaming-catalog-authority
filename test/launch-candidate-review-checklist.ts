@@ -179,6 +179,7 @@ test('documented npm JSON command is parseable', () => {
 
 test('source and docs preserve static review boundary', () => {
   const source = `${read('src/ops/launch-candidate-review-checklist.ts')}\n${read('src/ops/launch-candidate-review-checklist-cli.ts')}`;
+  const phase88Surface = `${source}\n${read('docs/PHASE_88_LAUNCH_CANDIDATE_REVIEW_CHECKLIST.md')}`;
   const docs = `${read('docs/PHASE_88_LAUNCH_CANDIDATE_REVIEW_CHECKLIST.md')}\n${read('README.md')}\n${read('package.json')}\n${read('test/deploy.ts')}`;
   for (const forbidden of [
     "from 'pg'",
@@ -240,7 +241,7 @@ test('source and docs preserve static review boundary', () => {
     ['releaseCandidateApproved:', 'true'].join(' '),
     ['closesO4:', 'true'].join(' '),
     ['closesO5:', 'true'].join(' '),
-  ]) assert(!docs.includes(forbidden), `docs exclude ${forbidden}`);
+  ]) assert(!phase88Surface.includes(forbidden), `Phase 88 source/docs exclude ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

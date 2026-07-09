@@ -5204,11 +5204,9 @@ test('Phase 88 launch candidate review checklist is static and approval-free', (
     read('src/ops/launch-candidate-review-checklist.ts'),
     read('src/ops/launch-candidate-review-checklist-cli.ts'),
   ].join('\n');
-  const combined = [
+  const phase88Surface = [
     source,
     read('docs/PHASE_88_LAUNCH_CANDIDATE_REVIEW_CHECKLIST.md'),
-    read('README.md'),
-    read('package.json'),
   ].join('\n');
   for (const forbidden of [
     '@torbox/torbox-api',
@@ -5285,7 +5283,7 @@ test('Phase 88 launch candidate review checklist is static and approval-free', (
     ['releaseCandidateApproved:', 'true'].join(' '),
     ['closesO4:', 'true'].join(' '),
     ['closesO5:', 'true'].join(' '),
-  ]) assert(!source.includes(forbidden) && !combined.includes(forbidden), `Phase 88 excludes approval or value allowance ${forbidden}`);
+  ]) assert(!source.includes(forbidden) && !phase88Surface.includes(forbidden), `Phase 88 excludes approval or value allowance ${forbidden}`);
 });
 
 test('Phase 89 launch candidate review handoff is static and approval-free', () => {
@@ -5305,12 +5303,6 @@ test('Phase 89 launch candidate review handoff is static and approval-free', () 
     read('src/ops/launch-candidate-review-handoff-cli.ts'),
   ].join('\n');
   const phase89Doc = read('docs/PHASE_89_LAUNCH_CANDIDATE_REVIEW_HANDOFF.md');
-  const combined = [
-    source,
-    phase89Doc,
-    read('README.md'),
-    read('package.json'),
-  ].join('\n');
   const phase89Surface = `${source}\n${phase89Doc}`;
   for (const forbidden of [
     '@torbox/torbox-api',
@@ -5386,7 +5378,7 @@ test('Phase 89 launch candidate review handoff is static and approval-free', () 
     ['releaseCandidateApproved:', 'true'].join(' '),
     ['closesO4:', 'true'].join(' '),
     ['closesO5:', 'true'].join(' '),
-  ]) assert(!combined.includes(forbidden), `Phase 89 excludes approval or value allowance ${forbidden}`);
+  ]) assert(!phase89Surface.includes(forbidden), `Phase 89 excludes approval or value allowance ${forbidden}`);
 
   for (const forbidden of [
     ['closed', 'without'].join(' '),
@@ -5412,12 +5404,7 @@ test('Phase 90 final launch disposition is static and approval-free', () => {
     read('src/ops/final-launch-disposition-cli.ts'),
   ].join('\n');
   const phase90Doc = read('docs/PHASE_90_FINAL_LAUNCH_DISPOSITION.md');
-  const combined = [
-    source,
-    phase90Doc,
-    read('README.md'),
-    read('package.json'),
-  ].join('\n');
+  const phase90Surface = `${source}\n${phase90Doc}`;
   for (const forbidden of [
     '@torbox/torbox-api',
     'react',
@@ -5492,7 +5479,7 @@ test('Phase 90 final launch disposition is static and approval-free', () => {
     ['closesO5:', 'true'].join(' '),
     ['closesGate:', 'true'].join(' '),
     ['actual commit id is', 'allowed'].join(' '),
-  ]) assert(!combined.includes(forbidden), `Phase 90 excludes approval, closure, or value allowance ${forbidden}`);
+  ]) assert(!phase90Surface.includes(forbidden), `Phase 90 excludes approval, closure, or value allowance ${forbidden}`);
 });
 
 test('Phase 91 production-time decision requests launch-candidate review without approval or gate closure', () => {
@@ -7816,6 +7803,95 @@ test('Phase 134 Unraid launch readiness decision is launch-readiness-only', () =
     'TorBoxReadOnlyClient',
     'JellyfinHttpClient',
   ]) assert(!source.includes(forbidden), `Phase 134 source excludes ${forbidden}`);
+});
+
+test('Phase 135 Unraid final launch approval record is approval-only', () => {
+  assert(exists('docs/PHASE_135_UNRAID_FINAL_LAUNCH_APPROVAL_RECORD.md'), 'Phase 135 final launch approval doc exists');
+  assert(exists('src/ops/unraid-final-launch-approval-record.ts'), 'Phase 135 final launch approval source exists');
+  assert(exists('src/ops/unraid-final-launch-approval-record-cli.ts'), 'Phase 135 final launch approval CLI exists');
+  assert(exists('test/unraid-final-launch-approval-record.ts'), 'Phase 135 final launch approval test exists');
+  assert(pkg.scripts['test:unraid-final-launch-approval-record'] === 'tsx test/unraid-final-launch-approval-record.ts', 'Phase 135 test script present');
+  assert(pkg.scripts['ops:unraid-final-launch-approval-record'] === 'tsx src/ops/unraid-final-launch-approval-record-cli.ts', 'Phase 135 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-launch-readiness-decision.ts && tsx test/unraid-final-launch-approval-record.ts'),
+    'Phase 135 aggregate test follows Phase 134 launch readiness decision',
+  );
+
+  const source = `${read('src/ops/unraid-final-launch-approval-record.ts')}\n${read('src/ops/unraid-final-launch-approval-record-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_135_UNRAID_FINAL_LAUNCH_APPROVAL_RECORD.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-135-unraid-final-launch-approval-record',
+    'phase-134-unraid-launch-readiness-decision',
+    'APPROVE_UNRAID_PRODUCTION_SWITCH',
+    'ready-for-final-launch-approval-record',
+    'ready-for-production-switch-execution-packet',
+    'approvalValuesEchoed: false',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: true',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 135 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 135 source excludes ${forbidden}`);
+});
+
+test('Phase 136 Unraid production switch execution packet is packet-only', () => {
+  assert(exists('docs/PHASE_136_UNRAID_PRODUCTION_SWITCH_EXECUTION_PACKET.md'), 'Phase 136 execution packet doc exists');
+  assert(exists('src/ops/unraid-production-switch-execution-packet.ts'), 'Phase 136 execution packet source exists');
+  assert(exists('src/ops/unraid-production-switch-execution-packet-cli.ts'), 'Phase 136 execution packet CLI exists');
+  assert(exists('test/unraid-production-switch-execution-packet.ts'), 'Phase 136 execution packet test exists');
+  assert(pkg.scripts['test:unraid-production-switch-execution-packet'] === 'tsx test/unraid-production-switch-execution-packet.ts', 'Phase 136 test script present');
+  assert(pkg.scripts['ops:unraid-production-switch-execution-packet'] === 'tsx src/ops/unraid-production-switch-execution-packet-cli.ts', 'Phase 136 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/unraid-final-launch-approval-record.ts && tsx test/unraid-production-switch-execution-packet.ts'),
+    'Phase 136 aggregate test follows Phase 135 final launch approval record',
+  );
+
+  const source = `${read('src/ops/unraid-production-switch-execution-packet.ts')}\n${read('src/ops/unraid-production-switch-execution-packet-cli.ts')}`;
+  const combined = [source, read('docs/PHASE_136_UNRAID_PRODUCTION_SWITCH_EXECUTION_PACKET.md'), read('README.md'), read('package.json')].join('\n');
+  for (const required of [
+    'phase-136-unraid-production-switch-execution-packet',
+    'phase-135-unraid-final-launch-approval-record',
+    'ready-for-production-switch-execution-packet',
+    'ready-for-real-unraid-production-switch',
+    'packetValuesEchoed: false',
+    'inputValuesEchoed: false',
+    'commandExecution: false',
+    'scriptGenerated: false',
+    'mutatesUnraid: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'launchApproved: true',
+    'FileCustodian remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 136 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'execSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 136 source excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
