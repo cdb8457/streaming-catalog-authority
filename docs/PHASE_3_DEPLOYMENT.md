@@ -34,6 +34,19 @@ runtime variant instead:
 docker compose -f docker-compose.unraid.runtime.yml up -d postgres
 ```
 
+The runtime variant defaults to the locally built ops image:
+
+```bash
+CATALOG_AUTHORITY_OPS_IMAGE=repo-ops:latest
+```
+
+When a public image is published, point launchers at it without editing YAML:
+
+```bash
+export CATALOG_AUTHORITY_OPS_IMAGE=ghcr.io/OWNER/catalog-authority-ops:TAG
+docker compose -f docker-compose.unraid.runtime.yml up -d postgres
+```
+
 Arcane custom commands or Unraid User Scripts can call the bundled launcher:
 
 ```bash

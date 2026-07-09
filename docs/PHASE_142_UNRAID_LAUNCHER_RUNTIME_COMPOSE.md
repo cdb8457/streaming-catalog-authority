@@ -7,8 +7,9 @@ There are now two supported Unraid operator paths:
 
 - Repository clone path: use `docker-compose.unraid.yml`. It keeps `build: .` and is correct when
   the operator runs Docker Compose from `/mnt/user/appdata/catalog/repo`.
-- Launcher/runtime path: use `docker-compose.unraid.runtime.yml`. It uses `image: repo-ops:latest`
-  so Arcane-style launchers do not need to resolve the repository as a build context.
+- Launcher/runtime path: use `docker-compose.unraid.runtime.yml`. It uses
+  `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}` so Arcane-style launchers do not need to
+  resolve the repository as a build context and can later point at a published image.
 
 Both paths use the same Unraid appdata locations:
 

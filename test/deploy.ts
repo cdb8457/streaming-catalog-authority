@@ -105,7 +105,7 @@ test('unraid runtime compose — launcher-ready image mode with no build context
   assert(/^name:\s*catalogauthority/m.test(unraidRuntimeCompose), 'runtime compose has stable launcher project name');
   assert(/^\s{2}postgres:/m.test(unraidRuntimeCompose), 'runtime postgres service');
   assert(/^\s{2}ops:/m.test(unraidRuntimeCompose), 'runtime ops service');
-  assert(unraidRuntimeCompose.includes('image: repo-ops:latest'), 'runtime ops uses prebuilt image');
+  assert(unraidRuntimeCompose.includes('image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}'), 'runtime ops uses configurable prebuilt image');
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'runtime compose has no build context');
   assert(unraidRuntimeCompose.includes('APP_ENV: production'), 'runtime ops uses production environment');
   assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data'), 'runtime pgdata bind mount');
@@ -8128,7 +8128,7 @@ test('Phase 142 Unraid launcher runtime compose is image-mode and no-port', () =
   ].join('\n');
   for (const required of [
     'docker-compose.unraid.runtime.yml',
-    'image: repo-ops:latest',
+    'image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}',
     'Launcher/runtime path',
     'Arcane',
     'cannot use the repository directory as a build context',
@@ -8141,6 +8141,30 @@ test('Phase 142 Unraid launcher runtime compose is image-mode and no-port', () =
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 142 runtime compose has no build context');
   assert(!/ports:/.test(unraidRuntimeCompose), 'Phase 142 runtime compose publishes no ports');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 142 runtime compose exposes no ports');
+});
+
+test('Phase 144 runtime image override preserves local default and future published image path', () => {
+  assert(exists('docs/PHASE_144_RUNTIME_IMAGE_OVERRIDE.md'), 'Phase 144 runtime image override doc exists');
+  const combined = [
+    unraidRuntimeCompose,
+    read('docs/PHASE_144_RUNTIME_IMAGE_OVERRIDE.md'),
+    read('docs/PHASE_3_DEPLOYMENT.md'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase 144',
+    'CATALOG_AUTHORITY_OPS_IMAGE',
+    '${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}',
+    'repo-ops:latest',
+    'ghcr.io/OWNER/catalog-authority-ops:TAG',
+    'without editing the compose file',
+    'does not publish an image',
+    'does not publish',
+    'one-shot',
+  ]) assert(combined.toLowerCase().includes(required.toLowerCase()), `Phase 144 surface preserves ${required}`);
+  assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 144 runtime compose still has no build context');
+  assert(!/ports:/.test(unraidRuntimeCompose), 'Phase 144 runtime compose publishes no ports');
+  assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 144 runtime compose exposes no ports');
 });
 
 test('Phase 143 Unraid ops launcher wraps runtime compose commands', () => {

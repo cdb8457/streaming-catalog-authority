@@ -1,8 +1,8 @@
 # Launcher/runtime Unraid stack for Catalog Authority.
 #
 # Use this file when a launcher such as Arcane cannot use the repository directory as a Docker
-# build context. It expects the ops image to already exist locally, or to be replaced later with
-# a published image name.
+# build context. It defaults to the locally built repo-ops:latest image and can be pointed at a
+# published image with CATALOG_AUTHORITY_OPS_IMAGE.
 #
 # Runtime steady state:
 #   postgres stays running
@@ -28,7 +28,7 @@ services:
       retries: 10
 
   ops:
-    image: repo-ops:latest
+    image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}
     restart: "no"
     depends_on:
       postgres:
