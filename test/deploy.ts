@@ -48,6 +48,7 @@ const compose = read('docker-compose.deploy.yml');
 const unraidCompose = read('docker-compose.unraid.yml');
 const unraidRuntimeCompose = read('docker-compose.unraid.runtime.yml');
 const unraidOpsLauncher = read('deploy/unraid-ops-launcher.sh');
+const dockerignore = read('.dockerignore');
 const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 
 test('compose — defines postgres + one-shot ops services', () => {
@@ -8165,6 +8166,38 @@ test('Phase 144 runtime image override preserves local default and future publis
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 144 runtime compose still has no build context');
   assert(!/ports:/.test(unraidRuntimeCompose), 'Phase 144 runtime compose publishes no ports');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 144 runtime compose exposes no ports');
+});
+
+test('Phase 145 image publishing readiness is local-only and build-context safe', () => {
+  assert(exists('docs/PHASE_145_IMAGE_PUBLISHING_READINESS.md'), 'Phase 145 image publishing readiness doc exists');
+  assert(exists('.dockerignore'), 'Docker build context ignore file exists');
+  assert(pkg.scripts['image:build:local'] === 'docker build -t repo-ops:latest .', 'local image build script present');
+  assert(pkg.scripts['image:inspect:local'] === 'docker image inspect repo-ops:latest', 'local image inspect script present');
+
+  const combined = [
+    dockerignore,
+    read('docs/PHASE_145_IMAGE_PUBLISHING_READINESS.md'),
+    read('docs/PHASE_3_DEPLOYMENT.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const required of [
+    'Phase 145',
+    'ghcr.io/OWNER/catalog-authority-ops:TAG',
+    'repo-ops:latest',
+    'image:build:local',
+    'image:inspect:local',
+    'explicit release approval',
+    'does not publish an image',
+    'contact a registry',
+    'CATALOG_AUTHORITY_OPS_IMAGE',
+    '.agentsroom',
+    '.pgdata-*',
+    'node_modules',
+    '*.bundle',
+  ]) assert(combined.includes(required), `Phase 145 surface preserves ${required}`);
+  assert(!/docker\s+push/.test(pkg.scripts['image:build:local'] ?? ''), 'local build script does not push');
+  assert(!/docker\s+push/.test(pkg.scripts['image:inspect:local'] ?? ''), 'local inspect script does not push');
 });
 
 test('Phase 143 Unraid ops launcher wraps runtime compose commands', () => {

@@ -1,12 +1,18 @@
+.agentsroom
+.pgdata-*
 node_modules
 .pgdata
-.pgdata-*
 .keystore-*
 .git
 *.log
 dist
-# Stage 3.4: never bake secrets / keystore / backups / worktrees into the image context.
 secrets
 backups
 *.age
 .worktrees
+npm-debug.log*
+Dockerfile*
+*.bundle
+*.redacted.txt
+*.redacted.json
+*.redacted.md

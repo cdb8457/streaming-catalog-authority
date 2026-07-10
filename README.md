@@ -1340,6 +1340,9 @@ Phase 144 adds `docs/PHASE_144_RUNTIME_IMAGE_OVERRIDE.md` and changes the runtim
 `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}`. The default still works on the current Unraid
 host, while future public deployments can set a published image name without editing the compose
 file.
+Phase 145 adds `docs/PHASE_145_IMAGE_PUBLISHING_READINESS.md`, `.dockerignore`, and local image
+verification scripts (`image:build:local`, `image:inspect:local`) so a future published ops image can
+be prepared without pushing to a registry or changing runtime behavior.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

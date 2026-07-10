@@ -47,6 +47,15 @@ export CATALOG_AUTHORITY_OPS_IMAGE=ghcr.io/OWNER/catalog-authority-ops:TAG
 docker compose -f docker-compose.unraid.runtime.yml up -d postgres
 ```
 
+Image publishing is not automatic. Use the local verification scripts first:
+
+```bash
+npm run image:build:local
+npm run image:inspect:local
+```
+
+See `docs/PHASE_145_IMAGE_PUBLISHING_READINESS.md` before pushing any public image.
+
 Arcane custom commands or Unraid User Scripts can call the bundled launcher:
 
 ```bash
