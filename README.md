@@ -1343,6 +1343,13 @@ file.
 Phase 145 adds `docs/PHASE_145_IMAGE_PUBLISHING_READINESS.md`, `.dockerignore`, and local image
 verification scripts (`image:build:local`, `image:inspect:local`) so a future published ops image can
 be prepared without pushing to a registry or changing runtime behavior.
+Phase 146 adds `docs/PHASE_146_LONG_RUNNING_SERVICE_BOUNDARY.md`,
+`ops:long-running-service-boundary`, and `test:long-running-service-boundary` as the reviewed
+boundary for the first always-on API plus minimal operator UI. It frames Catalog Authority as the
+backend orchestration rail, not a streaming product, selects local-admin-token-file auth, redacted
+system/operation/connector logs, planned operator port 8099, read-only-first data exposure, and
+keeps providers, scraping, downloading, playback, and media-server mutation forbidden until later
+reviewed connector phases. It does not change Compose or publish a port.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

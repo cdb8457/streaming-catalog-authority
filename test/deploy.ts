@@ -8200,6 +8200,62 @@ test('Phase 145 image publishing readiness is local-only and build-context safe'
   assert(!/docker\s+push/.test(pkg.scripts['image:inspect:local'] ?? ''), 'local inspect script does not push');
 });
 
+test('Phase 146 long-running service boundary defines always-on shape without starting it', () => {
+  assert(exists('docs/PHASE_146_LONG_RUNNING_SERVICE_BOUNDARY.md'), 'Phase 146 long-running service boundary doc exists');
+  assert(exists('src/ops/long-running-service-boundary.ts'), 'Phase 146 long-running service boundary source exists');
+  assert(exists('src/ops/long-running-service-boundary-cli.ts'), 'Phase 146 long-running service boundary CLI exists');
+  assert(exists('test/long-running-service-boundary.ts'), 'Phase 146 long-running service boundary test exists');
+  assert(pkg.scripts['test:long-running-service-boundary'] === 'tsx test/long-running-service-boundary.ts', 'Phase 146 test script present');
+  assert(pkg.scripts['ops:long-running-service-boundary'] === 'tsx src/ops/long-running-service-boundary-cli.ts', 'Phase 146 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/control-surface-compose-boundary.ts && tsx test/long-running-service-boundary.ts'),
+    'Phase 146 aggregate test follows Phase 140 control surface boundary',
+  );
+
+  const source = `${read('src/ops/long-running-service-boundary.ts')}\n${read('src/ops/long-running-service-boundary-cli.ts')}`;
+  const combined = [
+    source,
+    read('docs/PHASE_146_LONG_RUNNING_SERVICE_BOUNDARY.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const required of [
+    'phase-146-long-running-service-boundary',
+    'API plus minimal operator UI',
+    'backend orchestration rail',
+    'It is not the streaming product',
+    'local-admin-token-file',
+    '/mnt/user/appdata/catalog/secrets/operator_ui_token',
+    'read-only first',
+    '8099',
+    'system logs',
+    'operation logs',
+    'connector logs',
+    'No accidental ports',
+    'implementationStarted: false',
+    'composeChanged: false',
+    'serviceAdded: false',
+    'portPublishedNow: false',
+    'providerContactAllowed: false',
+    'providerModeEnabled: false',
+    'productionReady: false',
+    'phase-147-implement-first-always-on-service',
+  ]) assert(combined.includes(required), `Phase 146 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'node:net',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    'execSync',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 146 source excludes ${forbidden}`);
+});
+
 test('Phase 143 Unraid ops launcher wraps runtime compose commands', () => {
   assert(exists('docs/PHASE_143_UNRAID_OPS_LAUNCHERS.md'), 'Phase 143 ops launcher doc exists');
   assert(exists('deploy/unraid-ops-launcher.sh'), 'Phase 143 ops launcher script exists');
