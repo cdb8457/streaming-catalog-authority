@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
  * Phase 3 Stage 3.4 — static structural checks for the deployment artifacts.
  *
  * Dependency-free (no YAML lib, no Docker): asserts the compose topology, secret-file wiring, and
- * the no-HTTP/no-ports CLI shape by inspecting the files. The REAL compose smoke test
+ * the one-shot CLI shape and intentional app port by inspecting the files. The REAL compose smoke test
  * (`npm run smoke:compose`) is opt-in/manual and not part of CI, because this environment has no
  * Docker (the suite uses embedded PostgreSQL). This keeps the topology verified regardless.
  */
@@ -82,10 +82,11 @@ test('compose — CLI pattern: no ports / no HTTP daemon', () => {
   assert(!/(expose|EXPOSE)/.test(compose), 'no exposed port');
 });
 
-test('unraid compose — single canonical file with production binds and no published ports', () => {
+test('unraid compose — single canonical file with production binds and intentional app port', () => {
   assert(exists('docker-compose.unraid.yml'), 'canonical Unraid compose exists');
   assert(/^\s{2}postgres:/m.test(unraidCompose), 'Unraid postgres service');
   assert(/^\s{2}ops:/m.test(unraidCompose), 'Unraid ops service');
+  assert(/^\s{2}app:/m.test(unraidCompose), 'Unraid app service');
   assert(unraidCompose.includes('APP_ENV: production'), 'Unraid ops uses production environment');
   assert(unraidCompose.includes('/mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data'), 'Unraid pgdata bind mount');
   assert(unraidCompose.includes('/mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore'), 'Unraid keystore bind mount');
@@ -96,8 +97,11 @@ test('unraid compose — single canonical file with production binds and no publ
     '/mnt/user/appdata/catalog/secrets/database_url',
     '/mnt/user/appdata/catalog/secrets/completion_secret',
     '/mnt/user/appdata/catalog/secrets/custodian_kek',
+    '/mnt/user/appdata/catalog/secrets/operator_ui_token',
   ]) assert(unraidCompose.includes(secret), `Unraid secret file ${secret}`);
-  assert(!/ports:/.test(unraidCompose), 'Unraid compose publishes no ports');
+  assert(unraidCompose.includes('ops:operator-ui-server'), 'Unraid app runs operator UI server');
+  assert(unraidCompose.includes('OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token'), 'Unraid app uses operator token file');
+  assert(unraidCompose.includes('"8099:8099"'), 'Unraid compose publishes only the intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidCompose), 'Unraid compose exposes no ports');
 });
 
@@ -106,6 +110,7 @@ test('unraid runtime compose — launcher-ready image mode with no build context
   assert(/^name:\s*catalogauthority/m.test(unraidRuntimeCompose), 'runtime compose has stable launcher project name');
   assert(/^\s{2}postgres:/m.test(unraidRuntimeCompose), 'runtime postgres service');
   assert(/^\s{2}ops:/m.test(unraidRuntimeCompose), 'runtime ops service');
+  assert(/^\s{2}app:/m.test(unraidRuntimeCompose), 'runtime app service');
   assert(unraidRuntimeCompose.includes('image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}'), 'runtime ops uses configurable prebuilt image');
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'runtime compose has no build context');
   assert(unraidRuntimeCompose.includes('APP_ENV: production'), 'runtime ops uses production environment');
@@ -118,8 +123,11 @@ test('unraid runtime compose — launcher-ready image mode with no build context
     '/mnt/user/appdata/catalog/secrets/database_url',
     '/mnt/user/appdata/catalog/secrets/completion_secret',
     '/mnt/user/appdata/catalog/secrets/custodian_kek',
+    '/mnt/user/appdata/catalog/secrets/operator_ui_token',
   ]) assert(unraidRuntimeCompose.includes(secret), `runtime secret file ${secret}`);
-  assert(!/ports:/.test(unraidRuntimeCompose), 'runtime compose publishes no ports');
+  assert(unraidRuntimeCompose.includes('ops:operator-ui-server'), 'runtime app runs operator UI server');
+  assert(unraidRuntimeCompose.includes('OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token'), 'runtime app uses operator token file');
+  assert(unraidRuntimeCompose.includes('"8099:8099"'), 'runtime compose publishes only the intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'runtime compose exposes no ports');
 });
 
@@ -8117,7 +8125,7 @@ test('Phase 140 control surface Compose boundary stops before Compose changes', 
   ]) assert(!source.includes(forbidden), `Phase 140 source excludes ${forbidden}`);
 });
 
-test('Phase 142 Unraid launcher runtime compose is image-mode and no-port', () => {
+test('Phase 142 Unraid launcher runtime compose is image-mode', () => {
   assert(exists('docs/PHASE_142_UNRAID_LAUNCHER_RUNTIME_COMPOSE.md'), 'Phase 142 launcher runtime doc exists');
   assert(exists('docker-compose.unraid.runtime.yml'), 'Phase 142 runtime compose exists');
 
@@ -8137,10 +8145,10 @@ test('Phase 142 Unraid launcher runtime compose is image-mode and no-port', () =
     'catalogauthority-ops-1',
     'one-shot',
     'expected to exit',
-    'publishes no ports',
   ]) assert(combined.includes(required), `Phase 142 surface preserves ${required}`);
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 142 runtime compose has no build context');
-  assert(!/ports:/.test(unraidRuntimeCompose), 'Phase 142 runtime compose publishes no ports');
+  assert(/^\s{2}app:/m.test(unraidRuntimeCompose), 'Phase 147 runtime compose has app service');
+  assert(unraidRuntimeCompose.includes('"8099:8099"'), 'Phase 147 runtime compose publishes intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 142 runtime compose exposes no ports');
 });
 
@@ -8164,7 +8172,8 @@ test('Phase 144 runtime image override preserves local default and future publis
     'one-shot',
   ]) assert(combined.toLowerCase().includes(required.toLowerCase()), `Phase 144 surface preserves ${required}`);
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 144 runtime compose still has no build context');
-  assert(!/ports:/.test(unraidRuntimeCompose), 'Phase 144 runtime compose publishes no ports');
+  assert(unraidRuntimeCompose.includes('image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}'), 'Phase 144 runtime app still uses configurable image');
+  assert(unraidRuntimeCompose.includes('"8099:8099"'), 'Phase 147 runtime app publishes intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 144 runtime compose exposes no ports');
 });
 
@@ -8254,6 +8263,66 @@ test('Phase 146 long-running service boundary defines always-on shape without st
     'TorBoxReadOnlyClient',
     'JellyfinHttpClient',
   ]) assert(!source.includes(forbidden), `Phase 146 source excludes ${forbidden}`);
+});
+
+test('Phase 147 operator UI service is long-running, read-only, and intentionally exposed', () => {
+  assert(exists('docs/PHASE_147_OPERATOR_UI_SERVICE.md'), 'Phase 147 operator UI service doc exists');
+  assert(exists('src/ops/operator-ui-service.ts'), 'Phase 147 operator UI service source exists');
+  assert(exists('src/ops/operator-ui-service-cli.ts'), 'Phase 147 operator UI service CLI exists');
+  assert(exists('test/operator-ui-service.ts'), 'Phase 147 operator UI service test exists');
+  assert(pkg.scripts['test:operator-ui-service'] === 'tsx test/operator-ui-service.ts', 'Phase 147 test script present');
+  assert(pkg.scripts['ops:operator-ui-server'] === 'tsx src/ops/operator-ui-service-cli.ts', 'Phase 147 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/long-running-service-boundary.ts && tsx test/operator-ui-service.ts'),
+    'Phase 147 aggregate test follows Phase 146 boundary',
+  );
+
+  const source = `${read('src/ops/operator-ui-service.ts')}\n${read('src/ops/operator-ui-service-cli.ts')}`;
+  const combined = [
+    source,
+    unraidCompose,
+    unraidRuntimeCompose,
+    read('docs/PHASE_147_OPERATOR_UI_SERVICE.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const required of [
+    'phase-147-operator-ui-service',
+    'ops:operator-ui-server',
+    'API plus minimal operator UI',
+    'backend orchestration rail',
+    'read-only-first',
+    'local-admin-token-file',
+    'redacted-system-operation-connector',
+    'OPERATOR_UI_TOKEN_FILE',
+    '/run/secrets/operator_ui_token',
+    '/mnt/user/appdata/catalog/secrets/operator_ui_token',
+    'X-Operator-UI-Secret',
+    '8099:8099',
+    'GET /healthz',
+    'GET /api/status',
+    'GET /api/logs',
+    'restart: unless-stopped',
+  ]) assert(combined.includes(required), `Phase 147 surface preserves ${required}`);
+
+  assert(/^\s{2}app:/m.test(unraidCompose), 'canonical Unraid compose has app service');
+  assert(/^\s{2}app:/m.test(unraidRuntimeCompose), 'runtime Unraid compose has app service');
+  assert(unraidRuntimeCompose.includes('image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}'), 'runtime app uses configurable image');
+  assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'runtime compose still has no build context');
+  assert(unraidCompose.includes('build: .'), 'canonical app can build from repo context');
+  assert(unraidCompose.includes('"8099:8099"') && unraidRuntimeCompose.includes('"8099:8099"'), 'both Unraid compose files publish the intentional port');
+  assert(!/(8098|8100):/.test(`${unraidCompose}\n${unraidRuntimeCompose}`), 'no adjacent accidental operator ports');
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'execSync',
+    'spawnSync',
+    'request-download-link',
+    'magnet:',
+  ]) assert(!source.includes(forbidden), `Phase 147 source excludes ${forbidden}`);
 });
 
 test('Phase 143 Unraid ops launcher wraps runtime compose commands', () => {

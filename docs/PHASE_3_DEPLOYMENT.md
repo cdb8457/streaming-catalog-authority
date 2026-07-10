@@ -1,7 +1,8 @@
 # Phase 3 — Deployment (Stage 3.4)
 
-Catalog/privacy core only. **CLI/library model — no HTTP server, no long-running app daemon.**
-Deployment is Postgres + on-demand one-shot ops containers (`migrate`, `backup`). Artifacts:
+Catalog/privacy core plus the Phase 147 read-only operator service. Deployment is Postgres, a
+long-running operator API/UI container, and on-demand one-shot ops containers (`migrate`, `backup`).
+Artifacts:
 `docker-compose.deploy.yml`, `docker-compose.unraid.yml`, `docker-compose.unraid.runtime.yml`, the
 `ops:*` npm scripts, and the `*_FILE` secret indirection from Stage 3.1/3.2. For Unraid, operators
 choose one file for their launch path; they should not need layered `-f` compose files.
@@ -12,6 +13,7 @@ choose one file for their launch path; they should not need layered `-f` compose
 |---------|------|
 | `postgres` | PostgreSQL 16; data on the `pgdata` volume; `pg_isready` healthcheck; password via `POSTGRES_PASSWORD_FILE`. |
 | `ops` | One-shot CLI container (`entrypoint: npm run`). No ports, no daemon. Runs `ops:migrate` / `ops:backup` on demand. |
+| `app` | Long-running read-only operator API/UI (`ops:operator-ui-server`) on intentional port `8099`; token-protected status/log APIs. |
 
 ```bash
 docker compose -f docker-compose.deploy.yml run --rm ops ops:migrate
@@ -23,6 +25,7 @@ On Unraid from a cloned repository, use the single merged stack file:
 
 ```bash
 cd /mnt/user/appdata/catalog/repo
+docker compose -f docker-compose.unraid.yml up -d postgres app
 docker compose -f docker-compose.unraid.yml ps -a
 docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json
 ```
@@ -31,7 +34,7 @@ For Arcane or other launchers that cannot use the repository directory as a buil
 runtime variant instead:
 
 ```bash
-docker compose -f docker-compose.unraid.runtime.yml up -d postgres
+docker compose -f docker-compose.unraid.runtime.yml up -d postgres app
 ```
 
 The runtime variant defaults to the locally built ops image:
@@ -44,7 +47,7 @@ When a public image is published, point launchers at it without editing YAML:
 
 ```bash
 export CATALOG_AUTHORITY_OPS_IMAGE=ghcr.io/OWNER/catalog-authority-ops:TAG
-docker compose -f docker-compose.unraid.runtime.yml up -d postgres
+docker compose -f docker-compose.unraid.runtime.yml up -d postgres app
 ```
 
 Image publishing is not automatic. Use the local verification scripts first:
@@ -87,6 +90,7 @@ No secret values appear in compose env or the image. Each is a file consumed via
 | `database_url` | `DATABASE_URL_FILE` | runtime role |
 | `completion_secret` | `COMPLETION_SECRET_FILE` | custodian + DB `crypto_config` (must match) |
 | `custodian_kek` | `CUSTODIAN_KEK_FILE` | FileCustodian (base64 32-byte KEK) |
+| `operator_ui_token` | `OPERATOR_UI_TOKEN_FILE` | Phase 147 operator API/UI local admin auth |
 
 Create `./secrets/*` (gitignored) before running. The restore **preflight** (Stage 3.3) verifies
 the DB is reachable, the custodian is reachable, and `completion_secret` matches `crypto_config` —
@@ -118,7 +122,8 @@ key-material exclusion, not artifact encryption.
 - It reads secret files from `/mnt/user/appdata/catalog/secrets/...`.
 - `custodian_kek_previous` is not part of the steady-state compose file. The launcher mounts it only
   for `rewrap-plan` / KEK rotation windows; remove the file after review or rotation.
-- The `ops` container is a **User Script / one-shot** invocation (migrate, scheduled backup), not an always-on container; there is no HTTP port to expose.
+- The `ops` container is a **User Script / one-shot** invocation (migrate, scheduled backup), not an always-on container.
+- The `app` container is the first always-on service. It exposes only `8099:8099` for the read-only operator API/UI and requires `X-Operator-UI-Secret` for `/api/status` and `/api/logs`.
 - Use `deploy/unraid-ops-launcher.sh` for short Arcane/User Scripts commands backed by
   `docker-compose.unraid.runtime.yml`.
 
@@ -134,8 +139,8 @@ npm run smoke:compose   # docker compose -f docker-compose.deploy.yml run --rm o
 ```
 
 A dependency-free **structural** check of these deployment artifacts runs in CI as `test/deploy.ts`
-(asserts the services, healthcheck, separate volumes, `*_FILE` secrets, and the no-HTTP/no-ports
-shape) so the topology is verified even where Docker is unavailable.
+(asserts the services, healthchecks, separate volumes, `*_FILE` secrets, one-shot `ops`, and the
+single intentional `app` port) so the topology is verified even where Docker is unavailable.
 
 ## Production gates
 

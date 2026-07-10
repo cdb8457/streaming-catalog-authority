@@ -135,8 +135,9 @@ survives a prune). See `docs/PHASE_2_BACKUP_POLICY.md`.
 
 ## Self-hosting / Unraid (Phase 3–6)
 
-Deployment is **CLI/library only** — Postgres + on-demand one-shot ops containers, **no HTTP
-service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --rm ops <script>`):
+Deployment is Postgres + on-demand one-shot ops containers plus the Phase 147 read-only operator
+API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose run --rm ops
+<script>`) and run the UI through the Unraid `app` service on port `8099`.
 
 | Command | What it does |
 |---|---|
@@ -145,6 +146,7 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:version` | db schema version vs this build (exit 1 on mismatch) |
 | `ops:doctor [--json]` | **read-only** production self-check (config, schema version, runtime least-privilege, secret match, custodian, keystore, O4/O5 production gate WARN visibility); `--json` is the stable unattended-healthcheck contract; non-zero exit on any failure |
 | `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |
+| `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
 | `ops:verify-backup -- <file>` | **offline** structural check of a backup artifact (no DB) |
 | `ops:rehearse-restore -- <file>` | restore rehearsal into a throwaway `REHEARSAL_ADMIN_DATABASE_URL` (hard-refuses production) |
 | `ops:rewrap-kek [-- --plan [--json]]` | plan or rotate the KEK (preflight counts; explicit rewrap is resumable; identity untouched) |
@@ -171,7 +173,8 @@ service and no UI**. Operate it with `npm run ops:*` (or `docker compose run --r
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
 - **Docker Compose:** `docker-compose.unraid.yml` is the repository-clone Unraid stack file
-  (Postgres + one-shot ops, appdata bind mounts, no published ports, local `build: .`).
+  (Postgres + one-shot ops + read-only operator `app`, appdata bind mounts, intentional
+  `8099:8099` app port, local `build: .`).
   `docker-compose.unraid.runtime.yml` is the Arcane/launcher runtime variant that uses
   `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}` instead of a build context, so it can later
   point at a published image without editing YAML. `docker-compose.deploy.yml` remains the
@@ -1325,13 +1328,15 @@ remains a hardened reference harness.
 Phase 141 adds `docs/PHASE_141_SINGLE_UNRAID_COMPOSE.md` and `docker-compose.unraid.yml` as the
 single canonical Unraid Compose file. It merges the hardened deploy topology with Unraid appdata
 bind mounts and secret-file paths so normal Unraid operations use one command shape:
-`docker compose -f docker-compose.unraid.yml ...`. It publishes no ports and does not install
-Arcane/DockHand controls or start a new UI.
+`docker compose -f docker-compose.unraid.yml ...`. At Phase 141 it published no ports and did not
+install Arcane/DockHand controls or start a new UI; Phase 147 later adds the intentional read-only
+operator `app` port `8099:8099`.
 Phase 142 adds `docs/PHASE_142_UNRAID_LAUNCHER_RUNTIME_COMPOSE.md` and
 `docker-compose.unraid.runtime.yml` for Arcane/launcher deployments that cannot use the repository
 directory as a Docker build context. The runtime file uses `image: repo-ops:latest`, keeps the same
-Unraid appdata binds and secrets, publishes no ports, and documents that `ops` is a one-shot
-container expected to exit after commands complete.
+Unraid appdata binds and secrets, and documents that `ops` is a one-shot container expected to exit
+after commands complete; Phase 147 later adds the long-running read-only `app` service on port
+`8099`.
 Phase 143 adds `docs/PHASE_143_UNRAID_OPS_LAUNCHERS.md` and
 `deploy/unraid-ops-launcher.sh` so Arcane custom commands and Unraid User Scripts can run short
 runtime-compose-backed commands for doctor, migrate, backup, KEK rewrap planning, status, and
@@ -1350,6 +1355,12 @@ backend orchestration rail, not a streaming product, selects local-admin-token-f
 system/operation/connector logs, planned operator port 8099, read-only-first data exposure, and
 keeps providers, scraping, downloading, playback, and media-server mutation forbidden until later
 reviewed connector phases. It does not change Compose or publish a port.
+Phase 147 adds `docs/PHASE_147_OPERATOR_UI_SERVICE.md`, `ops:operator-ui-server`, and
+`test:operator-ui-service` as the first long-running read-only operator API/UI. The Unraid compose
+files now include an `app` service using `OPERATOR_UI_TOKEN_FILE=/run/secrets/operator_ui_token`,
+publishing only `8099:8099`, serving `/healthz`, `/api/status`, and `/api/logs`, and preserving the
+backend orchestration rail boundary with no provider contact, scraping, downloading, playback,
+command execution, or media-server mutation.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

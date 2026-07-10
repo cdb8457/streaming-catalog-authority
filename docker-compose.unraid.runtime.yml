@@ -6,6 +6,7 @@
 #
 # Runtime steady state:
 #   postgres stays running
+#   app is the long-running read-only operator API/UI on port 8099
 #   ops is a one-shot command container and exits after the command completes
 
 name: catalogauthority
@@ -52,6 +53,39 @@ services:
     entrypoint: ["npm", "run"]
     command: ["ops:migrate"]
 
+  app:
+    image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+      OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
+    volumes:
+      - /mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore
+    secrets:
+      - admin_database_url
+      - database_url
+      - completion_secret
+      - custodian_kek
+      - operator_ui_token
+    entrypoint: ["npm", "run"]
+    command: ["ops:operator-ui-server", "--", "--serve", "--host", "0.0.0.0", "--port", "8099"]
+    ports:
+      - "8099:8099"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:8099/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
 secrets:
   postgres_password:
     file: /mnt/user/appdata/catalog/secrets/postgres_password
@@ -63,3 +97,5 @@ secrets:
     file: /mnt/user/appdata/catalog/secrets/completion_secret
   custodian_kek:
     file: /mnt/user/appdata/catalog/secrets/custodian_kek
+  operator_ui_token:
+    file: /mnt/user/appdata/catalog/secrets/operator_ui_token
