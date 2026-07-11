@@ -168,7 +168,7 @@ test('package.json — ops + deploy scripts wired; no HTTP framework dep', () =>
   }
   assert(/test\/backup-ops\.ts/.test(pkg.scripts.test ?? ''), 'backup-ops in the test chain');
   assert(/test\/deploy\.ts/.test(pkg.scripts.test ?? ''), 'deploy in the test chain');
-  assert(/docker-compose\.deploy\.yml/.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke uses the deploy compose');
+  assert(/docker-compose\.unraid\.runtime\.yml/.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke uses the public Unraid runtime compose');
   const deps = Object.keys(pkg.dependencies ?? {});
   for (const banned of ['express', 'fastify', 'koa', 'http-server', 'age', 'aws-sdk', '@aws-sdk/client-kms',
     'node-fetch', 'undici', 'axios', 'got', 'puppeteer', 'cheerio', 'ws', 'plex-api', 'real-debrid', 'torbox']) {
@@ -8156,7 +8156,7 @@ test('Phase 142 Unraid launcher runtime compose is image-mode', () => {
     'image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}',
     'Launcher/runtime path',
     'Arcane',
-    'cannot use the repository directory as a build context',
+    'public Unraid release entrypoint',
     'catalogauthority-postgres-1',
     'catalogauthority-ops-1',
     'one-shot',
@@ -8609,6 +8609,38 @@ test('Phase 153 Arcane operator runbook maps safe buttons to exact launcher comm
     'ops:rewrap-kek',
     '--print --confirm-print',
   ]) assert(!doc.includes(forbidden), `Phase 153 runbook excludes ${forbidden}`);
+});
+
+test('Phase 154 release packaging documents one public Unraid deploy path', () => {
+  assert(exists('RELEASE.md'), 'Phase 154 release guide exists');
+  assert(exists('docs/PHASE_154_RELEASE_PACKAGING.md'), 'Phase 154 release packaging doc exists');
+  const release = read('RELEASE.md');
+  const phase154 = read('docs/PHASE_154_RELEASE_PACKAGING.md');
+  const deployment = read('docs/PHASE_3_DEPLOYMENT.md');
+  const readme = read('README.md');
+  const publicDocs = [release, phase154, deployment].join('\n');
+  const combined = [publicDocs, readme].join('\n');
+
+  for (const required of [
+    'phase-154-release-packaging',
+    'Current release tag: `phase-154`',
+    '/mnt/user/appdata/catalog/repo',
+    '/mnt/user/appdata/catalog',
+    '/mnt/user/appdata/catalog/secrets',
+    'docker-compose.unraid.runtime.yml',
+    'repo-ops:latest',
+    'ghcr.io/catalog-authority/catalog-authority-ops:<tag>',
+    'CATALOG_AUTHORITY_OPS_IMAGE',
+    'npm run image:build:local',
+    '/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check',
+  ]) assert(combined.includes(required), `Phase 154 release surface preserves ${required}`);
+
+  for (const forbidden of [
+    'docker-compose.deploy.yml',
+    'docker-compose.unraid.yml',
+    'ghcr.io/OWNER',
+    './secrets',
+  ]) assert(!publicDocs.includes(forbidden), `Phase 154 public docs exclude ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

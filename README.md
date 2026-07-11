@@ -175,13 +175,12 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:provider-availability-operator-packet [-- --json]` | static, redaction-safe Phase 59 provider availability evidence/review packet; executes nothing |
 | `ops:release-guard -- -- --base <ref> [--head <ref>] [--tag <tag>] [--mode pre-pr\|pre-merge\|post-merge]` | static, advisory coordinator release guard for Phase 24 handoffs; read-only Git inspection only, never approval |
 
-- **Docker Compose:** `docker-compose.unraid.yml` is the repository-clone Unraid stack file
-  (Postgres + one-shot ops + read-only operator `app`, appdata bind mounts, intentional
-  `8099:8099` app port, local `build: .`).
-  `docker-compose.unraid.runtime.yml` is the Arcane/launcher runtime variant that uses
-  `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}` instead of a build context, so it can later
-  point at a published image without editing YAML. `docker-compose.deploy.yml` remains the
-  generic/local deployment topology.
+- **Docker Compose:** `docker-compose.unraid.runtime.yml` is the public Unraid release
+  entrypoint (Postgres + one-shot ops + read-only operator `app`, canonical
+  `/mnt/user/appdata/catalog` bind mounts, intentional `8099:8099` app port, and
+  `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}`). Build `repo-ops:latest` locally with
+  `npm run image:build:local`, or set `CATALOG_AUTHORITY_OPS_IMAGE` to a published
+  `ghcr.io/catalog-authority/catalog-authority-ops:<tag>` image. See `RELEASE.md`.
 - **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
   commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`, `ui-live-check`,
   `ui-live-check-save`, `ui-evidence-review`, `ui-token-status`, `ui-token-rotate`, `migrate`,
@@ -1388,6 +1387,10 @@ valid JSON, complete schema, recency, and pass state, with nonzero exit on any f
 Phase 153 adds `docs/PHASE_153_ARCANE_OPERATOR_RUNBOOK.md`, a short Arcane custom-command button
 map for `start-ui`, `status`, `ui-live-check`, `ui-live-check-save`, `ui-logs`, `ui-token-status`,
 and `restart-ui`, all pointing at the canonical Unraid launcher path.
+Phase 154 adds `RELEASE.md` and `docs/PHASE_154_RELEASE_PACKAGING.md`. Public users run the single
+canonical Unraid compose entrypoint, `docker-compose.unraid.runtime.yml`, from
+`/mnt/user/appdata/catalog/repo`, with `repo-ops:latest` as the local image and
+`ghcr.io/catalog-authority/catalog-authority-ops:<tag>` as the published-image convention.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -216,7 +216,7 @@
     "ops:operator-ui-auth-packet-acceptance": "tsx src/ops/operator-ui-auth-packet-acceptance-cli.ts",
     "ops:launch-gate-audit": "tsx src/ops/launch-gate-audit-cli.ts",
     "ops:operator-acceptance-packet": "tsx src/ops/operator-acceptance-packet-cli.ts",
-    "smoke:compose": "docker compose -f docker-compose.deploy.yml run --rm ops ops:migrate",
+    "smoke:compose": "docker compose -f docker-compose.unraid.runtime.yml run --rm ops ops:migrate",
     "image:build:local": "docker build -t repo-ops:latest .",
     "image:inspect:local": "docker image inspect repo-ops:latest",
     "test:phase1": "tsx test/run.ts 5433",

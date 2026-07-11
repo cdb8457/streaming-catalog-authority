@@ -2,10 +2,10 @@
 
 Catalog/privacy core plus the Phase 147 read-only operator service. Deployment is Postgres, a
 long-running operator API/UI container, and on-demand one-shot ops containers (`migrate`, `backup`).
-Artifacts:
-`docker-compose.deploy.yml`, `docker-compose.unraid.yml`, `docker-compose.unraid.runtime.yml`, the
-`ops:*` npm scripts, and the `*_FILE` secret indirection from Stage 3.1/3.2. For Unraid, operators
-choose one file for their launch path; they should not need layered `-f` compose files.
+The public Unraid release entrypoint is `docker-compose.unraid.runtime.yml` from the canonical repo
+path `/mnt/user/appdata/catalog/repo`. It uses the `ops:*` npm scripts, `*_FILE` secret indirection,
+and canonical `/mnt/user/appdata/catalog` appdata bind mounts. Operators should not need layered
+`-f` compose files.
 
 ## Topology
 
@@ -16,28 +16,23 @@ choose one file for their launch path; they should not need layered `-f` compose
 | `app` | Long-running read-only operator API/UI (`ops:operator-ui-server`) on intentional port `8099`; token-protected status/log APIs. |
 
 ```bash
-docker compose -f docker-compose.deploy.yml run --rm ops ops:migrate
-docker compose -f docker-compose.deploy.yml run --rm ops ops:backup -- dump    /backups/cat.json
-docker compose -f docker-compose.deploy.yml run --rm ops ops:backup -- restore /backups/cat.json
+cd /mnt/user/appdata/catalog/repo
+docker compose -f docker-compose.unraid.runtime.yml run --rm ops ops:migrate
+docker compose -f docker-compose.unraid.runtime.yml run --rm ops ops:backup -- dump    /backups/cat.json
+docker compose -f docker-compose.unraid.runtime.yml run --rm ops ops:backup -- restore /backups/cat.json
 ```
 
-On Unraid from a cloned repository, use the single merged stack file:
+On Unraid from a cloned repository, use the runtime compose file:
 
 ```bash
 cd /mnt/user/appdata/catalog/repo
-docker compose -f docker-compose.unraid.yml up -d postgres app
-docker compose -f docker-compose.unraid.yml ps -a
-docker compose -f docker-compose.unraid.yml run --rm ops ops:doctor -- --json
-```
-
-For Arcane or other launchers that cannot use the repository directory as a build context, use the
-runtime variant instead:
-
-```bash
+npm run image:build:local
 docker compose -f docker-compose.unraid.runtime.yml up -d postgres app
+docker compose -f docker-compose.unraid.runtime.yml ps -a
+docker compose -f docker-compose.unraid.runtime.yml run --rm ops ops:doctor -- --json
 ```
 
-The runtime variant defaults to the locally built ops image:
+The release compose file defaults to the locally built ops image:
 
 ```bash
 CATALOG_AUTHORITY_OPS_IMAGE=repo-ops:latest
@@ -46,7 +41,7 @@ CATALOG_AUTHORITY_OPS_IMAGE=repo-ops:latest
 When a public image is published, point launchers at it without editing YAML:
 
 ```bash
-export CATALOG_AUTHORITY_OPS_IMAGE=ghcr.io/OWNER/catalog-authority-ops:TAG
+export CATALOG_AUTHORITY_OPS_IMAGE=ghcr.io/catalog-authority/catalog-authority-ops:<tag>
 docker compose -f docker-compose.unraid.runtime.yml up -d postgres app
 ```
 
@@ -62,10 +57,11 @@ See `docs/PHASE_145_IMAGE_PUBLISHING_READINESS.md` before pushing any public ima
 Arcane custom commands or Unraid User Scripts can call the bundled launcher:
 
 ```bash
-/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh start-postgres
-/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh doctor
-/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh backup
-/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh rewrap-plan
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh start-ui
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh status
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check-save
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-evidence-review /mnt/user/appdata/catalog/backups/evidence/operator-ui-live-check-*.json
 ```
 
 ## Volume mappings (keep key material separate)
@@ -83,7 +79,7 @@ wrapped DEKs. This is the deployment-level enforcement of the Stage 3b key-mater
 
 No secret values appear in compose env or the image. Each is a file consumed via `*_FILE`:
 
-| Secret file (`./secrets/…`) | Consumed as | By |
+| Secret file (`/mnt/user/appdata/catalog/secrets/...`) | Consumed as | By |
 |------------------------------|-------------|----|
 | `postgres_password` | `POSTGRES_PASSWORD_FILE` | postgres image |
 | `admin_database_url` | `ADMIN_DATABASE_URL_FILE` | owner/migrator |
@@ -92,7 +88,7 @@ No secret values appear in compose env or the image. Each is a file consumed via
 | `custodian_kek` | `CUSTODIAN_KEK_FILE` | FileCustodian (base64 32-byte KEK) |
 | `operator_ui_token` | `OPERATOR_UI_TOKEN_FILE` | Phase 147 operator API/UI local admin auth |
 
-Create `./secrets/*` (gitignored) before running. The restore **preflight** (Stage 3.3) verifies
+Create `/mnt/user/appdata/catalog/secrets/*` before running. The restore **preflight** (Stage 3.3) verifies
 the DB is reachable, the custodian is reachable, and `completion_secret` matches `crypto_config` —
 refusing the restore otherwise.
 
@@ -100,10 +96,10 @@ refusing the restore otherwise.
 
 The chosen first KEK direction is an **age-encrypted-file KEK**, handled **operator-side**, not
 in-process (no age dependency is bundled). The KEK is stored age-encrypted at rest; the operator
-decrypts it just before deploy and mounts the plaintext base64 KEK as `./secrets/custodian_kek`:
+decrypts it just before deploy and mounts the plaintext base64 KEK as `/mnt/user/appdata/catalog/secrets/custodian_kek`:
 
 ```bash
-age --decrypt -i ~/.age/key.txt custodian_kek.age > ./secrets/custodian_kek   # operator step
+age --decrypt -i ~/.age/key.txt custodian_kek.age > /mnt/user/appdata/catalog/secrets/custodian_kek
 ```
 
 The application only ever sees the decrypted KEK via `CUSTODIAN_KEK_FILE`. Backup artifacts are
@@ -113,9 +109,7 @@ key-material exclusion, not artifact encryption.
 
 ## Unraid notes
 
-- Use **`docker-compose.unraid.yml`** when running from a cloned repo on Unraid.
-- Use **`docker-compose.unraid.runtime.yml`** for Arcane/launcher paste-in flows where `build: .`
-  would fail because the launcher cannot see the repo path.
+- Use **`docker-compose.unraid.runtime.yml`** as the public Unraid release entrypoint.
 - It maps `pgdata` to `/mnt/user/appdata/catalog/pgdata`.
 - It maps the keystore to `/mnt/user/appdata/catalog/keystore`, separate from DB data and backups.
 - It maps backups to `/mnt/user/appdata/catalog/backups`.
@@ -129,13 +123,13 @@ key-material exclusion, not artifact encryption.
 
 ## Compose smoke test (opt-in / manual)
 
-`npm run smoke:compose` runs a real migrate through compose. It is **NOT part of CI**: this repo's
-test suite boots an **embedded PostgreSQL 16** specifically so CI needs no Docker daemon, and the
-build/CI environment here has **no Docker available** (`docker: command not found`). Run the smoke
-manually on a Docker host after creating `./secrets/*`:
+`npm run smoke:compose` runs a real migrate through the public release compose file. It is **NOT
+part of CI**: this repo's test suite boots an **embedded PostgreSQL 16** specifically so CI needs no
+Docker daemon. Run the smoke manually on a Docker host after creating the required secret files:
 
 ```bash
-npm run smoke:compose   # docker compose -f docker-compose.deploy.yml run --rm ops ops:migrate
+npm run image:build:local
+npm run smoke:compose
 ```
 
 A dependency-free **structural** check of these deployment artifacts runs in CI as `test/deploy.ts`
