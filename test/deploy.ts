@@ -8423,6 +8423,45 @@ test('Phase 143 Unraid ops launcher wraps runtime compose commands', () => {
   assert(!/(node:http|node:https|globalThis\.fetch|fetch\()/.test(unraidOpsLauncher), 'launcher has no network/provider implementation');
 });
 
+test('Phase 149 Unraid UI launcher commands operate existing runtime services only', () => {
+  assert(exists('docs/PHASE_149_UNRAID_UI_LAUNCHER_COMMANDS.md'), 'Phase 149 UI launcher doc exists');
+  const combined = [
+    unraidOpsLauncher,
+    read('docs/PHASE_149_UNRAID_UI_LAUNCHER_COMMANDS.md'),
+    read('docs/PHASE_143_UNRAID_OPS_LAUNCHERS.md'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-149-unraid-ui-launcher-commands',
+    'start-ui',
+    'restart-ui',
+    'ui-logs',
+    'ui-token-status',
+    'ui-token-rotate',
+    'compose up -d postgres app',
+    'compose up -d --force-recreate app',
+    'compose logs --tail',
+    'ops:operator-ui-token -- --status --json',
+    'ops:operator-ui-token -- --rotate --confirm --json',
+    'catalogauthority-app-1',
+    'Arcane',
+    'User Scripts',
+  ]) assert(combined.includes(required), `Phase 149 surface preserves ${required}`);
+  assert(
+    !`${unraidOpsLauncher}\n${read('docs/PHASE_149_UNRAID_UI_LAUNCHER_COMMANDS.md')}`.includes('--print --confirm-print'),
+    'Phase 149 launcher docs do not add a print-token shortcut',
+  );
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'globalThis.fetch',
+    'request-download-link',
+    'magnet:',
+  ]) assert(!unraidOpsLauncher.includes(forbidden), `Phase 149 launcher excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

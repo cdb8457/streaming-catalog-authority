@@ -34,15 +34,21 @@ Catalog Authority Unraid ops launcher
 
 Usage:
   unraid-ops-launcher.sh start-postgres
+  unraid-ops-launcher.sh start-ui
+  unraid-ops-launcher.sh restart-ui
   unraid-ops-launcher.sh status
+  unraid-ops-launcher.sh ui-logs
+  unraid-ops-launcher.sh ui-token-status
+  unraid-ops-launcher.sh ui-token-rotate
   unraid-ops-launcher.sh migrate
   unraid-ops-launcher.sh doctor
   unraid-ops-launcher.sh backup [output-file]
   unraid-ops-launcher.sh rewrap-plan
 
 Notes:
-  postgres is the long-running service.
+  postgres and app are the long-running services.
   ops is a one-shot command container and exits after each command.
+  ui-token-rotate changes the operator UI login token but does not print it.
   rewrap-plan requires a temporary previous KEK file at:
     /mnt/user/appdata/catalog/secrets/custodian_kek_previous
 EOF
@@ -52,8 +58,24 @@ case "${1:-}" in
   start-postgres)
     compose up -d postgres
     ;;
+  start-ui)
+    compose up -d postgres app
+    ;;
+  restart-ui)
+    compose up -d postgres
+    compose up -d --force-recreate app
+    ;;
   status)
     compose ps -a
+    ;;
+  ui-logs)
+    compose logs --tail "${CATALOG_AUTHORITY_UI_LOG_TAIL:-80}" app
+    ;;
+  ui-token-status)
+    run_ops ops:operator-ui-token -- --status --json
+    ;;
+  ui-token-rotate)
+    run_ops ops:operator-ui-token -- --rotate --confirm --json
     ;;
   migrate)
     run_ops ops:migrate

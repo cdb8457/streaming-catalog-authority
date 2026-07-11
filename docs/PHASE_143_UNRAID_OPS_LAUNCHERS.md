@@ -10,7 +10,12 @@ Supported commands:
 
 ```bash
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh start-postgres
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh start-ui
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh restart-ui
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh status
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-logs
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-token-status
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-token-rotate
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh migrate
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh doctor
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh backup
@@ -20,7 +25,12 @@ Supported commands:
 Command meanings:
 
 - `start-postgres`: starts the long-running Postgres service.
+- `start-ui`: starts Postgres and the long-running read-only operator UI service.
+- `restart-ui`: recreates the read-only operator UI service without changing Postgres.
 - `status`: shows the runtime compose stack.
+- `ui-logs`: shows recent redacted Docker logs for the operator UI service.
+- `ui-token-status`: reports operator UI token-file metadata without printing the token.
+- `ui-token-rotate`: rotates the operator UI token with explicit confirmation without printing it.
 - `migrate`: runs schema migration and exits.
 - `doctor`: runs the read-only JSON health check and exits non-zero on FAIL checks.
 - `backup`: writes a catalog backup under `/mnt/user/appdata/catalog/backups` unless a target file
@@ -32,7 +42,7 @@ Command meanings:
 
 Expected steady state remains unchanged:
 
-- `catalogauthority-postgres-1` stays running and healthy.
+- `catalogauthority-postgres-1` and `catalogauthority-app-1` stay running and healthy.
 - `catalogauthority-ops-1` exits after each command; this is success for one-shot ops commands.
 
 This phase does not add provider mode, publish ports, install a UI, or start a long-running API

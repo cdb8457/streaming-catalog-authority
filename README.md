@@ -181,7 +181,8 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
   point at a published image without editing YAML. `docker-compose.deploy.yml` remains the
   generic/local deployment topology.
 - **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
-  commands for `start-postgres`, `status`, `migrate`, `doctor`, `backup`, and `rewrap-plan` using
+  commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`,
+  `ui-token-status`, `ui-token-rotate`, `migrate`, `doctor`, `backup`, and `rewrap-plan` using
   the runtime compose file.
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
   one-shot ops container; no ports/UI).
@@ -1367,6 +1368,10 @@ Phase 148 adds `docs/PHASE_148_OPERATOR_UI_ACCESS.md`, `ops:operator-ui-token`, 
 token-file status, rotate the token with `--rotate --confirm`, and only prints the token with the
 explicit `--print --confirm-print` command. The live UI also shows pass/warn/fail doctor counts,
 attention items, port, service health, and redacted log counts.
+Phase 149 adds `docs/PHASE_149_UNRAID_UI_LAUNCHER_COMMANDS.md` and extends
+`deploy/unraid-ops-launcher.sh` with Arcane/User Scripts commands for `start-ui`, `restart-ui`,
+`ui-logs`, `ui-token-status`, and `ui-token-rotate`. These commands operate the existing runtime
+Compose services and do not add UI write actions or provider/media-server behavior.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
