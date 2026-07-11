@@ -148,6 +148,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |
 | `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
 | `ops:operator-ui-token -- --show-path/status/rotate` | safe operator UI token helper; rotation and status do not print the token, and printing requires `--print --confirm-print` |
+| `ops:operator-ui-live-check -- --json` | redaction-safe live operator UI check: health, auth rejection, authenticated status, and logs without printing the token |
 | `ops:verify-backup -- <file>` | **offline** structural check of a backup artifact (no DB) |
 | `ops:rehearse-restore -- <file>` | restore rehearsal into a throwaway `REHEARSAL_ADMIN_DATABASE_URL` (hard-refuses production) |
 | `ops:rewrap-kek [-- --plan [--json]]` | plan or rotate the KEK (preflight counts; explicit rewrap is resumable; identity untouched) |
@@ -181,7 +182,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
   point at a published image without editing YAML. `docker-compose.deploy.yml` remains the
   generic/local deployment topology.
 - **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
-  commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`,
+  commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`, `ui-live-check`,
   `ui-token-status`, `ui-token-rotate`, `migrate`, `doctor`, `backup`, and `rewrap-plan` using
   the runtime compose file.
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
@@ -1372,6 +1373,10 @@ Phase 149 adds `docs/PHASE_149_UNRAID_UI_LAUNCHER_COMMANDS.md` and extends
 `deploy/unraid-ops-launcher.sh` with Arcane/User Scripts commands for `start-ui`, `restart-ui`,
 `ui-logs`, `ui-token-status`, and `ui-token-rotate`. These commands operate the existing runtime
 Compose services and do not add UI write actions or provider/media-server behavior.
+Phase 150 adds `docs/PHASE_150_OPERATOR_UI_LIVE_CHECK.md`, `ops:operator-ui-live-check`, and
+`test:operator-ui-live-check`. The live check validates `/healthz`, unauthenticated 401 behavior,
+authenticated status, and authenticated logs while emitting only fixed labels, status codes, summary
+counts, and redaction-safe metadata. The Unraid launcher exposes it as `ui-live-check`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

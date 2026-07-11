@@ -38,6 +38,7 @@ Usage:
   unraid-ops-launcher.sh restart-ui
   unraid-ops-launcher.sh status
   unraid-ops-launcher.sh ui-logs
+  unraid-ops-launcher.sh ui-live-check
   unraid-ops-launcher.sh ui-token-status
   unraid-ops-launcher.sh ui-token-rotate
   unraid-ops-launcher.sh migrate
@@ -70,6 +71,9 @@ case "${1:-}" in
     ;;
   ui-logs)
     compose logs --tail "${CATALOG_AUTHORITY_UI_LOG_TAIL:-80}" app
+    ;;
+  ui-live-check)
+    run_ops ops:operator-ui-live-check -- --url "${CATALOG_AUTHORITY_UI_URL:-http://app:8099}" --json
     ;;
   ui-token-status)
     run_ops ops:operator-ui-token -- --status --json

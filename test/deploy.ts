@@ -8462,6 +8462,52 @@ test('Phase 149 Unraid UI launcher commands operate existing runtime services on
   ]) assert(!unraidOpsLauncher.includes(forbidden), `Phase 149 launcher excludes ${forbidden}`);
 });
 
+test('Phase 150 operator UI live check is redaction-safe and launcher-backed', () => {
+  assert(exists('docs/PHASE_150_OPERATOR_UI_LIVE_CHECK.md'), 'Phase 150 live check doc exists');
+  assert(exists('src/ops/operator-ui-live-check.ts'), 'Phase 150 live check source exists');
+  assert(exists('src/ops/operator-ui-live-check-cli.ts'), 'Phase 150 live check CLI exists');
+  assert(exists('test/operator-ui-live-check.ts'), 'Phase 150 live check test exists');
+  assert(pkg.scripts['test:operator-ui-live-check'] === 'tsx test/operator-ui-live-check.ts', 'Phase 150 test script present');
+  assert(pkg.scripts['ops:operator-ui-live-check'] === 'tsx src/ops/operator-ui-live-check-cli.ts', 'Phase 150 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-token.ts && tsx test/operator-ui-live-check.ts'),
+    'Phase 150 aggregate test follows token helper',
+  );
+
+  const source = `${read('src/ops/operator-ui-live-check.ts')}\n${read('src/ops/operator-ui-live-check-cli.ts')}`;
+  const combined = [
+    source,
+    unraidOpsLauncher,
+    read('docs/PHASE_150_OPERATOR_UI_LIVE_CHECK.md'),
+    read('docs/PHASE_149_UNRAID_UI_LAUNCHER_COMMANDS.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const required of [
+    'phase-150-operator-ui-live-check',
+    'ops:operator-ui-live-check',
+    'test:operator-ui-live-check',
+    'ui-live-check',
+    'http://app:8099',
+    '/healthz',
+    '/api/status',
+    '/api/logs',
+    'redaction-safe',
+    'token-output',
+    'secret-output',
+  ]) assert(combined.includes(required), `Phase 150 surface preserves ${required}`);
+  assert(!source.includes('--print --confirm-print'), 'Phase 150 live check does not include token print path');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'request-download-link',
+    'magnet:',
+    'docker compose',
+  ]) assert(!source.includes(forbidden), `Phase 150 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
