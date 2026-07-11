@@ -8691,6 +8691,41 @@ test('Phase 155 public deploy smoke is clean-clone and evidence-reviewed', () =>
   ]) assert(!doc.includes(forbidden), `Phase 155 smoke doc excludes ${forbidden}`);
 });
 
+test('Phases 161 and 162 document live UI access and normal operator workflow', () => {
+  assert(exists('docs/PHASE_161_OPERATOR_UI_ACCESS_VALIDATION.md'), 'Phase 161 access validation doc exists');
+  assert(exists('docs/PHASE_162_OPERATOR_WORKFLOW_RUNBOOK.md'), 'Phase 162 operator workflow runbook exists');
+  const phaseDocs = [
+    read('docs/PHASE_161_OPERATOR_UI_ACCESS_VALIDATION.md'),
+    read('docs/PHASE_162_OPERATOR_WORKFLOW_RUNBOOK.md'),
+  ].join('\n');
+  const combined = [
+    phaseDocs,
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-161-operator-ui-access-validation',
+    'phase-162-operator-workflow-runbook',
+    'http://192.168.1.31:8099/',
+    'unauthenticated `/api/status`: HTTP `401`',
+    'unauthenticated `/api/logs`: HTTP `401`',
+    '/mnt/user/projects/CatalogAuthority',
+    '/mnt/user/appdata/catalog/repo/docker-compose.unraid.runtime.yml',
+    'CATALOG_AUTHORITY_OPS_IMAGE=repo-ops:latest',
+    'CATALOG_AUTHORITY_APPDATA_DIR=/mnt/user/appdata/catalog',
+    'OPERATOR_UI_HOST_PORT=8099',
+    '/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check',
+    '/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check-save',
+    '/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-evidence-review',
+  ]) assert(combined.includes(required), `Phase 161/162 docs preserve ${required}`);
+  for (const forbidden of [
+    '--print --confirm-print',
+    'ops:backup -- restore',
+    'ops:rewrap-kek',
+    'request-download-link',
+    'magnet:',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 161/162 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

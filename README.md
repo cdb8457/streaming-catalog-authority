@@ -1394,6 +1394,11 @@ canonical Unraid compose entrypoint, `docker-compose.unraid.runtime.yml`, from
 Phase 155 adds `docs/PHASE_155_PUBLIC_DEPLOY_SMOKE.md` and validates a fresh clone using only
 `docker-compose.unraid.runtime.yml`, a temporary `CATALOG_AUTHORITY_APPDATA_DIR`, a temporary
 `OPERATOR_UI_HOST_PORT`, and a separate Compose project name so production paths are not reused.
+Phase 161 adds `docs/PHASE_161_OPERATOR_UI_ACCESS_VALIDATION.md` for the live operator UI access
+boundary: the UI shell and `/healthz` load, unauthenticated status/log APIs return 401, and the
+launcher live-check passes without printing the token. Phase 162 adds
+`docs/PHASE_162_OPERATOR_WORKFLOW_RUNBOOK.md`, the normal update/restart/validate/save/review
+workflow for Unraid and Arcane.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
