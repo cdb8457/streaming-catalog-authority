@@ -8,6 +8,9 @@
 #   postgres stays running
 #   app is the long-running read-only operator API/UI on port 8099
 #   ops is a one-shot command container and exits after the command completes
+#
+# Defaults are the canonical Unraid release paths. Phase 155 fresh-deploy smoke may override
+# CATALOG_AUTHORITY_APPDATA_DIR and OPERATOR_UI_HOST_PORT to avoid touching existing deployments.
 
 name: catalogauthority
 
@@ -19,7 +22,7 @@ services:
       POSTGRES_USER: postgres
       POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     volumes:
-      - /mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/pgdata:/var/lib/postgresql/data
     secrets:
       - postgres_password
     healthcheck:
@@ -42,11 +45,11 @@ services:
       COMPLETION_SECRET_FILE: /run/secrets/completion_secret
       CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
       CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
-      OPERATOR_UI_TOKEN_FILE: /mnt/user/appdata/catalog/secrets/operator_ui_token
+      OPERATOR_UI_TOKEN_FILE: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token
     volumes:
-      - /mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore
-      - /mnt/user/appdata/catalog/backups:/backups
-      - /mnt/user/appdata/catalog/secrets/operator_ui_token:/mnt/user/appdata/catalog/secrets/operator_ui_token
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/keystore:/var/lib/catalog/keystore
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:/backups
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token
     secrets:
       - admin_database_url
       - database_url
@@ -71,7 +74,7 @@ services:
       CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
       OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
     volumes:
-      - /mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/keystore:/var/lib/catalog/keystore
     secrets:
       - admin_database_url
       - database_url
@@ -81,7 +84,7 @@ services:
     entrypoint: ["npm", "run"]
     command: ["ops:operator-ui-server", "--", "--serve", "--host", "0.0.0.0", "--port", "8099"]
     ports:
-      - "8099:8099"
+      - "${OPERATOR_UI_HOST_PORT:-8099}:8099"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:8099/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
       interval: 10s
@@ -90,14 +93,14 @@ services:
 
 secrets:
   postgres_password:
-    file: /mnt/user/appdata/catalog/secrets/postgres_password
+    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/postgres_password
   admin_database_url:
-    file: /mnt/user/appdata/catalog/secrets/admin_database_url
+    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/admin_database_url
   database_url:
-    file: /mnt/user/appdata/catalog/secrets/database_url
+    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/database_url
   completion_secret:
-    file: /mnt/user/appdata/catalog/secrets/completion_secret
+    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/completion_secret
   custodian_kek:
-    file: /mnt/user/appdata/catalog/secrets/custodian_kek
+    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_kek
   operator_ui_token:
-    file: /mnt/user/appdata/catalog/secrets/operator_ui_token
+    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token

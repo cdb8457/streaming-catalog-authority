@@ -122,28 +122,40 @@ test('unraid runtime compose — launcher-ready image mode with no build context
   assert(unraidRuntimeCompose.includes('image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}'), 'runtime ops uses configurable prebuilt image');
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'runtime compose has no build context');
   assert(unraidRuntimeCompose.includes('APP_ENV: production'), 'runtime ops uses production environment');
-  assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data'), 'runtime pgdata bind mount');
-  assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore'), 'runtime keystore bind mount');
-  assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/backups:/backups'), 'runtime backups bind mount');
   assert(
-    unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/secrets/operator_ui_token:/mnt/user/appdata/catalog/secrets/operator_ui_token'),
+    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/pgdata:/var/lib/postgresql/data'),
+    'runtime pgdata bind mount keeps canonical default and smoke override',
+  );
+  assert(
+    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/keystore:/var/lib/catalog/keystore'),
+    'runtime keystore bind mount keeps canonical default and smoke override',
+  );
+  assert(
+    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:/backups'),
+    'runtime backups bind mount keeps canonical default and smoke override',
+  );
+  assert(
+    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token'),
     'runtime ops can manage the operator token file without exposing a UI write path',
   );
   for (const secret of [
-    '/mnt/user/appdata/catalog/secrets/postgres_password',
-    '/mnt/user/appdata/catalog/secrets/admin_database_url',
-    '/mnt/user/appdata/catalog/secrets/database_url',
-    '/mnt/user/appdata/catalog/secrets/completion_secret',
-    '/mnt/user/appdata/catalog/secrets/custodian_kek',
-    '/mnt/user/appdata/catalog/secrets/operator_ui_token',
-  ]) assert(unraidRuntimeCompose.includes(secret), `runtime secret file ${secret}`);
+    'postgres_password',
+    'admin_database_url',
+    'database_url',
+    'completion_secret',
+    'custodian_kek',
+    'operator_ui_token',
+  ]) assert(
+    unraidRuntimeCompose.includes(`file: \${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/${secret}`),
+    `runtime secret file ${secret} keeps canonical default and smoke override`,
+  );
   assert(unraidRuntimeCompose.includes('ops:operator-ui-server'), 'runtime app runs operator UI server');
   assert(unraidRuntimeCompose.includes('OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token'), 'runtime app uses operator token file');
   assert(
-    unraidRuntimeCompose.includes('OPERATOR_UI_TOKEN_FILE: /mnt/user/appdata/catalog/secrets/operator_ui_token'),
-    'runtime ops token helper uses writable host token path',
+    unraidRuntimeCompose.includes('OPERATOR_UI_TOKEN_FILE: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token'),
+    'runtime ops token helper uses writable host token path with canonical default',
   );
-  assert(unraidRuntimeCompose.includes('"8099:8099"'), 'runtime compose publishes only the intentional operator UI port');
+  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'runtime compose publishes only the intentional operator UI port with smoke override');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'runtime compose exposes no ports');
 });
 
@@ -8164,7 +8176,7 @@ test('Phase 142 Unraid launcher runtime compose is image-mode', () => {
   ]) assert(combined.includes(required), `Phase 142 surface preserves ${required}`);
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 142 runtime compose has no build context');
   assert(/^\s{2}app:/m.test(unraidRuntimeCompose), 'Phase 147 runtime compose has app service');
-  assert(unraidRuntimeCompose.includes('"8099:8099"'), 'Phase 147 runtime compose publishes intentional operator UI port');
+  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'Phase 147 runtime compose publishes intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 142 runtime compose exposes no ports');
 });
 
@@ -8189,7 +8201,7 @@ test('Phase 144 runtime image override preserves local default and future publis
   ]) assert(combined.toLowerCase().includes(required.toLowerCase()), `Phase 144 surface preserves ${required}`);
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 144 runtime compose still has no build context');
   assert(unraidRuntimeCompose.includes('image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}'), 'Phase 144 runtime app still uses configurable image');
-  assert(unraidRuntimeCompose.includes('"8099:8099"'), 'Phase 147 runtime app publishes intentional operator UI port');
+  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'Phase 147 runtime app publishes intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 144 runtime compose exposes no ports');
 });
 
@@ -8326,7 +8338,10 @@ test('Phase 147 operator UI service is long-running, read-only, and intentionall
   assert(unraidRuntimeCompose.includes('image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}'), 'runtime app uses configurable image');
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'runtime compose still has no build context');
   assert(unraidCompose.includes('build: .'), 'canonical app can build from repo context');
-  assert(unraidCompose.includes('"8099:8099"') && unraidRuntimeCompose.includes('"8099:8099"'), 'both Unraid compose files publish the intentional port');
+  assert(
+    unraidCompose.includes('"8099:8099"') && unraidRuntimeCompose.includes('"${OPERATOR_UI_HOST_PORT:-8099}:8099"'),
+    'both Unraid compose files publish the intentional port with runtime smoke override',
+  );
   assert(!/(8098|8100):/.test(`${unraidCompose}\n${unraidRuntimeCompose}`), 'no adjacent accidental operator ports');
 
   for (const forbidden of [
@@ -8631,6 +8646,7 @@ test('Phase 154 release packaging documents one public Unraid deploy path', () =
     'repo-ops:latest',
     'ghcr.io/catalog-authority/catalog-authority-ops:<tag>',
     'CATALOG_AUTHORITY_OPS_IMAGE',
+    'CATALOG_AUTHORITY_APPDATA_DIR',
     'npm run image:build:local',
     '/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check',
   ]) assert(combined.includes(required), `Phase 154 release surface preserves ${required}`);
@@ -8641,6 +8657,33 @@ test('Phase 154 release packaging documents one public Unraid deploy path', () =
     'ghcr.io/OWNER',
     './secrets',
   ]) assert(!publicDocs.includes(forbidden), `Phase 154 public docs exclude ${forbidden}`);
+});
+
+test('Phase 155 public deploy smoke is clean-clone and evidence-reviewed', () => {
+  assert(exists('docs/PHASE_155_PUBLIC_DEPLOY_SMOKE.md'), 'Phase 155 public smoke doc exists');
+  const doc = read('docs/PHASE_155_PUBLIC_DEPLOY_SMOKE.md');
+  const combined = [doc, read('README.md'), read('RELEASE.md'), unraidRuntimeCompose].join('\n');
+  for (const required of [
+    'phase-155-public-deploy-smoke',
+    'git clone /mnt/user/appdata/catalog/repo',
+    'docker-compose.unraid.runtime.yml',
+    'CATALOG_AUTHORITY_APPDATA_DIR',
+    'OPERATOR_UI_HOST_PORT',
+    'docker compose -p "$SMOKE_PROJECT"',
+    'npm ci',
+    'npm run image:build:local',
+    'ops:init',
+    'ops:operator-ui-live-check',
+    'ops:operator-ui-evidence-review',
+    'down --remove-orphans',
+  ]) assert(combined.includes(required), `Phase 155 smoke surface preserves ${required}`);
+  for (const forbidden of [
+    'docker-compose.deploy.yml',
+    'docker-compose.unraid.yml',
+    'ghcr.io/OWNER',
+    'request-download-link',
+    'magnet:',
+  ]) assert(!doc.includes(forbidden), `Phase 155 smoke doc excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

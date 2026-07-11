@@ -45,6 +45,17 @@ Verify:
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check-save
 ```
 
+Fresh public deploy smoke:
+
+- run from a clean clone of committed Git history;
+- use the same `docker-compose.unraid.runtime.yml` file;
+- set `CATALOG_AUTHORITY_APPDATA_DIR` to a temporary appdata directory;
+- set `OPERATOR_UI_HOST_PORT` to a temporary host port if `8099` is already in use;
+- use `docker compose -p <temporary-project-name>` so the smoke cannot reuse production
+  containers, networks, or volumes.
+
+See `docs/PHASE_155_PUBLIC_DEPLOY_SMOKE.md`.
+
 Review saved evidence:
 
 ```bash

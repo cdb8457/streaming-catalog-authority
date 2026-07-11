@@ -1391,6 +1391,9 @@ Phase 154 adds `RELEASE.md` and `docs/PHASE_154_RELEASE_PACKAGING.md`. Public us
 canonical Unraid compose entrypoint, `docker-compose.unraid.runtime.yml`, from
 `/mnt/user/appdata/catalog/repo`, with `repo-ops:latest` as the local image and
 `ghcr.io/catalog-authority/catalog-authority-ops:<tag>` as the published-image convention.
+Phase 155 adds `docs/PHASE_155_PUBLIC_DEPLOY_SMOKE.md` and validates a fresh clone using only
+`docker-compose.unraid.runtime.yml`, a temporary `CATALOG_AUTHORITY_APPDATA_DIR`, a temporary
+`OPERATOR_UI_HOST_PORT`, and a separate Compose project name so production paths are not reused.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
