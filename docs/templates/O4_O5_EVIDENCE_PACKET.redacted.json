@@ -1,0 +1,30 @@
+{
+  "packetReport": "phase-166-o4-o5-evidence-packet",
+  "createdAt": "2026-07-11T00:00:00.000Z",
+  "scope": "redaction-safe-o4-o5-evidence-index",
+  "o4": {
+    "descriptorPreflightLabel": "redacted-phase-29-o4-preflight-label",
+    "custodianBoundary": "external-local-sidecar-custodian",
+    "reviewStatus": "pending"
+  },
+  "o5": {
+    "descriptorPreflightLabel": "redacted-phase-30-o5-preflight-label",
+    "rewrapPlanLabel": "redacted-o5-rewrap-plan-label",
+    "reviewStatus": "pending"
+  },
+  "decision": {
+    "decisionPacketLabel": "redacted-phase-96-decision-packet-label",
+    "closureRequested": false
+  },
+  "forbidden": [
+    "no provider contact",
+    "no scraping",
+    "no downloading",
+    "no playback"
+  ],
+  "openGates": [
+    "O4 remains open",
+    "O5 remains open"
+  ]
+}
+

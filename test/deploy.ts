@@ -8803,6 +8803,69 @@ test('Phases 166 through 168 consolidate O4/O5 evidence direction without closin
   ]) assert(!phaseDocs.includes(forbidden), `Phase 166/167/168 docs exclude ${forbidden}`);
 });
 
+test('Phases 169 through 171 provide redacted O4/O5 templates and review flow only', () => {
+  for (const rel of [
+    'docs/PHASE_169_O4_O5_EVIDENCE_TEMPLATES.md',
+    'docs/PHASE_170_O4_O5_EVIDENCE_CAPTURE_RUNBOOK.md',
+    'docs/PHASE_171_O4_O5_REVIEW_CHECKLIST.md',
+    'docs/templates/O4_CUSTODIAN_DESCRIPTOR.redacted.json',
+    'docs/templates/O5_KEK_DESCRIPTOR.redacted.json',
+    'docs/templates/O4_O5_DECISION_RECORD.redacted.json',
+    'docs/templates/O4_O5_EVIDENCE_PACKET.redacted.json',
+  ]) assert(exists(rel), `${rel} exists`);
+
+  const templateJsonFiles = [
+    'docs/templates/O4_CUSTODIAN_DESCRIPTOR.redacted.json',
+    'docs/templates/O5_KEK_DESCRIPTOR.redacted.json',
+    'docs/templates/O4_O5_DECISION_RECORD.redacted.json',
+    'docs/templates/O4_O5_EVIDENCE_PACKET.redacted.json',
+  ];
+  for (const rel of templateJsonFiles) {
+    const parsed = JSON.parse(read(rel)) as unknown;
+    assert(parsed && typeof parsed === 'object' && !Array.isArray(parsed), `${rel} is valid object JSON`);
+  }
+
+  const phaseDocs = [
+    read('docs/PHASE_169_O4_O5_EVIDENCE_TEMPLATES.md'),
+    read('docs/PHASE_170_O4_O5_EVIDENCE_CAPTURE_RUNBOOK.md'),
+    read('docs/PHASE_171_O4_O5_REVIEW_CHECKLIST.md'),
+    ...templateJsonFiles.map((rel) => read(rel)),
+  ].join('\n');
+  const combined = `${phaseDocs}\n${read('README.md')}`;
+  for (const required of [
+    'phase-169-o4-o5-evidence-templates',
+    'phase-170-o4-o5-evidence-capture-runbook',
+    'phase-171-o4-o5-review-checklist',
+    'O4_CUSTODIAN_DESCRIPTOR.redacted.json',
+    'O5_KEK_DESCRIPTOR.redacted.json',
+    'O4_O5_DECISION_RECORD.redacted.json',
+    'O4_O5_EVIDENCE_PACKET.redacted.json',
+    'ops:custodian-evidence-preflight',
+    'ops:kek-evidence-preflight',
+    'ops:o4-o5-evidence-decision',
+    'ops:rewrap-kek -- --plan --json',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+    'no provider contact',
+    'no scraping',
+    'no downloading',
+    'no playback',
+    'media-server mutation',
+  ]) assert(combined.includes(required), `Phase 169/170/171 surface preserves ${required}`);
+  for (const forbidden of [
+    'request-download-link',
+    'magnet:',
+    '--print --confirm-print',
+    'productionReady: true',
+    'O4 closed',
+    'O5 closed',
+    'provider mode enabled',
+    'raw command output blob',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 169/170/171 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

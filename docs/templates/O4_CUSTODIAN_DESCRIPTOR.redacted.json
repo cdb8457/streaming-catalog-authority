@@ -1,0 +1,16 @@
+{
+  "adapterName": "external-local-sidecar-custodian",
+  "adapterVersion": "redacted-build-label",
+  "custodyBoundary": "external-self-hosted",
+  "implementsKeyCustodian": true,
+  "attestationFormatDocumented": true,
+  "durableTombstones": true,
+  "appCannotForgeAttestation": true,
+  "failClosedSemanticsDocumented": true,
+  "liveValidationEvidenceLabel": "redacted-o4-live-validation-label",
+  "contractKitCommandLabel": "redacted-o4-contract-kit-label",
+  "redactionReviewStatus": "passed",
+  "noRawSecretsInEvidence": true,
+  "backupRestoreFailClosedEvidence": true
+}
+

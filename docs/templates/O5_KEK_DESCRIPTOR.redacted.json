@@ -1,0 +1,13 @@
+{
+  "rewrapPlanEvidenceLabel": "redacted-o5-rewrap-plan-label",
+  "rotationRecordLabel": "redacted-o5-rotation-record-label",
+  "managedKekCustodyDocumented": true,
+  "rotationScheduleDocumented": true,
+  "operatorRunbookDocumented": true,
+  "alertTriageDocumented": true,
+  "independentSecretMediaDocumented": true,
+  "noRawSecretsInEvidence": true,
+  "residualRiskAccepted": true,
+  "redactionReviewStatus": "passed"
+}
+
