@@ -1385,6 +1385,9 @@ launcher. It saves the redaction-safe Phase 150 JSON report under
 Phase 152 adds `docs/PHASE_152_OPERATOR_UI_EVIDENCE_REVIEW.md`,
 `ops:operator-ui-evidence-review`, and `ui-evidence-review`. It reviews saved live-check evidence for
 valid JSON, complete schema, recency, and pass state, with nonzero exit on any failed file.
+Phase 153 adds `docs/PHASE_153_ARCANE_OPERATOR_RUNBOOK.md`, a short Arcane custom-command button
+map for `start-ui`, `status`, `ui-live-check`, `ui-live-check-save`, `ui-logs`, `ui-token-status`,
+and `restart-ui`, all pointing at the canonical Unraid launcher path.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

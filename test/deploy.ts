@@ -8584,6 +8584,33 @@ test('Phase 152 operator UI evidence review validates saved live-check evidence'
   ]) assert(!source.includes(forbidden), `Phase 152 source excludes ${forbidden}`);
 });
 
+test('Phase 153 Arcane operator runbook maps safe buttons to exact launcher commands', () => {
+  assert(exists('docs/PHASE_153_ARCANE_OPERATOR_RUNBOOK.md'), 'Phase 153 Arcane runbook exists');
+  const doc = read('docs/PHASE_153_ARCANE_OPERATOR_RUNBOOK.md');
+  const combined = [doc, read('README.md')].join('\n');
+  for (const required of [
+    'phase-153-arcane-operator-runbook',
+    '/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh',
+    '| `start-ui` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh start-ui` |',
+    '| `status` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh status` |',
+    '| `ui-live-check` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check` |',
+    '| `ui-live-check-save` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check-save` |',
+    '| `ui-logs` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-logs` |',
+    '| `ui-token-status` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-token-status` |',
+    '| `restart-ui` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh restart-ui` |',
+    'token printing',
+    'backup restore',
+    'KEK rotation',
+  ]) assert(combined.includes(required), `Phase 153 runbook preserves ${required}`);
+  for (const forbidden of [
+    'request-download-link',
+    'magnet:',
+    'ops:backup -- restore',
+    'ops:rewrap-kek',
+    '--print --confirm-print',
+  ]) assert(!doc.includes(forbidden), `Phase 153 runbook excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
