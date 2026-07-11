@@ -49,6 +49,7 @@ Usage:
   unraid-ops-launcher.sh ui-logs
   unraid-ops-launcher.sh ui-live-check
   unraid-ops-launcher.sh ui-live-check-save [output-file]
+  unraid-ops-launcher.sh ui-evidence-review <evidence-file>...
   unraid-ops-launcher.sh ui-token-status
   unraid-ops-launcher.sh ui-token-rotate
   unraid-ops-launcher.sh migrate
@@ -93,6 +94,10 @@ case "${1:-}" in
     chmod 600 "$tmp" 2>/dev/null || true
     mv "$tmp" "$target"
     echo "Saved redaction-safe operator UI live check: $target"
+    ;;
+  ui-evidence-review)
+    shift
+    run_ops_silent ops:operator-ui-evidence-review -- --max-age-hours "${CATALOG_AUTHORITY_EVIDENCE_MAX_AGE_HOURS:-24}" "$@"
     ;;
   ui-token-status)
     run_ops ops:operator-ui-token -- --status --json

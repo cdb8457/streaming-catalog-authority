@@ -149,6 +149,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
 | `ops:operator-ui-token -- --show-path/status/rotate` | safe operator UI token helper; rotation and status do not print the token, and printing requires `--print --confirm-print` |
 | `ops:operator-ui-live-check -- --json` | redaction-safe live operator UI check: health, auth rejection, authenticated status, and logs without printing the token |
+| `ops:operator-ui-evidence-review -- <file>...` | reviews saved operator UI evidence for valid JSON, complete schema, recency, and passing checks |
 | `ops:verify-backup -- <file>` | **offline** structural check of a backup artifact (no DB) |
 | `ops:rehearse-restore -- <file>` | restore rehearsal into a throwaway `REHEARSAL_ADMIN_DATABASE_URL` (hard-refuses production) |
 | `ops:rewrap-kek [-- --plan [--json]]` | plan or rotate the KEK (preflight counts; explicit rewrap is resumable; identity untouched) |
@@ -183,8 +184,8 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
   generic/local deployment topology.
 - **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
   commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`, `ui-live-check`,
-  `ui-live-check-save`, `ui-token-status`, `ui-token-rotate`, `migrate`, `doctor`, `backup`, and
-  `rewrap-plan` using the runtime compose file.
+  `ui-live-check-save`, `ui-evidence-review`, `ui-token-status`, `ui-token-rotate`, `migrate`,
+  `doctor`, `backup`, and `rewrap-plan` using the runtime compose file.
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
   one-shot ops container; no ports/UI).
 - **Start here — the authoritative production readiness gate:**
@@ -1381,6 +1382,9 @@ Phase 151 adds `docs/PHASE_151_OPERATOR_UI_LIVE_EVIDENCE.md` and `ui-live-check-
 launcher. It saves the redaction-safe Phase 150 JSON report under
 `/mnt/user/appdata/catalog/backups/evidence` using silent npm output, a temp file, and best-effort
 `0600` permissions.
+Phase 152 adds `docs/PHASE_152_OPERATOR_UI_EVIDENCE_REVIEW.md`,
+`ops:operator-ui-evidence-review`, and `ui-evidence-review`. It reviews saved live-check evidence for
+valid JSON, complete schema, recency, and pass state, with nonzero exit on any failed file.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

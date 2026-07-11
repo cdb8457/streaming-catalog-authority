@@ -8540,6 +8540,50 @@ test('Phase 151 operator UI live evidence saves clean redaction-safe JSON', () =
   ]) assert(!unraidOpsLauncher.includes(forbidden), `Phase 151 launcher excludes ${forbidden}`);
 });
 
+test('Phase 152 operator UI evidence review validates saved live-check evidence', () => {
+  assert(exists('docs/PHASE_152_OPERATOR_UI_EVIDENCE_REVIEW.md'), 'Phase 152 evidence review doc exists');
+  assert(exists('src/ops/operator-ui-evidence-review.ts'), 'Phase 152 evidence review source exists');
+  assert(exists('src/ops/operator-ui-evidence-review-cli.ts'), 'Phase 152 evidence review CLI exists');
+  assert(exists('test/operator-ui-evidence-review.ts'), 'Phase 152 evidence review test exists');
+  assert(pkg.scripts['test:operator-ui-evidence-review'] === 'tsx test/operator-ui-evidence-review.ts', 'Phase 152 test script present');
+  assert(pkg.scripts['ops:operator-ui-evidence-review'] === 'tsx src/ops/operator-ui-evidence-review-cli.ts', 'Phase 152 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-live-check.ts && tsx test/operator-ui-evidence-review.ts'),
+    'Phase 152 aggregate test follows live check',
+  );
+
+  const source = `${read('src/ops/operator-ui-evidence-review.ts')}\n${read('src/ops/operator-ui-evidence-review-cli.ts')}`;
+  const combined = [
+    source,
+    unraidOpsLauncher,
+    read('docs/PHASE_152_OPERATOR_UI_EVIDENCE_REVIEW.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const required of [
+    'phase-152-operator-ui-evidence-review',
+    'ops:operator-ui-evidence-review',
+    'test:operator-ui-evidence-review',
+    'ui-evidence-review',
+    '--max-age-hours',
+    'CATALOG_AUTHORITY_EVIDENCE_MAX_AGE_HOURS',
+    'valid JSON',
+    'schema',
+    'recent',
+    'passing',
+    'nonzero',
+  ]) assert(combined.includes(required), `Phase 152 surface preserves ${required}`);
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'request-download-link',
+    'magnet:',
+    'docker compose',
+  ]) assert(!source.includes(forbidden), `Phase 152 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
