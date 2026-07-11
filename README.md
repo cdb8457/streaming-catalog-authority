@@ -163,6 +163,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:custodian-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe Phase 28 descriptor preflight for O4 evidence review; reads one descriptor file only and does not close O4 |
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:o4-o5-evidence-decision -- -- --decision <decision.json> --custodian <o4-descriptor.json> --kek <o5-descriptor.json> [--json]` | static Phase 96 O4/O5 evidence decision packet; reads three explicit JSON files, authorizes only the offline contract-harness evidence slice, never contacts live services, and does not close O4/O5 |
+| `ops:o4-o5-evidence-packet-review -- -- <packet.json>... [--json]` | static Phase 172 O4/O5 evidence packet review; checks valid JSON, schema, open gates, forbidden boundary, and redaction safety without reading referenced artifacts or closing O4/O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
 | `ops:torbox-live-smoke-evidence-preflight -- -- <phase-43-report.json> [--json]` | static, redaction-safe Phase 43 live-smoke evidence report preflight; reads one report file only and does not contact TorBox |
 | `ops:torbox-live-smoke-summary-pack -- -- <phase-43-report.json>... [--json]` | static, redaction-safe Phase 43 live-smoke summary pack; reads explicit report files only and does not contact TorBox |
@@ -1417,6 +1418,10 @@ record, and Phase 166 evidence packet. Phase 170 adds the manual O4/O5 evidence 
 Phase 171 adds the review checklist and automatic-hold rules. All three are documentation/template
 only, with O4 and O5 still open and no provider contact, scraping, downloading, playback, or
 media-server mutation.
+Phase 172 adds `docs/PHASE_172_O4_O5_EVIDENCE_PACKET_REVIEW.md`,
+`ops:o4-o5-evidence-packet-review`, and `test:o4-o5-evidence-packet-review` as a local review command
+for saved Phase 166 packet JSON files. It checks valid JSON, schema, open-gates,
+forbidden-boundary, and redaction safety without reading referenced artifacts or closing O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

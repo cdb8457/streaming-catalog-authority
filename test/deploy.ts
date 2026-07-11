@@ -8866,6 +8866,53 @@ test('Phases 169 through 171 provide redacted O4/O5 templates and review flow on
   ]) assert(!phaseDocs.includes(forbidden), `Phase 169/170/171 docs exclude ${forbidden}`);
 });
 
+test('Phase 172 O4/O5 evidence packet review checks packet envelope only', () => {
+  assert(exists('docs/PHASE_172_O4_O5_EVIDENCE_PACKET_REVIEW.md'), 'Phase 172 packet review doc exists');
+  assert(exists('src/ops/o4-o5-evidence-packet-review.ts'), 'Phase 172 packet review source exists');
+  assert(exists('src/ops/o4-o5-evidence-packet-review-cli.ts'), 'Phase 172 packet review CLI exists');
+  assert(exists('test/o4-o5-evidence-packet-review.ts'), 'Phase 172 packet review test exists');
+  assert(pkg.scripts['test:o4-o5-evidence-packet-review'] === 'tsx test/o4-o5-evidence-packet-review.ts', 'Phase 172 test script present');
+  assert(pkg.scripts['ops:o4-o5-evidence-packet-review'] === 'tsx src/ops/o4-o5-evidence-packet-review-cli.ts', 'Phase 172 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/o4-o5-evidence-decision.ts && tsx test/o4-o5-evidence-packet-review.ts'),
+    'Phase 172 aggregate test follows Phase 96 decision packet',
+  );
+  const source = `${read('src/ops/o4-o5-evidence-packet-review.ts')}\n${read('src/ops/o4-o5-evidence-packet-review-cli.ts')}`;
+  const combined = [
+    source,
+    read('docs/PHASE_172_O4_O5_EVIDENCE_PACKET_REVIEW.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const required of [
+    'phase-172-o4-o5-evidence-packet-review',
+    'ops:o4-o5-evidence-packet-review',
+    'valid JSON',
+    'schema',
+    'open-gates',
+    'forbidden-boundary',
+    'redaction',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+    'no provider contact',
+    'no scraping',
+    'no downloading',
+    'no playback',
+  ]) assert(combined.includes(required), `Phase 172 surface preserves ${required}`);
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'request-download-link',
+    'magnet:',
+    'docker compose',
+    'globalThis.fetch',
+  ]) assert(!source.includes(forbidden), `Phase 172 source excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
