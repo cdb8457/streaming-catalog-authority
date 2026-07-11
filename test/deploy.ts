@@ -8761,6 +8761,48 @@ test('Phases 163 through 165 snapshot release state and scheduled UI evidence wi
   ]) assert(!phaseDocs.includes(forbidden), `Phase 163/164/165 docs exclude ${forbidden}`);
 });
 
+test('Phases 166 through 168 consolidate O4/O5 evidence direction without closing gates', () => {
+  assert(exists('docs/PHASE_166_O4_O5_EVIDENCE_PACKET.md'), 'Phase 166 O4/O5 evidence packet doc exists');
+  assert(exists('docs/PHASE_167_O4_CUSTODIAN_DIRECTION_DECISION.md'), 'Phase 167 O4 custodian direction doc exists');
+  assert(exists('docs/PHASE_168_O5_KEK_CUSTODY_DIRECTION_DECISION.md'), 'Phase 168 O5 KEK direction doc exists');
+  const phaseDocs = [
+    read('docs/PHASE_166_O4_O5_EVIDENCE_PACKET.md'),
+    read('docs/PHASE_167_O4_CUSTODIAN_DIRECTION_DECISION.md'),
+    read('docs/PHASE_168_O5_KEK_CUSTODY_DIRECTION_DECISION.md'),
+  ].join('\n');
+  const combined = `${phaseDocs}\n${read('README.md')}`;
+  for (const required of [
+    'phase-166-o4-o5-evidence-packet',
+    'phase-167-o4-custodian-direction-decision',
+    'phase-168-o5-kek-custody-direction-decision',
+    'ops:custodian-evidence-preflight',
+    'ops:kek-evidence-preflight',
+    'ops:o4-o5-evidence-decision',
+    'ops:rewrap-kek -- --plan --json',
+    'external local sidecar custodian',
+    'manual operator KEK custody',
+    'sidecar-owned KEK custody',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+    'no provider contact',
+    'no scraping',
+    'no downloading',
+    'no playback',
+    'FileCustodian` remains a hardened reference harness',
+  ]) assert(combined.includes(required), `Phase 166/167/168 surface preserves ${required}`);
+  for (const forbidden of [
+    'request-download-link',
+    'magnet:',
+    '--print --confirm-print',
+    'productionReady: true',
+    'O4 closed',
+    'O5 closed',
+    'provider mode enabled',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 166/167/168 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

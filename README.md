@@ -1405,6 +1405,13 @@ release snapshot. Phase 164 adds `docs/PHASE_164_SCHEDULED_UI_EVIDENCE_JOB.md` a
 `ui-live-check-save` plus evidence review. Phase 165 adds
 `docs/PHASE_165_PRODUCTION_GATE_REVIEW.md`, keeping O4 and O5 open and visible before any provider
 or media integration work.
+Phase 166 adds `docs/PHASE_166_O4_O5_EVIDENCE_PACKET.md`, a redaction-safe O4/O5 evidence packet
+shape that references `ops:custodian-evidence-preflight`, `ops:kek-evidence-preflight`,
+`ops:o4-o5-evidence-decision`, and `ops:rewrap-kek -- --plan --json` without closing either gate.
+Phase 167 adds `docs/PHASE_167_O4_CUSTODIAN_DIRECTION_DECISION.md`, selecting the external local
+sidecar custodian as the next O4 direction while keeping O4 open. Phase 168 adds
+`docs/PHASE_168_O5_KEK_CUSTODY_DIRECTION_DECISION.md`, keeping manual operator KEK custody as the
+current accepted-risk posture while targeting sidecar-owned KEK custody next; O5 remains open.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
