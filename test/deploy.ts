@@ -91,6 +91,10 @@ test('unraid compose — single canonical file with production binds and intenti
   assert(unraidCompose.includes('/mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data'), 'Unraid pgdata bind mount');
   assert(unraidCompose.includes('/mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore'), 'Unraid keystore bind mount');
   assert(unraidCompose.includes('/mnt/user/appdata/catalog/backups:/backups'), 'Unraid backups bind mount');
+  assert(
+    unraidCompose.includes('/mnt/user/appdata/catalog/secrets/operator_ui_token:/mnt/user/appdata/catalog/secrets/operator_ui_token'),
+    'Unraid ops can manage the operator token file without exposing a UI write path',
+  );
   for (const secret of [
     '/mnt/user/appdata/catalog/secrets/postgres_password',
     '/mnt/user/appdata/catalog/secrets/admin_database_url',
@@ -101,6 +105,10 @@ test('unraid compose — single canonical file with production binds and intenti
   ]) assert(unraidCompose.includes(secret), `Unraid secret file ${secret}`);
   assert(unraidCompose.includes('ops:operator-ui-server'), 'Unraid app runs operator UI server');
   assert(unraidCompose.includes('OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token'), 'Unraid app uses operator token file');
+  assert(
+    unraidCompose.includes('OPERATOR_UI_TOKEN_FILE: /mnt/user/appdata/catalog/secrets/operator_ui_token'),
+    'Unraid ops token helper uses writable host token path',
+  );
   assert(unraidCompose.includes('"8099:8099"'), 'Unraid compose publishes only the intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidCompose), 'Unraid compose exposes no ports');
 });
@@ -117,6 +125,10 @@ test('unraid runtime compose — launcher-ready image mode with no build context
   assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data'), 'runtime pgdata bind mount');
   assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore'), 'runtime keystore bind mount');
   assert(unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/backups:/backups'), 'runtime backups bind mount');
+  assert(
+    unraidRuntimeCompose.includes('/mnt/user/appdata/catalog/secrets/operator_ui_token:/mnt/user/appdata/catalog/secrets/operator_ui_token'),
+    'runtime ops can manage the operator token file without exposing a UI write path',
+  );
   for (const secret of [
     '/mnt/user/appdata/catalog/secrets/postgres_password',
     '/mnt/user/appdata/catalog/secrets/admin_database_url',
@@ -127,6 +139,10 @@ test('unraid runtime compose — launcher-ready image mode with no build context
   ]) assert(unraidRuntimeCompose.includes(secret), `runtime secret file ${secret}`);
   assert(unraidRuntimeCompose.includes('ops:operator-ui-server'), 'runtime app runs operator UI server');
   assert(unraidRuntimeCompose.includes('OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token'), 'runtime app uses operator token file');
+  assert(
+    unraidRuntimeCompose.includes('OPERATOR_UI_TOKEN_FILE: /mnt/user/appdata/catalog/secrets/operator_ui_token'),
+    'runtime ops token helper uses writable host token path',
+  );
   assert(unraidRuntimeCompose.includes('"8099:8099"'), 'runtime compose publishes only the intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'runtime compose exposes no ports');
 });
@@ -8323,6 +8339,54 @@ test('Phase 147 operator UI service is long-running, read-only, and intentionall
     'request-download-link',
     'magnet:',
   ]) assert(!source.includes(forbidden), `Phase 147 source excludes ${forbidden}`);
+});
+
+test('Phase 148 operator UI access helper is token-safe and UI-focused', () => {
+  assert(exists('docs/PHASE_148_OPERATOR_UI_ACCESS.md'), 'Phase 148 operator UI access doc exists');
+  assert(exists('src/ops/operator-ui-token.ts'), 'Phase 148 operator UI token source exists');
+  assert(exists('src/ops/operator-ui-token-cli.ts'), 'Phase 148 operator UI token CLI exists');
+  assert(exists('test/operator-ui-token.ts'), 'Phase 148 operator UI token test exists');
+  assert(pkg.scripts['test:operator-ui-token'] === 'tsx test/operator-ui-token.ts', 'Phase 148 test script present');
+  assert(pkg.scripts['ops:operator-ui-token'] === 'tsx src/ops/operator-ui-token-cli.ts', 'Phase 148 ops script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/operator-ui-service.ts && tsx test/operator-ui-token.ts'),
+    'Phase 148 aggregate test follows Phase 147 service',
+  );
+
+  const tokenSource = `${read('src/ops/operator-ui-token.ts')}\n${read('src/ops/operator-ui-token-cli.ts')}`;
+  const serviceSource = read('src/ops/operator-ui-service.ts');
+  const combined = [
+    tokenSource,
+    serviceSource,
+    read('docs/PHASE_148_OPERATOR_UI_ACCESS.md'),
+    read('README.md'),
+    read('package.json'),
+  ].join('\n');
+  for (const required of [
+    'phase-148-operator-ui-token',
+    'phase-148-operator-ui-access',
+    'ops:operator-ui-token',
+    '--show-path',
+    '--status --json',
+    '--rotate --confirm',
+    '--print --confirm-print',
+    '/mnt/user/appdata/catalog/secrets/operator_ui_token',
+    '/run/secrets/operator_ui_token',
+    'pass/warn/fail',
+    'Needs Attention',
+  ]) assert(combined.includes(required), `Phase 148 surface preserves ${required}`);
+
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'execSync',
+    'spawnSync',
+    'docker compose',
+    'request-download-link',
+    'magnet:',
+  ]) assert(!tokenSource.includes(forbidden), `Phase 148 token source excludes ${forbidden}`);
 });
 
 test('Phase 143 Unraid ops launcher wraps runtime compose commands', () => {

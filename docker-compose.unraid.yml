@@ -43,9 +43,11 @@ services:
       COMPLETION_SECRET_FILE: /run/secrets/completion_secret
       CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
       CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+      OPERATOR_UI_TOKEN_FILE: /mnt/user/appdata/catalog/secrets/operator_ui_token
     volumes:
       - /mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore
       - /mnt/user/appdata/catalog/backups:/backups
+      - /mnt/user/appdata/catalog/secrets/operator_ui_token:/mnt/user/appdata/catalog/secrets/operator_ui_token
     secrets:
       - admin_database_url
       - database_url

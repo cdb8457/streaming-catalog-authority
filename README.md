@@ -147,6 +147,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:doctor [--json]` | **read-only** production self-check (config, schema version, runtime least-privilege, secret match, custodian, keystore, O4/O5 production gate WARN visibility); `--json` is the stable unattended-healthcheck contract; non-zero exit on any failure |
 | `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |
 | `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
+| `ops:operator-ui-token -- --show-path/status/rotate` | safe operator UI token helper; rotation and status do not print the token, and printing requires `--print --confirm-print` |
 | `ops:verify-backup -- <file>` | **offline** structural check of a backup artifact (no DB) |
 | `ops:rehearse-restore -- <file>` | restore rehearsal into a throwaway `REHEARSAL_ADMIN_DATABASE_URL` (hard-refuses production) |
 | `ops:rewrap-kek [-- --plan [--json]]` | plan or rotate the KEK (preflight counts; explicit rewrap is resumable; identity untouched) |
@@ -1361,6 +1362,11 @@ files now include an `app` service using `OPERATOR_UI_TOKEN_FILE=/run/secrets/op
 publishing only `8099:8099`, serving `/healthz`, `/api/status`, and `/api/logs`, and preserving the
 backend orchestration rail boundary with no provider contact, scraping, downloading, playback,
 command execution, or media-server mutation.
+Phase 148 adds `docs/PHASE_148_OPERATOR_UI_ACCESS.md`, `ops:operator-ui-token`, and
+`test:operator-ui-token` for safe operator UI access management. It can show the token path, report
+token-file status, rotate the token with `--rotate --confirm`, and only prints the token with the
+explicit `--print --confirm-print` command. The live UI also shows pass/warn/fail doctor counts,
+attention items, port, service health, and redacted log counts.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

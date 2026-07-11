@@ -138,6 +138,10 @@ async function main(): Promise<void> {
       assert(rootResponse.headers['x-frame-options'] === 'DENY', 'frame denied');
       assert(rootResponse.body.includes('Catalog Authority'), 'brand visible');
       assert(rootResponse.body.includes('Operator token'), 'token input visible');
+      assert(rootResponse.body.includes('Needs Attention'), 'attention panel visible');
+      assert(rootResponse.body.includes('passCount'), 'pass counter wired');
+      assert(rootResponse.body.includes('warnCount'), 'warn counter wired');
+      assert(rootResponse.body.includes('failCount'), 'fail counter wired');
       for (const forbidden of ['postgresql://', 'CUSTODIAN_KEK', 'COMPLETION_SECRET', 'providerRef', 'rawPayload', 'playback', 'download']) {
         assert(!rootResponse.body.includes(forbidden), `root omits ${forbidden}`);
       }
@@ -160,10 +164,23 @@ async function main(): Promise<void> {
 
       const status = await httpGet(port, '/api/status', token);
       assert(status.statusCode === 503, 'status reports unavailable DB as 503');
-      const parsed = JSON.parse(status.body) as { report: string; mode: string; auth: string; forbidden: string[]; doctor: { ok: boolean; checks: Array<{ detail: string }> } };
+      const parsed = JSON.parse(status.body) as {
+        report: string;
+        uiRevision: string;
+        mode: string;
+        auth: string;
+        forbidden: string[];
+        doctorSummary: { pass: number; warn: number; fail: number; total: number };
+        needsAttention: string[];
+        doctor: { ok: boolean; checks: Array<{ detail: string }> };
+      };
       assert(parsed.report === 'phase-147-operator-ui-service', 'status report id');
+      assert(parsed.uiRevision === 'phase-148-operator-ui-access', 'ui revision');
       assert(parsed.mode === 'read-only-first', 'read-only first');
       assert(parsed.auth === 'local-admin-token-file', 'auth boundary');
+      assert(parsed.doctorSummary.fail === 1, 'fail summary');
+      assert(parsed.doctorSummary.total === parsed.doctor.checks.length, 'summary total');
+      assert(parsed.needsAttention.length === 1, 'attention item');
       for (const forbidden of ['provider-contact', 'scraping', 'downloading', 'playback', 'runtime-mutations', 'secret-exposure']) {
         assert(parsed.forbidden.includes(forbidden), `forbidden ${forbidden}`);
       }
@@ -212,6 +229,7 @@ async function main(): Promise<void> {
       'read-only-first',
       'local-admin-token-file',
       'redacted-system-operation-connector',
+      'phase-148-operator-ui-access',
       'OPERATOR_UI_TOKEN_FILE',
       '/run/secrets/operator_ui_token',
       '/mnt/user/appdata/catalog/secrets/operator_ui_token',

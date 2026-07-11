@@ -45,11 +45,19 @@ export interface OperatorUiServiceStatus {
   readonly ok: boolean;
   readonly service: 'catalog-authority-operator-ui';
   readonly report: 'phase-147-operator-ui-service';
+  readonly uiRevision: 'phase-148-operator-ui-access';
   readonly mode: 'read-only-first';
   readonly productFraming: 'backend-orchestration-rail-not-streaming-product';
   readonly port: number;
   readonly auth: 'local-admin-token-file';
   readonly logs: 'redacted-system-operation-connector';
+  readonly doctorSummary: {
+    readonly pass: number;
+    readonly warn: number;
+    readonly fail: number;
+    readonly total: number;
+  };
+  readonly needsAttention: readonly string[];
   readonly forbidden: readonly [
     'provider-contact',
     'scraping',
@@ -253,14 +261,26 @@ export async function buildOperatorUiServiceStatus(
     ok: doctor.ok,
     service: 'catalog-authority-operator-ui',
     report: 'phase-147-operator-ui-service',
+    uiRevision: 'phase-148-operator-ui-access',
     mode: 'read-only-first',
     productFraming: 'backend-orchestration-rail-not-streaming-product',
     port: config.port,
     auth: 'local-admin-token-file',
     logs: 'redacted-system-operation-connector',
+    doctorSummary: summarizeDoctor(doctor),
+    needsAttention: doctor.checks
+      .filter((check) => check.state !== 'pass')
+      .map((check) => `${check.state.toUpperCase()} ${check.name}: ${check.detail}`),
     forbidden: FORBIDDEN,
     doctor,
   };
+}
+
+function summarizeDoctor(doctor: OperatorUiServiceStatus['doctor']): OperatorUiServiceStatus['doctorSummary'] {
+  const pass = doctor.checks.filter((check) => check.state === 'pass').length;
+  const warn = doctor.checks.filter((check) => check.state === 'warn').length;
+  const fail = doctor.checks.filter((check) => check.state === 'fail').length;
+  return { pass, warn, fail, total: doctor.checks.length };
 }
 
 export function startOperatorUiService(input: OperatorUiServiceConfigInput = {}): Promise<StartedOperatorUiService> {
@@ -402,8 +422,10 @@ h1{margin:0;font-size:20px;font-weight:700;letter-spacing:0}.badge{font-size:12p
 main{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:18px;padding:18px;max-width:1180px;width:100%;margin:0 auto}.panel{background:#fff;border:1px solid #d9dee7;border-radius:8px;padding:16px;min-width:0}
 h2{font-size:15px;margin:0 0 12px}.field{display:grid;gap:7px;margin-bottom:12px}label{font-size:12px;color:#536173}input{width:100%;border:1px solid #b9c2cf;border-radius:6px;padding:10px 11px;font:inherit}
 button{border:0;border-radius:6px;background:#1769aa;color:#fff;font-weight:700;padding:10px 12px;cursor:pointer}button:disabled{background:#aab4c0;cursor:not-allowed}.actions{display:flex;gap:8px;flex-wrap:wrap}
-.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.metric{border:1px solid #e0e5ec;border-radius:8px;padding:12px;background:#fbfcfd}.metric span{display:block;color:#637083;font-size:12px}.metric strong{display:block;margin-top:6px;font-size:18px;overflow-wrap:anywhere}
+.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric{border:1px solid #e0e5ec;border-radius:8px;padding:12px;background:#fbfcfd}.metric span{display:block;color:#637083;font-size:12px}.metric strong{display:block;margin-top:6px;font-size:18px;overflow-wrap:anywhere}
+.metric.ok strong{color:#177245}.metric.warn strong{color:#9b6400}.metric.fail strong{color:#b42318}
 pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color:#eef4f8;border-radius:8px;padding:12px;max-height:380px;overflow:auto;font-size:12px;line-height:1.45}.status{font-size:13px;color:#536173;margin-top:12px;min-height:20px}
+.wide{grid-column:1/-1}.list{display:grid;gap:8px;margin:0;padding:0;list-style:none}.list li{border:1px solid #e0e5ec;border-radius:8px;padding:10px 12px;background:#fbfcfd;font-size:13px;overflow-wrap:anywhere}.muted{color:#637083}
 @media(max-width:760px){main{grid-template-columns:1fr;padding:12px}header{padding:14px 12px}.grid{grid-template-columns:1fr}}
 </style>
 </head>
@@ -423,7 +445,16 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color
 <div class="metric"><span>Service</span><strong id="service">-</strong></div>
 <div class="metric"><span>Mode</span><strong id="mode">-</strong></div>
 <div class="metric"><span>Doctor</span><strong id="doctor">-</strong></div>
+<div class="metric"><span>Port</span><strong id="port">-</strong></div>
+<div class="metric ok"><span>Pass</span><strong id="passCount">-</strong></div>
+<div class="metric warn"><span>Warn</span><strong id="warnCount">-</strong></div>
+<div class="metric fail"><span>Fail</span><strong id="failCount">-</strong></div>
+<div class="metric"><span>Log entries</span><strong id="logCount">-</strong></div>
 </div>
+</section>
+<section class="panel wide">
+<h2>Needs Attention</h2>
+<ul class="list" id="attention"><li class="muted">No status loaded.</li></ul>
 </section>
 <section class="panel">
 <h2>Checks</h2>
@@ -441,6 +472,12 @@ const statusText = document.getElementById('statusText');
 const service = document.getElementById('service');
 const mode = document.getElementById('mode');
 const doctor = document.getElementById('doctor');
+const port = document.getElementById('port');
+const passCount = document.getElementById('passCount');
+const warnCount = document.getElementById('warnCount');
+const failCount = document.getElementById('failCount');
+const logCount = document.getElementById('logCount');
+const attention = document.getElementById('attention');
 const checks = document.getElementById('checks');
 const logs = document.getElementById('logs');
 async function getJson(path){
@@ -454,10 +491,23 @@ function renderStatus(data){
   service.textContent = data.service || '-';
   mode.textContent = data.mode || '-';
   doctor.textContent = data.doctor && data.doctor.ok ? 'OK' : 'Needs attention';
-  checks.textContent = JSON.stringify(data.doctor.checks || [], null, 2);
+  port.textContent = String(data.port || '-');
+  passCount.textContent = String((data.doctorSummary && data.doctorSummary.pass) || 0);
+  warnCount.textContent = String((data.doctorSummary && data.doctorSummary.warn) || 0);
+  failCount.textContent = String((data.doctorSummary && data.doctorSummary.fail) || 0);
+  const items = data.needsAttention || [];
+  attention.innerHTML = '';
+  if(items.length === 0){
+    const li = document.createElement('li'); li.className='muted'; li.textContent='No warnings or failures.'; attention.appendChild(li);
+  }else{
+    for(const item of items){ const li = document.createElement('li'); li.textContent = item; attention.appendChild(li); }
+  }
+  checks.textContent = (data.doctor.checks || []).map(c => c.state.toUpperCase() + '  ' + c.name + ': ' + c.detail).join('\\n');
 }
 function renderLogs(data){
-  logs.textContent = (data.entries || []).map(e => e.ts + ' ' + e.level.toUpperCase() + ' ' + e.class + ' ' + e.code + ' ' + e.message).join('\\n') || 'No log entries.';
+  const entries = data.entries || [];
+  logCount.textContent = String(entries.length);
+  logs.textContent = entries.map(e => e.ts + ' ' + e.level.toUpperCase() + ' ' + e.class + ' ' + e.code + ' ' + e.message).join('\\n') || 'No log entries.';
 }
 async function refresh(){
   statusText.textContent = 'Loading...';
