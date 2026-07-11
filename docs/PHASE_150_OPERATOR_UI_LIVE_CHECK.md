@@ -15,7 +15,16 @@ Unraid launcher command:
 
 ```bash
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check-save
 ```
+
+`ui-live-check-save` writes clean JSON to:
+
+```text
+/mnt/user/appdata/catalog/backups/evidence/operator-ui-live-check-<UTC>.json
+```
+
+You can provide an explicit output file as the second argument.
 
 What it checks:
 
@@ -28,6 +37,7 @@ Output policy:
 
 - prints fixed check labels, HTTP status codes, doctor pass/warn/fail counts, attention count, and
   log-entry count;
+- saved evidence files contain the same redaction-safe JSON without npm banner text;
 - never prints the operator token;
 - never prints database URLs, KEK material, completion secrets, raw identity payloads, or provider
   identifiers.

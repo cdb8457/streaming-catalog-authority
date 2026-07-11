@@ -183,8 +183,8 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
   generic/local deployment topology.
 - **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
   commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`, `ui-live-check`,
-  `ui-token-status`, `ui-token-rotate`, `migrate`, `doctor`, `backup`, and `rewrap-plan` using
-  the runtime compose file.
+  `ui-live-check-save`, `ui-token-status`, `ui-token-rotate`, `migrate`, `doctor`, `backup`, and
+  `rewrap-plan` using the runtime compose file.
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
   one-shot ops container; no ports/UI).
 - **Start here — the authoritative production readiness gate:**
@@ -1377,6 +1377,10 @@ Phase 150 adds `docs/PHASE_150_OPERATOR_UI_LIVE_CHECK.md`, `ops:operator-ui-live
 `test:operator-ui-live-check`. The live check validates `/healthz`, unauthenticated 401 behavior,
 authenticated status, and authenticated logs while emitting only fixed labels, status codes, summary
 counts, and redaction-safe metadata. The Unraid launcher exposes it as `ui-live-check`.
+Phase 151 adds `docs/PHASE_151_OPERATOR_UI_LIVE_EVIDENCE.md` and `ui-live-check-save` to the Unraid
+launcher. It saves the redaction-safe Phase 150 JSON report under
+`/mnt/user/appdata/catalog/backups/evidence` using silent npm output, a temp file, and best-effort
+`0600` permissions.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -20,6 +20,7 @@ UI service commands:
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh status
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-logs
 /mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check
+/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check-save
 ```
 
 Token commands:
@@ -36,6 +37,7 @@ Expected results:
 - `status` shows the runtime Compose services.
 - `ui-logs` shows recent Docker logs from the read-only operator UI service.
 - `ui-live-check` runs the redaction-safe live validation command against the operator UI service.
+- `ui-live-check-save` writes the redaction-safe live validation JSON to an evidence file.
 - `ui-token-status` reports token file metadata only.
 - `ui-token-rotate` rotates the token with explicit confirmation and does not print the token value.
 

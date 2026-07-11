@@ -8508,6 +8508,38 @@ test('Phase 150 operator UI live check is redaction-safe and launcher-backed', (
   ]) assert(!source.includes(forbidden), `Phase 150 source excludes ${forbidden}`);
 });
 
+test('Phase 151 operator UI live evidence saves clean redaction-safe JSON', () => {
+  assert(exists('docs/PHASE_151_OPERATOR_UI_LIVE_EVIDENCE.md'), 'Phase 151 live evidence doc exists');
+  const combined = [
+    unraidOpsLauncher,
+    read('docs/PHASE_151_OPERATOR_UI_LIVE_EVIDENCE.md'),
+    read('docs/PHASE_150_OPERATOR_UI_LIVE_CHECK.md'),
+    read('docs/PHASE_149_UNRAID_UI_LAUNCHER_COMMANDS.md'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-151-operator-ui-live-evidence',
+    'ui-live-check-save',
+    'CATALOG_AUTHORITY_EVIDENCE_DIR',
+    '/mnt/user/appdata/catalog/backups/evidence',
+    'operator-ui-live-check-',
+    'run_ops_silent ops:operator-ui-live-check',
+    'compose run --rm ops --silent',
+    '.tmp-$$',
+    'chmod 600',
+    'redaction-safe',
+  ]) assert(combined.includes(required), `Phase 151 surface preserves ${required}`);
+  assert(!`${unraidOpsLauncher}\n${read('docs/PHASE_151_OPERATOR_UI_LIVE_EVIDENCE.md')}`.includes('--print --confirm-print'), 'Phase 151 has no print-token shortcut');
+  for (const forbidden of [
+    '@torbox/torbox-api',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'request-download-link',
+    'magnet:',
+  ]) assert(!unraidOpsLauncher.includes(forbidden), `Phase 151 launcher excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

@@ -9,6 +9,7 @@ set -eu
 REPO_DIR="${CATALOG_AUTHORITY_REPO_DIR:-/mnt/user/appdata/catalog/repo}"
 COMPOSE_FILE="${CATALOG_AUTHORITY_COMPOSE_FILE:-$REPO_DIR/docker-compose.unraid.runtime.yml}"
 BACKUP_DIR="${CATALOG_AUTHORITY_BACKUP_DIR:-/mnt/user/appdata/catalog/backups}"
+EVIDENCE_DIR="${CATALOG_AUTHORITY_EVIDENCE_DIR:-$BACKUP_DIR/evidence}"
 PREVIOUS_KEK_FILE="${CATALOG_AUTHORITY_PREVIOUS_KEK_FILE:-/mnt/user/appdata/catalog/secrets/custodian_kek_previous}"
 
 cd "$REPO_DIR"
@@ -19,6 +20,14 @@ compose() {
 
 run_ops() {
   compose run --rm ops "$@"
+}
+
+run_ops_silent() {
+  compose run --rm ops --silent "$@"
+}
+
+run_ui_live_check() {
+  run_ops_silent ops:operator-ui-live-check -- --url "${CATALOG_AUTHORITY_UI_URL:-http://app:8099}" --json
 }
 
 run_rewrap_plan() {
@@ -39,6 +48,7 @@ Usage:
   unraid-ops-launcher.sh status
   unraid-ops-launcher.sh ui-logs
   unraid-ops-launcher.sh ui-live-check
+  unraid-ops-launcher.sh ui-live-check-save [output-file]
   unraid-ops-launcher.sh ui-token-status
   unraid-ops-launcher.sh ui-token-rotate
   unraid-ops-launcher.sh migrate
@@ -73,7 +83,16 @@ case "${1:-}" in
     compose logs --tail "${CATALOG_AUTHORITY_UI_LOG_TAIL:-80}" app
     ;;
   ui-live-check)
-    run_ops ops:operator-ui-live-check -- --url "${CATALOG_AUTHORITY_UI_URL:-http://app:8099}" --json
+    run_ui_live_check
+    ;;
+  ui-live-check-save)
+    target="${2:-$EVIDENCE_DIR/operator-ui-live-check-$(date -u +%Y%m%dT%H%M%SZ).json}"
+    mkdir -p "$(dirname "$target")"
+    tmp="${target}.tmp-$$"
+    run_ui_live_check > "$tmp"
+    chmod 600 "$tmp" 2>/dev/null || true
+    mv "$tmp" "$target"
+    echo "Saved redaction-safe operator UI live check: $target"
     ;;
   ui-token-status)
     run_ops ops:operator-ui-token -- --status --json
