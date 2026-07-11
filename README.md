@@ -1399,6 +1399,12 @@ boundary: the UI shell and `/healthz` load, unauthenticated status/log APIs retu
 launcher live-check passes without printing the token. Phase 162 adds
 `docs/PHASE_162_OPERATOR_WORKFLOW_RUNBOOK.md`, the normal update/restart/validate/save/review
 workflow for Unraid and Arcane.
+Phase 163 adds `docs/PHASE_163_RELEASE_SNAPSHOT.md`, the current GitHub/Unraid/image/Arcane/UI
+release snapshot. Phase 164 adds `docs/PHASE_164_SCHEDULED_UI_EVIDENCE_JOB.md` and
+`deploy/unraid-ui-evidence-check.sh`, a narrow User Scripts wrapper for recurring
+`ui-live-check-save` plus evidence review. Phase 165 adds
+`docs/PHASE_165_PRODUCTION_GATE_REVIEW.md`, keeping O4 and O5 open and visible before any provider
+or media integration work.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

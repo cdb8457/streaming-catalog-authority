@@ -8726,6 +8726,41 @@ test('Phases 161 and 162 document live UI access and normal operator workflow', 
   ]) assert(!phaseDocs.includes(forbidden), `Phase 161/162 docs exclude ${forbidden}`);
 });
 
+test('Phases 163 through 165 snapshot release state and scheduled UI evidence without closing O4/O5', () => {
+  assert(exists('docs/PHASE_163_RELEASE_SNAPSHOT.md'), 'Phase 163 release snapshot doc exists');
+  assert(exists('docs/PHASE_164_SCHEDULED_UI_EVIDENCE_JOB.md'), 'Phase 164 scheduled evidence doc exists');
+  assert(exists('docs/PHASE_165_PRODUCTION_GATE_REVIEW.md'), 'Phase 165 production gate review doc exists');
+  assert(exists('deploy/unraid-ui-evidence-check.sh'), 'Phase 164 evidence wrapper exists');
+  const phaseDocs = [
+    read('docs/PHASE_163_RELEASE_SNAPSHOT.md'),
+    read('docs/PHASE_164_SCHEDULED_UI_EVIDENCE_JOB.md'),
+    read('docs/PHASE_165_PRODUCTION_GATE_REVIEW.md'),
+    read('deploy/unraid-ui-evidence-check.sh'),
+  ].join('\n');
+  const combined = `${phaseDocs}\n${read('README.md')}`;
+  for (const required of [
+    'phase-163-release-snapshot',
+    'phase-164-scheduled-ui-evidence-job',
+    'phase-165-production-gate-review',
+    '/mnt/user/projects/CatalogAuthority',
+    'http://192.168.1.31:8099/',
+    '/boot/config/plugins/user.scripts/scripts/catalog-ui-evidence-check',
+    '/mnt/user/appdata/catalog/repo/deploy/unraid-ui-evidence-check.sh',
+    'ui-live-check-save',
+    'ui-evidence-review',
+    'O4 remains open',
+    'O5 remains open',
+    'must not be described as turnkey production-ready with managed custody',
+  ]) assert(combined.includes(required), `Phase 163/164/165 surface preserves ${required}`);
+  for (const forbidden of [
+    '--print --confirm-print',
+    'ops:backup -- restore',
+    'ops:rewrap-kek',
+    'request-download-link',
+    'magnet:',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 163/164/165 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
