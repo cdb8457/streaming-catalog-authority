@@ -19,11 +19,11 @@ compose() {
 }
 
 run_ops() {
-  compose run --rm ops "$@"
+  compose run -T --rm ops "$@"
 }
 
 run_ops_silent() {
-  compose run --rm ops --silent "$@"
+  compose run -T --rm ops --silent "$@"
 }
 
 run_ui_live_check() {
@@ -31,7 +31,7 @@ run_ui_live_check() {
 }
 
 run_rewrap_plan() {
-  compose run --rm \
+  compose run -T --rm \
     -e CUSTODIAN_KEK_PREVIOUS_FILE=/run/secrets/custodian_kek_previous \
     -v "$PREVIOUS_KEK_FILE:/run/secrets/custodian_kek_previous:ro" \
     ops ops:rewrap-kek -- --plan --json

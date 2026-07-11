@@ -32,14 +32,14 @@ npm run image:build:local
 CATALOG_AUTHORITY_APPDATA_DIR="$SMOKE_APPDATA" OPERATOR_UI_HOST_PORT="$SMOKE_PORT" \
   docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml up -d postgres
 CATALOG_AUTHORITY_APPDATA_DIR="$SMOKE_APPDATA" OPERATOR_UI_HOST_PORT="$SMOKE_PORT" \
-  docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml run --rm ops ops:init
+  docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml run -T --rm ops ops:init
 CATALOG_AUTHORITY_APPDATA_DIR="$SMOKE_APPDATA" OPERATOR_UI_HOST_PORT="$SMOKE_PORT" \
   docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml up -d app
 CATALOG_AUTHORITY_APPDATA_DIR="$SMOKE_APPDATA" OPERATOR_UI_HOST_PORT="$SMOKE_PORT" \
-  docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml run --rm --silent ops \
+  docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml run -T --rm ops --silent \
   ops:operator-ui-live-check -- --url "http://app:8099" --json > "$SMOKE_APPDATA/backups/evidence/operator-ui-live-check-smoke.json"
 CATALOG_AUTHORITY_APPDATA_DIR="$SMOKE_APPDATA" OPERATOR_UI_HOST_PORT="$SMOKE_PORT" \
-  docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml run --rm --silent ops \
+  docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml run -T --rm ops --silent \
   ops:operator-ui-evidence-review -- "$SMOKE_APPDATA/backups/evidence/operator-ui-live-check-smoke.json"
 CATALOG_AUTHORITY_APPDATA_DIR="$SMOKE_APPDATA" OPERATOR_UI_HOST_PORT="$SMOKE_PORT" \
   docker compose -p "$SMOKE_PROJECT" -f docker-compose.unraid.runtime.yml down --remove-orphans
