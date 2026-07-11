@@ -135,6 +135,10 @@ test('unraid runtime compose — launcher-ready image mode with no build context
     'runtime backups bind mount keeps canonical default and smoke override',
   );
   assert(
+    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups'),
+    'runtime ops can review saved evidence by host path or /backups path',
+  );
+  assert(
     unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token'),
     'runtime ops can manage the operator token file without exposing a UI write path',
   );
