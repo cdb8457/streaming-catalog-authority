@@ -1489,6 +1489,12 @@ preconditions, before/after compose fragments, ordered cutover steps, verificati
 rollback triggers, data-safety notes, and abort points. It satisfies the Phase 193 criterion in the
 Phase 192 gate and unblocks Phase 194, but it does not edit Compose, install a service, switch
 custody, or close O4/O5.
+Phase 194 adds the long-running `sidecar` service to `docker-compose.unraid.runtime.yml` and
+`docs/PHASE_194_UNRAID_SIDECAR_SERVICE_INSTALL.md` / `test:sidecar-service-install` as the real
+Unraid sidecar install evidence phase. The service is socket-only, publishes no ports, avoids host
+networking, runs with least-privilege container settings, and stays idle while app/ops remain on
+`CUSTODIAN_MODE=file`. It satisfies the Phase 194 criterion in the Phase 192 gate, but it does not
+switch custody or close O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

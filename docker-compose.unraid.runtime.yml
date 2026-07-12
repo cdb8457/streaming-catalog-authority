@@ -59,6 +59,39 @@ services:
     entrypoint: ["npm", "run"]
     command: ["ops:migrate"]
 
+  sidecar:
+    image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}
+    restart: unless-stopped
+    environment:
+      APP_ENV: production
+      SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
+      SIDECAR_STATE_DIR: /var/lib/catalog-sidecar/state
+      SIDECAR_COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      SIDECAR_KEK_FILE: /run/secrets/custodian_kek
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+    volumes:
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/state:/var/lib/catalog-sidecar/state
+    secrets:
+      - completion_secret
+      - custodian_kek
+    entrypoint: ["npm", "run"]
+    command: ["ops:sidecar-daemon", "--", "--serve"]
+    healthcheck:
+      test: ["CMD-SHELL", "test -S /run/catalog-sidecar/catalog-sidecar.sock"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+
   app:
     image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}
     restart: unless-stopped
