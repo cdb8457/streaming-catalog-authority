@@ -1495,6 +1495,10 @@ Unraid sidecar install evidence phase. The service is socket-only, publishes no 
 networking, runs with least-privilege container settings, and stays idle while app/ops remain on
 `CUSTODIAN_MODE=file`. It satisfies the Phase 194 criterion in the Phase 192 gate, but it does not
 switch custody or close O4/O5.
+Phase 195 records an attempted production custody switch that rolled back to `CUSTODIAN_MODE=file`
+after a post-switch doctor parser false negative. Phase 196 adds
+`docs/PHASE_196_CUTOVER_PARSER_FIX.md`, `ops:cutover-doctor-check`, and `test:cutover-parser` to
+replace brittle grep matching with schema-aware doctor checkpoint parsing before any retry.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

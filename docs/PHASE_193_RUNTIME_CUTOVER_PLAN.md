@@ -78,8 +78,10 @@ remains unchanged. The operator UI host port remains unchanged. No sidecar port 
 6. Restart app: recreate `app` with sidecar mode.
    Expected signal: app starts, no missing `CUSTODIAN_SIDECAR_SOCKET_PATH` error, no network endpoint
    error, and healthcheck moves to healthy.
-7. Run post-switch evidence: capture `ops:doctor --json`, `ui-live-check`, sidecar status evidence,
-   and a redaction-safe custody smoke evidence report by ID/digest only.
+7. Run post-switch evidence: capture `ops:doctor --json`, validate it with the Phase 196
+   schema-aware cutover parser, capture `ui-live-check`, sidecar status evidence, and a
+   redaction-safe custody smoke evidence report by ID/digest only. Doctor checkpoint parsing must
+   distinguish valid-unhealthy doctor output from retryable parse/checkpoint errors.
 8. Run persistence-check restart: restart app, confirm it returns healthy, then restart sidecar by
    the Phase 194 service procedure and confirm app returns healthy again.
 9. Confirm UI/API health: `ui-live-check` must return `ok:true`, authenticated status must pass,
@@ -96,6 +98,7 @@ remains unchanged. The operator UI host port remains unchanged. No sidecar port 
 | Backup and snapshots | Verified database backup plus file keystore, sidecar state, and compose snapshot digests retained | Backup/snapshot report IDs and digests |
 | App stopped | Only `app` is stopped; `postgres` and sidecar remain healthy | `docker compose ps` plus sidecar status evidence |
 | App recreated | App starts with `CUSTODIAN_MODE=sidecar` and socket path configured | `docker compose ps`, app logs redacted summary |
+| Post-switch doctor | Doctor JSON parses with `ops:cutover-doctor-check` and returns `healthy`; `unhealthy` rolls back; retryable `parse-error` retries before rollback | `npm run ops:cutover-doctor-check -- <doctor-output-file> --exit-code <n> --json` |
 | Operator UI | Health endpoint OK; auth rejection works; authenticated status/logs pass | `deploy/unraid-ops-launcher.sh ui-live-check` |
 | Persistence restart | App and sidecar restart sequence returns to healthy | Phase 195 restart persistence evidence |
 | Post-switch custody | Sidecar custody path works and file-custodian app-held KEK path is no longer used by app/ops | Phase 195 post-switch custody evidence |
@@ -122,6 +125,10 @@ Rollback triggers:
 - App fails to start because the sidecar socket is missing or invalid: rollback immediately.
 - App starts but healthcheck does not become healthy: retry once after checking sidecar service
   health; rollback if the second start fails.
+- post-switch doctor parser returns `unhealthy`: rollback immediately.
+- post-switch doctor parser returns retryable `parse-error`: retry the doctor checkpoint up to 3
+  times with 5 seconds between attempts; rollback only after retries are exhausted or if a later
+  parse returns `unhealthy`.
 - `ui-live-check` returns `ok:false`: rollback unless the failure is an unrelated operator token
   issue verified by pre-cutover evidence.
 - Post-switch custody smoke evidence fails: rollback immediately.

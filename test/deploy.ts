@@ -9627,6 +9627,38 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
   ]) assert(combined.includes(required), `Phase 194 surface preserves ${required}`);
 });
 
+test('Phase 196 cutover doctor/parser fix is schema-aware and retry-safe', () => {
+  assert(exists('docs/PHASE_196_CUTOVER_PARSER_FIX.md'), 'Phase 196 parser fix doc exists');
+  assert(exists('src/ops/cutover-doctor-check.ts'), 'Phase 196 parser source exists');
+  assert(exists('src/ops/cutover-doctor-check-cli.ts'), 'Phase 196 parser CLI exists');
+  assert(exists('test/cutover-parser.ts'), 'Phase 196 parser test exists');
+  assert(exists('test/fixtures/phase-196/phase-195-post-switch-doctor.raw.txt'), 'Phase 196 real doctor fixture exists');
+  assert(pkg.scripts['test:cutover-parser'] === 'tsx test/cutover-parser.ts', 'Phase 196 test script present');
+  assert(pkg.scripts['ops:cutover-doctor-check'] === 'tsx src/ops/cutover-doctor-check-cli.ts', 'Phase 196 ops script present');
+  const combined = [
+    read('docs/PHASE_196_CUTOVER_PARSER_FIX.md'),
+    read('docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md'),
+    read('src/ops/cutover-doctor-check.ts'),
+    read('src/ops/cutover-doctor-check-cli.ts'),
+    read('test/cutover-parser.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-196-cutover-parser-fix',
+    'phase-195-post-switch-doctor.raw.txt',
+    'schema-aware cutover parser',
+    "status: 'parse-error'",
+    "status: 'unhealthy'",
+    "status: 'healthy'",
+    'retryable',
+    'ops:cutover-doctor-check',
+    'post-switch doctor parser returns retryable `parse-error`',
+    'O4 status after Phase 196: `open/deferred`',
+    'O5 status after Phase 196: `open/deferred`',
+    'Phase 197 switch',
+  ]) assert(combined.includes(required), `Phase 196 surface preserves ${required}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
