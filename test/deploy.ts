@@ -6546,8 +6546,8 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-unraid-service-plan.ts'),
-    'Phase 105 aggregate test follows Phase 189 sidecar factory evidence',
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 105 aggregate test follows Phase 190 sidecar factory evidence review',
   );
 
   const source = `${read('src/ops/sidecar-unraid-service-plan.ts')}\n${read('src/ops/sidecar-unraid-service-plan-cli.ts')}`;
@@ -9276,7 +9276,7 @@ test('Phase 189 adds sidecar factory evidence without production cutover', () =>
   assert(pkg.scripts['ops:sidecar-factory-evidence'] === 'tsx src/ops/sidecar-factory-evidence-cli.ts', 'Phase 189 ops script present');
   assert(pkg.scripts['test:sidecar-factory-evidence'] === 'tsx test/sidecar-factory-evidence.ts', 'Phase 189 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 189 aggregate test sits between daemon and Unraid service plan',
   );
   const source = [
@@ -9333,6 +9333,68 @@ test('Phase 189 adds sidecar factory evidence without production cutover', () =>
     'O5 closed',
     'Plex/Jellyfin mutation is enabled',
   ]) assert(!phaseSurface.includes(forbidden), `Phase 189 phase surface excludes ${forbidden}`);
+});
+
+test('Phase 190 adds static sidecar factory evidence review without sidecar startup', () => {
+  assert(exists('docs/PHASE_190_SIDECAR_FACTORY_EVIDENCE_REVIEW.md'), 'Phase 190 sidecar factory evidence review doc exists');
+  assert(exists('src/ops/sidecar-factory-evidence-review.ts'), 'Phase 190 sidecar factory evidence review source exists');
+  assert(exists('src/ops/sidecar-factory-evidence-review-cli.ts'), 'Phase 190 sidecar factory evidence review CLI exists');
+  assert(exists('test/sidecar-factory-evidence-review.ts'), 'Phase 190 sidecar factory evidence review test exists');
+  assert(pkg.scripts['ops:sidecar-factory-evidence-review'] === 'tsx src/ops/sidecar-factory-evidence-review-cli.ts', 'Phase 190 ops script present');
+  assert(pkg.scripts['test:sidecar-factory-evidence-review'] === 'tsx test/sidecar-factory-evidence-review.ts', 'Phase 190 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 190 aggregate test sits after Phase 189 evidence',
+  );
+  const source = [
+    read('src/ops/sidecar-factory-evidence-review.ts'),
+    read('src/ops/sidecar-factory-evidence-review-cli.ts'),
+  ].join('\n');
+  const phaseSurface = `${source}\n${read('docs/PHASE_190_SIDECAR_FACTORY_EVIDENCE_REVIEW.md')}`;
+  const combined = `${phaseSurface}\n${read('README.md')}\n${read('package.json')}`;
+  for (const required of [
+    'phase-190-sidecar-factory-evidence-review',
+    'ops:sidecar-factory-evidence-review',
+    'test:sidecar-factory-evidence-review',
+    'valid JSON',
+    'required Phase 189 evidence fields',
+    'overall evidence and every required check passed',
+    'review keeps sidecar evidence local and non-mutating',
+    'redaction-safe labels',
+    'closesO4',
+    'closesO5',
+    'O4 remains open',
+    'O5 remains open',
+  ]) assert(combined.includes(required), `Phase 190 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    '@aws-sdk',
+    '@azure',
+    '@google-cloud',
+    'express',
+    'fastify',
+    'koa',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+    'startSidecarDaemon',
+    'custodianFromEnv',
+  ]) assert(!source.includes(forbidden), `Phase 190 source excludes ${forbidden}`);
+  for (const forbidden of [
+    'ports:',
+    '0.0.0.0',
+    'request-download-link',
+    'magnet:',
+    'provider mode enabled',
+    'O4 closed',
+    'O5 closed',
+    'Plex/Jellyfin mutation is enabled',
+  ]) assert(!phaseSurface.includes(forbidden), `Phase 190 phase surface excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

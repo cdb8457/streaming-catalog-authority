@@ -164,6 +164,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:kek-evidence-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe O5 KEK custody/scheduling evidence preflight; reads one descriptor file only and does not close O5 |
 | `ops:o4-o5-evidence-decision -- -- --decision <decision.json> --custodian <o4-descriptor.json> --kek <o5-descriptor.json> [--json]` | static Phase 96 O4/O5 evidence decision packet; reads three explicit JSON files, authorizes only the offline contract-harness evidence slice, never contacts live services, and does not close O4/O5 |
 | `ops:o4-o5-evidence-packet-review -- -- <packet.json>... [--json]` | static Phase 172 O4/O5 evidence packet review; checks valid JSON, schema, open gates, forbidden boundary, and redaction safety without reading referenced artifacts or closing O4/O5 |
+| `ops:sidecar-factory-evidence-review -- -- --json <phase-189-evidence.json>...` | static Phase 190 sidecar factory evidence review; checks saved Phase 189 JSON for schema, pass state, boundary, and redaction safety without starting a daemon or closing O4/O5 |
 | `ops:torbox-smoke-readiness-preflight -- -- <descriptor.json> [--json]` | static, redaction-safe TorBox smoke readiness descriptor preflight; reads one descriptor file only and does not authorize live smoke |
 | `ops:torbox-live-smoke-evidence-preflight -- -- <phase-43-report.json> [--json]` | static, redaction-safe Phase 43 live-smoke evidence report preflight; reads one report file only and does not contact TorBox |
 | `ops:torbox-live-smoke-summary-pack -- -- <phase-43-report.json>... [--json]` | static, redaction-safe Phase 43 live-smoke summary pack; reads explicit report files only and does not contact TorBox |
@@ -1464,6 +1465,11 @@ Phase 189 adds `docs/PHASE_189_SIDECAR_FACTORY_EVIDENCE.md`, `ops:sidecar-factor
 and Phase 188 factory mode work together through a local socket. It starts only a temporary sidecar
 under the OS temp directory, emits `SIDECAR_FACTORY_EVIDENCE`, and still does not change Compose,
 install an Unraid service, switch runtime custody mode, or close O4/O5.
+Phase 190 adds `docs/PHASE_190_SIDECAR_FACTORY_EVIDENCE_REVIEW.md`,
+`ops:sidecar-factory-evidence-review`, and `test:sidecar-factory-evidence-review` as the static
+review gate for saved Phase 189 JSON. It checks valid JSON, required Phase 189 evidence fields, pass
+state, local non-mutating boundary flags, and redaction safety. It reads explicit files only and
+does not start a sidecar, change Compose, switch runtime custody mode, or close O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
