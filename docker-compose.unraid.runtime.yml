@@ -41,17 +41,21 @@ services:
       APP_ENV: production
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
       DATABASE_URL_FILE: /run/secrets/database_url
-      CUSTODIAN_MODE: sidecar
-      CUSTODIAN_SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
       OPERATOR_UI_TOKEN_FILE: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token
     volumes:
-      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/keystore:/var/lib/catalog/keystore
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:/backups
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token
     secrets:
       - admin_database_url
       - database_url
+      - completion_secret
+      - custodian_kek
     entrypoint: ["npm", "run"]
     command: ["ops:migrate"]
 
@@ -98,14 +102,18 @@ services:
       APP_ENV: production
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
       DATABASE_URL_FILE: /run/secrets/database_url
-      CUSTODIAN_MODE: sidecar
-      CUSTODIAN_SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
       OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
     volumes:
-      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/keystore:/var/lib/catalog/keystore
     secrets:
       - admin_database_url
       - database_url
+      - completion_secret
+      - custodian_kek
       - operator_ui_token
     entrypoint: ["npm", "run"]
     command: ["ops:operator-ui-server", "--", "--serve", "--host", "0.0.0.0", "--port", "8099"]

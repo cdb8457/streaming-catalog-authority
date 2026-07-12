@@ -10,12 +10,10 @@ import { MIGRATION_VERSION } from '../db/schema-version.js';
  * deployment is correctly wired and safe to operate. Every problem references conditions only —
  * NEVER a secret/KEK/connection-string value (redaction-safe, like the Stage 3.1 config errors).
  *
- * In file/memory mode, the completion-secret match check here is the SAME invariant the restore
- * preflight enforces (Stage 3.3): the configured secret must equal `crypto_config`, or attested
- * shred completion can never verify. In sidecar mode, the app no longer holds that secret; the
- * check becomes an explicit delegation assertion while custodian reachability proves the sidecar
- * owns the signing path. The app-privilege checks confirm the least-privileged runtime role cannot
- * write the tables or read/set the secret.
+ * The completion-secret match check here is the SAME invariant the restore preflight enforces
+ * (Stage 3.3): the configured secret must equal `crypto_config`, or attested shred completion can
+ * never verify. The app-privilege checks confirm the least-privileged runtime role cannot write
+ * the tables or read/set the secret.
  */
 
 export type CheckState = 'pass' | 'warn' | 'fail';
@@ -47,7 +45,7 @@ export interface DoctorDeps {
   admin: Client;      // owner/migrator connection
   pool: Pool;         // least-privileged app connection
   custodian: KeyCustodian;
-  completionSecret?: string;
+  completionSecret: string;
   custodianMode: 'memory' | 'file' | string;
   appEnv: 'production' | 'development' | 'test' | string;
   keystoreDir?: string;
@@ -99,10 +97,6 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     try {
       const dbSecret = (await deps.admin.query('SELECT completion_secret FROM crypto_config WHERE id = 1')).rows[0]?.completion_secret as string | undefined;
       if (!dbSecret) add('completion-secret', 'fail', 'crypto_config has no completion secret — run ops:init / set_completion_secret');
-      else if (deps.custodianMode === 'sidecar' && deps.completionSecret === undefined) {
-        add('completion-secret', 'pass', 'completion secret is delegated to the sidecar custodian; app/ops do not hold it');
-      }
-      else if (deps.completionSecret === undefined) add('completion-secret', 'fail', 'configured completion secret is missing for this custodian mode');
       else if (dbSecret !== deps.completionSecret) add('completion-secret', 'fail', 'configured completion secret does not match crypto_config (shred completion would never verify)');
       else add('completion-secret', 'pass', 'configured completion secret matches crypto_config');
     } catch { add('completion-secret', 'fail', 'could not read crypto_config to verify the completion secret'); }

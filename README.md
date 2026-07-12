@@ -1495,11 +1495,6 @@ Unraid sidecar install evidence phase. The service is socket-only, publishes no 
 networking, runs with least-privilege container settings, and stays idle while app/ops remain on
 `CUSTODIAN_MODE=file`. It satisfies the Phase 194 criterion in the Phase 192 gate, but it does not
 switch custody or close O4/O5.
-Phase 195 executes the production custody switch in `docker-compose.unraid.runtime.yml` from
-`CUSTODIAN_MODE=file` to `CUSTODIAN_MODE=sidecar` for app and ops, mounts the local sidecar socket,
-records pre-cutover backup/snapshot evidence, post-switch custody evidence, exposure proof, UI/API
-health, and restart-persistence evidence in `docs/PHASE_195_PRODUCTION_CUSTODY_SWITCH.md`, and
-makes O4 closure-eligible while leaving O5 open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -31,33 +31,32 @@ test('gate cites Phase 191 source artifact and Phase 190 passing evidence', () =
   ]) assert(doc.includes(required), `gate cites ${required}`);
 });
 
-test('criteria matrix has all O4 execution criteria satisfied after Phase 195', () => {
+test('criteria matrix has one satisfied prerequisite and three blocked execution criteria', () => {
   const doc = read('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md');
   for (const required of [
     '| Criterion | Required Evidence | Current State | Status |',
     'Phase 191 acceptance record exists, is redaction-safe, and cites Phase 190 passing evidence',
     '`satisfied`',
     'Runtime cutover plan exists and is reviewed',
-    'Present and reviewed',
+    '`not-satisfied-phase-193`',
     'Sidecar service installed on Unraid, local socket only, no public ports',
-    'Installed, healthy, socket-only, no public ports',
+    '`not-satisfied-phase-194`',
     'Production custody switched with post-switch evidence, persistence checks restarted, UI/API healthy',
-    'Switched with post-switch evidence retained',
+    '`not-satisfied-phase-195`',
   ]) assert(doc.includes(required), `criteria includes ${required}`);
 });
 
-test('readiness verdict is closure-eligible and keeps O5 open', () => {
+test('readiness verdict is pending execution and keeps O4/O5 open', () => {
   const doc = read('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md');
   for (const required of [
-    'Readiness verdict: `O4_CLOSURE_ELIGIBLE`',
-    'O4 closure criteria are explicitly defined.',
-    'Phase 193 runtime cutover plan evidence is satisfied.',
-    'Phase 194 sidecar service install evidence is satisfied.',
-    'Phase 195 production custody switch evidence is satisfied.',
-    'O4 status after this gate: `closure-eligible`',
+    'Readiness verdict: `O4_READY_PENDING_EXECUTION`',
+    'O4 closure criteria are now explicitly defined.',
+    'O4 cannot close yet',
+    'The next unblocked phase is Phase 193.',
+    'O4 status after this gate: `open/deferred`',
     'O5 status after this gate: `open/deferred`',
     'O5 is unchanged and out of scope for this gate.',
-    'This gate does not close O5.',
+    'This gate does not close O4 and does not close O5.',
   ]) assert(doc.includes(required), `verdict includes ${required}`);
 });
 
@@ -107,7 +106,7 @@ test('package, README, and deploy guard include Phase 192 verification', () => {
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:o4-sidecar-closure-readiness'] === 'tsx test/o4-sidecar-closure-readiness.ts', 'test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/production-custody-switch.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'aggregate order present',
   );
   assert(readme.includes('Phase 192 adds `docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md`'), 'README phase entry');

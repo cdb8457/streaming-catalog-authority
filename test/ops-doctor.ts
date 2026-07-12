@@ -88,15 +88,6 @@ async function main(): Promise<void> {
     assert(!r.ok, 'overall fail');
   });
 
-  await test('doctor - sidecar mode delegates completion secret out of app/ops', async () => {
-    const r = await runDoctor({ admin, pool, custodian: new InMemoryCustodian(secret), custodianMode: 'sidecar', appEnv: 'production' });
-    assert(r.ok, `doctor ok in sidecar mode (states: ${r.checks.map((c) => `${c.name}=${c.state}`).join(', ')})`);
-    assertEq(state(r, 'completion-secret'), 'pass', 'secret delegation passes');
-    assert(detail(r, 'completion-secret').includes('delegated to the sidecar custodian'), 'delegation detail');
-    assertEq(state(r, 'production-gate-o4-external-custodian'), 'absent', 'file-specific O4 warning is absent after sidecar cutover');
-    assertEq(state(r, 'production-gate-o5-managed-kek'), 'warn', 'O5 remains visible');
-  });
-
   // 5. doctor is READ-ONLY -----------------------------------------------------
   await test('doctor — is read-only (no DB mutation)', async () => {
     await admin.query("SET session_replication_role = 'replica'");
