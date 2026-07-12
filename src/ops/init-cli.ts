@@ -1,6 +1,6 @@
 import { Client } from 'pg';
 import { loadDbConfig, resolveAppEnv } from '../config/env.js';
-import { loadCustodianConfig, createCustodian } from '../core/crypto/custodian-factory.js';
+import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
 import { migrate, getPool, closePool } from '../db/pool.js';
 import { runDoctor, formatDoctorReport } from './doctor.js';
 
@@ -18,6 +18,7 @@ import { runDoctor, formatDoctorReport } from './doctor.js';
 async function main(): Promise<number> {
   const db = loadDbConfig();
   const custodianConfig = loadCustodianConfig(); // fail-closed on bad/insecure config
+  const completionSecret = requireAppHeldCompletionSecret(custodianConfig, 'ops:init');
 
   console.log('ops:init — applying migrations (owner) ...');
   await migrate();
@@ -27,12 +28,12 @@ async function main(): Promise<number> {
   const pool = getPool();
   try {
     console.log('ops:init — provisioning the completion secret (owner-only) ...');
-    await admin.query('SELECT set_completion_secret($1)', [custodianConfig.completionSecret]);
+    await admin.query('SELECT set_completion_secret($1)', [completionSecret]);
 
     const custodian = createCustodian(custodianConfig);
     const report = await runDoctor({
       admin, pool, custodian,
-      completionSecret: custodianConfig.completionSecret,
+      completionSecret,
       custodianMode: custodianConfig.mode,
       appEnv: resolveAppEnv(),
       keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,

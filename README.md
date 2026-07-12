@@ -1454,6 +1454,11 @@ Phase 187 adds `docs/PHASE_187_SIDECAR_DAEMON_EXECUTABLE.md`, `ops:sidecar-daemo
 redaction-safe `--self-test --json` path and a future controlled `--serve` mode using a local Unix
 socket or Windows named pipe only. It still does not change Compose, install an Unraid service,
 switch custody mode, contact providers, mutate media servers, or close O4/O5.
+Phase 188 adds `docs/PHASE_188_SIDECAR_FACTORY_MODE.md` and `CUSTODIAN_MODE=sidecar` support in the
+custodian factory. The app-side mode builds a `LocalSidecarCustodianClient` from
+`CUSTODIAN_SIDECAR_SOCKET_PATH`, validates that the path is local IPC only, and does not require the
+app process to hold `COMPLETION_SECRET`, `CUSTODIAN_KEK`, or `CUSTODIAN_KEYSTORE_DIR`. It is not wired
+into the Unraid Compose runtime and does not close O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

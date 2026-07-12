@@ -1,7 +1,7 @@
 import { readFileSync, writeFileSync } from 'node:fs';
 import { Client } from 'pg';
 import { loadDbConfig } from '../config/env.js';
-import { loadCustodianConfig, createCustodian } from '../core/crypto/custodian-factory.js';
+import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
 import { runDump, runRestore, parseBackupArgs, RestoreRefused, type BackupArtifact } from './backup-ops.js';
 
 /**
@@ -31,7 +31,7 @@ async function main(): Promise<void> {
       const custodianConfig = loadCustodianConfig();
       const custodian = createCustodian(custodianConfig);
       const artifact = JSON.parse(readFileSync(args.file, 'utf8')) as BackupArtifact;
-      const { preflight } = await runRestore({ admin, custodian, completionSecret: custodianConfig.completionSecret, artifact });
+      const { preflight } = await runRestore({ admin, custodian, completionSecret: requireAppHeldCompletionSecret(custodianConfig, 'ops:backup restore'), artifact });
       console.log(`restore complete. preflight: ${JSON.stringify(preflight.checks)}`);
     }
   } finally {

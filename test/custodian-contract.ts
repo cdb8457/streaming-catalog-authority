@@ -1,10 +1,11 @@
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { InMemoryCustodian } from '../src/core/crypto/custodian.js';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import { loadCustodianConfig, createCustodian, custodianFromEnv, type CustodianConfig } from '../src/core/crypto/custodian-factory.js';
+import { startLocalSidecarRuntime } from '../src/core/crypto/local-sidecar-runtime.js';
 import { ConfigError, type Env } from '../src/config/env.js';
 import {
   reportCustodianContractResults,
@@ -17,6 +18,10 @@ const tmpDirs: string[] = [];
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
 function assertEq(a: unknown, b: unknown, msg: string): void { if (a !== b) throw new Error(`${msg} (expected ${String(b)}, got ${String(a)})`); }
 function freshKeystore(): string { const d = mkdtempSync(path.join(tmpdir(), 'keystore-')); tmpDirs.push(d); return d; }
+function freshSocketPath(): string {
+  const id = `catalog-sidecar-factory-${process.pid}-${randomUUID()}`;
+  return process.platform === 'win32' ? `\\\\.\\pipe\\${id}` : path.join(tmpdir(), `${id}.sock`);
+}
 
 async function main(): Promise<void> {
   console.log('Running Phase 3 custodian conformance + factory suite (Stage 3.2):\n');
@@ -43,6 +48,20 @@ async function main(): Promise<void> {
   await runCustodianContractTest('factory — loadCustodianConfig parses file mode (base64 KEK -> 32 bytes)', () => {
     const cfg = loadCustodianConfig(fileEnv());
     assert(cfg.mode === 'file' && cfg.kek.length === 32, 'file mode, 32-byte KEK decoded');
+  });
+
+  await runCustodianContractTest('factory sidecar config parses without app-held secret or KEK', () => {
+    const socketPath = freshSocketPath();
+    const cfg = loadCustodianConfig({ CUSTODIAN_MODE: 'sidecar', CUSTODIAN_SIDECAR_SOCKET_PATH: socketPath });
+    if (cfg.mode !== 'sidecar') throw new Error('mode sidecar');
+    assertEq(cfg.socketPath, socketPath, 'socket path carried');
+  });
+
+  await runCustodianContractTest('factory sidecar config requires local IPC path and rejects network endpoints', () => {
+    try { loadCustodianConfig({ CUSTODIAN_MODE: 'sidecar' }); assert(false, 'should throw missing socket'); }
+    catch (e) { assert(e instanceof ConfigError, 'ConfigError'); assert(/CUSTODIAN_SIDECAR_SOCKET_PATH is required/.test((e as Error).message), 'requires socket path'); }
+    try { loadCustodianConfig({ CUSTODIAN_MODE: 'sidecar', CUSTODIAN_SIDECAR_SOCKET_PATH: '127.0.0.1:7777' }); assert(false, 'should throw network endpoint'); }
+    catch (e) { assert(e instanceof ConfigError, 'ConfigError'); assert(/must be a local Unix socket path or Windows named pipe/.test((e as Error).message), 'rejects network endpoint'); }
   });
 
   await runCustodianContractTest('factory — unknown CUSTODIAN_MODE fails closed (ConfigError)', () => {
@@ -88,6 +107,25 @@ async function main(): Promise<void> {
     const { keyId } = await c.provision('op1', 'item-a', 0);
     await c.commitProvision('op1');
     assertEq(await c.status(keyId), 'active', 'env-built custodian works');
+  });
+
+  await runCustodianContractTest('factory sidecar mode talks to local socket and preserves fail-closed destroy behavior', async () => {
+    const socketPath = freshSocketPath();
+    const runtime = await startLocalSidecarRuntime({
+      socketPath,
+      custodian: new InMemoryCustodian('sidecar-factory-secret', () => 1_804_291_200_000),
+    });
+    try {
+      const c = custodianFromEnv({ CUSTODIAN_MODE: 'sidecar', CUSTODIAN_SIDECAR_SOCKET_PATH: socketPath });
+      const { keyId, dek } = await c.provision('sidecar-op1', 'sidecar-item-a', 0);
+      await c.commitProvision('sidecar-op1');
+      assert((await c.get(keyId, 0)).equals(dek), 'sidecar factory get returns provisioned DEK');
+      await c.destroy('sidecar-destroy', keyId);
+      try { await c.get(keyId, 0); assert(false, 'destroyed get should fail'); }
+      catch { /* expected fail-closed path */ }
+    } finally {
+      await runtime.close();
+    }
   });
 
   for (const d of tmpDirs) rmSync(d, { recursive: true, force: true });

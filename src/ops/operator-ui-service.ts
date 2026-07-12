@@ -1,7 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Client } from 'pg';
 import { loadDbConfig, resolveAppEnv } from '../config/env.js';
-import { loadCustodianConfig, createCustodian } from '../core/crypto/custodian-factory.js';
+import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
 import { getPool, closePool } from '../db/pool.js';
 import {
   OPERATOR_UI_LOCAL_AUTH_HEADER,
@@ -243,7 +243,7 @@ export async function buildOperatorUiServiceStatus(
         admin,
         pool: getPool(),
         custodian,
-        completionSecret: custodianConfig.completionSecret,
+        completionSecret: requireAppHeldCompletionSecret(custodianConfig, 'operator-ui-status'),
         custodianMode: custodianConfig.mode,
         appEnv: resolveAppEnv(),
         keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,

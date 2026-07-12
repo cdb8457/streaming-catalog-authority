@@ -1,6 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { loadDbConfig, resolveVar } from '../config/env.js';
-import { loadCustodianConfig, createCustodian } from '../core/crypto/custodian-factory.js';
+import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
 import { runRehearsal, RehearsalRefused } from './rehearse.js';
 import type { BackupArtifact } from '../core/backup/backup-policy.js';
 
@@ -32,7 +32,7 @@ async function main(): Promise<number> {
     artifact,
     rehearsalAdminUrl: rehearsal.value,
     productionUrls: [db.adminDatabaseUrl, db.databaseUrl],
-    completionSecret: custodianConfig.completionSecret,
+    completionSecret: requireAppHeldCompletionSecret(custodianConfig, 'ops:rehearse-restore'),
     custodian,
   });
   for (const s of report.steps) console.log(`  ${s.ok ? 'OK  ' : 'FAIL'} ${s.step}: ${s.detail}`);

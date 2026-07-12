@@ -1,6 +1,6 @@
 import { Client } from 'pg';
 import { loadDbConfig, resolveAppEnv } from '../config/env.js';
-import { loadCustodianConfig, createCustodian } from '../core/crypto/custodian-factory.js';
+import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
 import { getPool, closePool } from '../db/pool.js';
 import { runDoctor, formatDoctorReport, formatDoctorJson } from './doctor.js';
 
@@ -27,7 +27,7 @@ async function main(): Promise<number> {
       admin,
       pool,
       custodian,
-      completionSecret: custodianConfig.completionSecret,
+      completionSecret: requireAppHeldCompletionSecret(custodianConfig, 'ops:doctor'),
       custodianMode: custodianConfig.mode,
       appEnv: resolveAppEnv(),
       keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,

@@ -9215,6 +9215,59 @@ test('Phase 187 adds a local sidecar daemon executable without production cutove
   ]) assert(!phaseSurface.includes(forbidden), `Phase 187 phase surface excludes ${forbidden}`);
 });
 
+test('Phase 188 adds sidecar custodian factory mode without runtime cutover', () => {
+  assert(exists('docs/PHASE_188_SIDECAR_FACTORY_MODE.md'), 'Phase 188 sidecar factory mode doc exists');
+  const source = `${read('src/core/crypto/custodian-factory.ts')}\n${read('test/custodian-contract.ts')}`;
+  const phaseSurface = `${source}\n${read('docs/PHASE_188_SIDECAR_FACTORY_MODE.md')}`;
+  const combined = `${phaseSurface}\n${read('README.md')}`;
+  for (const required of [
+    'phase-188-sidecar-factory-mode',
+    "export type CustodianMode = 'memory' | 'file' | 'sidecar'",
+    "SUPPORTED_MODES: readonly CustodianMode[] = ['memory', 'file', 'sidecar']",
+    "mode: 'sidecar'",
+    'CUSTODIAN_MODE=sidecar',
+    'CUSTODIAN_SIDECAR_SOCKET_PATH',
+    'LocalSidecarCustodianClient',
+    'UnixSocketSidecarTransport',
+    'assertLocalSocketPath',
+    'factory sidecar config parses without app-held secret or KEK',
+    'factory sidecar config requires local IPC path and rejects network endpoints',
+    'factory sidecar mode talks to local socket',
+    'without app-held secret or KEK',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+  ]) assert(combined.includes(required), `Phase 188 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    '@aws-sdk',
+    '@azure',
+    '@google-cloud',
+    'express',
+    'fastify',
+    'koa',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 188 source excludes ${forbidden}`);
+  for (const forbidden of [
+    'ports:',
+    '0.0.0.0',
+    'request-download-link',
+    'magnet:',
+    'provider mode enabled',
+    'O4 closed',
+    'O5 closed',
+    'Plex/Jellyfin mutation is enabled',
+  ]) assert(!phaseSurface.includes(forbidden), `Phase 188 phase surface excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

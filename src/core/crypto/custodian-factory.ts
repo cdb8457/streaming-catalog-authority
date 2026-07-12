@@ -2,6 +2,8 @@ import { ConfigError, resolveVar, resolveAppEnv, type Env } from '../../config/e
 import type { KeyCustodian } from './custodian.js';
 import { InMemoryCustodian } from './custodian.js';
 import { FileCustodian } from './file-custodian.js';
+import { LocalSidecarCustodianClient } from './local-sidecar-custodian.js';
+import { assertLocalSocketPath, UnixSocketSidecarTransport } from './local-sidecar-runtime.js';
 
 /**
  * Phase 3 Stage 3.2 — custodian selection boundary.
@@ -12,10 +14,11 @@ import { FileCustodian } from './file-custodian.js';
  * production custodian is a config change, not a code change.
  *
  * Operator-facing config:
- *   CUSTODIAN_MODE            memory | file                         (required)
- *   COMPLETION_SECRET[_FILE]  HMAC attestation secret              (required; shared with the DB)
- *   CUSTODIAN_KEYSTORE_DIR    keystore root                        (required for mode=file)
- *   CUSTODIAN_KEK[_FILE]      base64-encoded 32-byte KEK           (required for mode=file)
+ *   CUSTODIAN_MODE                 memory | file | sidecar              (required)
+ *   COMPLETION_SECRET[_FILE]       HMAC attestation secret              (required for memory/file)
+ *   CUSTODIAN_KEYSTORE_DIR         keystore root                        (required for mode=file)
+ *   CUSTODIAN_KEK[_FILE]           base64-encoded 32-byte KEK           (required for mode=file)
+ *   CUSTODIAN_SIDECAR_SOCKET_PATH  local socket/named-pipe path         (required for mode=sidecar)
  *
  * Scope (Stage 3.2): supported modes are `memory` (dev/test) and `file` (the FileCustodian
  * reference harness). The KEK is resolved here from a base64 value / file — this is the seam
@@ -27,13 +30,14 @@ import { FileCustodian } from './file-custodian.js';
  * adapter (design O4) is still an open production deployment gate; it would add another mode here.
  */
 
-export type CustodianMode = 'memory' | 'file';
+export type CustodianMode = 'memory' | 'file' | 'sidecar';
 
 export type CustodianConfig =
   | { mode: 'memory'; completionSecret: string }
-  | { mode: 'file'; completionSecret: string; keystoreDir: string; kek: Buffer };
+  | { mode: 'file'; completionSecret: string; keystoreDir: string; kek: Buffer }
+  | { mode: 'sidecar'; socketPath: string };
 
-const SUPPORTED_MODES: readonly CustodianMode[] = ['memory', 'file'];
+const SUPPORTED_MODES: readonly CustodianMode[] = ['memory', 'file', 'sidecar'];
 
 /**
  * Parse + validate custodian configuration from the environment. Aggregates every problem into
@@ -43,15 +47,18 @@ const SUPPORTED_MODES: readonly CustodianMode[] = ['memory', 'file'];
 export function loadCustodianConfig(env: Env = process.env): CustodianConfig {
   const problems: string[] = [];
 
-  const secret = resolveVar(env, 'COMPLETION_SECRET');
-  if (secret.problem) problems.push(secret.problem);
-  else if (secret.value === undefined) problems.push('COMPLETION_SECRET is required (set COMPLETION_SECRET or COMPLETION_SECRET_FILE)');
-
   const modeVar = resolveVar(env, 'CUSTODIAN_MODE');
   if (modeVar.problem) problems.push(modeVar.problem);
   else if (modeVar.value === undefined) problems.push(`CUSTODIAN_MODE is required (one of: ${SUPPORTED_MODES.join(', ')})`);
   else if (!SUPPORTED_MODES.includes(modeVar.value as CustodianMode)) {
     problems.push(`CUSTODIAN_MODE must be one of: ${SUPPORTED_MODES.join(', ')} (got "${modeVar.value}")`);
+  }
+
+  const needsCompletionSecret = modeVar.value === 'memory' || modeVar.value === 'file' || modeVar.value === undefined;
+  const secret = needsCompletionSecret ? resolveVar(env, 'COMPLETION_SECRET') : {};
+  if (secret.problem) problems.push(secret.problem);
+  else if (needsCompletionSecret && secret.value === undefined) {
+    problems.push('COMPLETION_SECRET is required for CUSTODIAN_MODE=memory or CUSTODIAN_MODE=file (set COMPLETION_SECRET or COMPLETION_SECRET_FILE)');
   }
 
   // Phase 4 production guard: the in-process `memory` custodian loses keys on restart and enforces
@@ -72,6 +79,22 @@ export function loadCustodianConfig(env: Env = process.env): CustodianConfig {
 
     if (problems.length > 0) throw new ConfigError(problems);
     return { mode: 'file', completionSecret: secret.value!, keystoreDir: dir.value!, kek: kek! };
+  }
+
+  if (modeVar.value === 'sidecar') {
+    const socket = resolveVar(env, 'CUSTODIAN_SIDECAR_SOCKET_PATH');
+    if (socket.problem) problems.push(socket.problem);
+    else if (socket.value === undefined) problems.push('CUSTODIAN_SIDECAR_SOCKET_PATH is required for CUSTODIAN_MODE=sidecar');
+    else {
+      try {
+        assertLocalSocketPath(socket.value);
+      } catch {
+        problems.push('CUSTODIAN_SIDECAR_SOCKET_PATH must be a local Unix socket path or Windows named pipe, not a network endpoint');
+      }
+    }
+
+    if (problems.length > 0) throw new ConfigError(problems);
+    return { mode: 'sidecar', socketPath: socket.value! };
   }
 
   if (problems.length > 0) throw new ConfigError(problems);
@@ -125,6 +148,8 @@ export function createCustodian(config: CustodianConfig, clock: () => number = (
       return new InMemoryCustodian(config.completionSecret, clock);
     case 'file':
       return new FileCustodian(config.keystoreDir, config.completionSecret, config.kek, clock);
+    case 'sidecar':
+      return new LocalSidecarCustodianClient(new UnixSocketSidecarTransport(config.socketPath));
     default: {
       // Exhaustiveness guard + runtime fail-closed for any future/unknown mode (e.g. a managed
       // KMS or age-file variant added to the union before its adapter exists).
@@ -132,6 +157,15 @@ export function createCustodian(config: CustodianConfig, clock: () => number = (
       throw new ConfigError([`unsupported custodian mode "${String(unknown.mode)}" (fail-closed; no adapter)`]);
     }
   }
+}
+
+export function requireAppHeldCompletionSecret(config: CustodianConfig, commandLabel: string): string {
+  if (config.mode === 'sidecar') {
+    throw new ConfigError([
+      `${commandLabel} is not sidecar-cutover ready: CUSTODIAN_MODE=sidecar does not expose an app-held COMPLETION_SECRET`,
+    ]);
+  }
+  return config.completionSecret;
 }
 
 /** Convenience: load from env and construct in one step. */
