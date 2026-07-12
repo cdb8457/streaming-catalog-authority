@@ -9094,6 +9094,56 @@ test('Phases 181 through 183 define sidecar custody design without implementatio
   ]) assert(!phaseDocs.includes(forbidden), `Phase 181/182/183 docs exclude ${forbidden}`);
 });
 
+test('Phases 184 through 186 define sidecar implementation readiness without runtime cutover', () => {
+  assert(exists('docs/PHASE_184_SIDECAR_IMPLEMENTATION_WORKPLAN.md'), 'Phase 184 implementation workplan exists');
+  assert(exists('docs/PHASE_185_SIDECAR_TEST_MATRIX.md'), 'Phase 185 test matrix exists');
+  assert(exists('docs/PHASE_186_SIDECAR_RUNTIME_CUTOVER_GATE.md'), 'Phase 186 runtime cutover gate exists');
+  const phaseDocs = [
+    read('docs/PHASE_184_SIDECAR_IMPLEMENTATION_WORKPLAN.md'),
+    read('docs/PHASE_185_SIDECAR_TEST_MATRIX.md'),
+    read('docs/PHASE_186_SIDECAR_RUNTIME_CUTOVER_GATE.md'),
+  ].join('\n');
+  const combined = `${phaseDocs}\n${read('README.md')}`;
+  for (const required of [
+    'phase-184-sidecar-implementation-workplan',
+    'phase-185-sidecar-test-matrix',
+    'phase-186-sidecar-runtime-cutover-gate',
+    'ready-for-sidecar-implementation-planning-review',
+    'ready-for-sidecar-test-matrix-review',
+    'ready-for-sidecar-cutover-gate-review',
+    '/mnt/user/appdata/catalog/sidecar/state',
+    '/mnt/user/appdata/catalog/sidecar/logs',
+    'Unix domain socket',
+    'custodian-sidecar',
+    'CUSTODIAN_MODE',
+    'contractKitPassed',
+    'socketUnavailableFailClosed',
+    'restartPersistenceExercised',
+    'restoreMismatchFailClosed',
+    'lostAckIdempotent',
+    'staleProvisionalsListedWithoutSecrets',
+    'corruptStateFailClosed',
+    'attestationOwnedBySidecar',
+    'redactionSafe',
+    'operator approval record',
+    'rollback plan',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+  ]) assert(combined.includes(required), `Phase 184/185/186 surface preserves ${required}`);
+  for (const forbidden of [
+    'ports:',
+    '0.0.0.0',
+    'request-download-link',
+    'magnet:',
+    'provider mode enabled',
+    'O4 closed',
+    'O5 closed',
+    'Plex/Jellyfin mutation is enabled',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 184/185/186 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

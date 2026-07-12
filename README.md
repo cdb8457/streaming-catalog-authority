@@ -1442,6 +1442,13 @@ contract for the local sidecar custodian. Phase 182 adds
 `docs/PHASE_182_SIDECAR_DURABLE_STATE_DESIGN.md`, the sidecar state/restart/restore design. Phase 183
 adds `docs/PHASE_183_UNRAID_SIDECAR_COMPOSE_PLAN.md`, the future Compose fit for a sidecar service.
 All three are design-only and keep O4/O5 open.
+Phase 184 adds `docs/PHASE_184_SIDECAR_IMPLEMENTATION_WORKPLAN.md`, the sidecar implementation build
+sequence and review unit plan. Phase 185 adds `docs/PHASE_185_SIDECAR_TEST_MATRIX.md`, the required
+contract, restart, restore, reconcile, corrupt-state, attestation, and redaction evidence matrix.
+Phase 186 adds `docs/PHASE_186_SIDECAR_RUNTIME_CUTOVER_GATE.md`, the minimum reviewed-input,
+operator-approval, rollback, and evidence gate before any future sidecar runtime switch. These phases
+remain planning/gating artifacts only; they do not install a sidecar, change Compose, switch custody
+mode, or close O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
