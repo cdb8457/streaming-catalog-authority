@@ -6546,8 +6546,8 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/sidecar-unraid-service-plan.ts'),
-    'Phase 105 aggregate test follows Phase 192 O4 sidecar readiness gate',
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 105 aggregate test follows Phase 193 runtime cutover plan',
   );
 
   const source = `${read('src/ops/sidecar-unraid-service-plan.ts')}\n${read('src/ops/sidecar-unraid-service-plan-cli.ts')}`;
@@ -9402,7 +9402,7 @@ test('Phase 191 sidecar evidence acceptance record is publishable and closure-fr
   assert(exists('test/sidecar-factory-evidence-acceptance-record.ts'), 'Phase 191 sidecar evidence acceptance record test exists');
   assert(pkg.scripts['test:sidecar-factory-evidence-acceptance-record'] === 'tsx test/sidecar-factory-evidence-acceptance-record.ts', 'Phase 191 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts'),
     'Phase 191 aggregate test sits after Phase 190 review',
   );
   const doc = read('docs/PHASE_191_SIDECAR_EVIDENCE_ACCEPTANCE_RECORD.md');
@@ -9455,7 +9455,7 @@ test('Phase 192 O4 sidecar closure readiness gate blocks closure until Phases 19
   assert(exists('test/o4-sidecar-closure-readiness.ts'), 'Phase 192 O4 closure readiness test exists');
   assert(pkg.scripts['test:o4-sidecar-closure-readiness'] === 'tsx test/o4-sidecar-closure-readiness.ts', 'Phase 192 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 192 aggregate test sits after Phase 191 acceptance record',
   );
   const doc = read('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md');
@@ -9507,6 +9507,64 @@ test('Phase 192 O4 sidecar closure readiness gate blocks closure until Phases 19
     'authorizationStatus: o4-authorized',
     'authorizesO4Closure: true',
   ]) assert(!doc.includes(forbidden), `Phase 192 record excludes ${forbidden}`);
+});
+
+test('Phase 193 runtime cutover plan defines file-to-sidecar execution without mutation', () => {
+  assert(exists('docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md'), 'Phase 193 runtime cutover plan doc exists');
+  assert(exists('test/runtime-cutover-plan.ts'), 'Phase 193 runtime cutover plan test exists');
+  assert(pkg.scripts['test:runtime-cutover-plan'] === 'tsx test/runtime-cutover-plan.ts', 'Phase 193 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 193 aggregate test sits after Phase 192 readiness gate',
+  );
+  const doc = read('docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md');
+  const suite = read('test/runtime-cutover-plan.ts');
+  const combined = `${doc}\n${suite}\n${read('README.md')}\n${read('package.json')}`;
+  for (const required of [
+    'phase-193-runtime-cutover-plan',
+    'plan-only phase',
+    'This plan satisfies the Phase 193 criterion in the Phase 192 gate.',
+    'does not satisfy Phase 194 or Phase 195',
+    'Phase 194 sidecar service install evidence exists',
+    'fresh backup of custody-relevant state',
+    'CUSTODIAN_MODE: file',
+    'CUSTODIAN_MODE: sidecar',
+    'CUSTODIAN_SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock',
+    '## Cutover Sequence',
+    '## Verification Matrix',
+    '## Rollback',
+    'Rollback direction: `CUSTODIAN_MODE=sidecar` back to `CUSTODIAN_MODE=file`.',
+    'Rollback triggers:',
+    'Data-safety notes:',
+    '## Abort Points',
+    'O4 status after this phase: `open/deferred`',
+    'O5 status after this phase: `open/deferred`',
+    'Phase 194 is now unblocked.',
+  ]) assert(combined.includes(required), `Phase 193 surface preserves ${required}`);
+  for (const forbidden of [
+    'postgres://',
+    'postgresql://',
+    '-----BEGIN',
+    'ssh-ed25519',
+    'token:',
+    'password:',
+    'secret:',
+    'kek:',
+    'dek:',
+    'wrappedHex',
+    'dekBase64',
+    '/mnt/user/',
+    '/boot/config/',
+    'C:\\',
+    '\\\\.\\pipe\\',
+    'http://',
+    'https://',
+    '192.168.',
+    'localhost:',
+    'o4Status: closed/authorized',
+    'authorizationStatus: o4-authorized',
+    'authorizesO4Closure: true',
+  ]) assert(!doc.includes(forbidden), `Phase 193 plan excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

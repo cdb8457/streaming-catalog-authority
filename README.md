@@ -1483,6 +1483,12 @@ plan, Phase 194 Unraid sidecar service install, and Phase 195 production custody
 not satisfied, and returns the verdict `O4_READY_PENDING_EXECUTION`. O4 and O5 remain open/deferred;
 this phase is artifact-only and does not change Compose, install a service, switch custody, or close
 O4/O5.
+Phase 193 adds `docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md` and `test:runtime-cutover-plan` as the
+plan-only runtime cutover runbook from `CUSTODIAN_MODE=file` to `CUSTODIAN_MODE=sidecar`. It defines
+preconditions, before/after compose fragments, ordered cutover steps, verification checkpoints,
+rollback triggers, data-safety notes, and abort points. It satisfies the Phase 193 criterion in the
+Phase 192 gate and unblocks Phase 194, but it does not edit Compose, install a service, switch
+custody, or close O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
