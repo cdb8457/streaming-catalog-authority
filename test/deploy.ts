@@ -6546,7 +6546,7 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 105 aggregate test follows Phase 194 sidecar service install',
   );
 
@@ -9455,7 +9455,7 @@ test('Phase 192 O4 sidecar closure readiness gate is closure-eligible after Phas
   assert(exists('test/o4-sidecar-closure-readiness.ts'), 'Phase 192 O4 closure readiness test exists');
   assert(pkg.scripts['test:o4-sidecar-closure-readiness'] === 'tsx test/o4-sidecar-closure-readiness.ts', 'Phase 192 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 192 aggregate test sits after Phase 191 acceptance record',
   );
   const doc = read('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md');
@@ -9515,7 +9515,7 @@ test('Phase 193 runtime cutover plan defines file-to-sidecar execution without m
   assert(exists('test/runtime-cutover-plan.ts'), 'Phase 193 runtime cutover plan test exists');
   assert(pkg.scripts['test:runtime-cutover-plan'] === 'tsx test/runtime-cutover-plan.ts', 'Phase 193 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 193 aggregate test sits after Phase 192 readiness gate',
   );
   const doc = read('docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md');
@@ -9684,6 +9684,39 @@ test('Phase 197 production custody switch retry makes sidecar mode the runtime i
     'Persistence evidence manifest digest',
     'O5 is unchanged and remains the only custody',
   ]) assert(combined.includes(required), `Phase 197 surface preserves ${required}`);
+});
+
+test('Phase 198 O4 final closure disposition records O4_CLOSED and leaves O5 open', () => {
+  assert(exists('docs/PHASE_198_O4_FINAL_CLOSURE_DISPOSITION.md'), 'Phase 198 O4 final disposition doc exists');
+  assert(exists('test/o4-closure-disposition.ts'), 'Phase 198 O4 final disposition test exists');
+  assert(pkg.scripts['test:o4-closure-disposition'] === 'tsx test/o4-closure-disposition.ts', 'Phase 198 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts'),
+    'Phase 198 aggregate test follows Phase 192 readiness',
+  );
+  const combined = [
+    read('docs/PHASE_198_O4_FINAL_CLOSURE_DISPOSITION.md'),
+    read('test/o4-closure-disposition.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-198-o4-final-closure-disposition',
+    'O4 final status: `O4_CLOSED`',
+    'phase-198-evidence-chain-satisfied',
+    'Phase 195 attempted the production custody switch and rolled back.',
+    'Phase 196 identified the root cause as a false negative',
+    'attempt=1 doctor_exit=0 parser_exit=0 verdict=healthy',
+    'Sidecar single-instance recovery',
+    'Socket permission drift',
+    'O5 final disposition: `open/deferred`',
+    'O4 closure does not close O5',
+  ]) assert(combined.includes(required), `Phase 198 surface preserves ${required}`);
+  const doc = read('docs/PHASE_198_O4_FINAL_CLOSURE_DISPOSITION.md');
+  for (const forbidden of [
+    'O5_CLOSED',
+    'provider mode enabled',
+    'playback enabled',
+  ]) assert(!doc.includes(forbidden), `Phase 198 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

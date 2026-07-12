@@ -92,9 +92,9 @@ The custodian is an interface. `InMemoryCustodian` is the dev/test impl; **`File
 a durable reference **harness, not the production adapter** (survives restart; zeroize-replace
 + unlink of the wrapped DEK — best-effort, *not* a guaranteed physical block scrub, see below;
 durable non-secret tombstones; holds the completion secret and KEK outside the app DB). A
-managed KMS / secrets service implementing the same `KeyCustodian` interface is the production
-target (design **O4**, still open) and provides the real deletion guarantee; swapping it in is a
-constructor change.
+production sidecar custodian implementing the same `KeyCustodian` interface is the current O4
+production target. O4 is formally closed by Phase 198 evidence; O5 managed KEK custody/scheduling
+remains open/deferred.
 
 The erasure guarantee does **not** depend on physically overwriting the DEK's disk blocks — an
 atomic rename swaps in a new inode rather than scrubbing the old one in place. It depends on the
@@ -1478,11 +1478,9 @@ readiness while keeping O4 and O5 open/deferred. It is artifact-only and does no
 change Compose, switch runtime custody mode, or close O4/O5.
 Phase 192 adds `docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md` and
 `test:o4-sidecar-closure-readiness` as the formal O4 sidecar closure-readiness gate. It defines the
-criteria matrix, marks the Phase 191 acceptance record satisfied, marks Phase 193 runtime cutover
-plan, Phase 194 Unraid sidecar service install, and Phase 195 production custody switch evidence as
-not satisfied, and returns the verdict `O4_READY_PENDING_EXECUTION`. O4 and O5 remain open/deferred;
-this phase is artifact-only and does not change Compose, install a service, switch custody, or close
-O4/O5.
+criteria matrix and, after Phases 193/194/197, records O4 as closure-eligible while leaving O5
+open/deferred. This phase is artifact-only and does not change Compose, install a service, switch
+custody, or close O4/O5.
 Phase 193 adds `docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md` and `test:runtime-cutover-plan` as the
 plan-only runtime cutover runbook from `CUSTODIAN_MODE=file` to `CUSTODIAN_MODE=sidecar`. It defines
 preconditions, before/after compose fragments, ordered cutover steps, verification checkpoints,
@@ -1502,6 +1500,11 @@ replace brittle grep matching with schema-aware doctor checkpoint parsing before
 Phase 197 records the successful production custody switch retry. The canonical Unraid runtime now
 runs `app` and `ops` with `CUSTODIAN_MODE=sidecar`, retained post-switch and restart-persistence
 evidence parses as healthy under the Phase 196 parser, O4 is closure-eligible, and O5 remains
+open/deferred.
+Phase 198 adds `docs/PHASE_198_O4_FINAL_CLOSURE_DISPOSITION.md` and
+`test:o4-closure-disposition` as the formal O4 final disposition. It closes O4 as `O4_CLOSED` based
+on the Phase 191/193/194/197 evidence chain, includes the Phase 195 rollback and Phase 196 parser
+fix in the closure narrative, accepts named residual O4 operational risks, and leaves O5
 open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
