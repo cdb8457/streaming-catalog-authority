@@ -26,9 +26,9 @@ changes are authorized by this phase.
 | Criterion | Required Evidence | Current State | Status |
 |---|---|---|---|
 | Phase 191 acceptance record exists, is redaction-safe, and cites Phase 190 passing evidence | `docs/PHASE_191_SIDECAR_EVIDENCE_ACCEPTANCE_RECORD.md`, commit `7990ac2`, tag `phase-191`, Phase 189/190 digests, Phase 190 `ok:true` | Present and accepted as input to this gate | `satisfied` |
-| Runtime cutover plan exists and is reviewed | Phase 193 reviewed runtime cutover plan with rollback and evidence procedure | Not present yet; Phase 193 remains required | `not-satisfied-phase-193` |
-| Sidecar service installed on Unraid, local socket only, no public ports | Phase 194 install evidence showing local socket only, no published ports, service health, and rollback readiness | Not installed yet; Phase 194 remains required | `not-satisfied-phase-194` |
-| Production custody switched with post-switch evidence, persistence checks restarted, UI/API healthy | Phase 195 post-switch evidence showing `CUSTODIAN_MODE=sidecar`, restart persistence, UI/API health, and fail-closed behavior | Not switched yet; Phase 195 remains required | `not-satisfied-phase-195` |
+| Runtime cutover plan exists and is reviewed | Phase 193 reviewed runtime cutover plan with rollback and evidence procedure | Satisfied by `docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md` | `satisfied` |
+| Sidecar service installed on Unraid, local socket only, no public ports | Phase 194 install evidence showing local socket only, no published ports, service health, and rollback readiness | Satisfied by `docs/PHASE_194_UNRAID_SIDECAR_SERVICE_INSTALL.md` | `satisfied` |
+| Production custody switched with post-switch evidence, persistence checks restarted, UI/API healthy | Phase 197 retry evidence showing `CUSTODIAN_MODE=sidecar`, restart persistence, UI/API health, and sidecar exposure proof | Satisfied by `docs/PHASE_197_PRODUCTION_CUSTODY_SWITCH_RETRY.md` | `satisfied-phase-197` |
 
 ## Readiness Verdict
 
@@ -36,13 +36,14 @@ Readiness verdict: `O4_READY_PENDING_EXECUTION`
 
 Meaning:
 
-- O4 closure criteria are now explicitly defined.
+- O4 closure criteria are now explicitly defined and satisfied by the retained Phase 191, Phase 193,
+  Phase 194, and Phase 197 artifacts.
 - The prerequisite sidecar factory evidence acceptance artifact is satisfied.
-- O4 cannot close yet because the Phase 193 runtime cutover plan, Phase 194 Unraid sidecar service
-  install evidence, and Phase 195 production custody switch evidence are not complete.
-- The next unblocked phase is Phase 193.
+- O4 is closure-eligible after Phase 197, but this gate record does not itself perform a separate
+  O4 final authorization.
+- The next unblocked action is explicit O4 final disposition, if desired.
 
-O4 status after this gate: `open/deferred`
+O4 status after Phase 197: `closure-eligible`
 
 O5 status after this gate: `open/deferred`
 
@@ -56,7 +57,7 @@ evidence for:
 - Phase 193: reviewed cutover plan, rollback plan, command order, and evidence capture checklist;
 - Phase 194: installed sidecar service on Unraid, local socket only, no public ports, health evidence,
   log evidence, and rollback readiness;
-- Phase 195: production custody switched to sidecar, post-switch evidence, restart persistence checks,
+- Phase 197: production custody switched to sidecar, post-switch evidence, restart persistence checks,
   UI/API health, and fail-closed verification.
 
 ## Boundary
@@ -86,6 +87,6 @@ Forbidden in this phase:
 
 ## Review Status
 
-Recommended next status: `ready-for-phase-193-runtime-cutover-plan`.
+Recommended next status: `o4-closure-eligible-after-phase-197`.
 
-O4 remains open. O5 remains open. This gate does not close O4 and does not close O5.
+O4 is closure-eligible. O5 remains open. This gate update does not close O4 and does not close O5.

@@ -15,16 +15,20 @@ const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8');
 
 function sidecarBlock(compose: string): string {
-  const start = compose.indexOf('  sidecar:\n');
-  const end = compose.indexOf('\n  app:\n', start);
-  assert(start >= 0, 'sidecar service exists');
-  assert(end > start, 'sidecar service is before app');
+  const startMatch = /^  sidecar:\r?$/m.exec(compose);
+  assert(startMatch, 'sidecar service exists');
+  if (!startMatch) throw new Error('sidecar service exists');
+  const start = startMatch.index;
+  const endMatch = /\r?\n  app:\r?\n/.exec(compose.slice(start));
+  assert(endMatch, 'sidecar service is before app');
+  if (!endMatch) throw new Error('sidecar service is before app');
+  const end = start + endMatch.index;
   return compose.slice(start, end);
 }
 
 console.log('Running Phase 194 sidecar service install suite:\n');
 
-test('runtime compose adds sidecar service without changing app or ops custody mode', () => {
+test('runtime compose preserves sidecar service after production custody switch', () => {
   const compose = read('docker-compose.unraid.runtime.yml');
   const sidecar = sidecarBlock(compose);
   assert(sidecar.includes('restart: unless-stopped'), 'sidecar restart policy');
@@ -35,9 +39,8 @@ test('runtime compose adds sidecar service without changing app or ops custody m
   assert(sidecar.includes('NPM_CONFIG_CACHE: /tmp/npm-cache'), 'npm cache stays on tmpfs');
   assert(sidecar.includes('command: ["ops:sidecar-daemon", "--", "--serve"]'), 'serve command');
   assert(sidecar.includes('test -S /run/catalog-sidecar/catalog-sidecar.sock'), 'socket healthcheck');
-  assert((compose.match(/CUSTODIAN_MODE: file/g) ?? []).length >= 2, 'app and ops remain file mode');
-  assert(!compose.includes('CUSTODIAN_MODE: sidecar'), 'app/ops do not switch to sidecar');
-  assert(!compose.includes('CUSTODIAN_SIDECAR_SOCKET_PATH:'), 'app/ops sidecar socket not configured yet');
+  assert((compose.match(/CUSTODIAN_MODE: sidecar/g) ?? []).length >= 2, 'app and ops switched to sidecar by Phase 197');
+  assert((compose.match(/CUSTODIAN_SIDECAR_SOCKET_PATH:/g) ?? []).length >= 2, 'app and ops sidecar socket configured by Phase 197');
 });
 
 test('sidecar service is socket-only and least-privilege', () => {

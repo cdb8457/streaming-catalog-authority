@@ -127,8 +127,8 @@ test('unraid runtime compose — launcher-ready image mode with no build context
     'runtime pgdata bind mount keeps canonical default and smoke override',
   );
   assert(
-    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/keystore:/var/lib/catalog/keystore'),
-    'runtime keystore bind mount keeps canonical default and smoke override',
+    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar'),
+    'runtime sidecar socket bind mount keeps canonical default and smoke override',
   );
   assert(
     unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:/backups'),
@@ -9450,7 +9450,7 @@ test('Phase 191 sidecar evidence acceptance record is publishable and closure-fr
   ]) assert(!doc.includes(forbidden), `Phase 191 record excludes ${forbidden}`);
 });
 
-test('Phase 192 O4 sidecar closure readiness gate blocks closure until Phases 193-195', () => {
+test('Phase 192 O4 sidecar closure readiness gate is closure-eligible after Phase 197', () => {
   assert(exists('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md'), 'Phase 192 O4 closure readiness doc exists');
   assert(exists('test/o4-sidecar-closure-readiness.ts'), 'Phase 192 O4 closure readiness test exists');
   assert(pkg.scripts['test:o4-sidecar-closure-readiness'] === 'tsx test/o4-sidecar-closure-readiness.ts', 'Phase 192 test script present');
@@ -9473,15 +9473,16 @@ test('Phase 192 O4 sidecar closure readiness gate blocks closure until Phases 19
     'Phase 191 acceptance record exists, is redaction-safe, and cites Phase 190 passing evidence',
     '`satisfied`',
     'Runtime cutover plan exists and is reviewed',
-    '`not-satisfied-phase-193`',
+    'Satisfied by `docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md`',
     'Sidecar service installed on Unraid, local socket only, no public ports',
-    '`not-satisfied-phase-194`',
+    'Satisfied by `docs/PHASE_194_UNRAID_SIDECAR_SERVICE_INSTALL.md`',
     'Production custody switched with post-switch evidence, persistence checks restarted, UI/API healthy',
-    '`not-satisfied-phase-195`',
+    'Satisfied by `docs/PHASE_197_PRODUCTION_CUSTODY_SWITCH_RETRY.md`',
+    '`satisfied-phase-197`',
     'Readiness verdict: `O4_READY_PENDING_EXECUTION`',
-    'O4 status after this gate: `open/deferred`',
+    'O4 status after Phase 197: `closure-eligible`',
     'O5 status after this gate: `open/deferred`',
-    'This gate does not close O4 and does not close O5.',
+    'does not close O4 and does not close O5',
   ]) assert(combined.includes(required), `Phase 192 surface preserves ${required}`);
   for (const forbidden of [
     'postgres://',
@@ -9604,8 +9605,7 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
     '/var/run/docker.sock',
     '0.0.0.0',
   ]) assert(!sidecar.includes(forbidden), `Phase 194 sidecar block excludes ${forbidden}`);
-  assert((unraidRuntimeCompose.match(/CUSTODIAN_MODE: file/g) ?? []).length >= 2, 'Phase 194 app and ops remain file mode');
-  assert(!unraidRuntimeCompose.includes('CUSTODIAN_MODE: sidecar'), 'Phase 194 does not switch app/ops to sidecar mode');
+  assert(unraidRuntimeCompose.includes('  sidecar:'), 'Phase 194 sidecar service remains present after later switch');
 
   const doc = read('docs/PHASE_194_UNRAID_SIDECAR_SERVICE_INSTALL.md');
   const suite = read('test/sidecar-service-install.ts');
@@ -9657,6 +9657,33 @@ test('Phase 196 cutover doctor/parser fix is schema-aware and retry-safe', () =>
     'O5 status after Phase 196: `open/deferred`',
     'Phase 197 switch',
   ]) assert(combined.includes(required), `Phase 196 surface preserves ${required}`);
+});
+
+test('Phase 197 production custody switch retry makes sidecar mode the runtime invariant', () => {
+  assert(exists('docs/PHASE_197_PRODUCTION_CUSTODY_SWITCH_RETRY.md'), 'Phase 197 switch retry doc exists');
+  assert(pkg.scripts['test:production-custody-switch'] === 'tsx test/production-custody-switch.ts', 'Phase 197 production switch test script present');
+  assert((unraidRuntimeCompose.match(/CUSTODIAN_MODE: sidecar/g) ?? []).length >= 2, 'Phase 197 app and ops are sidecar mode');
+  assert(!unraidRuntimeCompose.includes('CUSTODIAN_MODE: file'), 'Phase 197 runtime no longer asserts file mode');
+  assert((unraidRuntimeCompose.match(/CUSTODIAN_SIDECAR_SOCKET_PATH: \/run\/catalog-sidecar\/catalog-sidecar\.sock/g) ?? []).length >= 2, 'Phase 197 app and ops receive socket path');
+  assert(!unraidRuntimeCompose.includes('CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore'), 'Phase 197 removes file keystore env from app/ops');
+  assert(!unraidRuntimeCompose.includes('CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek'), 'Phase 197 removes app/ops KEK env');
+  const combined = [
+    read('docs/PHASE_197_PRODUCTION_CUSTODY_SWITCH_RETRY.md'),
+    read('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md'),
+    read('test/production-custody-switch.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-197-production-custody-switch-retry',
+    'production-sidecar-custody-active',
+    'attempt=1 doctor_exit=0 parser_exit=0 verdict=healthy',
+    'O4 status after Phase 197: `closure-eligible`',
+    'O5 status after Phase 197: `open/deferred`',
+    'satisfied-phase-197',
+    'sidecar exposure proof',
+    'Persistence evidence manifest digest',
+    'O5 is unchanged and remains the only custody',
+  ]) assert(combined.includes(required), `Phase 197 surface preserves ${required}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

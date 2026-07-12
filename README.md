@@ -1499,6 +1499,10 @@ Phase 195 records an attempted production custody switch that rolled back to `CU
 after a post-switch doctor parser false negative. Phase 196 adds
 `docs/PHASE_196_CUTOVER_PARSER_FIX.md`, `ops:cutover-doctor-check`, and `test:cutover-parser` to
 replace brittle grep matching with schema-aware doctor checkpoint parsing before any retry.
+Phase 197 records the successful production custody switch retry. The canonical Unraid runtime now
+runs `app` and `ops` with `CUSTODIAN_MODE=sidecar`, retained post-switch and restart-persistence
+evidence parses as healthy under the Phase 196 parser, O4 is closure-eligible, and O5 remains
+open/deferred.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

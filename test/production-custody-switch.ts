@@ -14,34 +14,37 @@ function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(m
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8');
 
-console.log('Running Phase 195 production custody switch attempt suite:\n');
+console.log('Running Phase 197 production custody switch retry suite:\n');
 
-test('phase record documents attempted rollback and keeps gates open', () => {
-  const doc = read('docs/PHASE_195_PRODUCTION_CUSTODY_SWITCH.md');
+test('phase record documents successful sidecar switch and O4 closure eligibility', () => {
+  const doc = read('docs/PHASE_197_PRODUCTION_CUSTODY_SWITCH_RETRY.md');
   for (const required of [
-    'phase-195-production-custody-switch',
-    'attempted-with-rollback',
-    'Production custody is not switched',
-    'Rollback trigger: `post_switch_doctor_failed`',
-    'post-switch doctor output later parsed as `ok:true`',
-    'phase-195-precondition-evidence',
-    'phase-195-custody-state-backup-verified',
-    'phase-195-post-rollback-verification',
-    'O4 status after this attempt: `open/deferred`',
-    'O5 status after this attempt: `open/deferred`',
-    'Phase 195 exit criteria are not met',
+    'phase-197-production-custody-switch-retry',
+    'production-sidecar-custody-active',
+    'CUSTODIAN_MODE=sidecar',
+    'attempt=1 doctor_exit=0 parser_exit=0 verdict=healthy',
+    '"status":"healthy"',
+    'post-switch doctor parser output',
+    'app-path doctor parser output',
+    'sidecar exposure proof',
+    'Persistence evidence manifest digest',
+    'Rollback was not triggered.',
+    'O4 status after Phase 197: `closure-eligible`',
+    'O5 status after Phase 197: `open/deferred`',
   ]) assert(doc.includes(required), `doc includes ${required}`);
 });
 
-test('runtime compose remains on file custody after rollback', () => {
+test('runtime compose asserts sidecar custody after successful switch', () => {
   const compose = read('docker-compose.unraid.runtime.yml');
-  assert((compose.match(/CUSTODIAN_MODE: file/g) ?? []).length >= 2, 'app and ops remain file mode');
-  assert(!compose.includes('CUSTODIAN_MODE: sidecar'), 'app/ops are not left in sidecar mode');
-  assert(compose.includes('CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore'), 'file keystore env restored');
-  assert(compose.includes('CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek'), 'KEK secret env restored');
+  assert((compose.match(/CUSTODIAN_MODE: sidecar/g) ?? []).length >= 2, 'app and ops are sidecar mode');
+  assert(!compose.includes('CUSTODIAN_MODE: file'), 'app/ops are not left in file mode');
+  assert((compose.match(/CUSTODIAN_SIDECAR_SOCKET_PATH: \/run\/catalog-sidecar\/catalog-sidecar\.sock/g) ?? []).length >= 2, 'app and ops receive socket path');
+  assert((compose.match(/sidecar\/run:\/run\/catalog-sidecar/g) ?? []).length >= 2, 'app and ops mount only sidecar run socket path');
+  assert(!compose.includes('CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore'), 'file keystore env removed from app/ops');
+  assert(!compose.includes('CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek'), 'KEK secret env removed from app/ops');
 });
 
-test('doctor sidecar compatibility remains available for a future retry', () => {
+test('doctor sidecar compatibility is the active production path', () => {
   const source = `${read('src/ops/doctor.ts')}\n${read('src/ops/doctor-cli.ts')}\n${read('src/ops/operator-ui-service.ts')}\n${read('test/ops-doctor.ts')}`;
   assert(source.includes('completion secret is delegated to the sidecar custodian'), 'delegated completion-secret check');
   assert(source.includes("custodianConfig.mode === 'sidecar'"), 'sidecar caller branch');
