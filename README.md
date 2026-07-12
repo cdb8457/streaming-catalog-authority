@@ -1437,6 +1437,11 @@ managed-custody, provider, download, playback, and media-server orchestration cl
 Phase 179 updates `RELEASE.md` as the Launch v1 release package with `launch-v1` as the release tag,
 canonical Unraid quick start, evidence review commands, and the allowed launch claim. Phase 180 adds
 `docs/PHASE_180_ARCANE_FINAL_BUTTON_CHECKLIST.md`, the final Arcane button checklist for Launch v1.
+Phase 181 adds `docs/PHASE_181_SIDECAR_CUSTODIAN_API_CONTRACT.md`, the Launch v1 follow-on API
+contract for the local sidecar custodian. Phase 182 adds
+`docs/PHASE_182_SIDECAR_DURABLE_STATE_DESIGN.md`, the sidecar state/restart/restore design. Phase 183
+adds `docs/PHASE_183_UNRAID_SIDECAR_COMPOSE_PLAN.md`, the future Compose fit for a sidecar service.
+All three are design-only and keep O4/O5 open.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

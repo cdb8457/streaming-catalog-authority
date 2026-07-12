@@ -9051,6 +9051,49 @@ test('Phases 179 and 180 package Launch v1 for easier Unraid and Arcane launch',
   ]) assert(!phaseDocs.includes(forbidden), `Phase 179/180 docs exclude ${forbidden}`);
 });
 
+test('Phases 181 through 183 define sidecar custody design without implementation or gate closure', () => {
+  assert(exists('docs/PHASE_181_SIDECAR_CUSTODIAN_API_CONTRACT.md'), 'Phase 181 sidecar API contract exists');
+  assert(exists('docs/PHASE_182_SIDECAR_DURABLE_STATE_DESIGN.md'), 'Phase 182 sidecar durable state design exists');
+  assert(exists('docs/PHASE_183_UNRAID_SIDECAR_COMPOSE_PLAN.md'), 'Phase 183 sidecar Compose plan exists');
+  const phaseDocs = [
+    read('docs/PHASE_181_SIDECAR_CUSTODIAN_API_CONTRACT.md'),
+    read('docs/PHASE_182_SIDECAR_DURABLE_STATE_DESIGN.md'),
+    read('docs/PHASE_183_UNRAID_SIDECAR_COMPOSE_PLAN.md'),
+  ].join('\n');
+  const combined = `${phaseDocs}\n${read('README.md')}`;
+  for (const required of [
+    'phase-181-sidecar-custodian-api-contract',
+    'phase-182-sidecar-durable-state-design',
+    'phase-183-unraid-sidecar-compose-plan',
+    'ready-for-sidecar-api-design-review',
+    'ready-for-sidecar-state-design-review',
+    'ready-for-sidecar-compose-design-review',
+    'Unix domain socket',
+    'custodian-sidecar',
+    '/mnt/user/appdata/catalog/sidecar/state',
+    '/mnt/user/appdata/catalog/sidecar/run',
+    '/mnt/user/appdata/catalog/sidecar/logs',
+    'provision',
+    'commitProvision',
+    'destroy',
+    'listStaleProvisioning',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+  ]) assert(combined.includes(required), `Phase 181/182/183 surface preserves ${required}`);
+  for (const forbidden of [
+    'ports:',
+    '0.0.0.0',
+    'request-download-link',
+    'magnet:',
+    'provider mode enabled',
+    'O4 closed',
+    'O5 closed',
+    'Plex/Jellyfin mutation is enabled',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 181/182/183 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
