@@ -6546,8 +6546,8 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-unraid-service-plan.ts'),
-    'Phase 105 aggregate test follows Phase 103/104 durable evidence',
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 105 aggregate test follows Phase 187 sidecar daemon executable',
   );
 
   const source = `${read('src/ops/sidecar-unraid-service-plan.ts')}\n${read('src/ops/sidecar-unraid-service-plan-cli.ts')}`;
@@ -9142,6 +9142,77 @@ test('Phases 184 through 186 define sidecar implementation readiness without run
     'O5 closed',
     'Plex/Jellyfin mutation is enabled',
   ]) assert(!phaseDocs.includes(forbidden), `Phase 184/185/186 docs exclude ${forbidden}`);
+});
+
+test('Phase 187 adds a local sidecar daemon executable without production cutover', () => {
+  assert(exists('docs/PHASE_187_SIDECAR_DAEMON_EXECUTABLE.md'), 'Phase 187 sidecar daemon executable doc exists');
+  assert(exists('src/ops/sidecar-daemon.ts'), 'Phase 187 sidecar daemon source exists');
+  assert(exists('src/ops/sidecar-daemon-cli.ts'), 'Phase 187 sidecar daemon CLI exists');
+  assert(exists('test/sidecar-daemon.ts'), 'Phase 187 sidecar daemon test exists');
+  assert(pkg.scripts['ops:sidecar-daemon'] === 'tsx src/ops/sidecar-daemon-cli.ts', 'Phase 187 ops script present');
+  assert(pkg.scripts['test:sidecar-daemon'] === 'tsx test/sidecar-daemon.ts', 'Phase 187 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts'),
+    'Phase 187 aggregate test follows durable sidecar state evidence',
+  );
+  const source = [
+    read('src/ops/sidecar-daemon.ts'),
+    read('src/ops/sidecar-daemon-cli.ts'),
+  ].join('\n');
+  const phaseSurface = `${source}\n${read('docs/PHASE_187_SIDECAR_DAEMON_EXECUTABLE.md')}`;
+  const combined = `${phaseSurface}\n${read('README.md')}`;
+  for (const required of [
+    'phase-187-sidecar-daemon-executable',
+    'phase-187-sidecar-daemon-self-test',
+    'SIDECAR_DAEMON_SELF_TEST',
+    'ops:sidecar-daemon',
+    '--self-test',
+    '--serve',
+    'SIDECAR_SOCKET_PATH',
+    'SIDECAR_STATE_DIR',
+    'SIDECAR_COMPLETION_SECRET_FILE',
+    'SIDECAR_KEK_FILE',
+    'local Unix socket or Windows named pipe only',
+    'FileCustodian remains a reference harness',
+    'usesFileCustodianReferenceHarness: true',
+    'serviceInstallAllowed: false',
+    'composeChangeAllowed: false',
+    'runtimeCutoverAllowed: false',
+    'providerContactAllowed: false',
+    'playbackAllowed: false',
+    'mediaServerMutationAllowed: false',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+  ]) assert(combined.includes(required), `Phase 187 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    '@aws-sdk',
+    '@azure',
+    '@google-cloud',
+    'express',
+    'fastify',
+    'koa',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 187 source excludes ${forbidden}`);
+  for (const forbidden of [
+    'ports:',
+    '0.0.0.0',
+    'request-download-link',
+    'magnet:',
+    'provider mode enabled',
+    'O4 closed',
+    'O5 closed',
+    'Plex/Jellyfin mutation is enabled',
+  ]) assert(!phaseSurface.includes(forbidden), `Phase 187 phase surface excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

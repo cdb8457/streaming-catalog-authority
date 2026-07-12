@@ -1449,6 +1449,11 @@ Phase 186 adds `docs/PHASE_186_SIDECAR_RUNTIME_CUTOVER_GATE.md`, the minimum rev
 operator-approval, rollback, and evidence gate before any future sidecar runtime switch. These phases
 remain planning/gating artifacts only; they do not install a sidecar, change Compose, switch custody
 mode, or close O4/O5.
+Phase 187 adds `docs/PHASE_187_SIDECAR_DAEMON_EXECUTABLE.md`, `ops:sidecar-daemon`, and
+`test:sidecar-daemon` as the first local sidecar executable wrapper. It supports a finite
+redaction-safe `--self-test --json` path and a future controlled `--serve` mode using a local Unix
+socket or Windows named pipe only. It still does not change Compose, install an Unraid service,
+switch custody mode, contact providers, mutate media servers, or close O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
