@@ -13,9 +13,14 @@ Service name: `sidecar`
 
 Runtime stack: `docker-compose.unraid.runtime.yml`
 
-Image source: `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}` built from the Phase 194 source tree.
+Image source: `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}` built from the Phase 194 install
+source tree.
 
-Pinned build source: `phase-194` tag after this phase is committed.
+Pinned install build source: commit `c9cc743` (`Add Unraid sidecar service install`).
+
+Phase record source: `phase-194` tag after the evidence record is committed.
+
+Deployed image id: `sha256:0246fd96fe35971ded849f38d4160d134f0248c32bb559bc373eb82d4517e29a`
 
 Command:
 
@@ -31,6 +36,7 @@ SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
 SIDECAR_STATE_DIR: /var/lib/catalog-sidecar/state
 SIDECAR_COMPLETION_SECRET_FILE: /run/secrets/completion_secret
 SIDECAR_KEK_FILE: /run/secrets/custodian_kek
+NPM_CONFIG_CACHE: /tmp/npm-cache
 ```
 
 Mounts:
@@ -85,16 +91,16 @@ material, KEK value, log payload, hostname, database URL, or command output is i
 document.
 
 - Install evidence report id: `phase-194-sidecar-install-evidence`
-- Install evidence digest: `pending-unraid-install`
+- Install evidence digest: `sha256:ceeeda354c0f88e8097ab134a24f7379e916e247aac2f1c69c3b6dfafa431296`
 - Service health evidence id: `phase-194-sidecar-health-evidence`
-- Service health digest: `pending-unraid-install`
+- Service health digest: `sha256:31cb4876d94a20d5ea1a97a0660bc4c95acf5817b6d4a3200f648eff8b805dfb`
 - Exposure proof evidence id: `phase-194-sidecar-exposure-proof`
-- Exposure proof digest: `pending-unraid-install`
+- Exposure proof digest: `sha256:258818931d645ce44baf0933a8ebf72419ab2e6a2994f7d42dc56dd3d0b1856b`
 - Restart persistence evidence id: `phase-194-sidecar-restart-persistence`
-- Restart persistence digest: `pending-unraid-install`
+- Restart persistence digest: `sha256:e5fcea909bab4c8841716c61dfaa7a9ab78a00f479a1b1c977a66d0462f022f3`
 - App unchanged evidence id: `phase-194-app-custody-unchanged`
-- App unchanged digest: `pending-unraid-install`
-- Runtime image id: `pending-unraid-install`
+- App unchanged digest: `sha256:976eccb8225bf37213616bf836a365205a6889ec40ed8a259ad08506638cfa07`
+- Runtime image id: `sha256:0246fd96fe35971ded849f38d4160d134f0248c32bb559bc373eb82d4517e29a`
 
 ## Evidence Requirements
 
