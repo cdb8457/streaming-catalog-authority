@@ -6546,8 +6546,8 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-unraid-service-plan.ts'),
-    'Phase 105 aggregate test follows Phase 187 sidecar daemon executable',
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 105 aggregate test follows Phase 189 sidecar factory evidence',
   );
 
   const source = `${read('src/ops/sidecar-unraid-service-plan.ts')}\n${read('src/ops/sidecar-unraid-service-plan-cli.ts')}`;
@@ -9266,6 +9266,73 @@ test('Phase 188 adds sidecar custodian factory mode without runtime cutover', ()
     'O5 closed',
     'Plex/Jellyfin mutation is enabled',
   ]) assert(!phaseSurface.includes(forbidden), `Phase 188 phase surface excludes ${forbidden}`);
+});
+
+test('Phase 189 adds sidecar factory evidence without production cutover', () => {
+  assert(exists('docs/PHASE_189_SIDECAR_FACTORY_EVIDENCE.md'), 'Phase 189 sidecar factory evidence doc exists');
+  assert(exists('src/ops/sidecar-factory-evidence.ts'), 'Phase 189 sidecar factory evidence source exists');
+  assert(exists('src/ops/sidecar-factory-evidence-cli.ts'), 'Phase 189 sidecar factory evidence CLI exists');
+  assert(exists('test/sidecar-factory-evidence.ts'), 'Phase 189 sidecar factory evidence test exists');
+  assert(pkg.scripts['ops:sidecar-factory-evidence'] === 'tsx src/ops/sidecar-factory-evidence-cli.ts', 'Phase 189 ops script present');
+  assert(pkg.scripts['test:sidecar-factory-evidence'] === 'tsx test/sidecar-factory-evidence.ts', 'Phase 189 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 189 aggregate test sits between daemon and Unraid service plan',
+  );
+  const source = [
+    read('src/ops/sidecar-factory-evidence.ts'),
+    read('src/ops/sidecar-factory-evidence-cli.ts'),
+  ].join('\n');
+  const phaseSurface = `${source}\n${read('docs/PHASE_189_SIDECAR_FACTORY_EVIDENCE.md')}`;
+  const combined = `${phaseSurface}\n${read('README.md')}\n${read('package.json')}`;
+  for (const required of [
+    'phase-189-sidecar-factory-evidence',
+    'SIDECAR_FACTORY_EVIDENCE',
+    'ops:sidecar-factory-evidence',
+    'test:sidecar-factory-evidence',
+    'daemonWrapperExercised: true',
+    'custodianFactorySidecarModeExercised: true',
+    'localSocketOnly: true',
+    'appHeldCompletionSecretRequired: false',
+    'appHeldKekRequired: false',
+    'serviceInstallAllowed: false',
+    'composeChangeAllowed: false',
+    'runtimeCutoverAllowed: false',
+    'providerContactAllowed: false',
+    'playbackAllowed: false',
+    'mediaServerMutationAllowed: false',
+    'closesO4: false',
+    'closesO5: false',
+    'O4 remains open',
+    'O5 remains open',
+  ]) assert(combined.includes(required), `Phase 189 surface preserves ${required}`);
+  for (const forbidden of [
+    'node:http',
+    'node:https',
+    'globalThis.fetch',
+    'fetch(',
+    "from 'pg'",
+    'docker compose',
+    '@aws-sdk',
+    '@azure',
+    '@google-cloud',
+    'express',
+    'fastify',
+    'koa',
+    'ProviderAdapter',
+    'TorBoxReadOnlyClient',
+    'JellyfinHttpClient',
+  ]) assert(!source.includes(forbidden), `Phase 189 source excludes ${forbidden}`);
+  for (const forbidden of [
+    'ports:',
+    '0.0.0.0',
+    'request-download-link',
+    'magnet:',
+    'provider mode enabled',
+    'O4 closed',
+    'O5 closed',
+    'Plex/Jellyfin mutation is enabled',
+  ]) assert(!phaseSurface.includes(forbidden), `Phase 189 phase surface excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

@@ -1459,6 +1459,11 @@ custodian factory. The app-side mode builds a `LocalSidecarCustodianClient` from
 `CUSTODIAN_SIDECAR_SOCKET_PATH`, validates that the path is local IPC only, and does not require the
 app process to hold `COMPLETION_SECRET`, `CUSTODIAN_KEK`, or `CUSTODIAN_KEYSTORE_DIR`. It is not wired
 into the Unraid Compose runtime and does not close O4/O5.
+Phase 189 adds `docs/PHASE_189_SIDECAR_FACTORY_EVIDENCE.md`, `ops:sidecar-factory-evidence`, and
+`test:sidecar-factory-evidence` as a finite redaction-safe proof that the Phase 187 daemon wrapper
+and Phase 188 factory mode work together through a local socket. It starts only a temporary sidecar
+under the OS temp directory, emits `SIDECAR_FACTORY_EVIDENCE`, and still does not change Compose,
+install an Unraid service, switch runtime custody mode, or close O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
