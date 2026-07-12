@@ -127,8 +127,8 @@ test('unraid runtime compose — launcher-ready image mode with no build context
     'runtime pgdata bind mount keeps canonical default and smoke override',
   );
   assert(
-    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/keystore:/var/lib/catalog/keystore'),
-    'runtime keystore bind mount keeps canonical default and smoke override',
+    unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar'),
+    'runtime sidecar socket bind mount keeps canonical default and smoke override',
   );
   assert(
     unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:/backups'),
@@ -6546,7 +6546,7 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/production-custody-switch.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 105 aggregate test follows Phase 194 sidecar service install',
   );
 
@@ -9450,12 +9450,12 @@ test('Phase 191 sidecar evidence acceptance record is publishable and closure-fr
   ]) assert(!doc.includes(forbidden), `Phase 191 record excludes ${forbidden}`);
 });
 
-test('Phase 192 O4 sidecar closure readiness gate blocks closure until Phases 193-195', () => {
+test('Phase 192 O4 sidecar closure readiness gate is closure-eligible after Phase 195', () => {
   assert(exists('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md'), 'Phase 192 O4 closure readiness doc exists');
   assert(exists('test/o4-sidecar-closure-readiness.ts'), 'Phase 192 O4 closure readiness test exists');
   assert(pkg.scripts['test:o4-sidecar-closure-readiness'] === 'tsx test/o4-sidecar-closure-readiness.ts', 'Phase 192 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/production-custody-switch.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 192 aggregate test sits after Phase 191 acceptance record',
   );
   const doc = read('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md');
@@ -9473,15 +9473,15 @@ test('Phase 192 O4 sidecar closure readiness gate blocks closure until Phases 19
     'Phase 191 acceptance record exists, is redaction-safe, and cites Phase 190 passing evidence',
     '`satisfied`',
     'Runtime cutover plan exists and is reviewed',
-    '`not-satisfied-phase-193`',
+    'Present and reviewed',
     'Sidecar service installed on Unraid, local socket only, no public ports',
-    '`not-satisfied-phase-194`',
+    'Installed, healthy, socket-only, no public ports',
     'Production custody switched with post-switch evidence, persistence checks restarted, UI/API healthy',
-    '`not-satisfied-phase-195`',
-    'Readiness verdict: `O4_READY_PENDING_EXECUTION`',
-    'O4 status after this gate: `open/deferred`',
+    'Switched with post-switch evidence retained',
+    'Readiness verdict: `O4_CLOSURE_ELIGIBLE`',
+    'O4 status after this gate: `closure-eligible`',
     'O5 status after this gate: `open/deferred`',
-    'This gate does not close O4 and does not close O5.',
+    'This gate does not close O5.',
   ]) assert(combined.includes(required), `Phase 192 surface preserves ${required}`);
   for (const forbidden of [
     'postgres://',
@@ -9514,7 +9514,7 @@ test('Phase 193 runtime cutover plan defines file-to-sidecar execution without m
   assert(exists('test/runtime-cutover-plan.ts'), 'Phase 193 runtime cutover plan test exists');
   assert(pkg.scripts['test:runtime-cutover-plan'] === 'tsx test/runtime-cutover-plan.ts', 'Phase 193 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/production-custody-switch.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 193 aggregate test sits after Phase 192 readiness gate',
   );
   const doc = read('docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md');
@@ -9572,7 +9572,7 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
   assert(exists('test/sidecar-service-install.ts'), 'Phase 194 sidecar service install test exists');
   assert(pkg.scripts['test:sidecar-service-install'] === 'tsx test/sidecar-service-install.ts', 'Phase 194 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/production-custody-switch.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 194 aggregate test sits after Phase 193 runtime plan',
   );
   const sidecarStart = unraidRuntimeCompose.indexOf('  sidecar:\n');
@@ -9605,9 +9605,6 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
     '/var/run/docker.sock',
     '0.0.0.0',
   ]) assert(!sidecar.includes(forbidden), `Phase 194 sidecar block excludes ${forbidden}`);
-  assert((unraidRuntimeCompose.match(/CUSTODIAN_MODE: file/g) ?? []).length >= 2, 'Phase 194 app and ops remain file mode');
-  assert(!unraidRuntimeCompose.includes('CUSTODIAN_MODE: sidecar'), 'Phase 194 does not switch app/ops to sidecar mode');
-
   const doc = read('docs/PHASE_194_UNRAID_SIDECAR_SERVICE_INSTALL.md');
   const suite = read('test/sidecar-service-install.ts');
   const combined = `${doc}\n${suite}\n${read('README.md')}\n${read('package.json')}`;
@@ -9626,6 +9623,48 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
     'O4 remains open',
     'O5 remains open',
   ]) assert(combined.includes(required), `Phase 194 surface preserves ${required}`);
+});
+
+test('Phase 195 production custody switch makes sidecar the expected runtime mode', () => {
+  assert(exists('docs/PHASE_195_PRODUCTION_CUSTODY_SWITCH.md'), 'Phase 195 production custody switch doc exists');
+  assert(exists('test/production-custody-switch.ts'), 'Phase 195 production custody switch test exists');
+  assert(pkg.scripts['test:production-custody-switch'] === 'tsx test/production-custody-switch.ts', 'Phase 195 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-service-install.ts && tsx test/production-custody-switch.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 195 aggregate test sits after Phase 194 install',
+  );
+  const opsStart = unraidRuntimeCompose.indexOf('  ops:\n');
+  const sidecarStart = unraidRuntimeCompose.indexOf('\n  sidecar:\n', opsStart);
+  const appStart = unraidRuntimeCompose.indexOf('\n  app:\n', sidecarStart);
+  assert(opsStart >= 0 && sidecarStart > opsStart && appStart > sidecarStart, 'ops, sidecar, and app service blocks exist');
+  const ops = unraidRuntimeCompose.slice(opsStart, sidecarStart);
+  const app = unraidRuntimeCompose.slice(appStart);
+  for (const [name, block] of [['ops', ops], ['app', app]] as const) {
+    assert(block.includes('CUSTODIAN_MODE: sidecar'), `Phase 195 ${name} uses sidecar mode`);
+    assert(block.includes('CUSTODIAN_SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock'), `Phase 195 ${name} has socket env`);
+    assert(block.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar'), `Phase 195 ${name} mounts sidecar socket`);
+    assert(!block.includes('CUSTODIAN_MODE: file'), `Phase 195 ${name} does not regress to file mode`);
+    assert(!block.includes('COMPLETION_SECRET_FILE:'), `Phase 195 ${name} does not hold completion secret`);
+    assert(!block.includes('CUSTODIAN_KEYSTORE_DIR:'), `Phase 195 ${name} does not use file keystore dir`);
+    assert(!block.includes('CUSTODIAN_KEK_FILE:'), `Phase 195 ${name} does not hold KEK`);
+    assert(!block.includes('/var/lib/catalog/keystore'), `Phase 195 ${name} does not mount file keystore`);
+  }
+
+  const doc = read('docs/PHASE_195_PRODUCTION_CUSTODY_SWITCH.md');
+  const suite = read('test/production-custody-switch.ts');
+  const combined = `${doc}\n${suite}\n${read('README.md')}\n${read('package.json')}\n${read('src/ops/doctor.ts')}\n${read('src/ops/doctor-cli.ts')}\n${read('src/ops/operator-ui-service.ts')}`;
+  for (const required of [
+    'phase-195-production-custody-switch',
+    'executed-as-written',
+    'phase-195-precondition-evidence',
+    'phase-195-post-switch-custody-evidence',
+    'phase-195-sidecar-exposure-proof',
+    'phase-195-restart-persistence-evidence',
+    'phase-195-ui-api-health-evidence',
+    'completion secret is delegated to the sidecar custodian',
+    'O4 status after Phase 195: `closure-eligible`',
+    'O5 status after Phase 195: `open/deferred`',
+  ]) assert(combined.includes(required), `Phase 195 surface preserves ${required}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

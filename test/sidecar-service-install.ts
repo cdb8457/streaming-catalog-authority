@@ -24,7 +24,7 @@ function sidecarBlock(compose: string): string {
 
 console.log('Running Phase 194 sidecar service install suite:\n');
 
-test('runtime compose adds sidecar service without changing app or ops custody mode', () => {
+test('runtime compose keeps the installed sidecar service socket-only', () => {
   const compose = read('docker-compose.unraid.runtime.yml');
   const sidecar = sidecarBlock(compose);
   assert(sidecar.includes('restart: unless-stopped'), 'sidecar restart policy');
@@ -35,9 +35,6 @@ test('runtime compose adds sidecar service without changing app or ops custody m
   assert(sidecar.includes('NPM_CONFIG_CACHE: /tmp/npm-cache'), 'npm cache stays on tmpfs');
   assert(sidecar.includes('command: ["ops:sidecar-daemon", "--", "--serve"]'), 'serve command');
   assert(sidecar.includes('test -S /run/catalog-sidecar/catalog-sidecar.sock'), 'socket healthcheck');
-  assert((compose.match(/CUSTODIAN_MODE: file/g) ?? []).length >= 2, 'app and ops remain file mode');
-  assert(!compose.includes('CUSTODIAN_MODE: sidecar'), 'app/ops do not switch to sidecar');
-  assert(!compose.includes('CUSTODIAN_SIDECAR_SOCKET_PATH:'), 'app/ops sidecar socket not configured yet');
 });
 
 test('sidecar service is socket-only and least-privilege', () => {
@@ -119,7 +116,7 @@ test('package, README, and deploy guard include Phase 194 verification', () => {
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:sidecar-service-install'] === 'tsx test/sidecar-service-install.ts', 'test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/production-custody-switch.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'aggregate order present',
   );
   assert(readme.includes('Phase 194 adds the long-running `sidecar` service'), 'README phase entry');

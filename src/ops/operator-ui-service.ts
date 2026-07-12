@@ -243,7 +243,9 @@ export async function buildOperatorUiServiceStatus(
         admin,
         pool: getPool(),
         custodian,
-        completionSecret: requireAppHeldCompletionSecret(custodianConfig, 'operator-ui-status'),
+        completionSecret: custodianConfig.mode === 'sidecar'
+          ? undefined
+          : requireAppHeldCompletionSecret(custodianConfig, 'operator-ui-status'),
         custodianMode: custodianConfig.mode,
         appEnv: resolveAppEnv(),
         keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,

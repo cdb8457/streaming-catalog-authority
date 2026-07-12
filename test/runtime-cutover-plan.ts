@@ -130,7 +130,7 @@ test('package, README, and deploy guard include Phase 193 verification', () => {
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:runtime-cutover-plan'] === 'tsx test/runtime-cutover-plan.ts', 'test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/production-custody-switch.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'aggregate order present',
   );
   assert(readme.includes('Phase 193 adds `docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md`'), 'README phase entry');
