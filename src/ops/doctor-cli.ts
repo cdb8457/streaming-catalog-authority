@@ -27,7 +27,9 @@ async function main(): Promise<number> {
       admin,
       pool,
       custodian,
-      completionSecret: requireAppHeldCompletionSecret(custodianConfig, 'ops:doctor'),
+      completionSecret: custodianConfig.mode === 'sidecar'
+        ? undefined
+        : requireAppHeldCompletionSecret(custodianConfig, 'ops:doctor'),
       custodianMode: custodianConfig.mode,
       appEnv: resolveAppEnv(),
       keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,

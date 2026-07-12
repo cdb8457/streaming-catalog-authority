@@ -9575,10 +9575,9 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
     (pkg.scripts.test ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 194 aggregate test sits after Phase 193 runtime plan',
   );
-  const sidecarStart = unraidRuntimeCompose.indexOf('  sidecar:\n');
-  const appStart = unraidRuntimeCompose.indexOf('\n  app:\n', sidecarStart);
-  assert(sidecarStart >= 0 && appStart > sidecarStart, 'sidecar service block exists before app');
-  const sidecar = unraidRuntimeCompose.slice(sidecarStart, appStart);
+  const sidecarMatch = unraidRuntimeCompose.match(/  sidecar:\r?\n[\s\S]*?\r?\n  app:\r?\n/);
+  assert(sidecarMatch, 'sidecar service block exists before app');
+  const sidecar = sidecarMatch![0];
   for (const required of [
     'restart: unless-stopped',
     'SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock',

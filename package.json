@@ -22,6 +22,7 @@
     "test:o4-sidecar-closure-readiness": "tsx test/o4-sidecar-closure-readiness.ts",
     "test:runtime-cutover-plan": "tsx test/runtime-cutover-plan.ts",
     "test:sidecar-service-install": "tsx test/sidecar-service-install.ts",
+    "test:production-custody-switch": "tsx test/production-custody-switch.ts",
     "test:sidecar-unraid-service-plan": "tsx test/sidecar-unraid-service-plan.ts",
     "test:sidecar-unraid-operator-script-packet": "tsx test/sidecar-unraid-operator-script-packet.ts",
     "test:sidecar-unraid-evidence-capture": "tsx test/sidecar-unraid-evidence-capture.ts",
