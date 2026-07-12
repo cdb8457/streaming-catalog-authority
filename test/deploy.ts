@@ -6546,8 +6546,8 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/sidecar-unraid-service-plan.ts'),
-    'Phase 105 aggregate test follows Phase 191 sidecar evidence acceptance record',
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 105 aggregate test follows Phase 192 O4 sidecar readiness gate',
   );
 
   const source = `${read('src/ops/sidecar-unraid-service-plan.ts')}\n${read('src/ops/sidecar-unraid-service-plan-cli.ts')}`;
@@ -9343,7 +9343,7 @@ test('Phase 190 adds static sidecar factory evidence review without sidecar star
   assert(pkg.scripts['ops:sidecar-factory-evidence-review'] === 'tsx src/ops/sidecar-factory-evidence-review-cli.ts', 'Phase 190 ops script present');
   assert(pkg.scripts['test:sidecar-factory-evidence-review'] === 'tsx test/sidecar-factory-evidence-review.ts', 'Phase 190 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts'),
     'Phase 190 aggregate test sits after Phase 189 evidence',
   );
   const source = [
@@ -9402,7 +9402,7 @@ test('Phase 191 sidecar evidence acceptance record is publishable and closure-fr
   assert(exists('test/sidecar-factory-evidence-acceptance-record.ts'), 'Phase 191 sidecar evidence acceptance record test exists');
   assert(pkg.scripts['test:sidecar-factory-evidence-acceptance-record'] === 'tsx test/sidecar-factory-evidence-acceptance-record.ts', 'Phase 191 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 191 aggregate test sits after Phase 190 review',
   );
   const doc = read('docs/PHASE_191_SIDECAR_EVIDENCE_ACCEPTANCE_RECORD.md');
@@ -9448,6 +9448,65 @@ test('Phase 191 sidecar evidence acceptance record is publishable and closure-fr
     '192.168.',
     'localhost:',
   ]) assert(!doc.includes(forbidden), `Phase 191 record excludes ${forbidden}`);
+});
+
+test('Phase 192 O4 sidecar closure readiness gate blocks closure until Phases 193-195', () => {
+  assert(exists('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md'), 'Phase 192 O4 closure readiness doc exists');
+  assert(exists('test/o4-sidecar-closure-readiness.ts'), 'Phase 192 O4 closure readiness test exists');
+  assert(pkg.scripts['test:o4-sidecar-closure-readiness'] === 'tsx test/o4-sidecar-closure-readiness.ts', 'Phase 192 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 192 aggregate test sits after Phase 191 acceptance record',
+  );
+  const doc = read('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md');
+  const suite = read('test/o4-sidecar-closure-readiness.ts');
+  const combined = `${doc}\n${suite}\n${read('README.md')}\n${read('package.json')}`;
+  for (const required of [
+    'phase-192-o4-sidecar-closure-readiness',
+    'phase-191-sidecar-evidence-acceptance-record',
+    'commit `7990ac2`',
+    'tag `phase-191`',
+    'sha256:a3b1c61af28ac37b8e24ed7cfb941eb128a119a201036263e4ac2e7daee1fe8a',
+    'sha256:f75d46172af9ff3c1a1c452dad4a1914958908e6a2210871510c017d6fdea0f2',
+    'Phase 190 review verdict: `ok:true`',
+    '| Criterion | Required Evidence | Current State | Status |',
+    'Phase 191 acceptance record exists, is redaction-safe, and cites Phase 190 passing evidence',
+    '`satisfied`',
+    'Runtime cutover plan exists and is reviewed',
+    '`not-satisfied-phase-193`',
+    'Sidecar service installed on Unraid, local socket only, no public ports',
+    '`not-satisfied-phase-194`',
+    'Production custody switched with post-switch evidence, persistence checks restarted, UI/API healthy',
+    '`not-satisfied-phase-195`',
+    'Readiness verdict: `O4_READY_PENDING_EXECUTION`',
+    'O4 status after this gate: `open/deferred`',
+    'O5 status after this gate: `open/deferred`',
+    'This gate does not close O4 and does not close O5.',
+  ]) assert(combined.includes(required), `Phase 192 surface preserves ${required}`);
+  for (const forbidden of [
+    'postgres://',
+    'postgresql://',
+    '-----BEGIN',
+    'ssh-ed25519',
+    'token:',
+    'password:',
+    'secret:',
+    'kek:',
+    'dek:',
+    'wrappedHex',
+    'dekBase64',
+    '/mnt/user/',
+    '/boot/config/',
+    'C:\\',
+    '\\\\.\\pipe\\',
+    'http://',
+    'https://',
+    '192.168.',
+    'localhost:',
+    'o4Status: closed/authorized',
+    'authorizationStatus: o4-authorized',
+    'authorizesO4Closure: true',
+  ]) assert(!doc.includes(forbidden), `Phase 192 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

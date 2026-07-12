@@ -1476,6 +1476,13 @@ record for the Phase 189/190 sidecar factory evidence set. It cites only report 
 digests, and Phase 190 pass/fail counts; it accepts the evidence as input to Phase 192 O4 closure
 readiness while keeping O4 and O5 open/deferred. It is artifact-only and does not start a sidecar,
 change Compose, switch runtime custody mode, or close O4/O5.
+Phase 192 adds `docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md` and
+`test:o4-sidecar-closure-readiness` as the formal O4 sidecar closure-readiness gate. It defines the
+criteria matrix, marks the Phase 191 acceptance record satisfied, marks Phase 193 runtime cutover
+plan, Phase 194 Unraid sidecar service install, and Phase 195 production custody switch evidence as
+not satisfied, and returns the verdict `O4_READY_PENDING_EXECUTION`. O4 and O5 remain open/deferred;
+this phase is artifact-only and does not change Compose, install a service, switch custody, or close
+O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
