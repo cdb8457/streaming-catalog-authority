@@ -1429,6 +1429,11 @@ evidence directory. Phase 174 adds `docs/PHASE_174_ARCANE_O4_O5_PACKET_REVIEW.md
 guidance for `o4-o5-evidence-capture` and `o4-o5-packet-review`. Phase 175 adds
 `docs/PHASE_175_O4_SIDECAR_READINESS_GATE.md` as the stop line before sidecar implementation; it
 reports ready-for-sidecar-design-review, not O4/O5 closure.
+Phase 176 adds `docs/PHASE_176_FINAL_LAUNCH_CANDIDATE_SWEEP.md`, the final redaction-safe launch
+candidate sweep. Phase 177 adds `docs/PHASE_177_LAUNCH_V1_OPERATOR_RUNBOOK.md`, the concise Launch v1
+operator runbook. Phase 178 adds `docs/PHASE_178_LAUNCH_V1_DECISION_RECORD.md`, approving Launch v1
+as the self-hosted backend/operator foundation with O4/O5 accepted as open warnings, while forbidding
+managed-custody, provider, download, playback, and media-server orchestration claims.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

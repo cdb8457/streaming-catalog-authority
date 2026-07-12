@@ -8972,6 +8972,45 @@ test('Phases 173 through 175 capture and review O4/O5 packets without closing ga
   ]) assert(!phaseDocs.includes(forbidden), `Phase 173/174/175 docs exclude ${forbidden}`);
 });
 
+test('Phases 176 through 178 define Launch v1 with explicit O4/O5 open warnings', () => {
+  assert(exists('docs/PHASE_176_FINAL_LAUNCH_CANDIDATE_SWEEP.md'), 'Phase 176 final sweep doc exists');
+  assert(exists('docs/PHASE_177_LAUNCH_V1_OPERATOR_RUNBOOK.md'), 'Phase 177 launch runbook exists');
+  assert(exists('docs/PHASE_178_LAUNCH_V1_DECISION_RECORD.md'), 'Phase 178 launch decision record exists');
+  const phaseDocs = [
+    read('docs/PHASE_176_FINAL_LAUNCH_CANDIDATE_SWEEP.md'),
+    read('docs/PHASE_177_LAUNCH_V1_OPERATOR_RUNBOOK.md'),
+    read('docs/PHASE_178_LAUNCH_V1_DECISION_RECORD.md'),
+  ].join('\n');
+  const combined = `${phaseDocs}\n${read('README.md')}`;
+  for (const required of [
+    'phase-176-final-launch-candidate-sweep',
+    'phase-177-launch-v1-operator-runbook',
+    'phase-178-launch-v1-decision-record',
+    'launch-v1-operator-backend-with-open-o4-o5-warnings',
+    'self-hosted backend/operator foundation',
+    'accepted open warning',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+    'ui-live-check-save',
+    'ui-evidence-review',
+    'o4-o5-evidence-capture',
+    'o4-o5-packet-review',
+    'Catalog Authority Launch v1 is ready',
+    'no provider/media behavior',
+  ]) assert(combined.includes(required), `Phase 176/177/178 surface preserves ${required}`);
+  for (const forbidden of [
+    'request-download-link',
+    'magnet:',
+    '--print --confirm-print',
+    'O4 closed',
+    'O5 closed',
+    'provider mode enabled',
+    'turnkey production-ready managed custody.',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 176/177/178 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
