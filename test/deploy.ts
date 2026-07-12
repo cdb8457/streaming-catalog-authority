@@ -8642,7 +8642,7 @@ test('Phase 154 release packaging documents one public Unraid deploy path', () =
 
   for (const required of [
     'phase-154-release-packaging',
-    'Current release tag: `phase-154`',
+    'Current release tag: `launch-v1`',
     '/mnt/user/appdata/catalog/repo',
     '/mnt/user/appdata/catalog',
     '/mnt/user/appdata/catalog/secrets',
@@ -9009,6 +9009,46 @@ test('Phases 176 through 178 define Launch v1 with explicit O4/O5 open warnings'
     'provider mode enabled',
     'turnkey production-ready managed custody.',
   ]) assert(!phaseDocs.includes(forbidden), `Phase 176/177/178 docs exclude ${forbidden}`);
+});
+
+test('Phases 179 and 180 package Launch v1 for easier Unraid and Arcane launch', () => {
+  assert(exists('docs/PHASE_179_LAUNCH_V1_RELEASE_PACKAGE.md'), 'Phase 179 release package doc exists');
+  assert(exists('docs/PHASE_180_ARCANE_FINAL_BUTTON_CHECKLIST.md'), 'Phase 180 Arcane checklist doc exists');
+  const phaseDocs = [
+    read('docs/PHASE_179_LAUNCH_V1_RELEASE_PACKAGE.md'),
+    read('docs/PHASE_180_ARCANE_FINAL_BUTTON_CHECKLIST.md'),
+    read('RELEASE.md'),
+  ].join('\n');
+  const combined = `${phaseDocs}\n${read('README.md')}`;
+  for (const required of [
+    'phase-179-launch-v1-release-package',
+    'phase-180-arcane-final-button-checklist',
+    'Current release tag: `launch-v1`',
+    'git clone https://github.com/cdb8457/streaming-catalog-authority.git',
+    'docker-compose.unraid.runtime.yml',
+    'repo-ops:latest',
+    'ui-live-check',
+    'ui-live-check-save',
+    'ui-evidence-review',
+    'o4-o5-evidence-capture',
+    'o4-o5-packet-review',
+    'ui-token-status',
+    'Catalog Authority Launch v1 is ready',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+    'no provider/media behavior',
+  ]) assert(combined.includes(required), `Phase 179/180 surface preserves ${required}`);
+  for (const forbidden of [
+    '--print --confirm-print',
+    'ops:backup -- restore',
+    'request-download-link',
+    'magnet:',
+    'provider mode enabled',
+    'O4 closed',
+    'O5 closed',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 179/180 docs exclude ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

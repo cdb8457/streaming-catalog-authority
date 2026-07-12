@@ -35,7 +35,7 @@ Not approved for Launch v1:
 - media-server library writes;
 - O4 closure;
 - O5 closure;
-- managed-custody production closure claims.
+- claims that managed custody is closed.
 
 ## Accepted Open Warnings
 

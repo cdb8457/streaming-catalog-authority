@@ -1434,6 +1434,9 @@ candidate sweep. Phase 177 adds `docs/PHASE_177_LAUNCH_V1_OPERATOR_RUNBOOK.md`, 
 operator runbook. Phase 178 adds `docs/PHASE_178_LAUNCH_V1_DECISION_RECORD.md`, approving Launch v1
 as the self-hosted backend/operator foundation with O4/O5 accepted as open warnings, while forbidding
 managed-custody, provider, download, playback, and media-server orchestration claims.
+Phase 179 updates `RELEASE.md` as the Launch v1 release package with `launch-v1` as the release tag,
+canonical Unraid quick start, evidence review commands, and the allowed launch claim. Phase 180 adds
+`docs/PHASE_180_ARCANE_FINAL_BUTTON_CHECKLIST.md`, the final Arcane button checklist for Launch v1.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
