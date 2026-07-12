@@ -6546,8 +6546,8 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-unraid-service-plan.ts'),
-    'Phase 105 aggregate test follows Phase 190 sidecar factory evidence review',
+    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 105 aggregate test follows Phase 191 sidecar evidence acceptance record',
   );
 
   const source = `${read('src/ops/sidecar-unraid-service-plan.ts')}\n${read('src/ops/sidecar-unraid-service-plan-cli.ts')}`;
@@ -9276,8 +9276,8 @@ test('Phase 189 adds sidecar factory evidence without production cutover', () =>
   assert(pkg.scripts['ops:sidecar-factory-evidence'] === 'tsx src/ops/sidecar-factory-evidence-cli.ts', 'Phase 189 ops script present');
   assert(pkg.scripts['test:sidecar-factory-evidence'] === 'tsx test/sidecar-factory-evidence.ts', 'Phase 189 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-unraid-service-plan.ts'),
-    'Phase 189 aggregate test sits between daemon and Unraid service plan',
+    (pkg.scripts.test ?? '').includes('test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts'),
+    'Phase 189 aggregate test sits after daemon and before sidecar evidence review',
   );
   const source = [
     read('src/ops/sidecar-factory-evidence.ts'),
@@ -9343,7 +9343,7 @@ test('Phase 190 adds static sidecar factory evidence review without sidecar star
   assert(pkg.scripts['ops:sidecar-factory-evidence-review'] === 'tsx src/ops/sidecar-factory-evidence-review-cli.ts', 'Phase 190 ops script present');
   assert(pkg.scripts['test:sidecar-factory-evidence-review'] === 'tsx test/sidecar-factory-evidence-review.ts', 'Phase 190 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 190 aggregate test sits after Phase 189 evidence',
   );
   const source = [
@@ -9395,6 +9395,59 @@ test('Phase 190 adds static sidecar factory evidence review without sidecar star
     'O5 closed',
     'Plex/Jellyfin mutation is enabled',
   ]) assert(!phaseSurface.includes(forbidden), `Phase 190 phase surface excludes ${forbidden}`);
+});
+
+test('Phase 191 sidecar evidence acceptance record is publishable and closure-free', () => {
+  assert(exists('docs/PHASE_191_SIDECAR_EVIDENCE_ACCEPTANCE_RECORD.md'), 'Phase 191 sidecar evidence acceptance record exists');
+  assert(exists('test/sidecar-factory-evidence-acceptance-record.ts'), 'Phase 191 sidecar evidence acceptance record test exists');
+  assert(pkg.scripts['test:sidecar-factory-evidence-acceptance-record'] === 'tsx test/sidecar-factory-evidence-acceptance-record.ts', 'Phase 191 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    'Phase 191 aggregate test sits after Phase 190 review',
+  );
+  const doc = read('docs/PHASE_191_SIDECAR_EVIDENCE_ACCEPTANCE_RECORD.md');
+  const suite = read('test/sidecar-factory-evidence-acceptance-record.ts');
+  const combined = `${doc}\n${suite}\n${read('README.md')}\n${read('package.json')}`;
+  for (const required of [
+    'phase-191-sidecar-evidence-acceptance-record',
+    'phase-189-sidecar-factory-evidence',
+    'phase-190-sidecar-factory-evidence-review',
+    'sha256:a3b1c61af28ac37b8e24ed7cfb941eb128a119a201036263e4ac2e7daee1fe8a',
+    'sha256:f75d46172af9ff3c1a1c452dad4a1914958908e6a2210871510c017d6fdea0f2',
+    'Phase 190 review verdict: `ok:true`',
+    'Phase 190 failed files: `0`',
+    'accepted-for-o4-closure-readiness-input',
+    'evidence chain is intact',
+    'local socket / local IPC only',
+    'no public TCP listener',
+    'no service install',
+    'no Compose change',
+    'no runtime custody cutover',
+    'O4 status: `open/deferred`',
+    'O5 status: `open/deferred`',
+    'This record does not close O4 and does not close O5.',
+  ]) assert(combined.includes(required), `Phase 191 surface preserves ${required}`);
+  for (const forbidden of [
+    'postgres://',
+    'postgresql://',
+    '-----BEGIN',
+    'ssh-ed25519',
+    'token:',
+    'password:',
+    'secret:',
+    'kek:',
+    'dek:',
+    'wrappedHex',
+    'dekBase64',
+    '/mnt/user/',
+    '/boot/config/',
+    'C:\\',
+    '\\\\.\\pipe\\',
+    'http://',
+    'https://',
+    '192.168.',
+    'localhost:',
+  ]) assert(!doc.includes(forbidden), `Phase 191 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

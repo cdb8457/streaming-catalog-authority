@@ -1470,6 +1470,12 @@ Phase 190 adds `docs/PHASE_190_SIDECAR_FACTORY_EVIDENCE_REVIEW.md`,
 review gate for saved Phase 189 JSON. It checks valid JSON, required Phase 189 evidence fields, pass
 state, local non-mutating boundary flags, and redaction safety. It reads explicit files only and
 does not start a sidecar, change Compose, switch runtime custody mode, or close O4/O5.
+Phase 191 adds `docs/PHASE_191_SIDECAR_EVIDENCE_ACCEPTANCE_RECORD.md` and
+`test:sidecar-factory-evidence-acceptance-record` as the publishable, redaction-safe acceptance
+record for the Phase 189/190 sidecar factory evidence set. It cites only report IDs, SHA-256
+digests, and Phase 190 pass/fail counts; it accepts the evidence as input to Phase 192 O4 closure
+readiness while keeping O4 and O5 open/deferred. It is artifact-only and does not start a sidecar,
+change Compose, switch runtime custody mode, or close O4/O5.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
