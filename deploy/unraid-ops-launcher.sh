@@ -37,6 +37,42 @@ run_rewrap_plan() {
     ops ops:rewrap-kek -- --plan --json
 }
 
+write_file_safely() {
+  target="$1"
+  tmp="${target}.tmp-$$"
+  cat > "$tmp"
+  chmod 600 "$tmp" 2>/dev/null || true
+  mv "$tmp" "$target"
+}
+
+capture_o4_o5_evidence() {
+  target_dir="${1:-$EVIDENCE_DIR/o4-o5/o4-o5-$(date -u +%Y%m%dT%H%M%SZ)}"
+  mkdir -p "$target_dir"
+  chmod 700 "$target_dir" 2>/dev/null || true
+
+  o4_descriptor="$target_dir/o4-custodian-descriptor.redacted.json"
+  o5_descriptor="$target_dir/o5-kek-descriptor.redacted.json"
+  decision_record="$target_dir/o4-o5-decision-record.redacted.json"
+  packet="$target_dir/o4-o5-evidence-packet.redacted.json"
+
+  cp "$REPO_DIR/docs/templates/O4_CUSTODIAN_DESCRIPTOR.redacted.json" "$o4_descriptor"
+  cp "$REPO_DIR/docs/templates/O5_KEK_DESCRIPTOR.redacted.json" "$o5_descriptor"
+  cp "$REPO_DIR/docs/templates/O4_O5_DECISION_RECORD.redacted.json" "$decision_record"
+  cp "$REPO_DIR/docs/templates/O4_O5_EVIDENCE_PACKET.redacted.json" "$packet"
+  chmod 600 "$o4_descriptor" "$o5_descriptor" "$decision_record" "$packet" 2>/dev/null || true
+
+  run_ops_silent ops:custodian-evidence-preflight -- "$o4_descriptor" --json \
+    | write_file_safely "$target_dir/o4-custodian-preflight.redacted.json"
+  run_ops_silent ops:kek-evidence-preflight -- "$o5_descriptor" --json \
+    | write_file_safely "$target_dir/o5-kek-preflight.redacted.json"
+  run_ops_silent ops:o4-o5-evidence-decision -- --decision "$decision_record" --custodian "$o4_descriptor" --kek "$o5_descriptor" --json \
+    | write_file_safely "$target_dir/o4-o5-decision-packet.redacted.json"
+  run_ops_silent ops:o4-o5-evidence-packet-review -- "$packet" --json \
+    | write_file_safely "$target_dir/o4-o5-packet-review.redacted.json"
+
+  echo "Saved redaction-safe O4/O5 evidence packet bundle: $target_dir"
+}
+
 usage() {
   cat <<'EOF'
 Catalog Authority Unraid ops launcher
@@ -50,6 +86,8 @@ Usage:
   unraid-ops-launcher.sh ui-live-check
   unraid-ops-launcher.sh ui-live-check-save [output-file]
   unraid-ops-launcher.sh ui-evidence-review <evidence-file>...
+  unraid-ops-launcher.sh o4-o5-evidence-capture [output-dir]
+  unraid-ops-launcher.sh o4-o5-packet-review <packet-file>...
   unraid-ops-launcher.sh ui-token-status
   unraid-ops-launcher.sh ui-token-rotate
   unraid-ops-launcher.sh migrate
@@ -98,6 +136,13 @@ case "${1:-}" in
   ui-evidence-review)
     shift
     run_ops_silent ops:operator-ui-evidence-review -- --max-age-hours "${CATALOG_AUTHORITY_EVIDENCE_MAX_AGE_HOURS:-24}" "$@"
+    ;;
+  o4-o5-evidence-capture)
+    capture_o4_o5_evidence "${2:-}"
+    ;;
+  o4-o5-packet-review)
+    shift
+    run_ops_silent ops:o4-o5-evidence-packet-review -- "$@"
     ;;
   ui-token-status)
     run_ops ops:operator-ui-token -- --status --json

@@ -8913,6 +8913,65 @@ test('Phase 172 O4/O5 evidence packet review checks packet envelope only', () =>
   ]) assert(!source.includes(forbidden), `Phase 172 source excludes ${forbidden}`);
 });
 
+test('Phases 173 through 175 capture and review O4/O5 packets without closing gates', () => {
+  assert(exists('docs/PHASE_173_O4_O5_PACKET_CAPTURE.md'), 'Phase 173 packet capture doc exists');
+  assert(exists('docs/PHASE_174_ARCANE_O4_O5_PACKET_REVIEW.md'), 'Phase 174 Arcane packet review doc exists');
+  assert(exists('docs/PHASE_175_O4_SIDECAR_READINESS_GATE.md'), 'Phase 175 sidecar readiness gate doc exists');
+  const phaseDocs = [
+    read('docs/PHASE_173_O4_O5_PACKET_CAPTURE.md'),
+    read('docs/PHASE_174_ARCANE_O4_O5_PACKET_REVIEW.md'),
+    read('docs/PHASE_175_O4_SIDECAR_READINESS_GATE.md'),
+    read('docs/PHASE_153_ARCANE_OPERATOR_RUNBOOK.md'),
+  ].join('\n');
+  const combined = [
+    phaseDocs,
+    unraidOpsLauncher,
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-173-o4-o5-packet-capture',
+    'phase-174-arcane-o4-o5-packet-review',
+    'phase-175-o4-sidecar-readiness-gate',
+    'o4-o5-evidence-capture',
+    'o4-o5-packet-review',
+    '/mnt/user/appdata/catalog/backups/evidence/o4-o5',
+    'ops:custodian-evidence-preflight',
+    'ops:kek-evidence-preflight',
+    'ops:o4-o5-evidence-decision',
+    'ops:o4-o5-evidence-packet-review',
+    'o4-o5-packet-review.redacted.json',
+    'ready-for-sidecar-design-review',
+    'O4 remains open',
+    'O5 remains open',
+    'does not close O4',
+    'does not close O5',
+    'no provider contact',
+    'no scraping',
+    'no downloading',
+    'no playback',
+    'media-server library writes',
+  ]) assert(combined.includes(required), `Phase 173/174/175 surface preserves ${required}`);
+  for (const launcherRequired of [
+    'capture_o4_o5_evidence',
+    'write_file_safely',
+    'o4-o5-evidence-capture)',
+    'o4-o5-packet-review)',
+    'docs/templates/O4_CUSTODIAN_DESCRIPTOR.redacted.json',
+    'docs/templates/O5_KEK_DESCRIPTOR.redacted.json',
+    'docs/templates/O4_O5_DECISION_RECORD.redacted.json',
+    'docs/templates/O4_O5_EVIDENCE_PACKET.redacted.json',
+  ]) assert(unraidOpsLauncher.includes(launcherRequired), `launcher preserves ${launcherRequired}`);
+  for (const forbidden of [
+    '--print --confirm-print',
+    'ops:backup -- restore',
+    'request-download-link',
+    'magnet:',
+    'provider mode enabled',
+    'O4 closed',
+    'O5 closed',
+  ]) assert(!phaseDocs.includes(forbidden), `Phase 173/174/175 docs exclude ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

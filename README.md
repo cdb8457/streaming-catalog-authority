@@ -184,8 +184,9 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
   `ghcr.io/catalog-authority/catalog-authority-ops:<tag>` image. See `RELEASE.md`.
 - **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
   commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`, `ui-live-check`,
-  `ui-live-check-save`, `ui-evidence-review`, `ui-token-status`, `ui-token-rotate`, `migrate`,
-  `doctor`, `backup`, and `rewrap-plan` using the runtime compose file.
+  `ui-live-check-save`, `ui-evidence-review`, `o4-o5-evidence-capture`, `o4-o5-packet-review`,
+  `ui-token-status`, `ui-token-rotate`, `migrate`, `doctor`, `backup`, and `rewrap-plan` using the
+  runtime compose file.
 - **Unraid:** `deploy/unraid-catalog-authority.xml` (Community-Applications template for the
   one-shot ops container; no ports/UI).
 - **Start here — the authoritative production readiness gate:**
@@ -1422,6 +1423,12 @@ Phase 172 adds `docs/PHASE_172_O4_O5_EVIDENCE_PACKET_REVIEW.md`,
 `ops:o4-o5-evidence-packet-review`, and `test:o4-o5-evidence-packet-review` as a local review command
 for saved Phase 166 packet JSON files. It checks valid JSON, schema, open-gates,
 forbidden-boundary, and redaction safety without reading referenced artifacts or closing O4/O5.
+Phase 173 adds `docs/PHASE_173_O4_O5_PACKET_CAPTURE.md` and the
+`o4-o5-evidence-capture` launcher command to save a redaction-safe packet bundle under the Unraid
+evidence directory. Phase 174 adds `docs/PHASE_174_ARCANE_O4_O5_PACKET_REVIEW.md` and Arcane button
+guidance for `o4-o5-evidence-capture` and `o4-o5-packet-review`. Phase 175 adds
+`docs/PHASE_175_O4_SIDECAR_READINESS_GATE.md` as the stop line before sidecar implementation; it
+reports ready-for-sidecar-design-review, not O4/O5 closure.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

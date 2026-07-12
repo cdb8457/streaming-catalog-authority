@@ -19,7 +19,9 @@ Canonical launcher:
 | `ui-logs` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-logs` | Shows recent redacted operator UI Docker logs. |
 | `ui-token-status` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-token-status` | Reports operator UI token-file metadata without printing the token. |
 | `restart-ui` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh restart-ui` | Recreates the read-only operator UI container after ensuring Postgres is up. |
+| `o4-o5-evidence-capture` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh o4-o5-evidence-capture` | Captures a redaction-safe O4/O5 packet bundle from templates and static preflight outputs. |
+| `o4-o5-packet-review` | `/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh o4-o5-packet-review <packet-file>` | Reviews one explicit saved Phase 166 packet JSON without scanning evidence directories. |
 
 Do not add Arcane buttons for provider contact, scraping, downloading, playback, media-server
-mutation, token printing, database shell access, backup restore, migration, or KEK rotation unless a
-later explicit phase authorizes that control surface.
+mutation, token printing, database shell access, backup restore, migration, or mutating KEK rotation
+unless a later explicit phase authorizes that control surface.
