@@ -1540,6 +1540,10 @@ Phase 205 adds `docs/PHASE_205_JELLYFIN_READ_ONLY_MAPPING.md`,
 read-only mapping rung. It maps encrypted Catalog Authority refs to Jellyfin match counts through the
 existing publisher privacy boundary, emits only item digests and counts, and stores no Jellyfin IDs
 or media identity.
+Phase 206 adds `docs/PHASE_206_JELLYFIN_DISPOSABLE_WRITE_PROOF.md` and
+`test:jellyfin-disposable-write` as the optional disposable write rung. It pins the only approved
+write proof to a token-marked collection created by the test, recovered by token, deleted, and verified
+gone; uncertain cleanup fails loudly and live write gates remain default-off.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
