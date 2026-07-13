@@ -1530,6 +1530,11 @@ Phase 203 adds `docs/PHASE_203_MEDIA_PLAYER_BOUNDARY_SELECTION.md` and
 Jellyfin as the first controlled media-player target, defers Plex and Emby, inventories existing
 Jellyfin scaffolding, defines the Phase 204-207 test ladder, and keeps all Jellyfin networking and
 write-capable paths default-off.
+Phase 204 adds `docs/PHASE_204_JELLYFIN_READ_ONLY_SMOKE.md` and
+`test:jellyfin-readonly-smoke` as the first Jellyfin rung. It extends the opt-in read-only smoke to
+prove `GET /System/Info` before paged `GET /Items` lookup, keeps API keys in secret-file/header-only
+handling, forbids writes, and commits no live Jellyfin evidence without an operator-designated test
+instance.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

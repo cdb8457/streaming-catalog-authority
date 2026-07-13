@@ -38,7 +38,7 @@ async function main(): Promise<number> {
 
   console.log(write ? 'jellyfin WRITE round-trip smoke (DESTRUCTIVE, self-cleaning):' : 'jellyfin read-only smoke:');
   console.log(formatSmokeReport(report));
-  if (!write) console.log('\n(read-only; validates auth + base URL + the find mapping. Add --write for the full round-trip.)');
+  if (!write) console.log('\n(read-only; validates auth + base URL via GET /System/Info, then the GET /Items find mapping. Add --write for the full round-trip.)');
   return report.ok ? 0 : 1;
 }
 

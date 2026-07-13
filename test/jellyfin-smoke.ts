@@ -18,8 +18,12 @@ const KEY = 'SUPER-SECRET-API-KEY';
 class FakeSmokeClient implements SmokeClient {
   private readonly collections = new Map<string, string>(); // handle -> name(with marker)
   private counter = 0;
-  constructor(private readonly library: Record<string, string> = {}, private readonly faults: Partial<Record<'find' | 'create' | 'createThenThrow' | 'findByToken' | 'delete', boolean>> = {}, private readonly leaveDuplicate = false) {}
+  constructor(private readonly library: Record<string, string> = {}, private readonly faults: Partial<Record<'serverInfo' | 'find' | 'create' | 'createThenThrow' | 'findByToken' | 'delete', boolean>> = {}, private readonly leaveDuplicate = false) {}
   count(): number { return this.collections.size; }
+  async getServerInfo(): Promise<{ serverName?: string; version?: string }> {
+    if (this.faults.serverInfo) throw new Error(`server info boom ${KEY}`);
+    return { serverName: 'fixture', version: '10.fixture' };
+  }
   async findItemsByRefs(refs: readonly JellyfinRef[]): Promise<string[]> {
     if (this.faults.find) throw new Error(`boom ${KEY}`); // a leaky error message
     const out: string[] = []; for (const r of refs) { const id = this.library[`${r.type}:${r.value}`]; if (id) out.push(id); } return out;
@@ -55,6 +59,7 @@ async function main(): Promise<void> {
 
   await test('read-only smoke — reports the matched count; find failure is redaction-safe', async () => {
     const okR = await runReadOnlySmoke(new TaggingClient({ 'tmdb:603': 'item-1' }), REF);
+    assert(step(okR, 'server-info')?.ok, 'server info ok');
     assert(okR.ok && /1 library item/.test(step(okR, 'find')!.detail), 'find ok with count');
     const badR = await runReadOnlySmoke(new TaggingClient({}, { find: true }), REF);
     assert(!badR.ok && !step(badR, 'find')!.ok, 'find failure surfaced'); assert(noSecret(badR), 'no api key in the report');

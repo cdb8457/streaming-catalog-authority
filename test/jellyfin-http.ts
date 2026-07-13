@@ -30,6 +30,7 @@ class FakeTransport {
     const method = init?.method ?? 'GET';
     this.requests.push({ method, url, headers: init?.headers ?? {} });
     const u = new URL(url);
+    if (method === 'GET' && u.pathname === '/System/Info') return ok({ ServerName: 'fixture', Version: '10.fixture' });
     if (method === 'GET' && u.pathname === '/Items') return ok({ Items: this.items });
     if (method === 'DELETE' && u.pathname.startsWith('/Items/')) {
       const id = decodeURIComponent(u.pathname.slice('/Items/'.length));
@@ -52,6 +53,18 @@ async function main(): Promise<void> {
   });
 
   // --- request shapes + api-key header-only (redaction) -----------------------
+  await test('http - getServerInfo issues GET /System/Info with api key header-only', async () => {
+    const t = new FakeTransport();
+    const c = new JellyfinHttpClient({ baseUrl: 'http://jf.local:8096/', apiKey: KEY, fetch: t.fetch });
+    const info = await c.getServerInfo();
+    assertEq(info.serverName, 'fixture', 'server name parsed');
+    assertEq(info.version, '10.fixture', 'version parsed');
+    const [req] = t.requests;
+    assert(req!.method === 'GET' && new URL(req!.url).pathname === '/System/Info', 'GET /System/Info');
+    assert(!req!.url.includes(KEY), 'api key NEVER in the URL');
+    assertEq(req!.headers['X-Emby-Token'], KEY, 'api key sent as header');
+  });
+
   await test('http — find + delete issue the expected requests; api key is header-only, never in the URL', async () => {
     const t = new FakeTransport([{ Id: 'item-a', ProviderIds: { tmdb: '603' } }]);
     const c = new JellyfinHttpClient({ baseUrl: 'http://jf.local:8096/', apiKey: KEY, fetch: t.fetch });

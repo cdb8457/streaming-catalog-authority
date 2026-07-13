@@ -1,7 +1,7 @@
 import type { JellyfinClient, JellyfinRef } from './client.js';
 import type { FetchLike, HttpResponseLike } from './transport.js';
 import {
-  buildFindCandidatesRequest, matchItems, buildDeleteCollectionRequest,
+  buildFindCandidatesRequest, matchItems, buildDeleteCollectionRequest, buildSystemInfoRequest,
   buildCreateTaggedRequest, parseCreatedId, buildFindByTokenRequest, matchIdByToken, pageItems, type HttpRequestSpec,
 } from './mapping.js';
 
@@ -34,6 +34,11 @@ export interface JellyfinHttpOptions {
   readonly pageLimit?: number;  // /Items page size (default 500)
 }
 
+export interface JellyfinServerInfo {
+  readonly serverName?: string;
+  readonly version?: string;
+}
+
 /**
  * Phase 11 — the real Jellyfin client over an INJECTED {@link FetchLike}. Ships real **find + revoke**
  * (both orphan-safe: find is read-only; revoke deletes a known opaque handle). Live **create is
@@ -59,6 +64,15 @@ export class JellyfinHttpClient implements JellyfinClient {
     this.timeoutMs = opts.timeoutMs ?? 10_000;
     this.maxRetries = Math.max(0, opts.maxRetries ?? 2);
     this.pageLimit = Math.max(1, opts.pageLimit ?? PAGE_LIMIT);
+  }
+
+  async getServerInfo(): Promise<JellyfinServerInfo> {
+    const body = await this.requestJson('getServerInfo', buildSystemInfoRequest(), true);
+    const raw = body as { ServerName?: unknown; Version?: unknown; ProductName?: unknown };
+    return {
+      ...(typeof raw.ServerName === 'string' ? { serverName: raw.ServerName } : {}),
+      ...(typeof raw.Version === 'string' ? { version: raw.Version } : {}),
+    };
   }
 
   async findItemsByRefs(refs: readonly JellyfinRef[]): Promise<string[]> {

@@ -16,6 +16,11 @@ export interface HttpRequestSpec {
   query?: Record<string, string>;
 }
 
+/** GET Jellyfin server information. Used by the Phase 204 read-only smoke as auth/base-url proof. */
+export function buildSystemInfoRequest(): HttpRequestSpec {
+  return { method: 'GET', path: '/System/Info' };
+}
+
 /**
  * GET one PAGE of candidate items with their ProviderIds, for LOCAL matching (avoids unreliable server
  * filters). Jellyfin `GET /Items` paginates, so the client walks pages (StartIndex/Limit) and matches

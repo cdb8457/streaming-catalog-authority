@@ -15,6 +15,7 @@ export interface SmokeReport { ok: boolean; steps: SmokeStep[]; }
 
 /** The client primitives the smoke exercises (satisfied by JellyfinHttpClient). */
 export interface SmokeClient {
+  getServerInfo?(): Promise<{ readonly serverName?: string; readonly version?: string }>;
   findItemsByRefs(refs: readonly JellyfinRef[]): Promise<string[]>;
   createTaggedCollection(name: string, itemIds: readonly string[], token: string): Promise<string>;
   findCollectionByToken(token: string): Promise<string | null>;
@@ -46,9 +47,21 @@ async function cleanupByToken(client: SmokeClient, token: string, steps: SmokeSt
   } catch (e) { steps.push({ step: 'verify-gone', ok: false, detail: `CLEANUP NOT CONFIRMED (${redactErr(e)}) — a collection may remain; delete it manually` }); }
 }
 
-/** READ-ONLY: validate auth + base URL + the find mapping. No writes. */
+/** READ-ONLY: validate auth + base URL + server-info + the find mapping. No writes. */
 export async function runReadOnlySmoke(client: SmokeClient, ref: JellyfinRef): Promise<SmokeReport> {
   const steps: SmokeStep[] = [];
+  if (typeof client.getServerInfo === 'function') {
+    try {
+      const info = await client.getServerInfo();
+      const labels = [info.serverName ? 'server-name-present' : 'server-name-absent', info.version ? 'version-present' : 'version-absent'];
+      steps.push({ step: 'server-info', ok: true, detail: `server info read (${labels.join(', ')})` });
+    } catch (e) {
+      steps.push({ step: 'server-info', ok: false, detail: `server info failed: ${redactErr(e)}` });
+      return finalize(steps);
+    }
+  } else {
+    steps.push({ step: 'server-info', ok: true, detail: 'server info not implemented by fixture client' });
+  }
   try {
     const ids = await client.findItemsByRefs([ref]);
     steps.push({ step: 'find', ok: true, detail: `${ids.length} library item(s) matched the provided ref` });
