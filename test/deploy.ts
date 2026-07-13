@@ -7244,7 +7244,7 @@ test('Phase 120 Unraid operator readiness bundle is offline planning only', () =
   assert(pkg.scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'Phase 120 test script present');
   assert(pkg.scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'Phase 120 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 120 aggregate test follows Phase 119 O5 final authorization through Phase 199 disposition',
   );
 
@@ -8642,7 +8642,7 @@ test('Phase 154 release packaging documents one public Unraid deploy path', () =
 
   for (const required of [
     'phase-154-release-packaging',
-    'Current release tag: `launch-v1`',
+    'Current launch package: `phase-200` / `0d08052`',
     '/mnt/user/appdata/catalog/repo',
     '/mnt/user/appdata/catalog',
     '/mnt/user/appdata/catalog/secrets',
@@ -9023,7 +9023,7 @@ test('Phases 179 and 180 package Launch v1 for easier Unraid and Arcane launch',
   for (const required of [
     'phase-179-launch-v1-release-package',
     'phase-180-arcane-final-button-checklist',
-    'Current release tag: `launch-v1`',
+    'Current launch package: `phase-200` / `0d08052`',
     'git clone https://github.com/cdb8457/streaming-catalog-authority.git',
     'docker-compose.unraid.runtime.yml',
     'repo-ops:latest',
@@ -9033,12 +9033,13 @@ test('Phases 179 and 180 package Launch v1 for easier Unraid and Arcane launch',
     'o4-o5-evidence-capture',
     'o4-o5-packet-review',
     'ui-token-status',
-    'Catalog Authority Launch v1 is ready',
-    'O4 remains open',
-    'O5 remains open',
+    'Catalog Authority is ready as a self-hosted backend/operator foundation',
+    'O4: `O4_CLOSED`',
+    'O5: `O5_DEFERRED_ACCEPTED`',
+    'LAUNCH_WARNING_O5_DEFERRED_ACCEPTED',
     'does not close O4',
     'does not close O5',
-    'no provider/media behavior',
+    'no provider live mode',
   ]) assert(combined.includes(required), `Phase 179/180 surface preserves ${required}`);
   for (const forbidden of [
     '--print --confirm-print',
@@ -9046,8 +9047,6 @@ test('Phases 179 and 180 package Launch v1 for easier Unraid and Arcane launch',
     'request-download-link',
     'magnet:',
     'provider mode enabled',
-    'O4 closed',
-    'O5 closed',
   ]) assert(!phaseDocs.includes(forbidden), `Phase 179/180 docs exclude ${forbidden}`);
 });
 
@@ -9724,7 +9723,7 @@ test('Phase 199 O5 final disposition records accepted deferral and launch warnin
   assert(exists('test/o5-disposition.ts'), 'Phase 199 O5 disposition test exists');
   assert(pkg.scripts['test:o5-disposition'] === 'tsx test/o5-disposition.ts', 'Phase 199 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 199 aggregate test follows O5 authorization preflight',
   );
   const combined = [
@@ -9774,7 +9773,7 @@ test('Phase 200 launch readiness pass records ready with accepted warning', () =
   assert(exists('test/launch-readiness-pass.ts'), 'Phase 200 launch readiness test exists');
   assert(pkg.scripts['test:launch-readiness-pass'] === 'tsx test/launch-readiness-pass.ts', 'Phase 200 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 200 aggregate test follows O5 disposition',
   );
   const combined = [
@@ -9802,6 +9801,41 @@ test('Phase 200 launch readiness pass records ready with accepted warning', () =
     '/mnt/user/',
     '192.168.',
   ]) assert(!doc.includes(forbidden), `Phase 200 record excludes ${forbidden}`);
+});
+
+test('Phase 201 launch package exposes operator handoff without scope expansion', () => {
+  assert(exists('docs/PHASE_201_LAUNCH_PACKAGE.md'), 'Phase 201 launch package doc exists');
+  assert(exists('test/launch-package.ts'), 'Phase 201 launch package test exists');
+  assert(pkg.scripts['test:launch-package'] === 'tsx test/launch-package.ts', 'Phase 201 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    'Phase 201 aggregate test follows launch readiness pass',
+  );
+  const combined = [
+    read('docs/PHASE_201_LAUNCH_PACKAGE.md'),
+    read('test/launch-package.ts'),
+    read('README.md'),
+    read('RELEASE.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-201-launch-package',
+    'LAUNCH_PACKAGE_READY_WITH_ACCEPTED_WARNINGS',
+    'LAUNCH_READY_WITH_ACCEPTED_WARNINGS',
+    'LAUNCH_WARNING_O5_DEFERRED_ACCEPTED',
+    'O4_CLOSED',
+    'O5_DEFERRED_ACCEPTED',
+    'Current launch package: `phase-200` / `0d08052`',
+    '/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check',
+    'no streaming product claim',
+  ]) assert(combined.includes(required), `Phase 201 surface preserves ${required}`);
+  const doc = read('docs/PHASE_201_LAUNCH_PACKAGE.md');
+  for (const forbidden of [
+    'O5_CLOSED',
+    'provider mode enabled',
+    'playback enabled',
+    'download enabled',
+    '192.168.',
+  ]) assert(!doc.includes(forbidden), `Phase 201 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

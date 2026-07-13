@@ -1516,6 +1516,10 @@ formal launch-readiness pass. It records `LAUNCH_READY_WITH_ACCEPTED_WARNINGS` f
 catalog authority backend/operator foundation, cites the synced Unraid repo/image and live UI
 `ok:true` evidence, keeps O4 as `O4_CLOSED`, keeps O5 as `O5_DEFERRED_ACCEPTED`, and forbids any
 streaming product, provider, download, playback, scraping, or media-server launch claim.
+Phase 201 adds `docs/PHASE_201_LAUNCH_PACKAGE.md` and `test:launch-package` as the operator-facing
+launch package. It updates `RELEASE.md` to the Phase 200 launch-ready state, lists the exact Unraid
+paths and launcher commands, preserves `LAUNCH_WARNING_O5_DEFERRED_ACCEPTED`, and keeps all provider
+and media behavior forbidden.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -77,7 +77,7 @@ test('package, README, and deploy guard pin Phase 200 launch readiness', () => {
   const readme = read('README.md');
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:launch-readiness-pass'] === 'tsx test/launch-readiness-pass.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(readme.includes('Phase 200 adds `docs/PHASE_200_LAUNCH_READINESS_PASS.md`'), 'README phase entry');
   assert(deploy.includes('Phase 200 launch readiness pass'), 'deploy guard entry');
   assert(deploy.includes('LAUNCH_READY_WITH_ACCEPTED_WARNINGS'), 'deploy guard status');

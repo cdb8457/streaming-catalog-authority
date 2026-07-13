@@ -88,7 +88,7 @@ test('package and deploy guard pin the final O5 disposition', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:o5-disposition'] === 'tsx test/o5-disposition.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts'), 'aggregate order includes launch readiness after O5 disposition');
   assert(deploy.includes('Phase 199 O5 final disposition'), 'deploy guard entry');
   assert(deploy.includes('O5_DEFERRED_ACCEPTED'), 'deploy guard pins O5 disposition');
   assert(deploy.includes('LAUNCH_WARNING_O5_DEFERRED_ACCEPTED'), 'deploy guard pins warning');
