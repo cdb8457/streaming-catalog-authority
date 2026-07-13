@@ -94,7 +94,7 @@ test('package and deploy guard pin Phase 202 verification', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:launch-candidate-dry-run'] === 'tsx test/launch-candidate-dry-run.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 202 launch candidate consumer dry run'), 'deploy guard entry');
   assert(deploy.includes('LAUNCH_CANDIDATE_CONSUMER_DRY_RUN_READY_WITH_ACCEPTED_WARNINGS'), 'deploy guard status');
 });

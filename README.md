@@ -1525,6 +1525,11 @@ Phase 202 adds `docs/PHASE_202_LAUNCH_CANDIDATE_DRY_RUN.md` and
 follow the documented repository, canonical Unraid path, single runtime compose file, secret-file
 list, Arcane/User Scripts launcher commands, and healthy-state checks without hidden local history,
 while preserving the O5 launch warning and forbidding provider/media scope expansion.
+Phase 203 adds `docs/PHASE_203_MEDIA_PLAYER_BOUNDARY_SELECTION.md` and
+`test:media-player-boundary` as the media-player integration boundary selection. It formally selects
+Jellyfin as the first controlled media-player target, defers Plex and Emby, inventories existing
+Jellyfin scaffolding, defines the Phase 204-207 test ladder, and keeps all Jellyfin networking and
+write-capable paths default-off.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
