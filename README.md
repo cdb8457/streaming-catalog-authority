@@ -94,7 +94,8 @@ a durable reference **harness, not the production adapter** (survives restart; z
 durable non-secret tombstones; holds the completion secret and KEK outside the app DB). A
 production sidecar custodian implementing the same `KeyCustodian` interface is the current O4
 production target. O4 is formally closed by Phase 198 evidence; O5 managed KEK custody/scheduling
-remains open/deferred.
+is formally deferred-accepted by Phase 199 with launch warning
+`LAUNCH_WARNING_O5_DEFERRED_ACCEPTED`.
 
 The erasure guarantee does **not** depend on physically overwriting the DEK's disk blocks — an
 atomic rename swaps in a new inode rather than scrubbing the old one in place. It depends on the
@@ -1506,6 +1507,10 @@ Phase 198 adds `docs/PHASE_198_O4_FINAL_CLOSURE_DISPOSITION.md` and
 on the Phase 191/193/194/197 evidence chain, includes the Phase 195 rollback and Phase 196 parser
 fix in the closure narrative, accepts named residual O4 operational risks, and leaves O5
 open/deferred.
+Phase 199 adds `docs/PHASE_199_O5_FINAL_DISPOSITION.md` and `test:o5-disposition` as the formal O5
+final disposition. It records O5 as `O5_DEFERRED_ACCEPTED`, propagates
+`LAUNCH_WARNING_O5_DEFERRED_ACCEPTED` to launch-facing docs, names reopening criteria, and leaves O4
+closed as `O4_CLOSED` without changing runtime, Compose, custody, KEK, or sidecar behavior.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

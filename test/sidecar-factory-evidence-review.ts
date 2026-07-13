@@ -114,7 +114,7 @@ test('source, docs, and package preserve Phase 190 static review boundary', () =
   assert(pkg.scripts['test:sidecar-factory-evidence-review'] === 'tsx test/sidecar-factory-evidence-review.ts', 'test script');
   assert(pkg.scripts['ops:sidecar-factory-evidence-review'] === 'tsx src/ops/sidecar-factory-evidence-review-cli.ts', 'ops script');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts'),
     'aggregate order',
   );
   const source = `${read('src/ops/sidecar-factory-evidence-review.ts')}\n${read('src/ops/sidecar-factory-evidence-review-cli.ts')}`;

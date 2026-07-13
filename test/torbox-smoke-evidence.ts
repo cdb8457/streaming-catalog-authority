@@ -179,20 +179,20 @@ test('UI examples are present, non-runtime, non-AI-looking, and operator-dashboa
   ], 'UI examples');
   assert(/documentation examples\s+only/.test(ui), 'UI examples are documentation only');
   assert(/decorative\s+gradients/.test(ui), 'UI examples forbid decorative gradients');
-  assert(/O4\s+Open[\s\S]*O5\s+Open/i.test(ui), 'readiness screen shows O4/O5 open');
+  assert(/O4\s+Closed[\s\S]*O5\s+Deferred accepted/i.test(ui), 'readiness screen shows O4 closed and O5 deferred accepted');
   assert(/Counts and fixed categories only[\s\S]*No raw refs, tokens, URLs, response bodies, titles, item ids, CDN URLs, or permalink URLs/i.test(ui), 'TorBox screen is redacted');
 });
 
-test('O4/O5 remain open/deferred and FileCustodian boundary is preserved', () => {
+test('O4/O5 final statuses and custody boundary are preserved', () => {
   const combined = [
     read('docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md'),
     read('docs/templates/TORBOX_SMOKE_EVIDENCE.md'),
     read('docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md'),
     read('README.md'),
   ].join('\n');
-  assert(/O4[\s\S]{0,80}open\/deferred/i.test(combined), 'O4 remains open/deferred');
-  assert(/O5[\s\S]{0,80}open\/deferred/i.test(combined), 'O5 remains open/deferred');
-  assert(/FileCustodian[\s\S]{0,120}hardened reference harness, not production KMS/i.test(combined), 'FileCustodian boundary preserved');
+  assert(/O4_CLOSED/i.test(combined), 'O4 closed status remains visible');
+  assert(/O5_DEFERRED_ACCEPTED/i.test(combined), 'O5 accepted deferral remains visible');
+  assert(/Sidecar custody[\s\S]{0,120}accepted O4 production custody path/i.test(combined), 'sidecar custody boundary preserved');
 });
 
 test('Phase 35 adds no production runtime module or transport implementation', () => {

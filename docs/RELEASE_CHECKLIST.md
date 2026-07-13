@@ -11,6 +11,14 @@ Use `docs/PHASE_30_KEK_EVIDENCE_PREFLIGHT.md` / `ops:kek-evidence-preflight` to 
 redaction-safe descriptor JSON file before O5 KEK custody/scheduling evidence review; it does not
 close O5.
 
+## Launch custody warning
+- [ ] O4: `O4_CLOSED` by Phase 198 (`a3681d3` / `phase-198`).
+- [ ] O5: `O5_DEFERRED_ACCEPTED` by Phase 199 with launch warning
+      `LAUNCH_WARNING_O5_DEFERRED_ACCEPTED`.
+- [ ] Do not claim `O5_CLOSED` unless a future O5 closure record supersedes Phase 199.
+- [ ] If O5 is reopened by the Phase 199 criteria, stop launch/readiness approval until the new O5
+      review is resolved.
+
 ## Before upgrading
 - [ ] **Backup** the current DB: `ops:backup -- dump /backups/pre-upgrade-YYYY-MM-DD.json`
 - [ ] **Verify** it offline: `ops:verify-backup -- /backups/pre-upgrade-YYYY-MM-DD.json`
@@ -22,10 +30,10 @@ close O5.
 - [ ] Deploy the new image.
 - [ ] `ops:migrate` (idempotent; records the new schema version).
 - [ ] `ops:version` — db == expected.
-- [ ] `ops:doctor` — no FAIL checks; review any WARN checks. Expected O4/O5 production WARNs
-      must be recorded in the readiness evidence bundle.
-- [ ] O4/O5 remain visible: Phase 28 descriptor checks do not close O4, and managed KEK custody /
-      scheduling remains open/deferred until separately accepted.
+- [ ] `ops:doctor` — no FAIL checks; review any WARN checks. Expected O5 deferred-accepted launch
+      warning must be recorded in the readiness evidence bundle.
+- [ ] O4/O5 remain visible: O4 is closed by Phase 198, and managed KEK custody / scheduling is
+      `O5_DEFERRED_ACCEPTED` by Phase 199 until a future O5 closure record supersedes it.
 - [ ] If a production custodian descriptor is being reviewed, run
       `ops:custodian-evidence-preflight -- -- <descriptor.json> --json` and retain only the
       redaction-safe report; confirm `closesO4:false`.

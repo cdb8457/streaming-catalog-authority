@@ -15,14 +15,14 @@ gradients, orbs, oversized empty cards, chat chrome, consumer playback UI, or do
 Readiness Gates
 
 Gate   Status    Last evidence          Doctor signal       Next action
-O4     Open      Deferred by policy      WARN visible        Review external custodian adapter evidence
-O5     Open      Deferred by policy      WARN visible        Review managed KEK custody schedule
+O4     Closed    Phase 198 evidence      PASS/accepted       Monitor sidecar custody evidence
+O5     Deferred accepted Phase 199 decision WARN visible     Track managed KEK custody schedule
 DB     Met       2026-07 build check     PASS                Continue routine backup rehearsal
 CI     Met       Latest package run      PASS                Keep deterministic suites green
 
 Warnings
-- O4 remains open/deferred; FileCustodian is a reference harness, not production KMS.
-- O5 remains open/deferred; managed KEK custody/scheduling evidence is not accepted.
+- O4_CLOSED is recorded by Phase 198.
+- O5_DEFERRED_ACCEPTED remains launch-visible as LAUNCH_WARNING_O5_DEFERRED_ACCEPTED.
 ```
 
 Design notes:
@@ -65,12 +65,12 @@ Area                    Status   Last check        Evidence
 Crypto-shredding        Met      Latest CI         Phase 2 tests
 Backup replay compare   Met      Latest CI         Backup integrity gate
 Restore rehearsal       Due      Operator-owned    Redacted rehearsal evidence
-External custodian O4   Open     Deferred          Production custodian evidence needed
-Managed KEK O5          Open     Deferred          KEK custody/schedule evidence needed
+External custodian O4   Closed   Phase 198         O4_CLOSED evidence chain
+Managed KEK O5          Deferred Phase 199         O5_DEFERRED_ACCEPTED launch warning
 
 Boundary
 - Main DB backups hold ciphertext and key-control state only.
-- FileCustodian is a hardened reference harness, not production KMS.
+- Sidecar custody is the accepted O4 production custody path.
 - Redacted evidence must exclude key material, identity, provider refs, and secret paths.
 ```
 

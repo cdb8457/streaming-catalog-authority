@@ -7244,8 +7244,8 @@ test('Phase 120 Unraid operator readiness bundle is offline planning only', () =
   assert(pkg.scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'Phase 120 test script present');
   assert(pkg.scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'Phase 120 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/unraid-operator-readiness-bundle.ts'),
-    'Phase 120 aggregate test follows Phase 119 O5 final authorization',
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    'Phase 120 aggregate test follows Phase 119 O5 final authorization through Phase 199 disposition',
   );
 
   const source = `${read('src/ops/unraid-operator-readiness-bundle.ts')}\n${read('src/ops/unraid-operator-readiness-bundle-cli.ts')}`;
@@ -9717,6 +9717,56 @@ test('Phase 198 O4 final closure disposition records O4_CLOSED and leaves O5 ope
     'provider mode enabled',
     'playback enabled',
   ]) assert(!doc.includes(forbidden), `Phase 198 record excludes ${forbidden}`);
+});
+
+test('Phase 199 O5 final disposition records accepted deferral and launch warning', () => {
+  assert(exists('docs/PHASE_199_O5_FINAL_DISPOSITION.md'), 'Phase 199 O5 final disposition doc exists');
+  assert(exists('test/o5-disposition.ts'), 'Phase 199 O5 disposition test exists');
+  assert(pkg.scripts['test:o5-disposition'] === 'tsx test/o5-disposition.ts', 'Phase 199 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    'Phase 199 aggregate test follows O5 authorization preflight',
+  );
+  const combined = [
+    read('docs/PHASE_199_O5_FINAL_DISPOSITION.md'),
+    read('test/o5-disposition.ts'),
+    read('README.md'),
+    read('docs/RELEASE_CHECKLIST.md'),
+    read('docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-199-o5-final-disposition',
+    'O5_DEFERRED_ACCEPTED',
+    'LAUNCH_WARNING_O5_DEFERRED_ACCEPTED',
+    'O4_CLOSED',
+    'commit `a3681d3`',
+    'tag `phase-198`',
+    'suspected KEK compromise',
+    '90 days have elapsed',
+    'Phase 200 launch/readiness review is unblocked',
+  ]) assert(combined.includes(required), `Phase 199 surface preserves ${required}`);
+  const doc = read('docs/PHASE_199_O5_FINAL_DISPOSITION.md');
+  for (const forbidden of [
+    'postgres://',
+    'postgresql://',
+    '-----BEGIN',
+    'ssh-ed25519',
+    'token:',
+    'password:',
+    'secret:',
+    'kek:',
+    'dek:',
+    'wrappedHex',
+    'dekBase64',
+    '/mnt/user/',
+    '/boot/config/',
+    'C:\\',
+    '\\\\.\\pipe\\',
+    'http://',
+    'https://',
+    '192.168.',
+    'localhost:',
+  ]) assert(!doc.includes(forbidden), `Phase 199 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
