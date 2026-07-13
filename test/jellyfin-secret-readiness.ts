@@ -99,7 +99,7 @@ await test('package, deploy guard, and README wire Phase 212 verification', () =
   const readme = read('README.md');
   assert(pkg.scripts['ops:jellyfin-secret-readiness'] === 'tsx src/ops/jellyfin-secret-readiness-cli.ts', 'ops script present');
   assert(pkg.scripts['test:jellyfin-secret-readiness'] === 'tsx test/jellyfin-secret-readiness.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 212 Jellyfin secret readiness gate'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_SECRET_READINESS_GATE_READY'), 'deploy guard status');
   assert(readme.includes('Phase 212 adds `docs/PHASE_212_JELLYFIN_SECRET_READINESS_GATE.md`'), 'README ledger entry');
