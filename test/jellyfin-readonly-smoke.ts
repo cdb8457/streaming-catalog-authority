@@ -112,7 +112,7 @@ await test('package, deploy guard, and docs wire the Phase 204 gate', () => {
   const deploy = read('test/deploy.ts');
   const readme = read('README.md');
   assert(pkg.scripts['test:jellyfin-readonly-smoke'] === 'tsx test/jellyfin-readonly-smoke.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 204 Jellyfin read-only smoke'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_READ_ONLY_SMOKE_READY'), 'deploy guard status');
   assert(readme.includes('Phase 204 adds `docs/PHASE_204_JELLYFIN_READ_ONLY_SMOKE.md`'), 'README ledger entry');

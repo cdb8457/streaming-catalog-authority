@@ -1548,6 +1548,10 @@ Phase 207 adds `docs/PHASE_207_JELLYFIN_EVIDENCE_REVIEW_DECISION.md` and
 `test:jellyfin-evidence-review-decision` as the Jellyfin ladder review. It records
 `JELLYFIN_INTEGRATION_DEFERRED_PENDING_LIVE_EVIDENCE`: the implementation gates are ready, but no
 live Jellyfin evidence is retained, so integration is not launched.
+Phase 208 adds `docs/PHASE_208_EXISTING_JELLYFIN_LIVE_EVIDENCE_PREFLIGHT.md` and
+`test:jellyfin-live-evidence-preflight` as the existing-server live-evidence preflight. It records
+that Jellyfin should be discovered on the existing `8096` listener, that `8920` must not be assumed,
+and that no Jellyfin install, container, Compose change, or new Jellyfin port binding is allowed.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

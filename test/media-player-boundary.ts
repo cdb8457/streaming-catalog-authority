@@ -118,7 +118,7 @@ await test('package and deploy guard pin Phase 203 verification', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:media-player-boundary'] === 'tsx test/media-player-boundary.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 203 media-player boundary selection'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_SELECTED_FOR_BOUNDARY_CONTROLLED_TESTING'), 'deploy guard status');
 });
