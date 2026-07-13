@@ -83,7 +83,7 @@ test('package and deploy guard pin Phase 201 verification', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:launch-package'] === 'tsx test/launch-package.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 201 launch package'), 'deploy guard entry');
   assert(deploy.includes('LAUNCH_PACKAGE_READY_WITH_ACCEPTED_WARNINGS'), 'deploy guard status');
 });
