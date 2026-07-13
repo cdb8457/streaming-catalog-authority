@@ -1575,6 +1575,10 @@ Phase 213 adds `docs/PHASE_213_JELLYFIN_CONTAINER_COMMAND_SHAPE_FIX.md` and
 `test:jellyfin-container-command-shape` to correct the Unraid operator command shape: run Jellyfin
 evidence commands inside `repo-ops:latest`, not directly on the Unraid host, and mount the secret
 only after it exists.
+Phase 214 adds `docs/PHASE_214_JELLYFIN_SECRET_INSTALL_OPERATOR_PACKET.md` and
+`test:jellyfin-secret-install-operator-packet` as the redaction-safe operator packet for installing
+the Jellyfin API key file. It uses a no-echo Unraid shell flow, keeps the live capture blocked until
+`JELLYFIN_SECRET_READY`, and still performs no Jellyfin network contact or port changes.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
