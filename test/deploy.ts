@@ -2,7 +2,7 @@ import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 /**
- * Phase 3 Stage 3.4 â€” static structural checks for the deployment artifacts.
+ * Phase 3 Stage 3.4 Ã¢â‚¬â€ static structural checks for the deployment artifacts.
  *
  * Dependency-free (no YAML lib, no Docker): asserts the compose topology, secret-file wiring, and
  * the one-shot CLI shape and intentional app port by inspecting the files. The REAL compose smoke test
@@ -51,23 +51,23 @@ const unraidOpsLauncher = read('deploy/unraid-ops-launcher.sh');
 const dockerignore = read('.dockerignore');
 const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
 
-test('compose â€” defines postgres + one-shot ops services', () => {
+test('compose Ã¢â‚¬â€ defines postgres + one-shot ops services', () => {
   assert(/^\s{2}postgres:/m.test(compose), 'postgres service');
   assert(/^\s{2}ops:/m.test(compose), 'ops service');
   assert(/entrypoint:\s*\["npm",\s*"run"\]/.test(compose), 'ops is a one-shot npm-run container');
 });
 
-test('compose â€” postgres has a pg_isready healthcheck', () => {
+test('compose Ã¢â‚¬â€ postgres has a pg_isready healthcheck', () => {
   assert(/healthcheck:/.test(compose) && /pg_isready/.test(compose), 'pg_isready healthcheck present');
 });
 
-test('compose â€” keystore is a SEPARATE volume from pgdata and backups', () => {
+test('compose Ã¢â‚¬â€ keystore is a SEPARATE volume from pgdata and backups', () => {
   for (const v of ['pgdata:', 'keystore:', 'backups:']) assert(compose.includes(v), `${v} volume declared`);
   assert(compose.includes('/var/lib/postgresql/data'), 'pgdata mount path');
   assert(compose.includes('/var/lib/catalog/keystore'), 'keystore mount path (distinct from pgdata)');
 });
 
-test('compose â€” secrets delivered via *_FILE (no inline secret values)', () => {
+test('compose Ã¢â‚¬â€ secrets delivered via *_FILE (no inline secret values)', () => {
   for (const v of ['POSTGRES_PASSWORD_FILE', 'ADMIN_DATABASE_URL_FILE', 'DATABASE_URL_FILE', 'COMPLETION_SECRET_FILE', 'CUSTODIAN_KEK_FILE']) {
     assert(compose.includes(v), `${v} used`);
   }
@@ -77,12 +77,12 @@ test('compose â€” secrets delivered via *_FILE (no inline secret values)', 
   assert(!/CUSTODIAN_KEK:\s*\S/.test(compose), 'no inline CUSTODIAN_KEK value');
 });
 
-test('compose â€” CLI pattern: no ports / no HTTP daemon', () => {
+test('compose Ã¢â‚¬â€ CLI pattern: no ports / no HTTP daemon', () => {
   assert(!/ports:/.test(compose), 'no published ports (not an HTTP service)');
   assert(!/(expose|EXPOSE)/.test(compose), 'no exposed port');
 });
 
-test('unraid compose â€” single canonical file with production binds and intentional app port', () => {
+test('unraid compose Ã¢â‚¬â€ single canonical file with production binds and intentional app port', () => {
   assert(exists('docker-compose.unraid.yml'), 'canonical Unraid compose exists');
   assert(/^\s{2}postgres:/m.test(unraidCompose), 'Unraid postgres service');
   assert(/^\s{2}ops:/m.test(unraidCompose), 'Unraid ops service');
@@ -113,7 +113,7 @@ test('unraid compose â€” single canonical file with production binds and in
   assert(!/(expose|EXPOSE)/.test(unraidCompose), 'Unraid compose exposes no ports');
 });
 
-test('unraid runtime compose â€” launcher-ready image mode with no build context', () => {
+test('unraid runtime compose Ã¢â‚¬â€ launcher-ready image mode with no build context', () => {
   assert(exists('docker-compose.unraid.runtime.yml'), 'Unraid runtime compose exists');
   assert(/^name:\s*catalogauthority/m.test(unraidRuntimeCompose), 'runtime compose has stable launcher project name');
   assert(/^\s{2}postgres:/m.test(unraidRuntimeCompose), 'runtime postgres service');
@@ -163,7 +163,7 @@ test('unraid runtime compose â€” launcher-ready image mode with no build co
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'runtime compose exposes no ports');
 });
 
-test('compose â€” `docker compose run ops` invocations must NOT double-prefix npm run', () => {
+test('compose Ã¢â‚¬â€ `docker compose run ops` invocations must NOT double-prefix npm run', () => {
   // With entrypoint ["npm","run"], `docker compose run ops <args>` already prepends `npm run`.
   // So any `... run --rm ops npm run X` becomes `npm run npm run X` (broken). The script name
   // must be passed directly: `... run --rm ops X`. Enforce that invariant everywhere it appears.
@@ -178,7 +178,7 @@ test('compose â€” `docker compose run ops` invocations must NOT double-pref
   for (const [name, src] of opsFiles()) assert(!broken.test(src), `src/ops/${name} must not contain the "run --rm ops npm run" double-prefix`);
 });
 
-test('package.json â€” ops + deploy scripts wired; no HTTP framework dep', () => {
+test('package.json Ã¢â‚¬â€ ops + deploy scripts wired; no HTTP framework dep', () => {
   for (const s of ['ops:migrate', 'ops:backup', 'test:backup-ops', 'test:deploy', 'smoke:compose']) {
     assert(typeof pkg.scripts[s] === 'string', `script ${s} present`);
   }
@@ -192,7 +192,7 @@ test('package.json â€” ops + deploy scripts wired; no HTTP framework dep', 
   }
 });
 
-test('adapter boundary â€” no network/provider leakage in src/core/adapters (Phase 7)', () => {
+test('adapter boundary Ã¢â‚¬â€ no network/provider leakage in src/core/adapters (Phase 7)', () => {
   const dir = fileURLToPath(new URL('../src/core/adapters', import.meta.url));
   const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
   assert(files.length >= 3, 'adapter module present');
@@ -1715,7 +1715,7 @@ test('provider availability operator packet - Phase 59 packages count-only evide
   ]) assert(!`${packet}\n${cli}`.includes(forbidden), `Phase 59 source excludes ${forbidden}`);
 });
 
-test('erasure policy â€” Phase 9 publish module clean; doc + suites wired', () => {
+test('erasure policy Ã¢â‚¬â€ Phase 9 publish module clean; doc + suites wired', () => {
   const dir = fileURLToPath(new URL('../src/core/publish', import.meta.url));
   const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
   assert(files.length >= 4, 'publish module present');
@@ -1733,7 +1733,7 @@ test('erasure policy â€” Phase 9 publish module clean; doc + suites wired',
   assert((pkg.scripts.test ?? '').includes('test/publish-erasure.ts') && (pkg.scripts.test ?? '').includes('test/publish-consent.ts'), 'publish suites in the CI chain');
 });
 
-test('jellyfin adapter â€” Phase 10 fake/local only: no network, no OTHER providers; doc + suites wired', () => {
+test('jellyfin adapter Ã¢â‚¬â€ Phase 10 fake/local only: no network, no OTHER providers; doc + suites wired', () => {
   const dir = fileURLToPath(new URL('../src/core/adapters/jellyfin', import.meta.url));
   const files = readdirSync(dir).filter((f) => f.endsWith('.ts'));
   assert(files.length >= 5, 'jellyfin module present');
@@ -1753,9 +1753,9 @@ test('jellyfin adapter â€” Phase 10 fake/local only: no network, no OTHER p
   assert((pkg.scripts.test ?? '').includes('test/jellyfin-privacy.ts') && (pkg.scripts.test ?? '').includes('test/jellyfin-contract.ts'), 'jellyfin suites in the CI chain');
 });
 
-test('jellyfin HTTP (Phase 11) â€” injected-fetch only in core; gated; smoke opt-in + out of CI', () => {
+test('jellyfin HTTP (Phase 11) Ã¢â‚¬â€ injected-fetch only in core; gated; smoke opt-in + out of CI', () => {
   const dir = fileURLToPath(new URL('../src/core/adapters/jellyfin', import.meta.url));
-  // the core adapter must NEVER reference a bare/global fetch â€” network only flows via the injected seam.
+  // the core adapter must NEVER reference a bare/global fetch Ã¢â‚¬â€ network only flows via the injected seam.
   for (const f of readdirSync(dir).filter((x) => x.endsWith('.ts'))) {
     const src = readFileSync(`${dir}/${f}`, 'utf8');
     assert(!/globalThis\.fetch|\bwindow\.fetch\b|\bfetch\s*\(/.test(src), `src/core/adapters/jellyfin/${f} references no bare/global fetch`);
@@ -1773,12 +1773,12 @@ test('jellyfin HTTP (Phase 11) â€” injected-fetch only in core; gated; smok
   for (const kw of ['JELLYFIN_ENABLE_NETWORK', 'PROVISIONAL', 'injected', 'X-Emby-Token', 'smoke:jellyfin']) assert(doc.includes(kw), `doc covers ${kw}`);
 });
 
-test('publish outbox â€” Phase 12 doc + suites wired; create only via the outbox', () => {
+test('publish outbox Ã¢â‚¬â€ Phase 12 doc + suites wired; create only via the outbox', () => {
   assert(exists('docs/PHASE_12_PUBLISH_OUTBOX.md'), 'outbox doc exists');
   const doc = read('docs/PHASE_12_PUBLISH_OUTBOX.md');
   for (const kw of ['correlation_token', 'outbox', 'adopt', 'reconcile', 'JELLYFIN_ALLOW_LIVE_PUBLISH']) assert(doc.includes(kw), `doc covers ${kw}`);
   assert((pkg.scripts.test ?? '').includes('test/publish-outbox.ts') && (pkg.scripts.test ?? '').includes('test/jellyfin-outbox.ts'), 'outbox suites in the CI chain');
-  // the bare create stays disabled â€” the ONLY real-create path is the outbox (createTaggedCollection).
+  // the bare create stays disabled Ã¢â‚¬â€ the ONLY real-create path is the outbox (createTaggedCollection).
   const hc = read('src/core/adapters/jellyfin/http-client.ts');
   assert(hc.includes('JellyfinPublishDisabledError') && /createCollection\([^)]*\)[^{]*\{[^}]*throw/.test(hc), 'bare createCollection stays disabled');
   assert(hc.includes('createTaggedCollection'), 'outbox-only tagged create exists');
@@ -1786,7 +1786,7 @@ test('publish outbox â€” Phase 12 doc + suites wired; create only via the o
   assert(!(pkg.scripts.test ?? '').includes('publish-reconcile'), 'the reconcile CLI is NOT in the CI chain');
 });
 
-test('jellyfin smoke â€” Phase 13 validation: doc + suite wired; globalThis.fetch limited to operator CLIs', () => {
+test('jellyfin smoke Ã¢â‚¬â€ Phase 13 validation: doc + suite wired; globalThis.fetch limited to operator CLIs', () => {
   assert(exists('docs/PHASE_13_JELLYFIN_VALIDATION.md'), 'validation doc exists');
   const doc = read('docs/PHASE_13_JELLYFIN_VALIDATION.md');
   for (const kw of ['--write', 'self-clean', 'find-by-token', 'SearchTerm', 'redaction-safe']) assert(doc.includes(kw), `doc covers ${kw}`);
@@ -1798,11 +1798,11 @@ test('jellyfin smoke â€” Phase 13 validation: doc + suite wired; globalThis
   const withFetch = walkTs(fileURLToPath(new URL('../src', import.meta.url)))
     .filter((f) => readFileSync(f, 'utf8').includes('globalThis.fetch'))
     .map((f) => f.replace(/\\/g, '/'));
-  assert(withFetch.length === 4, `exactly four src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
-  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|jellyfin-live-readonly-smoke-cli|publish-reconcile-cli|torbox-smoke-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
+  assert(withFetch.length === 5, `exactly five src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
+  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|jellyfin-live-readonly-smoke-cli|jellyfin-live-evidence-capture-cli|publish-reconcile-cli|torbox-smoke-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
 });
 
-test('jellyfin mapping â€” Phase 14 pagination is present + bounded; doc wired', () => {
+test('jellyfin mapping Ã¢â‚¬â€ Phase 14 pagination is present + bounded; doc wired', () => {
   const map = read('src/core/adapters/jellyfin/mapping.ts');
   assert(/StartIndex/.test(map) && /Limit/.test(map), 'find requests carry StartIndex + Limit (paginated)');
   const hc = read('src/core/adapters/jellyfin/http-client.ts');
@@ -1812,7 +1812,7 @@ test('jellyfin mapping â€” Phase 14 pagination is present + bounded; doc wi
   for (const kw of ['pagination', 'StartIndex', 'MAX_PAGES', 'PROVISIONAL', '--write']) assert(doc.includes(kw), `doc covers ${kw}`);
 });
 
-test('production readiness gate â€” Phase 22 consolidates the 9 criteria + statuses; no stale refs', () => {
+test('production readiness gate Ã¢â‚¬â€ Phase 22 consolidates the 9 criteria + statuses; no stale refs', () => {
   assert(exists('docs/PHASE_22_PRODUCTION_READINESS_GATE.md'), 'readiness gate doc exists');
   const gate = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
   // all 9 readiness areas are covered
@@ -2416,14 +2416,14 @@ test('ops entrypoints exist', () => {
   assert(exists('src/ops/backup-cli.ts'), 'backup-cli');
 });
 
-test('docs â€” PHASE_3_DEPLOYMENT covers Unraid, *_FILE, keystore separation, operator age', () => {
+test('docs Ã¢â‚¬â€ PHASE_3_DEPLOYMENT covers Unraid, *_FILE, keystore separation, operator age', () => {
   assert(exists('docs/PHASE_3_DEPLOYMENT.md'), 'deployment doc exists');
   const doc = read('docs/PHASE_3_DEPLOYMENT.md');
   for (const kw of ['Unraid', '_FILE', 'keystore', 'age', 'O4']) assert(doc.includes(kw), `doc mentions ${kw}`);
   assert(/separate volume/i.test(doc), 'doc states keystore/pgdata separation');
 });
 
-test('docs â€” production-gate wording is accurate (memory guard is CLOSED/enforced)', () => {
+test('docs Ã¢â‚¬â€ production-gate wording is accurate (memory guard is CLOSED/enforced)', () => {
   const doc = read('docs/PHASE_3_DEPLOYMENT.md');
   // stale: the memory-mode guard must NOT be described as an open "guard ... OPEN" gate anymore.
   assert(!/guard[^\n]*\bopen\b/i.test(doc), 'no stale "guard ... OPEN" wording (memory guard is enforced)');
@@ -2436,7 +2436,7 @@ test('docs â€” production-gate wording is accurate (memory guard is CLOSED/
   assert(/O5[^\n]*OPEN/i.test(doc) && /ops:rewrap-kek/.test(doc), 'O5 automation open but rewrap tooling documented');
 });
 
-test('unraid template â€” one-shot, no ports, *_FILE secrets, separate keystore (Stage 5.3)', () => {
+test('unraid template Ã¢â‚¬â€ one-shot, no ports, *_FILE secrets, separate keystore (Stage 5.3)', () => {
   assert(exists('deploy/unraid-catalog-authority.xml'), 'unraid template exists');
   const xml = read('deploy/unraid-catalog-authority.xml');
   assert(/<Container/.test(xml) && /<\/Container>/.test(xml), 'is a Container template');
@@ -2453,7 +2453,7 @@ test('unraid template â€” one-shot, no ports, *_FILE secrets, separate keys
   assert(!/<Config Name="COMPLETION_SECRET"[^>]*>(?!\/run\/secrets)/.test(xml), 'no inline completion secret value');
 });
 
-test('ops lifecycle â€” Phase 6 CLIs + docs are wired (version/verify/rehearse/doctor --json)', () => {
+test('ops lifecycle Ã¢â‚¬â€ Phase 6 CLIs + docs are wired (version/verify/rehearse/doctor --json)', () => {
   for (const s of ['ops:version', 'ops:verify-backup', 'ops:rehearse-restore', 'ops:doctor']) {
     assert(typeof pkg.scripts[s] === 'string', `script ${s} present`);
   }
@@ -7244,7 +7244,7 @@ test('Phase 120 Unraid operator readiness bundle is offline planning only', () =
   assert(pkg.scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'Phase 120 test script present');
   assert(pkg.scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'Phase 120 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 120 aggregate test follows Phase 119 O5 final authorization through Phase 199 disposition',
   );
 
@@ -9723,7 +9723,7 @@ test('Phase 199 O5 final disposition records accepted deferral and launch warnin
   assert(exists('test/o5-disposition.ts'), 'Phase 199 O5 disposition test exists');
   assert(pkg.scripts['test:o5-disposition'] === 'tsx test/o5-disposition.ts', 'Phase 199 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 199 aggregate test follows O5 authorization preflight',
   );
   const combined = [
@@ -9773,7 +9773,7 @@ test('Phase 200 launch readiness pass records ready with accepted warning', () =
   assert(exists('test/launch-readiness-pass.ts'), 'Phase 200 launch readiness test exists');
   assert(pkg.scripts['test:launch-readiness-pass'] === 'tsx test/launch-readiness-pass.ts', 'Phase 200 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 200 aggregate test follows O5 disposition',
   );
   const combined = [
@@ -9808,7 +9808,7 @@ test('Phase 201 launch package exposes operator handoff without scope expansion'
   assert(exists('test/launch-package.ts'), 'Phase 201 launch package test exists');
   assert(pkg.scripts['test:launch-package'] === 'tsx test/launch-package.ts', 'Phase 201 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 201 aggregate test follows launch readiness pass',
   );
   const combined = [
@@ -9843,7 +9843,7 @@ test('Phase 202 launch candidate consumer dry run preserves the public launch pa
   assert(exists('test/launch-candidate-dry-run.ts'), 'Phase 202 consumer dry-run test exists');
   assert(pkg.scripts['test:launch-candidate-dry-run'] === 'tsx test/launch-candidate-dry-run.ts', 'Phase 202 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 202 aggregate test follows launch package',
   );
   const combined = [
@@ -9878,7 +9878,7 @@ test('Phase 203 media-player boundary selection chooses Jellyfin without enablin
   assert(exists('test/media-player-boundary.ts'), 'Phase 203 media-player boundary test exists');
   assert(pkg.scripts['test:media-player-boundary'] === 'tsx test/media-player-boundary.ts', 'Phase 203 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 203 aggregate test follows launch candidate dry run',
   );
   const combined = [
@@ -9913,7 +9913,7 @@ test('Phase 204 Jellyfin read-only smoke is guarded and write-free', () => {
   assert(exists('test/jellyfin-readonly-smoke.ts'), 'Phase 204 Jellyfin read-only smoke test exists');
   assert(pkg.scripts['test:jellyfin-readonly-smoke'] === 'tsx test/jellyfin-readonly-smoke.ts', 'Phase 204 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 204 aggregate test follows media-player boundary and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -9952,7 +9952,7 @@ test('Phase 205 Jellyfin read-only mapping emits counts-only evidence', () => {
   assert(exists('test/jellyfin-readonly-mapping.ts'), 'Phase 205 Jellyfin read-only mapping test exists');
   assert(pkg.scripts['test:jellyfin-readonly-mapping'] === 'tsx test/jellyfin-readonly-mapping.ts', 'Phase 205 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 205 aggregate test follows read-only smoke and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -9990,7 +9990,7 @@ test('Phase 206 Jellyfin disposable write proof is gated and self-cleaning', () 
   assert(exists('test/jellyfin-disposable-write.ts'), 'Phase 206 Jellyfin disposable write test exists');
   assert(pkg.scripts['test:jellyfin-disposable-write'] === 'tsx test/jellyfin-disposable-write.ts', 'Phase 206 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 206 aggregate test follows read-only mapping and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10030,7 +10030,7 @@ test('Phase 207 Jellyfin evidence review decision defers launch pending live evi
   assert(exists('test/jellyfin-evidence-review-decision.ts'), 'Phase 207 Jellyfin decision test exists');
   assert(pkg.scripts['test:jellyfin-evidence-review-decision'] === 'tsx test/jellyfin-evidence-review-decision.ts', 'Phase 207 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 207 aggregate test follows disposable write proof and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10068,7 +10068,7 @@ test('Phase 208 existing Jellyfin live evidence preflight forbids installs and p
   assert(exists('test/jellyfin-live-evidence-preflight.ts'), 'Phase 208 Jellyfin preflight test exists');
   assert(pkg.scripts['test:jellyfin-live-evidence-preflight'] === 'tsx test/jellyfin-live-evidence-preflight.ts', 'Phase 208 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 208 aggregate test follows evidence review decision and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10112,7 +10112,7 @@ test('Phase 209 Jellyfin live read-only smoke runner is secret-file-only and wri
   assert(pkg.scripts['ops:jellyfin-live-readonly-smoke'] === 'tsx src/ops/jellyfin-live-readonly-smoke-cli.ts', 'Phase 209 ops script present');
   assert(pkg.scripts['test:jellyfin-live-readonly-smoke-runner'] === 'tsx test/jellyfin-live-readonly-smoke-runner.ts', 'Phase 209 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 209 aggregate test follows live evidence preflight and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10156,7 +10156,7 @@ test('Phase 210 Jellyfin live evidence capture preflight records missing secret 
   assert(exists('test/jellyfin-live-evidence-capture-preflight.ts'), 'Phase 210 Jellyfin live capture preflight test exists');
   assert(pkg.scripts['test:jellyfin-live-evidence-capture-preflight'] === 'tsx test/jellyfin-live-evidence-capture-preflight.ts', 'Phase 210 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 210 aggregate test follows live read-only runner and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10190,6 +10190,51 @@ test('Phase 210 Jellyfin live evidence capture preflight records missing secret 
     'postgres://',
     'postgresql://',
   ]) assert(!doc.includes(forbidden), `Phase 210 record excludes ${forbidden}`);
+});
+
+test('Phase 211 Jellyfin live evidence capture command saves redaction-safe smoke JSON', () => {
+  assert(exists('docs/PHASE_211_JELLYFIN_LIVE_EVIDENCE_CAPTURE_COMMAND.md'), 'Phase 211 Jellyfin live capture command doc exists');
+  assert(exists('src/ops/jellyfin-live-evidence-capture.ts'), 'Phase 211 Jellyfin live capture module exists');
+  assert(exists('src/ops/jellyfin-live-evidence-capture-cli.ts'), 'Phase 211 Jellyfin live capture CLI exists');
+  assert(exists('test/jellyfin-live-evidence-capture.ts'), 'Phase 211 Jellyfin live capture test exists');
+  assert(pkg.scripts['ops:jellyfin-live-evidence-capture'] === 'tsx src/ops/jellyfin-live-evidence-capture-cli.ts', 'Phase 211 ops script present');
+  assert(pkg.scripts['test:jellyfin-live-evidence-capture'] === 'tsx test/jellyfin-live-evidence-capture.ts', 'Phase 211 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    'Phase 211 aggregate test follows capture preflight and precedes Unraid readiness bundle',
+  );
+  const combined = [
+    read('docs/PHASE_211_JELLYFIN_LIVE_EVIDENCE_CAPTURE_COMMAND.md'),
+    read('src/ops/jellyfin-live-evidence-capture.ts'),
+    read('test/jellyfin-live-evidence-capture.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-211-jellyfin-live-evidence-capture-command',
+    'JELLYFIN_LIVE_EVIDENCE_CAPTURE_COMMAND_READY_SECRET_BLOCKED',
+    'LIVE_EVIDENCE_CAPTURE_COMMAND_READY_AWAITING_SECRET',
+    'phase-211-jellyfin-live-evidence-capture',
+    'phase-209-jellyfin-live-readonly-smoke',
+    'ops:jellyfin-live-evidence-capture',
+    '--out /mnt/user/appdata/catalog/evidence/phase-211-jellyfin-live-readonly-smoke.json',
+    'JELLYFIN_LIVE_EVIDENCE_BLOCKED_SECRET_MISSING',
+    'evidenceDigest',
+    'bytesWritten',
+    'Phase 207 remains `JELLYFIN_INTEGRATION_DEFERRED_PENDING_LIVE_EVIDENCE`',
+    'O4 remains `O4_CLOSED`',
+    'O5 remains `O5_DEFERRED_ACCEPTED`',
+  ]) assert(combined.includes(required), `Phase 211 surface preserves ${required}`);
+  const doc = read('docs/PHASE_211_JELLYFIN_LIVE_EVIDENCE_CAPTURE_COMMAND.md');
+  for (const forbidden of [
+    'O5_CLOSED',
+    'JELLYFIN_INTEGRATION_LAUNCHED',
+    'provider mode enabled',
+    'playback enabled',
+    'download enabled',
+    '192.168.',
+    'postgres://',
+    'postgresql://',
+  ]) assert(!doc.includes(forbidden), `Phase 211 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

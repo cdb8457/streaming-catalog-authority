@@ -64,7 +64,7 @@ await test('package, deploy guard, and README wire Phase 207 verification', () =
   const deploy = read('test/deploy.ts');
   const readme = read('README.md');
   assert(pkg.scripts['test:jellyfin-evidence-review-decision'] === 'tsx test/jellyfin-evidence-review-decision.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 207 Jellyfin evidence review decision'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_INTEGRATION_DEFERRED_PENDING_LIVE_EVIDENCE'), 'deploy guard status');
   assert(readme.includes('Phase 207 adds `docs/PHASE_207_JELLYFIN_EVIDENCE_REVIEW_DECISION.md`'), 'README ledger entry');

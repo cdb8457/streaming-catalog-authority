@@ -1562,6 +1562,11 @@ Phase 210 adds `docs/PHASE_210_JELLYFIN_LIVE_EVIDENCE_CAPTURE_PREFLIGHT.md` and
 real Unraid preflight result `JELLYFIN_LIVE_EVIDENCE_BLOCKED_SECRET_MISSING`, preserves the existing
 `8096` Jellyfin target, and gives the secret-file setup plus capture command without running live
 smoke or changing Compose.
+Phase 211 adds `docs/PHASE_211_JELLYFIN_LIVE_EVIDENCE_CAPTURE_COMMAND.md`,
+`ops:jellyfin-live-evidence-capture`, and `test:jellyfin-live-evidence-capture` as the guarded
+save command for Phase 209 live read-only smoke JSON. The command writes retained evidence to a
+chosen file, prints only a redaction-safe summary, and remains blocked until the Jellyfin API key
+secret file exists.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
