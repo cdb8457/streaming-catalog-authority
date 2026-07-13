@@ -1520,6 +1520,11 @@ Phase 201 adds `docs/PHASE_201_LAUNCH_PACKAGE.md` and `test:launch-package` as t
 launch package. It updates `RELEASE.md` to the Phase 200 launch-ready state, lists the exact Unraid
 paths and launcher commands, preserves `LAUNCH_WARNING_O5_DEFERRED_ACCEPTED`, and keeps all provider
 and media behavior forbidden.
+Phase 202 adds `docs/PHASE_202_LAUNCH_CANDIDATE_DRY_RUN.md` and
+`test:launch-candidate-dry-run` as the consumer dry-run gate. It verifies that a fresh operator can
+follow the documented repository, canonical Unraid path, single runtime compose file, secret-file
+list, Arcane/User Scripts launcher commands, and healthy-state checks without hidden local history,
+while preserving the O5 launch warning and forbidding provider/media scope expansion.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

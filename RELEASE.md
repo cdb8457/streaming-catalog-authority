@@ -6,6 +6,10 @@ Launch status: `LAUNCH_READY_WITH_ACCEPTED_WARNINGS`
 
 Required warning: `LAUNCH_WARNING_O5_DEFERRED_ACCEPTED`
 
+Operator handoff package: `phase-201` / `9378a07`
+
+Consumer dry-run gate: `docs/PHASE_202_LAUNCH_CANDIDATE_DRY_RUN.md`
+
 Catalog Authority is ready as a self-hosted backend/operator foundation on Unraid. It includes
 Postgres, sidecar custody, one-shot ops commands, the read-only operator UI, Arcane/User Scripts
 launchers, and redaction-safe evidence capture/review.
@@ -20,6 +24,7 @@ custody/scheduling closure.
 
 Operator handoff:
 
+- `docs/PHASE_202_LAUNCH_CANDIDATE_DRY_RUN.md`
 - `docs/PHASE_201_LAUNCH_PACKAGE.md`
 - `docs/PHASE_200_LAUNCH_READINESS_PASS.md`
 - `docs/RELEASE_CHECKLIST.md`

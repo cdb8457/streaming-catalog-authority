@@ -7244,7 +7244,7 @@ test('Phase 120 Unraid operator readiness bundle is offline planning only', () =
   assert(pkg.scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'Phase 120 test script present');
   assert(pkg.scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'Phase 120 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 120 aggregate test follows Phase 119 O5 final authorization through Phase 199 disposition',
   );
 
@@ -9723,7 +9723,7 @@ test('Phase 199 O5 final disposition records accepted deferral and launch warnin
   assert(exists('test/o5-disposition.ts'), 'Phase 199 O5 disposition test exists');
   assert(pkg.scripts['test:o5-disposition'] === 'tsx test/o5-disposition.ts', 'Phase 199 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 199 aggregate test follows O5 authorization preflight',
   );
   const combined = [
@@ -9773,7 +9773,7 @@ test('Phase 200 launch readiness pass records ready with accepted warning', () =
   assert(exists('test/launch-readiness-pass.ts'), 'Phase 200 launch readiness test exists');
   assert(pkg.scripts['test:launch-readiness-pass'] === 'tsx test/launch-readiness-pass.ts', 'Phase 200 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 200 aggregate test follows O5 disposition',
   );
   const combined = [
@@ -9808,7 +9808,7 @@ test('Phase 201 launch package exposes operator handoff without scope expansion'
   assert(exists('test/launch-package.ts'), 'Phase 201 launch package test exists');
   assert(pkg.scripts['test:launch-package'] === 'tsx test/launch-package.ts', 'Phase 201 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 201 aggregate test follows launch readiness pass',
   );
   const combined = [
@@ -9836,6 +9836,41 @@ test('Phase 201 launch package exposes operator handoff without scope expansion'
     'download enabled',
     '192.168.',
   ]) assert(!doc.includes(forbidden), `Phase 201 record excludes ${forbidden}`);
+});
+
+test('Phase 202 launch candidate consumer dry run preserves the public launch path', () => {
+  assert(exists('docs/PHASE_202_LAUNCH_CANDIDATE_DRY_RUN.md'), 'Phase 202 consumer dry-run doc exists');
+  assert(exists('test/launch-candidate-dry-run.ts'), 'Phase 202 consumer dry-run test exists');
+  assert(pkg.scripts['test:launch-candidate-dry-run'] === 'tsx test/launch-candidate-dry-run.ts', 'Phase 202 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    'Phase 202 aggregate test follows launch package',
+  );
+  const combined = [
+    read('docs/PHASE_202_LAUNCH_CANDIDATE_DRY_RUN.md'),
+    read('test/launch-candidate-dry-run.ts'),
+    read('README.md'),
+    read('RELEASE.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-202-launch-candidate-consumer-dry-run',
+    'LAUNCH_CANDIDATE_CONSUMER_DRY_RUN_READY_WITH_ACCEPTED_WARNINGS',
+    'Operator handoff package: `phase-201` / `9378a07`',
+    'Consumer dry-run gate: `docs/PHASE_202_LAUNCH_CANDIDATE_DRY_RUN.md`',
+    'git clone https://github.com/cdb8457/streaming-catalog-authority.git .',
+    'docker compose -f docker-compose.unraid.runtime.yml up -d postgres app sidecar',
+    '/mnt/user/appdata/catalog/repo/deploy/unraid-ops-launcher.sh ui-live-check',
+    'LAUNCH_WARNING_O5_DEFERRED_ACCEPTED',
+    'no provider or media runtime behavior enabled',
+  ]) assert(combined.includes(required), `Phase 202 surface preserves ${required}`);
+  const doc = read('docs/PHASE_202_LAUNCH_CANDIDATE_DRY_RUN.md');
+  for (const forbidden of [
+    'O5_CLOSED',
+    'provider mode enabled',
+    'playback enabled',
+    'download enabled',
+    '192.168.',
+  ]) assert(!doc.includes(forbidden), `Phase 202 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
