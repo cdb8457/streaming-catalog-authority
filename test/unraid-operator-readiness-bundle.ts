@@ -95,7 +95,7 @@ test('source and docs preserve offline planning boundary', () => {
   const scripts = (JSON.parse(read('package.json')) as { scripts: Record<string, string> }).scripts;
   assert(scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'ops script');
   assert(scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'test script');
-  assert((scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order');
+  assert((scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order');
   for (const forbidden of [
     'node:fs',
     'node:http',

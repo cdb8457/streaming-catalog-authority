@@ -1511,6 +1511,11 @@ Phase 199 adds `docs/PHASE_199_O5_FINAL_DISPOSITION.md` and `test:o5-disposition
 final disposition. It records O5 as `O5_DEFERRED_ACCEPTED`, propagates
 `LAUNCH_WARNING_O5_DEFERRED_ACCEPTED` to launch-facing docs, names reopening criteria, and leaves O4
 closed as `O4_CLOSED` without changing runtime, Compose, custody, KEK, or sidecar behavior.
+Phase 200 adds `docs/PHASE_200_LAUNCH_READINESS_PASS.md` and `test:launch-readiness-pass` as the
+formal launch-readiness pass. It records `LAUNCH_READY_WITH_ACCEPTED_WARNINGS` for the self-hosted
+catalog authority backend/operator foundation, cites the synced Unraid repo/image and live UI
+`ok:true` evidence, keeps O4 as `O4_CLOSED`, keeps O5 as `O5_DEFERRED_ACCEPTED`, and forbids any
+streaming product, provider, download, playback, scraping, or media-server launch claim.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

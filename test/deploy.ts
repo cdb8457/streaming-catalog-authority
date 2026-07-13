@@ -7244,7 +7244,7 @@ test('Phase 120 Unraid operator readiness bundle is offline planning only', () =
   assert(pkg.scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'Phase 120 test script present');
   assert(pkg.scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'Phase 120 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 120 aggregate test follows Phase 119 O5 final authorization through Phase 199 disposition',
   );
 
@@ -9724,7 +9724,7 @@ test('Phase 199 O5 final disposition records accepted deferral and launch warnin
   assert(exists('test/o5-disposition.ts'), 'Phase 199 O5 disposition test exists');
   assert(pkg.scripts['test:o5-disposition'] === 'tsx test/o5-disposition.ts', 'Phase 199 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 199 aggregate test follows O5 authorization preflight',
   );
   const combined = [
@@ -9767,6 +9767,41 @@ test('Phase 199 O5 final disposition records accepted deferral and launch warnin
     '192.168.',
     'localhost:',
   ]) assert(!doc.includes(forbidden), `Phase 199 record excludes ${forbidden}`);
+});
+
+test('Phase 200 launch readiness pass records ready with accepted warning', () => {
+  assert(exists('docs/PHASE_200_LAUNCH_READINESS_PASS.md'), 'Phase 200 launch readiness doc exists');
+  assert(exists('test/launch-readiness-pass.ts'), 'Phase 200 launch readiness test exists');
+  assert(pkg.scripts['test:launch-readiness-pass'] === 'tsx test/launch-readiness-pass.ts', 'Phase 200 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    'Phase 200 aggregate test follows O5 disposition',
+  );
+  const combined = [
+    read('docs/PHASE_200_LAUNCH_READINESS_PASS.md'),
+    read('test/launch-readiness-pass.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-200-launch-readiness-pass',
+    'LAUNCH_READY_WITH_ACCEPTED_WARNINGS',
+    'LAUNCH_WARNING_O5_DEFERRED_ACCEPTED',
+    'O4_CLOSED',
+    'O5_DEFERRED_ACCEPTED',
+    'phase-200-unraid-sync-4998c65de',
+    'phase-200-repo-ops-latest-build',
+    'phase-200-ui-live-check-ok-true',
+    'no streaming product claim',
+  ]) assert(combined.includes(required), `Phase 200 surface preserves ${required}`);
+  const doc = read('docs/PHASE_200_LAUNCH_READINESS_PASS.md');
+  for (const forbidden of [
+    'O5_CLOSED',
+    'provider mode enabled',
+    'playback enabled',
+    'download enabled',
+    '/mnt/user/',
+    '192.168.',
+  ]) assert(!doc.includes(forbidden), `Phase 200 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
