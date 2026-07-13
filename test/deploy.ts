@@ -1798,8 +1798,8 @@ test('jellyfin smoke — Phase 13 validation: doc + suite wired; globalThis.fetc
   const withFetch = walkTs(fileURLToPath(new URL('../src', import.meta.url)))
     .filter((f) => readFileSync(f, 'utf8').includes('globalThis.fetch'))
     .map((f) => f.replace(/\\/g, '/'));
-  assert(withFetch.length === 3, `exactly three src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
-  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|publish-reconcile-cli|torbox-smoke-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
+  assert(withFetch.length === 4, `exactly four src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
+  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|jellyfin-live-readonly-smoke-cli|publish-reconcile-cli|torbox-smoke-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
 });
 
 test('jellyfin mapping — Phase 14 pagination is present + bounded; doc wired', () => {
@@ -7244,7 +7244,7 @@ test('Phase 120 Unraid operator readiness bundle is offline planning only', () =
   assert(pkg.scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'Phase 120 test script present');
   assert(pkg.scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'Phase 120 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 120 aggregate test follows Phase 119 O5 final authorization through Phase 199 disposition',
   );
 
@@ -9723,7 +9723,7 @@ test('Phase 199 O5 final disposition records accepted deferral and launch warnin
   assert(exists('test/o5-disposition.ts'), 'Phase 199 O5 disposition test exists');
   assert(pkg.scripts['test:o5-disposition'] === 'tsx test/o5-disposition.ts', 'Phase 199 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 199 aggregate test follows O5 authorization preflight',
   );
   const combined = [
@@ -9773,7 +9773,7 @@ test('Phase 200 launch readiness pass records ready with accepted warning', () =
   assert(exists('test/launch-readiness-pass.ts'), 'Phase 200 launch readiness test exists');
   assert(pkg.scripts['test:launch-readiness-pass'] === 'tsx test/launch-readiness-pass.ts', 'Phase 200 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 200 aggregate test follows O5 disposition',
   );
   const combined = [
@@ -9808,7 +9808,7 @@ test('Phase 201 launch package exposes operator handoff without scope expansion'
   assert(exists('test/launch-package.ts'), 'Phase 201 launch package test exists');
   assert(pkg.scripts['test:launch-package'] === 'tsx test/launch-package.ts', 'Phase 201 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 201 aggregate test follows launch readiness pass',
   );
   const combined = [
@@ -9843,7 +9843,7 @@ test('Phase 202 launch candidate consumer dry run preserves the public launch pa
   assert(exists('test/launch-candidate-dry-run.ts'), 'Phase 202 consumer dry-run test exists');
   assert(pkg.scripts['test:launch-candidate-dry-run'] === 'tsx test/launch-candidate-dry-run.ts', 'Phase 202 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 202 aggregate test follows launch package',
   );
   const combined = [
@@ -9878,7 +9878,7 @@ test('Phase 203 media-player boundary selection chooses Jellyfin without enablin
   assert(exists('test/media-player-boundary.ts'), 'Phase 203 media-player boundary test exists');
   assert(pkg.scripts['test:media-player-boundary'] === 'tsx test/media-player-boundary.ts', 'Phase 203 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 203 aggregate test follows launch candidate dry run',
   );
   const combined = [
@@ -9913,7 +9913,7 @@ test('Phase 204 Jellyfin read-only smoke is guarded and write-free', () => {
   assert(exists('test/jellyfin-readonly-smoke.ts'), 'Phase 204 Jellyfin read-only smoke test exists');
   assert(pkg.scripts['test:jellyfin-readonly-smoke'] === 'tsx test/jellyfin-readonly-smoke.ts', 'Phase 204 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 204 aggregate test follows media-player boundary and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -9952,7 +9952,7 @@ test('Phase 205 Jellyfin read-only mapping emits counts-only evidence', () => {
   assert(exists('test/jellyfin-readonly-mapping.ts'), 'Phase 205 Jellyfin read-only mapping test exists');
   assert(pkg.scripts['test:jellyfin-readonly-mapping'] === 'tsx test/jellyfin-readonly-mapping.ts', 'Phase 205 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 205 aggregate test follows read-only smoke and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -9990,7 +9990,7 @@ test('Phase 206 Jellyfin disposable write proof is gated and self-cleaning', () 
   assert(exists('test/jellyfin-disposable-write.ts'), 'Phase 206 Jellyfin disposable write test exists');
   assert(pkg.scripts['test:jellyfin-disposable-write'] === 'tsx test/jellyfin-disposable-write.ts', 'Phase 206 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 206 aggregate test follows read-only mapping and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10030,7 +10030,7 @@ test('Phase 207 Jellyfin evidence review decision defers launch pending live evi
   assert(exists('test/jellyfin-evidence-review-decision.ts'), 'Phase 207 Jellyfin decision test exists');
   assert(pkg.scripts['test:jellyfin-evidence-review-decision'] === 'tsx test/jellyfin-evidence-review-decision.ts', 'Phase 207 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 207 aggregate test follows disposable write proof and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10068,7 +10068,7 @@ test('Phase 208 existing Jellyfin live evidence preflight forbids installs and p
   assert(exists('test/jellyfin-live-evidence-preflight.ts'), 'Phase 208 Jellyfin preflight test exists');
   assert(pkg.scripts['test:jellyfin-live-evidence-preflight'] === 'tsx test/jellyfin-live-evidence-preflight.ts', 'Phase 208 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 208 aggregate test follows evidence review decision and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10102,6 +10102,53 @@ test('Phase 208 existing Jellyfin live evidence preflight forbids installs and p
     'postgres://',
     'postgresql://',
   ]) assert(!doc.includes(forbidden), `Phase 208 record excludes ${forbidden}`);
+});
+
+test('Phase 209 Jellyfin live read-only smoke runner is secret-file-only and write-free', () => {
+  assert(exists('docs/PHASE_209_JELLYFIN_LIVE_READONLY_SMOKE_RUNNER.md'), 'Phase 209 Jellyfin live runner doc exists');
+  assert(exists('src/ops/jellyfin-live-readonly-smoke.ts'), 'Phase 209 Jellyfin live runner module exists');
+  assert(exists('src/ops/jellyfin-live-readonly-smoke-cli.ts'), 'Phase 209 Jellyfin live runner CLI exists');
+  assert(exists('test/jellyfin-live-readonly-smoke-runner.ts'), 'Phase 209 Jellyfin live runner test exists');
+  assert(pkg.scripts['ops:jellyfin-live-readonly-smoke'] === 'tsx src/ops/jellyfin-live-readonly-smoke-cli.ts', 'Phase 209 ops script present');
+  assert(pkg.scripts['test:jellyfin-live-readonly-smoke-runner'] === 'tsx test/jellyfin-live-readonly-smoke-runner.ts', 'Phase 209 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    'Phase 209 aggregate test follows live evidence preflight and precedes Unraid readiness bundle',
+  );
+  const combined = [
+    read('docs/PHASE_209_JELLYFIN_LIVE_READONLY_SMOKE_RUNNER.md'),
+    read('src/ops/jellyfin-live-readonly-smoke.ts'),
+    read('test/jellyfin-live-readonly-smoke-runner.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-209-jellyfin-live-readonly-smoke-runner',
+    'JELLYFIN_LIVE_READONLY_SMOKE_RUNNER_READY',
+    'LIVE_READONLY_SMOKE_RUNNER_READY_NO_EVIDENCE_CAPTURED',
+    'phase-209-jellyfin-live-readonly-smoke',
+    'JELLYFIN_API_KEY_FILE',
+    'JELLYFIN_API_KEY must not be set',
+    'JELLYFIN_ALLOW_LIVE_PUBLISH must not be true',
+    'GET /System/Info',
+    'GET /Items',
+    'hostEchoed: false',
+    'apiKeyEchoed: false',
+    'evidenceDigest',
+    'Phase 207 remains `JELLYFIN_INTEGRATION_DEFERRED_PENDING_LIVE_EVIDENCE`',
+    'O4 remains `O4_CLOSED`',
+    'O5 remains `O5_DEFERRED_ACCEPTED`',
+  ]) assert(combined.includes(required), `Phase 209 surface preserves ${required}`);
+  const doc = read('docs/PHASE_209_JELLYFIN_LIVE_READONLY_SMOKE_RUNNER.md');
+  for (const forbidden of [
+    'O5_CLOSED',
+    'JELLYFIN_INTEGRATION_LAUNCHED',
+    'provider mode enabled',
+    'playback enabled',
+    'download enabled',
+    '192.168.',
+    'postgres://',
+    'postgresql://',
+  ]) assert(!doc.includes(forbidden), `Phase 209 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

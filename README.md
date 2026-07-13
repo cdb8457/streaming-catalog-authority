@@ -1552,6 +1552,11 @@ Phase 208 adds `docs/PHASE_208_EXISTING_JELLYFIN_LIVE_EVIDENCE_PREFLIGHT.md` and
 `test:jellyfin-live-evidence-preflight` as the existing-server live-evidence preflight. It records
 that Jellyfin should be discovered on the existing `8096` listener, that `8920` must not be assumed,
 and that no Jellyfin install, container, Compose change, or new Jellyfin port binding is allowed.
+Phase 209 adds `docs/PHASE_209_JELLYFIN_LIVE_READONLY_SMOKE_RUNNER.md`,
+`ops:jellyfin-live-readonly-smoke`, and `test:jellyfin-live-readonly-smoke-runner` as the existing
+Jellyfin live read-only smoke runner. It requires `JELLYFIN_API_KEY_FILE`, refuses direct
+`JELLYFIN_API_KEY` and live-publish mode, emits hostless/keyless JSON evidence, and captures no live
+evidence until an operator runs it against the existing `8096` service.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
