@@ -1571,6 +1571,10 @@ Phase 212 adds `docs/PHASE_212_JELLYFIN_SECRET_READINESS_GATE.md`,
 `ops:jellyfin-secret-readiness`, and `test:jellyfin-secret-readiness` as a no-network secret-file
 readiness gate. It verifies the Jellyfin API key is supplied by file, readable, non-empty, and
 owner-only without printing the secret or contacting Jellyfin.
+Phase 213 adds `docs/PHASE_213_JELLYFIN_CONTAINER_COMMAND_SHAPE_FIX.md` and
+`test:jellyfin-container-command-shape` to correct the Unraid operator command shape: run Jellyfin
+evidence commands inside `repo-ops:latest`, not directly on the Unraid host, and mount the secret
+only after it exists.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

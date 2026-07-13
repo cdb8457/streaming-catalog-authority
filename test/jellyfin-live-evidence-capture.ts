@@ -135,7 +135,7 @@ await test('package, deploy guard, and README wire Phase 211 verification', () =
   const readme = read('README.md');
   assert(pkg.scripts['ops:jellyfin-live-evidence-capture'] === 'tsx src/ops/jellyfin-live-evidence-capture-cli.ts', 'ops script present');
   assert(pkg.scripts['test:jellyfin-live-evidence-capture'] === 'tsx test/jellyfin-live-evidence-capture.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 211 Jellyfin live evidence capture command'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_LIVE_EVIDENCE_CAPTURE_COMMAND_READY_SECRET_BLOCKED'), 'deploy guard status');
   assert(readme.includes('Phase 211 adds `docs/PHASE_211_JELLYFIN_LIVE_EVIDENCE_CAPTURE_COMMAND.md`'), 'README ledger entry');
