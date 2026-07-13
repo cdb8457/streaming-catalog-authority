@@ -1557,6 +1557,11 @@ Phase 209 adds `docs/PHASE_209_JELLYFIN_LIVE_READONLY_SMOKE_RUNNER.md`,
 Jellyfin live read-only smoke runner. It requires `JELLYFIN_API_KEY_FILE`, refuses direct
 `JELLYFIN_API_KEY` and live-publish mode, emits hostless/keyless JSON evidence, and captures no live
 evidence until an operator runs it against the existing `8096` service.
+Phase 210 adds `docs/PHASE_210_JELLYFIN_LIVE_EVIDENCE_CAPTURE_PREFLIGHT.md` and
+`test:jellyfin-live-evidence-capture-preflight` as the live evidence capture gate. It records the
+real Unraid preflight result `JELLYFIN_LIVE_EVIDENCE_BLOCKED_SECRET_MISSING`, preserves the existing
+`8096` Jellyfin target, and gives the secret-file setup plus capture command without running live
+smoke or changing Compose.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
