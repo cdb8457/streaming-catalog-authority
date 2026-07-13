@@ -142,7 +142,7 @@ await test('package, deploy guard, and README wire Phase 209 verification', () =
   const readme = read('README.md');
   assert(pkg.scripts['ops:jellyfin-live-readonly-smoke'] === 'tsx src/ops/jellyfin-live-readonly-smoke-cli.ts', 'ops script present');
   assert(pkg.scripts['test:jellyfin-live-readonly-smoke-runner'] === 'tsx test/jellyfin-live-readonly-smoke-runner.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 209 Jellyfin live read-only smoke runner'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_LIVE_READONLY_SMOKE_RUNNER_READY'), 'deploy guard status');
   assert(readme.includes('Phase 209 adds `docs/PHASE_209_JELLYFIN_LIVE_READONLY_SMOKE_RUNNER.md`'), 'README ledger entry');
