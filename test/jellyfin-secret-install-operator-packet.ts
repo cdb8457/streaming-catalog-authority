@@ -64,7 +64,7 @@ await test('package, deploy guard, and README wire Phase 214 verification', () =
   const deploy = read('test/deploy.ts');
   const readme = read('README.md');
   assert(pkg.scripts['test:jellyfin-secret-install-operator-packet'] === 'tsx test/jellyfin-secret-install-operator-packet.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 214 Jellyfin secret install operator packet'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_SECRET_INSTALL_PACKET_READY'), 'deploy guard status');
   assert(readme.includes('Phase 214 adds `docs/PHASE_214_JELLYFIN_SECRET_INSTALL_OPERATOR_PACKET.md`'), 'README ledger entry');

@@ -1579,6 +1579,11 @@ Phase 214 adds `docs/PHASE_214_JELLYFIN_SECRET_INSTALL_OPERATOR_PACKET.md` and
 `test:jellyfin-secret-install-operator-packet` as the redaction-safe operator packet for installing
 the Jellyfin API key file. It uses a no-echo Unraid shell flow, keeps the live capture blocked until
 `JELLYFIN_SECRET_READY`, and still performs no Jellyfin network contact or port changes.
+Phase 215 adds `deploy/unraid-jellyfin-live-capture.sh`,
+`docs/PHASE_215_JELLYFIN_LIVE_CAPTURE_LAUNCHER.md`, and
+`test:jellyfin-live-capture-launcher` as the guarded one-command Unraid launcher for the
+post-secret read-only Jellyfin evidence capture. It refuses missing/empty secrets, runs readiness
+before capture, and keeps Compose, ports, custody, playback, downloads, and provider modes unchanged.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
