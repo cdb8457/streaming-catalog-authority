@@ -1,4 +1,62 @@
-# Catalog Authority Launch Package
+# Catalog Authority Release Notes
+
+## v1.0.0 - Current Scope Release
+
+Release date: `2026-07-14`
+
+Version choice: `v1.0.0`. This is the first versioned release because Phase 200 established
+`LAUNCH_READY_WITH_ACCEPTED_WARNINGS`, Phase 198 closed O4 sidecar custody, and Phase 222 concluded
+the Jellyfin ladder with read-only integration proven for the current scope. The version does not
+claim a streaming product, provider runtime, download orchestration, playback, scraping, or
+media-server write capability.
+
+What ships:
+
+- self-hosted Catalog Authority backend/operator foundation for Unraid;
+- Postgres-backed catalog authority and ops commands;
+- sidecar custody active for production runtime, with O4 status `O4_CLOSED`;
+- read-only operator UI/API and Arcane/User Scripts launcher path;
+- Jellyfin read-only integration proven with live evidence for auth, server info, library lookup,
+  and Catalog Authority to Jellyfin library-item mapping.
+
+Accepted warnings:
+
+- `LAUNCH_WARNING_O5_DEFERRED_ACCEPTED`: managed KEK custody/scheduling remains deferred by owner
+  decision. Reopen O5 for suspected KEK compromise, custody incident, multi-user/production-scale
+  milestone, provider/download/playback/media-server mutation scope, or the 90-day review interval.
+- `JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING`: Jellyfin write-capable collection proof
+  is blocked on this server. A future Jellyfin collection-write investigation and fresh operator
+  authorization are required before any write-capable retry.
+
+What this is not:
+
+- no provider live mode;
+- no Real-Debrid, TorBox, Usenet, Plex, Emby, or Stremio integration claim;
+- no Jellyfin write-capable integration claim;
+- no scraping, downloading, playback, create-download, request-link, or media-server mutation;
+- no claim that managed KEK custody/scheduling is closed.
+
+Evidence anchors:
+
+- O4 final closure: Phase 198, tag `phase-198`, commit `a3681d3`.
+- O5 final disposition: Phase 199, tag `phase-199`, commit `4998c65`,
+  status `O5_DEFERRED_ACCEPTED`.
+- Launch readiness: Phase 200, tag `phase-200`, status `LAUNCH_READY_WITH_ACCEPTED_WARNINGS`.
+- Jellyfin data-positive read-only mapping: Phase 220, tag `phase-220`, file SHA-256
+  `7b8cb31e703f20b87a7f262cc376f956c26ed14827ec3c2349db22d183ea3055`, report digest
+  `ac423af0f96afcb2fff905c228cdc3dd43e29ee866340b3b96c89f9a8e3e9b71`.
+- Jellyfin integration decision: Phase 222, tag `phase-222`, status
+  `JELLYFIN_INTEGRATION_DECISION_READ_ONLY_PROVEN_WRITE_BLOCKED`.
+
+Image/tag guidance:
+
+- source release tag: `v1.0.0`;
+- local Unraid image tag: `repo-ops:v1.0.0`;
+- current local runtime image alias: `repo-ops:latest`;
+- published image convention remains `ghcr.io/catalog-authority/catalog-authority-ops:v1.0.0`
+  when a registry image is explicitly published.
+
+## Launch Package Baseline
 
 Current launch package: `phase-200` / `0d08052`
 
