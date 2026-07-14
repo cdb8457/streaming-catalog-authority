@@ -11,6 +11,7 @@ import type { Env } from '../config/env.js';
 import { getPool } from '../db/pool.js';
 
 export type JellyfinLiveReadOnlyMappingStatus =
+  | 'JELLYFIN_LIVE_READONLY_MAPPING_MATCHED'
   | 'JELLYFIN_LIVE_READONLY_MAPPING_PASS'
   | 'JELLYFIN_LIVE_READONLY_MAPPING_NO_ELIGIBLE_ITEMS'
   | 'JELLYFIN_LIVE_READONLY_MAPPING_FAIL';
@@ -137,6 +138,8 @@ export async function runJellyfinLiveReadOnlyMapping(opts: RunJellyfinLiveReadOn
   const status: JellyfinLiveReadOnlyMappingStatus =
     itemIds.length === 0
       ? 'JELLYFIN_LIVE_READONLY_MAPPING_NO_ELIGIBLE_ITEMS'
+      : mapping.ok && mapping.totals.mapped > 0
+        ? 'JELLYFIN_LIVE_READONLY_MAPPING_MATCHED'
       : mapping.ok
         ? 'JELLYFIN_LIVE_READONLY_MAPPING_PASS'
         : 'JELLYFIN_LIVE_READONLY_MAPPING_FAIL';

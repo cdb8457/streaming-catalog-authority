@@ -256,6 +256,7 @@
     "ops:jellyfin-live-readonly-smoke": "tsx src/ops/jellyfin-live-readonly-smoke-cli.ts",
     "ops:jellyfin-live-evidence-capture": "tsx src/ops/jellyfin-live-evidence-capture-cli.ts",
     "ops:jellyfin-live-readonly-mapping": "tsx src/ops/jellyfin-live-readonly-mapping-cli.ts",
+    "ops:catalog-ingest-item": "tsx src/ops/catalog-ingest-item-cli.ts",
     "ops:jellyfin-secret-readiness": "tsx src/ops/jellyfin-secret-readiness-cli.ts",
     "smoke:torbox-readonly": "tsx src/ops/torbox-smoke-cli.ts",
     "test:publish-outbox": "tsx test/publish-outbox.ts 5449",

@@ -79,7 +79,7 @@ await test('live mapping emits counts-only evidence for selected catalog refs', 
       now: () => new Date('2026-07-14T12:00:00.000Z'),
     });
     assertEq(report.report, 'phase-219-jellyfin-live-readonly-mapping', 'report id');
-    assertEq(report.status, 'JELLYFIN_LIVE_READONLY_MAPPING_PASS', 'pass status');
+    assertEq(report.status, 'JELLYFIN_LIVE_READONLY_MAPPING_MATCHED', 'matched status');
     assertEq(report.ok, true, 'ok true');
     assertEq(report.redactionSafe, true, 'redaction marker');
     assertEq(report.selection.mode, 'explicit-item-ids', 'explicit selection');
@@ -88,6 +88,7 @@ await test('live mapping emits counts-only evidence for selected catalog refs', 
     assertEq(report.mapping.totals.requested, 1, 'requested count');
     assertEq(report.mapping.totals.mapped, 1, 'mapped count');
     assertEq(report.mapping.totals.jellyfinMatches, 2, 'match count');
+    assertEq(report.mapping.items[0]?.jellyfinItemDigests?.length, 2, 'jellyfin match digests emitted');
     assertEq(report.dataPositiveMappingEvidence, true, 'data-positive evidence');
     assert(report.evidenceDigest.length === 64, 'digest emitted');
     assert(noLeak(report), 'report redaction-safe');
@@ -162,6 +163,7 @@ await test('launcher and package wiring preserve read-only Unraid boundary', () 
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   const launcher = read('deploy/unraid-jellyfin-live-mapping-capture.sh');
   assert(pkg.scripts['ops:jellyfin-live-readonly-mapping'] === 'tsx src/ops/jellyfin-live-readonly-mapping-cli.ts', 'ops script present');
+  assert(pkg.scripts['ops:catalog-ingest-item'] === 'tsx src/ops/catalog-ingest-item-cli.ts', 'ingest ops script present');
   assert(pkg.scripts['test:jellyfin-live-readonly-mapping'] === 'tsx test/jellyfin-live-readonly-mapping.ts', 'test script present');
   for (const required of [
     'docker compose -f "$COMPOSE_FILE" run --rm',

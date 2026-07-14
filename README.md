@@ -1602,6 +1602,10 @@ Phase 219 adds `docs/PHASE_219_JELLYFIN_LIVE_READONLY_MAPPING.md`,
 runtime. The retained evidence is accepted for command/boundary behavior with
 `JELLYFIN_LIVE_READONLY_MAPPING_BOUNDARY_ACCEPTED_NO_ELIGIBLE_ITEMS`; data-positive mapping remains
 pending because the live catalog has no eligible provider-ref items yet.
+Phase 220 adds `docs/PHASE_220_JELLYFIN_DATA_POSITIVE_MAPPING.md` and `ops:catalog-ingest-item` to
+seed catalog items through `CatalogAuthority.addItem`, then reruns the guarded Phase 219 mapper. It
+records `JELLYFIN_DATA_POSITIVE_READONLY_MAPPING_ACCEPTED`: one live Jellyfin item matched by digest
+and one seeded catalog item remained unmatched, with Jellyfin writes still disabled.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

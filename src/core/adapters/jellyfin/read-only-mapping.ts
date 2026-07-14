@@ -8,6 +8,7 @@ export interface JellyfinReadOnlyMappingItem {
   readonly status: 'mapped' | 'unmatched' | 'no_refs' | 'unavailable';
   readonly refCount: number;
   readonly matchCount: number;
+  readonly jellyfinItemDigests?: readonly string[];
 }
 
 export interface JellyfinReadOnlyMappingReport {
@@ -40,6 +41,10 @@ export function digestCatalogItemId(itemId: string): string {
   return createHash('sha256').update(`phase-205:${itemId}`).digest('hex').slice(0, 16);
 }
 
+export function digestJellyfinItemId(itemId: string): string {
+  return createHash('sha256').update(`phase-220-jellyfin:${itemId}`).digest('hex').slice(0, 16);
+}
+
 export async function buildJellyfinReadOnlyMappingItem(
   client: Pick<JellyfinClient, 'findItemsByRefs'>,
   identity: PublishableIdentity,
@@ -54,6 +59,7 @@ export async function buildJellyfinReadOnlyMappingItem(
     status: matches.length > 0 ? 'mapped' : 'unmatched',
     refCount: refs.length,
     matchCount: matches.length,
+    ...(matches.length > 0 ? { jellyfinItemDigests: matches.map(digestJellyfinItemId) } : {}),
   };
 }
 

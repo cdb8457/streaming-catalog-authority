@@ -10548,6 +10548,7 @@ test('Phase 219 Jellyfin live read-only mapping captures boundary evidence', () 
     read('docs/PHASE_219_JELLYFIN_LIVE_READONLY_MAPPING.md'),
     read('src/ops/jellyfin-live-readonly-mapping.ts'),
     read('src/ops/jellyfin-live-readonly-mapping-cli.ts'),
+    read('src/ops/catalog-ingest-item-cli.ts'),
     read('deploy/unraid-jellyfin-live-mapping-capture.sh'),
     read('test/jellyfin-live-readonly-mapping.ts'),
     read('README.md'),
@@ -10579,6 +10580,53 @@ test('Phase 219 Jellyfin live read-only mapping captures boundary evidence', () 
     'phase219-raw-provider-ref',
     'jellyfin-raw-item-id',
   ]) assert(!doc.includes(forbidden), `Phase 219 record excludes ${forbidden}`);
+});
+
+test('Phase 220 Jellyfin data-positive mapping records matched and unmatched live evidence', () => {
+  assert(exists('docs/PHASE_220_JELLYFIN_DATA_POSITIVE_MAPPING.md'), 'Phase 220 Jellyfin data-positive doc exists');
+  assert(exists('src/ops/catalog-ingest-item-cli.ts'), 'Phase 220 catalog ingest CLI exists');
+  assert(pkg.scripts['ops:catalog-ingest-item'] === 'tsx src/ops/catalog-ingest-item-cli.ts', 'Phase 220 ingest ops script present');
+  assert(pkg.scripts['test:jellyfin-live-readonly-mapping'] === 'tsx test/jellyfin-live-readonly-mapping.ts', 'Phase 220 reuses mapping test script');
+  const combined = [
+    read('docs/PHASE_220_JELLYFIN_DATA_POSITIVE_MAPPING.md'),
+    read('src/ops/catalog-ingest-item-cli.ts'),
+    read('src/core/adapters/jellyfin/read-only-mapping.ts'),
+    read('test/jellyfin-live-readonly-mapping.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'phase-220-jellyfin-data-positive-mapping',
+    'ops:catalog-ingest-item',
+    'CatalogAuthority.addItem',
+    'JELLYFIN_LIVE_READONLY_MAPPING_MATCHED',
+    'JELLYFIN_DATA_POSITIVE_READONLY_MAPPING_ACCEPTED',
+    '7b8cb31e703f20b87a7f262cc376f956c26ed14827ec3c2349db22d183ea3055',
+    'ac423af0f96afcb2fff905c228cdc3dd43e29ee866340b3b96c89f9a8e3e9b71',
+    'f9d4c92b3665d153',
+    '5c346baec81c4aea',
+    '53fc28e719abd1b4',
+    'mapped `1`',
+    'Unmatched `1`',
+    'writeMode: false',
+    'O4 remains `O4_CLOSED`',
+    'O5 remains `O5_DEFERRED_ACCEPTED`',
+  ]) assert(combined.includes(required), `Phase 220 surface preserves ${required}`);
+  const doc = read('docs/PHASE_220_JELLYFIN_DATA_POSITIVE_MAPPING.md');
+  for (const forbidden of [
+    'O5_CLOSED',
+    'JELLYFIN_INTEGRATION_LAUNCHED',
+    'provider mode enabled',
+    'playback enabled',
+    'download enabled',
+    '192.168.',
+    'postgres://',
+    'postgresql://',
+    'tt0133093',
+    '1316092',
+    '999999',
+    'phase-220-live-match',
+    'phase-220-live-miss',
+  ]) assert(!doc.includes(forbidden), `Phase 220 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
