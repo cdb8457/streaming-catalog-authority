@@ -66,8 +66,13 @@ function fakeAuthority(refs: readonly JellyfinRef[]): CatalogAuthority {
 class ProofClient implements JellyfinWriteProofClient {
   readonly events: string[] = [];
   private readonly collections = new Map<string, { token: string; items: Set<string> }>();
-  constructor(private readonly faults: Partial<Record<'priorResidue' | 'delete', boolean>> = {}) {
+  private membershipStaleReadsRemaining = 0;
+  private prefixStaleReadsRemaining = 0;
+  private deletedOnce = false;
+  constructor(private readonly faults: Partial<Record<'priorResidue' | 'delete', boolean>> & { staleMembershipReads?: number; stalePrefixReadsAfterDelete?: number } = {}) {
     if (faults.priorResidue) this.collections.set('prior-collection-id', { token: 'prior-token', items: new Set() });
+    this.membershipStaleReadsRemaining = faults.staleMembershipReads ?? 0;
+    this.prefixStaleReadsRemaining = faults.stalePrefixReadsAfterDelete ?? 0;
   }
 
   async findItemsByRefs(refs: readonly JellyfinRef[]): Promise<string[]> {
@@ -90,6 +95,10 @@ class ProofClient implements JellyfinWriteProofClient {
 
   async listCollectionItemIds(collectionId: string): Promise<string[]> {
     this.events.push('list-items');
+    if (this.membershipStaleReadsRemaining > 0) {
+      this.membershipStaleReadsRemaining--;
+      return [];
+    }
     return [...(this.collections.get(collectionId)?.items ?? [])];
   }
 
@@ -103,7 +112,9 @@ class ProofClient implements JellyfinWriteProofClient {
   async deleteCollection(collectionId: string): Promise<'deleted' | 'not_found'> {
     this.events.push('delete');
     if (this.faults.delete) throw new Error(`delete ${SECRET}`);
-    return this.collections.delete(collectionId) ? 'deleted' : 'not_found';
+    const deleted = this.collections.delete(collectionId);
+    if (deleted) this.deletedOnce = true;
+    return deleted ? 'deleted' : 'not_found';
   }
 
   async findCollectionByToken(token: string): Promise<string | null> {
@@ -114,6 +125,10 @@ class ProofClient implements JellyfinWriteProofClient {
 
   async findCollectionsByNamePrefix(_prefix: string): Promise<string[]> {
     this.events.push('find-prefix');
+    if (this.deletedOnce && this.prefixStaleReadsRemaining > 0) {
+      this.prefixStaleReadsRemaining--;
+      return [COLLECTION_ID];
+    }
     return [...this.collections.keys()];
   }
 
@@ -164,12 +179,38 @@ await test('prior disposable collection residue refuses before any new write', a
       client,
       itemIds: [ITEM_ID],
       token: 'phase221-token',
+      consistencyTimeoutMs: 0,
     });
     assert(!report.ok, 'residue report fails');
     assertEq(report.status, 'JELLYFIN_WRITE_PROOF_REFUSED_PRIOR_RESIDUE', 'residue status');
     assertEq(report.collection.priorResidueCount, 1, 'prior residue counted');
     assert(!client.events.includes('create:0'), 'no create attempted');
     assert(noLeak(report), 'residue report redaction-safe');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await test('bounded consistency polling tolerates delayed membership and absence reads', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'jf-write-proof-221-poll-'));
+  try {
+    const client = new ProofClient({ staleMembershipReads: 1, stalePrefixReadsAfterDelete: 1 });
+    const report = await runJellyfinWriteProof({
+      env: fixtureEnv(dir),
+      authority: fakeAuthority([{ type: 'tmdb', value: RAW_REF }]),
+      client,
+      itemIds: [ITEM_ID],
+      token: 'phase221-token',
+      now: () => new Date('2026-07-14T12:00:00.000Z'),
+      consistencyTimeoutMs: 250,
+      consistencyPollMs: 0,
+    });
+    assert(report.ok, 'write proof ok after bounded polling');
+    assertEq(report.status, 'JELLYFIN_WRITE_PROOF_CLEANED_UP', 'success status');
+    assert(report.steps.some((s) => s.step === 'verify-membership' && /after 2 poll\(s\)/.test(s.detail)), 'membership was retried');
+    assert(report.steps.some((s) => s.step === 'verify-absence' && /after 2 poll\(s\)/.test(s.detail)), 'absence was retried');
+    assertEq(report.collection.finalResidueCount, 0, 'no final residue after polling');
+    assert(noLeak(report), 'polling report redaction-safe');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }

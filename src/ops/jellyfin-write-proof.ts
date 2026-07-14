@@ -62,7 +62,7 @@ export interface JellyfinWriteProofReport {
     readonly allowedOperations: readonly [
       'POST /Collections',
       'POST /Collections/{collectionId}/Items',
-      'GET /Items?ParentId={collectionId}',
+      'GET /Items?parentId={collectionId}',
       'DELETE /Collections/{collectionId}/Items',
       'DELETE /Items/{collectionId}',
     ];
@@ -117,6 +117,8 @@ export interface RunJellyfinWriteProofOptions {
   readonly env?: Env;
   readonly fetch?: FetchLike;
   readonly now?: () => Date;
+  readonly consistencyTimeoutMs?: number;
+  readonly consistencyPollMs?: number;
   readonly token?: string;
   readonly itemIds?: readonly string[];
   readonly limit?: number;
@@ -140,6 +142,9 @@ const FORBIDDEN = [
   'api key',
   'database url',
 ] as const;
+
+const DEFAULT_CONSISTENCY_TIMEOUT_MS = 30_000;
+const DEFAULT_CONSISTENCY_POLL_MS = 500;
 
 function assertPhase221Env(env: Env): void {
   const problems: string[] = [];
@@ -175,6 +180,27 @@ function digestReport(report: Omit<JellyfinWriteProofReport, 'evidenceDigest'>):
 function redactedError(e: unknown): string {
   if (e instanceof JellyfinHttpError) return `${e.operation} ${e.status === null ? 'transport-error' : `HTTP ${e.status}`}`;
   return (e as { name?: string })?.name ?? 'error';
+}
+
+async function sleep(ms: number): Promise<void> {
+  if (ms <= 0) return;
+  await new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function pollUntil<T>(
+  timeoutMs: number,
+  pollMs: number,
+  read: () => Promise<T>,
+  ok: (value: T) => boolean,
+): Promise<{ value: T; attempts: number }> {
+  const started = Date.now();
+  let attempts = 0;
+  for (;;) {
+    attempts++;
+    const value = await read();
+    if (ok(value) || Date.now() - started >= timeoutMs) return { value, attempts };
+    await sleep(pollMs);
+  }
 }
 
 async function selectMappedTarget(
@@ -215,6 +241,8 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
   const timestamp = now().toISOString();
   const target = parseTarget(config.baseUrl);
   const client = opts.client ?? createRealJellyfinClient(opts.fetch!, env);
+  const consistencyTimeoutMs = Math.max(0, opts.consistencyTimeoutMs ?? DEFAULT_CONSISTENCY_TIMEOUT_MS);
+  const consistencyPollMs = Math.max(0, opts.consistencyPollMs ?? DEFAULT_CONSISTENCY_POLL_MS);
   const limit = Math.max(1, Math.min(100, opts.limit ?? 25));
   let pool = opts.pool;
   const itemIds = opts.itemIds ? [...opts.itemIds] : await selectEligibleCatalogItemIds(pool ??= getPool(), limit);
@@ -240,8 +268,14 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
   let skipRemaining = false;
 
   try {
-    priorResidue = await client.findCollectionsByNamePrefix(PHASE_221_COLLECTION_PREFIX);
-    steps.push({ step: 'preflight-residue', ok: priorResidue.length === 0, detail: `${priorResidue.length} prior test-owned collection(s) found` });
+    const priorPoll = await pollUntil(
+      consistencyTimeoutMs,
+      consistencyPollMs,
+      () => client.findCollectionsByNamePrefix(PHASE_221_COLLECTION_PREFIX),
+      (ids) => ids.length === 0,
+    );
+    priorResidue = priorPoll.value;
+    steps.push({ step: 'preflight-residue', ok: priorResidue.length === 0, detail: `${priorResidue.length} prior test-owned collection(s) found after ${priorPoll.attempts} poll(s)` });
     if (priorResidue.length > 0) {
       status = 'JELLYFIN_WRITE_PROOF_REFUSED_PRIOR_RESIDUE';
       skipRemaining = true;
@@ -268,27 +302,47 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
         await client.addItemsToCollection(collectionId, targetItemIds);
         steps.push({ step: 'add-items', ok: true, detail: `${targetItemIds.length} existing library item reference(s) added` });
 
-        const membership = await client.listCollectionItemIds(collectionId);
+        const membershipPoll = await pollUntil(
+          consistencyTimeoutMs,
+          consistencyPollMs,
+          () => client.listCollectionItemIds(collectionId!),
+          (ids) => targetItemIds.every((id) => new Set(ids).has(id)) && ids.length >= targetItemIds.length,
+        );
+        const membership = membershipPoll.value;
         const membershipSet = new Set(membership);
         const membershipOk = targetItemIds.every((id) => membershipSet.has(id)) && membership.length >= targetItemIds.length;
-        steps.push({ step: 'verify-membership', ok: membershipOk, detail: `${membership.length} collection member(s) read back` });
+        steps.push({ step: 'verify-membership', ok: membershipOk, detail: `${membership.length} collection member(s) read back after ${membershipPoll.attempts} poll(s)` });
         if (!membershipOk) status = 'JELLYFIN_WRITE_PROOF_FAILED';
 
         await client.removeItemsFromCollection(collectionId, targetItemIds);
         removeAttempted = true;
-        const afterRemove = await client.listCollectionItemIds(collectionId);
+        const afterRemovePoll = await pollUntil(
+          consistencyTimeoutMs,
+          consistencyPollMs,
+          () => client.listCollectionItemIds(collectionId!),
+          (ids) => targetItemIds.every((id) => !new Set(ids).has(id)),
+        );
+        const afterRemove = afterRemovePoll.value;
         const removed = targetItemIds.every((id) => !new Set(afterRemove).has(id));
-        steps.push({ step: 'remove-items', ok: removed, detail: `${afterRemove.length} collection member(s) remain after removal` });
+        steps.push({ step: 'remove-items', ok: removed, detail: `${afterRemove.length} collection member(s) remain after removal after ${afterRemovePoll.attempts} poll(s)` });
         if (!removed) status = 'JELLYFIN_WRITE_PROOF_FAILED';
 
         const deleted = await client.deleteCollection(collectionId);
         deleteAttempted = true;
         steps.push({ step: 'delete-collection', ok: deleted === 'deleted' || deleted === 'not_found', detail: `delete returned ${deleted}` });
 
-        const tokenLookup = await client.findCollectionByToken(token);
-        finalResidue = await client.findCollectionsByNamePrefix(PHASE_221_COLLECTION_PREFIX);
-        cleanupSuccess = tokenLookup === null && finalResidue.length === 0;
-        steps.push({ step: 'verify-absence', ok: cleanupSuccess, detail: `${finalResidue.length} test-owned collection(s) remain` });
+        const absencePoll = await pollUntil(
+          consistencyTimeoutMs,
+          consistencyPollMs,
+          async () => ({
+            tokenLookup: await client.findCollectionByToken(token),
+            residue: await client.findCollectionsByNamePrefix(PHASE_221_COLLECTION_PREFIX),
+          }),
+          (state) => state.tokenLookup === null && state.residue.length === 0,
+        );
+        finalResidue = absencePoll.value.residue;
+        cleanupSuccess = absencePoll.value.tokenLookup === null && finalResidue.length === 0;
+        steps.push({ step: 'verify-absence', ok: cleanupSuccess, detail: `${finalResidue.length} test-owned collection(s) remain after ${absencePoll.attempts} poll(s)` });
 
         afterState = digestIds(await client.findItemsByRefs(targetRefs));
         const libraryUnchanged = beforeState.digest === afterState.digest && beforeState.count === afterState.count;
@@ -314,9 +368,17 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
         }
         await client.deleteCollection(collectionId);
         deleteAttempted = true;
-        const tokenLookup = await client.findCollectionByToken(token);
-        finalResidue = await client.findCollectionsByNamePrefix(PHASE_221_COLLECTION_PREFIX);
-        cleanupSuccess = tokenLookup === null && finalResidue.length === 0;
+        const absencePoll = await pollUntil(
+          consistencyTimeoutMs,
+          consistencyPollMs,
+          async () => ({
+            tokenLookup: await client.findCollectionByToken(token),
+            residue: await client.findCollectionsByNamePrefix(PHASE_221_COLLECTION_PREFIX),
+          }),
+          (state) => state.tokenLookup === null && state.residue.length === 0,
+        );
+        finalResidue = absencePoll.value.residue;
+        cleanupSuccess = absencePoll.value.tokenLookup === null && finalResidue.length === 0;
         if (cleanupSuccess && status === 'JELLYFIN_WRITE_PROOF_CLEANUP_FAILED') status = 'JELLYFIN_WRITE_PROOF_FAILED';
       } catch {
         orphanedCollectionDigest = digest(collectionId, 'phase-221-collection');
@@ -351,7 +413,7 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
         allowedOperations: [
           'POST /Collections',
           'POST /Collections/{collectionId}/Items',
-          'GET /Items?ParentId={collectionId}',
+          'GET /Items?parentId={collectionId}',
           'DELETE /Collections/{collectionId}/Items',
           'DELETE /Items/{collectionId}',
         ],
