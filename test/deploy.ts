@@ -10657,6 +10657,7 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
     'Catalog Authority disposable write proof',
     'JELLYFIN_ALLOW_LIVE_PUBLISH=true',
     '--confirm-disposable-write',
+    'JELLYFIN_BASE_URL=$BASE_URL',
     'POST /Collections/{collectionId}/Items',
     'DELETE /Collections/{collectionId}/Items',
     'libraryState.unchanged',

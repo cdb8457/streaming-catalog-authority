@@ -235,7 +235,7 @@ await test('phase document, launcher, package, and deploy guard wire Phase 221',
     '--confirm-disposable-write',
     'phase-221-jellyfin-write-proof.json',
     'docker compose -f "$COMPOSE_FILE" run --rm',
-    '--add-host=host.docker.internal:host-gateway',
+    'JELLYFIN_BASE_URL=$BASE_URL',
   ]) assert(launcher.includes(required), `launcher includes ${required}`);
   for (const forbidden of [' --publish', '\n-p ', 'ports:', 'docker run', 'JELLYFIN_API_KEY=']) {
     assert(!launcher.includes(forbidden), `launcher excludes ${forbidden}`);

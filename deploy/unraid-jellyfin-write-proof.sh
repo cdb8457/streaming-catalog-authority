@@ -7,7 +7,7 @@ COMPOSE_FILE="${CATALOG_AUTHORITY_COMPOSE_FILE:-docker-compose.unraid.runtime.ym
 SECRET_FILE="${JELLYFIN_API_KEY_FILE_HOST:-$APPDATA_DIR/secrets/jellyfin_api_key}"
 SECRET_MOUNT="/run/secrets/jellyfin_api_key"
 EVIDENCE_DIR="${CATALOG_AUTHORITY_EVIDENCE_DIR:-$APPDATA_DIR/evidence}"
-BASE_URL="${JELLYFIN_BASE_URL:-http://host.docker.internal:8096}"
+BASE_URL="${JELLYFIN_BASE_URL:-http://tower.local:8096}"
 LIMIT="${1:-25}"
 OUT_FILE="${2:-$EVIDENCE_DIR/phase-221-jellyfin-write-proof.json}"
 
@@ -20,7 +20,7 @@ Environment:
   CATALOG_AUTHORITY_REPO_DIR      Repo path, default /mnt/user/appdata/catalog/repo
   CATALOG_AUTHORITY_APPDATA_DIR   Appdata path, default /mnt/user/appdata/catalog
   JELLYFIN_API_KEY_FILE_HOST      Host secret file, default /mnt/user/appdata/catalog/secrets/jellyfin_api_key
-  JELLYFIN_BASE_URL               Jellyfin URL from inside Docker, default http://host.docker.internal:8096
+  JELLYFIN_BASE_URL               Jellyfin URL from inside Docker, default http://tower.local:8096
   CATALOG_AUTHORITY_EVIDENCE_DIR  Evidence directory, default /mnt/user/appdata/catalog/evidence
 EOF
 }
@@ -57,7 +57,6 @@ rm -f "$tmp_out"
 
 docker compose -f "$COMPOSE_FILE" run --rm \
   --entrypoint npm \
-  --add-host=host.docker.internal:host-gateway \
   -v "$SECRET_FILE:$SECRET_MOUNT:ro" \
   -v "$(dirname "$OUT_FILE"):/evidence" \
   -e JELLYFIN_ENABLE_NETWORK=true \
