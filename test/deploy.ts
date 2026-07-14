@@ -10541,7 +10541,7 @@ test('Phase 219 Jellyfin live read-only mapping captures boundary evidence', () 
   assert(pkg.scripts['ops:jellyfin-live-readonly-mapping'] === 'tsx src/ops/jellyfin-live-readonly-mapping-cli.ts', 'Phase 219 ops script present');
   assert(pkg.scripts['test:jellyfin-live-readonly-mapping'] === 'tsx test/jellyfin-live-readonly-mapping.ts', 'Phase 219 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts'),
     'Phase 219 aggregate test runs before deploy guard',
   );
   const combined = [
@@ -10638,7 +10638,7 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
   assert(pkg.scripts['ops:jellyfin-write-proof'] === 'tsx src/ops/jellyfin-write-proof-cli.ts', 'Phase 221 ops script present');
   assert(pkg.scripts['test:jellyfin-write-proof'] === 'tsx test/jellyfin-write-proof.ts', 'Phase 221 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/deploy.ts'),
     'Phase 221 aggregate test runs before deploy guard',
   );
   const combined = [
@@ -10685,6 +10685,53 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
     'phase-220-live-match',
     'phase-220-live-miss',
   ]) assert(!doc.includes(forbidden), `Phase 221 record excludes ${forbidden}`);
+});
+
+test('Phase 222 Jellyfin integration decision proves read-only and blocks writes', () => {
+  assert(exists('docs/PHASE_222_JELLYFIN_INTEGRATION_DECISION.md'), 'Phase 222 Jellyfin decision doc exists');
+  assert(exists('test/jellyfin-integration-decision.ts'), 'Phase 222 Jellyfin decision test exists');
+  assert(pkg.scripts['test:jellyfin-integration-decision'] === 'tsx test/jellyfin-integration-decision.ts', 'Phase 222 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/deploy.ts'),
+    'Phase 222 aggregate test runs after write proof and before deploy guard',
+  );
+  const combined = [
+    read('docs/PHASE_222_JELLYFIN_INTEGRATION_DECISION.md'),
+    read('docs/PHASE_200_LAUNCH_READINESS_PASS.md'),
+    read('docs/RELEASE_CHECKLIST.md'),
+    read('test/jellyfin-integration-decision.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'Phase 222: Jellyfin Integration Evidence Review & Launch Decision',
+    'phase-222-jellyfin-integration-decision',
+    'JELLYFIN_READ_ONLY_INTEGRATION_PROVEN',
+    'JELLYFIN_READ_ONLY_LAUNCH_ELIGIBLE_CURRENT_SCOPE',
+    'JELLYFIN_WRITE_CAPABLE_NOT_LAUNCH_READY',
+    'JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING',
+    'JELLYFIN_INTEGRATION_DECISION_READ_ONLY_PROVEN_WRITE_BLOCKED',
+    'cd3dd6b2b10725f5115376a56400a7c42e33bc59784cf8701f73da8353cebde9',
+    '46f3945e995651a916fb7fab820ebc69ef8d61bc2a1700cbe0b3a7407bed4c75',
+    '7b8cb31e703f20b87a7f262cc376f956c26ed14827ec3c2349db22d183ea3055',
+    'fc2a1841107a8b5f807ffcfed0aeed67a25331e2ba4db465f3c8b0bd97ed0cc6',
+    'f7a5ca903900da963baa4c927caf1484bf027c68e5a45eec1772befba5637bcd',
+    'mapped `1`, unmatched `1`',
+    'manual probe residue returned to `0`',
+    'new operator authorization gate',
+    'O4 remains `O4_CLOSED`',
+    'O5 remains `O5_DEFERRED_ACCEPTED`',
+    'LAUNCH_WARNING_O5_DEFERRED_ACCEPTED',
+  ]) assert(combined.includes(required), `Phase 222 surface preserves ${required}`);
+  const doc = read('docs/PHASE_222_JELLYFIN_INTEGRATION_DECISION.md');
+  for (const forbidden of [
+    '192.168.',
+    '/mnt/user/appdata',
+    'O5_CLOSED',
+    'JELLYFIN_WRITE_CAPABLE_LAUNCH_ELIGIBLE',
+    'provider live mode enabled',
+    'playback enabled',
+    'download enabled',
+  ]) assert(!doc.includes(forbidden), `Phase 222 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

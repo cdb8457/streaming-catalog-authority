@@ -19,6 +19,17 @@ close O5.
 - [ ] If O5 is reopened by the Phase 199 criteria, stop launch/readiness approval until the new O5
       review is resolved.
 
+## Jellyfin launch boundary
+- [ ] If Jellyfin is mentioned in launch/release notes, state only
+      `JELLYFIN_READ_ONLY_INTEGRATION_PROVEN` for the current read-only scope.
+- [ ] Keep `JELLYFIN_WRITE_CAPABLE_NOT_LAUNCH_READY` visible with named deficiency
+      `JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING`.
+- [ ] Preserve the Phase 222 rung-4 disposition
+      `JELLYFIN_INTEGRATION_DECISION_READ_ONLY_PROVEN_WRITE_BLOCKED`.
+- [ ] Do not enable `JELLYFIN_ALLOW_LIVE_PUBLISH=true` in shipped Compose/runtime configuration.
+- [ ] Do not reattempt Jellyfin rung 3 writes without a future investigation phase and a new
+      operator authorization gate.
+
 ## Before upgrading
 - [ ] **Backup** the current DB: `ops:backup -- dump /backups/pre-upgrade-YYYY-MM-DD.json`
 - [ ] **Verify** it offline: `ops:verify-backup -- /backups/pre-upgrade-YYYY-MM-DD.json`

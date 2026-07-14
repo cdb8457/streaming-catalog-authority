@@ -1612,6 +1612,14 @@ recorded as `JELLYFIN_WRITE_PROOF_FAILED_SAFE`: the command stayed guarded and s
 the live Jellyfin server accepted the add request without exposing collection membership through the
 bounded polling window. Cleanup succeeded with zero residue and unchanged library state. Runtime
 Jellyfin write integration remains deferred pending Phase 222 review.
+Phase 222 adds `docs/PHASE_222_JELLYFIN_INTEGRATION_DECISION.md` and
+`test:jellyfin-integration-decision` as the rung-4 evidence review and launch decision. It records
+`JELLYFIN_READ_ONLY_INTEGRATION_PROVEN` and
+`JELLYFIN_READ_ONLY_LAUNCH_ELIGIBLE_CURRENT_SCOPE` for auth, server info, library lookup, and
+catalog-to-library mapping, while recording `JELLYFIN_WRITE_CAPABLE_NOT_LAUNCH_READY` with named
+deficiency `JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING`. The rung-4 disposition is
+`JELLYFIN_INTEGRATION_DECISION_READ_ONLY_PROVEN_WRITE_BLOCKED`; any write reattempt requires a
+future investigation phase and a new operator authorization gate.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

@@ -34,6 +34,18 @@ scheduling.
 
 ## Launch Scope
 
+Phase 222 Jellyfin addendum:
+
+- read-only Jellyfin integration is `JELLYFIN_READ_ONLY_INTEGRATION_PROVEN` and
+  `JELLYFIN_READ_ONLY_LAUNCH_ELIGIBLE_CURRENT_SCOPE` for authentication, server-info inspection,
+  library lookup, and Catalog Authority to Jellyfin library-item mapping;
+- write-capable Jellyfin integration is `JELLYFIN_WRITE_CAPABLE_NOT_LAUNCH_READY` with named
+  deficiency `JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING`;
+- the Phase 222 rung-4 disposition is
+  `JELLYFIN_INTEGRATION_DECISION_READ_ONLY_PROVEN_WRITE_BLOCKED`;
+- any write-capable Jellyfin retry requires a future investigation phase and a new operator
+  authorization gate.
+
 Approved launch claim:
 
 - self-hosted catalog authority backend/operator foundation;
@@ -45,7 +57,8 @@ Forbidden launch claims:
 
 - no streaming product claim;
 - no provider live mode;
-- no Real-Debrid, TorBox, Usenet, Plex, Jellyfin, Emby, or Stremio integration claim;
+- no Real-Debrid, TorBox, Usenet, Plex, Emby, or Stremio integration claim;
+- no Jellyfin write-capable integration claim beyond the Phase 222 read-only Jellyfin addendum;
 - no scraping, downloading, playback, create-download, request-link, or media-server mutation;
 - no claim that managed KEK custody/scheduling is closed.
 
