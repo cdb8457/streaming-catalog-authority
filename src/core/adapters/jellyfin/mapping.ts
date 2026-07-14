@@ -53,17 +53,17 @@ export function buildDeleteCollectionRequest(collectionId: string): HttpRequestS
 
 /** Add existing library items to a collection by opaque Jellyfin ids. */
 export function buildAddCollectionItemsRequest(collectionId: string, itemIds: readonly string[]): HttpRequestSpec {
-  return { method: 'POST', path: `/Collections/${encodeURIComponent(collectionId)}/Items`, query: { Ids: [...itemIds].join(',') } };
+  return { method: 'POST', path: `/Collections/${encodeURIComponent(collectionId)}/Items`, query: { ids: [...itemIds].join(',') } };
 }
 
 /** Remove existing library items from a collection by opaque Jellyfin ids. */
 export function buildRemoveCollectionItemsRequest(collectionId: string, itemIds: readonly string[]): HttpRequestSpec {
-  return { method: 'DELETE', path: `/Collections/${encodeURIComponent(collectionId)}/Items`, query: { Ids: [...itemIds].join(',') } };
+  return { method: 'DELETE', path: `/Collections/${encodeURIComponent(collectionId)}/Items`, query: { ids: [...itemIds].join(',') } };
 }
 
 /** Read one page of a collection's member items. */
 export function buildCollectionItemsRequest(collectionId: string, startIndex = 0, limit = 500): HttpRequestSpec {
-  return { method: 'GET', path: '/Items', query: { ParentId: collectionId, Fields: 'ProviderIds', StartIndex: String(startIndex), Limit: String(limit) } };
+  return { method: 'GET', path: '/Items', query: { parentId: collectionId, fields: 'ProviderIds', startIndex: String(startIndex), limit: String(limit) } };
 }
 
 // --- Phase 12 outbox: token-tagged create + find-by-token (PROVISIONAL, smoke-gated) ---
@@ -77,7 +77,7 @@ export const tokenMark = (token: string): string => `[cat:${token}]`;
 
 /** POST a collection whose name carries the opaque token marker (atomic + recoverable). */
 export function buildCreateTaggedRequest(name: string, itemIds: readonly string[], token: string): HttpRequestSpec {
-  return { method: 'POST', path: '/Collections', query: { Name: `${name} ${tokenMark(token)}`, Ids: [...itemIds].join(',') } };
+  return { method: 'POST', path: '/Collections', query: { name: `${name} ${tokenMark(token)}`, ids: [...itemIds].join(',') } };
 }
 
 /** Parse the create response to the OPAQUE collection id (the handle). */

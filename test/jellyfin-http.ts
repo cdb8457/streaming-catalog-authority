@@ -3,6 +3,12 @@ import { createRealJellyfinClient, isJellyfinNetworkEnabled, JellyfinNetworkDisa
 import { ConfigError, type Env } from '../src/config/env.js';
 import type { FetchLike, HttpResponseLike, HttpRequestInit } from '../src/core/adapters/jellyfin/transport.js';
 import { runJellyfinFindContract, type ContractHarness } from './jellyfin-contract-kit.js';
+import {
+  buildAddCollectionItemsRequest,
+  buildCollectionItemsRequest,
+  buildCreateTaggedRequest,
+  buildRemoveCollectionItemsRequest,
+} from '../src/core/adapters/jellyfin/mapping.js';
 
 let passed = 0;
 let failed = 0;
@@ -138,6 +144,24 @@ async function main(): Promise<void> {
     assertEq(await c.findCollectionByToken(TOKEN), 'target-1', 'matched the token-tagged BoxSet locally (not the others)');
     assertEq(await c.findCollectionByToken('absent-token'), null, 'no marker match -> null');
     assert(reqs.every((u) => !/SearchTerm/.test(u)), 'the request carries NO SearchTerm (local-filter only)');
+  });
+
+  await test('collection request mapping uses Jellyfin OpenAPI lowercase query names', () => {
+    const create = buildCreateTaggedRequest('Disposable', ['item-1'], 'token-1');
+    const add = buildAddCollectionItemsRequest('collection-1', ['item-1']);
+    const remove = buildRemoveCollectionItemsRequest('collection-1', ['item-1']);
+    const read = buildCollectionItemsRequest('collection-1', 2, 10);
+    assertEq(create.query?.name, 'Disposable [cat:token-1]', 'create uses lowercase name');
+    assertEq(create.query?.ids, 'item-1', 'create uses lowercase ids');
+    assertEq(add.query?.ids, 'item-1', 'add uses lowercase ids');
+    assertEq(remove.query?.ids, 'item-1', 'remove uses lowercase ids');
+    assertEq(read.query?.parentId, 'collection-1', 'read uses OpenAPI parentId');
+    assertEq(read.query?.fields, 'ProviderIds', 'read uses lowercase fields');
+    for (const spec of [create, add, remove, read]) {
+      assert(!('Ids' in (spec.query ?? {})), 'no uppercase Ids query parameter');
+      assert(!('Name' in (spec.query ?? {})), 'no uppercase Name query parameter');
+      assert(!('ParentId' in (spec.query ?? {})), 'no uppercase ParentId query parameter');
+    }
   });
 
   // --- pagination: matches beyond Jellyfin's default page must not be missed --
