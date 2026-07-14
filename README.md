@@ -1592,6 +1592,10 @@ Phase 217 adds `docs/PHASE_217_SCHEDULED_DOCTOR_ALERT_FIX.md` and
 `test:scheduled-doctor-alert-fix` after diagnosing stale hourly Unraid doctor alerts. The scheduled
 `catalog-doctor` wrapper must call the canonical `deploy/unraid-ops-launcher.sh doctor` path instead
 of the retired layered compose files.
+Phase 218 adds `docs/PHASE_218_JELLYFIN_LIVE_READONLY_EVIDENCE_ACCEPTANCE.md` and
+`test:jellyfin-live-readonly-evidence-acceptance` to accept the retained live read-only Jellyfin
+smoke evidence by digest. It records `JELLYFIN_LIVE_READONLY_SMOKE_ACCEPTED`, keeps runtime
+integration deferred, and leaves live read-only mapping as the next evidence gap.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
