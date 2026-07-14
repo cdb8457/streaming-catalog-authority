@@ -37,17 +37,16 @@ secret file paths, tokens, KEKs, DEKs, provider refs, or media titles.
 ```bash
 #!/bin/bash
 set -euo pipefail
-APP_DIR="<catalog-authority-app-dir>"
+CATALOG_LAUNCHER="${CATALOG_LAUNCHER:-<canonical-unraid-ops-launcher>}"
 NOTIFY_CMD="<notification-command>"
 EVIDENCE_DIR="<redacted-evidence-dir>"
 
-cd "$APP_DIR"
-OUT="$(npm run --silent ops:doctor -- --json)" || {
+OUT="$("$CATALOG_LAUNCHER" doctor)" || {
   "$NOTIFY_CMD" -e "catalog doctor" -s "FAIL: doctor" -d "ops:doctor reported FAIL checks; inspect redacted JSON output" -i alert
   exit 1
 }
 
-# Expected O4/O5 WARN checks are readiness gates to record/review, not health failures.
+# Expected O5 WARN checks are readiness gates to record/review, not health failures.
 # Other WARN checks should be investigated using docs/PHASE_5_RUNBOOK.md.
 mkdir -p "$EVIDENCE_DIR"
 printf '%s\n' "$OUT" > "$EVIDENCE_DIR/doctor-latest.redacted.json"

@@ -1588,6 +1588,10 @@ Phase 216 adds `docs/PHASE_216_ARCANE_JELLYFIN_LIVE_CAPTURE_BUTTON.md` and
 `test:arcane-jellyfin-live-capture-button` to put the guarded Jellyfin live-capture launcher into
 the Arcane/User Scripts runbook. The button contains no API key and stays blocked by the Phase 214
 secret install requirement.
+Phase 217 adds `docs/PHASE_217_SCHEDULED_DOCTOR_ALERT_FIX.md` and
+`test:scheduled-doctor-alert-fix` after diagnosing stale hourly Unraid doctor alerts. The scheduled
+`catalog-doctor` wrapper must call the canonical `deploy/unraid-ops-launcher.sh doctor` path instead
+of the retired layered compose files.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

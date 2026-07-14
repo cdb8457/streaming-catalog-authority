@@ -154,7 +154,7 @@ case "${1:-}" in
     run_ops ops:migrate
     ;;
   doctor)
-    run_ops ops:doctor -- --json
+    run_ops_silent ops:doctor -- --json
     ;;
   backup)
     target="${2:-$BACKUP_DIR/catalog-$(date -u +%Y%m%dT%H%M%SZ).json}"
