@@ -16,7 +16,7 @@ Allowed Jellyfin operations:
 
 - `POST /Collections`
 - `POST /Collections/{collectionId}/Items`
-- `GET /Items?parentId={collectionId}`
+- `GET /Items/{itemId}/Collections`
 - `DELETE /Collections/{collectionId}/Items`
 - `DELETE /Items/{collectionId}`
 
@@ -66,8 +66,8 @@ Required gates:
 3. Snapshot before: record a digest/count of the mapped live Jellyfin item set.
 4. Create one token-marked disposable collection.
 5. Add the mapped existing library item reference(s).
-6. Read back collection membership through a bounded consistency poll and verify the expected hashed
-   item digests are present.
+6. Read back collection membership from the mapped item path through a bounded consistency poll and
+   verify the expected collection reference is present.
 7. Remove the item reference(s).
 8. Delete the collection.
 9. Verify absence by token and prefix lookup through a bounded consistency poll.

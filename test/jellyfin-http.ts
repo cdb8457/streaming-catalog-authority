@@ -7,6 +7,7 @@ import {
   buildAddCollectionItemsRequest,
   buildCollectionItemsRequest,
   buildCreateTaggedRequest,
+  buildItemCollectionsRequest,
   buildRemoveCollectionItemsRequest,
 } from '../src/core/adapters/jellyfin/mapping.js';
 
@@ -151,13 +152,16 @@ async function main(): Promise<void> {
     const add = buildAddCollectionItemsRequest('collection-1', ['item-1']);
     const remove = buildRemoveCollectionItemsRequest('collection-1', ['item-1']);
     const read = buildCollectionItemsRequest('collection-1', 2, 10);
+    const itemCollections = buildItemCollectionsRequest('item-1', 2, 10);
     assertEq(create.query?.name, 'Disposable [cat:token-1]', 'create uses lowercase name');
     assertEq(create.query?.ids, 'item-1', 'create uses lowercase ids');
     assertEq(add.query?.ids, 'item-1', 'add uses lowercase ids');
     assertEq(remove.query?.ids, 'item-1', 'remove uses lowercase ids');
     assertEq(read.query?.parentId, 'collection-1', 'read uses OpenAPI parentId');
     assertEq(read.query?.fields, 'ProviderIds', 'read uses lowercase fields');
-    for (const spec of [create, add, remove, read]) {
+    assertEq(itemCollections.path, '/Items/item-1/Collections', 'item collection read uses OpenAPI path');
+    assertEq(itemCollections.query?.fields, 'ProviderIds', 'item collection read uses lowercase fields');
+    for (const spec of [create, add, remove, read, itemCollections]) {
       assert(!('Ids' in (spec.query ?? {})), 'no uppercase Ids query parameter');
       assert(!('Name' in (spec.query ?? {})), 'no uppercase Name query parameter');
       assert(!('ParentId' in (spec.query ?? {})), 'no uppercase ParentId query parameter');

@@ -102,6 +102,19 @@ class ProofClient implements JellyfinWriteProofClient {
     return [...(this.collections.get(collectionId)?.items ?? [])];
   }
 
+  async listItemCollectionIds(itemId: string): Promise<string[]> {
+    this.events.push('list-item-collections');
+    if (this.membershipStaleReadsRemaining > 0) {
+      this.membershipStaleReadsRemaining--;
+      return [];
+    }
+    const collectionIds: string[] = [];
+    for (const [collectionId, collection] of this.collections) {
+      if (collection.items.has(itemId)) collectionIds.push(collectionId);
+    }
+    return collectionIds;
+  }
+
   async removeItemsFromCollection(collectionId: string, itemIds: readonly string[]): Promise<void> {
     this.events.push(`remove:${itemIds.length}`);
     const collection = this.collections.get(collectionId);
@@ -157,7 +170,7 @@ await test('write proof happy path creates, adds, verifies, removes, deletes, an
     assertEq(client.count(), 0, 'fake collection removed');
     assertEq(
       client.events.join(','),
-      'find-prefix,find:1,find:1,create:0,add:1,list-items,remove:1,list-items,delete,find-token,find-prefix,find:1',
+      'find-prefix,find:1,find:1,create:0,add:1,list-item-collections,remove:1,list-item-collections,delete,find-token,find-prefix,find:1',
       'expected write sequence',
     );
     for (const step of ['preflight-residue', 'select-target', 'create-collection', 'add-items', 'verify-membership', 'remove-items', 'delete-collection', 'verify-absence', 'snapshot-after']) {

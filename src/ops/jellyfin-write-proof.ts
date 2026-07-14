@@ -26,6 +26,7 @@ export interface JellyfinWriteProofClient {
   createTaggedCollection(name: string, itemIds: readonly string[], token: string): Promise<string>;
   addItemsToCollection(collectionId: string, itemIds: readonly string[]): Promise<void>;
   listCollectionItemIds(collectionId: string): Promise<string[]>;
+  listItemCollectionIds(itemId: string): Promise<string[]>;
   removeItemsFromCollection(collectionId: string, itemIds: readonly string[]): Promise<void>;
   deleteCollection(collectionId: string): Promise<'deleted' | 'not_found'>;
   findCollectionByToken(token: string): Promise<string | null>;
@@ -62,7 +63,7 @@ export interface JellyfinWriteProofReport {
     readonly allowedOperations: readonly [
       'POST /Collections',
       'POST /Collections/{collectionId}/Items',
-      'GET /Items?parentId={collectionId}',
+      'GET /Items/{itemId}/Collections',
       'DELETE /Collections/{collectionId}/Items',
       'DELETE /Items/{collectionId}',
     ];
@@ -203,6 +204,30 @@ async function pollUntil<T>(
   }
 }
 
+async function itemCollectionsContain(
+  client: Pick<JellyfinWriteProofClient, 'listItemCollectionIds'>,
+  collectionId: string,
+  itemIds: readonly string[],
+): Promise<boolean> {
+  for (const itemId of itemIds) {
+    const collectionIds = await client.listItemCollectionIds(itemId);
+    if (!collectionIds.includes(collectionId)) return false;
+  }
+  return true;
+}
+
+async function itemCollectionsExclude(
+  client: Pick<JellyfinWriteProofClient, 'listItemCollectionIds'>,
+  collectionId: string,
+  itemIds: readonly string[],
+): Promise<boolean> {
+  for (const itemId of itemIds) {
+    const collectionIds = await client.listItemCollectionIds(itemId);
+    if (collectionIds.includes(collectionId)) return false;
+  }
+  return true;
+}
+
 async function selectMappedTarget(
   authority: CatalogAuthority,
   client: Pick<JellyfinWriteProofClient, 'findItemsByRefs'>,
@@ -305,13 +330,11 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
         const membershipPoll = await pollUntil(
           consistencyTimeoutMs,
           consistencyPollMs,
-          () => client.listCollectionItemIds(collectionId!),
-          (ids) => targetItemIds.every((id) => new Set(ids).has(id)) && ids.length >= targetItemIds.length,
+          () => itemCollectionsContain(client, collectionId!, targetItemIds),
+          (contained) => contained,
         );
-        const membership = membershipPoll.value;
-        const membershipSet = new Set(membership);
-        const membershipOk = targetItemIds.every((id) => membershipSet.has(id)) && membership.length >= targetItemIds.length;
-        steps.push({ step: 'verify-membership', ok: membershipOk, detail: `${membership.length} collection member(s) read back after ${membershipPoll.attempts} poll(s)` });
+        const membershipOk = membershipPoll.value;
+        steps.push({ step: 'verify-membership', ok: membershipOk, detail: `${membershipOk ? targetItemIds.length : 0} item collection reference(s) confirmed after ${membershipPoll.attempts} poll(s)` });
         if (!membershipOk) status = 'JELLYFIN_WRITE_PROOF_FAILED';
 
         await client.removeItemsFromCollection(collectionId, targetItemIds);
@@ -319,12 +342,11 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
         const afterRemovePoll = await pollUntil(
           consistencyTimeoutMs,
           consistencyPollMs,
-          () => client.listCollectionItemIds(collectionId!),
-          (ids) => targetItemIds.every((id) => !new Set(ids).has(id)),
+          () => itemCollectionsExclude(client, collectionId!, targetItemIds),
+          (removed) => removed,
         );
-        const afterRemove = afterRemovePoll.value;
-        const removed = targetItemIds.every((id) => !new Set(afterRemove).has(id));
-        steps.push({ step: 'remove-items', ok: removed, detail: `${afterRemove.length} collection member(s) remain after removal after ${afterRemovePoll.attempts} poll(s)` });
+        const removed = afterRemovePoll.value;
+        steps.push({ step: 'remove-items', ok: removed, detail: `${removed ? 0 : targetItemIds.length} item collection reference(s) remain after removal after ${afterRemovePoll.attempts} poll(s)` });
         if (!removed) status = 'JELLYFIN_WRITE_PROOF_FAILED';
 
         const deleted = await client.deleteCollection(collectionId);
@@ -413,7 +435,7 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
         allowedOperations: [
           'POST /Collections',
           'POST /Collections/{collectionId}/Items',
-          'GET /Items?parentId={collectionId}',
+          'GET /Items/{itemId}/Collections',
           'DELETE /Collections/{collectionId}/Items',
           'DELETE /Items/{collectionId}',
         ],

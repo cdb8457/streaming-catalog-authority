@@ -66,6 +66,11 @@ export function buildCollectionItemsRequest(collectionId: string, startIndex = 0
   return { method: 'GET', path: '/Items', query: { parentId: collectionId, fields: 'ProviderIds', startIndex: String(startIndex), limit: String(limit) } };
 }
 
+/** Read one page of collections containing a library item. */
+export function buildItemCollectionsRequest(itemId: string, startIndex = 0, limit = 500): HttpRequestSpec {
+  return { method: 'GET', path: `/Items/${encodeURIComponent(itemId)}/Collections`, query: { fields: 'ProviderIds', startIndex: String(startIndex), limit: String(limit) } };
+}
+
 // --- Phase 12 outbox: token-tagged create + find-by-token (PROVISIONAL, smoke-gated) ---
 //
 // The opaque correlation token is embedded in the collection NAME as `[cat:<token>]` so a single

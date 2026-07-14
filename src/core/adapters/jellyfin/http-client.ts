@@ -3,7 +3,7 @@ import type { FetchLike, HttpResponseLike } from './transport.js';
 import {
   buildFindCandidatesRequest, matchItems, buildDeleteCollectionRequest, buildSystemInfoRequest,
   buildCreateTaggedRequest, parseCreatedId, buildFindByTokenRequest, matchIdByToken, pageItems, type HttpRequestSpec,
-  buildAddCollectionItemsRequest, buildRemoveCollectionItemsRequest, buildCollectionItemsRequest, matchIdsByNamePrefix,
+  buildAddCollectionItemsRequest, buildRemoveCollectionItemsRequest, buildCollectionItemsRequest, buildItemCollectionsRequest, matchIdsByNamePrefix,
 } from './mapping.js';
 
 const PAGE_LIMIT = 500;   // items per page
@@ -143,6 +143,16 @@ export class JellyfinHttpClient implements JellyfinClient {
 
   async listCollectionItemIds(collectionId: string): Promise<string[]> {
     const items = await this.getAllPages('listCollectionItemIds', (start, limit) => buildCollectionItemsRequest(collectionId, start, limit));
+    const ids: string[] = [];
+    for (const raw of items) {
+      const id = (raw as { Id?: unknown }).Id;
+      if (typeof id === 'string') ids.push(id);
+    }
+    return ids;
+  }
+
+  async listItemCollectionIds(itemId: string): Promise<string[]> {
+    const items = await this.getAllPages('listItemCollectionIds', (start, limit) => buildItemCollectionsRequest(itemId, start, limit));
     const ids: string[] = [];
     for (const raw of items) {
       const id = (raw as { Id?: unknown }).Id;
