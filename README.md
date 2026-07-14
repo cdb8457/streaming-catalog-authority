@@ -1607,10 +1607,11 @@ seed catalog items through `CatalogAuthority.addItem`, then reruns the guarded P
 records `JELLYFIN_DATA_POSITIVE_READONLY_MAPPING_ACCEPTED`: one live Jellyfin item matched by digest
 and one seeded catalog item remained unmatched, with Jellyfin writes still disabled.
 Phase 221 adds `docs/PHASE_221_JELLYFIN_WRITE_PROOF.md`, `ops:jellyfin-write-proof`, and
-`deploy/unraid-jellyfin-write-proof.sh` as the rung-3 disposable write proof. It creates one
-test-owned Jellyfin collection, adds existing mapped item references, verifies membership, removes
-the references, deletes the collection, proves absence and unchanged library state, and keeps
-runtime Jellyfin integration deferred pending Phase 222 review.
+`deploy/unraid-jellyfin-write-proof.sh` as the rung-3 disposable write proof. The live run is
+recorded as `JELLYFIN_WRITE_PROOF_FAILED_SAFE`: the command stayed guarded and self-cleaning, but
+the live Jellyfin server accepted the add request without exposing collection membership through the
+bounded polling window. Cleanup succeeded with zero residue and unchanged library state. Runtime
+Jellyfin write integration remains deferred pending Phase 222 review.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

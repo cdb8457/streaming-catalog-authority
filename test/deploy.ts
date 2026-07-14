@@ -10652,7 +10652,8 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
   for (const required of [
     'Phase 221 Jellyfin write-capable disposable collection proof',
     'phase-221-jellyfin-write-proof',
-    'JELLYFIN_WRITE_PROOF_CLEANED_UP',
+    'JELLYFIN_WRITE_PROOF_FAILED_SAFE',
+    'Retained command status: `JELLYFIN_WRITE_PROOF_FAILED`',
     'JELLYFIN_WRITE_PROOF_CLEANUP_FAILED',
     'Catalog Authority disposable write proof',
     'JELLYFIN_ALLOW_LIVE_PUBLISH=true',
@@ -10664,6 +10665,7 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
     'DELETE /Collections/{collectionId}/Items',
     'libraryState.unchanged',
     'cleanup.success',
+    'manual probe residue: `0`',
     'phase-221-jellyfin-write-proof.json',
     'Jellyfin runtime integration remains deferred pending Phase 222',
     'O4 remains `O4_CLOSED`',

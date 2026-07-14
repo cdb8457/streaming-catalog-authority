@@ -2,7 +2,7 @@
 
 Report id: `phase-221-jellyfin-write-proof`
 
-Decision status: `JELLYFIN_WRITE_PROOF_CLEANED_UP`
+Decision status: `JELLYFIN_WRITE_PROOF_FAILED_SAFE`
 
 Operator authorization: rung 3 write proof authorized on `2026-07-14`.
 
@@ -103,21 +103,61 @@ must retain only hashed collection identifiers.
 
 Evidence file: `/mnt/user/appdata/catalog/evidence/phase-221-jellyfin-write-proof.json`
 
-Evidence file SHA-256: `PENDING_LIVE_RUN`
+Evidence file SHA-256:
+`fc2a1841107a8b5f807ffcfed0aeed67a25331e2ba4db465f3c8b0bd97ed0cc6`
 
-Report digest: `PENDING_LIVE_RUN`
+Report digest:
+`f7a5ca903900da963baa4c927caf1484bf027c68e5a45eec1772befba5637bcd`
 
-Accepted live result: `PENDING_LIVE_RUN`
+Accepted live result: `JELLYFIN_WRITE_PROOF_FAILED_SAFE`
 
-The retained evidence must include:
+Retained command status: `JELLYFIN_WRITE_PROOF_FAILED`
 
-- `status: JELLYFIN_WRITE_PROOF_CLEANED_UP`
+The retained evidence includes:
+
+- `status: JELLYFIN_WRITE_PROOF_FAILED`
 - `cleanup.success: true`
 - `collection.finalResidueCount: 0`
 - `libraryState.unchanged: true`
 - hashed catalog item digest(s)
 - hashed Jellyfin item digest(s)
 - hashed collection digest only
+
+The failed-safe basis is that the live disposable write proof did not prove membership, but the
+operation remained bounded and self-cleaning. The retained proof created a token-marked disposable
+collection and the Jellyfin add endpoint returned success, but membership verification did not
+materialize through the bounded polling window. Cleanup then deleted the test collection, verified
+zero Phase 221 residue, and confirmed the mapped library item set was unchanged.
+
+Retained proof summary:
+
+- `mappedItems: 1`
+- `verify-membership: 0 collection-items reference(s) confirmed after 61 poll(s)`
+- `cleanup.success: true`
+- `collection.finalResidueCount: 0`
+- `libraryState.unchanged: true`
+
+Manual membership probe:
+
+To disambiguate a race from a real Jellyfin write-compatibility issue, a separate manual probe was
+run from Tower. It selected one existing Jellyfin library item, created a disposable probe
+collection, added the item by opaque Jellyfin id, and polled both `ParentId` and `parentId`
+membership reads every five seconds for sixty seconds. The add call returned HTTP `204`, but both
+membership paths remained at zero for the full polling window. The probe collection was deleted with
+HTTP `204`, and the manual probe residue count returned to zero.
+
+Manual probe redacted identifiers:
+
+- item digest: `69e9cf049e9a1da6`
+- collection digest: `b6e4b27a82d40669`
+- poll result: `members_upper=0`, `members_lower=0` through `t+60s`
+- cleanup result: `cleanup_http=204`
+- manual probe residue: `0`
+
+Phase 221 therefore does not prove the Jellyfin rung-3 write-capable integration on this server.
+It proves the write guard, redaction boundary, bounded polling, and cleanup behavior. Phase 222 must
+review this failed-safe evidence and decide whether to defer Jellyfin writes or open a
+version-specific Jellyfin collection-write investigation.
 
 ## Status
 
@@ -126,5 +166,5 @@ O4 remains `O4_CLOSED`.
 O5 remains `O5_DEFERRED_ACCEPTED`.
 
 Jellyfin runtime integration remains deferred pending Phase 222 operator evidence review and launch
-decision. Phase 221 proves the disposable write boundary only; it does not enable provider mode,
-playback, downloads, scraping, or a permanent media-server integration.
+decision. Phase 221 does not enable Jellyfin write-capable integration; it does not enable provider
+mode, playback, downloads, scraping, or a permanent media-server integration.

@@ -345,7 +345,7 @@ await test('phase document, launcher, package, and deploy guard wire Phase 221',
   }
   for (const required of [
     'Phase 221 Jellyfin write-capable disposable collection proof',
-    'JELLYFIN_WRITE_PROOF_CLEANED_UP',
+    'JELLYFIN_WRITE_PROOF_FAILED_SAFE',
     'test:jellyfin-write-proof',
     'Phase 221 adds `docs/PHASE_221_JELLYFIN_WRITE_PROOF.md`',
   ]) assert(`${deploy}\n${readme}`.includes(required), `Phase 221 wiring includes ${required}`);
@@ -355,7 +355,9 @@ await test('phase artifacts are redaction-safe and keep integration launch defer
   const doc = read('docs/PHASE_221_JELLYFIN_WRITE_PROOF.md');
   for (const required of [
     'phase-221-jellyfin-write-proof',
-    'JELLYFIN_WRITE_PROOF_CLEANED_UP',
+    'JELLYFIN_WRITE_PROOF_FAILED_SAFE',
+    'Retained command status: `JELLYFIN_WRITE_PROOF_FAILED`',
+    'manual probe residue: `0`',
     PHASE_221_COLLECTION_PREFIX,
     'O4 remains `O4_CLOSED`',
     'O5 remains `O5_DEFERRED_ACCEPTED`',
