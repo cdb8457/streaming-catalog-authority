@@ -64,6 +64,7 @@ cd "$REPO_DIR"
 tmp_out="${OUT_FILE}.tmp-$$"
 rm -f "$tmp_out"
 
+set +e
 docker compose -f "$COMPOSE_FILE" run --rm \
   --entrypoint npm \
   -v "$SECRET_FILE:$SECRET_MOUNT:ro" \
@@ -76,7 +77,15 @@ docker compose -f "$COMPOSE_FILE" run --rm \
   run --silent ops:jellyfin-live-readonly-mapping -- \
     --limit "$LIMIT" \
     --out "/evidence/$(basename "$tmp_out")"
+cmd_status=$?
+set -e
 
-chmod 600 "$tmp_out" 2>/dev/null || true
-mv "$tmp_out" "$OUT_FILE"
-echo "Saved redaction-safe Jellyfin live read-only mapping evidence: $OUT_FILE"
+if [ -f "$tmp_out" ]; then
+  chmod 600 "$tmp_out" 2>/dev/null || true
+  mv "$tmp_out" "$OUT_FILE"
+  echo "Saved redaction-safe Jellyfin live read-only mapping evidence: $OUT_FILE"
+else
+  echo "Jellyfin live read-only mapping command did not create evidence: $tmp_out" >&2
+fi
+
+exit "$cmd_status"
