@@ -49,7 +49,12 @@ const unraidCompose = read('docker-compose.unraid.yml');
 const unraidRuntimeCompose = read('docker-compose.unraid.runtime.yml');
 const unraidOpsLauncher = read('deploy/unraid-ops-launcher.sh');
 const dockerignore = read('.dockerignore');
-const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+const pkg = JSON.parse(read('package.json')) as {
+  version: string;
+  scripts: Record<string, string>;
+  dependencies?: Record<string, string>;
+  devDependencies?: Record<string, string>;
+};
 
 test('compose ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â defines postgres + one-shot ops services', () => {
   assert(/^\s{2}postgres:/m.test(compose), 'postgres service');
@@ -10638,7 +10643,7 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
   assert(pkg.scripts['ops:jellyfin-write-proof'] === 'tsx src/ops/jellyfin-write-proof-cli.ts', 'Phase 221 ops script present');
   assert(pkg.scripts['test:jellyfin-write-proof'] === 'tsx test/jellyfin-write-proof.ts', 'Phase 221 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/deploy.ts'),
     'Phase 221 aggregate test runs before deploy guard',
   );
   const combined = [
@@ -10692,7 +10697,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
   assert(exists('test/jellyfin-integration-decision.ts'), 'Phase 222 Jellyfin decision test exists');
   assert(pkg.scripts['test:jellyfin-integration-decision'] === 'tsx test/jellyfin-integration-decision.ts', 'Phase 222 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/deploy.ts'),
     'Phase 222 aggregate test runs after write proof and before deploy guard',
   );
   const combined = [
@@ -10732,6 +10737,48 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
     'playback enabled',
     'download enabled',
   ]) assert(!doc.includes(forbidden), `Phase 222 record excludes ${forbidden}`);
+});
+
+test('Phase 223 versioned release cut records v1.0.0 with accepted warnings', () => {
+  assert(exists('docs/PHASE_223_RELEASE_CUT.md'), 'Phase 223 release cut doc exists');
+  assert(exists('test/versioned-release-cut.ts'), 'Phase 223 release cut test exists');
+  assert(pkg.version === '1.0.0', 'package version is 1.0.0');
+  assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/deploy.ts'),
+    'Phase 223 aggregate test runs after Jellyfin decision and before deploy guard',
+  );
+  const combined = [
+    read('docs/PHASE_223_RELEASE_CUT.md'),
+    read('test/versioned-release-cut.ts'),
+    read('RELEASE.md'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'Phase 223: Versioned Release Cut',
+    'phase-223-versioned-release-cut',
+    'Selected version: `v1.0.0`',
+    'Source release commit: `4d1f81830`',
+    'RELEASE_FRESH_CLONE_SMOKE_PASS',
+    'VERSIONED_RELEASE_CUT_READY_WITH_ACCEPTED_WARNINGS',
+    'LAUNCH_WARNING_O5_DEFERRED_ACCEPTED',
+    'JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING',
+    'JELLYFIN_INTEGRATION_DECISION_READ_ONLY_PROVEN_WRITE_BLOCKED',
+    'sha256:a8342b416a005734faf7dd16f312ec6a7254c979b8a6143c9477d4b20ee8d3f5',
+    'sidecar published ports: `{}`',
+    'live check status: `ok:true`',
+    'JELLYFIN_COMPOSE_WRITE_GUARD_OK',
+    'Phase 223 adds `docs/PHASE_223_RELEASE_CUT.md`',
+  ]) assert(combined.includes(required), `Phase 223 surface preserves ${required}`);
+  const doc = read('docs/PHASE_223_RELEASE_CUT.md');
+  for (const forbidden of [
+    '192.168.',
+    'O5_CLOSED',
+    'JELLYFIN_WRITE_CAPABLE_LAUNCH_ELIGIBLE',
+    'provider live mode enabled',
+    'playback enabled',
+    'download enabled',
+  ]) assert(!doc.includes(forbidden), `Phase 223 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

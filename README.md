@@ -1620,6 +1620,11 @@ catalog-to-library mapping, while recording `JELLYFIN_WRITE_CAPABLE_NOT_LAUNCH_R
 deficiency `JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING`. The rung-4 disposition is
 `JELLYFIN_INTEGRATION_DECISION_READ_ONLY_PROVEN_WRITE_BLOCKED`; any write reattempt requires a
 future investigation phase and a new operator authorization gate.
+Phase 223 adds `docs/PHASE_223_RELEASE_CUT.md`, `test:versioned-release-cut`, and the `v1.0.0`
+release notes. It records `VERSIONED_RELEASE_CUT_READY_WITH_ACCEPTED_WARNINGS`, a clean-clone smoke
+of the `v1.0.0` tag, Unraid running the release image digest, O4 closed, O5 deferred-accepted, and
+Jellyfin read-only proven while Jellyfin writes remain blocked by
+`JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING`.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
