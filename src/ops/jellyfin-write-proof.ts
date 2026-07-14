@@ -205,27 +205,43 @@ async function pollUntil<T>(
 }
 
 async function itemCollectionsContain(
-  client: Pick<JellyfinWriteProofClient, 'listItemCollectionIds'>,
+  client: Pick<JellyfinWriteProofClient, 'listCollectionItemIds' | 'listItemCollectionIds'>,
   collectionId: string,
   itemIds: readonly string[],
-): Promise<boolean> {
+): Promise<{ ok: boolean; count: number; mode: 'item-collections' | 'collection-items' }> {
   for (const itemId of itemIds) {
-    const collectionIds = await client.listItemCollectionIds(itemId);
-    if (!collectionIds.includes(collectionId)) return false;
+    let collectionIds: string[];
+    try {
+      collectionIds = await client.listItemCollectionIds(itemId);
+    } catch (e) {
+      if (!(e instanceof JellyfinHttpError) || e.status !== 404) throw e;
+      const memberIds = await client.listCollectionItemIds(collectionId);
+      const memberSet = new Set(memberIds);
+      return { ok: itemIds.every((id) => memberSet.has(id)) && memberIds.length >= itemIds.length, count: memberIds.length, mode: 'collection-items' };
+    }
+    if (!collectionIds.includes(collectionId)) return { ok: false, count: 0, mode: 'item-collections' };
   }
-  return true;
+  return { ok: true, count: itemIds.length, mode: 'item-collections' };
 }
 
 async function itemCollectionsExclude(
-  client: Pick<JellyfinWriteProofClient, 'listItemCollectionIds'>,
+  client: Pick<JellyfinWriteProofClient, 'listCollectionItemIds' | 'listItemCollectionIds'>,
   collectionId: string,
   itemIds: readonly string[],
-): Promise<boolean> {
+): Promise<{ ok: boolean; count: number; mode: 'item-collections' | 'collection-items' }> {
   for (const itemId of itemIds) {
-    const collectionIds = await client.listItemCollectionIds(itemId);
-    if (collectionIds.includes(collectionId)) return false;
+    let collectionIds: string[];
+    try {
+      collectionIds = await client.listItemCollectionIds(itemId);
+    } catch (e) {
+      if (!(e instanceof JellyfinHttpError) || e.status !== 404) throw e;
+      const memberIds = await client.listCollectionItemIds(collectionId);
+      const remaining = memberIds.filter((id) => itemIds.includes(id));
+      return { ok: remaining.length === 0, count: remaining.length, mode: 'collection-items' };
+    }
+    if (collectionIds.includes(collectionId)) return { ok: false, count: 1, mode: 'item-collections' };
   }
-  return true;
+  return { ok: true, count: 0, mode: 'item-collections' };
 }
 
 async function selectMappedTarget(
@@ -331,10 +347,10 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
           consistencyTimeoutMs,
           consistencyPollMs,
           () => itemCollectionsContain(client, collectionId!, targetItemIds),
-          (contained) => contained,
+          (result) => result.ok,
         );
-        const membershipOk = membershipPoll.value;
-        steps.push({ step: 'verify-membership', ok: membershipOk, detail: `${membershipOk ? targetItemIds.length : 0} item collection reference(s) confirmed after ${membershipPoll.attempts} poll(s)` });
+        const membershipOk = membershipPoll.value.ok;
+        steps.push({ step: 'verify-membership', ok: membershipOk, detail: `${membershipPoll.value.count} ${membershipPoll.value.mode} reference(s) confirmed after ${membershipPoll.attempts} poll(s)` });
         if (!membershipOk) status = 'JELLYFIN_WRITE_PROOF_FAILED';
 
         await client.removeItemsFromCollection(collectionId, targetItemIds);
@@ -343,10 +359,10 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
           consistencyTimeoutMs,
           consistencyPollMs,
           () => itemCollectionsExclude(client, collectionId!, targetItemIds),
-          (removed) => removed,
+          (result) => result.ok,
         );
-        const removed = afterRemovePoll.value;
-        steps.push({ step: 'remove-items', ok: removed, detail: `${removed ? 0 : targetItemIds.length} item collection reference(s) remain after removal after ${afterRemovePoll.attempts} poll(s)` });
+        const removed = afterRemovePoll.value.ok;
+        steps.push({ step: 'remove-items', ok: removed, detail: `${afterRemovePoll.value.count} ${afterRemovePoll.value.mode} reference(s) remain after removal after ${afterRemovePoll.attempts} poll(s)` });
         if (!removed) status = 'JELLYFIN_WRITE_PROOF_FAILED';
 
         const deleted = await client.deleteCollection(collectionId);
@@ -403,8 +419,27 @@ export async function runJellyfinWriteProof(opts: RunJellyfinWriteProofOptions =
         cleanupSuccess = absencePoll.value.tokenLookup === null && finalResidue.length === 0;
         if (cleanupSuccess && status === 'JELLYFIN_WRITE_PROOF_CLEANUP_FAILED') status = 'JELLYFIN_WRITE_PROOF_FAILED';
       } catch {
-        orphanedCollectionDigest = digest(collectionId, 'phase-221-collection');
-        status = 'JELLYFIN_WRITE_PROOF_CLEANUP_FAILED';
+        try {
+          const absencePoll = await pollUntil(
+            consistencyTimeoutMs,
+            consistencyPollMs,
+            async () => ({
+              tokenLookup: await client.findCollectionByToken(token),
+              residue: await client.findCollectionsByNamePrefix(PHASE_221_COLLECTION_PREFIX),
+            }),
+            (state) => state.tokenLookup === null && state.residue.length === 0,
+          );
+          finalResidue = absencePoll.value.residue;
+          cleanupSuccess = absencePoll.value.tokenLookup === null && finalResidue.length === 0;
+          if (cleanupSuccess) status = 'JELLYFIN_WRITE_PROOF_FAILED';
+          else {
+            orphanedCollectionDigest = digest(collectionId, 'phase-221-collection');
+            status = 'JELLYFIN_WRITE_PROOF_CLEANUP_FAILED';
+          }
+        } catch {
+          orphanedCollectionDigest = digest(collectionId, 'phase-221-collection');
+          status = 'JELLYFIN_WRITE_PROOF_CLEANUP_FAILED';
+        }
       }
     }
   }

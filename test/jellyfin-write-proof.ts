@@ -6,6 +6,7 @@ import { PHASE_221_COLLECTION_PREFIX, runJellyfinWriteProof, type JellyfinWriteP
 import type { Env } from '../src/config/env.js';
 import type { CatalogAuthority } from '../src/core/catalog/authority.js';
 import type { JellyfinRef } from '../src/core/adapters/jellyfin/client.js';
+import { JellyfinHttpError } from '../src/core/adapters/jellyfin/http-client.js';
 
 let passed = 0;
 let failed = 0;
@@ -69,7 +70,7 @@ class ProofClient implements JellyfinWriteProofClient {
   private membershipStaleReadsRemaining = 0;
   private prefixStaleReadsRemaining = 0;
   private deletedOnce = false;
-  constructor(private readonly faults: Partial<Record<'priorResidue' | 'delete', boolean>> & { staleMembershipReads?: number; stalePrefixReadsAfterDelete?: number } = {}) {
+  constructor(private readonly faults: Partial<Record<'priorResidue' | 'delete' | 'itemCollections404' | 'deleteAfterRemoval', boolean>> & { staleMembershipReads?: number; stalePrefixReadsAfterDelete?: number } = {}) {
     if (faults.priorResidue) this.collections.set('prior-collection-id', { token: 'prior-token', items: new Set() });
     this.membershipStaleReadsRemaining = faults.staleMembershipReads ?? 0;
     this.prefixStaleReadsRemaining = faults.stalePrefixReadsAfterDelete ?? 0;
@@ -104,6 +105,7 @@ class ProofClient implements JellyfinWriteProofClient {
 
   async listItemCollectionIds(itemId: string): Promise<string[]> {
     this.events.push('list-item-collections');
+    if (this.faults.itemCollections404) throw new JellyfinHttpError('listItemCollectionIds', 404, 'jellyfin listItemCollectionIds: HTTP 404');
     if (this.membershipStaleReadsRemaining > 0) {
       this.membershipStaleReadsRemaining--;
       return [];
@@ -127,6 +129,7 @@ class ProofClient implements JellyfinWriteProofClient {
     if (this.faults.delete) throw new Error(`delete ${SECRET}`);
     const deleted = this.collections.delete(collectionId);
     if (deleted) this.deletedOnce = true;
+    if (this.faults.deleteAfterRemoval) throw new Error(`delete ${SECRET}`);
     return deleted ? 'deleted' : 'not_found';
   }
 
@@ -224,6 +227,50 @@ await test('bounded consistency polling tolerates delayed membership and absence
     assert(report.steps.some((s) => s.step === 'verify-absence' && /after 2 poll\(s\)/.test(s.detail)), 'absence was retried');
     assertEq(report.collection.finalResidueCount, 0, 'no final residue after polling');
     assert(noLeak(report), 'polling report redaction-safe');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await test('older Jellyfin item-collection 404 falls back to collection member reads', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'jf-write-proof-221-fallback-'));
+  try {
+    const client = new ProofClient({ itemCollections404: true });
+    const report = await runJellyfinWriteProof({
+      env: fixtureEnv(dir),
+      authority: fakeAuthority([{ type: 'tmdb', value: RAW_REF }]),
+      client,
+      itemIds: [ITEM_ID],
+      token: 'phase221-token',
+      consistencyTimeoutMs: 0,
+    });
+    assert(report.ok, 'write proof ok through fallback membership reads');
+    assertEq(report.status, 'JELLYFIN_WRITE_PROOF_CLEANED_UP', 'success status');
+    assert(report.steps.some((s) => s.step === 'verify-membership' && s.detail.includes('collection-items')), 'membership used fallback mode');
+    assert(report.steps.some((s) => s.step === 'remove-items' && s.detail.includes('collection-items')), 'remove verification used fallback mode');
+    assert(noLeak(report), 'fallback report redaction-safe');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+await test('delete error is not cleanup-failed when follow-up absence proof succeeds', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'jf-write-proof-221-delete-recovered-'));
+  try {
+    const client = new ProofClient({ deleteAfterRemoval: true });
+    const report = await runJellyfinWriteProof({
+      env: fixtureEnv(dir),
+      authority: fakeAuthority([{ type: 'tmdb', value: RAW_REF }]),
+      client,
+      itemIds: [ITEM_ID],
+      token: 'phase221-token',
+      consistencyTimeoutMs: 0,
+    });
+    assert(!report.ok, 'proof remains failed because delete returned an error');
+    assertEq(report.status, 'JELLYFIN_WRITE_PROOF_FAILED', 'cleanup recovered avoids cleanup-failed status');
+    assertEq(report.cleanup.success, true, 'absence proof recovered cleanup');
+    assertEq(report.collection.finalResidueCount, 0, 'no residue');
+    assert(noLeak(report), 'delete recovery report redaction-safe');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
