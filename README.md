@@ -1596,6 +1596,12 @@ Phase 218 adds `docs/PHASE_218_JELLYFIN_LIVE_READONLY_EVIDENCE_ACCEPTANCE.md` an
 `test:jellyfin-live-readonly-evidence-acceptance` to accept the retained live read-only Jellyfin
 smoke evidence by digest. It records `JELLYFIN_LIVE_READONLY_SMOKE_ACCEPTED`, keeps runtime
 integration deferred, and leaves live read-only mapping as the next evidence gap.
+Phase 219 adds `docs/PHASE_219_JELLYFIN_LIVE_READONLY_MAPPING.md`,
+`ops:jellyfin-live-readonly-mapping`, `deploy/unraid-jellyfin-live-mapping-capture.sh`, and
+`test:jellyfin-live-readonly-mapping` to run the guarded live mapping command against the real
+runtime. The retained evidence is accepted for command/boundary behavior with
+`JELLYFIN_LIVE_READONLY_MAPPING_BOUNDARY_ACCEPTED_NO_ELIGIBLE_ITEMS`; data-positive mapping remains
+pending because the live catalog has no eligible provider-ref items yet.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
