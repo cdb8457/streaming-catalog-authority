@@ -55,6 +55,8 @@ cd "$REPO_DIR"
 tmp_out="${OUT_FILE}.tmp-$$"
 rm -f "$tmp_out"
 
+docker compose -f "$COMPOSE_FILE" up -d postgres sidecar
+
 set +e
 docker compose -f "$COMPOSE_FILE" run --rm \
   --entrypoint npm \
@@ -64,7 +66,7 @@ docker compose -f "$COMPOSE_FILE" run --rm \
   -e JELLYFIN_ALLOW_LIVE_PUBLISH=true \
   -e "JELLYFIN_BASE_URL=$BASE_URL" \
   -e "JELLYFIN_API_KEY_FILE=$SECRET_MOUNT" \
-  app \
+  ops \
   run --silent ops:jellyfin-write-proof -- \
     --limit "$LIMIT" \
     --out "/evidence/$(basename "$tmp_out")" \

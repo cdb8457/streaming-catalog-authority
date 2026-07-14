@@ -166,11 +166,13 @@ await test('launcher and package wiring preserve read-only Unraid boundary', () 
   assert(pkg.scripts['ops:catalog-ingest-item'] === 'tsx src/ops/catalog-ingest-item-cli.ts', 'ingest ops script present');
   assert(pkg.scripts['test:jellyfin-live-readonly-mapping'] === 'tsx test/jellyfin-live-readonly-mapping.ts', 'test script present');
   for (const required of [
+    'docker compose -f "$COMPOSE_FILE" up -d postgres sidecar',
     'docker compose -f "$COMPOSE_FILE" run --rm',
     '--entrypoint npm',
     'JELLYFIN_ENABLE_NETWORK=true',
     'JELLYFIN_API_KEY_FILE=$SECRET_MOUNT',
     'JELLYFIN_ALLOW_LIVE_PUBLISH=false',
+    'ops \\',
     'ops:jellyfin-live-readonly-mapping',
     'phase-219-jellyfin-live-readonly-mapping.json',
   ]) assert(launcher.includes(required), `launcher includes ${required}`);

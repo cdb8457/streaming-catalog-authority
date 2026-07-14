@@ -234,7 +234,9 @@ await test('phase document, launcher, package, and deploy guard wire Phase 221',
     'ops:jellyfin-write-proof',
     '--confirm-disposable-write',
     'phase-221-jellyfin-write-proof.json',
+    'docker compose -f "$COMPOSE_FILE" up -d postgres sidecar',
     'docker compose -f "$COMPOSE_FILE" run --rm',
+    'ops \\',
     'JELLYFIN_BASE_URL=$BASE_URL',
   ]) assert(launcher.includes(required), `launcher includes ${required}`);
   for (const forbidden of [' --publish', '\n-p ', 'ports:', 'docker run', 'JELLYFIN_API_KEY=']) {
