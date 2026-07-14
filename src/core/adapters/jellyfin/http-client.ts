@@ -3,6 +3,7 @@ import type { FetchLike, HttpResponseLike } from './transport.js';
 import {
   buildFindCandidatesRequest, matchItems, buildDeleteCollectionRequest, buildSystemInfoRequest,
   buildCreateTaggedRequest, parseCreatedId, buildFindByTokenRequest, matchIdByToken, pageItems, type HttpRequestSpec,
+  buildAddCollectionItemsRequest, buildRemoveCollectionItemsRequest, buildCollectionItemsRequest, matchIdsByNamePrefix,
 } from './mapping.js';
 
 const PAGE_LIMIT = 500;   // items per page
@@ -120,9 +121,34 @@ export class JellyfinHttpClient implements JellyfinClient {
     return matchIdByToken(token, items);
   }
 
+  async findCollectionsByNamePrefix(prefix: string): Promise<string[]> {
+    const items = await this.getAllPages('findCollectionsByNamePrefix', (start, limit) => buildFindByTokenRequest(start, limit));
+    return matchIdsByNamePrefix(prefix, items);
+  }
+
   async deleteCollection(collectionId: string): Promise<'deleted' | 'not_found'> {
     const res = await this.send('deleteCollection', buildDeleteCollectionRequest(collectionId), { idempotent: true, allow404: true });
     return res.status === 404 ? 'not_found' : 'deleted';
+  }
+
+  async addItemsToCollection(collectionId: string, itemIds: readonly string[]): Promise<void> {
+    if (itemIds.length === 0) return;
+    await this.send('addItemsToCollection', buildAddCollectionItemsRequest(collectionId, itemIds), { idempotent: false });
+  }
+
+  async removeItemsFromCollection(collectionId: string, itemIds: readonly string[]): Promise<void> {
+    if (itemIds.length === 0) return;
+    await this.send('removeItemsFromCollection', buildRemoveCollectionItemsRequest(collectionId, itemIds), { idempotent: true, allow404: true });
+  }
+
+  async listCollectionItemIds(collectionId: string): Promise<string[]> {
+    const items = await this.getAllPages('listCollectionItemIds', (start, limit) => buildCollectionItemsRequest(collectionId, start, limit));
+    const ids: string[] = [];
+    for (const raw of items) {
+      const id = (raw as { Id?: unknown }).Id;
+      if (typeof id === 'string') ids.push(id);
+    }
+    return ids;
   }
 
   // --- HTTP plumbing ----------------------------------------------------------

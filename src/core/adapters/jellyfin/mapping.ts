@@ -51,6 +51,21 @@ export function buildDeleteCollectionRequest(collectionId: string): HttpRequestS
   return { method: 'DELETE', path: `/Items/${encodeURIComponent(collectionId)}` };
 }
 
+/** Add existing library items to a collection by opaque Jellyfin ids. */
+export function buildAddCollectionItemsRequest(collectionId: string, itemIds: readonly string[]): HttpRequestSpec {
+  return { method: 'POST', path: `/Collections/${encodeURIComponent(collectionId)}/Items`, query: { Ids: [...itemIds].join(',') } };
+}
+
+/** Remove existing library items from a collection by opaque Jellyfin ids. */
+export function buildRemoveCollectionItemsRequest(collectionId: string, itemIds: readonly string[]): HttpRequestSpec {
+  return { method: 'DELETE', path: `/Collections/${encodeURIComponent(collectionId)}/Items`, query: { Ids: [...itemIds].join(',') } };
+}
+
+/** Read one page of a collection's member items. */
+export function buildCollectionItemsRequest(collectionId: string, startIndex = 0, limit = 500): HttpRequestSpec {
+  return { method: 'GET', path: '/Items', query: { ParentId: collectionId, Fields: 'ProviderIds', StartIndex: String(startIndex), Limit: String(limit) } };
+}
+
 // --- Phase 12 outbox: token-tagged create + find-by-token (PROVISIONAL, smoke-gated) ---
 //
 // The opaque correlation token is embedded in the collection NAME as `[cat:<token>]` so a single
@@ -96,4 +111,14 @@ export function matchIdByToken(token: string, items: readonly unknown[]): string
     if (typeof it.Id === 'string' && typeof it.Name === 'string' && it.Name.includes(mark)) return it.Id;
   }
   return null;
+}
+
+/** From aggregated BoxSet rows, return opaque ids whose Name begins with the disposable proof prefix. */
+export function matchIdsByNamePrefix(prefix: string, items: readonly unknown[]): string[] {
+  const out: string[] = [];
+  for (const raw of items) {
+    const it = raw as { Id?: unknown; Name?: unknown };
+    if (typeof it.Id === 'string' && typeof it.Name === 'string' && it.Name.startsWith(prefix)) out.push(it.Id);
+  }
+  return out;
 }

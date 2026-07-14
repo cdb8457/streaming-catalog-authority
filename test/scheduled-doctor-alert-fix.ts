@@ -73,7 +73,7 @@ await test('package, deploy guard, and README wire Phase 217 verification', () =
   const deploy = read('test/deploy.ts');
   const readme = read('README.md');
   assert(pkg.scripts['test:scheduled-doctor-alert-fix'] === 'tsx test/scheduled-doctor-alert-fix.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((pkg.scripts.test ?? '').includes('test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 217 scheduled doctor alert fix'), 'deploy guard entry');
   assert(deploy.includes('phase-217-scheduled-doctor-alert-fix'), 'deploy guard report id');
   assert(readme.includes('Phase 217 adds `docs/PHASE_217_SCHEDULED_DOCTOR_ALERT_FIX.md`'), 'README ledger entry');
