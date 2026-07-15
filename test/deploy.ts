@@ -10879,6 +10879,7 @@ test('Phase 225 import service state machine is local, observed-state, and guard
 test('Phase 226 Jellyfin test library preflight blocks Gelato and missing mount', () => {
   assert(exists('src/ops/jellyfin-test-library-preflight.ts'), 'Phase 226 test library preflight module exists');
   assert(exists('src/ops/jellyfin-test-library-preflight-cli.ts'), 'Phase 226 test library preflight CLI exists');
+  assert(exists('deploy/unraid-local-media-preflight.sh'), 'Phase 226 Unraid local-media preflight launcher exists');
   assert(exists('test/jellyfin-test-library-preflight.ts'), 'Phase 226 test library preflight test exists');
   assert(pkg.scripts['ops:jellyfin-test-library-preflight'] === 'tsx src/ops/jellyfin-test-library-preflight-cli.ts', 'Phase 226 ops script present');
   assert(pkg.scripts['test:jellyfin-test-library-preflight'] === 'tsx test/jellyfin-test-library-preflight.ts', 'Phase 226 test script present');
@@ -10889,6 +10890,7 @@ test('Phase 226 Jellyfin test library preflight blocks Gelato and missing mount'
   const combined = [
     read('src/ops/jellyfin-test-library-preflight.ts'),
     read('src/ops/jellyfin-test-library-preflight-cli.ts'),
+    read('deploy/unraid-local-media-preflight.sh'),
     read('test/jellyfin-test-library-preflight.ts'),
   ].join('\n');
   for (const required of [
@@ -10901,6 +10903,8 @@ test('Phase 226 Jellyfin test library preflight blocks Gelato and missing mount'
     'not-gelato',
     'empty-or-test-only',
     'JELLYFIN_ALLOW_LIVE_PUBLISH must not be true',
+    'docker inspect jellyfin',
+    '$HOST_TEST_DIR:$HOST_TEST_DIR:ro',
   ]) assert(combined.includes(required), `Phase 226 preflight surface preserves ${required}`);
   for (const forbidden of [
     'POST',
