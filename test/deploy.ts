@@ -10643,7 +10643,7 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
   assert(pkg.scripts['ops:jellyfin-write-proof'] === 'tsx src/ops/jellyfin-write-proof-cli.ts', 'Phase 221 ops script present');
   assert(pkg.scripts['test:jellyfin-write-proof'] === 'tsx test/jellyfin-write-proof.ts', 'Phase 221 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/deploy.ts'),
     'Phase 221 aggregate test runs before deploy guard',
   );
   const combined = [
@@ -10697,7 +10697,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
   assert(exists('test/jellyfin-integration-decision.ts'), 'Phase 222 Jellyfin decision test exists');
   assert(pkg.scripts['test:jellyfin-integration-decision'] === 'tsx test/jellyfin-integration-decision.ts', 'Phase 222 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/deploy.ts'),
     'Phase 222 aggregate test runs after write proof and before deploy guard',
   );
   const combined = [
@@ -10745,7 +10745,7 @@ test('Phase 223 versioned release cut records v1.0.0 with accepted warnings', ()
   assert(pkg.version === '1.0.0', 'package version is 1.0.0');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/deploy.ts'),
     'Phase 223 aggregate test runs after Jellyfin decision and before deploy guard',
   );
   const combined = [
@@ -10786,7 +10786,7 @@ test('Phase 224 working foundation redefinition records E2E product gap', () => 
   assert(exists('test/working-foundation-plan.ts'), 'Phase 224 working foundation test exists');
   assert(pkg.scripts['test:working-foundation-plan'] === 'tsx test/working-foundation-plan.ts', 'Phase 224 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/deploy.ts'),
     'Phase 224 aggregate test runs after release cut and before deploy guard',
   );
   const combined = [
@@ -10836,7 +10836,7 @@ test('Phase 225 import service state machine is local, observed-state, and guard
   assert(pkg.scripts['ops:local-media-pipeline'] === 'tsx src/ops/local-media-pipeline-cli.ts', 'Phase 225 ops script present');
   assert(pkg.scripts['test:import-state-machine'] === 'tsx test/import-state-machine.ts', 'Phase 225 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/deploy.ts'),
     'Phase 225 aggregate test runs after working-foundation plan and before deploy guard',
   );
   const combined = [
@@ -10874,6 +10874,43 @@ test('Phase 225 import service state machine is local, observed-state, and guard
     'playback enabled',
     'JELLYFIN_WRITE_CAPABLE_LAUNCH_ELIGIBLE',
   ]) assert(!combined.includes(forbidden), `Phase 225 surface excludes ${forbidden}`);
+});
+
+test('Phase 226 Jellyfin test library preflight blocks Gelato and missing mount', () => {
+  assert(exists('src/ops/jellyfin-test-library-preflight.ts'), 'Phase 226 test library preflight module exists');
+  assert(exists('src/ops/jellyfin-test-library-preflight-cli.ts'), 'Phase 226 test library preflight CLI exists');
+  assert(exists('test/jellyfin-test-library-preflight.ts'), 'Phase 226 test library preflight test exists');
+  assert(pkg.scripts['ops:jellyfin-test-library-preflight'] === 'tsx src/ops/jellyfin-test-library-preflight-cli.ts', 'Phase 226 ops script present');
+  assert(pkg.scripts['test:jellyfin-test-library-preflight'] === 'tsx test/jellyfin-test-library-preflight.ts', 'Phase 226 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/deploy.ts'),
+    'Phase 226 preflight test runs after import state machine and before deploy guard',
+  );
+  const combined = [
+    read('src/ops/jellyfin-test-library-preflight.ts'),
+    read('src/ops/jellyfin-test-library-preflight-cli.ts'),
+    read('test/jellyfin-test-library-preflight.ts'),
+  ].join('\n');
+  for (const required of [
+    'phase-226-jellyfin-test-library-preflight',
+    'Catalog Authority Test',
+    '/media/catalog-authority-test-library',
+    '/mnt/user/media/catalog-authority-test-library',
+    'container-mount',
+    'virtual-folder',
+    'not-gelato',
+    'empty-or-test-only',
+    'JELLYFIN_ALLOW_LIVE_PUBLISH must not be true',
+  ]) assert(combined.includes(required), `Phase 226 preflight surface preserves ${required}`);
+  for (const forbidden of [
+    'POST',
+    'DELETE',
+    'PUT',
+    'PATCH',
+    'provider live mode enabled',
+    'download enabled',
+    'playback enabled',
+  ]) assert(!combined.includes(forbidden), `Phase 226 preflight excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
