@@ -5,9 +5,9 @@ import {
   lstatSync,
   mkdirSync,
   readdirSync,
+  linkSync,
   readFileSync,
   realpathSync,
-  renameSync,
   rmdirSync,
   rmSync,
   statSync,
@@ -25,10 +25,12 @@ export type PromotionLifecycleState =
 
 export type PromotionFailureCode =
   | 'PROMOTION_APPROVAL_REQUIRED'
+  | 'PROMOTION_APPROVAL_MISMATCH'
   | 'PROMOTION_SOURCE_INVALID'
   | 'PROMOTION_TARGET_FORBIDDEN'
   | 'PROMOTION_DESTINATION_COLLISION'
   | 'PROMOTION_COPY_MISMATCH'
+  | 'PROMOTION_VISIBILITY_REQUIRED'
   | 'PROMOTION_REAL_LIBRARY_VISIBILITY_TIMEOUT'
   | 'PROMOTION_VISIBILITY_CHECK_FAILED'
   | 'PROMOTION_WITHDRAWAL_REFUSED'
@@ -56,7 +58,24 @@ export interface RealLibraryVisibilityInput {
 export interface RealLibraryVisibilityResult {
   readonly visible: boolean;
   readonly itemId?: string;
-  readonly matchBasis?: 'path' | 'title-year' | 'title';
+  // Real-library visibility is accepted only when the observation is by exact path.
+  // Title/title-year are not permitted bases: a same-title test-library twin must
+  // never satisfy real-library visibility.
+  readonly matchBasis?: 'path';
+}
+
+// One-shot operator approval, bound to the exact item, source, destination, and root.
+// Every binding field is mandatory: the service recomputes each value from the actual
+// run and fails closed (PROMOTION_APPROVAL_MISMATCH) on any divergence, so an approval
+// can never authorize a different item, a swapped source, or a different destination.
+export interface RealLibraryPromotionApproval {
+  readonly approved: boolean;
+  readonly approvalId?: string;
+  readonly itemId?: string;
+  readonly targetRoot?: string;
+  readonly sourceRealPath?: string;
+  readonly sourceSha256?: string;
+  readonly destinationPath?: string;
 }
 
 export interface RealLibraryPromotionInput {
@@ -66,14 +85,10 @@ export interface RealLibraryPromotionInput {
   readonly sourceFile: string;
   readonly testLibraryRoot: string;
   readonly targetRoot: string;
-  readonly approval: {
-    readonly approved: boolean;
-    readonly approvalId?: string;
-  };
+  readonly approval: RealLibraryPromotionApproval;
   readonly runId?: string;
   readonly now?: () => Date;
   readonly visibilityClient?: RealLibraryVisibilityClient;
-  readonly awaitVisibility?: boolean;
   readonly visibilityPolls?: number;
   readonly visibilityPollMs?: number;
   readonly withdrawAfter?: boolean;
@@ -123,7 +138,7 @@ export interface RealLibraryPromotionReport {
     readonly awaited: boolean;
     readonly visible: boolean;
     readonly itemDigest?: string;
-    readonly matchBasis?: 'path' | 'title-year' | 'title';
+    readonly matchBasis?: 'path';
     readonly polls: number;
     readonly absentAfterWithdrawal?: boolean;
   };
@@ -170,7 +185,7 @@ export function defaultRealMoviesRoot(): string {
 // VISIBLE_IN_JELLYFIN — must never satisfy "visible in the real library" nor mask
 // absence after withdrawal. Title/year are deliberately not a fallback here.
 export function realLibraryPathMatch(itemPath: string, destinationPath: string): boolean {
-  return normalizePath(itemPath) === normalizePath(destinationPath);
+  return canonicalPath(itemPath) === canonicalPath(destinationPath);
 }
 
 export function buildPromotionDestination(input: { title: string; year?: number; sourceFile: string; targetRoot: string }): string {
@@ -273,10 +288,16 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
     return { ...withoutDigest, evidenceDigest: digest('phase-230-report', JSON.stringify(withoutDigest)) };
   };
 
-  if (!input.approval.approved || !input.approval.approvalId) {
-    return fail('PROMOTION_APPROVAL_REQUIRED', 'explicit one-shot operator approval is required');
+  const approval = input.approval;
+  if (!approval.approved || !approval.approvalId
+    || !approval.itemId || !approval.targetRoot || !approval.sourceRealPath
+    || !approval.sourceSha256 || !approval.destinationPath) {
+    return fail('PROMOTION_APPROVAL_REQUIRED', 'explicit one-shot operator approval bound to item, source, destination, and root is required');
   }
-  transition('PROMOTION_APPROVED', true, 'operator approval present for one item and destination', true);
+  // Bindings verifiable before any filesystem work: item identity and target root.
+  if (approval.itemId !== input.itemId) return fail('PROMOTION_APPROVAL_MISMATCH', 'approval does not bind the promoted item id');
+  if (canonicalPath(approval.targetRoot) !== canonicalPath(input.targetRoot)) return fail('PROMOTION_APPROVAL_MISMATCH', 'approval does not bind the target root');
+  transition('PROMOTION_APPROVED', true, 'operator approval present and bound to one item and destination', true);
 
   if (!isAllowedTargetRoot(input.targetRoot, input.allowCustomTargetRootForTests === true)) return fail('PROMOTION_TARGET_FORBIDDEN', 'promotion target root is not the approved real Movies root');
   if (containsForbiddenPath(input.targetRoot) || containsForbiddenPath(input.sourceFile)) {
@@ -294,9 +315,20 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
   if (sourceSizeBytes <= 0) return fail('PROMOTION_SOURCE_INVALID', 'source file is empty');
   sourceSha256 = hashFile(input.sourceFile);
 
+  // Source bindings: the approval must pin this exact source real path and checksum.
+  const sourceReal = safeRealpath(input.sourceFile);
+  if (!sourceReal || canonicalPath(approval.sourceRealPath) !== canonicalPath(sourceReal)) {
+    return fail('PROMOTION_APPROVAL_MISMATCH', 'approval does not bind the source real path');
+  }
+  if (approval.sourceSha256 !== sourceSha256) return fail('PROMOTION_APPROVAL_MISMATCH', 'approval does not bind the source checksum');
+
   const destinationPath = buildPromotionDestination(input);
   if (!isWithin(destinationPath, input.targetRoot)) return fail('PROMOTION_TARGET_FORBIDDEN', 'destination escapes approved real Movies root');
   if (hasSymlinkComponent(input.targetRoot, destinationPath)) return fail('PROMOTION_TARGET_FORBIDDEN', 'destination path traverses a symlink out of the approved real Movies root');
+  // Destination binding: the approval must pin this exact planned destination path.
+  if (canonicalPath(approval.destinationPath) !== canonicalPath(destinationPath)) {
+    return fail('PROMOTION_APPROVAL_MISMATCH', 'approval does not bind the destination path');
+  }
   destinationNameDigest = digest('phase-230-destination-name', basename(destinationPath));
   const destinationDir = dirname(destinationPath);
   createdDirectory = !existsSync(destinationDir);
@@ -316,23 +348,55 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
     }
     alreadyPresent = true;
   } else {
-    const tempPath = `${destinationPath}.tmp-${process.pid}-${Date.now()}`;
+    const tempPath = `${destinationPath}.tmp-${randomUUID()}`;
     try {
       copyFileSync(input.sourceFile, tempPath);
-      const tempSize = statSync(tempPath).size;
-      const tempHash = hashFile(tempPath);
-      if (tempSize !== sourceSizeBytes || tempHash !== sourceSha256) {
-        rmSync(tempPath, { force: true });
-        return fail('PROMOTION_COPY_MISMATCH', 'temporary promotion copy checksum did not match source');
-      }
-      renameSync(tempPath, destinationPath);
-      createdByRun = true;
     } catch {
       rmSync(tempPath, { force: true });
       return fail('PROMOTION_COPY_MISMATCH', 'promotion copy failed and temporary residue was removed');
     }
-    destinationSizeBytes = statSync(destinationPath).size;
-    destinationSha256 = hashFile(destinationPath);
+    const tempSize = statSync(tempPath).size;
+    const tempHash = hashFile(tempPath);
+    if (tempSize !== sourceSizeBytes || tempHash !== sourceSha256) {
+      rmSync(tempPath, { force: true });
+      return fail('PROMOTION_COPY_MISMATCH', 'temporary promotion copy checksum did not match source');
+    }
+    // Atomic no-clobber publish. linkSync fails with EEXIST if the destination was
+    // created between the existence check above and now, so a promotion can never
+    // overwrite a concurrently-written real-library file.
+    let published = false;
+    try {
+      linkSync(tempPath, destinationPath);
+      published = true;
+    } catch (err) {
+      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') {
+        rmSync(tempPath, { force: true });
+        return fail('PROMOTION_COPY_MISMATCH', 'atomic promotion publish failed and temporary residue was removed');
+      }
+    }
+    rmSync(tempPath, { force: true });
+    if (published) {
+      createdByRun = true;
+      destinationSizeBytes = statSync(destinationPath).size;
+      destinationSha256 = hashFile(destinationPath);
+    } else {
+      // A concurrent writer won the race: treat exactly like a pre-existing destination,
+      // never a rewrite. Same checksum is an already-present no-op; different is a collision.
+      let existingSize: number;
+      let existingHash: string;
+      try {
+        existingSize = statSync(destinationPath).size;
+        existingHash = hashFile(destinationPath);
+      } catch {
+        return fail('PROMOTION_DESTINATION_COLLISION', 'destination appeared concurrently and could not be verified');
+      }
+      destinationSizeBytes = existingSize;
+      destinationSha256 = existingHash;
+      if (existingSize !== sourceSizeBytes || existingHash !== sourceSha256) {
+        return fail('PROMOTION_DESTINATION_COLLISION', 'destination appeared concurrently with a different observed checksum');
+      }
+      alreadyPresent = true;
+    }
   }
 
   // Final race-resistant containment on the materialized file: reject a symlinked
@@ -348,19 +412,20 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
   afterPromotionDigest = treeDigest(input.targetRoot);
   transition('PROMOTED', true, 'destination file exists with matching observed size and sha256', true);
 
-  if (input.awaitVisibility) {
-    let visible: { visible: boolean; jellyfin?: RealLibraryPromotionReport['jellyfin'] };
-    try {
-      visible = await awaitVisible(input, destinationPath);
-    } catch {
-      return fail('PROMOTION_VISIBILITY_CHECK_FAILED', 'Jellyfin read-only visibility check failed before a verdict was observed');
-    }
-    if (!visible.visible) return fail('PROMOTION_REAL_LIBRARY_VISIBILITY_TIMEOUT', 'Jellyfin read-only query did not observe promoted item in real Movies library');
-    jellyfin = visible.jellyfin;
-    transition('VISIBLE_IN_REAL_LIBRARY', true, 'Jellyfin read-only query observed promoted item in real Movies library', true);
-  } else {
-    transition('VISIBLE_IN_REAL_LIBRARY', true, 'promotion visibility accepted by file-state proof only', true);
+  // Observed read-only Jellyfin state is mandatory for real-library promotion success:
+  // a file-on-disk proof alone can never reach VISIBLE_IN_REAL_LIBRARY.
+  if (!input.visibilityClient) {
+    return fail('PROMOTION_VISIBILITY_REQUIRED', 'real-library promotion success requires observed read-only Jellyfin visibility by exact path');
   }
+  let visible: { visible: boolean; jellyfin?: RealLibraryPromotionReport['jellyfin'] };
+  try {
+    visible = await awaitVisible(input, destinationPath);
+  } catch {
+    return fail('PROMOTION_VISIBILITY_CHECK_FAILED', 'Jellyfin read-only visibility check failed before a verdict was observed');
+  }
+  if (!visible.visible) return fail('PROMOTION_REAL_LIBRARY_VISIBILITY_TIMEOUT', 'Jellyfin read-only query did not observe promoted item in real Movies library');
+  jellyfin = visible.jellyfin;
+  transition('VISIBLE_IN_REAL_LIBRARY', true, 'Jellyfin read-only query observed promoted item in real Movies library', true);
 
   if (input.withdrawAfter) {
     if (!createdByRun) {
@@ -372,16 +437,14 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
     afterWithdrawalDigest = treeDigest(input.targetRoot);
     returnedToBefore = afterWithdrawalDigest === beforeDigest;
     if (!returnedToBefore) return fail('PROMOTION_WITHDRAWAL_FAILED', 'real Movies subtree digest did not return to prior state');
-    if (input.awaitVisibility) {
-      let absent: { absent: boolean };
-      try {
-        absent = await awaitAbsent(input, destinationPath);
-      } catch {
-        return fail('PROMOTION_VISIBILITY_CHECK_FAILED', 'Jellyfin read-only absence check failed before a verdict was observed');
-      }
-      jellyfin = { ...(jellyfin ?? { awaited: true, visible: false, polls: 0 }), absentAfterWithdrawal: absent.absent };
-      if (!absent.absent) return fail('PROMOTION_WITHDRAWAL_FAILED', 'Jellyfin read-only query still observed withdrawn item');
+    let absent: { absent: boolean };
+    try {
+      absent = await awaitAbsent(input, destinationPath);
+    } catch {
+      return fail('PROMOTION_VISIBILITY_CHECK_FAILED', 'Jellyfin read-only absence check failed before a verdict was observed');
     }
+    jellyfin = { ...(jellyfin ?? { awaited: true, visible: false, polls: 0 }), absentAfterWithdrawal: absent.absent };
+    if (!absent.absent) return fail('PROMOTION_WITHDRAWAL_FAILED', 'Jellyfin read-only query still observed withdrawn item');
     transition('PROMOTION_WITHDRAWN', true, 'withdrawal removed only the promoted file and restored prior subtree digest', true);
   }
 
@@ -398,14 +461,16 @@ async function awaitVisible(input: RealLibraryPromotionInput, destinationPath: s
       ...(input.year !== undefined ? { year: input.year } : {}),
       destinationPath,
     });
-    if (result.visible) {
+    // Accept a visibility observation only when it is by exact path. A client that
+    // reports visible without a 'path' basis (e.g. a title match) is not evidence.
+    if (result.visible && result.matchBasis === 'path') {
       return {
         visible: true,
         jellyfin: {
           awaited: true,
           visible: true,
           ...(result.itemId ? { itemDigest: digest('phase-230-jellyfin-item', result.itemId) } : {}),
-          ...(result.matchBasis ? { matchBasis: result.matchBasis } : {}),
+          matchBasis: 'path',
           polls: poll,
         },
       };
@@ -425,7 +490,8 @@ async function awaitAbsent(input: RealLibraryPromotionInput, destinationPath: st
       ...(input.year !== undefined ? { year: input.year } : {}),
       destinationPath,
     });
-    if (!result.visible) return { absent: true };
+    // Absent unless the exact path is still observed; a non-path "visible" is not the item.
+    if (!(result.visible && result.matchBasis === 'path')) return { absent: true };
     if (poll < maxPolls && pollMs > 0) await new Promise((resolve) => setTimeout(resolve, pollMs));
   }
   return { absent: false };
@@ -443,7 +509,7 @@ function withdrawPromotedFile(destinationPath: string, expectedSha256: string | 
     // Only remove the movie directory if this run created it and it is now empty;
     // never delete a real-library directory that pre-existed the promotion or that
     // resolves (via symlink) outside the approved root.
-    if (createdDirectory && isWithin(dir, targetRoot) && normalizePath(dir) !== normalizePath(targetRoot) && !isSymlink(dir) && resolvesWithin(dir, targetRoot) && readdirSync(dir).length === 0) rmdirSync(dir);
+    if (createdDirectory && isWithin(dir, targetRoot) && canonicalPath(dir) !== canonicalPath(targetRoot) && !isSymlink(dir) && resolvesWithin(dir, targetRoot) && readdirSync(dir).length === 0) rmdirSync(dir);
   } catch {
     return { ok: false, code: 'PROMOTION_WITHDRAWAL_FAILED', evidence: 'promoted file removed but empty directory cleanup failed' };
   }
@@ -451,7 +517,9 @@ function withdrawPromotedFile(destinationPath: string, expectedSha256: string | 
 }
 
 function isAllowedTargetRoot(path: string, allowCustomTargetRootForTests: boolean): boolean {
-  return allowCustomTargetRootForTests || normalizePath(path) === normalizePath(DEFAULT_REAL_MOVIES_ROOT);
+  // Case-sensitive: Linux paths are case-sensitive, so /mnt/user/media/movies is NOT
+  // the approved /mnt/user/media/Movies root.
+  return allowCustomTargetRootForTests || canonicalPath(path) === canonicalPath(DEFAULT_REAL_MOVIES_ROOT);
 }
 
 function isWithin(path: string, root: string): boolean {
@@ -554,6 +622,15 @@ function treeDigest(root: string): string {
   return digest('phase-230-tree', entries.join('\n'));
 }
 
+// Case-PRESERVING canonical form for path EQUALITY (target root, approval bindings,
+// visibility match, directory identity). Must not lowercase: Linux paths are
+// case-sensitive and lowercasing can false-match distinct paths.
+function canonicalPath(path: string): string {
+  return path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/(.)\/$/, '$1');
+}
+
+// Case-INSENSITIVE form, used ONLY for the Gelato/AIO denylist substring scan where a
+// broader (case-folded) match is intentionally safe.
 function normalizePath(path: string): string {
   return path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/\/$/, '').toLowerCase();
 }

@@ -1,10 +1,12 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   buildPromotionDestination,
   realLibraryPathMatch,
   runRealLibraryPromotion,
+  type RealLibraryPromotionApproval,
   type RealLibraryVisibilityClient,
 } from '../src/ops/real-library-promotion.js';
 
@@ -38,6 +40,38 @@ function sourceInTestLibrary(root: string, name = 'source.mp4', body: string | B
   return { source, testRoot };
 }
 
+function sha256File(path: string): string {
+  return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+// A one-shot approval bound to the exact item, source real path/checksum, destination, and root.
+function boundApproval(opts: { itemId: string; targetRoot: string; source: string; title: string; year?: number; approvalId?: string }): RealLibraryPromotionApproval {
+  const destinationPath = buildPromotionDestination({
+    title: opts.title,
+    ...(opts.year !== undefined ? { year: opts.year } : {}),
+    sourceFile: opts.source,
+    targetRoot: opts.targetRoot,
+  });
+  return {
+    approved: true,
+    approvalId: opts.approvalId ?? 'approval',
+    itemId: opts.itemId,
+    targetRoot: opts.targetRoot,
+    sourceRealPath: realpathSync(opts.source),
+    sourceSha256: sha256File(opts.source),
+    destinationPath,
+  };
+}
+
+// Read-only observer that reports visible-by-path exactly while the promoted file is on disk.
+const fileStateClient: RealLibraryVisibilityClient = {
+  async findVisibleItem({ destinationPath }) {
+    return existsSync(destinationPath)
+      ? { visible: true, itemId: 'jellyfin-real-item', matchBasis: 'path' }
+      : { visible: false };
+  },
+};
+
 const now = (() => {
   let i = 0;
   return () => new Date(Date.UTC(2026, 6, 15, 1, 0, i++));
@@ -57,10 +91,71 @@ await test('refuses without explicit operator approval', async () => {
       testLibraryRoot: testRoot,
       targetRoot: '/mnt/user/media/Movies',
       approval: { approved: false, approvalId: 'approval-1' },
+      visibilityClient: fileStateClient,
       now,
     });
     assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'approval missing fails');
     assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_APPROVAL_REQUIRED'), 'approval failure code');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('refuses an approval not bound to this item/source/destination', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    const wrongItem: RealLibraryPromotionApproval = {
+      ...boundApproval({ itemId: 'ffffffff-ffff-4fff-8fff-ffffffffffff', targetRoot, source, title: 'Bind Proof', year: 2026 }),
+      // approval attests a DIFFERENT item than the one being promoted below.
+    };
+    const report = await runRealLibraryPromotion({
+      itemId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      title: 'Bind Proof',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval: wrongItem,
+      allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
+      now,
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'unbound approval fails closed');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_APPROVAL_MISMATCH'), 'approval mismatch code');
+    const dest = buildPromotionDestination({ title: 'Bind Proof', year: 2026, sourceFile: source, targetRoot });
+    assert(!existsSync(dest), 'nothing is promoted under an unbound approval');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('refuses an approval whose bound source checksum does not match', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    const tampered: RealLibraryPromotionApproval = {
+      ...boundApproval({ itemId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd', targetRoot, source, title: 'Checksum Proof', year: 2026 }),
+      sourceSha256: 'deadbeef'.repeat(8), // attests a checksum the source does not have
+    };
+    const report = await runRealLibraryPromotion({
+      itemId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      title: 'Checksum Proof',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval: tampered,
+      allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
+      now,
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'checksum-unbound approval fails closed');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_APPROVAL_MISMATCH'), 'approval mismatch code');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -76,7 +171,8 @@ await test('refuses Gelato/AIO or unapproved target roots', async () => {
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot: '/mnt/user/media/Gelato',
-      approval: { approved: true, approvalId: 'approval-2' },
+      approval: boundApproval({ itemId: '22222222-2222-4222-8222-222222222222', targetRoot: '/mnt/user/media/Gelato', source, title: 'Promotion Proof' }),
+      visibilityClient: fileStateClient,
       now,
     });
     assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_TARGET_FORBIDDEN'), 'target forbidden');
@@ -101,8 +197,9 @@ await test('refuses to overwrite a different real-library file', async () => {
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot,
-      approval: { approved: true, approvalId: 'approval-3' },
+      approval: boundApproval({ itemId: '33333333-3333-4333-8333-333333333333', targetRoot, source, title: 'Collision Proof', year: 2026 }),
       allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
       now,
     });
     assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_DESTINATION_COLLISION'), 'collision failure');
@@ -113,21 +210,12 @@ await test('refuses to overwrite a different real-library file', async () => {
   }
 });
 
-await test('promotes, verifies visibility, withdraws, and restores prior tree digest', async () => {
+await test('promotes, verifies observed visibility, withdraws, and restores prior tree digest', async () => {
   const root = workspace();
   const targetRoot = join(root, 'Movies');
   try {
     const { source, testRoot } = sourceInTestLibrary(root);
     mkdirSync(targetRoot, { recursive: true });
-    let calls = 0;
-    const client: RealLibraryVisibilityClient = {
-      async findVisibleItem() {
-        calls += 1;
-        return calls < 2
-          ? { visible: true, itemId: 'jellyfin-real-item', matchBasis: 'path' }
-          : { visible: false };
-      },
-    };
     const report = await runRealLibraryPromotion({
       itemId: '44444444-4444-4444-8444-444444444444',
       title: 'Promotion Proof',
@@ -135,10 +223,9 @@ await test('promotes, verifies visibility, withdraws, and restores prior tree di
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot,
-      approval: { approved: true, approvalId: 'approval-4' },
+      approval: boundApproval({ itemId: '44444444-4444-4444-8444-444444444444', targetRoot, source, title: 'Promotion Proof', year: 2026 }),
       allowCustomTargetRootForTests: true,
-      visibilityClient: client,
-      awaitVisibility: true,
+      visibilityClient: fileStateClient,
       visibilityPolls: 2,
       visibilityPollMs: 0,
       withdrawAfter: true,
@@ -146,10 +233,67 @@ await test('promotes, verifies visibility, withdraws, and restores prior tree di
     });
     assert(report.ok, 'promotion withdrawal proof ok');
     assertEq(report.status, 'REAL_LIBRARY_PROMOTION_WITHDRAWN', 'withdrawn status');
+    assertEq(report.jellyfin?.matchBasis, 'path', 'visibility observed by exact path');
     assert(report.realLibrary.returnedToBefore, 'tree returned to before digest');
     assert(report.jellyfin?.absentAfterWithdrawal, 'Jellyfin absence observed after withdrawal');
     const dest = buildPromotionDestination({ title: 'Promotion Proof', year: 2026, sourceFile: source, targetRoot });
     assert(!existsSync(dest), 'promoted file withdrawn');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('requires observed Jellyfin visibility: no client cannot reach real-library success', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    const report = await runRealLibraryPromotion({
+      itemId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      title: 'Visibility Required',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval: boundApproval({ itemId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee', targetRoot, source, title: 'Visibility Required', year: 2026 }),
+      allowCustomTargetRootForTests: true,
+      now, // no visibilityClient
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'file proof alone is not success');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_VISIBILITY_REQUIRED'), 'visibility-required code');
+    assert(report.lifecycle.currentState !== 'VISIBLE_IN_REAL_LIBRARY', 'never marks visible from file proof');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('visibility that is not by exact path is not accepted', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    // Reports visible but never with a 'path' basis: must be treated as no evidence.
+    const nonPathClient: RealLibraryVisibilityClient = {
+      async findVisibleItem() { return { visible: true, itemId: 'title-only' }; },
+    };
+    const report = await runRealLibraryPromotion({
+      itemId: '00000000-0000-4000-8000-000000000000',
+      title: 'Basis Proof',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval: boundApproval({ itemId: '00000000-0000-4000-8000-000000000000', targetRoot, source, title: 'Basis Proof', year: 2026 }),
+      allowCustomTargetRootForTests: true,
+      visibilityClient: nonPathClient,
+      visibilityPolls: 1,
+      visibilityPollMs: 0,
+      now,
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'non-path visibility fails closed');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_REAL_LIBRARY_VISIBILITY_TIMEOUT'), 'visibility timeout code');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -170,13 +314,51 @@ await test('same-checksum existing destination is an already-present no-op', asy
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot,
-      approval: { approved: true, approvalId: 'approval-5' },
+      approval: boundApproval({ itemId: '55555555-5555-4555-8555-555555555555', targetRoot, source, title: 'Noop Proof' }),
       allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
       now,
     });
     assert(report.ok, 'same-checksum promotion ok');
     assert(report.file.alreadyPresent, 'already present no-op');
     rmSync(dirname(dest), { recursive: true, force: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('atomic no-clobber: concurrent promotions never overwrite or corrupt the destination', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    const approval = boundApproval({ itemId: '99999999-9999-4999-8999-999999999999', targetRoot, source, title: 'Race Proof', year: 2026 });
+    const run = () => runRealLibraryPromotion({
+      itemId: '99999999-9999-4999-8999-999999999999',
+      title: 'Race Proof',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval,
+      allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
+      visibilityPolls: 1,
+      visibilityPollMs: 0,
+      now,
+    });
+    const reports = await Promise.all(Array.from({ length: 8 }, run));
+    for (const r of reports) {
+      assert(r.status !== 'REAL_LIBRARY_PROMOTION_FAILED', 'no concurrent run fails');
+      assert(r.lifecycle.transitions.every((t) => t.failureCode !== 'PROMOTION_DESTINATION_COLLISION'), 'no false collision from the race');
+    }
+    // Exactly one writer creates the file; the rest observe an already-present no-op.
+    const creators = reports.filter((r) => !r.file.alreadyPresent).length;
+    assert(creators >= 1, 'at least one writer created the destination');
+    const dest = buildPromotionDestination({ title: 'Race Proof', year: 2026, sourceFile: source, targetRoot });
+    assert(existsSync(dest), 'destination exists after the race');
+    assertEq(sha256File(dest), sha256File(source), 'destination content is exactly the source (no clobber/corruption)');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -198,8 +380,9 @@ await test('refuses to withdraw a pre-existing real-library file (no data loss)'
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot,
-      approval: { approved: true, approvalId: 'approval-6' },
+      approval: boundApproval({ itemId: '66666666-6666-4666-8666-666666666666', targetRoot, source, title: 'Pre Existing Real File', year: 2026 }),
       allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
       withdrawAfter: true,
       now,
     });
@@ -230,8 +413,9 @@ await test('withdrawal keeps a pre-existing destination directory and its unrela
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot,
-      approval: { approved: true, approvalId: 'approval-7' },
+      approval: boundApproval({ itemId: '77777777-7777-4777-8777-777777777777', targetRoot, source, title: 'Shared Dir Proof', year: 2026 }),
       allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
       withdrawAfter: true,
       now,
     });
@@ -270,8 +454,9 @@ await test('refuses a symlinked destination directory that escapes the approved 
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot,
-      approval: { approved: true, approvalId: 'approval-8' },
+      approval: boundApproval({ itemId: '88888888-8888-4888-8888-888888888888', targetRoot, source, title: 'Symlink Escape', year: 2026 }),
       allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
       now,
     });
     assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'symlinked destination component is refused');
@@ -282,12 +467,13 @@ await test('refuses a symlinked destination directory that escapes the approved 
   }
 });
 
-await test('exact-path matcher rejects the same-title test-library twin and other items', () => {
+await test('exact-path matcher is case-sensitive and rejects the same-title test-library twin', () => {
   const dest = '/mnt/user/media/Movies/Promotion Proof (2026)/Promotion Proof (2026).mp4';
-  // Exact promoted path (with trailing-slash / separator normalization) matches.
   assert(realLibraryPathMatch(dest, dest), 'identical path matches');
   assert(realLibraryPathMatch('/mnt/user/media/Movies//Promotion Proof (2026)/Promotion Proof (2026).mp4', dest), 'collapsed separators match');
   assert(realLibraryPathMatch('\\mnt\\user\\media\\Movies\\Promotion Proof (2026)\\Promotion Proof (2026).mp4', dest), 'backslash separators match');
+  // Case-sensitive: a lowercase Movies is a different Linux path and must NOT match.
+  assert(!realLibraryPathMatch('/mnt/user/media/movies/Promotion Proof (2026)/Promotion Proof (2026).mp4', dest), 'case difference must not match');
   // The isolated test-library twin shares the title/tail but is NOT the promoted path.
   assert(!realLibraryPathMatch('/mnt/user/media/catalog-authority-test-library/Movies/Promotion Proof (2026)/Promotion Proof (2026).mp4', dest), 'test-library twin must not match');
   // A different real-library movie must not match.
@@ -311,10 +497,9 @@ await test('visibility client exception yields a redaction-safe digested failure
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot,
-      approval: { approved: true, approvalId: 'approval-9' },
+      approval: boundApproval({ itemId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', targetRoot, source, title: 'Promotion Proof', year: 2026 }),
       allowCustomTargetRootForTests: true,
       visibilityClient: client,
-      awaitVisibility: true,
       visibilityPolls: 1,
       visibilityPollMs: 0,
       now,
@@ -324,7 +509,6 @@ await test('visibility client exception yields a redaction-safe digested failure
     const serialized = JSON.stringify(report);
     assert(!serialized.includes('SECRET-should-not-leak'), 'raw visibility error text must not leak into evidence');
     assert(!serialized.includes('192.168.1.31'), 'raw endpoint must not leak into evidence');
-    // The promoted file must be cleaned or left inertly; either way, nothing escaped the root.
     rmSync(targetRoot, { recursive: true, force: true });
   } finally {
     rmSync(root, { recursive: true, force: true });
@@ -353,8 +537,9 @@ await test('refuses a symlinked target root that escapes to an outside directory
       sourceFile: source,
       testLibraryRoot: testRoot,
       targetRoot: realTargetRoot,
-      approval: { approved: true, approvalId: 'approval-10' },
+      approval: boundApproval({ itemId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb', targetRoot: realTargetRoot, source, title: 'Root Escape', year: 2026 }),
       allowCustomTargetRootForTests: true,
+      visibilityClient: fileStateClient,
       now,
     });
     assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'symlinked target root is refused');

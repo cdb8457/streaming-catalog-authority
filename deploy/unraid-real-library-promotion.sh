@@ -23,6 +23,11 @@ ITEM_ID="${CATALOG_AUTHORITY_PROMOTION_ITEM_ID:-}"
 TITLE="${CATALOG_AUTHORITY_PROMOTION_TITLE:-Catalog Authority E2E Probe}"
 YEAR="${CATALOG_AUTHORITY_PROMOTION_YEAR:-2026}"
 APPROVAL_ID="${CATALOG_AUTHORITY_PROMOTION_APPROVAL_ID:-phase-230-single-live-promotion}"
+# Operator-authored approval attestation. It MUST be produced by the approving authority
+# and bind this exact run: itemId, targetRoot, sourceRealPath, sourceSha256, destinationPath.
+# The launcher does not derive it (that would defeat the binding); it only passes it through.
+APPROVAL_FILE="${CATALOG_AUTHORITY_PROMOTION_APPROVAL_FILE:-}"
+APPROVAL_MOUNT="/run/approval/real-library-promotion.json"
 VISIBILITY_POLLS="${CATALOG_AUTHORITY_PROMOTION_VISIBILITY_POLLS:-24}"
 VISIBILITY_POLL_MS="${CATALOG_AUTHORITY_PROMOTION_VISIBILITY_POLL_MS:-5000}"
 
@@ -66,6 +71,12 @@ if [ ! -f "$SECRET_FILE" ] || [ ! -s "$SECRET_FILE" ]; then
   exit 2
 fi
 
+if [ -z "$APPROVAL_FILE" ] || [ ! -f "$APPROVAL_FILE" ] || [ ! -s "$APPROVAL_FILE" ]; then
+  echo "operator approval file is required and must exist: set CATALOG_AUTHORITY_PROMOTION_APPROVAL_FILE" >&2
+  echo "it must bind itemId, targetRoot, sourceRealPath, sourceSha256, and destinationPath for this exact run" >&2
+  exit 2
+fi
+
 if [ -z "$ITEM_ID" ]; then
   ITEM_ID="$(node -e "console.log(require('crypto').randomUUID())")"
 fi
@@ -84,11 +95,11 @@ docker run --rm \
   --volume "$SOURCE_FILE:$SOURCE_FILE:ro" \
   --volume "$HOST_TEST_DIR:$HOST_TEST_DIR:ro" \
   --volume "$REAL_MOVIES_ROOT:$REAL_MOVIES_ROOT" \
+  --volume "$APPROVAL_FILE:$APPROVAL_MOUNT:ro" \
   --env PROMOTION_APPROVED=true \
   --env JELLYFIN_ENABLE_NETWORK=true \
   --env "JELLYFIN_BASE_URL=$BASE_URL" \
   --env "JELLYFIN_API_KEY_FILE=$SECRET_MOUNT" \
-  --env JELLYFIN_TRIGGER_LIBRARY_SCAN=true \
   --env JELLYFIN_ALLOW_LIVE_PUBLISH=false \
   "$OPS_IMAGE" \
   npm run --silent ops:real-library-promotion -- \
@@ -100,7 +111,7 @@ docker run --rm \
     --test-library-root "$HOST_TEST_DIR" \
     --target-root "$REAL_MOVIES_ROOT" \
     --approval-id "$APPROVAL_ID" \
-    --await-jellyfin \
+    --approval-file "$APPROVAL_MOUNT" \
     --withdraw-after \
     --visibility-polls "$VISIBILITY_POLLS" \
     --visibility-poll-ms "$VISIBILITY_POLL_MS"

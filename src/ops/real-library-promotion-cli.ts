@@ -11,10 +11,25 @@ import {
 
 function usage(): string {
   return [
-    'usage: ops:real-library-promotion --out <evidence.json> --item-id <uuid> --title <title> --source-file <path> --approval-id <id> [--year <year>] [--test-library-root <path>] [--target-root <path>] [--await-jellyfin] [--withdraw-after]',
+    'usage: ops:real-library-promotion --out <evidence.json> --item-id <uuid> --title <title> --source-file <path> --approval-file <approval.json> [--approval-id <id>] [--year <year>] [--test-library-root <path>] [--target-root <path>] [--withdraw-after]',
     '',
-    'Real-library promotion only: requires PROMOTION_APPROVED=true, targets /mnt/user/media/Movies, no providers, downloads, scraping, playback, Gelato/AIO, or Jellyfin writes.',
+    'Real-library promotion only: requires PROMOTION_APPROVED=true and an approval file that binds itemId, targetRoot, sourceRealPath, sourceSha256, and destinationPath. Read-only observed Jellyfin visibility is mandatory. No providers, downloads, scraping, playback, Gelato/AIO, or Jellyfin writes (no scan/refresh trigger).',
   ].join('\n');
+}
+
+interface ApprovalFile {
+  readonly approvalId?: string;
+  readonly itemId?: string;
+  readonly targetRoot?: string;
+  readonly sourceRealPath?: string;
+  readonly sourceSha256?: string;
+  readonly destinationPath?: string;
+}
+
+function readApprovalFile(path: string): ApprovalFile {
+  const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
+  if (!parsed || typeof parsed !== 'object') throw new Error('approval file must be a JSON object');
+  return parsed as ApprovalFile;
 }
 
 function valueAfter(args: readonly string[], flag: string): string | undefined {
@@ -29,15 +44,14 @@ async function main(): Promise<number> {
   const itemId = valueAfter(args, '--item-id');
   const title = valueAfter(args, '--title');
   const sourceFile = valueAfter(args, '--source-file');
-  const approvalId = valueAfter(args, '--approval-id');
+  const approvalFile = valueAfter(args, '--approval-file');
   const yearRaw = valueAfter(args, '--year');
   const testLibraryRoot = valueAfter(args, '--test-library-root') ?? '/mnt/user/media/catalog-authority-test-library';
   const targetRoot = valueAfter(args, '--target-root') ?? defaultRealMoviesRoot();
-  const awaitJellyfin = args.includes('--await-jellyfin');
   const withdrawAfter = args.includes('--withdraw-after');
   const visibilityPollsRaw = valueAfter(args, '--visibility-polls');
   const visibilityPollMsRaw = valueAfter(args, '--visibility-poll-ms');
-  if (!out || !itemId || !title || !sourceFile || !approvalId) {
+  if (!out || !itemId || !title || !sourceFile || !approvalFile) {
     console.error(usage());
     return 2;
   }
@@ -46,6 +60,8 @@ async function main(): Promise<number> {
     console.error('invalid --year: expected a non-negative integer');
     return 2;
   }
+  const approvalRecord = readApprovalFile(approvalFile);
+  const approvalId = valueAfter(args, '--approval-id') ?? approvalRecord.approvalId;
   const visibilityPolls = visibilityPollsRaw === undefined ? undefined : Number(visibilityPollsRaw);
   const visibilityPollMs = visibilityPollMsRaw === undefined ? undefined : Number(visibilityPollMsRaw);
   const report = await runRealLibraryPromotion({
@@ -57,13 +73,18 @@ async function main(): Promise<number> {
     targetRoot,
     approval: {
       approved: process.env.PROMOTION_APPROVED === 'true',
-      approvalId,
+      ...(approvalId !== undefined ? { approvalId } : {}),
+      ...(approvalRecord.itemId !== undefined ? { itemId: approvalRecord.itemId } : {}),
+      ...(approvalRecord.targetRoot !== undefined ? { targetRoot: approvalRecord.targetRoot } : {}),
+      ...(approvalRecord.sourceRealPath !== undefined ? { sourceRealPath: approvalRecord.sourceRealPath } : {}),
+      ...(approvalRecord.sourceSha256 !== undefined ? { sourceSha256: approvalRecord.sourceSha256 } : {}),
+      ...(approvalRecord.destinationPath !== undefined ? { destinationPath: approvalRecord.destinationPath } : {}),
     },
-    awaitVisibility: awaitJellyfin,
     withdrawAfter,
     ...(visibilityPolls !== undefined ? { visibilityPolls } : {}),
     ...(visibilityPollMs !== undefined ? { visibilityPollMs } : {}),
-    ...(awaitJellyfin ? { visibilityClient: buildJellyfinVisibilityClient() } : {}),
+    // Read-only observed Jellyfin visibility is mandatory for real-library promotion.
+    visibilityClient: buildJellyfinVisibilityClient(),
   });
   const body = `${JSON.stringify(report, null, 2)}\n`;
   mkdirSync(dirname(out), { recursive: true });
@@ -92,23 +113,18 @@ function buildJellyfinVisibilityClient(): RealLibraryVisibilityClient {
   const keyFile = env.JELLYFIN_API_KEY_FILE;
   if (!baseUrl || !keyFile) throw new Error('JELLYFIN_BASE_URL and JELLYFIN_API_KEY_FILE are required');
   const apiKey = readFileSync(keyFile, 'utf8').trim();
-  const triggerLibraryScan = env.JELLYFIN_TRIGGER_LIBRARY_SCAN === 'true';
-  return new JellyfinPathVisibilityClient(baseUrl, apiKey, triggerLibraryScan);
+  return new JellyfinPathVisibilityClient(baseUrl, apiKey);
 }
 
+// Strictly read-only: this client issues GET /Items only. It never triggers a library
+// scan/refresh or any other Jellyfin write — promotion must not mutate the media server.
 class JellyfinPathVisibilityClient implements RealLibraryVisibilityClient {
   private readonly baseUrl: string;
-  private scanCount = 0;
-  constructor(baseUrl: string, private readonly apiKey: string, private readonly triggerLibraryScan: boolean) {
+  constructor(baseUrl: string, private readonly apiKey: string) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
   async findVisibleItem(input: RealLibraryVisibilityInput): Promise<RealLibraryVisibilityResult> {
-    if (this.triggerLibraryScan) {
-      this.scanCount += 1;
-      const res = await fetch(`${this.baseUrl}/Library/Refresh`, { method: 'POST', headers: { 'X-Emby-Token': this.apiKey, Accept: 'application/json' } });
-      if (!res.ok && res.status !== 204) throw new Error(`jellyfin scan trigger HTTP ${res.status}`);
-    }
     for (let start = 0; start < 100_000; start += 500) {
       const url = new URL(`${this.baseUrl}/Items`);
       url.searchParams.set('Recursive', 'true');
