@@ -1,6 +1,8 @@
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { buildPromotionReadinessChecklist, type PromotionReadinessInput } from '../src/ops/promotion-readiness.js';
 import { buildApprovalAttestation } from '../src/ops/promotion-approval.js';
 import { reviewPromotionEvidence } from '../src/ops/promotion-evidence-review.js';
@@ -240,6 +242,77 @@ await test('approval-evidence check is SKIPPED and non-blocking when not supplie
     const m = item(checklist, 'APPROVAL_EVIDENCE_MATCHES_APPROVAL');
     assertEq(m.status, 'SKIPPED', 'skipped when absent');
     assert(!m.required, 'not required when absent');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when the promotion evidence approvalDigest is DELETED', async () => {
+  const root = workspace();
+  try {
+    const bundle = await fullBundle(root);
+    delete (bundle.promotionEvidence as Record<string, unknown>).approvalDigest; // must not silently pass
+    const checklist = buildPromotionReadinessChecklist(bundle);
+    assertEq(checklist.verdict, 'BLOCKED', 'deleted approvalDigest blocks');
+    const m = item(checklist, 'PROMOTION_MATCHES_APPROVAL');
+    assertEq(m.status, 'FAIL', 'promotion match fails');
+    assert(m.mismatches?.includes('APPROVAL_ID'), 'APPROVAL_ID mismatch on deleted approvalDigest');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when the promotion evidence approvalDigest is MALFORMED', async () => {
+  const root = workspace();
+  try {
+    const bundle = await fullBundle(root);
+    (bundle.promotionEvidence as Record<string, unknown>).approvalDigest = 'not-a-sha256';
+    const checklist = buildPromotionReadinessChecklist(bundle);
+    assertEq(checklist.verdict, 'BLOCKED', 'malformed approvalDigest blocks');
+    assert(item(checklist, 'PROMOTION_MATCHES_APPROVAL').mismatches?.includes('APPROVAL_ID'), 'APPROVAL_ID mismatch on malformed approvalDigest');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when the promotion evidence approvalDigest is a wrong-but-valid sha256', async () => {
+  const root = workspace();
+  try {
+    const bundle = await fullBundle(root);
+    (bundle.promotionEvidence as Record<string, unknown>).approvalDigest = 'd'.repeat(64);
+    const checklist = buildPromotionReadinessChecklist(bundle);
+    assertEq(checklist.verdict, 'BLOCKED', 'wrong approvalDigest blocks');
+    assert(item(checklist, 'PROMOTION_MATCHES_APPROVAL').mismatches?.includes('APPROVAL_ID'), 'APPROVAL_ID mismatch on wrong approvalDigest');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('CLI writes the checklist file but never echoes the raw --out path or identity to stdout', async () => {
+  const root = workspace();
+  try {
+    const bundle = await fullBundle(root);
+    const artifacts = join(root, 'artifacts');
+    mkdirSync(artifacts, { recursive: true });
+    const approvalPath = join(artifacts, 'approval.json');
+    const promoPath = join(artifacts, 'promotion-evidence.json');
+    const reviewPath = join(artifacts, 'review.json');
+    writeFileSync(approvalPath, JSON.stringify(bundle.approval));
+    writeFileSync(promoPath, JSON.stringify(bundle.promotionEvidence));
+    writeFileSync(reviewPath, JSON.stringify(bundle.evidenceReview));
+    // The --out path deliberately embeds forbidden fragments; stdout must not echo them.
+    const outPath = join(root, 'catalog-authority-test-library', 'RAWOUTMARKER-out', 'checklist.json');
+    const cliPath = fileURLToPath(new URL('../src/ops/promotion-readiness-cli.ts', import.meta.url));
+    const projectRoot = fileURLToPath(new URL('..', import.meta.url));
+    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath,
+      '--approval', approvalPath, '--promotion-evidence', promoPath, '--evidence-review', reviewPath, '--out', outPath],
+      { cwd: projectRoot, encoding: 'utf8' });
+    assert(res.error === undefined, `spawn ok: ${res.error?.message ?? ''}`);
+    assertEq(res.status, 0, `CLI exits READY (stderr: ${res.stderr ?? ''})`);
+    assert(existsSync(outPath), 'checklist file was written');
+    const stdout = res.stdout ?? '';
+    const parsed = JSON.parse(stdout) as Record<string, unknown>;
+    assertEq(parsed.redactionSafe, true, 'stdout flagged redaction-safe');
+    assertEq(parsed.outputWritten, true, 'stdout reports outputWritten boolean');
+    assert(!('outputFile' in parsed), 'stdout does not include an outputFile key');
+    assert(!stdout.includes('RAWOUTMARKER'), 'stdout does not echo the out-path marker');
+    assert(!stdout.includes('catalog-authority-test-library'), 'stdout has no test-library fragment');
+    assert(!stdout.includes('/mnt/'), 'stdout has no /mnt path fragment');
+    assert(!stdout.includes(outPath.replace(/\\/g, '/')) && !stdout.includes(outPath), 'stdout does not echo the raw --out path');
+    const written = JSON.parse(readFileSync(outPath, 'utf8')) as Record<string, unknown>;
+    assertEq(written.report, 'phase-230-promotion-readiness-checklist', 'the written file is the redaction-safe checklist');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

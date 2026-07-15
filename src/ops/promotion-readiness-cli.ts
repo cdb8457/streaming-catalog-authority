@@ -67,7 +67,8 @@ function main(): number {
     blockers: checklist.blockers,
     items: checklist.items.map((i) => ({ id: i.id, status: i.status, ...(i.mismatches ? { mismatches: i.mismatches } : {}) })),
     checklistDigest: checklist.checklistDigest,
-    ...(out ? { outputFile: out } : {}),
+    // Never echo the raw --out path (it may embed identity); report only that a file was written.
+    ...(out ? { outputWritten: true } : {}),
   }, null, 2));
   return checklist.verdict === 'READY' ? 0 : 1;
 }

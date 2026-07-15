@@ -197,7 +197,9 @@ function approvalEvidenceMismatches(approval: Record<string, unknown>, evidence:
 function promotionMismatches(approval: Record<string, unknown>, evidence: Record<string, unknown>, targetRootEnum: string): string[] {
   const m: string[] = [];
   if (evidence.itemDigest !== digest('phase-230-item', approval.itemId as string)) m.push('ITEM');
-  if (isNonEmpty(evidence.approvalDigest) && evidence.approvalDigest !== digest('phase-230-approval', approval.approvalId as string)) m.push('APPROVAL_ID');
+  // approvalDigest must be present, sha256-shaped, and equal: a missing or malformed value is a
+  // mismatch, never a silent pass (a real promotion always carries the approval digest).
+  if (!isSha256(evidence.approvalDigest) || evidence.approvalDigest !== digest('phase-230-approval', approval.approvalId as string)) m.push('APPROVAL_ID');
   const file = asObject(evidence.file);
   if (file.sourceSha256 !== approval.sourceSha256) m.push('SOURCE');
   if (file.destinationNameDigest !== digest('phase-230-destination-name', basename(approval.destinationPath as string))) m.push('DESTINATION');
