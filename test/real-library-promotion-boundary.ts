@@ -84,7 +84,7 @@ test('Phase 229 is wired into README and package scripts', () => {
   assert(readme.includes('Phase 229 adds `docs/PHASE_229_REAL_LIBRARY_PROMOTION_BOUNDARY.md`'), 'README ledger entry');
   assert(pkg.scripts['test:real-library-promotion-boundary'] === 'tsx test/real-library-promotion-boundary.ts', 'phase test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/real-library-promotion-boundary.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'aggregate test runs promotion boundary before deploy guard',
   );
 });
