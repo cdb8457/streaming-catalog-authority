@@ -1640,6 +1640,11 @@ the guarded Jellyfin test-library preflight. The accepted Unraid evidence record
 `LOCAL_MEDIA_VISIBLE_IN_JELLYFIN` with path-based Jellyfin visibility on poll `2`, while keeping
 providers, downloads, scraping, playback, Jellyfin collection writes, and real-library paths out of
 scope.
+Phase 227 adds `docs/PHASE_227_REPEATABILITY_FAILURE_INJECTION.md` and accepts the live
+repeatability/failure-injection evidence. It records two fresh successful imports, one idempotent
+duplicate retry, one corrupt-source failure with no residue, and one Jellyfin-unreachable failure
+that retained a checksum-matched import and became visible after a healthy scan. Phase 228 is
+unblocked for the working-foundation acceptance record.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

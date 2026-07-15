@@ -10966,6 +10966,36 @@ test('Phase 226 local media E2E launcher is isolated and read-only against Jelly
   }
 });
 
+test('Phase 227 repeatability and failure injection evidence is accepted', () => {
+  assert(exists('docs/PHASE_227_REPEATABILITY_FAILURE_INJECTION.md'), 'Phase 227 repeatability doc exists');
+  const doc = read('docs/PHASE_227_REPEATABILITY_FAILURE_INJECTION.md');
+  const readme = read('README.md');
+  for (const required of [
+    'Phase 227: Repeatability + Failure Injection',
+    'PHASE_227_REPEATABILITY_FAILURE_INJECTION_PASS',
+    'f3a935b78a3bc0a84c3697626ece37000b344eccdad4004e08028cd82212cede',
+    'f6ed50ace33d7e57979acf72b8f63cac22eb24081663c82b00780dd300559d77',
+    'abcb80b6b8c33b420eb8015706de28d0fa3ac41db5ce9ef123d3e2af1990c5f0',
+    '937d764dd4f53204a885eac8e86bc22dade1384b96fc79b414e87e5d2b01f7cb',
+    'ca2dae943fb240e8945a06af9dcfdee5ec177a035e758b876b51c9c9cff77591',
+    '22ba43c7f8db7605fa8aa858489e30054b0b48c40edb1985b99545c5d473c2b5',
+    'idempotentNoop:true',
+    'IMPORT_SOURCE_INVALID',
+    'JELLYFIN_SCAN_TIMEOUT',
+    'postFailureRetry.unreachableImportVisibleAfterHealthyScan: true',
+    'postFailureRetry.corruptImportResiduePresent: false',
+    'Phase 228 is unblocked',
+  ]) assert(doc.includes(required), `Phase 227 record preserves ${required}`);
+  assert(readme.includes('Phase 227 adds `docs/PHASE_227_REPEATABILITY_FAILURE_INJECTION.md`'), 'README ledger entry');
+  for (const forbidden of [
+    'provider live mode enabled',
+    'download enabled',
+    'playback enabled',
+    'scraping enabled',
+    'JELLYFIN_WRITE_CAPABLE_LAUNCH_ELIGIBLE',
+  ]) assert(!doc.includes(forbidden), `Phase 227 record excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
