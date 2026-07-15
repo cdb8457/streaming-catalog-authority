@@ -99,17 +99,24 @@ function buildJellyfinVisibilityClient(): LocalMediaVisibilityClient {
   const keyFile = env.JELLYFIN_API_KEY_FILE;
   if (!baseUrl || !keyFile) throw new Error('JELLYFIN_BASE_URL and JELLYFIN_API_KEY_FILE are required');
   const apiKey = readFileSync(keyFile, 'utf8').trim();
-  const client = new JellyfinPathVisibilityClient(baseUrl, apiKey);
+  const triggerLibraryScan = env.JELLYFIN_TRIGGER_LIBRARY_SCAN === 'true';
+  const client = new JellyfinPathVisibilityClient(baseUrl, apiKey, triggerLibraryScan);
   return client;
 }
 
 class JellyfinPathVisibilityClient implements LocalMediaVisibilityClient {
   private readonly baseUrl: string;
-  constructor(baseUrl: string, private readonly apiKey: string) {
+  private scanTriggered = false;
+  constructor(baseUrl: string, private readonly apiKey: string, private readonly triggerLibraryScan: boolean) {
     this.baseUrl = baseUrl.replace(/\/+$/, '');
   }
 
   async findVisibleItem(input: LocalMediaVisibilityInput): Promise<LocalMediaVisibilityResult> {
+    if (this.triggerLibraryScan && !this.scanTriggered) {
+      this.scanTriggered = true;
+      const res = await fetch(`${this.baseUrl}/Library/Refresh`, { method: 'POST', headers: { 'X-Emby-Token': this.apiKey, Accept: 'application/json' } });
+      if (!res.ok && res.status !== 204) throw new Error(`jellyfin scan trigger HTTP ${res.status}`);
+    }
     for (let start = 0; start < 100_000; start += 500) {
       const url = new URL(`${this.baseUrl}/Items`);
       url.searchParams.set('Recursive', 'true');

@@ -81,6 +81,7 @@ docker run --rm \
   --env JELLYFIN_ENABLE_NETWORK=true \
   --env "JELLYFIN_BASE_URL=$BASE_URL" \
   --env "JELLYFIN_API_KEY_FILE=$SECRET_MOUNT" \
+  --env JELLYFIN_TRIGGER_LIBRARY_SCAN=true \
   --env JELLYFIN_ALLOW_LIVE_PUBLISH=false \
   "$OPS_IMAGE" \
   npm run --silent ops:local-media-pipeline -- \

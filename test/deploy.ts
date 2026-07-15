@@ -10927,6 +10927,7 @@ test('Phase 226 local media E2E launcher is isolated and read-only against Jelly
     'docker run --rm',
     '--network "$COMPOSE_NETWORK"',
     'JELLYFIN_ENABLE_NETWORK=true',
+    'JELLYFIN_TRIGGER_LIBRARY_SCAN=true',
     'JELLYFIN_ALLOW_LIVE_PUBLISH=false',
     '/mnt/user/media/catalog-authority-test-library',
     '$SOURCE_FILE:$SOURCE_FILE:ro',
