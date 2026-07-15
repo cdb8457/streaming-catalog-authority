@@ -173,7 +173,10 @@ const FORBIDDEN: RealLibraryPromotionReport['forbidden'] = [
   'raw-destination-path',
   'raw-media-title',
 ];
-const ALLOWED_EXTENSIONS = new Set(['.mkv', '.mp4', '.m4v', '.avi', '.mov', '.webm']);
+// Single source of truth for the media extension allowlist, shared with the offline
+// approval-attestation workflow so its readiness checks match this service exactly.
+export const ALLOWED_MEDIA_EXTENSIONS = ['.mkv', '.mp4', '.m4v', '.avi', '.mov', '.webm'] as const;
+const ALLOWED_EXTENSIONS = new Set<string>(ALLOWED_MEDIA_EXTENSIONS);
 
 export function defaultRealMoviesRoot(): string {
   return DEFAULT_REAL_MOVIES_ROOT;
@@ -624,8 +627,9 @@ function treeDigest(root: string): string {
 
 // Case-PRESERVING canonical form for path EQUALITY (target root, approval bindings,
 // visibility match, directory identity). Must not lowercase: Linux paths are
-// case-sensitive and lowercasing can false-match distinct paths.
-function canonicalPath(path: string): string {
+// case-sensitive and lowercasing can false-match distinct paths. Exported so the
+// offline approval-attestation validator uses identical equality semantics.
+export function canonicalPath(path: string): string {
   return path.replace(/\\/g, '/').replace(/\/+/g, '/').replace(/(.)\/$/, '$1');
 }
 
