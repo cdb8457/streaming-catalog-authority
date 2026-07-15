@@ -71,18 +71,19 @@ export function buildPromotionReadinessChecklist(input: PromotionReadinessInput)
   const itemDigest = approvalWellFormed ? digest('phase-230-item', approval.itemId as string) : undefined;
   const destinationNameDigest = approvalWellFormed ? digest('phase-230-destination-name', basename(approval.destinationPath as string)) : undefined;
 
-  // 2. Optional: approval evidence matches the approval it attests.
+  // 2. Approval evidence is optional to supply, but when supplied it must be consistent:
+  //    a missing or malformed expected digest field is a divergence, not a silent pass.
   if (approvalEvidence === undefined) {
     items.push({ id: 'APPROVAL_EVIDENCE_MATCHES_APPROVAL', required: false, status: 'SKIPPED', detail: 'no approval evidence supplied' });
   } else if (!approvalWellFormed) {
-    items.push({ id: 'APPROVAL_EVIDENCE_MATCHES_APPROVAL', required: false, status: 'FAIL', detail: 'cannot cross-check approval evidence against a malformed approval' });
+    items.push({ id: 'APPROVAL_EVIDENCE_MATCHES_APPROVAL', required: false, status: 'SKIPPED', detail: 'cannot cross-check approval evidence against a malformed approval' });
   } else {
     const m = approvalEvidenceMismatches(approval, approvalEvidence);
     items.push({
       id: 'APPROVAL_EVIDENCE_MATCHES_APPROVAL',
-      required: false,
+      required: true,
       status: m.length === 0 ? 'PASS' : 'FAIL',
-      detail: m.length === 0 ? 'approval evidence digests match the approval binding' : 'approval evidence digests diverge from the approval binding',
+      detail: m.length === 0 ? 'approval evidence digests match the approval binding' : 'approval evidence digests are missing, malformed, or diverge from the approval binding',
       ...(m.length ? { mismatches: m } : {}),
     });
   }
@@ -179,12 +180,17 @@ export function buildPromotionReadinessChecklist(input: PromotionReadinessInput)
 
 function approvalEvidenceMismatches(approval: Record<string, unknown>, evidence: Record<string, unknown>): string[] {
   const m: string[] = [];
-  if (isSha256(evidence.itemDigest) && evidence.itemDigest !== digest('phase-230-item', approval.itemId as string)) m.push('ITEM');
-  if (isSha256(evidence.approvalIdDigest) && evidence.approvalIdDigest !== digest('phase-230-approval', approval.approvalId as string)) m.push('APPROVAL_ID');
-  if (isSha256(evidence.sourceRealPathDigest) && evidence.sourceRealPathDigest !== digest('phase-230-source-real-path', approval.sourceRealPath as string)) m.push('SOURCE_REAL_PATH');
-  if (isSha256(evidence.sourceSha256) && evidence.sourceSha256 !== approval.sourceSha256) m.push('SOURCE_SHA256');
-  if (isSha256(evidence.destinationPathDigest) && evidence.destinationPathDigest !== digest('phase-230-destination-path', approval.destinationPath as string)) m.push('DESTINATION_PATH');
-  if (isSha256(evidence.destinationNameDigest) && evidence.destinationNameDigest !== digest('phase-230-destination-name', basename(approval.destinationPath as string))) m.push('DESTINATION_NAME');
+  // A ready approval evidence must carry every one of these as a valid SHA-256 that matches the
+  // approval binding. Missing or malformed (non-sha256) counts as a mismatch, never a pass.
+  const expect = (actual: unknown, expected: string, code: string): void => {
+    if (!isSha256(actual) || actual !== expected) m.push(code);
+  };
+  expect(evidence.itemDigest, digest('phase-230-item', approval.itemId as string), 'ITEM');
+  expect(evidence.approvalIdDigest, digest('phase-230-approval', approval.approvalId as string), 'APPROVAL_ID');
+  expect(evidence.sourceRealPathDigest, digest('phase-230-source-real-path', approval.sourceRealPath as string), 'SOURCE_REAL_PATH');
+  expect(evidence.sourceSha256, approval.sourceSha256 as string, 'SOURCE_SHA256');
+  expect(evidence.destinationPathDigest, digest('phase-230-destination-path', approval.destinationPath as string), 'DESTINATION_PATH');
+  expect(evidence.destinationNameDigest, digest('phase-230-destination-name', basename(approval.destinationPath as string)), 'DESTINATION_NAME');
   return m;
 }
 

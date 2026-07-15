@@ -27,7 +27,7 @@ ever handling the raw paths.
 | Item | Required | BLOCKED when |
 |------|----------|--------------|
 | `APPROVAL_WELL_FORMED` | yes | approval attestation is missing/malformed binding fields |
-| `APPROVAL_EVIDENCE_MATCHES_APPROVAL` | no (skipped if not supplied) | supplied approval evidence's digests diverge from the approval |
+| `APPROVAL_EVIDENCE_MATCHES_APPROVAL` | when supplied (skipped if not supplied) | supplied approval evidence's expected digests are missing, malformed, or diverge from the approval — a missing/malformed field never silently passes |
 | `PROMOTION_EVIDENCE_PRESENT` | yes | no promotion evidence report supplied |
 | `PROMOTION_MATCHES_APPROVAL` | yes | promotion evidence's item / source sha256 / destination-name / approval / target-root digests do not all match the approval (reported per-field in `mismatches`) |
 | `OBSERVED_JELLYFIN_STATE` | yes | promotion evidence does not prove observed read-only visibility by exact path (`ok`, a VISIBLE/WITHDRAWN status, `jellyfin.awaited/visible/matchBasis==='path'`, and `absentAfterWithdrawal` for a withdrawal) |

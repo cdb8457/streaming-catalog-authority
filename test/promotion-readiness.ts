@@ -192,6 +192,57 @@ await test('emitted checklist never leaks a raw path or title from the inputs', 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('BLOCKED when supplied approval evidence is MISSING an expected digest', async () => {
+  const root = workspace();
+  try {
+    const bundle = await fullBundle(root);
+    delete (bundle.approvalEvidence as Record<string, unknown>).itemDigest; // omitted, must not silently pass
+    const checklist = buildPromotionReadinessChecklist(bundle);
+    assertEq(checklist.verdict, 'BLOCKED', 'missing digest field blocks');
+    const m = item(checklist, 'APPROVAL_EVIDENCE_MATCHES_APPROVAL');
+    assertEq(m.status, 'FAIL', 'approval-evidence match fails');
+    assert(m.required, 'the check is required once approval evidence is supplied');
+    assert(m.mismatches?.includes('ITEM'), 'missing ITEM digest reported');
+    assert(checklist.blockers.includes('APPROVAL_EVIDENCE_MATCHES_APPROVAL'), 'listed as a blocker');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when supplied approval evidence has a MALFORMED expected digest', async () => {
+  const root = workspace();
+  try {
+    const bundle = await fullBundle(root);
+    (bundle.approvalEvidence as Record<string, unknown>).sourceRealPathDigest = 'not-a-sha256';
+    const checklist = buildPromotionReadinessChecklist(bundle);
+    assertEq(checklist.verdict, 'BLOCKED', 'malformed digest field blocks');
+    const m = item(checklist, 'APPROVAL_EVIDENCE_MATCHES_APPROVAL');
+    assertEq(m.status, 'FAIL', 'approval-evidence match fails');
+    assert(m.mismatches?.includes('SOURCE_REAL_PATH'), 'malformed SOURCE_REAL_PATH digest reported');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when supplied approval evidence has a wrong-but-valid digest', async () => {
+  const root = workspace();
+  try {
+    const bundle = await fullBundle(root);
+    (bundle.approvalEvidence as Record<string, unknown>).destinationNameDigest = 'c'.repeat(64);
+    const checklist = buildPromotionReadinessChecklist(bundle);
+    assertEq(checklist.verdict, 'BLOCKED', 'diverging digest blocks');
+    assert(item(checklist, 'APPROVAL_EVIDENCE_MATCHES_APPROVAL').mismatches?.includes('DESTINATION_NAME'), 'DESTINATION_NAME divergence reported');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('approval-evidence check is SKIPPED and non-blocking when not supplied', async () => {
+  const root = workspace();
+  try {
+    const bundle = await fullBundle(root);
+    const checklist = buildPromotionReadinessChecklist({ approval: bundle.approval, promotionEvidence: bundle.promotionEvidence, evidenceReview: bundle.evidenceReview });
+    assertEq(checklist.verdict, 'READY', `still ready without approval evidence (blockers: ${checklist.blockers.join(',')})`);
+    const m = item(checklist, 'APPROVAL_EVIDENCE_MATCHES_APPROVAL');
+    assertEq(m.status, 'SKIPPED', 'skipped when absent');
+    assert(!m.required, 'not required when absent');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('BLOCKED and does not throw on a malformed approval', () => {
   const checklist = buildPromotionReadinessChecklist({ approval: { nope: true } });
   assertEq(checklist.verdict, 'BLOCKED', 'malformed approval blocked');
