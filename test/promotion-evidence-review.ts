@@ -167,6 +167,39 @@ await test('rejects a raw path leaked into a transition evidence string', async 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('rejects a raw path smuggled into file.extension', async () => {
+  const root = workspace();
+  try {
+    const report = await produceEvidence(root, { withdraw: true });
+    (report.file as Record<string, unknown>).extension = '/mnt/user/media/Movies/Secret.mp4';
+    const review = reviewPromotionEvidence(reseal(report));
+    assert(!review.ok, 'rejected');
+    assert(review.problems.includes('RAW_PATH_LEAK_SUSPECTED'), 'raw path leak problem under file.extension');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('rejects a raw path smuggled into a nested extension field', async () => {
+  const root = workspace();
+  try {
+    const report = await produceEvidence(root, { withdraw: true });
+    (report.file as Record<string, unknown>).nested = { extension: 'C:\\secret\\movie.mp4' };
+    const review = reviewPromotionEvidence(reseal(report));
+    assert(!review.ok, 'rejected');
+    assert(review.problems.includes('RAW_PATH_LEAK_SUSPECTED'), 'raw path leak problem under a nested extension');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('still accepts a genuine report whose extension is a safe media enum', async () => {
+  const root = workspace();
+  try {
+    const report = await produceEvidence(root, { withdraw: true });
+    assertEq((report.file as Record<string, unknown>).extension, '.mp4', 'fixture uses a safe extension enum');
+    const review = reviewPromotionEvidence(report);
+    assert(review.ok, `safe extension still accepted (problems: ${review.problems.join(',')})`);
+    assert(review.checks.noRawPathLeak, 'no false-positive leak on a valid extension');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('rejects a non-promotion / malformed document without throwing', () => {
   for (const bogus of [null, 42, 'nope', {}, { report: 'something-else', version: 1 }]) {
     const review = reviewPromotionEvidence(bogus);

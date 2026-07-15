@@ -24,7 +24,7 @@ cannot set).
 | `lifecycleWellFormed` | `lifecycle.logsRetrievable` ≠ true, no transitions, or an unknown `currentState` |
 | `stateStatusConsistent` | `status` / `ok` / terminal `currentState` disagree (VISIBLE⇒ok+`VISIBLE_IN_REAL_LIBRARY`, WITHDRAWN⇒ok+`PROMOTION_WITHDRAWN`, FAILED⇒!ok+`PROMOTION_FAILED`) |
 | `evidenceDigestVerified` | the report's own `evidenceDigest` does not recompute as `sha256("phase-230-report:" + JSON.stringify(report-without-evidenceDigest))` |
-| `noRawPathLeak` | any string value (other than the `targetRoot` enum and `file.extension`) looks like an absolute/drive path, contains `/mnt/` or a test-library fragment, or ends in a media extension |
+| `noRawPathLeak` | any string value looks like an absolute/drive path, contains `/mnt/` or a test-library fragment, or ends in a media extension. `targetRoot` and `extension` fields are exempt **only** when they hold a known-safe enum value (a target-root enum, or a canonical media extension) — a path smuggled into an `extension`/`targetRoot` field anywhere in the tree is still flagged |
 
 The review record it emits is itself redaction-safe: only enums, booleans, digests, and the subject's
 (enum) status / (digest) `evidenceDigest`.

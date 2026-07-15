@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { ALLOWED_MEDIA_EXTENSIONS } from './real-library-promotion.js';
 
 // Local, non-live reviewer for a `phase-230-real-library-promotion` evidence report (the
 // document runRealLibraryPromotion emits). It is the mechanical pre-acceptance gate an
@@ -160,15 +161,17 @@ function verifyEvidenceDigest(report: Record<string, unknown>): boolean {
   return digest('phase-230-report', JSON.stringify(withoutDigest)) === evidenceDigest;
 }
 
-// A redaction-safe report contains no raw filesystem paths: the only path-like strings are
-// the `targetRoot` enum and the `file.extension` value. Any other absolute/drive/media-suffix
-// string, or a test-library path fragment, is a suspected identity leak.
+// A redaction-safe report contains no raw filesystem paths. The only legitimately path-adjacent
+// strings are the `targetRoot` enum and the `file.extension` value — but those are exempt ONLY
+// when they hold a known-safe enum value. A path-shaped string smuggled into an `extension` (or
+// `targetRoot`) field anywhere in the tree is still a suspected identity leak, not an exemption.
 function hasRawPathLeak(report: Record<string, unknown>): boolean {
   let leak = false;
   const walk = (value: unknown, key: string | undefined): void => {
     if (leak) return;
     if (typeof value === 'string') {
-      if (key === 'targetRoot' || key === 'extension') return;
+      if (key === 'extension' && isSafeExtensionValue(value)) return;
+      if (key === 'targetRoot' && VALID_TARGET_ROOTS.has(value)) return;
       if (looksLikePath(value)) leak = true;
       return;
     }
@@ -182,6 +185,12 @@ function hasRawPathLeak(report: Record<string, unknown>): boolean {
   };
   walk(report, undefined);
   return leak;
+}
+
+// Only the canonical media-extension enum values are an exempt `extension`; anything else
+// (e.g. a full path that happens to end in .mp4) is subject to the path-leak scan.
+function isSafeExtensionValue(value: string): boolean {
+  return (ALLOWED_MEDIA_EXTENSIONS as readonly string[]).includes(value);
 }
 
 function looksLikePath(s: string): boolean {
