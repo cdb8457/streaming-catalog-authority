@@ -190,6 +190,32 @@ await test('records Jellyfin unreachable/timeout as failed with logs and importe
   }
 });
 
+await test('records thrown Jellyfin visibility errors as failed evidence', async () => {
+  const root = workspace();
+  try {
+    const source = mediaFile(root);
+    const libraryRoot = join(root, 'library');
+    const client: LocalMediaVisibilityClient = { async findVisibleItem() { throw new Error('network down'); } };
+    const report = await runLocalMediaPipeline({
+      itemId: '77777777-7777-4777-8777-777777777777',
+      title: 'Unreachable Proof',
+      sourceFile: source,
+      libraryRoot,
+      visibilityClient: client,
+      awaitJellyfinVisibility: true,
+      visibilityPolls: 2,
+      visibilityPollMs: 0,
+      now,
+    });
+    assertEq(report.status, 'LOCAL_MEDIA_FAILED', 'unreachable visibility fails');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'JELLYFIN_SCAN_TIMEOUT'), 'unreachable failure code');
+    assertEq(report.jellyfin?.visible, false, 'not visible');
+    assertEq(report.file.sourceSha256, report.file.destinationSha256, 'import retained for safe retry');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

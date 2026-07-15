@@ -285,11 +285,17 @@ export async function runLocalMediaPipeline(input: LocalMediaPipelineInput): Pro
     const maxPolls = Math.max(1, input.visibilityPolls ?? 12);
     const pollMs = Math.max(0, input.visibilityPollMs ?? 5000);
     for (let poll = 1; poll <= maxPolls; poll += 1) {
-      const result = await input.visibilityClient.findVisibleItem({
-        title: input.title,
-        ...(input.year !== undefined ? { year: input.year } : {}),
-        destinationPath,
-      });
+      let result: LocalMediaVisibilityResult;
+      try {
+        result = await input.visibilityClient.findVisibleItem({
+          title: input.title,
+          ...(input.year !== undefined ? { year: input.year } : {}),
+          destinationPath,
+        });
+      } catch {
+        jellyfin = { awaited: true, visible: false, polls: poll };
+        return fail('JELLYFIN_SCAN_TIMEOUT', 'Jellyfin read-only visibility query failed within bounded retry window');
+      }
       if (result.visible) {
         jellyfin = {
           awaited: true,
