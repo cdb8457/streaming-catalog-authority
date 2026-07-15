@@ -10917,6 +10917,32 @@ test('Phase 226 Jellyfin test library preflight blocks Gelato and missing mount'
   ]) assert(!combined.includes(forbidden), `Phase 226 preflight excludes ${forbidden}`);
 });
 
+test('Phase 226 local media E2E launcher is isolated and read-only against Jellyfin', () => {
+  assert(exists('deploy/unraid-local-media-e2e.sh'), 'Phase 226 Unraid local-media E2E launcher exists');
+  const launcher = read('deploy/unraid-local-media-e2e.sh');
+  for (const required of [
+    'phase-226-local-media-e2e.json',
+    'ops:local-media-pipeline',
+    '--await-jellyfin',
+    'JELLYFIN_ENABLE_NETWORK=true',
+    'JELLYFIN_ALLOW_LIVE_PUBLISH=false',
+    '/mnt/user/media/catalog-authority-test-library',
+    '$SOURCE_FILE:$SOURCE_FILE:ro',
+    '$HOST_TEST_DIR:$HOST_TEST_DIR',
+    'source media file must not already be inside the isolated test library',
+    'Catalog Authority E2E Probe',
+  ]) assert(launcher.includes(required), `Phase 226 E2E launcher preserves ${required}`);
+  for (const forbidden of [
+    'JELLYFIN_ALLOW_LIVE_PUBLISH=true',
+    'docker.sock',
+    'network_mode: host',
+    'provider live mode enabled',
+    'download enabled',
+    'playback enabled',
+    'scraping enabled',
+  ]) assert(!launcher.includes(forbidden), `Phase 226 E2E launcher excludes ${forbidden}`);
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');
