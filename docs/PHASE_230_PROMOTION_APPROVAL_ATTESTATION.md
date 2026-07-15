@@ -24,6 +24,12 @@ The validator re-derives every field the same way the service does (shared `cano
 shared media-extension allowlist, `buildPromotionDestination`), so a `validate` pass is a faithful
 preview of the service's binding check.
 
+Source containment mirrors `runRealLibraryPromotion` exactly, reusing the service's own
+`hasSymlinkComponent` and `resolvesWithin`: the workflow refuses a source that is a symlink, sits under
+a **symlinked test-library root**, is reached through a **symlinked intermediate component**, or whose
+real path escapes the isolated test library — before it ever hashes the file. So an approval can never
+be produced or validated for a source smuggled in through a symlink.
+
 ## Files
 
 - `src/ops/promotion-approval.ts` — `buildApprovalAttestation` / `validateApprovalAttestation` + redaction-safe evidence.

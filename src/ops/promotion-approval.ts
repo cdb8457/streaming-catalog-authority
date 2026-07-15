@@ -6,6 +6,8 @@ import {
   buildPromotionDestination,
   canonicalPath,
   defaultRealMoviesRoot,
+  hasSymlinkComponent,
+  resolvesWithin,
 } from './real-library-promotion.js';
 
 // Local, non-live readiness workflow for the later operator-approved real-library
@@ -51,6 +53,8 @@ export type ApprovalProblem =
   | 'SOURCE_MISSING'
   | 'SOURCE_NOT_REGULAR_FILE'
   | 'SOURCE_IS_SYMLINK'
+  | 'SOURCE_SYMLINK_COMPONENT'
+  | 'SOURCE_RESOLVES_OUTSIDE'
   | 'SOURCE_OUTSIDE_TEST_LIBRARY'
   | 'SOURCE_EXTENSION_NOT_ALLOWED'
   | 'SOURCE_EMPTY'
@@ -217,8 +221,14 @@ function inspectSource(sourceFile: string, testLibraryRoot: string): ApprovalPro
   const problems: ApprovalProblem[] = [];
   if (!isWithin(sourceFile, testLibraryRoot)) problems.push('SOURCE_OUTSIDE_TEST_LIBRARY');
   if (safeIsSymlink(sourceFile)) { problems.push('SOURCE_IS_SYMLINK'); return problems; }
+  // Mirror runRealLibraryPromotion's source containment: reject a symlinked test-library
+  // root or any symlinked intermediate component (hasSymlinkComponent), then a realpath
+  // escape (resolvesWithin). A symlinked ancestor can redirect the source read outside the
+  // isolated test library even when the textual path looks contained; refuse before hashing.
+  if (hasSymlinkComponent(testLibraryRoot, sourceFile)) { problems.push('SOURCE_SYMLINK_COMPONENT'); return problems; }
   if (!existsSync(sourceFile)) { problems.push('SOURCE_MISSING'); return problems; }
   if (!statSync(sourceFile).isFile()) { problems.push('SOURCE_NOT_REGULAR_FILE'); return problems; }
+  if (!resolvesWithin(sourceFile, testLibraryRoot)) { problems.push('SOURCE_RESOLVES_OUTSIDE'); return problems; }
   const ext = extname(sourceFile).toLowerCase();
   if (!ALLOWED_MEDIA_EXTENSIONS.includes(ext as (typeof ALLOWED_MEDIA_EXTENSIONS)[number])) problems.push('SOURCE_EXTENSION_NOT_ALLOWED');
   if (statSync(sourceFile).size <= 0) problems.push('SOURCE_EMPTY');

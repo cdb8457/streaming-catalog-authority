@@ -565,7 +565,7 @@ function nearestExistingAncestor(path: string): string {
 // paths. Re-checked immediately before/after each mutation to bound TOCTOU windows
 // (Node has no portable openat/O_NOFOLLOW; realpath-immediately-before-use is the
 // practical mitigation).
-function resolvesWithin(path: string, root: string): boolean {
+export function resolvesWithin(path: string, root: string): boolean {
   const realRoot = safeRealpath(root);
   if (!realRoot) return false;
   const realAncestor = safeRealpath(nearestExistingAncestor(path));
@@ -578,7 +578,7 @@ function resolvesWithin(path: string, root: string): boolean {
 // (inclusive of intermediate directories, exclusive of `root` itself) is a symlink.
 // A symlinked component can redirect the real destination outside the approved root
 // even when the textual path passes `isWithin`.
-function hasSymlinkComponent(root: string, target: string): boolean {
+export function hasSymlinkComponent(root: string, target: string): boolean {
   const resolvedRoot = resolve(root);
   const resolvedTarget = resolve(target);
   // The approved root itself must be a real directory: a symlinked root can redirect

@@ -226,6 +226,109 @@ await test('build fails for a symlinked source', () => {
   }
 });
 
+await test('build rejects a symlinked test-library root (mirrors the promotion service)', () => {
+  const root = workspace();
+  try {
+    // Real test library holding the source, plus a junction standing in as the test-library root.
+    const realTestLib = join(root, 'real-test-library');
+    const source = join(realTestLib, 'Movies', 'Approval Proof (2026)', 'source.mp4');
+    mkdirSync(dirname(source), { recursive: true });
+    writeFileSync(source, MINIMAL_MP4_FIXTURE);
+    const junctionRoot = join(root, 'catalog-authority-test-library');
+    let linked = true;
+    try { symlinkSync(realTestLib, junctionRoot, 'junction'); } catch { linked = false; console.log('    (skipped: symlink creation not permitted)'); }
+    if (!linked) return;
+    const sourceViaJunction = join(junctionRoot, 'Movies', 'Approval Proof (2026)', 'source.mp4');
+    const result = buildApprovalAttestation({
+      itemId: 'cccccccc-cccc-4ccc-8ccc-cccccccccccc',
+      title: 'Approval Proof',
+      year: 2026,
+      sourceFile: sourceViaJunction,
+      testLibraryRoot: junctionRoot,
+      targetRoot: join(root, 'Movies'),
+      approvalId: 'approval-symlink-root',
+    });
+    assert(!result.ok, 'symlinked test-library root rejected');
+    assert(result.approval === undefined, 'no approval emitted through a symlinked root');
+    assert(result.evidence.problems.includes('SOURCE_SYMLINK_COMPONENT'), 'symlink component problem');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('build rejects a symlinked intermediate component in the source path', () => {
+  const root = workspace();
+  try {
+    const testRoot = join(root, 'catalog-authority-test-library'); // real root
+    mkdirSync(testRoot, { recursive: true });
+    // The source lives outside the test library; a junction inside the root points to it.
+    const outsideMovies = join(root, 'outside-movies');
+    const source = join(outsideMovies, 'Approval Proof (2026)', 'source.mp4');
+    mkdirSync(dirname(source), { recursive: true });
+    writeFileSync(source, MINIMAL_MP4_FIXTURE);
+    const moviesLink = join(testRoot, 'Movies');
+    let linked = true;
+    try { symlinkSync(outsideMovies, moviesLink, 'junction'); } catch { linked = false; console.log('    (skipped: symlink creation not permitted)'); }
+    if (!linked) return;
+    const sourceViaLink = join(moviesLink, 'Approval Proof (2026)', 'source.mp4');
+    const result = buildApprovalAttestation({
+      itemId: 'dddddddd-dddd-4ddd-8ddd-dddddddddddd',
+      title: 'Approval Proof',
+      year: 2026,
+      sourceFile: sourceViaLink,
+      testLibraryRoot: testRoot,
+      targetRoot: join(root, 'Movies'),
+      approvalId: 'approval-symlink-ancestor',
+    });
+    assert(!result.ok, 'symlinked intermediate component rejected');
+    assert(result.approval === undefined, 'no approval emitted through a symlinked ancestor');
+    assert(result.evidence.problems.includes('SOURCE_SYMLINK_COMPONENT'), 'symlink component problem');
+    // The real file behind the junction must not be reachable as an approved source.
+    assertEq(existsSync(source), true, 'the out-of-tree file itself is untouched');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('validate also rejects a symlinked intermediate component', () => {
+  const root = workspace();
+  try {
+    const testRoot = join(root, 'catalog-authority-test-library');
+    mkdirSync(testRoot, { recursive: true });
+    const outsideMovies = join(root, 'outside-movies');
+    const source = join(outsideMovies, 'Approval Proof (2026)', 'source.mp4');
+    mkdirSync(dirname(source), { recursive: true });
+    writeFileSync(source, MINIMAL_MP4_FIXTURE);
+    const moviesLink = join(testRoot, 'Movies');
+    let linked = true;
+    try { symlinkSync(outsideMovies, moviesLink, 'junction'); } catch { linked = false; console.log('    (skipped: symlink creation not permitted)'); }
+    if (!linked) return;
+    const sourceViaLink = join(moviesLink, 'Approval Proof (2026)', 'source.mp4');
+    // A hand-authored approval that is otherwise well-formed must still be refused because the
+    // source is reached through a symlink — validation mirrors the service's containment.
+    const approval = {
+      approvalId: 'approval-x',
+      itemId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      targetRoot: join(root, 'Movies'),
+      sourceRealPath: sourceViaLink,
+      sourceSha256: 'a'.repeat(64),
+      destinationPath: buildPromotionDestination({ title: 'Approval Proof', year: 2026, sourceFile: sourceViaLink, targetRoot: join(root, 'Movies') }),
+    };
+    const validated = validateApprovalAttestation(approval, {
+      itemId: 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee',
+      title: 'Approval Proof',
+      year: 2026,
+      sourceFile: sourceViaLink,
+      testLibraryRoot: testRoot,
+      targetRoot: join(root, 'Movies'),
+    });
+    assert(!validated.ok, 'validate rejects a symlink-reached source');
+    assert(validated.evidence.problems.includes('SOURCE_SYMLINK_COMPONENT'), 'symlink component problem on validate');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
 await test('build fails for a disallowed source extension', () => {
   const root = workspace();
   try {
