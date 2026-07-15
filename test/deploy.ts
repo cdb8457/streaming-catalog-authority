@@ -10919,7 +10919,10 @@ test('Phase 226 Jellyfin test library preflight blocks Gelato and missing mount'
 
 test('Phase 226 local media E2E launcher is isolated and read-only against Jellyfin', () => {
   assert(exists('deploy/unraid-local-media-e2e.sh'), 'Phase 226 Unraid local-media E2E launcher exists');
+  assert(exists('docs/PHASE_226_LIVE_SINGLE_FILE_E2E.md'), 'Phase 226 live E2E acceptance doc exists');
   const launcher = read('deploy/unraid-local-media-e2e.sh');
+  const doc = read('docs/PHASE_226_LIVE_SINGLE_FILE_E2E.md');
+  const readme = read('README.md');
   for (const required of [
     'phase-226-local-media-e2e.json',
     'ops:local-media-pipeline',
@@ -10936,6 +10939,19 @@ test('Phase 226 local media E2E launcher is isolated and read-only against Jelly
     'source media file must not already be inside the isolated test library',
     'Catalog Authority E2E Probe',
   ]) assert(launcher.includes(required), `Phase 226 E2E launcher preserves ${required}`);
+  for (const required of [
+    'Phase 226: Live Single-File E2E on Unraid',
+    'PHASE_226_LIVE_SINGLE_FILE_E2E_PASS',
+    'LOCAL_MEDIA_VISIBLE_IN_JELLYFIN',
+    'VISIBLE_IN_JELLYFIN',
+    '07e6f2e7c0135e261d18e1717a55152e987d7da22730f4811977268fc6f225ae',
+    '905140e2e773aa6e42eecb0575fb58fb7ebd5fb90c88bef6c9aa104ddef957d8',
+    'sha256:cd4a386d2c6b44bd24df426249b78588b09b425573ad0fe70008b555e78ebb0f',
+    'match basis: `path`',
+    'Jellyfin visibility polls: `2`',
+    'Phase 227 is unblocked',
+  ]) assert(doc.includes(required), `Phase 226 acceptance record preserves ${required}`);
+  assert(readme.includes('Phase 226 adds `docs/PHASE_226_LIVE_SINGLE_FILE_E2E.md`'), 'README ledger entry');
   for (const forbidden of [
     'JELLYFIN_ALLOW_LIVE_PUBLISH=true',
     'docker.sock',
@@ -10944,7 +10960,10 @@ test('Phase 226 local media E2E launcher is isolated and read-only against Jelly
     'download enabled',
     'playback enabled',
     'scraping enabled',
-  ]) assert(!launcher.includes(forbidden), `Phase 226 E2E launcher excludes ${forbidden}`);
+  ]) {
+    assert(!launcher.includes(forbidden), `Phase 226 E2E launcher excludes ${forbidden}`);
+    assert(!doc.includes(forbidden), `Phase 226 acceptance record excludes ${forbidden}`);
+  }
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

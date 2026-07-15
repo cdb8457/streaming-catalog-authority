@@ -1632,6 +1632,14 @@ means infrastructure readiness, not product readiness, and defines
 result with UI lifecycle status. Current product status is
 `PRODUCT_READY_FALSE_E2E_WORKFLOW_MISSING`; Phase 225 is unblocked for the local-media import
 service and lifecycle state machine.
+Phase 225 adds `docs/PHASE_225_IMPORT_SERVICE_STATE_MACHINE.md`, `ops:local-media-pipeline`, and
+`test:import-state-machine`. It implements the observed-state local import lifecycle through
+`IMPORTED`, with optional read-only Jellyfin visibility reaching `VISIBLE_IN_JELLYFIN`.
+Phase 226 adds `docs/PHASE_226_LIVE_SINGLE_FILE_E2E.md`, `deploy/unraid-local-media-e2e.sh`, and
+the guarded Jellyfin test-library preflight. The accepted Unraid evidence records
+`LOCAL_MEDIA_VISIBLE_IN_JELLYFIN` with path-based Jellyfin visibility on poll `2`, while keeping
+providers, downloads, scraping, playback, Jellyfin collection writes, and real-library paths out of
+scope.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
