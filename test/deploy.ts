@@ -10643,7 +10643,7 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
   assert(pkg.scripts['ops:jellyfin-write-proof'] === 'tsx src/ops/jellyfin-write-proof-cli.ts', 'Phase 221 ops script present');
   assert(pkg.scripts['test:jellyfin-write-proof'] === 'tsx test/jellyfin-write-proof.ts', 'Phase 221 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
     'Phase 221 aggregate test runs before deploy guard',
   );
   const combined = [
@@ -10697,7 +10697,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
   assert(exists('test/jellyfin-integration-decision.ts'), 'Phase 222 Jellyfin decision test exists');
   assert(pkg.scripts['test:jellyfin-integration-decision'] === 'tsx test/jellyfin-integration-decision.ts', 'Phase 222 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
     'Phase 222 aggregate test runs after write proof and before deploy guard',
   );
   const combined = [
@@ -10745,7 +10745,7 @@ test('Phase 223 versioned release cut records v1.0.0 with accepted warnings', ()
   assert(pkg.version === '1.0.0', 'package version is 1.0.0');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
     'Phase 223 aggregate test runs after Jellyfin decision and before deploy guard',
   );
   const combined = [
@@ -10786,7 +10786,7 @@ test('Phase 224 working foundation redefinition records E2E product gap', () => 
   assert(exists('test/working-foundation-plan.ts'), 'Phase 224 working foundation test exists');
   assert(pkg.scripts['test:working-foundation-plan'] === 'tsx test/working-foundation-plan.ts', 'Phase 224 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
     'Phase 224 aggregate test runs after release cut and before deploy guard',
   );
   const combined = [
@@ -10826,6 +10826,54 @@ test('Phase 224 working foundation redefinition records E2E product gap', () => 
     'JELLYFIN_WRITE_CAPABLE_LAUNCH_ELIGIBLE',
     'PRODUCT_READY_TRUE',
   ]) assert(!doc.includes(forbidden), `Phase 224 record excludes ${forbidden}`);
+});
+
+test('Phase 225 import service state machine is local, observed-state, and guarded', () => {
+  assert(exists('docs/PHASE_225_IMPORT_SERVICE_STATE_MACHINE.md'), 'Phase 225 import service doc exists');
+  assert(exists('src/ops/local-media-pipeline.ts'), 'Phase 225 import service module exists');
+  assert(exists('src/ops/local-media-pipeline-cli.ts'), 'Phase 225 import service CLI exists');
+  assert(exists('test/import-state-machine.ts'), 'Phase 225 import state machine test exists');
+  assert(pkg.scripts['ops:local-media-pipeline'] === 'tsx src/ops/local-media-pipeline-cli.ts', 'Phase 225 ops script present');
+  assert(pkg.scripts['test:import-state-machine'] === 'tsx test/import-state-machine.ts', 'Phase 225 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/deploy.ts'),
+    'Phase 225 aggregate test runs after working-foundation plan and before deploy guard',
+  );
+  const combined = [
+    read('docs/PHASE_225_IMPORT_SERVICE_STATE_MACHINE.md'),
+    read('src/ops/local-media-pipeline.ts'),
+    read('src/ops/local-media-pipeline-cli.ts'),
+    read('test/import-state-machine.ts'),
+  ].join('\n');
+  for (const required of [
+    'Phase 225: Import Service + State Machine',
+    'phase-225-import-service-state-machine',
+    'phase-225-local-media-pipeline',
+    'REQUESTED',
+    'STORED',
+    'IMPORT_VALIDATING',
+    'IMPORTING',
+    'IMPORTED',
+    'JELLYFIN_SCAN_WAITING',
+    'VISIBLE_IN_JELLYFIN',
+    'FAILED',
+    'IMPORT_DESTINATION_COLLISION',
+    'IMPORT_COPY_MISMATCH',
+    'JELLYFIN_SCAN_TIMEOUT',
+    '/mnt/user/media/catalog-authority-test-library',
+    'copy',
+    'destination file exists with matching observed size and sha256',
+    'JELLYFIN_ENABLE_NETWORK',
+    'JELLYFIN_ALLOW_LIVE_PUBLISH must not be true',
+    'PHASE_225_IMPORT_SERVICE_STATE_MACHINE_READY',
+  ]) assert(combined.includes(required), `Phase 225 surface preserves ${required}`);
+  for (const forbidden of [
+    'provider live mode enabled',
+    'download enabled',
+    'scraping enabled',
+    'playback enabled',
+    'JELLYFIN_WRITE_CAPABLE_LAUNCH_ELIGIBLE',
+  ]) assert(!combined.includes(forbidden), `Phase 225 surface excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
