@@ -6,6 +6,7 @@ import {
   mkdirSync,
   readdirSync,
   readFileSync,
+  realpathSync,
   renameSync,
   rmdirSync,
   rmSync,
@@ -29,6 +30,7 @@ export type PromotionFailureCode =
   | 'PROMOTION_DESTINATION_COLLISION'
   | 'PROMOTION_COPY_MISMATCH'
   | 'PROMOTION_REAL_LIBRARY_VISIBILITY_TIMEOUT'
+  | 'PROMOTION_VISIBILITY_CHECK_FAILED'
   | 'PROMOTION_WITHDRAWAL_REFUSED'
   | 'PROMOTION_WITHDRAWAL_FAILED';
 
@@ -162,6 +164,15 @@ export function defaultRealMoviesRoot(): string {
   return DEFAULT_REAL_MOVIES_ROOT;
 }
 
+// Exact-path visibility predicate for real-library promotion. Real-library visibility
+// and withdrawal-absence must key on the EXACT promoted destination path: a same-title
+// item elsewhere — notably the isolated test-library twin, which is also
+// VISIBLE_IN_JELLYFIN — must never satisfy "visible in the real library" nor mask
+// absence after withdrawal. Title/year are deliberately not a fallback here.
+export function realLibraryPathMatch(itemPath: string, destinationPath: string): boolean {
+  return normalizePath(itemPath) === normalizePath(destinationPath);
+}
+
 export function buildPromotionDestination(input: { title: string; year?: number; sourceFile: string; targetRoot: string }): string {
   const title = normalizeMediaTitle(input.title);
   const year = Number.isInteger(input.year) ? String(input.year) : 'Unknown Year';
@@ -275,6 +286,7 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
   if (isSymlink(input.sourceFile)) return fail('PROMOTION_SOURCE_INVALID', 'source path is a symlink and is refused');
   if (hasSymlinkComponent(input.testLibraryRoot, input.sourceFile)) return fail('PROMOTION_SOURCE_INVALID', 'source path traverses a symlink out of the isolated test library');
   if (!existsSync(input.sourceFile) || !statSync(input.sourceFile).isFile()) return fail('PROMOTION_SOURCE_INVALID', 'source file is missing or not a regular file');
+  if (!resolvesWithin(input.sourceFile, input.testLibraryRoot)) return fail('PROMOTION_SOURCE_INVALID', 'source path resolves outside the isolated test library');
   const ext = extname(input.sourceFile).toLowerCase();
   if (!ALLOWED_EXTENSIONS.has(ext)) return fail('PROMOTION_SOURCE_INVALID', 'source extension is outside media allowlist');
 
@@ -289,6 +301,12 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
   const destinationDir = dirname(destinationPath);
   createdDirectory = !existsSync(destinationDir);
   mkdirSync(destinationDir, { recursive: true });
+  // Realpath-verify the just-created directory: catches a symlinked root/ancestor and
+  // any swap that occurred between the textual checks above and directory creation.
+  if (!resolvesWithin(destinationDir, input.targetRoot)) {
+    if (createdDirectory) { try { rmdirSync(destinationDir); } catch { /* leave for operator */ } }
+    return fail('PROMOTION_TARGET_FORBIDDEN', 'destination directory resolves outside the approved real Movies root');
+  }
 
   if (existsSync(destinationPath)) {
     destinationSizeBytes = statSync(destinationPath).size;
@@ -317,6 +335,12 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
     destinationSha256 = hashFile(destinationPath);
   }
 
+  // Final race-resistant containment on the materialized file: reject a symlinked
+  // destination or one whose real path escaped the approved root between mkdir and now.
+  if (isSymlink(destinationPath) || !resolvesWithin(destinationPath, input.targetRoot)) {
+    if (createdByRun) rmSync(destinationPath, { force: true });
+    return fail('PROMOTION_TARGET_FORBIDDEN', 'destination file resolves outside the approved real Movies root');
+  }
   if (destinationSizeBytes !== sourceSizeBytes || destinationSha256 !== sourceSha256) {
     return fail('PROMOTION_COPY_MISMATCH', 'destination checksum did not match source after promotion');
   }
@@ -325,7 +349,12 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
   transition('PROMOTED', true, 'destination file exists with matching observed size and sha256', true);
 
   if (input.awaitVisibility) {
-    const visible = await awaitVisible(input, destinationPath);
+    let visible: { visible: boolean; jellyfin?: RealLibraryPromotionReport['jellyfin'] };
+    try {
+      visible = await awaitVisible(input, destinationPath);
+    } catch {
+      return fail('PROMOTION_VISIBILITY_CHECK_FAILED', 'Jellyfin read-only visibility check failed before a verdict was observed');
+    }
     if (!visible.visible) return fail('PROMOTION_REAL_LIBRARY_VISIBILITY_TIMEOUT', 'Jellyfin read-only query did not observe promoted item in real Movies library');
     jellyfin = visible.jellyfin;
     transition('VISIBLE_IN_REAL_LIBRARY', true, 'Jellyfin read-only query observed promoted item in real Movies library', true);
@@ -344,7 +373,12 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
     returnedToBefore = afterWithdrawalDigest === beforeDigest;
     if (!returnedToBefore) return fail('PROMOTION_WITHDRAWAL_FAILED', 'real Movies subtree digest did not return to prior state');
     if (input.awaitVisibility) {
-      const absent = await awaitAbsent(input, destinationPath);
+      let absent: { absent: boolean };
+      try {
+        absent = await awaitAbsent(input, destinationPath);
+      } catch {
+        return fail('PROMOTION_VISIBILITY_CHECK_FAILED', 'Jellyfin read-only absence check failed before a verdict was observed');
+      }
       jellyfin = { ...(jellyfin ?? { awaited: true, visible: false, polls: 0 }), absentAfterWithdrawal: absent.absent };
       if (!absent.absent) return fail('PROMOTION_WITHDRAWAL_FAILED', 'Jellyfin read-only query still observed withdrawn item');
     }
@@ -399,15 +433,17 @@ async function awaitAbsent(input: RealLibraryPromotionInput, destinationPath: st
 
 function withdrawPromotedFile(destinationPath: string, expectedSha256: string | undefined, targetRoot: string, createdDirectory: boolean): { ok: true } | { ok: false; code: PromotionFailureCode; evidence: string } {
   if (!expectedSha256 || !isWithin(destinationPath, targetRoot)) return { ok: false, code: 'PROMOTION_WITHDRAWAL_REFUSED', evidence: 'withdrawal target is outside approved root or missing checksum' };
-  if (isSymlink(destinationPath)) return { ok: false, code: 'PROMOTION_WITHDRAWAL_REFUSED', evidence: 'promoted path is a symlink and is refused for withdrawal' };
+  if (isSymlink(destinationPath) || hasSymlinkComponent(targetRoot, destinationPath)) return { ok: false, code: 'PROMOTION_WITHDRAWAL_REFUSED', evidence: 'promoted path is a symlink and is refused for withdrawal' };
+  if (!resolvesWithin(destinationPath, targetRoot)) return { ok: false, code: 'PROMOTION_WITHDRAWAL_REFUSED', evidence: 'promoted path resolves outside approved root and is refused for withdrawal' };
   if (!existsSync(destinationPath)) return { ok: false, code: 'PROMOTION_WITHDRAWAL_FAILED', evidence: 'promoted file was missing before withdrawal' };
   if (hashFile(destinationPath) !== expectedSha256) return { ok: false, code: 'PROMOTION_WITHDRAWAL_REFUSED', evidence: 'promoted file checksum changed before withdrawal' };
   rmSync(destinationPath);
   const dir = dirname(destinationPath);
   try {
     // Only remove the movie directory if this run created it and it is now empty;
-    // never delete a real-library directory that pre-existed the promotion.
-    if (createdDirectory && isWithin(dir, targetRoot) && normalizePath(dir) !== normalizePath(targetRoot) && !isSymlink(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
+    // never delete a real-library directory that pre-existed the promotion or that
+    // resolves (via symlink) outside the approved root.
+    if (createdDirectory && isWithin(dir, targetRoot) && normalizePath(dir) !== normalizePath(targetRoot) && !isSymlink(dir) && resolvesWithin(dir, targetRoot) && readdirSync(dir).length === 0) rmdirSync(dir);
   } catch {
     return { ok: false, code: 'PROMOTION_WITHDRAWAL_FAILED', evidence: 'promoted file removed but empty directory cleanup failed' };
   }
@@ -433,6 +469,40 @@ function isSymlink(path: string): boolean {
   }
 }
 
+function safeRealpath(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
+
+// Deepest ancestor of `path` that currently exists (or `path` itself when it exists).
+// Lets us realpath a not-yet-created destination by resolving its real parent chain.
+function nearestExistingAncestor(path: string): string {
+  let current = resolve(path);
+  while (!existsSync(current)) {
+    const parent = dirname(current);
+    if (parent === current) return current;
+    current = parent;
+  }
+  return current;
+}
+
+// Race-resistant containment: resolves symlinks on both the approved root and the
+// deepest existing ancestor of `path`, then checks textual containment of the *real*
+// paths. Re-checked immediately before/after each mutation to bound TOCTOU windows
+// (Node has no portable openat/O_NOFOLLOW; realpath-immediately-before-use is the
+// practical mitigation).
+function resolvesWithin(path: string, root: string): boolean {
+  const realRoot = safeRealpath(root);
+  if (!realRoot) return false;
+  const realAncestor = safeRealpath(nearestExistingAncestor(path));
+  if (!realAncestor) return false;
+  const rel = relative(realRoot, realAncestor);
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
 // Returns true if any existing path component strictly between `root` and `target`
 // (inclusive of intermediate directories, exclusive of `root` itself) is a symlink.
 // A symlinked component can redirect the real destination outside the approved root
@@ -440,6 +510,9 @@ function isSymlink(path: string): boolean {
 function hasSymlinkComponent(root: string, target: string): boolean {
   const resolvedRoot = resolve(root);
   const resolvedTarget = resolve(target);
+  // The approved root itself must be a real directory: a symlinked root can redirect
+  // the entire subtree out of bounds while every relative component looks contained.
+  if (isSymlink(resolvedRoot)) return true;
   const rel = relative(resolvedRoot, resolvedTarget);
   if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false;
   const parts = rel.split(/[\\/]/).filter((part) => part.length > 0);
@@ -462,9 +535,14 @@ function treeDigest(root: string): string {
   const walk = (dir: string): void => {
     for (const name of readdirSync(dir).sort()) {
       const path = join(dir, name);
-      const st = statSync(path);
+      // lstat, never stat: a symlinked entry is recorded as a symlink and never
+      // followed, so the before/after subtree digest cannot be redirected out of
+      // the real Movies subtree or made to hash an attacker-chosen target.
+      const st = lstatSync(path);
       const relDigest = digest('phase-230-tree-rel', relative(root, path).replace(/\\/g, '/'));
-      if (st.isDirectory()) {
+      if (st.isSymbolicLink()) {
+        entries.push(`l:${relDigest}`);
+      } else if (st.isDirectory()) {
         entries.push(`d:${relDigest}`);
         walk(path);
       } else if (st.isFile()) {

@@ -39,7 +39,30 @@ Pre-existing doc-string assertion failures in `test/real-library-promotion-bound
 `test/deploy.ts` are unrelated to this remediation (they fail identically at commit `015b3ef`) and are
 out of scope.
 
+## Second-pass remediation (follow-up review)
+
+A follow-up review of the first-pass commit raised further items. The first-pass fixes
+(pre-existing-file withdrawal refusal and directory-ownership scoping) are preserved unchanged.
+Addressed here:
+
+| Item | Finding | Fix | Proof |
+|------|---------|-----|-------|
+| 4 | **Visibility/absence could be satisfied by the wrong item.** The CLI visibility client matched by loose path suffix and by title / title-year. The isolated test-library twin (same title, also `VISIBLE_IN_JELLYFIN`) could satisfy "visible in the real library" (false positive) and mask absence after withdrawal (false negative), since visibility and absence must query the *exact* promoted path. | Added the pure, exported `realLibraryPathMatch`, which compares the normalized **exact** destination path only. The CLI client drops the title/title-year fallbacks and matches path-exact; a non-match fails closed (visibility timeout). | Test: *exact-path matcher rejects the same-title test-library twin and other items*. |
+| 5 | **Symlink containment / TOCTOU gaps.** `hasSymlinkComponent` never flagged a symlinked *root*; containment used only textual `resolve()`; `treeDigest` used `statSync` (follows symlinks). | `hasSymlinkComponent` now rejects a symlinked root. Added `resolvesWithin` (realpath of the approved root vs. the deepest existing ancestor), re-checked immediately before/after each mutation — source, post-mkdir directory, post-materialization file, and withdrawal. `treeDigest` now uses `lstatSync` and records symlinks as `l:` without ever following them. Residual TOCTOU is bounded by realpath-immediately-before-use (Node exposes no portable `openat`/`O_NOFOLLOW`). | Test: *refuses a symlinked target root that escapes to an outside directory* (plus the existing symlinked-destination test). |
+| 6 | **Visibility exceptions escaped as raw errors.** `awaitVisible`/`awaitAbsent` threw (client-required, HTTP, or network errors), rejecting the run's promise and printing raw text — not redaction-safe, no digested evidence. | Both visibility calls are wrapped; any exception becomes a bounded, generic `PROMOTION_VISIBILITY_CHECK_FAILED` transition with a fixed value-free message — no URL, path, or raw error text enters evidence. | Test: *visibility client exception yields a redaction-safe digested failure* — asserts the failure code and that the endpoint/secret never appear in the serialized report. |
+
+Items (1)–(3) of the follow-up review were truncated from the received message and are **not** addressed
+here; they remain outstanding pending the reviewer re-sharing them. No Phase 231 authorization is implied.
+
+The Phase 224–227 local-media test-library import path (`local-media-pipeline-cli.ts`) still uses the
+loose matcher; it is deliberately out of scope for this real-library promotion remediation.
+
+Second-pass verification: `tsc --noEmit` clean; `test/real-library-promotion.ts` **11 passed, 0 failed**;
+promotion boundary and deploy guard unchanged from baseline (only the pre-existing CRLF doc-assertion
+failures remain).
+
 ## Exit status
 
 Phase 230 promotion service safety invariants are restored and covered by regression tests. The single
-operator-approved live promotion remains gated exactly as defined in Phase 229.
+operator-approved live promotion remains gated exactly as defined in Phase 229. Follow-up review items
+(1)–(3) remain open pending their (truncated) text.

@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   buildPromotionDestination,
+  realLibraryPathMatch,
   runRealLibraryPromotion,
   type RealLibraryVisibilityClient,
 } from '../src/ops/real-library-promotion.js';
@@ -276,6 +277,89 @@ await test('refuses a symlinked destination directory that escapes the approved 
     assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'symlinked destination component is refused');
     assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_TARGET_FORBIDDEN'), 'target forbidden code');
     assertEq(existsSync(join(outside, 'Symlink Escape (2026).mp4')), false, 'nothing was written through the symlink');
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('exact-path matcher rejects the same-title test-library twin and other items', () => {
+  const dest = '/mnt/user/media/Movies/Promotion Proof (2026)/Promotion Proof (2026).mp4';
+  // Exact promoted path (with trailing-slash / separator normalization) matches.
+  assert(realLibraryPathMatch(dest, dest), 'identical path matches');
+  assert(realLibraryPathMatch('/mnt/user/media/Movies//Promotion Proof (2026)/Promotion Proof (2026).mp4', dest), 'collapsed separators match');
+  assert(realLibraryPathMatch('\\mnt\\user\\media\\Movies\\Promotion Proof (2026)\\Promotion Proof (2026).mp4', dest), 'backslash separators match');
+  // The isolated test-library twin shares the title/tail but is NOT the promoted path.
+  assert(!realLibraryPathMatch('/mnt/user/media/catalog-authority-test-library/Movies/Promotion Proof (2026)/Promotion Proof (2026).mp4', dest), 'test-library twin must not match');
+  // A different real-library movie must not match.
+  assert(!realLibraryPathMatch('/mnt/user/media/Movies/Other Movie (2026)/Other Movie (2026).mp4', dest), 'different movie must not match');
+});
+
+await test('visibility client exception yields a redaction-safe digested failure', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    const secret = 'http://192.168.1.31:8096/Items?token=SECRET-should-not-leak';
+    const client: RealLibraryVisibilityClient = {
+      async findVisibleItem() { throw new Error(`jellyfin visibility failed for ${secret}`); },
+    };
+    const report = await runRealLibraryPromotion({
+      itemId: 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
+      title: 'Promotion Proof',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval: { approved: true, approvalId: 'approval-9' },
+      allowCustomTargetRootForTests: true,
+      visibilityClient: client,
+      awaitVisibility: true,
+      visibilityPolls: 1,
+      visibilityPollMs: 0,
+      now,
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'visibility exception fails closed');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_VISIBILITY_CHECK_FAILED'), 'digested visibility failure code');
+    const serialized = JSON.stringify(report);
+    assert(!serialized.includes('SECRET-should-not-leak'), 'raw visibility error text must not leak into evidence');
+    assert(!serialized.includes('192.168.1.31'), 'raw endpoint must not leak into evidence');
+    // The promoted file must be cleaned or left inertly; either way, nothing escaped the root.
+    rmSync(targetRoot, { recursive: true, force: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('refuses a symlinked target root that escapes to an outside directory', async () => {
+  const root = workspace();
+  const realTargetRoot = join(root, 'Movies');
+  const outside = join(root, 'outside-real-root');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(outside, { recursive: true });
+    let linked = true;
+    try {
+      symlinkSync(outside, realTargetRoot, 'junction'); // the approved root itself is a symlink out of bounds
+    } catch {
+      linked = false;
+      console.log('    (skipped: symlink creation not permitted in this environment)');
+    }
+    if (!linked) return;
+    const report = await runRealLibraryPromotion({
+      itemId: 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb',
+      title: 'Root Escape',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot: realTargetRoot,
+      approval: { approved: true, approvalId: 'approval-10' },
+      allowCustomTargetRootForTests: true,
+      now,
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'symlinked target root is refused');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_TARGET_FORBIDDEN'), 'target forbidden code');
+    assertEq(existsSync(join(outside, 'Root Escape (2026)')), false, 'nothing was written through the symlinked root');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }

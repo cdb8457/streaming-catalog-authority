@@ -2,6 +2,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   defaultRealMoviesRoot,
+  realLibraryPathMatch,
   runRealLibraryPromotion,
   type RealLibraryVisibilityClient,
   type RealLibraryVisibilityInput,
@@ -112,31 +113,24 @@ class JellyfinPathVisibilityClient implements RealLibraryVisibilityClient {
       const url = new URL(`${this.baseUrl}/Items`);
       url.searchParams.set('Recursive', 'true');
       url.searchParams.set('IncludeItemTypes', 'Movie,Episode,Video');
-      url.searchParams.set('Fields', 'Path,ProductionYear');
+      url.searchParams.set('Fields', 'Path');
       url.searchParams.set('StartIndex', String(start));
       url.searchParams.set('Limit', '500');
       const res = await fetch(url, { headers: { 'X-Emby-Token': this.apiKey, Accept: 'application/json' } });
       if (!res.ok) throw new Error(`jellyfin visibility HTTP ${res.status}`);
-      const body = await res.json() as { Items?: Array<{ Id?: unknown; Name?: unknown; Path?: unknown; ProductionYear?: unknown }> };
+      const body = await res.json() as { Items?: Array<{ Id?: unknown; Path?: unknown }> };
       const items = Array.isArray(body.Items) ? body.Items : [];
       for (const item of items) {
         const id = typeof item.Id === 'string' ? item.Id : undefined;
         const path = typeof item.Path === 'string' ? item.Path : undefined;
-        const name = typeof item.Name === 'string' ? item.Name : undefined;
-        const year = typeof item.ProductionYear === 'number' ? item.ProductionYear : undefined;
-        if (id && path && samePath(path, input.destinationPath)) return { visible: true, itemId: id, matchBasis: 'path' };
-        if (id && name && name.toLowerCase() === input.title.toLowerCase() && input.year !== undefined && year === input.year) return { visible: true, itemId: id, matchBasis: 'title-year' };
-        if (id && name && name.toLowerCase() === input.title.toLowerCase() && input.year === undefined) return { visible: true, itemId: id, matchBasis: 'title' };
+        // Exact promoted-path match only. Title/year are not consulted: a same-title
+        // test-library twin must not satisfy real-library visibility or mask absence.
+        if (id && path && realLibraryPathMatch(path, input.destinationPath)) return { visible: true, itemId: id, matchBasis: 'path' };
       }
       if (items.length < 500) break;
     }
     return { visible: false };
   }
-}
-
-function samePath(a: string, b: string): boolean {
-  const norm = (value: string): string => value.replace(/\\/g, '/').replace(/\/+/g, '/').toLowerCase();
-  return norm(a) === norm(b) || norm(a).endsWith(`/${norm(b).split('/').slice(-3).join('/')}`);
 }
 
 main().then((code) => process.exit(code)).catch((err) => {
