@@ -238,6 +238,7 @@ export async function runLocalMediaPipeline(input: LocalMediaPipelineInput): Pro
     return fail('IMPORT_SOURCE_INVALID', 'source file is not readable');
   }
   if (!sourceStat.isFile() || sourceStat.size <= 0) return fail('IMPORT_SOURCE_INVALID', 'source is not a regular non-empty file');
+  if (!hasExpectedMediaSignature(input.sourceFile, ext)) return fail('IMPORT_SOURCE_INVALID', 'source media signature did not match the extension');
   sourceSizeBytes = sourceStat.size;
   sourceSha256 = hashFile(input.sourceFile);
 
@@ -311,6 +312,14 @@ export async function runLocalMediaPipeline(input: LocalMediaPipelineInput): Pro
 
 export function hashFile(path: string): string {
   return createHash('sha256').update(readFileSync(path)).digest('hex');
+}
+
+function hasExpectedMediaSignature(path: string, ext: string): boolean {
+  const head = readFileSync(path).subarray(0, 16);
+  if (ext === '.mp4' || ext === '.m4v' || ext === '.mov') {
+    return head.length >= 12 && head.subarray(4, 8).toString('ascii') === 'ftyp';
+  }
+  return true;
 }
 
 function digest(scope: string, value: string): string {

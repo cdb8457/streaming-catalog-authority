@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
   buildLocalMediaDestination,
+  hashFile,
   normalizeMediaTitle,
   runLocalMediaPipeline,
   type LocalMediaVisibilityClient,
@@ -23,7 +24,14 @@ function workspace(): string {
   return mkdtempSync(join(tmpdir(), 'catalog-local-media-'));
 }
 
-function mediaFile(dir: string, name = 'source.mp4', body = 'not-a-real-video-but-a-nonempty-media-fixture'): string {
+const MINIMAL_MP4_FIXTURE = Buffer.concat([
+  Buffer.from([0x00, 0x00, 0x00, 0x18]),
+  Buffer.from('ftypmp42', 'ascii'),
+  Buffer.from([0x00, 0x00, 0x00, 0x00]),
+  Buffer.from('mp42isomcatalog-authority-fixture', 'ascii'),
+]);
+
+function mediaFile(dir: string, name = 'source.mp4', body: string | Buffer = MINIMAL_MP4_FIXTURE): string {
   const path = join(dir, name);
   writeFileSync(path, body);
   return path;
@@ -65,7 +73,7 @@ await test('imports by copy and records observed-state transitions', async () =>
     assertEq(report.lifecycle.currentState, 'IMPORTED', 'state imported');
     assert(report.lifecycle.transitions.every((t) => t.observedState), 'all transitions are observed-state transitions');
     assertEq(report.file.sourceSha256, report.file.destinationSha256, 'copy checksum matches');
-    assert(readFileSync(source, 'utf8').includes('nonempty'), 'source remains unchanged');
+    assertEq(hashFile(source), report.file.sourceSha256, 'source remains unchanged by checksum');
     assert(!JSON.stringify(report).includes(source), 'raw source path not in evidence');
     assert(report.forbidden.includes('jellyfin-write-api'), 'Jellyfin writes forbidden');
   } finally {
@@ -100,6 +108,10 @@ await test('fails closed on invalid source and forbidden extension without resid
     const missing = await runLocalMediaPipeline({ itemId: '33333333-3333-4333-8333-333333333334', title: 'Missing', sourceFile: join(root, 'missing.mp4'), libraryRoot, now });
     assert(missing.lifecycle.transitions.some((t) => t.failureCode === 'IMPORT_SOURCE_INVALID'), 'missing source failure code');
     assert(!existsSync(join(libraryRoot, 'Movies', 'Missing (Unknown Year)')), 'missing source left no destination folder');
+    const corrupt = mediaFile(root, 'corrupt.mp4', 'not-a-real-mp4');
+    const corruptReport = await runLocalMediaPipeline({ itemId: '33333333-3333-4333-8333-333333333335', title: 'Corrupt', sourceFile: corrupt, libraryRoot, now });
+    assert(corruptReport.lifecycle.transitions.some((t) => t.failureCode === 'IMPORT_SOURCE_INVALID'), 'corrupt source failure code');
+    assert(!existsSync(join(libraryRoot, 'Movies', 'Corrupt (Unknown Year)')), 'corrupt source left no destination folder');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
@@ -108,7 +120,7 @@ await test('fails closed on invalid source and forbidden extension without resid
 await test('fails closed on destination collision and preserves existing file', async () => {
   const root = workspace();
   try {
-    const source = mediaFile(root, 'source.mp4', 'source-one');
+    const source = mediaFile(root, 'source.mkv', 'source-one');
     const libraryRoot = join(root, 'library');
     const dest = buildLocalMediaDestination({ title: 'Collision Proof', sourceFile: source, libraryRoot });
     mkdirSync(dirname(dest), { recursive: true });
