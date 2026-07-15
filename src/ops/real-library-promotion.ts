@@ -2,6 +2,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import {
   copyFileSync,
   existsSync,
+  lstatSync,
   mkdirSync,
   readdirSync,
   readFileSync,
@@ -186,6 +187,8 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
   let destinationSha256: string | undefined;
   let destinationNameDigest: string | undefined;
   let alreadyPresent = false;
+  let createdByRun = false;
+  let createdDirectory = false;
   let withdrawn = false;
   let promotedDigest: string | undefined;
   let afterPromotionDigest: string | undefined;
@@ -269,6 +272,8 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
     return fail('PROMOTION_TARGET_FORBIDDEN', 'promotion path intersects Gelato or AIO Streams boundary');
   }
   if (!isWithin(input.sourceFile, input.testLibraryRoot)) return fail('PROMOTION_SOURCE_INVALID', 'source file is not inside the isolated test library');
+  if (isSymlink(input.sourceFile)) return fail('PROMOTION_SOURCE_INVALID', 'source path is a symlink and is refused');
+  if (hasSymlinkComponent(input.testLibraryRoot, input.sourceFile)) return fail('PROMOTION_SOURCE_INVALID', 'source path traverses a symlink out of the isolated test library');
   if (!existsSync(input.sourceFile) || !statSync(input.sourceFile).isFile()) return fail('PROMOTION_SOURCE_INVALID', 'source file is missing or not a regular file');
   const ext = extname(input.sourceFile).toLowerCase();
   if (!ALLOWED_EXTENSIONS.has(ext)) return fail('PROMOTION_SOURCE_INVALID', 'source extension is outside media allowlist');
@@ -279,8 +284,11 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
 
   const destinationPath = buildPromotionDestination(input);
   if (!isWithin(destinationPath, input.targetRoot)) return fail('PROMOTION_TARGET_FORBIDDEN', 'destination escapes approved real Movies root');
+  if (hasSymlinkComponent(input.targetRoot, destinationPath)) return fail('PROMOTION_TARGET_FORBIDDEN', 'destination path traverses a symlink out of the approved real Movies root');
   destinationNameDigest = digest('phase-230-destination-name', basename(destinationPath));
-  mkdirSync(dirname(destinationPath), { recursive: true });
+  const destinationDir = dirname(destinationPath);
+  createdDirectory = !existsSync(destinationDir);
+  mkdirSync(destinationDir, { recursive: true });
 
   if (existsSync(destinationPath)) {
     destinationSizeBytes = statSync(destinationPath).size;
@@ -300,6 +308,7 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
         return fail('PROMOTION_COPY_MISMATCH', 'temporary promotion copy checksum did not match source');
       }
       renameSync(tempPath, destinationPath);
+      createdByRun = true;
     } catch {
       rmSync(tempPath, { force: true });
       return fail('PROMOTION_COPY_MISMATCH', 'promotion copy failed and temporary residue was removed');
@@ -325,7 +334,10 @@ export async function runRealLibraryPromotion(input: RealLibraryPromotionInput):
   }
 
   if (input.withdrawAfter) {
-    const withdrawal = withdrawPromotedFile(destinationPath, destinationSha256, input.targetRoot);
+    if (!createdByRun) {
+      return fail('PROMOTION_WITHDRAWAL_REFUSED', 'withdrawal refused: destination file pre-existed this run and was not created by promotion');
+    }
+    const withdrawal = withdrawPromotedFile(destinationPath, destinationSha256, input.targetRoot, createdDirectory);
     if (!withdrawal.ok) return fail(withdrawal.code, withdrawal.evidence);
     withdrawn = true;
     afterWithdrawalDigest = treeDigest(input.targetRoot);
@@ -385,14 +397,17 @@ async function awaitAbsent(input: RealLibraryPromotionInput, destinationPath: st
   return { absent: false };
 }
 
-function withdrawPromotedFile(destinationPath: string, expectedSha256: string | undefined, targetRoot: string): { ok: true } | { ok: false; code: PromotionFailureCode; evidence: string } {
+function withdrawPromotedFile(destinationPath: string, expectedSha256: string | undefined, targetRoot: string, createdDirectory: boolean): { ok: true } | { ok: false; code: PromotionFailureCode; evidence: string } {
   if (!expectedSha256 || !isWithin(destinationPath, targetRoot)) return { ok: false, code: 'PROMOTION_WITHDRAWAL_REFUSED', evidence: 'withdrawal target is outside approved root or missing checksum' };
+  if (isSymlink(destinationPath)) return { ok: false, code: 'PROMOTION_WITHDRAWAL_REFUSED', evidence: 'promoted path is a symlink and is refused for withdrawal' };
   if (!existsSync(destinationPath)) return { ok: false, code: 'PROMOTION_WITHDRAWAL_FAILED', evidence: 'promoted file was missing before withdrawal' };
   if (hashFile(destinationPath) !== expectedSha256) return { ok: false, code: 'PROMOTION_WITHDRAWAL_REFUSED', evidence: 'promoted file checksum changed before withdrawal' };
   rmSync(destinationPath);
   const dir = dirname(destinationPath);
   try {
-    if (isWithin(dir, targetRoot) && readdirSync(dir).length === 0) rmdirSync(dir);
+    // Only remove the movie directory if this run created it and it is now empty;
+    // never delete a real-library directory that pre-existed the promotion.
+    if (createdDirectory && isWithin(dir, targetRoot) && normalizePath(dir) !== normalizePath(targetRoot) && !isSymlink(dir) && readdirSync(dir).length === 0) rmdirSync(dir);
   } catch {
     return { ok: false, code: 'PROMOTION_WITHDRAWAL_FAILED', evidence: 'promoted file removed but empty directory cleanup failed' };
   }
@@ -408,6 +423,32 @@ function isWithin(path: string, root: string): boolean {
   const resolvedRoot = resolve(root);
   const rel = relative(resolvedRoot, resolvedPath);
   return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel));
+}
+
+function isSymlink(path: string): boolean {
+  try {
+    return lstatSync(path).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
+// Returns true if any existing path component strictly between `root` and `target`
+// (inclusive of intermediate directories, exclusive of `root` itself) is a symlink.
+// A symlinked component can redirect the real destination outside the approved root
+// even when the textual path passes `isWithin`.
+function hasSymlinkComponent(root: string, target: string): boolean {
+  const resolvedRoot = resolve(root);
+  const resolvedTarget = resolve(target);
+  const rel = relative(resolvedRoot, resolvedTarget);
+  if (rel === '' || rel.startsWith('..') || isAbsolute(rel)) return false;
+  const parts = rel.split(/[\\/]/).filter((part) => part.length > 0);
+  let current = resolvedRoot;
+  for (const part of parts) {
+    current = join(current, part);
+    if (isSymlink(current)) return true;
+  }
+  return false;
 }
 
 function containsForbiddenPath(path: string): boolean {

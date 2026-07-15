@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import {
@@ -176,6 +176,106 @@ await test('same-checksum existing destination is an already-present no-op', asy
     assert(report.ok, 'same-checksum promotion ok');
     assert(report.file.alreadyPresent, 'already present no-op');
     rmSync(dirname(dest), { recursive: true, force: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('refuses to withdraw a pre-existing real-library file (no data loss)', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    const dest = buildPromotionDestination({ title: 'Pre Existing Real File', year: 2026, sourceFile: source, targetRoot });
+    mkdirSync(dirname(dest), { recursive: true });
+    writeFileSync(dest, readFileSync(source)); // same-checksum file that this run did NOT create
+    const report = await runRealLibraryPromotion({
+      itemId: '66666666-6666-4666-8666-666666666666',
+      title: 'Pre Existing Real File',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval: { approved: true, approvalId: 'approval-6' },
+      allowCustomTargetRootForTests: true,
+      withdrawAfter: true,
+      now,
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'withdrawal of a pre-existing file must fail closed');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_WITHDRAWAL_REFUSED'), 'withdrawal refused code');
+    assert(existsSync(dest), 'pre-existing real-library file must survive the refused withdrawal');
+    assertEq(readFileSync(dest).length, readFileSync(source).length, 'pre-existing file bytes intact');
+    rmSync(dirname(dest), { recursive: true, force: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('withdrawal keeps a pre-existing destination directory and its unrelated files', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    const dest = buildPromotionDestination({ title: 'Shared Dir Proof', year: 2026, sourceFile: source, targetRoot });
+    mkdirSync(dirname(dest), { recursive: true }); // directory pre-exists, promotion did not create it
+    const sibling = join(dirname(dest), 'poster.jpg');
+    writeFileSync(sibling, 'pre-existing-artwork');
+    const report = await runRealLibraryPromotion({
+      itemId: '77777777-7777-4777-8777-777777777777',
+      title: 'Shared Dir Proof',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval: { approved: true, approvalId: 'approval-7' },
+      allowCustomTargetRootForTests: true,
+      withdrawAfter: true,
+      now,
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_WITHDRAWN', 'promotion into a shared directory withdraws cleanly');
+    assert(!existsSync(dest), 'only the promoted file is removed');
+    assert(existsSync(dirname(dest)), 'pre-existing directory is preserved');
+    assert(existsSync(sibling), 'unrelated sibling file is preserved');
+    assert(report.realLibrary.returnedToBefore, 'tree returns to the pre-promotion digest');
+    rmSync(dirname(dest), { recursive: true, force: true });
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+await test('refuses a symlinked destination directory that escapes the approved root', async () => {
+  const root = workspace();
+  const targetRoot = join(root, 'Movies');
+  const outside = join(root, 'outside-real-root');
+  try {
+    const { source, testRoot } = sourceInTestLibrary(root);
+    mkdirSync(targetRoot, { recursive: true });
+    mkdirSync(outside, { recursive: true });
+    const dest = buildPromotionDestination({ title: 'Symlink Escape', year: 2026, sourceFile: source, targetRoot });
+    let linked = true;
+    try {
+      symlinkSync(outside, dirname(dest), 'junction'); // movie dir is a symlink pointing outside the root
+    } catch {
+      linked = false;
+      console.log('    (skipped: symlink creation not permitted in this environment)');
+    }
+    if (!linked) return;
+    const report = await runRealLibraryPromotion({
+      itemId: '88888888-8888-4888-8888-888888888888',
+      title: 'Symlink Escape',
+      year: 2026,
+      sourceFile: source,
+      testLibraryRoot: testRoot,
+      targetRoot,
+      approval: { approved: true, approvalId: 'approval-8' },
+      allowCustomTargetRootForTests: true,
+      now,
+    });
+    assertEq(report.status, 'REAL_LIBRARY_PROMOTION_FAILED', 'symlinked destination component is refused');
+    assert(report.lifecycle.transitions.some((t) => t.failureCode === 'PROMOTION_TARGET_FORBIDDEN'), 'target forbidden code');
+    assertEq(existsSync(join(outside, 'Symlink Escape (2026).mp4')), false, 'nothing was written through the symlink');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
