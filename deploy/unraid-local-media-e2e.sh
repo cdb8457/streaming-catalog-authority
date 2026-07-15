@@ -8,11 +8,13 @@ set -eu
 REPO_DIR="${CATALOG_AUTHORITY_REPO_DIR:-/mnt/user/appdata/catalog/repo}"
 APPDATA_DIR="${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}"
 COMPOSE_FILE="${CATALOG_AUTHORITY_COMPOSE_FILE:-docker-compose.unraid.runtime.yml}"
+OPS_IMAGE="${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}"
 SECRET_FILE="${JELLYFIN_API_KEY_FILE_HOST:-$APPDATA_DIR/secrets/jellyfin_api_key}"
 SECRET_MOUNT="/run/secrets/jellyfin_api_key"
 EVIDENCE_DIR="${CATALOG_AUTHORITY_EVIDENCE_DIR:-$APPDATA_DIR/evidence}"
 BASE_URL="${JELLYFIN_BASE_URL:-http://192.168.1.31:8096}"
 HOST_TEST_DIR="${CATALOG_AUTHORITY_TEST_LIBRARY_HOST_PATH:-/mnt/user/media/catalog-authority-test-library}"
+COMPOSE_NETWORK="${CATALOG_AUTHORITY_COMPOSE_NETWORK:-catalogauthority_default}"
 
 SOURCE_FILE="${1:-}"
 OUT_FILE="${2:-$EVIDENCE_DIR/phase-226-local-media-e2e.json}"
@@ -62,18 +64,26 @@ cd "$REPO_DIR"
 
 docker compose -f "$COMPOSE_FILE" up -d postgres sidecar
 
-docker compose -f "$COMPOSE_FILE" run --rm \
-  --entrypoint npm \
-  -v "$SECRET_FILE:$SECRET_MOUNT:ro" \
-  -v "$(dirname "$OUT_FILE"):/evidence" \
-  -v "$SOURCE_FILE:$SOURCE_FILE:ro" \
-  -v "$HOST_TEST_DIR:$HOST_TEST_DIR" \
-  -e JELLYFIN_ENABLE_NETWORK=true \
-  -e "JELLYFIN_BASE_URL=$BASE_URL" \
-  -e "JELLYFIN_API_KEY_FILE=$SECRET_MOUNT" \
-  -e JELLYFIN_ALLOW_LIVE_PUBLISH=false \
-  ops \
-  run --silent ops:local-media-pipeline -- \
+docker run --rm \
+  --network "$COMPOSE_NETWORK" \
+  --volume "$APPDATA_DIR/secrets/admin_database_url:/run/secrets/admin_database_url:ro" \
+  --volume "$APPDATA_DIR/secrets/database_url:/run/secrets/database_url:ro" \
+  --volume "$APPDATA_DIR/sidecar/run:/run/catalog-sidecar" \
+  --volume "$SECRET_FILE:$SECRET_MOUNT:ro" \
+  --volume "$(dirname "$OUT_FILE"):/evidence" \
+  --volume "$SOURCE_FILE:$SOURCE_FILE:ro" \
+  --volume "$HOST_TEST_DIR:$HOST_TEST_DIR" \
+  --env APP_ENV=production \
+  --env ADMIN_DATABASE_URL_FILE=/run/secrets/admin_database_url \
+  --env DATABASE_URL_FILE=/run/secrets/database_url \
+  --env CUSTODIAN_MODE=sidecar \
+  --env CUSTODIAN_SIDECAR_SOCKET_PATH=/run/catalog-sidecar/catalog-sidecar.sock \
+  --env JELLYFIN_ENABLE_NETWORK=true \
+  --env "JELLYFIN_BASE_URL=$BASE_URL" \
+  --env "JELLYFIN_API_KEY_FILE=$SECRET_MOUNT" \
+  --env JELLYFIN_ALLOW_LIVE_PUBLISH=false \
+  "$OPS_IMAGE" \
+  npm run --silent ops:local-media-pipeline -- \
     --out "/evidence/$(basename "$OUT_FILE")" \
     --item-id "$ITEM_ID" \
     --title "$TITLE" \
