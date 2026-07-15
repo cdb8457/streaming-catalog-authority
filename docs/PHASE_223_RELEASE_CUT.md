@@ -172,3 +172,13 @@ Clean post-release branches can start from this baseline for:
 - Jellyfin collection-write investigation;
 - Plex rung-1 read-only ladder;
 - O5 reopening or closure work.
+
+## Phase 224 Addendum
+
+Phase 224 clarifies that the `v1.0.0` release cut describes infrastructure readiness, not product
+readiness. The release remains valid for the scoped backend/operator foundation: runtime stack,
+sidecar custody, operator UI health/status, release packaging, and Jellyfin read-only evidence.
+
+It does not claim a complete media workflow. Product readiness remains false until the project proves
+one boring, repeatable end-to-end process from operator input to Jellyfin-visible result with UI
+lifecycle status. The current named gap is `PRODUCT_READY_FALSE_E2E_WORKFLOW_MISSING`.

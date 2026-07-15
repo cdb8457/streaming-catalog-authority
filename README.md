@@ -1625,6 +1625,13 @@ release notes. It records `VERSIONED_RELEASE_CUT_READY_WITH_ACCEPTED_WARNINGS`, 
 of the `v1.0.0` tag, Unraid running the release image digest, O4 closed, O5 deferred-accepted, and
 Jellyfin read-only proven while Jellyfin writes remain blocked by
 `JELLYFIN_COLLECTION_WRITE_MEMBERSHIP_NOT_MATERIALIZING`.
+Phase 224 adds `docs/PHASE_224_WORKING_FOUNDATION_REDEFINITION.md` and
+`test:working-foundation-plan`. It annotates the Phase 200/223 launch records so `launch-ready`
+means infrastructure readiness, not product readiness, and defines
+`WORKING_FOUNDATION` as one complete repeatable workflow from operator input to Jellyfin-visible
+result with UI lifecycle status. Current product status is
+`PRODUCT_READY_FALSE_E2E_WORKFLOW_MISSING`; Phase 225 is unblocked for the local-media import
+service and lifecycle state machine.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43

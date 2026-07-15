@@ -103,3 +103,14 @@ The single warning is the accepted O5 launch warning. It is not a launch blocker
 - O5 final status: `O5_DEFERRED_ACCEPTED`.
 - Launch readiness status: `LAUNCH_READY_WITH_ACCEPTED_WARNINGS`.
 - Phase 201, if needed, should be launch packaging/polish only unless a reopening criterion fires.
+
+## Phase 224 Addendum
+
+Phase 224 clarifies that this launch-readiness record describes infrastructure readiness, not product
+readiness. The Phase 200 claim remains scoped to the self-hosted Catalog Authority backend/operator
+foundation, custody path, health/status surface, and accepted warnings. It does not assert a complete
+media workflow.
+
+Product readiness remains false until a complete, repeatable workflow is proven from operator input
+to catalog storage, local media import, Jellyfin-visible result, and UI lifecycle status. The current
+named gap is `PRODUCT_READY_FALSE_E2E_WORKFLOW_MISSING`.

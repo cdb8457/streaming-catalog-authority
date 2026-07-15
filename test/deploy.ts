@@ -10643,7 +10643,7 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
   assert(pkg.scripts['ops:jellyfin-write-proof'] === 'tsx src/ops/jellyfin-write-proof-cli.ts', 'Phase 221 ops script present');
   assert(pkg.scripts['test:jellyfin-write-proof'] === 'tsx test/jellyfin-write-proof.ts', 'Phase 221 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/deploy.ts'),
     'Phase 221 aggregate test runs before deploy guard',
   );
   const combined = [
@@ -10697,7 +10697,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
   assert(exists('test/jellyfin-integration-decision.ts'), 'Phase 222 Jellyfin decision test exists');
   assert(pkg.scripts['test:jellyfin-integration-decision'] === 'tsx test/jellyfin-integration-decision.ts', 'Phase 222 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/deploy.ts'),
     'Phase 222 aggregate test runs after write proof and before deploy guard',
   );
   const combined = [
@@ -10745,7 +10745,7 @@ test('Phase 223 versioned release cut records v1.0.0 with accepted warnings', ()
   assert(pkg.version === '1.0.0', 'package version is 1.0.0');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/deploy.ts'),
+    (pkg.scripts.test ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/deploy.ts'),
     'Phase 223 aggregate test runs after Jellyfin decision and before deploy guard',
   );
   const combined = [
@@ -10779,6 +10779,53 @@ test('Phase 223 versioned release cut records v1.0.0 with accepted warnings', ()
     'playback enabled',
     'download enabled',
   ]) assert(!doc.includes(forbidden), `Phase 223 record excludes ${forbidden}`);
+});
+
+test('Phase 224 working foundation redefinition records E2E product gap', () => {
+  assert(exists('docs/PHASE_224_WORKING_FOUNDATION_REDEFINITION.md'), 'Phase 224 working foundation doc exists');
+  assert(exists('test/working-foundation-plan.ts'), 'Phase 224 working foundation test exists');
+  assert(pkg.scripts['test:working-foundation-plan'] === 'tsx test/working-foundation-plan.ts', 'Phase 224 test script present');
+  assert(
+    (pkg.scripts.test ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/deploy.ts'),
+    'Phase 224 aggregate test runs after release cut and before deploy guard',
+  );
+  const combined = [
+    read('docs/PHASE_224_WORKING_FOUNDATION_REDEFINITION.md'),
+    read('docs/PHASE_200_LAUNCH_READINESS_PASS.md'),
+    read('docs/PHASE_223_RELEASE_CUT.md'),
+    read('test/working-foundation-plan.ts'),
+    read('README.md'),
+  ].join('\n');
+  for (const required of [
+    'Phase 224: Working Foundation Redefinition + First End-to-End Workflow Plan',
+    'phase-224-working-foundation-redefinition',
+    'Prior `launch-ready` claims in Phase 200 and Phase 223 describe infrastructure readiness',
+    'WORKING_FOUNDATION = one complete, boring, repeatable media workflow from input to visible result',
+    'PRODUCT_READY_FALSE_E2E_WORKFLOW_MISSING',
+    'Phase 224 Addendum',
+    '/mnt/user/media/catalog-authority-test-library',
+    '`REQUESTED`',
+    '`STORED`',
+    '`IMPORTED`',
+    '`VISIBLE_IN_JELLYFIN`',
+    '`FAILED`',
+    'verification\nmeans observed state, not accepted commands or HTTP status codes alone',
+    'Phase 225: local import service and lifecycle state machine, local/fake evidence only.',
+    'Phase 226: live single-file end-to-end on Unraid.',
+    'Phase 227: repeatability and failure-injection proof.',
+    'Phase 228: working-foundation acceptance record.',
+    'Providers get defined later as "how files arrive at Step 3."',
+    'Phase 224 adds `docs/PHASE_224_WORKING_FOUNDATION_REDEFINITION.md`',
+  ]) assert(combined.includes(required), `Phase 224 surface preserves ${required}`);
+  const doc = read('docs/PHASE_224_WORKING_FOUNDATION_REDEFINITION.md');
+  for (const forbidden of [
+    'provider live mode enabled',
+    'download enabled',
+    'playback enabled',
+    'scraping enabled',
+    'JELLYFIN_WRITE_CAPABLE_LAUNCH_ELIGIBLE',
+    'PRODUCT_READY_TRUE',
+  ]) assert(!doc.includes(forbidden), `Phase 224 record excludes ${forbidden}`);
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);
