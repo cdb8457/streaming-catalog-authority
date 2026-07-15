@@ -1645,6 +1645,11 @@ repeatability/failure-injection evidence. It records two fresh successful import
 duplicate retry, one corrupt-source failure with no residue, and one Jellyfin-unreachable failure
 that retained a checksum-matched import and became visible after a healthy scan. Phase 228 is
 unblocked for the working-foundation acceptance record.
+Phase 229 adds `docs/PHASE_229_REAL_LIBRARY_PROMOTION_BOUNDARY.md` and defines the real-library
+promotion boundary without runtime changes. Promotion means an explicit operator-approved copy from
+the isolated test library into `/mnt/user/media/Movies`, never automatic, never overwriting existing
+files, and never targeting Gelato/AIO paths. Phase 230 is unblocked for guarded implementation and a
+single reversible live promotion proof.
 Phase 48 updates the static live-smoke operator plan command shapes to the copy/paste-safe npm form:
 `npm run --silent smoke:torbox-readonly -- -- --live-smoke ...`.
 Phase 49 adds `ops:torbox-live-smoke-summary-pack`, a local summary command for explicit Phase 43
