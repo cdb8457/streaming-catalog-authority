@@ -32,6 +32,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-handoff.ts', 'src/ops/promotion-handoff-cli.ts',
   'src/ops/promotion-artifact-schema.ts', 'src/ops/promotion-artifact-schema-cli.ts',
   'src/ops/promotion-dashboard.ts', 'src/ops/promotion-dashboard-cli.ts',
+  'src/ops/promotion-fixture-bundle.ts', 'src/ops/promotion-fixture-bundle-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -61,6 +62,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_DASHBOARD.md',
   'docs/PHASE_230_LOCAL_SAFETY_SUITE.md',
   'docs/PHASE_230_LOCAL_TOOLING_INDEX.md',
+  'docs/PHASE_230_PROMOTION_FIXTURE_BUNDLE.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');
