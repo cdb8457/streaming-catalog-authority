@@ -43,6 +43,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-self-digest-verifier.ts', 'src/ops/promotion-self-digest-verifier-cli.ts',
   'src/ops/promotion-cli-contract.ts', 'src/ops/promotion-cli-contract-cli.ts',
   'src/ops/promotion-determinism.ts', 'src/ops/promotion-determinism-cli.ts',
+  'src/ops/promotion-blocker-taxonomy.ts', 'src/ops/promotion-blocker-taxonomy-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -84,6 +85,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_SELF_DIGEST_VERIFIER.md',
   'docs/PHASE_230_PROMOTION_CLI_CONTRACT.md',
   'docs/PHASE_230_PROMOTION_DETERMINISM.md',
+  'docs/PHASE_230_PROMOTION_BLOCKER_TAXONOMY.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');

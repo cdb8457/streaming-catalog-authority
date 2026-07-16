@@ -41,6 +41,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-self-digest-verifier', doc: 'PHASE_230_PROMOTION_SELF_DIGEST_VERIFIER' },
   { base: 'promotion-cli-contract', doc: 'PHASE_230_PROMOTION_CLI_CONTRACT' },
   { base: 'promotion-determinism', doc: 'PHASE_230_PROMOTION_DETERMINISM' },
+  { base: 'promotion-blocker-taxonomy', doc: 'PHASE_230_PROMOTION_BLOCKER_TAXONOMY' },
 ];
 
 export interface OpMetaCheck {
