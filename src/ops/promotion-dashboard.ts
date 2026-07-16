@@ -1,18 +1,20 @@
 import { createHash } from 'node:crypto';
 
 // Local, non-live offline acceptance dashboard. It consumes the rehearsal-matrix manifest, the
-// artifact-integrity report, and the coordinator handoff packet, and renders a single redaction-safe
-// dashboard that is READY only when ALL three are green. It reads parsed JSON only; it performs no
-// promotion, never touches the real Movies root, never contacts Jellyfin, and authorizes nothing live.
+// artifact-integrity report, the artifact-schema report, and the coordinator handoff packet, and
+// renders a single redaction-safe dashboard that is READY only when ALL FOUR are green. It reads parsed
+// JSON only; it performs no promotion, never touches the real Movies root, never contacts Jellyfin, and
+// authorizes nothing live.
 
 export interface DashboardInput {
   readonly matrix?: unknown;
   readonly integrity?: unknown;
+  readonly schema?: unknown;
   readonly handoff?: unknown;
 }
 
 export interface DashboardPanel {
-  readonly source: 'matrix' | 'integrity' | 'handoff';
+  readonly source: 'matrix' | 'integrity' | 'schema' | 'handoff';
   readonly present: boolean;
   readonly ok: boolean;
   readonly status?: string;
@@ -44,6 +46,12 @@ export function buildAcceptanceDashboard(input: DashboardInput): AcceptanceDashb
     report: 'phase-230-promotion-artifact-integrity', okField: (o) => o.ok === true,
     statusField: 'ok', digestField: 'integrityDigest',
     missing: 'INTEGRITY_MISSING', invalid: 'INTEGRITY_INVALID', notOk: 'INTEGRITY_NOT_OK',
+  }, blockers));
+
+  panels.push(evaluate('schema', input.schema, {
+    report: 'phase-230-promotion-artifact-schema', okField: (o) => o.ok === true,
+    statusField: 'ok', digestField: 'schemaDigest',
+    missing: 'SCHEMA_MISSING', invalid: 'SCHEMA_INVALID', notOk: 'SCHEMA_NOT_OK',
   }, blockers));
 
   panels.push(evaluate('handoff', input.handoff, {

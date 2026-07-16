@@ -78,6 +78,45 @@ await test('rejects a malformed-but-self-digested artifact that the integrity ve
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+const FAILED_STATE_CASES: Array<{ kind: keyof RawBundle; field: string; value: string; boolField?: string; digestField: string; scope: string; code: string }> = [
+  { kind: 'approvalEvidence', field: 'status', value: 'APPROVAL_ATTESTATION_INVALID', digestField: 'evidenceDigest', scope: 'phase-230-approval-evidence', code: 'APPROVAL_EVIDENCE_STATUS_INVALID' },
+  { kind: 'promotionEvidence', field: 'status', value: 'REAL_LIBRARY_PROMOTION_FAILED', boolField: 'ok', digestField: 'evidenceDigest', scope: 'phase-230-report', code: 'PROMOTION_EVIDENCE_STATUS_INVALID' },
+  { kind: 'evidenceReview', field: 'status', value: 'PROMOTION_EVIDENCE_REJECTED', boolField: 'ok', digestField: 'reviewDigest', scope: 'phase-230-evidence-review', code: 'EVIDENCE_REVIEW_STATUS_INVALID' },
+  { kind: 'readiness', field: 'verdict', value: 'BLOCKED', digestField: 'checklistDigest', scope: 'phase-230-readiness-checklist', code: 'READINESS_STATUS_INVALID' },
+  { kind: 'acceptancePacket', field: 'status', value: 'ACCEPTANCE_REFUSED', boolField: 'accepted', digestField: 'sealDigest', scope: 'phase-230-acceptance-seal', code: 'ACCEPTANCE_PACKET_STATUS_INVALID' },
+];
+
+for (const c of FAILED_STATE_CASES) {
+  await test(`rejects a re-self-digested ${c.kind} in a failed/refused state`, async () => {
+    const root = workspace();
+    try {
+      const { bundle, raw } = await bundleFromRehearsal(root);
+      const artifact = raw[c.kind];
+      artifact[c.field] = c.value;
+      if (c.boolField) artifact[c.boolField] = false; // realistic failed-state boolean
+      reseal(artifact, c.digestField, c.scope); // valid self-digest over the failed-state body
+      const rep = validateArtifactSchemas(bundle);
+      assert(!rep.ok, 'strict schema rejects the failed/refused state');
+      assert(rep.problems.includes(c.code), `${c.code} reported`);
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+await test('a re-self-digested REFUSED acceptance passes integrity but fails strict schema', async () => {
+  const root = workspace();
+  try {
+    const { bundle, raw } = await bundleFromRehearsal(root);
+    raw.acceptancePacket.status = 'ACCEPTANCE_REFUSED';
+    raw.acceptancePacket.accepted = false;
+    reseal(raw.acceptancePacket, 'sealDigest', 'phase-230-acceptance-seal');
+    const integrity = verifyArtifactIntegrity(bundle);
+    assert(integrity.ok, `integrity still accepts the resealed terminal packet (problems: ${integrity.problems.join(',')})`);
+    const schema = validateArtifactSchemas(bundle);
+    assert(!schema.ok, 'strict schema rejects the refused acceptance');
+    assert(schema.problems.includes('ACCEPTANCE_PACKET_STATUS_INVALID') && schema.problems.includes('ACCEPTANCE_PACKET_NOT_SUCCESSFUL'), 'status + not-successful reported');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('rejects a wrong report type', async () => {
   const root = workspace();
   try {

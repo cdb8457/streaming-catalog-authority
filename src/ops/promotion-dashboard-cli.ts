@@ -8,10 +8,11 @@ import { buildAcceptanceDashboard, type DashboardInput } from './promotion-dashb
 
 function usage(): string {
   return [
-    'usage: ops:promotion-dashboard [--matrix <f>] [--integrity <f>] [--handoff <f>] [--out <dashboard.json>]',
+    'usage: ops:promotion-dashboard [--matrix <f>] [--integrity <f>] [--schema <f>] [--handoff <f>] [--out <dashboard.json>]',
     '',
     'Local, non-live: DASHBOARD_READY only when the rehearsal matrix passed, the integrity report is ok,',
-    'and the coordinator handoff is READY_FOR_COORDINATOR. Exit 0 = READY, 1 = BLOCKED. Authorizes nothing live.',
+    'the artifact-schema report is ok, and the coordinator handoff is READY_FOR_COORDINATOR. Exit 0 = READY,',
+    '1 = BLOCKED. Authorizes nothing live.',
   ].join('\n');
 }
 
@@ -30,6 +31,7 @@ function main(): number {
   const args = process.argv.slice(2);
   const matrixPath = valueAfter(args, '--matrix');
   const integrityPath = valueAfter(args, '--integrity');
+  const schemaPath = valueAfter(args, '--schema');
   const handoffPath = valueAfter(args, '--handoff');
   const out = valueAfter(args, '--out');
   let input: DashboardInput;
@@ -37,6 +39,7 @@ function main(): number {
     input = {
       ...(matrixPath ? { matrix: readJson(matrixPath, 'matrix') } : {}),
       ...(integrityPath ? { integrity: readJson(integrityPath, 'integrity') } : {}),
+      ...(schemaPath ? { schema: readJson(schemaPath, 'schema') } : {}),
       ...(handoffPath ? { handoff: readJson(handoffPath, 'handoff') } : {}),
     };
   } catch (err) {

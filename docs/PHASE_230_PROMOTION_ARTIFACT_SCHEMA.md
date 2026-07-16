@@ -19,14 +19,21 @@ For each of `approvalEvidence`, `promotionEvidence`, `evidenceReview`, `readines
 
 - `report` matches the expected report id and `version === 1`;
 - `redactionSafe === true`;
-- the status/verdict field is one of the allowed enum values;
+- the status/verdict is a **successful terminal state** — a bundle here represents an accepted,
+  ready-for-handoff promotion, so failed/refused/blocked states are rejected: approval
+  `APPROVAL_ATTESTATION_READY`; promotion `REAL_LIBRARY_PROMOTION_VISIBLE`/`WITHDRAWN` with `ok === true`
+  (not `FAILED`); review `PROMOTION_EVIDENCE_ACCEPTED` with `ok === true` (not `REJECTED`); readiness
+  `READY` (not `BLOCKED`); acceptance `ACCEPTED_SEALED` with `accepted === true` (not `REFUSED`);
 - the self-digest field is a well-formed SHA-256 string (shape only — recomputation is the integrity
   verifier's job);
 - the required structural fields are present.
 
-Problems are generic codes (e.g. `ACCEPTANCE_PACKET_STATUS_INVALID`, `PROMOTION_EVIDENCE_VERSION_INVALID`,
-`EVIDENCE_REVIEW_NOT_REDACTION_SAFE`, `APPROVAL_EVIDENCE_MISSING_FIELD`, `READINESS_MISSING`). `ok` is true
-only when every supplied artifact is well-formed and none is missing. The report carries a `schemaDigest`.
+Problems are generic codes (e.g. `ACCEPTANCE_PACKET_STATUS_INVALID`, `ACCEPTANCE_PACKET_NOT_SUCCESSFUL`,
+`PROMOTION_EVIDENCE_VERSION_INVALID`, `EVIDENCE_REVIEW_NOT_REDACTION_SAFE`, `APPROVAL_EVIDENCE_MISSING_FIELD`,
+`READINESS_MISSING`). `ok` is true only when every supplied artifact is well-formed, in a successful
+terminal state, and none is missing. Because a failed/refused artifact can be re-self-digested (its own
+digest recomputes) yet is still rejected here, this is a strictly stronger gate than the integrity
+verifier. The report carries a `schemaDigest`.
 
 ## Files
 

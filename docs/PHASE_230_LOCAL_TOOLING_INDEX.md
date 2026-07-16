@@ -25,7 +25,7 @@ for all of this tooling and **not authorized** by any of it.
 | Artifact integrity | `ops:promotion-artifact-integrity` | [integrity](PHASE_230_PROMOTION_ARTIFACT_INTEGRITY.md) | Self-digest + cross-artifact chain + missing checks |
 | Artifact schema | `ops:promotion-artifact-schema` | [schema](PHASE_230_PROMOTION_ARTIFACT_SCHEMA.md) | Strict shape/status validation (catches malformed-but-self-digested) |
 | Coordinator handoff | `ops:promotion-handoff` | [handoff](PHASE_230_PROMOTION_HANDOFF.md) | Redaction-safe summary with explicit no-Phase-231/no-live language |
-| Acceptance dashboard | `ops:promotion-dashboard` | [dashboard](PHASE_230_PROMOTION_DASHBOARD.md) | matrix + integrity + handoff → READY only if all green |
+| Acceptance dashboard | `ops:promotion-dashboard` | [dashboard](PHASE_230_PROMOTION_DASHBOARD.md) | matrix + integrity + schema + handoff → READY only if all green |
 | Live-boundary guard | `test:promotion-live-boundary-guard` | [guard](PHASE_230_PROMOTION_LIVE_BOUNDARY_GUARD.md) | Static guard that the local tools/docs hold no live hooks |
 | Local safety suite | `test:phase230-local` | [suite](PHASE_230_LOCAL_SAFETY_SUITE.md) | Fast regression gate over only the local safety suites |
 
