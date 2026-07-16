@@ -21,18 +21,23 @@ constant `NONE`).
 | `dag` | `ok === true` (acyclic) |
 | `archive` | `overall === ARCHIVE_READY` |
 
-`overall` is `REVIEW_BUNDLE_READY` iff every component is present and green; otherwise
+Beyond the per-component green checks it enforces a consistency cross-check: the **archive manifest's own
+component digests must match the evidence/transcript/ledger/dag actually supplied here** — so an archive
+built over a *different* run is caught (`ARCHIVE_EVIDENCE_MISMATCH`, `ARCHIVE_TRANSCRIPT_MISMATCH`,
+`ARCHIVE_LEDGER_MISMATCH`, `ARCHIVE_DAG_MISMATCH`) even when every component is individually green.
+
+`overall` is `REVIEW_BUNDLE_READY` iff every component is present, green, and consistent; otherwise
 `REVIEW_BUNDLE_BLOCKED` with generic blockers (`*_MISSING`, `*_INVALID`, `EVIDENCE_NOT_COMPLETE`,
-`TRANSCRIPT_NOT_CLEAN`, `LEDGER_INCOMPLETE`, `DAG_NOT_ACYCLIC`, `ARCHIVE_NOT_READY`). Each component
-carries name/present/ok/digest; the fixed no-live / no-Phase-231 disclaimers are present in every
-bundle; and the whole is sealed with a `reviewBundleDigest`.
+`TRANSCRIPT_NOT_CLEAN`, `LEDGER_INCOMPLETE`, `DAG_NOT_ACYCLIC`, `ARCHIVE_NOT_READY`,
+`ARCHIVE_*_MISMATCH`). Each component carries name/present/ok/digest; the fixed no-live / no-Phase-231
+disclaimers are present in every bundle; and the whole is sealed with a `reviewBundleDigest`.
 
 ## Files
 
 - `src/ops/promotion-review-bundle.ts` — `buildReviewBundle(input)`.
 - `src/ops/promotion-review-bundle-cli.ts` — CLI wrapper.
-- `test/promotion-review-bundle.ts` — 5 tests: all-green READY, missing component, not-clean transcript,
-  empty input, and a spawned CLI run.
+- `test/promotion-review-bundle.ts` — 6 tests: all-green READY, missing component, not-clean transcript,
+  a cross-run archive mismatch, empty input, and a spawned CLI run.
 
 ## Usage
 

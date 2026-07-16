@@ -3,8 +3,10 @@ import { createHash } from 'node:crypto';
 // Local, non-live final coordinator review bundle. It combines the five top-level offline records — the
 // evidence packet, the review transcript, the provenance ledger, the gate DAG (graph), and the archive
 // manifest — into one redaction-safe, deterministic bundle that is REVIEW_BUNDLE_READY only when all are
-// present, valid, and green. It reads parsed JSON only; it performs no promotion, never touches the real
-// Movies root, never contacts Jellyfin, and authorizes nothing live.
+// present, valid, green, AND mutually consistent: the archive manifest's own component digests must match
+// the evidence/transcript/ledger/dag actually supplied here, so an archive assembled from a different run
+// is caught with a generic mismatch code. It reads parsed JSON only; it performs no promotion, never
+// touches the real Movies root, never contacts Jellyfin, and authorizes nothing live.
 
 export interface ReviewBundleInput {
   readonly evidence?: unknown;
@@ -60,16 +62,30 @@ const SPECS: readonly Spec[] = [
 
 export function buildReviewBundle(input: ReviewBundleInput): ReviewBundle {
   const blockers: string[] = [];
+  const parsed: Partial<Record<keyof ReviewBundleInput, Record<string, unknown>>> = {};
   const components: ReviewBundleComponent[] = SPECS.map((spec) => {
     const value = input[spec.key];
     if (value === undefined) { blockers.push(spec.missing); return { component: spec.key, present: false, ok: false }; }
     const obj = asObject(value);
     if (obj.report !== spec.report) { blockers.push(spec.invalid); return { component: spec.key, present: true, ok: false }; }
+    parsed[spec.key] = obj;
     const ok = spec.ok(obj);
     if (!ok) blockers.push(spec.notOk);
     const d = asSha256(obj[spec.digestField]);
     return { component: spec.key, present: true, ok, ...(d ? { digest: d } : {}) };
   });
+
+  // Cross-check: the archive manifest must have been built over THIS evidence/transcript/ledger/dag. Each
+  // archive component digest must match the corresponding supplied record; an archive from a different run
+  // is caught even though every individual component is internally green.
+  const archiveObj = parsed.archive;
+  if (archiveObj) {
+    const archiveDigestFor = componentDigestFor(archiveObj);
+    for (const [key, digestField] of ARCHIVE_LINKS) {
+      const supplied = parsed[key] ? asSha256(parsed[key]![digestField]) : undefined;
+      if (supplied && archiveDigestFor(key) !== supplied) blockers.push(`ARCHIVE_${key.toUpperCase()}_MISMATCH`);
+    }
+  }
 
   const overall: ReviewBundle['overall'] = blockers.length === 0 ? 'REVIEW_BUNDLE_READY' : 'REVIEW_BUNDLE_BLOCKED';
   const withoutDigest: Omit<ReviewBundle, 'reviewBundleDigest'> = {
@@ -85,6 +101,21 @@ export function buildReviewBundle(input: ReviewBundleInput): ReviewBundle {
   return { ...withoutDigest, reviewBundleDigest: digest('phase-230-review-bundle', JSON.stringify(withoutDigest)) };
 }
 
+// Which archive component each supplied record must agree with, and the field carrying that record's digest.
+const ARCHIVE_LINKS: readonly [key: 'evidence' | 'transcript' | 'ledger' | 'dag', digestField: string][] = [
+  ['evidence', 'packetDigest'],
+  ['transcript', 'transcriptDigest'],
+  ['ledger', 'ledgerDigest'],
+  ['dag', 'dagDigest'],
+];
+
+function componentDigestFor(archive: Record<string, unknown>): (name: string) => string | undefined {
+  const comps = Array.isArray(archive.components) ? archive.components : [];
+  return (name: string): string | undefined => {
+    for (const c of comps) { const co = asObject(c); if (co.component === name) return asSha256(co.digest); }
+    return undefined;
+  };
+}
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }

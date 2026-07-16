@@ -44,6 +44,14 @@ const NODES: readonly GateNode[] = [
   { id: 'provenance-ledger', test: 'test/promotion-provenance-ledger.ts', dependsOn: ['fixture-bundle'], blockers: [] },
   { id: 'evidence-packet', test: 'test/promotion-evidence-packet.ts', dependsOn: ['fixture-bundle', 'bundle-replay'], blockers: ['BUNDLE_NOT_READY', 'REPLAY_MISSING', 'REPLAY_NOT_OK'] },
   { id: 'review-transcript', test: 'test/promotion-review-transcript.ts', dependsOn: [], blockers: ['REVIEWED_COMMIT_INVALID', 'TEST_FAILED'] },
+  { id: 'gate-dag', test: 'test/promotion-gate-dag.ts', dependsOn: [], blockers: ['CYCLE_DETECTED', 'UNKNOWN_DEPENDENCY'] },
+  { id: 'changelog', test: 'test/promotion-changelog.ts', dependsOn: [], blockers: ['CHANGELOG_COMMIT_INVALID', 'RAW_PATH_LEAK_SUSPECTED'] },
+  { id: 'archive-manifest', test: 'test/promotion-archive-manifest.ts', dependsOn: ['provenance-ledger', 'gate-dag', 'evidence-packet', 'review-transcript'], blockers: ['ARCHIVE_NOT_READY', 'EVIDENCE_LEDGER_MISMATCH', 'TRANSCRIPT_LEDGER_MISMATCH'] },
+  { id: 'acceptance-meta', test: 'test/promotion-acceptance-meta.ts', dependsOn: [], blockers: ['ACCEPTANCE_META_INCOMPLETE'] },
+  { id: 'injection-corpus', test: 'test/promotion-injection-corpus.ts', dependsOn: [], blockers: ['INJECTION_EXECUTION_DETECTED', 'INJECTION_LIVE_CALL_DETECTED'] },
+  { id: 'review-bundle', test: 'test/promotion-review-bundle.ts', dependsOn: ['evidence-packet', 'review-transcript', 'provenance-ledger', 'gate-dag', 'archive-manifest'], blockers: ['REVIEW_BUNDLE_BLOCKED', 'ARCHIVE_EVIDENCE_MISMATCH'] },
+  { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
+  { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];
 
 export function buildGateDag(): readonly GateNode[] {

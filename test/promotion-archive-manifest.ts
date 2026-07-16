@@ -25,6 +25,7 @@ function assertEq<T>(actual: T, expected: T, msg: string): void { if (actual !==
 function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-archive-')); }
 function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 16, 18, 0, i++)); }
 const COMMIT = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
+const COMMIT_ALT = 'a1b2c3d4e5f6071829304152637485960a1b2c3d';
 
 async function greenInputs(root: string) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'archive', now: makeNow() })));
@@ -80,6 +81,30 @@ await test('BLOCKED when the review transcript is not clean', async () => {
     const archive = buildArchiveManifest({ ledger, dag, evidence, transcript: blockedTranscript });
     assertEq(archive.overall, 'ARCHIVE_BLOCKED', 'blocked');
     assert(archive.blockers.includes('TRANSCRIPT_NOT_CLEAN'), 'transcript-not-clean blocker');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when a component is from a different run (ledger cross-check)', async () => {
+  const root = workspace();
+  try {
+    const { ledger, dag, evidence } = await greenInputs(root); // ledger records the transcript at COMMIT
+    const otherTranscript = buildReviewTranscript({ reviewedCommit: COMMIT_ALT, testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
+    const archive = buildArchiveManifest({ ledger, dag, evidence, transcript: otherTranscript });
+    assertEq(archive.overall, 'ARCHIVE_BLOCKED', 'blocked');
+    assert(archive.blockers.includes('TRANSCRIPT_LEDGER_MISMATCH'), `generic transcript/ledger mismatch (blockers: ${archive.blockers.join(',')})`);
+    assert(!archive.blockers.includes('TRANSCRIPT_NOT_CLEAN'), 'the transcript is itself still clean');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when a component fails its own self-digest recompute', async () => {
+  const root = workspace();
+  try {
+    const { ledger, dag, evidence, transcript } = await greenInputs(root);
+    const tampered = JSON.parse(JSON.stringify(dag)) as { nodeCount: number; [k: string]: unknown };
+    tampered.nodeCount += 1; // body mutated; the stated dagDigest is now stale
+    const archive = buildArchiveManifest({ ledger, dag: tampered, evidence, transcript });
+    assertEq(archive.overall, 'ARCHIVE_BLOCKED', 'blocked');
+    assert(archive.blockers.includes('DAG_DIGEST_MISMATCH'), `generic self-digest mismatch (blockers: ${archive.blockers.join(',')})`);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

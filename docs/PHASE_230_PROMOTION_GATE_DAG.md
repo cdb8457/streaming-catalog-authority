@@ -13,8 +13,11 @@ never touches `/mnt/user/media/Movies`, never contacts Jellyfin, and authorizes 
 
 approval → promotion → rehearsal → evidence-review → readiness → acceptance-seal → rehearsal-matrix →
 artifact-integrity / artifact-schema → handoff → dashboard → fixture-bundle → { bundle-replay,
-bundle-diff, tamper-corpus, provenance-ledger } → evidence-packet; review-transcript is independent.
-Each node carries `{ id, test, dependsOn, blockers }`.
+bundle-diff, tamper-corpus, provenance-ledger } → evidence-packet. The W–AD terminal gates are also
+declared: `changelog`, `gate-dag`, `acceptance-meta`, `injection-corpus`, `closure`, and `live-boundary`
+are independent guard gates; `archive-manifest` depends on `provenance-ledger`, `gate-dag`,
+`evidence-packet`, and `review-transcript`; and `review-bundle` depends on those plus `archive-manifest`.
+`review-transcript` is independent. Each node carries `{ id, test, dependsOn, blockers }`.
 
 `verifyGateDag` runs Kahn's algorithm: `acyclic` is true only when the topological order covers every
 node; `problems` reports `CYCLE_DETECTED` or `UNKNOWN_DEPENDENCY:<id>`. The report is redaction-safe

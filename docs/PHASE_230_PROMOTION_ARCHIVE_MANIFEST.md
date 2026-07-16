@@ -6,9 +6,9 @@ Status: `PHASE_230_PROMOTION_ARCHIVE_MANIFEST_READY`
 
 Consumes the four top-level offline records — the **provenance ledger**, the **gate DAG**, the
 **coordinator evidence packet**, and the **review transcript** — and produces a redaction-safe archive
-manifest that is `ARCHIVE_READY` **only when all four are present, valid, and green**. It reads parsed
-JSON only; it performs no promotion, never touches `/mnt/user/media/Movies`, never contacts Jellyfin,
-and authorizes nothing live (`authorization` is the constant `NONE`).
+manifest that is `ARCHIVE_READY` **only when all four are present, valid, green, and mutually
+consistent**. It reads parsed JSON only; it performs no promotion, never touches `/mnt/user/media/Movies`,
+never contacts Jellyfin, and authorizes nothing live (`authorization` is the constant `NONE`).
 
 ## Green criteria
 
@@ -19,17 +19,25 @@ and authorizes nothing live (`authorization` is the constant `NONE`).
 | `evidence` | `phase-230-promotion-coordinator-evidence-packet` and `overall === EVIDENCE_COMPLETE` |
 | `transcript` | `phase-230-promotion-review-transcript` and `verdict === REVIEW_CLEAN` |
 
-`overall` is `ARCHIVE_READY` iff every component is present and green; otherwise `ARCHIVE_BLOCKED` with
-generic blockers (`*_MISSING`, `*_INVALID`, `LEDGER_INCOMPLETE`, `DAG_NOT_ACYCLIC`, `EVIDENCE_NOT_COMPLETE`,
-`TRANSCRIPT_NOT_CLEAN`). Each component carries only its name, presence, ok, and digest; the manifest is
-sealed with an `archiveDigest`.
+Beyond the per-component green checks it enforces two consistency cross-checks: (a) each present
+component must **recompute to its own stated self-digest** (else `<COMPONENT>_DIGEST_MISMATCH`), and (b)
+the ledger must actually **record the supplied evidence `packetDigest` and transcript `transcriptDigest`**
+(else `EVIDENCE_LEDGER_MISMATCH` / `TRANSCRIPT_LEDGER_MISMATCH`). This catches a set stitched together
+from different runs even when every component is individually green.
+
+`overall` is `ARCHIVE_READY` iff every component is present, green, and consistent; otherwise
+`ARCHIVE_BLOCKED` with generic blockers (`*_MISSING`, `*_INVALID`, `LEDGER_INCOMPLETE`, `DAG_NOT_ACYCLIC`,
+`EVIDENCE_NOT_COMPLETE`, `TRANSCRIPT_NOT_CLEAN`, `*_DIGEST_MISMATCH`, `EVIDENCE_LEDGER_MISMATCH`,
+`TRANSCRIPT_LEDGER_MISMATCH`). Each component carries only its name, presence, ok, and digest; the
+manifest is sealed with an `archiveDigest`.
 
 ## Files
 
 - `src/ops/promotion-archive-manifest.ts` — `buildArchiveManifest(input)`.
 - `src/ops/promotion-archive-manifest-cli.ts` — CLI wrapper.
-- `test/promotion-archive-manifest.ts` — 6 tests: all-green READY, missing component, incomplete ledger,
-  not-clean transcript, empty input, and a spawned CLI run.
+- `test/promotion-archive-manifest.ts` — 8 tests: all-green READY, missing component, incomplete ledger,
+  not-clean transcript, a cross-run ledger mismatch, a tampered self-digest, empty input, and a spawned
+  CLI run.
 
 ## Usage
 

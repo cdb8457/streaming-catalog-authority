@@ -26,6 +26,7 @@ function assertEq<T>(actual: T, expected: T, msg: string): void { if (actual !==
 function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-reviewbundle-')); }
 function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 16, 20, 0, i++)); }
 const COMMIT = 'c71c61e7d868705fa191b7fdf9d93f15f1309043';
+const COMMIT_ALT = 'a1b2c3d4e5f6071829304152637485960a1b2c3d';
 
 async function greenInputs(root: string) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'rb', now: makeNow() })));
@@ -74,6 +75,18 @@ await test('BLOCKED when the transcript is not clean', async () => {
     const rb = buildReviewBundle({ evidence, transcript: notClean, ledger, dag, archive });
     assertEq(rb.overall, 'REVIEW_BUNDLE_BLOCKED', 'blocked');
     assert(rb.blockers.includes('TRANSCRIPT_NOT_CLEAN'), 'transcript-not-clean blocker');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when the archive was built over a different run (component cross-check)', async () => {
+  const root = workspace();
+  try {
+    const { evidence, transcript, ledger, dag, archive } = await greenInputs(root); // archive built over transcript@COMMIT
+    const otherTranscript = buildReviewTranscript({ reviewedCommit: COMMIT_ALT, testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
+    const rb = buildReviewBundle({ evidence, transcript: otherTranscript, ledger, dag, archive });
+    assertEq(rb.overall, 'REVIEW_BUNDLE_BLOCKED', 'blocked');
+    assert(rb.blockers.includes('ARCHIVE_TRANSCRIPT_MISMATCH'), `generic archive/transcript mismatch (blockers: ${rb.blockers.join(',')})`);
+    assert(!rb.blockers.includes('TRANSCRIPT_NOT_CLEAN'), 'the supplied transcript is itself still clean');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
