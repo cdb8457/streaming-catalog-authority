@@ -30,6 +30,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-rehearsal-matrix.ts', 'src/ops/promotion-rehearsal-matrix-cli.ts',
   'src/ops/promotion-artifact-integrity.ts', 'src/ops/promotion-artifact-integrity-cli.ts',
   'src/ops/promotion-handoff.ts', 'src/ops/promotion-handoff-cli.ts',
+  'src/ops/promotion-artifact-schema.ts', 'src/ops/promotion-artifact-schema-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -55,6 +56,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_REHEARSAL_MATRIX.md',
   'docs/PHASE_230_PROMOTION_ARTIFACT_INTEGRITY.md',
   'docs/PHASE_230_PROMOTION_HANDOFF.md',
+  'docs/PHASE_230_PROMOTION_ARTIFACT_SCHEMA.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');
