@@ -339,7 +339,7 @@
     "ops:promotion-evidence-packet": "tsx src/ops/promotion-evidence-packet-cli.ts",
     "test:promotion-evidence-packet": "tsx test/promotion-evidence-packet.ts",
     "test:promotion-live-boundary-guard": "tsx test/promotion-live-boundary-guard.ts",
-    "test:phase230-local": "tsx test/promotion-approval.ts && tsx test/promotion-evidence-review.ts && tsx test/promotion-readiness.ts && tsx test/promotion-acceptance-seal.ts && tsx test/real-library-promotion.ts && tsx test/promotion-rehearsal.ts && tsx test/promotion-rehearsal-matrix.ts && tsx test/promotion-artifact-integrity.ts && tsx test/promotion-artifact-schema.ts && tsx test/promotion-dashboard.ts && tsx test/promotion-handoff.ts && tsx test/promotion-live-boundary-guard.ts && tsx test/phase230-local-suite-manifest.ts"
+    "test:phase230-local": "tsx test/promotion-approval.ts && tsx test/promotion-evidence-review.ts && tsx test/promotion-readiness.ts && tsx test/promotion-acceptance-seal.ts && tsx test/real-library-promotion.ts && tsx test/promotion-rehearsal.ts && tsx test/promotion-rehearsal-matrix.ts && tsx test/promotion-artifact-integrity.ts && tsx test/promotion-artifact-schema.ts && tsx test/promotion-dashboard.ts && tsx test/promotion-handoff.ts && tsx test/promotion-fixture-bundle.ts && tsx test/promotion-bundle-replay.ts && tsx test/promotion-evidence-packet.ts && tsx test/promotion-live-boundary-guard.ts && tsx test/phase230-local-suite-manifest.ts"
   },
   "dependencies": {
     "pg": "^8.13.1"

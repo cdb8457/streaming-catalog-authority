@@ -3,7 +3,7 @@ import { dirname } from 'node:path';
 import { buildAcceptanceDashboard, type DashboardInput } from './promotion-dashboard.js';
 
 // Offline acceptance-dashboard CLI. Renders the matrix + integrity + handoff artifacts into a single
-// redaction-safe dashboard that is READY only when all three are green. Never promotes, never touches
+// redaction-safe dashboard that is READY only when all four are green. Never promotes, never touches
 // the real Movies root, never contacts Jellyfin.
 
 function usage(): string {

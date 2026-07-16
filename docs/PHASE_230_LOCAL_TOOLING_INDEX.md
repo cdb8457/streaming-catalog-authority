@@ -26,6 +26,9 @@ for all of this tooling and **not authorized** by any of it.
 | Artifact schema | `ops:promotion-artifact-schema` | [schema](PHASE_230_PROMOTION_ARTIFACT_SCHEMA.md) | Strict shape/status validation (catches malformed-but-self-digested) |
 | Coordinator handoff | `ops:promotion-handoff` | [handoff](PHASE_230_PROMOTION_HANDOFF.md) | Redaction-safe summary with explicit no-Phase-231/no-live language |
 | Acceptance dashboard | `ops:promotion-dashboard` | [dashboard](PHASE_230_PROMOTION_DASHBOARD.md) | matrix + integrity + schema + handoff → READY only if all green |
+| Fixture evidence bundle | `ops:promotion-fixture-bundle` | [bundle](PHASE_230_PROMOTION_FIXTURE_BUNDLE.md) | One successful rehearsal → deterministic redaction-safe bundle of every artifact + report |
+| Bundle replay verifier | `ops:promotion-bundle-replay` | [replay](PHASE_230_PROMOTION_BUNDLE_REPLAY.md) | Re-derive/re-verify a bundle's reports; fail closed on any tamper/mismatch |
+| Coordinator evidence packet | `ops:promotion-evidence-packet` | [packet](PHASE_230_PROMOTION_EVIDENCE_PACKET.md) | Digests + test commands + human gates + no-Phase-231 language |
 | Live-boundary guard | `test:promotion-live-boundary-guard` | [guard](PHASE_230_PROMOTION_LIVE_BOUNDARY_GUARD.md) | Static guard that the local tools/docs hold no live hooks |
 | Local safety suite | `test:phase230-local` | [suite](PHASE_230_LOCAL_SAFETY_SUITE.md) | Fast regression gate over only the local safety suites |
 
@@ -54,7 +57,10 @@ ops:promotion-dashboard  ──►  dashboard.json  (DASHBOARD_READY only if all
 
 The rehearsal / matrix run the whole chain on fixtures (approval → promotion → review → readiness →
 acceptance) with a local file-state observer, so the mechanics can be proven offline before any live run
-is ever considered.
+is ever considered. `ops:promotion-fixture-bundle` packages a full successful run (artifacts + integrity
++ schema + matrix + handoff + dashboard) into one deterministic bundle; `ops:promotion-bundle-replay`
+re-verifies that bundle end-to-end; and `ops:promotion-evidence-packet` distills it to a coordinator
+packet of digests, reproduction commands, and the remaining human gates.
 
 ## Test commands
 

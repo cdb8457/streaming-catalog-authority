@@ -33,6 +33,9 @@ const LOCAL_SUITES = [
   'test/promotion-artifact-schema.ts',
   'test/promotion-dashboard.ts',
   'test/promotion-handoff.ts',
+  'test/promotion-fixture-bundle.ts',
+  'test/promotion-bundle-replay.ts',
+  'test/promotion-evidence-packet.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
 ];
