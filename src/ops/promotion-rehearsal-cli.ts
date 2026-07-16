@@ -1,6 +1,6 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
-import { runPromotionRehearsal, type RehearsalInput } from './promotion-rehearsal.js';
+import { REHEARSAL_SCENARIOS, runPromotionRehearsal, type RehearsalInput, type RehearsalScenario } from './promotion-rehearsal.js';
 
 // Offline rehearsal CLI. Runs the fixture-only Phase 230 pipeline end-to-end in an ephemeral sandbox
 // and writes a redaction-safe manifest. Never runs the deploy launcher, never touches the real Movies
@@ -8,12 +8,15 @@ import { runPromotionRehearsal, type RehearsalInput } from './promotion-rehearsa
 
 function usage(): string {
   return [
-    'usage: ops:promotion-rehearsal [--work-dir <dir>] [--title <t>] [--year <y>] [--item-id <id>] \\',
-    '    [--acceptor-id <id>] [--run-id <id>] [--keep-sandbox] [--out <manifest.json>] [--artifacts-dir <dir>]',
+    'usage: ops:promotion-rehearsal [--scenario <name>] [--work-dir <dir>] [--title <t>] [--year <y>] \\',
+    '    [--item-id <id>] [--acceptor-id <id>] [--run-id <id>] [--keep-sandbox] [--out <manifest.json>] [--artifacts-dir <dir>]',
+    '',
+    `  --scenario one of: ${REHEARSAL_SCENARIOS.join(', ')} (default: success)`,
     '',
     'Local, non-live: builds an ephemeral fixture sandbox and runs approval -> promotion (promote+withdraw) ->',
     'evidence review -> readiness -> acceptance seal with a local file-state observer (no Jellyfin), then emits a',
-    'redaction-safe manifest. Exit 0 = REHEARSAL_PASS, 1 = REHEARSAL_FAIL. Does not authorize Phase 231.',
+    'redaction-safe manifest. Non-success scenarios inject a deterministic fixture fault. Exit 0 = REHEARSAL_PASS,',
+    '1 = REHEARSAL_FAIL. Does not authorize Phase 231.',
   ].join('\n');
 }
 
@@ -33,8 +36,14 @@ async function main(): Promise<number> {
     console.error('invalid --year: expected a non-negative integer');
     return 2;
   }
+  const scenarioRaw = valueAfter(args, '--scenario');
+  if (scenarioRaw !== undefined && !REHEARSAL_SCENARIOS.includes(scenarioRaw as RehearsalScenario)) {
+    console.error(`invalid --scenario: expected one of ${REHEARSAL_SCENARIOS.join(', ')}`);
+    return 2;
+  }
 
   const input: RehearsalInput = {
+    ...(scenarioRaw !== undefined ? { scenario: scenarioRaw as RehearsalScenario } : {}),
     ...(valueAfter(args, '--work-dir') !== undefined ? { workDir: valueAfter(args, '--work-dir') } : {}),
     ...(valueAfter(args, '--title') !== undefined ? { title: valueAfter(args, '--title') } : {}),
     ...(year !== undefined ? { year } : {}),
@@ -67,6 +76,7 @@ async function main(): Promise<number> {
 
   console.log(JSON.stringify({
     report: 'phase-230-promotion-rehearsal-capture',
+    scenario: manifest.scenario,
     outcome: manifest.outcome,
     redactionSafe: true,
     stages: manifest.stages.map((s) => ({ stage: s.stage, ok: s.ok, status: s.status })),

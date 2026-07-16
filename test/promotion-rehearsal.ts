@@ -1,9 +1,10 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { runPromotionRehearsal } from '../src/ops/promotion-rehearsal.js';
+import { runPromotionRehearsal, type RehearsalScenario } from '../src/ops/promotion-rehearsal.js';
 
 let passed = 0;
 let failed = 0;
@@ -22,6 +23,7 @@ async function assertRejects(fn: () => Promise<unknown>, matcher: string, msg: s
 
 function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-rehearsal-')); }
 const fixedNow = (() => { let i = 0; return () => new Date(Date.UTC(2026, 6, 15, 8, 0, i++)); })();
+function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 15, 9, 0, i++)); }
 
 function stage(manifest: Awaited<ReturnType<typeof runPromotionRehearsal>>['manifest'], id: string) {
   const s = manifest.stages.find((x) => x.stage === id);
@@ -36,6 +38,8 @@ await test('runs the full fixture pipeline end-to-end and passes', async () => {
   try {
     const { manifest, artifacts } = await runPromotionRehearsal({ workDir: root, runId: 'run-pass', itemId: '11111111-1111-4111-8111-111111111111', now: fixedNow });
     assertEq(manifest.outcome, 'REHEARSAL_PASS', `pass (notes: ${manifest.notes.join(',')})`);
+    assertEq(manifest.scenario, 'success', 'records success scenario');
+    assertEq(manifest.notes.length, 0, 'no blocker notes on success');
     assertEq(manifest.stages.length, 5, 'five stages');
     assert(manifest.stages.every((s) => s.ok), 'all stages ok');
     assertEq(stage(manifest, 'APPROVAL').status, 'APPROVAL_ATTESTATION_READY', 'approval ready');
@@ -90,6 +94,77 @@ await test('the manifest is redaction-safe (no raw path or title)', async () => 
 
 await test('refuses a work-dir that intersects the real Movies root', async () => {
   await assertRejects(() => runPromotionRehearsal({ workDir: '/mnt/user/media/Movies', runId: 'x' }), 'must not intersect the real Movies root', 'real Movies work-dir refused');
+});
+
+const FAILURE_CASES: Array<{ scenario: RehearsalScenario; stage: string; status: string; note: string }> = [
+  { scenario: 'visibility-timeout', stage: 'PROMOTION', status: 'REAL_LIBRARY_PROMOTION_FAILED', note: 'PROMOTION_NOT_CLEAN' },
+  { scenario: 'rejected-acceptance', stage: 'ACCEPTANCE_SEAL', status: 'ACCEPTANCE_REFUSED', note: 'ACCEPTANCE_NOT_SEALED' },
+  { scenario: 'tampered-readiness', stage: 'ACCEPTANCE_SEAL', status: 'ACCEPTANCE_REFUSED', note: 'ACCEPTANCE_NOT_SEALED' },
+  { scenario: 'digest-chain-mismatch', stage: 'READINESS', status: 'BLOCKED', note: 'READINESS_NOT_READY' },
+];
+
+for (const c of FAILURE_CASES) {
+  await test(`scenario ${c.scenario} yields REHEARSAL_FAIL with a generic blocker`, async () => {
+    const root = workspace();
+    try {
+      const { manifest } = await runPromotionRehearsal({ workDir: root, runId: `run-${c.scenario}`, scenario: c.scenario, now: fixedNow });
+      assertEq(manifest.outcome, 'REHEARSAL_FAIL', `fails (notes: ${manifest.notes.join(',')})`);
+      assertEq(manifest.scenario, c.scenario, 'records the scenario');
+      assertEq(manifest.stages.length, 5, 'still records all five stages');
+      const s = stage(manifest, c.stage);
+      assertEq(s.ok, false, `${c.stage} not ok`);
+      assertEq(s.status, c.status, `${c.stage} status is a generic enum`);
+      assert(manifest.notes.includes(c.note), `generic blocker note ${c.note}`);
+      // notes/statuses stay generic — no raw path or title leaks even on failure.
+      const serialized = JSON.stringify(manifest);
+      assert(!serialized.includes('/mnt/') && !serialized.includes('catalog-authority-test-library') && !serialized.includes(root), 'no raw path in a failed manifest');
+    } finally { rmSync(root, { recursive: true, force: true }); }
+  });
+}
+
+await test('manifestDigest recomputes deterministically from the manifest body', async () => {
+  const root = workspace();
+  try {
+    const { manifest } = await runPromotionRehearsal({ workDir: root, runId: 'run-recompute', itemId: '22222222-2222-4222-8222-222222222222', now: makeNow() });
+    const { manifestDigest, ...body } = manifest as unknown as Record<string, unknown> & { manifestDigest: string };
+    const recomputed = createHash('sha256').update(`phase-230-rehearsal-manifest:${JSON.stringify(body)}`).digest('hex');
+    assertEq(recomputed, manifestDigest, 'recomputed manifest digest matches the sealed value');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('two runs with identical fixed inputs produce an identical manifest (deterministic)', async () => {
+  const root = workspace();
+  try {
+    const fixed = { workDir: join(root, 'fixed'), runId: 'run-det', itemId: '33333333-3333-4333-8333-333333333333', title: 'Deterministic Fixture', year: 2026, acceptorId: 'coordinator-1', scenario: 'success' as RehearsalScenario };
+    const a = await runPromotionRehearsal({ ...fixed, now: makeNow() });
+    const b = await runPromotionRehearsal({ ...fixed, now: makeNow() });
+    assertEq(a.manifest.outcome, 'REHEARSAL_PASS', 'first run passes');
+    assertEq(a.manifest.manifestDigest, b.manifest.manifestDigest, 'manifest digest is identical across runs');
+    assertEq(JSON.stringify(a.manifest), JSON.stringify(b.manifest), 'whole manifest is identical across runs');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('CLI rejects an unknown --scenario', () => {
+  const cliPath = fileURLToPath(new URL('../src/ops/promotion-rehearsal-cli.ts', import.meta.url));
+  const projectRoot = fileURLToPath(new URL('..', import.meta.url));
+  const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--scenario', 'not-a-scenario'], { cwd: projectRoot, encoding: 'utf8' });
+  assertEq(res.status, 2, `usage exit (stderr: ${res.stderr ?? ''})`);
+  assert((res.stderr ?? '').includes('invalid --scenario'), 'reports invalid scenario');
+});
+
+await test('CLI runs a failing scenario, exits 1, and reports it redaction-safely', async () => {
+  const root = workspace();
+  try {
+    const cliPath = fileURLToPath(new URL('../src/ops/promotion-rehearsal-cli.ts', import.meta.url));
+    const projectRoot = fileURLToPath(new URL('..', import.meta.url));
+    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--scenario', 'rejected-acceptance', '--work-dir', join(root, 'work'), '--run-id', 'cli-fail'], { cwd: projectRoot, encoding: 'utf8' });
+    assertEq(res.status, 1, `REHEARSAL_FAIL exit (stderr: ${res.stderr ?? ''})`);
+    const parsed = JSON.parse(res.stdout ?? '') as Record<string, unknown>;
+    assertEq(parsed.scenario, 'rejected-acceptance', 'stdout scenario');
+    assertEq(parsed.outcome, 'REHEARSAL_FAIL', 'stdout outcome');
+    assert(Array.isArray(parsed.notes) && (parsed.notes as string[]).includes('ACCEPTANCE_NOT_SEALED'), 'generic blocker note in stdout');
+    assert(!(res.stdout ?? '').includes('/mnt/') && !(res.stdout ?? '').includes('catalog-authority-test-library'), 'no path fragments in stdout');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 await test('CLI runs the rehearsal, writes the manifest, and never echoes raw paths to stdout', async () => {

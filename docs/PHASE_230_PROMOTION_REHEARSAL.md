@@ -23,6 +23,29 @@ It never runs the deploy launcher, never writes to the real Movies root, never c
 authorizes nothing live: a passing rehearsal is a fixture proof of the mechanics, not a live gate, and
 does not authorize Phase 231.
 
+## Scenarios
+
+`--scenario` (default `success`) selects a fixture mode. Every scenario runs entirely on sandbox
+fixtures with the local observer; the non-success ones inject a deterministic fault to exercise a
+specific failure mode, and each yields `REHEARSAL_FAIL` with a generic blocker note:
+
+| Scenario | Injected fault | Surfaces as | Generic note |
+|----------|----------------|-------------|--------------|
+| `success` | none | `REHEARSAL_PASS` | — |
+| `visibility-timeout` | observer never reports the file visible | `PROMOTION` = `REAL_LIBRARY_PROMOTION_FAILED` | `PROMOTION_NOT_CLEAN` |
+| `rejected-acceptance` | acceptance decision is `REJECT` | `ACCEPTANCE_SEAL` = `ACCEPTANCE_REFUSED` | `ACCEPTANCE_NOT_SEALED` |
+| `tampered-readiness` | a bound checklist field is mutated so the seal's checklist-digest recomputation fails | `ACCEPTANCE_SEAL` = `ACCEPTANCE_REFUSED` | `ACCEPTANCE_NOT_SEALED` |
+| `digest-chain-mismatch` | the readiness cross-artifact digest chain is broken (promotion evidence item digest ≠ approval) | `READINESS` = `BLOCKED` | `READINESS_NOT_READY` |
+
+All notes and stage statuses are generic codes/enums — no raw path or title leaks, even on failure.
+
+## Determinism
+
+Given identical fixed inputs (`workDir`, `runId`, `itemId`, `title`, `year`, `acceptorId`, `scenario`,
+and a `now` sequence), the whole manifest is reproducible: the rehearsal passes its `runId` down to the
+guarded promotion so every stage digest is deterministic, and `manifestDigest =
+sha256("phase-230-rehearsal-manifest:" + body)` recomputes exactly.
+
 ## Manifest
 
 `runPromotionRehearsal` returns the raw stage artifacts (in memory) and a manifest:

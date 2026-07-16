@@ -18,6 +18,19 @@ import { canonicalPath, defaultRealMoviesRoot, runRealLibraryPromotion, type Rea
 // and authorizes nothing live: a passing rehearsal proves the mechanics on fixtures, it is not a live
 // gate and does not authorize Phase 231.
 
+// Fixture-only rehearsal scenarios. Every one runs entirely on sandbox fixtures with a local observer;
+// the non-success scenarios inject a deterministic fault to exercise a specific failure mode.
+export type RehearsalScenario =
+  | 'success'
+  | 'visibility-timeout'
+  | 'rejected-acceptance'
+  | 'tampered-readiness'
+  | 'digest-chain-mismatch';
+
+export const REHEARSAL_SCENARIOS: readonly RehearsalScenario[] = [
+  'success', 'visibility-timeout', 'rejected-acceptance', 'tampered-readiness', 'digest-chain-mismatch',
+];
+
 export interface RehearsalInput {
   readonly workDir?: string;      // base dir for the ephemeral sandbox (default: OS temp dir)
   readonly runId?: string;        // sandbox id + run digest (default: random)
@@ -26,6 +39,7 @@ export interface RehearsalInput {
   readonly year?: number;         // fixture year (default: 2026)
   readonly acceptorId?: string;   // acceptance-seal acceptor (default: 'rehearsal-operator')
   readonly keepSandbox?: boolean; // keep the sandbox for inspection (default: false, ephemeral)
+  readonly scenario?: RehearsalScenario; // fixture fault to inject (default: 'success')
   readonly now?: () => Date;
 }
 
@@ -43,6 +57,7 @@ export interface RehearsalManifest {
   readonly version: 1;
   readonly redactionSafe: true;
   readonly mode: 'offline-fixture-rehearsal';
+  readonly scenario: RehearsalScenario;
   readonly outcome: 'REHEARSAL_PASS' | 'REHEARSAL_FAIL';
   readonly runDigest: string;
   readonly itemDigest: string;
@@ -100,6 +115,7 @@ export async function runPromotionRehearsal(input: RehearsalInput = {}): Promise
   const title = input.title ?? 'Rehearsal Fixture';
   const year = input.year ?? 2026;
   const acceptorId = input.acceptorId ?? 'rehearsal-operator';
+  const scenario = input.scenario ?? 'success';
   const now = input.now ?? (() => new Date());
   const workDir = input.workDir ?? tmpdir();
   const sandboxRoot = join(workDir, `phase-230-rehearsal-${runId}`);
@@ -124,23 +140,24 @@ export async function runPromotionRehearsal(input: RehearsalInput = {}): Promise
     stages.push({ stage: 'APPROVAL', ok: built.ok, status: built.evidence.status, digest: built.evidence.evidenceDigest });
     if (!built.ok || !built.approval) {
       notes.push('APPROVAL_FAILED');
-      return finalize(runId, itemId, stages, notes, artifacts);
+      return finalize(runId, itemId, scenario, stages, notes, artifacts);
     }
     artifacts.approval = built.approval;
 
     // 2. Guarded promotion (promote AND withdraw), local file-state observer only.
-    const observer: RealLibraryVisibilityClient = {
-      async findVisibleItem({ destinationPath }) {
-        return existsSync(destinationPath) ? { visible: true, itemId: 'rehearsal-observer', matchBasis: 'path' } : { visible: false };
-      },
-    };
+    // The 'visibility-timeout' scenario uses an observer that never reports the file visible, so the
+    // guarded promotion fails closed with a visibility timeout — no live Jellyfin is ever involved.
+    const observer: RealLibraryVisibilityClient = scenario === 'visibility-timeout'
+      ? { async findVisibleItem() { return { visible: false }; } }
+      : { async findVisibleItem({ destinationPath }) { return existsSync(destinationPath) ? { visible: true, itemId: 'rehearsal-observer', matchBasis: 'path' } : { visible: false }; } };
     const report = await runRealLibraryPromotion({
       itemId, title, year, sourceFile: source, testLibraryRoot: testRoot, targetRoot,
       approval: { approved: true, ...built.approval },
       allowCustomTargetRootForTests: true,
       visibilityClient: observer,
-      visibilityPolls: 3, visibilityPollMs: 0,
+      visibilityPolls: 2, visibilityPollMs: 0,
       withdrawAfter: true,
+      runId, // deterministic promotion run digest for a fixed rehearsal runId
       now,
     });
     artifacts.promotionEvidence = report;
@@ -148,20 +165,32 @@ export async function runPromotionRehearsal(input: RehearsalInput = {}): Promise
     stages.push({ stage: 'PROMOTION', ok: promotionClean, status: report.status, digest: report.evidenceDigest });
     if (!promotionClean) notes.push('PROMOTION_NOT_CLEAN');
 
-    // 3. Evidence review.
+    // 3. Evidence review (of the actual report — a well-formed FAILED report still reviews cleanly).
     const review = reviewPromotionEvidence(report);
     artifacts.evidenceReview = review;
     stages.push({ stage: 'EVIDENCE_REVIEW', ok: review.ok, status: review.status, digest: review.reviewDigest });
+    if (!review.ok) notes.push('EVIDENCE_REVIEW_NOT_ACCEPTED');
 
-    // 4. Readiness checklist.
-    const checklist = buildPromotionReadinessChecklist({ approval: built.approval, approvalEvidence: built.evidence, promotionEvidence: report, evidenceReview: review });
+    // 4. Readiness checklist. The 'digest-chain-mismatch' scenario breaks the cross-artifact chain by
+    // feeding readiness a promotion evidence whose itemDigest no longer matches the approval.
+    const readinessPromotionEvidence = scenario === 'digest-chain-mismatch'
+      ? { ...(report as unknown as Record<string, unknown>), itemDigest: 'a'.repeat(64) }
+      : report;
+    const checklist = buildPromotionReadinessChecklist({ approval: built.approval, approvalEvidence: built.evidence, promotionEvidence: readinessPromotionEvidence, evidenceReview: review });
     artifacts.readiness = checklist;
     stages.push({ stage: 'READINESS', ok: checklist.verdict === 'READY', status: checklist.verdict, digest: checklist.checklistDigest });
+    if (checklist.verdict !== 'READY') notes.push('READINESS_NOT_READY');
 
-    // 5. Acceptance seal.
-    const packet = sealPromotionAcceptance({ readinessChecklist: checklist, evidenceReview: review, approvalEvidence: built.evidence, acceptance: { acceptorId, decision: 'ACCEPT', accepted: true } });
+    // 5. Acceptance seal. 'tampered-readiness' mutates a bound field so the seal's checklist-digest
+    // recomputation fails; 'rejected-acceptance' supplies a REJECT decision.
+    const sealChecklist = scenario === 'tampered-readiness'
+      ? { ...(checklist as unknown as Record<string, unknown>), itemDigest: 'b'.repeat(64) }
+      : checklist;
+    const decision = scenario === 'rejected-acceptance' ? 'REJECT' : 'ACCEPT';
+    const packet = sealPromotionAcceptance({ readinessChecklist: sealChecklist, evidenceReview: review, approvalEvidence: built.evidence, acceptance: { acceptorId, decision, accepted: decision === 'ACCEPT' } });
     artifacts.acceptancePacket = packet;
     stages.push({ stage: 'ACCEPTANCE_SEAL', ok: packet.status === 'ACCEPTED_SEALED', status: packet.status, digest: packet.sealDigest });
+    if (packet.status !== 'ACCEPTED_SEALED') notes.push('ACCEPTANCE_NOT_SEALED');
   } catch {
     notes.push('REHEARSAL_EXCEPTION');
   } finally {
@@ -170,16 +199,17 @@ export async function runPromotionRehearsal(input: RehearsalInput = {}): Promise
     }
   }
 
-  return finalize(runId, itemId, stages, notes, artifacts);
+  return finalize(runId, itemId, scenario, stages, notes, artifacts);
 }
 
-function finalize(runId: string, itemId: string, stages: RehearsalStage[], notes: string[], artifacts: RehearsalArtifacts): RehearsalResult {
+function finalize(runId: string, itemId: string, scenario: RehearsalScenario, stages: RehearsalStage[], notes: string[], artifacts: RehearsalArtifacts): RehearsalResult {
   const allStagesGreen = stages.length === 5 && stages.every((s) => s.ok);
   const withoutManifestDigest: Omit<RehearsalManifest, 'manifestDigest'> = {
     report: 'phase-230-promotion-rehearsal-manifest',
     version: 1,
     redactionSafe: true,
     mode: 'offline-fixture-rehearsal',
+    scenario,
     outcome: allStagesGreen ? 'REHEARSAL_PASS' : 'REHEARSAL_FAIL',
     runDigest: digest('phase-230-run', runId),
     itemDigest: digest('phase-230-item', itemId),
