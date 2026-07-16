@@ -17,8 +17,11 @@ nothing live.
 `real-library-promotion` (the guarded service, fixture tests only), `promotion-rehearsal`,
 `promotion-rehearsal-matrix`, `promotion-artifact-integrity`, `promotion-artifact-schema`,
 `promotion-dashboard`, `promotion-handoff`, `promotion-fixture-bundle`, `promotion-bundle-replay`,
-`promotion-evidence-packet`, `promotion-live-boundary-guard`, and the
-`phase230-local-suite-manifest` guard itself.
+`promotion-evidence-packet`, `promotion-bundle-diff`, `promotion-tamper-corpus`,
+`promotion-review-transcript`, `promotion-provenance-ledger`, `promotion-gate-dag`,
+`promotion-changelog`, `promotion-archive-manifest`, `promotion-acceptance-meta`,
+`promotion-injection-corpus`, `promotion-review-bundle`, `promotion-live-boundary-guard`,
+`phase230-closure`, and the `phase230-local-suite-manifest` guard itself.
 
 ## Excluded (by design)
 

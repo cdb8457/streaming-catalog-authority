@@ -29,7 +29,15 @@ for all of this tooling and **not authorized** by any of it.
 | Fixture evidence bundle | `ops:promotion-fixture-bundle` | [bundle](PHASE_230_PROMOTION_FIXTURE_BUNDLE.md) | One successful rehearsal → deterministic redaction-safe bundle of every artifact + report |
 | Bundle replay verifier | `ops:promotion-bundle-replay` | [replay](PHASE_230_PROMOTION_BUNDLE_REPLAY.md) | Re-derive/re-verify a bundle's reports; fail closed on any tamper/mismatch |
 | Coordinator evidence packet | `ops:promotion-evidence-packet` | [packet](PHASE_230_PROMOTION_EVIDENCE_PACKET.md) | Digests + test commands + human gates + no-Phase-231 language |
+| Provenance ledger | `ops:promotion-provenance-ledger` | [ledger](PHASE_230_PROMOTION_PROVENANCE_LEDGER.md) | id + digest + producer + consumers + status per artifact/report |
+| Gate dependency DAG | `ops:promotion-gate-dag` | [dag](PHASE_230_PROMOTION_GATE_DAG.md) | Declares the gate graph; verifies acyclic + topological order |
+| Changelog generator | `ops:promotion-changelog` | [changelog](PHASE_230_PROMOTION_CHANGELOG.md) | Redaction-safe release notes from a commit list + no-live footer |
+| Evidence archive manifest | `ops:promotion-archive-manifest` | [archive](PHASE_230_PROMOTION_ARCHIVE_MANIFEST.md) | ledger + dag + evidence + transcript → READY only if all green |
+| Acceptance meta-check | `ops:promotion-acceptance-meta` | [meta](PHASE_230_PROMOTION_ACCEPTANCE_META.md) | Every op has module/CLI/test/doc/scripts/gate/boundary |
+| Injection corpus | `ops:promotion-injection-corpus` | [injection](PHASE_230_PROMOTION_INJECTION_CORPUS.md) | Untrusted text treated as data; no execution/live calls |
+| Coordinator review bundle | `ops:promotion-review-bundle` | [review-bundle](PHASE_230_PROMOTION_REVIEW_BUNDLE.md) | evidence + transcript + ledger + dag + archive → READY only if all green |
 | Live-boundary guard | `test:promotion-live-boundary-guard` | [guard](PHASE_230_PROMOTION_LIVE_BOUNDARY_GUARD.md) | Static guard that the local tools/docs hold no live hooks |
+| Local closure guard | `test:phase230-closure` | [closure](PHASE_230_LOCAL_CLOSURE_INDEX.md) | Every op fully mapped; gate holds only local suites |
 | Local safety suite | `test:phase230-local` | [suite](PHASE_230_LOCAL_SAFETY_SUITE.md) | Fast regression gate over only the local safety suites |
 
 ## Artifact flow
