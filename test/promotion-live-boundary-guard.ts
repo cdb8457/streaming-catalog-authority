@@ -39,6 +39,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-tamper-corpus.ts', 'src/ops/promotion-tamper-corpus-cli.ts',
   'src/ops/promotion-review-transcript.ts', 'src/ops/promotion-review-transcript-cli.ts',
   'src/ops/promotion-provenance-ledger.ts', 'src/ops/promotion-provenance-ledger-cli.ts',  'src/ops/promotion-gate-dag.ts', 'src/ops/promotion-gate-dag-cli.ts',  'src/ops/promotion-changelog.ts', 'src/ops/promotion-changelog-cli.ts',  'src/ops/promotion-archive-manifest.ts', 'src/ops/promotion-archive-manifest-cli.ts',  'src/ops/promotion-acceptance-meta.ts', 'src/ops/promotion-acceptance-meta-cli.ts',  'src/ops/promotion-injection-corpus.ts', 'src/ops/promotion-injection-corpus-cli.ts',  'src/ops/promotion-review-bundle.ts', 'src/ops/promotion-review-bundle-cli.ts',
+  'src/ops/promotion-consistency-matrix.ts', 'src/ops/promotion-consistency-matrix-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -76,6 +77,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_REVIEW_TRANSCRIPT.md',
   'docs/PHASE_230_LOCAL_CLOSURE_INDEX.md',
   'docs/PHASE_230_PROMOTION_PROVENANCE_LEDGER.md',  'docs/PHASE_230_PROMOTION_GATE_DAG.md',  'docs/PHASE_230_PROMOTION_CHANGELOG.md',  'docs/PHASE_230_PROMOTION_ARCHIVE_MANIFEST.md',  'docs/PHASE_230_PROMOTION_ACCEPTANCE_META.md',  'docs/PHASE_230_PROMOTION_INJECTION_CORPUS.md',  'docs/PHASE_230_PROMOTION_REVIEW_BUNDLE.md',
+  'docs/PHASE_230_PROMOTION_CONSISTENCY_MATRIX.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');

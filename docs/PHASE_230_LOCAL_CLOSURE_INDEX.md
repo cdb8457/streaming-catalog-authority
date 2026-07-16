@@ -40,6 +40,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-acceptance-meta` | PHASE_230_PROMOTION_ACCEPTANCE_META |
 | `promotion-injection-corpus` | PHASE_230_PROMOTION_INJECTION_CORPUS |
 | `promotion-review-bundle` | PHASE_230_PROMOTION_REVIEW_BUNDLE |
+| `promotion-consistency-matrix` | PHASE_230_PROMOTION_CONSISTENCY_MATRIX |
 
 ## Test-only local suites
 

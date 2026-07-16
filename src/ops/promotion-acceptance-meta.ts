@@ -37,6 +37,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-acceptance-meta', doc: 'PHASE_230_PROMOTION_ACCEPTANCE_META' },
   { base: 'promotion-injection-corpus', doc: 'PHASE_230_PROMOTION_INJECTION_CORPUS' },
   { base: 'promotion-review-bundle', doc: 'PHASE_230_PROMOTION_REVIEW_BUNDLE' },
+  { base: 'promotion-consistency-matrix', doc: 'PHASE_230_PROMOTION_CONSISTENCY_MATRIX' },
 ];
 
 export interface OpMetaCheck {

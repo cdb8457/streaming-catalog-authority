@@ -50,6 +50,7 @@ const NODES: readonly GateNode[] = [
   { id: 'acceptance-meta', test: 'test/promotion-acceptance-meta.ts', dependsOn: [], blockers: ['ACCEPTANCE_META_INCOMPLETE'] },
   { id: 'injection-corpus', test: 'test/promotion-injection-corpus.ts', dependsOn: [], blockers: ['INJECTION_EXECUTION_DETECTED', 'INJECTION_LIVE_CALL_DETECTED'] },
   { id: 'review-bundle', test: 'test/promotion-review-bundle.ts', dependsOn: ['evidence-packet', 'review-transcript', 'provenance-ledger', 'gate-dag', 'archive-manifest'], blockers: ['REVIEW_BUNDLE_BLOCKED', 'ARCHIVE_EVIDENCE_MISMATCH'] },
+  { id: 'consistency-matrix', test: 'test/promotion-consistency-matrix.ts', dependsOn: ['archive-manifest', 'review-bundle'], blockers: ['MATRIX_INCONSISTENT', 'MATRIX_INCOMPLETE'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];
