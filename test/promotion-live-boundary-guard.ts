@@ -60,6 +60,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_ARTIFACT_SCHEMA.md',
   'docs/PHASE_230_PROMOTION_DASHBOARD.md',
   'docs/PHASE_230_LOCAL_SAFETY_SUITE.md',
+  'docs/PHASE_230_LOCAL_TOOLING_INDEX.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');
