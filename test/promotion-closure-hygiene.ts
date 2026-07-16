@@ -25,6 +25,8 @@ test('the toolchain is hygienic: DAG acyclic, blockers catalogued, taxonomy ops 
   assertEq(h.overall, 'HYGIENE_OK', `hygienic (problems: ${h.problems.join(',')})`);
   assertEq(h.authorization, 'NONE', 'authorizes nothing');
   assert(h.checks.every((c) => c.ok), 'every hygiene check ok');
+  const names = new Set(h.checks.map((c) => c.check));
+  assert(names.has('self-digest-covers-reports') && names.has('cli-contract-conformant'), 'the new coverage checks are present');
   assert(h.opCount > 0 && h.nodeCount > 0 && h.blockerCodeCount > 0, 'non-empty counts');
   assert(/^[0-9a-f]{64}$/.test(h.hygieneDigest), 'hygiene digest present');
 });

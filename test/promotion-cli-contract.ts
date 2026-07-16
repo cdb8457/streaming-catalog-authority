@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { verifyCliContract, buildCliContractReport } from '../src/ops/promotion-cli-contract.js';
+import { verifyCliContract, buildCliContractReport, CONTRACT_SIGNATURES, CONTRACTED_CLIS, signatureOf } from '../src/ops/promotion-cli-contract.js';
 import { buildFixtureEvidenceBundle } from '../src/ops/promotion-fixture-bundle.js';
 import { replayFixtureBundle } from '../src/ops/promotion-bundle-replay.js';
 import { buildCoordinatorEvidencePacket } from '../src/ops/promotion-evidence-packet.js';
@@ -28,7 +28,6 @@ const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-clicontract-')); }
 function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 17, 10, 0, i++)); }
 const COMMIT = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
-const sig = (keys: string[]): string => keys.filter((k) => k !== 'outputWritten').sort().join(',');
 
 async function chain(root: string) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'cli', now: makeNow() })));
@@ -72,31 +71,44 @@ test('the verifier accepts a compliant capture and rejects each violation', () =
   assert(!verifyCliContract(42).ok && verifyCliContract(42).problems.includes('NOT_AN_OBJECT'), 'non-object rejected');
 });
 
-await test('a live consistency-matrix + self-digest-verifier capture matches its declared signature', async () => {
+await test('every declared CLI signature is dynamically verified against a live capture', async () => {
   const root = workspace();
   try {
     const set = await chain(root);
     const dir = join(root, 'a'); mkdirSync(dir, { recursive: true });
     const w = (n: string, v: unknown): string => { const p = join(dir, n); writeFileSync(p, JSON.stringify(v)); return p; };
     const p = { evidence: w('e.json', set.evidence), transcript: w('t.json', set.transcript), ledger: w('l.json', set.ledger), dag: w('d.json', set.dag), archive: w('ar.json', set.archive), review: w('rb.json', set.reviewBundle) };
+    // a capture (for the cli-contract CLI) and a subjects file (for the determinism CLI)
+    const mCapture = run('promotion-consistency-matrix-cli.ts', ['--evidence', p.evidence, '--transcript', p.transcript, '--ledger', p.ledger, '--dag', p.dag, '--archive', p.archive, '--reviewbundle', p.review]);
+    const captureFile = w('cap.json', JSON.parse(mCapture.stdout));
+    const subjectsFile = w('subj.json', { subjects: [{ subject: 'dag', digests: [set.dag.dagDigest, set.dag.dagDigest] }] });
 
-    const m = run('promotion-consistency-matrix-cli.ts', ['--evidence', p.evidence, '--transcript', p.transcript, '--ledger', p.ledger, '--dag', p.dag, '--archive', p.archive, '--reviewbundle', p.review]);
-    assertEq(m.status, 0, 'matrix CLI exit 0');
-    const mc = JSON.parse(m.stdout) as Record<string, unknown>;
-    const mr = verifyCliContract(mc);
-    assert(mr.ok, `matrix capture compliant (problems: ${mr.problems.join(',')})`);
-    assertEq(mr.keySignature, sig(['report', 'overall', 'authorization', 'redactionSafe', 'edges', 'mismatches', 'incomplete', 'matrixDigest']), 'matrix signature stable');
+    const invocations: Record<string, string[]> = {
+      'promotion-consistency-matrix': ['--evidence', p.evidence, '--transcript', p.transcript, '--ledger', p.ledger, '--dag', p.dag, '--archive', p.archive, '--reviewbundle', p.review],
+      'promotion-self-digest-verifier': ['--report', p.evidence, '--report', p.ledger],
+      'promotion-cli-contract': ['--capture', captureFile],
+      'promotion-determinism': ['--in', subjectsFile],
+      'promotion-blocker-taxonomy': [],
+      'promotion-final-summary': ['--reviewbundle', p.review, '--transcript', p.transcript],
+      'promotion-closure-hygiene': [],
+    };
 
-    const v = run('promotion-self-digest-verifier-cli.ts', ['--report', p.evidence, '--report', p.ledger]);
-    assertEq(v.status, 0, 'verifier CLI exit 0');
-    const vc = JSON.parse(v.stdout) as Record<string, unknown>;
-    const vr = verifyCliContract(vc);
-    assert(vr.ok, `verifier capture compliant (problems: ${vr.problems.join(',')})`);
-    assertEq(vr.keySignature, sig(['report', 'overall', 'authorization', 'redactionSafe', 'count', 'results', 'mismatches', 'unrecognized', 'verifierDigest']), 'verifier signature stable');
+    assert(CONTRACTED_CLIS.length >= 7, `expected >= 7 declared CLIs, got ${CONTRACTED_CLIS.length}`);
+    assert(CONTRACTED_CLIS.every((b) => b in invocations), 'every declared CLI has a live invocation');
 
-    // the aggregate report over both captures
-    const agg = buildCliContractReport([mc, vc]);
-    assertEq(agg.overall, 'CONTRACT_OK', `aggregate ok (violations: ${agg.violations.join(',')})`);
+    const captures: unknown[] = [];
+    for (const base of CONTRACTED_CLIS) {
+      const res = run(`${base}-cli.ts`, invocations[base]!);
+      assertEq(res.status, 0, `${base} CLI exit 0 (stdout: ${res.stdout})`);
+      const cap = JSON.parse(res.stdout) as Record<string, unknown>;
+      const r = verifyCliContract(cap);
+      assert(r.ok, `${base} capture compliant (problems: ${r.problems.join(',')})`);
+      assertEq(r.keySignature, signatureOf(CONTRACT_SIGNATURES[base]!), `${base} signature stable`);
+      captures.push(cap);
+    }
+
+    const agg = buildCliContractReport(captures);
+    assertEq(agg.overall, 'CONTRACT_OK', `aggregate ok over ${captures.length} captures (violations: ${agg.violations.join(',')})`);
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

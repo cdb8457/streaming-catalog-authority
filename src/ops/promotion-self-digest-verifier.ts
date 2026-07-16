@@ -33,6 +33,12 @@ const REGISTRY: Readonly<Record<string, DigestSpec>> = {
   'phase-230-promotion-injection-corpus': { field: 'corpusDigest', scope: 'phase-230-injection-corpus' },
   'phase-230-promotion-coordinator-review-bundle': { field: 'reviewBundleDigest', scope: 'phase-230-review-bundle' },
   'phase-230-promotion-cross-report-consistency-matrix': { field: 'matrixDigest', scope: 'phase-230-consistency-matrix' },
+  'phase-230-promotion-self-digest-verification': { field: 'verifierDigest', scope: 'phase-230-self-digest-verifier' },
+  'phase-230-promotion-cli-contract': { field: 'contractDigest', scope: 'phase-230-cli-contract' },
+  'phase-230-promotion-determinism-stress': { field: 'determinismDigest', scope: 'phase-230-determinism-stress' },
+  'phase-230-promotion-blocker-taxonomy': { field: 'taxonomyDigest', scope: 'phase-230-blocker-taxonomy' },
+  'phase-230-promotion-coordinator-final-summary': { field: 'summaryDigest', scope: 'phase-230-final-summary' },
+  'phase-230-promotion-closure-hygiene': { field: 'hygieneDigest', scope: 'phase-230-closure-hygiene' },
 };
 
 export const KNOWN_REPORT_IDS: readonly string[] = Object.keys(REGISTRY);

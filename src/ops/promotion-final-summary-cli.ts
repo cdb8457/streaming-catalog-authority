@@ -8,7 +8,7 @@ import { buildFinalSummary, type FinalSummaryInput } from './promotion-final-sum
 
 function usage(): string {
   return [
-    'usage: ops:promotion-final-summary --reviewbundle <f> [--matrix <f>] [--selfdigest <f>] [--taxonomy <f>] [--out <summary.json>]',
+    'usage: ops:promotion-final-summary --reviewbundle <f> --transcript <f> [--matrix <f>] [--selfdigest <f>] [--taxonomy <f>] [--out <summary.json>]',
     '',
     'Local, non-live: FINAL_SUMMARY_READY only when the review bundle is READY and every supplied optional',
     'check is green. It authorizes NOTHING live and does not authorize Phase 231. Exit 0 = READY, 1 = BLOCKED.',
@@ -29,7 +29,7 @@ function main(): number {
   if (args.includes('--help')) { console.log(usage()); return 0; }
   const out = valueAfter(args, '--out');
   const map: Array<[keyof FinalSummaryInput, string]> = [
-    ['reviewBundle', '--reviewbundle'], ['consistencyMatrix', '--matrix'], ['selfDigest', '--selfdigest'], ['taxonomy', '--taxonomy'],
+    ['reviewBundle', '--reviewbundle'], ['transcript', '--transcript'], ['consistencyMatrix', '--matrix'], ['selfDigest', '--selfdigest'], ['taxonomy', '--taxonomy'],
   ];
   const input: FinalSummaryInput = {};
   try {
@@ -48,6 +48,10 @@ function main(): number {
     overall: summary.overall,
     authorization: summary.authorization,
     redactionSafe: true,
+    reviewedCommit: summary.reviewedCommit,
+    testResults: summary.testResults,
+    testsPassed: summary.testsPassed,
+    testsFailed: summary.testsFailed,
     checks: summary.checks,
     blockers: summary.blockers,
     summaryDigest: summary.summaryDigest,

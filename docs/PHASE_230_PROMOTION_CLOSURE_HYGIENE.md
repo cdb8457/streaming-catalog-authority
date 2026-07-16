@@ -17,6 +17,11 @@ never contacts Jellyfin, and authorizes nothing live (`authorization` is the con
 - `taxonomy-ops-known` — every taxonomy op is a real gate-DAG node id (else `UNKNOWN_TAXONOMY_OP`).
 - `registry-wired` — every `LOCAL_OPS_REGISTRY` base has `ops:`/`test:` scripts, is in the local gate, the
   suite manifest, the live-boundary guard sources, and the closure index (else `REGISTRY_NOT_WIRED`).
+- `self-digest-covers-reports` — every op's primary report id is in the self-digest verifier's registry
+  (`KNOWN_REPORT_IDS`), so no report can escape self-digest verification (else
+  `REPORT_NOT_IN_SELF_DIGEST_REGISTRY`).
+- `cli-contract-conformant` — every op's CLI emits a `-capture` report id and a `redactionSafe: true` flag
+  (else `CLI_NOT_CONTRACT_CONFORMANT`).
 
 `overall` is `HYGIENE_OK` when no problem fires, else `HYGIENE_VIOLATION`. Output carries only check names,
 booleans, counts, and generic problem codes (no raw digests/paths/titles) plus a `hygieneDigest`.

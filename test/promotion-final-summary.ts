@@ -52,7 +52,7 @@ await test('FINAL_SUMMARY_READY when the review bundle is READY and every suppli
   const root = workspace();
   try {
     const g = await greenAll(root);
-    const s = buildFinalSummary({ reviewBundle: g.reviewBundle, consistencyMatrix: g.consistencyMatrix, selfDigest: g.selfDigest, taxonomy: g.taxonomy });
+    const s = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: g.transcript, consistencyMatrix: g.consistencyMatrix, selfDigest: g.selfDigest, taxonomy: g.taxonomy });
     assertEq(s.overall, 'FINAL_SUMMARY_READY', `ready (blockers: ${s.blockers.join(',')})`);
     assertEq(s.authorization, 'NONE', 'authorizes nothing');
     assert(s.checks.every((c) => c.ok), 'every check ok');
@@ -63,13 +63,30 @@ await test('FINAL_SUMMARY_READY when the review bundle is READY and every suppli
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-await test('READY with the review bundle alone (optional checks absent do not block)', async () => {
+await test('surfaces the exact reviewed commit and test results from the transcript', async () => {
+  const root = workspace();
+  try {
+    const g = await greenAll(root);
+    const s = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: g.transcript });
+    assertEq(s.overall, 'FINAL_SUMMARY_READY', `ready (blockers: ${s.blockers.join(',')})`);
+    assertEq(s.reviewedCommit, COMMIT, 'exact reviewed commit carried');
+    assertEq(s.testResults.length, 1, 'one test-result row');
+    assertEq(s.testResults[0]!.command, 'npm run test:phase230-local', 'command carried');
+    assertEq(s.testsPassed, 5, 'passed total');
+    assertEq(s.testsFailed, 0, 'failed total');
+    assert(s.checks.filter((c) => c.check !== 'reviewBundle' && c.check !== 'transcript').every((c) => !c.present && c.ok), 'optionals absent, not blocking');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when the transcript is missing (commit/results unknown)', async () => {
   const root = workspace();
   try {
     const g = await greenAll(root);
     const s = buildFinalSummary({ reviewBundle: g.reviewBundle });
-    assertEq(s.overall, 'FINAL_SUMMARY_READY', 'ready');
-    assert(s.checks.filter((c) => c.check !== 'reviewBundle').every((c) => !c.present && c.ok), 'optionals absent, not blocking');
+    assertEq(s.overall, 'FINAL_SUMMARY_BLOCKED', 'blocked');
+    assert(s.blockers.includes('TRANSCRIPT_MISSING'), 'transcript-missing blocker');
+    assertEq(s.reviewedCommit, null, 'no commit without a transcript');
+    assertEq(s.testResults.length, 0, 'no test results without a transcript');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -78,7 +95,7 @@ await test('BLOCKED when the review bundle is not READY', async () => {
   try {
     const { evidence, transcript, ledger, dag } = await greenAll(root);
     const notReady = buildReviewBundle({ evidence, transcript, ledger, dag }); // no archive -> BLOCKED
-    const s = buildFinalSummary({ reviewBundle: notReady });
+    const s = buildFinalSummary({ reviewBundle: notReady, transcript });
     assertEq(s.overall, 'FINAL_SUMMARY_BLOCKED', 'blocked');
     assert(s.blockers.includes('REVIEW_BUNDLE_NOT_READY'), 'review-bundle-not-ready blocker');
     assertEq(s.humanGates.length, FINAL_SUMMARY_HUMAN_GATES.length, 'human gates still restated');
@@ -91,7 +108,7 @@ await test('BLOCKED when a supplied optional check is not green', async () => {
     const g = await greenAll(root);
     const otherTranscript = buildReviewTranscript({ reviewedCommit: 'a1b2c3d4e5f6071829304152637485960a1b2c3d', testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
     const badMatrix = buildConsistencyMatrix({ ...g, transcript: otherTranscript });
-    const s = buildFinalSummary({ reviewBundle: g.reviewBundle, consistencyMatrix: badMatrix });
+    const s = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: g.transcript, consistencyMatrix: badMatrix });
     assertEq(s.overall, 'FINAL_SUMMARY_BLOCKED', 'blocked');
     assert(s.blockers.includes('MATRIX_NOT_CONSISTENT'), 'matrix-not-consistent blocker');
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -110,17 +127,19 @@ await test('CLI builds the summary and never echoes raw paths to stdout', async 
     const g = await greenAll(root);
     const dir = join(root, 'a'); mkdirSync(dir, { recursive: true });
     const w = (n: string, v: unknown): string => { const p = join(dir, n); writeFileSync(p, JSON.stringify(v)); return p; };
-    const rb = w('rb.json', g.reviewBundle); const mx = w('mx.json', g.consistencyMatrix); const sd = w('sd.json', g.selfDigest); const tx = w('tx.json', g.taxonomy);
+    const rb = w('rb.json', g.reviewBundle); const trf = w('tr.json', g.transcript); const mx = w('mx.json', g.consistencyMatrix); const sd = w('sd.json', g.selfDigest); const tx = w('tx.json', g.taxonomy);
     const outPath = join(root, 'catalog-authority-test-library', 'FSMARKER-out', 'summary.json');
     const cliPath = fileURLToPath(new URL('../src/ops/promotion-final-summary-cli.ts', import.meta.url));
     const projectRoot = fileURLToPath(new URL('..', import.meta.url));
-    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--reviewbundle', rb, '--matrix', mx, '--selfdigest', sd, '--taxonomy', tx, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
+    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--reviewbundle', rb, '--transcript', trf, '--matrix', mx, '--selfdigest', sd, '--taxonomy', tx, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
     assert(res.error === undefined, `spawn ok: ${res.error?.message ?? ''}`);
     assertEq(res.status, 0, `READY exit (stderr: ${res.stderr ?? ''})`);
     assert(existsSync(outPath), 'summary file written');
     const parsed = JSON.parse(res.stdout ?? '') as Record<string, unknown>;
     assertEq(parsed.overall, 'FINAL_SUMMARY_READY', 'stdout overall');
     assertEq(parsed.outputWritten, true, 'stdout reports outputWritten');
+    assertEq(parsed.reviewedCommit, COMMIT, 'stdout carries the exact reviewed commit');
+    assertEq(parsed.testsPassed, 5, 'stdout carries the passed total');
     assert(!(res.stdout ?? '').includes('FSMARKER') && !(res.stdout ?? '').includes('catalog-authority-test-library') && !(res.stdout ?? '').includes('/mnt/'), 'no path fragments in stdout');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

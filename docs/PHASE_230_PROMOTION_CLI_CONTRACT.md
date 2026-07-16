@@ -20,13 +20,18 @@ top-level keys, excluding the optional `outputWritten`), and generic `problems`
 `buildCliContractReport` aggregates many captures: `overall` is `CONTRACT_VIOLATION` if any capture
 fails, `NO_CAPTURES` for empty input, else `CONTRACT_OK`.
 
+`CONTRACT_SIGNATURES` declares the exact stdout key snapshot for each AE-AK aggregator/verifier CLI
+(`CONTRACTED_CLIS`). The guard's test spawns **every** one of those CLIs against live green inputs and
+asserts the captured signature matches — dynamic coverage well beyond a single spot-check.
+
 ## Files
 
-- `src/ops/promotion-cli-contract.ts` — `verifyCliContract(capture)`, `buildCliContractReport(captures)`.
+- `src/ops/promotion-cli-contract.ts` — `verifyCliContract(capture)`, `buildCliContractReport(captures)`,
+  `CONTRACT_SIGNATURES`, `CONTRACTED_CLIS`, `signatureOf(keys)`.
 - `src/ops/promotion-cli-contract-cli.ts` — CLI wrapper (repeatable `--capture`).
 - `test/promotion-cli-contract.ts` — 5 tests: static coverage that every reporting CLI emits the
-  redaction flag, per-violation unit checks, a live signature match for two CLIs, empty input, and a
-  spawned CLI run.
+  redaction flag, per-violation unit checks, a live signature match for every declared CLI (all seven
+  AE-AK aggregators/verifiers spawned), empty input, and a spawned CLI run.
 
 ## Usage
 

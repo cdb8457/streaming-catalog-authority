@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { buildGateDag, verifyGateDag } from './promotion-gate-dag.js';
 import { BLOCKER_CODES, buildBlockerTaxonomy } from './promotion-blocker-taxonomy.js';
 import { LOCAL_OPS_REGISTRY } from './promotion-acceptance-meta.js';
+import { KNOWN_REPORT_IDS } from './promotion-self-digest-verifier.js';
 
 // Local, non-live closure / dependency hygiene meta-verifier. It confirms the toolchain's structural
 // invariants hold together: the gate DAG is acyclic, every gate blocker code is catalogued in the blocker
@@ -53,7 +54,10 @@ export function buildClosureHygiene(projectRoot: string): ClosureHygieneReport {
   const unknownOp = taxonomy.entries.some((e) => !nodeIds.has(e.op));
   if (unknownOp) problems.push('UNKNOWN_TAXONOMY_OP');
 
+  const known = new Set(KNOWN_REPORT_IDS);
   let notWired = false;
+  let reportUncovered = false;
+  let cliNonConformant = false;
   for (const { base } of LOCAL_OPS_REGISTRY) {
     const wired = typeof scripts[`ops:${base}`] === 'string' && typeof scripts[`test:${base}`] === 'string'
       && gate.includes(`tsx test/${base}.ts`)
@@ -61,8 +65,19 @@ export function buildClosureHygiene(projectRoot: string): ClosureHygieneReport {
       && guardSrc.includes(`src/ops/${base}.ts`)
       && closureIndex.includes(base);
     if (!wired) notWired = true;
+
+    // Every op's primary report id must be verifiable by the self-digest verifier.
+    const moduleSrc = read(`src/ops/${base}.ts`);
+    const idMatch = /report: '(phase-230-[a-z0-9-]+)'/.exec(moduleSrc);
+    if (idMatch && !known.has(idMatch[1]!)) reportUncovered = true;
+
+    // Every op's CLI must conform to the universal stdout contract (a -capture id + a redaction flag).
+    const cliSrc = read(`src/ops/${base}-cli.ts`);
+    if (!(cliSrc.includes("-capture'") && cliSrc.includes('redactionSafe: true'))) cliNonConformant = true;
   }
   if (notWired) problems.push('REGISTRY_NOT_WIRED');
+  if (reportUncovered) problems.push('REPORT_NOT_IN_SELF_DIGEST_REGISTRY');
+  if (cliNonConformant) problems.push('CLI_NOT_CONTRACT_CONFORMANT');
 
   const checks: HygieneCheck[] = [
     { check: 'dag-acyclic', ok: dag.ok },
@@ -70,6 +85,8 @@ export function buildClosureHygiene(projectRoot: string): ClosureHygieneReport {
     { check: 'taxonomy-consistent', ok: taxonomy.overall === 'TAXONOMY_CONSISTENT' },
     { check: 'taxonomy-ops-known', ok: !unknownOp },
     { check: 'registry-wired', ok: !notWired },
+    { check: 'self-digest-covers-reports', ok: !reportUncovered },
+    { check: 'cli-contract-conformant', ok: !cliNonConformant },
   ];
 
   const uniqueProblems = [...new Set(problems)];

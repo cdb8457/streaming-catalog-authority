@@ -14,6 +14,13 @@ import { buildArchiveManifest } from '../src/ops/promotion-archive-manifest.js';
 import { buildReviewBundle } from '../src/ops/promotion-review-bundle.js';
 import { buildConsistencyMatrix } from '../src/ops/promotion-consistency-matrix.js';
 import { buildChangelog } from '../src/ops/promotion-changelog.js';
+import { buildCliContractReport } from '../src/ops/promotion-cli-contract.js';
+import { assessDeterminism } from '../src/ops/promotion-determinism.js';
+import { buildBlockerTaxonomy } from '../src/ops/promotion-blocker-taxonomy.js';
+import { buildFinalSummary } from '../src/ops/promotion-final-summary.js';
+import { buildClosureHygiene } from '../src/ops/promotion-closure-hygiene.js';
+
+const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 
 let passed = 0;
 let failed = 0;
@@ -41,7 +48,14 @@ async function reportSet(root: string) {
   const reviewBundle = buildReviewBundle({ evidence, transcript, ledger, dag, archive });
   const matrix = buildConsistencyMatrix({ evidence, transcript, ledger, dag, archive, reviewBundle });
   const changelog = buildChangelog({ commits: [{ sha: COMMIT, subject: 'Record repeatability evidence' }] });
-  return [bundle, replay, evidence, transcript, ledger, dag, archive, reviewBundle, matrix, changelog];
+  // The AE-AK meta-op reports themselves must also be self-digest-verifiable.
+  const selfDigest = verifySelfDigests([bundle, replay, evidence, transcript, ledger, dag, archive, reviewBundle, matrix, changelog]);
+  const taxonomy = buildBlockerTaxonomy();
+  const determinism = assessDeterminism([{ subject: 'gate-dag', digests: [dag.dagDigest, dag.dagDigest] }]);
+  const cliContract = buildCliContractReport([{ report: 'phase-230-promotion-thing-capture', redactionSafe: true, someDigest: 'a'.repeat(64) }]);
+  const finalSummary = buildFinalSummary({ reviewBundle, transcript, consistencyMatrix: matrix, selfDigest, taxonomy });
+  const hygiene = buildClosureHygiene(projectRoot);
+  return [bundle, replay, evidence, transcript, ledger, dag, archive, reviewBundle, matrix, changelog, selfDigest, taxonomy, determinism, cliContract, finalSummary, hygiene];
 }
 
 console.log('Running Phase 230 self-digest verifier suite:\n');
@@ -93,7 +107,6 @@ await test('CLI verifies reports and never echoes raw paths to stdout', async ()
     const files = reports.map((r, i) => { const p = join(dir, `r${i}.json`); writeFileSync(p, JSON.stringify(r)); return p; });
     const outPath = join(root, 'catalog-authority-test-library', 'SDMARKER-out', 'verification.json');
     const cliPath = fileURLToPath(new URL('../src/ops/promotion-self-digest-verifier-cli.ts', import.meta.url));
-    const projectRoot = fileURLToPath(new URL('..', import.meta.url));
     const flags: string[] = [];
     for (const p of files) { flags.push('--report', p); }
     const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, ...flags, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });

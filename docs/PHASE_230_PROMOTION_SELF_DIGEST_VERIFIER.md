@@ -14,8 +14,10 @@ Jellyfin, and authorizes nothing live (`authorization` is the constant `NONE`).
 A built-in registry maps every Phase 230 report id (approval attestation, evidence review, readiness,
 acceptance packet, rehearsal manifest/matrix, artifact integrity/schema, dashboard, handoff, fixture
 bundle, bundle replay, evidence packet, bundle diff, tamper corpus, review transcript, provenance ledger,
-gate DAG, changelog, archive manifest, acceptance meta, injection corpus, review bundle, and consistency
-matrix) to its trailing digest field and hashing scope. Each supplied report is `recognized` + `verified`,
+gate DAG, changelog, archive manifest, acceptance meta, injection corpus, review bundle, consistency
+matrix, self-digest verification, CLI contract, determinism stress, blocker taxonomy, coordinator final
+summary, and closure hygiene) to its trailing digest field and hashing scope. Each supplied report is
+`recognized` + `verified`,
 or flagged. `overall` is `DIGEST_MISMATCH` if any recognized report fails, else `UNRECOGNIZED_REPORT` if
 any report id is unknown, else `NO_REPORTS` for empty input, else `ALL_VERIFIED`. Output carries only
 report ids and booleans (no raw digests/paths/titles) plus a `verifierDigest`.
@@ -24,8 +26,8 @@ report ids and booleans (no raw digests/paths/titles) plus a `verifierDigest`.
 
 - `src/ops/promotion-self-digest-verifier.ts` — `verifySelfDigests(reports)`, `KNOWN_REPORT_IDS`.
 - `src/ops/promotion-self-digest-verifier-cli.ts` — CLI wrapper (repeatable `--report`).
-- `test/promotion-self-digest-verifier.ts` — 5 tests: all-verified over a 10-report set, a tampered body,
-  an unrecognized id, empty input, and a spawned CLI run.
+- `test/promotion-self-digest-verifier.ts` — 5 tests: all-verified over a 16-report set (including the
+  AE-AK meta-op reports), a tampered body, an unrecognized id, empty input, and a spawned CLI run.
 
 ## Usage
 

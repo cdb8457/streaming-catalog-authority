@@ -9,9 +9,16 @@ import { createHash } from 'node:crypto';
 
 export interface FinalSummaryInput {
   readonly reviewBundle?: unknown;
+  readonly transcript?: unknown;
   readonly consistencyMatrix?: unknown;
   readonly selfDigest?: unknown;
   readonly taxonomy?: unknown;
+}
+
+export interface SummaryTestResult {
+  readonly command: string;
+  readonly passed: number;
+  readonly failed: number;
 }
 
 export const FINAL_SUMMARY_HUMAN_GATES: readonly string[] = [
@@ -40,6 +47,10 @@ export interface FinalSummary {
   readonly redactionSafe: true;
   readonly authorization: 'NONE';
   readonly overall: 'FINAL_SUMMARY_READY' | 'FINAL_SUMMARY_BLOCKED';
+  readonly reviewedCommit: string | null;
+  readonly testResults: readonly SummaryTestResult[];
+  readonly testsPassed: number;
+  readonly testsFailed: number;
   readonly checks: readonly SummaryCheck[];
   readonly blockers: readonly string[];
   readonly humanGates: readonly string[];
@@ -78,6 +89,25 @@ export function buildFinalSummary(input: FinalSummaryInput): FinalSummary {
     }
   }
 
+  // Required: the review transcript pins the exact reviewed commit and the test results.
+  let reviewedCommit: string | null = null;
+  let testResults: SummaryTestResult[] = [];
+  const tr = input.transcript;
+  if (tr === undefined) { blockers.push('TRANSCRIPT_MISSING'); checks.push({ check: 'transcript', present: false, ok: false }); }
+  else {
+    const o = asObject(tr);
+    if (o.report !== 'phase-230-promotion-review-transcript') { blockers.push('TRANSCRIPT_INVALID'); checks.push({ check: 'transcript', present: true, ok: false }); }
+    else {
+      const clean = o.verdict === 'REVIEW_CLEAN';
+      if (!clean) blockers.push('TRANSCRIPT_NOT_CLEAN');
+      reviewedCommit = typeof o.reviewedCommit === 'string' && /^[0-9a-f]{40}$/.test(o.reviewedCommit) ? o.reviewedCommit : null;
+      testResults = normalizeTestResults(o.testResults);
+      checks.push({ check: 'transcript', present: true, ok: clean });
+    }
+  }
+  const testsPassed = testResults.reduce((a, t) => a + t.passed, 0);
+  const testsFailed = testResults.reduce((a, t) => a + t.failed, 0);
+
   // Optional cross-checks: absent is fine; present-but-not-green blocks.
   for (const spec of OPTIONAL) {
     const v = input[spec.key];
@@ -96,6 +126,10 @@ export function buildFinalSummary(input: FinalSummaryInput): FinalSummary {
     redactionSafe: true,
     authorization: 'NONE',
     overall,
+    reviewedCommit,
+    testResults,
+    testsPassed,
+    testsFailed,
     checks,
     blockers,
     humanGates: FINAL_SUMMARY_HUMAN_GATES,
@@ -104,6 +138,23 @@ export function buildFinalSummary(input: FinalSummaryInput): FinalSummary {
   return { ...withoutDigest, summaryDigest: digest('phase-230-final-summary', JSON.stringify(withoutDigest)) };
 }
 
+// Only well-formed, redaction-safe test-result rows survive: a fixed command label and non-negative counts.
+function normalizeTestResults(value: unknown): SummaryTestResult[] {
+  if (!Array.isArray(value)) return [];
+  const out: SummaryTestResult[] = [];
+  for (const r of value) {
+    const o = asObject(r);
+    const command = typeof o.command === 'string' && !looksLikePath(o.command) ? o.command : '<redacted>';
+    const passed = typeof o.passed === 'number' && o.passed >= 0 ? o.passed : 0;
+    const failed = typeof o.failed === 'number' && o.failed >= 0 ? o.failed : 0;
+    out.push({ command, passed, failed });
+  }
+  return out;
+}
+function looksLikePath(s: string): boolean {
+  return /^\//.test(s) || /[A-Za-z]:[\\/]/.test(s) || /\/mnt\//.test(s) || /\\mnt\\/.test(s)
+    || s.includes('catalog-authority-test-library') || /\.(mkv|mp4|avi|mov|m4v|ts|webm)$/i.test(s);
+}
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }

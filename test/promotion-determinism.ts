@@ -28,6 +28,7 @@ function assertEq<T>(actual: T, expected: T, msg: string): void { if (actual !==
 function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-determinism-')); }
 function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 17, 12, 0, i++)); }
 const COMMIT = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
+const COMMIT_ALT = 'a1b2c3d4e5f6071829304152637485960a1b2c3d';
 
 async function chain(root: string) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'det', now: makeNow() })));
@@ -42,13 +43,31 @@ async function chain(root: string) {
 
 console.log('Running Phase 230 determinism stress suite:\n');
 
+// Rebuild the fixture chain from scratch, with identical (workDir, runId, now) inputs, to capture the
+// bottom-of-stack digests. Same inputs must yield the same digests every time.
+async function rebuild(root: string) {
+  const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'det', now: makeNow() })));
+  const replay = replayFixtureBundle(bundle);
+  const evidence = buildCoordinatorEvidencePacket({ bundle, replay });
+  const transcript = buildReviewTranscript({ reviewedCommit: COMMIT, testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
+  const ledger = buildProvenanceLedger({ bundle, replay, evidence, transcript });
+  return { bundle: bundle.bundleDigest as string, replay: replay.replayDigest, evidence: evidence.packetDigest, ledger: ledger.ledgerDigest };
+}
+
 await test('DETERMINISTIC across repeated builds and reordered inputs', async () => {
   const root = workspace();
   try {
     const { evidence, transcript, ledger, dag, archive } = await chain(root);
     const times = <T>(n: number, f: () => T): T[] => Array.from({ length: n }, f);
+    const s = [await rebuild(root), await rebuild(root), await rebuild(root)];
 
     const subjects = [
+      // bottom-of-stack builders rebuilt from identical inputs
+      { subject: 'fixture-bundle', digests: s.map((x) => x.bundle) },
+      { subject: 'bundle-replay', digests: s.map((x) => x.replay) },
+      { subject: 'evidence-packet', digests: s.map((x) => x.evidence) },
+      { subject: 'provenance-ledger', digests: s.map((x) => x.ledger) },
+      // pure aggregators recomputed in place
       { subject: 'gate-dag', digests: times(3, () => verifyGateDag().dagDigest) },
       { subject: 'archive-manifest', digests: times(3, () => buildArchiveManifest({ ledger, dag, evidence, transcript }).archiveDigest) },
       { subject: 'review-bundle', digests: times(3, () => buildReviewBundle({ evidence, transcript, ledger, dag, archive }).reviewBundleDigest) },
@@ -64,8 +83,32 @@ await test('DETERMINISTIC across repeated builds and reordered inputs', async ()
     const r = assessDeterminism(subjects);
     assertEq(r.overall, 'DETERMINISTIC', `deterministic (non-deterministic: ${r.nonDeterministic.join(',')})`);
     assertEq(r.authorization, 'NONE', 'authorizes nothing');
-    assert(r.results.every((s) => s.deterministic && s.distinct === 1 && s.samples === 3), 'every subject stable over 3 samples');
+    assert(r.results.every((x) => x.deterministic && x.distinct === 1 && x.samples === 3), 'every subject stable over 3 samples');
+    assert(r.results.some((x) => x.subject === 'fixture-bundle') && r.results.some((x) => x.subject === 'provenance-ledger'), 'covers bundle + ledger');
     assert(/^[0-9a-f]{64}$/.test(r.determinismDigest), 'determinism digest present');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('controlled changes are detected: a deliberate input change alters the digest', async () => {
+  const root = workspace();
+  try {
+    const { evidence, ledger, dag } = await chain(root);
+    // A controlled change to the reviewed commit must change the transcript digest...
+    const trA = buildReviewTranscript({ reviewedCommit: COMMIT, testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
+    const trB = buildReviewTranscript({ reviewedCommit: COMMIT_ALT, testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
+    assert(trA.transcriptDigest !== trB.transcriptDigest, 'reviewed-commit change alters the transcript digest');
+    // ...and propagate into the ledger digest.
+    const ledgerA = buildProvenanceLedger({ bundle: {}, replay: {}, evidence, transcript: trA });
+    const ledgerB = buildProvenanceLedger({ bundle: {}, replay: {}, evidence, transcript: trB });
+    assert(ledgerA.ledgerDigest !== ledgerB.ledgerDigest, 'transcript change alters the ledger digest');
+    // A change to the archive input changes its digest too.
+    const archA = buildArchiveManifest({ ledger, dag, evidence, transcript: trA });
+    const archB = buildArchiveManifest({ ledger, dag, evidence, transcript: trB });
+    assert(archA.archiveDigest !== archB.archiveDigest, 'transcript change alters the archive digest');
+    // Feeding the differing samples as one subject must be reported NON_DETERMINISTIC (sensitivity proof).
+    const r = assessDeterminism([{ subject: 'transcript-controlled-change', digests: [trA.transcriptDigest, trB.transcriptDigest] }]);
+    assertEq(r.overall, 'NON_DETERMINISTIC', 'controlled change surfaces as non-deterministic');
+    assert(r.nonDeterministic.includes('transcript-controlled-change'), 'controlled-change subject flagged');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

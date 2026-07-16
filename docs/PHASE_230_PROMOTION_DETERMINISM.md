@@ -18,15 +18,21 @@ else `INSUFFICIENT_SAMPLES` if any subject has fewer than two samples, else `NO_
 else `DETERMINISTIC`. Output carries only fixed subject labels, sample/distinct counts, and booleans (no
 raw digests, paths, or titles) plus a `determinismDigest`.
 
-The suite exercises real builders (gate DAG, archive manifest, review bundle) repeated three times, and
-proves input-order independence for the consistency matrix by rebuilding it with reordered input keys.
+The suite exercises real builders repeated three times — the bottom-of-stack `fixture-bundle`,
+`bundle-replay`, `evidence-packet`, and `provenance-ledger` (each rebuilt from identical
+`workDir`/`runId`/`now` inputs), plus the `gate-dag`, `archive-manifest`, and `review-bundle`
+aggregators — and proves input-order independence for the consistency matrix by rebuilding it with
+reordered input keys. A separate **controlled-change** test proves the digests are content-sensitive: a
+deliberate change to the reviewed commit alters the transcript, ledger, and archive digests, and the
+differing samples are correctly reported `NON_DETERMINISTIC`.
 
 ## Files
 
 - `src/ops/promotion-determinism.ts` — `assessDeterminism(subjects)`.
 - `src/ops/promotion-determinism-cli.ts` — CLI wrapper (`--in subjects.json`).
-- `test/promotion-determinism.ts` — 5 tests: a real repeated/reordered stress pass, a varying subject,
-  an under-sampled subject, empty input, and a spawned CLI run.
+- `test/promotion-determinism.ts` — 6 tests: a real repeated/reordered stress pass over bundle, replay,
+  evidence, ledger, and the aggregators; a controlled-change sensitivity check; a varying subject; an
+  under-sampled subject; empty input; and a spawned CLI run.
 
 ## Usage
 

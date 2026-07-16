@@ -7,6 +7,25 @@ import { createHash } from 'node:crypto';
 // visible. It reads parsed JSON only; it performs no promotion, never touches the real Movies root, never
 // contacts Jellyfin, and authorizes nothing live.
 
+// Declared stdout key snapshots (unsorted) for the AE-AK aggregator/verifier CLIs. The guard's test spawns
+// each and asserts its live capture matches the sorted signature here, so any drift is caught.
+export const CONTRACT_SIGNATURES: Readonly<Record<string, readonly string[]>> = {
+  'promotion-consistency-matrix': ['report', 'overall', 'authorization', 'redactionSafe', 'edges', 'mismatches', 'incomplete', 'matrixDigest'],
+  'promotion-self-digest-verifier': ['report', 'overall', 'authorization', 'redactionSafe', 'count', 'results', 'mismatches', 'unrecognized', 'verifierDigest'],
+  'promotion-cli-contract': ['report', 'overall', 'authorization', 'redactionSafe', 'results', 'violations', 'contractDigest'],
+  'promotion-determinism': ['report', 'overall', 'authorization', 'redactionSafe', 'results', 'nonDeterministic', 'determinismDigest'],
+  'promotion-blocker-taxonomy': ['report', 'overall', 'authorization', 'redactionSafe', 'count', 'categories', 'problems', 'taxonomyDigest'],
+  'promotion-final-summary': ['report', 'overall', 'authorization', 'redactionSafe', 'reviewedCommit', 'testResults', 'testsPassed', 'testsFailed', 'checks', 'blockers', 'summaryDigest'],
+  'promotion-closure-hygiene': ['report', 'overall', 'authorization', 'redactionSafe', 'checks', 'problems', 'hygieneDigest'],
+};
+
+// The CLIs whose exact signature the guard snapshots (and dynamically verifies).
+export const CONTRACTED_CLIS: readonly string[] = Object.keys(CONTRACT_SIGNATURES);
+
+export function signatureOf(keys: readonly string[]): string {
+  return [...keys].filter((k) => k !== 'outputWritten').sort().join(',');
+}
+
 export interface CliContractResult {
   readonly ok: boolean;
   readonly keySignature: string;
