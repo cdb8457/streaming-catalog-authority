@@ -36,6 +36,13 @@ for all of this tooling and **not authorized** by any of it.
 | Acceptance meta-check | `ops:promotion-acceptance-meta` | [meta](PHASE_230_PROMOTION_ACCEPTANCE_META.md) | Every op has module/CLI/test/doc/scripts/gate/boundary |
 | Injection corpus | `ops:promotion-injection-corpus` | [injection](PHASE_230_PROMOTION_INJECTION_CORPUS.md) | Untrusted text treated as data; no execution/live calls |
 | Coordinator review bundle | `ops:promotion-review-bundle` | [review-bundle](PHASE_230_PROMOTION_REVIEW_BUNDLE.md) | evidence + transcript + ledger + dag + archive → READY only if all green |
+| Cross-report consistency matrix | `ops:promotion-consistency-matrix` | [matrix](PHASE_230_PROMOTION_CONSISTENCY_MATRIX.md) | Every shared digest agrees across all six top-level reports |
+| Self-digest verifier | `ops:promotion-self-digest-verifier` | [self-digest](PHASE_230_PROMOTION_SELF_DIGEST_VERIFIER.md) | Recomputes and confirms each report's own self-digest |
+| CLI contract snapshot guard | `ops:promotion-cli-contract` | [cli-contract](PHASE_230_PROMOTION_CLI_CONTRACT.md) | Universal CLI stdout contract + stable key signature |
+| Determinism stress suite | `ops:promotion-determinism` | [determinism](PHASE_230_PROMOTION_DETERMINISM.md) | Repeated / reordered builder digests must be identical |
+| Blocker taxonomy index | `ops:promotion-blocker-taxonomy` | [taxonomy](PHASE_230_PROMOTION_BLOCKER_TAXONOMY.md) | Catalogue of every blocker code, attributed and categorized |
+| Coordinator final summary | `ops:promotion-final-summary` | [summary](PHASE_230_PROMOTION_FINAL_SUMMARY.md) | One-page verdict over review bundle + optional cross-checks |
+| Closure / dependency hygiene | `ops:promotion-closure-hygiene` | [hygiene](PHASE_230_PROMOTION_CLOSURE_HYGIENE.md) | DAG + taxonomy + registry + wiring are mutually consistent |
 | Live-boundary guard | `test:promotion-live-boundary-guard` | [guard](PHASE_230_PROMOTION_LIVE_BOUNDARY_GUARD.md) | Static guard that the local tools/docs hold no live hooks |
 | Local closure guard | `test:phase230-closure` | [closure](PHASE_230_LOCAL_CLOSURE_INDEX.md) | Every op fully mapped; gate holds only local suites |
 | Local safety suite | `test:phase230-local` | [suite](PHASE_230_LOCAL_SAFETY_SUITE.md) | Fast regression gate over only the local safety suites |

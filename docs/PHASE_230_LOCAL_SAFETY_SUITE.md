@@ -20,8 +20,10 @@ nothing live.
 `promotion-evidence-packet`, `promotion-bundle-diff`, `promotion-tamper-corpus`,
 `promotion-review-transcript`, `promotion-provenance-ledger`, `promotion-gate-dag`,
 `promotion-changelog`, `promotion-archive-manifest`, `promotion-acceptance-meta`,
-`promotion-injection-corpus`, `promotion-review-bundle`, `promotion-live-boundary-guard`,
-`phase230-closure`, and the `phase230-local-suite-manifest` guard itself.
+`promotion-injection-corpus`, `promotion-review-bundle`, `promotion-consistency-matrix`,
+`promotion-self-digest-verifier`, `promotion-cli-contract`, `promotion-determinism`,
+`promotion-blocker-taxonomy`, `promotion-final-summary`, `promotion-closure-hygiene`,
+`promotion-live-boundary-guard`, `phase230-closure`, and the `phase230-local-suite-manifest` guard itself.
 
 ## Excluded (by design)
 
