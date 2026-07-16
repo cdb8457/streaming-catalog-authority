@@ -35,6 +35,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-review-transcript` | PHASE_230_PROMOTION_REVIEW_TRANSCRIPT |
 | `promotion-provenance-ledger` | PHASE_230_PROMOTION_PROVENANCE_LEDGER |
 | `promotion-gate-dag` | PHASE_230_PROMOTION_GATE_DAG |
+| `promotion-changelog` | PHASE_230_PROMOTION_CHANGELOG |
 
 ## Test-only local suites
 
