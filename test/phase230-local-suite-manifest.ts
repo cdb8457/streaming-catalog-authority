@@ -40,6 +40,7 @@ const LOCAL_SUITES = [
   'test/promotion-tamper-corpus.ts',
   'test/promotion-review-transcript.ts',
   'test/promotion-provenance-ledger.ts',
+  'test/promotion-gate-dag.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',
