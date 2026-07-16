@@ -44,6 +44,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-blocker-taxonomy', doc: 'PHASE_230_PROMOTION_BLOCKER_TAXONOMY' },
   { base: 'promotion-final-summary', doc: 'PHASE_230_PROMOTION_FINAL_SUMMARY' },
   { base: 'promotion-closure-hygiene', doc: 'PHASE_230_PROMOTION_CLOSURE_HYGIENE' },
+  { base: 'promotion-negative-evidence-corpus', doc: 'PHASE_230_PROMOTION_NEGATIVE_EVIDENCE_CORPUS' },
 ];
 
 export interface OpMetaCheck {

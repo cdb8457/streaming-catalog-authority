@@ -47,6 +47,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-blocker-taxonomy` | PHASE_230_PROMOTION_BLOCKER_TAXONOMY |
 | `promotion-final-summary` | PHASE_230_PROMOTION_FINAL_SUMMARY |
 | `promotion-closure-hygiene` | PHASE_230_PROMOTION_CLOSURE_HYGIENE |
+| `promotion-negative-evidence-corpus` | PHASE_230_PROMOTION_NEGATIVE_EVIDENCE_CORPUS |
 
 ## Test-only local suites
 
