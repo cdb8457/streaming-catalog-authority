@@ -73,6 +73,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_BUNDLE_DIFF.md',
   'docs/PHASE_230_PROMOTION_TAMPER_CORPUS.md',
   'docs/PHASE_230_PROMOTION_REVIEW_TRANSCRIPT.md',
+  'docs/PHASE_230_LOCAL_CLOSURE_INDEX.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');

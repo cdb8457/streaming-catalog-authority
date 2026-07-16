@@ -41,6 +41,7 @@ const LOCAL_SUITES = [
   'test/promotion-review-transcript.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
+  'test/phase230-closure.ts',
 ];
 
 // Legacy / live / known-failing suites that must NOT be in the local gate.
