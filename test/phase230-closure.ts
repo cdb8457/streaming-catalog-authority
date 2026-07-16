@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { LOCAL_OPS_REGISTRY } from '../src/ops/promotion-acceptance-meta.js';
 
 // Closure guard for the Phase 230 local tooling: every local tool must have a module, a CLI, a test, a
 // doc, ops+test package scripts, and be wired into the test:phase230-local gate; every doc must state
@@ -23,25 +24,7 @@ const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string
 const gate = pkg.scripts['test:phase230-local'] ?? '';
 
 // Every local tool: module base -> doc name. Each has a CLI, a test, and ops:/test: scripts.
-const TOOLS: Array<{ base: string; doc: string }> = [
-  { base: 'promotion-approval', doc: 'PHASE_230_PROMOTION_APPROVAL_ATTESTATION' },
-  { base: 'promotion-evidence-review', doc: 'PHASE_230_PROMOTION_EVIDENCE_REVIEW' },
-  { base: 'promotion-readiness', doc: 'PHASE_230_PROMOTION_READINESS' },
-  { base: 'promotion-acceptance-seal', doc: 'PHASE_230_PROMOTION_ACCEPTANCE_SEAL' },
-  { base: 'promotion-rehearsal', doc: 'PHASE_230_PROMOTION_REHEARSAL' },
-  { base: 'promotion-rehearsal-matrix', doc: 'PHASE_230_PROMOTION_REHEARSAL_MATRIX' },
-  { base: 'promotion-artifact-integrity', doc: 'PHASE_230_PROMOTION_ARTIFACT_INTEGRITY' },
-  { base: 'promotion-artifact-schema', doc: 'PHASE_230_PROMOTION_ARTIFACT_SCHEMA' },
-  { base: 'promotion-dashboard', doc: 'PHASE_230_PROMOTION_DASHBOARD' },
-  { base: 'promotion-handoff', doc: 'PHASE_230_PROMOTION_HANDOFF' },
-  { base: 'promotion-fixture-bundle', doc: 'PHASE_230_PROMOTION_FIXTURE_BUNDLE' },
-  { base: 'promotion-bundle-replay', doc: 'PHASE_230_PROMOTION_BUNDLE_REPLAY' },
-  { base: 'promotion-evidence-packet', doc: 'PHASE_230_PROMOTION_EVIDENCE_PACKET' },
-  { base: 'promotion-bundle-diff', doc: 'PHASE_230_PROMOTION_BUNDLE_DIFF' },
-  { base: 'promotion-tamper-corpus', doc: 'PHASE_230_PROMOTION_TAMPER_CORPUS' },
-  { base: 'promotion-review-transcript', doc: 'PHASE_230_PROMOTION_REVIEW_TRANSCRIPT' },
-  { base: 'promotion-provenance-ledger', doc: 'PHASE_230_PROMOTION_PROVENANCE_LEDGER' },  { base: 'promotion-gate-dag', doc: 'PHASE_230_PROMOTION_GATE_DAG' },  { base: 'promotion-changelog', doc: 'PHASE_230_PROMOTION_CHANGELOG' },  { base: 'promotion-archive-manifest', doc: 'PHASE_230_PROMOTION_ARCHIVE_MANIFEST' },
-];
+const TOOLS = LOCAL_OPS_REGISTRY; // single source of truth (also drives the acceptance meta-check)
 
 // Test-only local suites (no module/CLI/ops script).
 const TEST_ONLY = ['promotion-live-boundary-guard', 'phase230-local-suite-manifest', 'phase230-closure'];

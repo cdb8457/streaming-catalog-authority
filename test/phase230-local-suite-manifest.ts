@@ -43,6 +43,7 @@ const LOCAL_SUITES = [
   'test/promotion-gate-dag.ts',
   'test/promotion-changelog.ts',
   'test/promotion-archive-manifest.ts',
+  'test/promotion-acceptance-meta.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',
