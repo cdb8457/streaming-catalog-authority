@@ -43,6 +43,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-consistency-matrix` | PHASE_230_PROMOTION_CONSISTENCY_MATRIX |
 | `promotion-self-digest-verifier` | PHASE_230_PROMOTION_SELF_DIGEST_VERIFIER |
 | `promotion-cli-contract` | PHASE_230_PROMOTION_CLI_CONTRACT |
+| `promotion-determinism` | PHASE_230_PROMOTION_DETERMINISM |
 
 ## Test-only local suites
 

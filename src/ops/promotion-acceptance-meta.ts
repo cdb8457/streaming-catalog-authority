@@ -40,6 +40,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-consistency-matrix', doc: 'PHASE_230_PROMOTION_CONSISTENCY_MATRIX' },
   { base: 'promotion-self-digest-verifier', doc: 'PHASE_230_PROMOTION_SELF_DIGEST_VERIFIER' },
   { base: 'promotion-cli-contract', doc: 'PHASE_230_PROMOTION_CLI_CONTRACT' },
+  { base: 'promotion-determinism', doc: 'PHASE_230_PROMOTION_DETERMINISM' },
 ];
 
 export interface OpMetaCheck {

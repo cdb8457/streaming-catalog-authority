@@ -49,6 +49,7 @@ const LOCAL_SUITES = [
   'test/promotion-consistency-matrix.ts',
   'test/promotion-self-digest-verifier.ts',
   'test/promotion-cli-contract.ts',
+  'test/promotion-determinism.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',
