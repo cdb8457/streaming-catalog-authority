@@ -38,6 +38,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-changelog` | PHASE_230_PROMOTION_CHANGELOG |
 | `promotion-archive-manifest` | PHASE_230_PROMOTION_ARCHIVE_MANIFEST |
 | `promotion-acceptance-meta` | PHASE_230_PROMOTION_ACCEPTANCE_META |
+| `promotion-injection-corpus` | PHASE_230_PROMOTION_INJECTION_CORPUS |
 
 ## Test-only local suites
 
