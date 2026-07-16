@@ -49,6 +49,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-closure-hygiene` | PHASE_230_PROMOTION_CLOSURE_HYGIENE |
 | `promotion-negative-evidence-corpus` | PHASE_230_PROMOTION_NEGATIVE_EVIDENCE_CORPUS |
 | `promotion-release-checklist` | PHASE_230_PROMOTION_RELEASE_CHECKLIST |
+| `promotion-merge-readiness` | PHASE_230_PROMOTION_MERGE_READINESS |
 
 ## Test-only local suites
 

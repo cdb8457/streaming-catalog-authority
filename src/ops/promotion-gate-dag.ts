@@ -59,6 +59,7 @@ const NODES: readonly GateNode[] = [
   { id: 'closure-hygiene', test: 'test/promotion-closure-hygiene.ts', dependsOn: ['gate-dag', 'blocker-taxonomy'], blockers: ['HYGIENE_VIOLATION', 'REGISTRY_NOT_WIRED'] },
   { id: 'negative-evidence-corpus', test: 'test/promotion-negative-evidence-corpus.ts', dependsOn: [], blockers: ['CORPUS_BREACHED'] },
   { id: 'release-checklist', test: 'test/promotion-release-checklist.ts', dependsOn: ['final-summary', 'negative-evidence-corpus', 'closure-hygiene'], blockers: ['RELEASE_CHECKLIST_BLOCKED', 'NEGATIVE_CORPUS_BREACHED'] },
+  { id: 'merge-readiness', test: 'test/promotion-merge-readiness.ts', dependsOn: ['release-checklist'], blockers: ['MERGE_DRY_RUN_BLOCKED', 'RELEASE_CHECKLIST_NOT_CLEARED'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];

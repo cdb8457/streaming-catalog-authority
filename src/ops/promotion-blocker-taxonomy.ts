@@ -117,6 +117,13 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'SELF_DIGEST_MISSING', op: 'release-checklist' },
   { code: 'SELF_DIGEST_INVALID', op: 'release-checklist' },
   { code: 'SELF_DIGEST_NOT_VERIFIED', op: 'release-checklist' },
+  { code: 'MERGE_DRY_RUN_BLOCKED', op: 'merge-readiness' },
+  { code: 'RELEASE_CHECKLIST_MISSING', op: 'merge-readiness' },
+  { code: 'RELEASE_CHECKLIST_INVALID', op: 'merge-readiness' },
+  { code: 'RELEASE_CHECKLIST_NOT_CLEARED', op: 'merge-readiness' },
+  { code: 'FINAL_SUMMARY_MISSING', op: 'merge-readiness' },
+  { code: 'FINAL_SUMMARY_INVALID', op: 'merge-readiness' },
+  { code: 'FINAL_SUMMARY_NOT_READY', op: 'merge-readiness' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
