@@ -36,6 +36,7 @@ const LOCAL_SUITES = [
   'test/promotion-fixture-bundle.ts',
   'test/promotion-bundle-replay.ts',
   'test/promotion-evidence-packet.ts',
+  'test/promotion-bundle-diff.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
 ];
