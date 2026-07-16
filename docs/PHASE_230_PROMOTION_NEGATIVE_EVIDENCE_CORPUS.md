@@ -12,13 +12,27 @@ the constant `NONE`).
 
 ## Samples
 
-Each sample carries a fixed `id` and `category` and asserts its validator rejects it — e.g. a tampered
-self-digest (`DIGEST_MISMATCH`), an unknown report id (`UNRECOGNIZED_REPORT`), an empty archive / review
-bundle (`*_BLOCKED`), a cross-report digest mismatch (`MATRIX_INCONSISTENT`), an unsubstantiated review
-(`REVIEWED_COMMIT_INVALID` / `TEST_RESULTS_INVALID`), a redaction leak (`RAW_PATH_LEAK`), and a malformed
-capture (`NOT_AN_OBJECT`). `overall` is `CORPUS_HELD` only when **every** sample is rejected, else
-`CORPUS_BREACHED` with the breaching sample ids. The report carries only fixed sample ids, categories,
-counts, and booleans — **never the payloads themselves** — plus a `corpusDigest`.
+Each sample carries a fixed `id` and `category` and asserts its validator rejects it. Coverage includes:
+
+- **Tampered digests** — a stale ledger or review-bundle self-digest (`DIGEST_MISMATCH`).
+- **Unknown / malformed** — an unknown report id (`UNRECOGNIZED_REPORT`), a non-object capture
+  (`NOT_AN_OBJECT`), a redaction leak (`RAW_PATH_LEAK`).
+- **Missing components** — an empty archive / review bundle (`*_BLOCKED`).
+- **Cross-report mismatch (green-looking, stale)** — a ledger recording the wrong evidence digest
+  (`EVIDENCE_LEDGER_MISMATCH`), a review bundle whose archive component doesn't match
+  (`ARCHIVE_EVIDENCE_MISMATCH`), and a consistency-matrix review/archive divergence (`MATRIX_INCONSISTENT`).
+- **Unsubstantiated review** — a clean transcript with a bogus commit or no tests (`REVIEWED_COMMIT_INVALID`
+  / `TEST_RESULTS_INVALID`).
+- **Stale binding** — a release checklist whose final summary is bound to a different reviewed commit
+  (`COMMIT_BINDING_MISMATCH`) or whose review bundle doesn't bind the transcript
+  (`TRANSCRIPT_BUNDLE_MISMATCH`), and a merge-readiness manifest whose final summary is unbound from the
+  cleared checklist (`FINAL_SUMMARY_BINDING_MISMATCH`).
+- **Incomplete / not-ready upstream** — a merge-readiness manifest with a missing context
+  (`MERGE_CONTEXT_MISSING`) or a not-cleared release checklist (`RELEASE_CHECKLIST_NOT_CLEARED`).
+
+`overall` is `CORPUS_HELD` only when **every** sample is rejected, else `CORPUS_BREACHED` with the breaching
+sample ids. The report carries only fixed sample ids, categories, counts, and booleans — **never the
+payloads themselves** — plus a `corpusDigest`.
 
 ## Files
 

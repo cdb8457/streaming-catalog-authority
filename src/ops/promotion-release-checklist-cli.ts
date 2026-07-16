@@ -8,10 +8,11 @@ import { buildReleaseChecklist, type ReleaseChecklistInput } from './promotion-r
 
 function usage(): string {
   return [
-    'usage: ops:promotion-release-checklist --finalsummary <f> --negativecorpus <f> --closurehygiene <f> [--selfdigest <f>] [--out <checklist.json>]',
+    'usage: ops:promotion-release-checklist --reviewbundle <f> --transcript <f> --finalsummary <f> --closurehygiene <f> --negativecorpus <f> [--selfdigest <f>] [--out <checklist.json>]',
     '',
-    'Local, non-live: RELEASE_CHECKLIST_CLEARED only when every required item is present, valid, and passing.',
-    'Clearing it authorizes NOTHING live, no merge, and does not authorize Phase 231. Exit 0 = CLEARED, 1 = BLOCKED.',
+    'Local, non-live: RELEASE_CHECKLIST_CLEARED only when every required item is present, valid, passing, and',
+    'the review bundle, transcript, and final summary bind to the same run. Clearing it authorizes NOTHING',
+    'live, no merge, and does not authorize Phase 231. Exit 0 = CLEARED, 1 = BLOCKED.',
   ].join('\n');
 }
 
@@ -29,7 +30,7 @@ function main(): number {
   if (args.includes('--help')) { console.log(usage()); return 0; }
   const out = valueAfter(args, '--out');
   const map: Array<[keyof ReleaseChecklistInput, string]> = [
-    ['finalSummary', '--finalsummary'], ['negativeCorpus', '--negativecorpus'], ['closureHygiene', '--closurehygiene'], ['selfDigest', '--selfdigest'],
+    ['reviewBundle', '--reviewbundle'], ['transcript', '--transcript'], ['finalSummary', '--finalsummary'], ['closureHygiene', '--closurehygiene'], ['negativeCorpus', '--negativecorpus'], ['selfDigest', '--selfdigest'],
   ];
   const input: ReleaseChecklistInput = {};
   try {
@@ -49,6 +50,8 @@ function main(): number {
     authorization: checklist.authorization,
     redactionSafe: true,
     items: checklist.items,
+    bindings: checklist.bindings,
+    boundDigests: checklist.boundDigests,
     blockers: checklist.blockers,
     checklistDigest: checklist.checklistDigest,
     ...(out ? { outputWritten: true } : {}),

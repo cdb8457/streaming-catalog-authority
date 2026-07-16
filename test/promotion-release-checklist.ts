@@ -32,12 +32,13 @@ const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-release-')); }
 function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 18, 8, 0, i++)); }
 const COMMIT = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
+const COMMIT_ALT = 'a1b2c3d4e5f6071829304152637485960a1b2c3d';
 
-async function greenInputs(root: string) {
+async function greenInputs(root: string, commit = COMMIT) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'release', now: makeNow() })));
   const replay = replayFixtureBundle(bundle);
   const evidence = buildCoordinatorEvidencePacket({ bundle, replay });
-  const transcript = buildReviewTranscript({ reviewedCommit: COMMIT, testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
+  const transcript = buildReviewTranscript({ reviewedCommit: commit, testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
   const ledger = buildProvenanceLedger({ bundle, replay, evidence, transcript });
   const dag = verifyGateDag();
   const archive = buildArchiveManifest({ ledger, dag, evidence, transcript });
@@ -46,12 +47,12 @@ async function greenInputs(root: string) {
   const finalSummary = buildFinalSummary({ reviewBundle, transcript });
   const negativeCorpus = buildNegativeEvidenceCorpus();
   const closureHygiene = buildClosureHygiene(projectRoot);
-  return { finalSummary, negativeCorpus, closureHygiene, selfDigest };
+  return { reviewBundle, transcript, finalSummary, closureHygiene, negativeCorpus, selfDigest };
 }
 
 console.log('Running Phase 230 coordinator release checklist suite:\n');
 
-await test('RELEASE_CHECKLIST_CLEARED when every required item passes', async () => {
+await test('RELEASE_CHECKLIST_CLEARED when every item passes and the artifacts bind to one run', async () => {
   const root = workspace();
   try {
     const g = await greenInputs(root);
@@ -59,29 +60,46 @@ await test('RELEASE_CHECKLIST_CLEARED when every required item passes', async ()
     assertEq(c.overall, 'RELEASE_CHECKLIST_CLEARED', `cleared (blockers: ${c.blockers.join(',')})`);
     assertEq(c.authorization, 'NONE', 'authorizes nothing');
     assert(c.items.every((i) => i.pass), 'every item passes');
-    assertEq(c.humanGates.length, RELEASE_CHECKLIST_HUMAN_GATES.length, 'human gates restated');
-    assertEq(c.disclaimers.length, RELEASE_CHECKLIST_DISCLAIMERS.length, 'disclaimers present');
+    assert(c.bindings.length === 3 && c.bindings.every((b) => b.ok), 'all three bindings hold');
+    assert(/^[0-9a-f]{64}$/.test(c.boundDigests['review-bundle'] ?? '') && /^[0-9a-f]{64}$/.test(c.boundDigests['final-summary'] ?? ''), 'bound digests recorded');
     assert(c.disclaimers.some((d) => /merge\/tag\/master/i.test(d)), 'explicit no-merge disclaimer');
     assertEq(verifySelfDigests([c]).overall, 'ALL_VERIFIED', 'checklist self-verifies');
-    assert(/^[0-9a-f]{64}$/.test(c.checklistDigest), 'checklist digest present');
+    assertEq(c.humanGates.length, RELEASE_CHECKLIST_HUMAN_GATES.length, 'human gates restated');
+    assertEq(c.disclaimers.length, RELEASE_CHECKLIST_DISCLAIMERS.length, 'disclaimers present');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-await test('CLEARED with the three required items and no optional self-digest', async () => {
+await test('BLOCKED when the final summary was built over a different reviewed commit', async () => {
   const root = workspace();
   try {
-    const { finalSummary, negativeCorpus, closureHygiene } = await greenInputs(root);
-    const c = buildReleaseChecklist({ finalSummary, negativeCorpus, closureHygiene });
-    assertEq(c.overall, 'RELEASE_CHECKLIST_CLEARED', 'cleared');
-    assert(c.items.find((i) => i.item === 'self-digest')?.present === false, 'optional self-digest absent but not blocking');
+    const g = await greenInputs(root);
+    // a final summary from a transcript at COMMIT_ALT, paired with the run's transcript at COMMIT
+    const otherTranscript = buildReviewTranscript({ reviewedCommit: COMMIT_ALT, testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }] });
+    const staleFinal = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: otherTranscript });
+    const c = buildReleaseChecklist({ ...g, finalSummary: staleFinal });
+    assertEq(c.overall, 'RELEASE_CHECKLIST_BLOCKED', 'blocked');
+    assert(c.blockers.includes('COMMIT_BINDING_MISMATCH'), 'commit-binding-mismatch blocker');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when the review bundle does not bind the supplied transcript', async () => {
+  const a = workspace();
+  const b = workspace();
+  try {
+    const ga = await greenInputs(a);
+    const gb = await greenInputs(b, COMMIT_ALT); // a different commit -> a different transcript digest
+    // review bundle from run A, but transcript + final summary from run B (transcript digest differs)
+    const c = buildReleaseChecklist({ ...ga, transcript: gb.transcript, finalSummary: gb.finalSummary });
+    assertEq(c.overall, 'RELEASE_CHECKLIST_BLOCKED', 'blocked');
+    assert(c.blockers.includes('TRANSCRIPT_BUNDLE_MISMATCH'), 'transcript-bundle-mismatch blocker');
+  } finally { rmSync(a, { recursive: true, force: true }); rmSync(b, { recursive: true, force: true }); }
 });
 
 await test('BLOCKED when a required item is missing', async () => {
   const root = workspace();
   try {
-    const { finalSummary, closureHygiene } = await greenInputs(root);
-    const c = buildReleaseChecklist({ finalSummary, closureHygiene }); // no negativeCorpus
+    const { reviewBundle, transcript, finalSummary, closureHygiene } = await greenInputs(root);
+    const c = buildReleaseChecklist({ reviewBundle, transcript, finalSummary, closureHygiene }); // no negativeCorpus
     assertEq(c.overall, 'RELEASE_CHECKLIST_BLOCKED', 'blocked');
     assert(c.blockers.includes('NEGATIVE_CORPUS_MISSING'), 'negative-corpus-missing blocker');
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -90,9 +108,9 @@ await test('BLOCKED when a required item is missing', async () => {
 await test('BLOCKED when the adversarial corpus reports a breach', async () => {
   const root = workspace();
   try {
-    const { finalSummary, closureHygiene } = await greenInputs(root);
+    const g = await greenInputs(root);
     const breached = { report: 'phase-230-promotion-negative-evidence-corpus', overall: 'CORPUS_BREACHED' };
-    const c = buildReleaseChecklist({ finalSummary, negativeCorpus: breached, closureHygiene });
+    const c = buildReleaseChecklist({ ...g, negativeCorpus: breached });
     assertEq(c.overall, 'RELEASE_CHECKLIST_BLOCKED', 'blocked');
     assert(c.blockers.includes('NEGATIVE_CORPUS_BREACHED'), 'corpus-breached blocker');
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -101,7 +119,7 @@ await test('BLOCKED when the adversarial corpus reports a breach', async () => {
 test('BLOCKED and redaction-safe on empty input', () => {
   const c = buildReleaseChecklist({});
   assertEq(c.overall, 'RELEASE_CHECKLIST_BLOCKED', 'blocked');
-  assert(c.blockers.includes('FINAL_SUMMARY_MISSING') && c.blockers.includes('CLOSURE_HYGIENE_MISSING'), 'required-missing blockers');
+  assert(c.blockers.includes('REVIEW_BUNDLE_MISSING') && c.blockers.includes('TRANSCRIPT_MISSING') && c.blockers.includes('FINAL_SUMMARY_MISSING'), 'required-missing blockers');
   assert(c.redactionSafe === true && !JSON.stringify(c).includes('/mnt/'), 'redaction-safe');
 });
 
@@ -111,10 +129,10 @@ await test('CLI builds the checklist and never echoes raw paths to stdout', asyn
     const g = await greenInputs(root);
     const dir = join(root, 'a'); mkdirSync(dir, { recursive: true });
     const w = (n: string, v: unknown): string => { const p = join(dir, n); writeFileSync(p, JSON.stringify(v)); return p; };
-    const fs = w('fs.json', g.finalSummary); const nc = w('nc.json', g.negativeCorpus); const ch = w('ch.json', g.closureHygiene); const sd = w('sd.json', g.selfDigest);
+    const rb = w('rb.json', g.reviewBundle); const tr = w('tr.json', g.transcript); const fs = w('fs.json', g.finalSummary); const ch = w('ch.json', g.closureHygiene); const nc = w('nc.json', g.negativeCorpus); const sd = w('sd.json', g.selfDigest);
     const outPath = join(root, 'catalog-authority-test-library', 'RCMARKER-out', 'checklist.json');
     const cliPath = fileURLToPath(new URL('../src/ops/promotion-release-checklist-cli.ts', import.meta.url));
-    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--finalsummary', fs, '--negativecorpus', nc, '--closurehygiene', ch, '--selfdigest', sd, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
+    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--reviewbundle', rb, '--transcript', tr, '--finalsummary', fs, '--closurehygiene', ch, '--negativecorpus', nc, '--selfdigest', sd, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
     assert(res.error === undefined, `spawn ok: ${res.error?.message ?? ''}`);
     assertEq(res.status, 0, `CLEARED exit (stderr: ${res.stderr ?? ''})`);
     assert(existsSync(outPath), 'checklist file written');

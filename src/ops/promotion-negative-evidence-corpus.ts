@@ -5,6 +5,8 @@ import { buildReviewBundle } from './promotion-review-bundle.js';
 import { buildConsistencyMatrix } from './promotion-consistency-matrix.js';
 import { buildFinalSummary } from './promotion-final-summary.js';
 import { verifyCliContract } from './promotion-cli-contract.js';
+import { buildReleaseChecklist } from './promotion-release-checklist.js';
+import { buildMergeReadiness } from './promotion-merge-readiness.js';
 
 // Local, non-live negative-evidence adversarial corpus. Each sample is a deliberately malformed or
 // adversarial evidence artifact (a tampered self-digest, an unknown report id, a stitched-together set, an
@@ -15,9 +17,15 @@ import { verifyCliContract } from './promotion-cli-contract.js';
 // nothing live. The report never echoes any payload, only fixed sample ids, categories, and booleans.
 
 const VALID_SHA = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
+const OTHER_SHA = 'a1b2c3d4e5f6071829304152637485960a1b2c3d';
 const A64 = 'a'.repeat(64);
 const B64 = 'b'.repeat(64);
+const T64 = 'c'.repeat(64);
+const Z64 = 'd'.repeat(64);
 const READY_BUNDLE = { report: 'phase-230-promotion-coordinator-review-bundle', overall: 'REVIEW_BUNDLE_READY' };
+const GOOD_CONTEXT = { branch: 'work/branch', base: '1'.repeat(40), head: '2'.repeat(40), commits: [{ sha: VALID_SHA, subject: 'a commit' }], requiredTests: ['npm run test:phase230-local'] };
+const HELD_CORPUS = { report: 'phase-230-promotion-negative-evidence-corpus', overall: 'CORPUS_HELD' };
+const OK_HYGIENE = { report: 'phase-230-promotion-closure-hygiene', overall: 'HYGIENE_OK' };
 
 interface NegativeSample {
   readonly id: string;
@@ -70,6 +78,77 @@ const SAMPLES: readonly NegativeSample[] = [
   {
     id: 'cli-capture-non-object', category: 'malformed',
     rejected: () => { const r = verifyCliContract(42); return !r.ok && r.problems.includes('NOT_AN_OBJECT'); },
+  },
+  {
+    id: 'archive-evidence-ledger-mismatch', category: 'cross-report-mismatch',
+    rejected: () => buildArchiveManifest({
+      ledger: { report: 'phase-230-promotion-provenance-ledger', complete: true, absent: [], ledgerDigest: '0'.repeat(64), entries: [{ id: 'phase-230-promotion-coordinator-evidence-packet', digest: B64 }, { id: 'phase-230-promotion-review-transcript', digest: T64 }] },
+      dag: { report: 'phase-230-promotion-gate-dag', ok: true, dagDigest: '0'.repeat(64) },
+      evidence: { report: 'phase-230-promotion-coordinator-evidence-packet', overall: 'EVIDENCE_COMPLETE', packetDigest: A64 },
+      transcript: { report: 'phase-230-promotion-review-transcript', verdict: 'REVIEW_CLEAN', transcriptDigest: T64 },
+    }).blockers.includes('EVIDENCE_LEDGER_MISMATCH'),
+  },
+  {
+    id: 'review-bundle-archive-component-mismatch', category: 'cross-report-mismatch',
+    rejected: () => buildReviewBundle({
+      evidence: { report: 'phase-230-promotion-coordinator-evidence-packet', overall: 'EVIDENCE_COMPLETE', packetDigest: A64 },
+      transcript: { report: 'phase-230-promotion-review-transcript', verdict: 'REVIEW_CLEAN', transcriptDigest: T64 },
+      ledger: { report: 'phase-230-promotion-provenance-ledger', complete: true, ledgerDigest: B64 },
+      dag: { report: 'phase-230-promotion-gate-dag', ok: true, dagDigest: Z64 },
+      archive: { report: 'phase-230-promotion-evidence-archive-manifest', overall: 'ARCHIVE_READY', components: [{ component: 'evidence', digest: Z64 }] },
+    }).blockers.includes('ARCHIVE_EVIDENCE_MISMATCH'),
+  },
+  {
+    id: 'matrix-review-archive-mismatch', category: 'cross-report-mismatch',
+    rejected: () => buildConsistencyMatrix({
+      archive: { report: 'phase-230-promotion-evidence-archive-manifest', archiveDigest: A64 },
+      reviewBundle: { report: 'phase-230-promotion-coordinator-review-bundle', components: [{ component: 'archive', digest: B64 }] },
+    }).overall === 'MATRIX_INCONSISTENT',
+  },
+  {
+    id: 'self-digest-stale-review-bundle', category: 'tampered-digest',
+    rejected: () => verifySelfDigests([{ report: 'phase-230-promotion-coordinator-review-bundle', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'REVIEW_BUNDLE_READY', components: [], blockers: [], disclaimers: [], reviewBundleDigest: '0'.repeat(64) }]).overall === 'DIGEST_MISMATCH',
+  },
+  {
+    id: 'release-checklist-commit-binding-mismatch', category: 'stale-binding',
+    rejected: () => buildReleaseChecklist({
+      reviewBundle: { report: 'phase-230-promotion-coordinator-review-bundle', overall: 'REVIEW_BUNDLE_READY', components: [{ component: 'transcript', digest: T64 }] },
+      transcript: { report: 'phase-230-promotion-review-transcript', verdict: 'REVIEW_CLEAN', reviewedCommit: VALID_SHA, testResults: [{ command: 'x', passed: 1, failed: 0 }], transcriptDigest: T64 },
+      finalSummary: { report: 'phase-230-promotion-coordinator-final-summary', overall: 'FINAL_SUMMARY_READY', reviewedCommit: OTHER_SHA, testsPassed: 1, testsFailed: 0 },
+      closureHygiene: OK_HYGIENE,
+      negativeCorpus: HELD_CORPUS,
+    }).blockers.includes('COMMIT_BINDING_MISMATCH'),
+  },
+  {
+    id: 'release-checklist-transcript-bundle-mismatch', category: 'stale-binding',
+    rejected: () => buildReleaseChecklist({
+      reviewBundle: { report: 'phase-230-promotion-coordinator-review-bundle', overall: 'REVIEW_BUNDLE_READY', components: [{ component: 'transcript', digest: Z64 }] },
+      transcript: { report: 'phase-230-promotion-review-transcript', verdict: 'REVIEW_CLEAN', reviewedCommit: VALID_SHA, testResults: [{ command: 'x', passed: 1, failed: 0 }], transcriptDigest: T64 },
+      finalSummary: { report: 'phase-230-promotion-coordinator-final-summary', overall: 'FINAL_SUMMARY_READY', reviewedCommit: VALID_SHA, testsPassed: 1, testsFailed: 0 },
+      closureHygiene: OK_HYGIENE,
+      negativeCorpus: HELD_CORPUS,
+    }).blockers.includes('TRANSCRIPT_BUNDLE_MISMATCH'),
+  },
+  {
+    id: 'merge-readiness-final-summary-unbound', category: 'stale-binding',
+    rejected: () => buildMergeReadiness({
+      releaseChecklist: { report: 'phase-230-promotion-coordinator-release-checklist', overall: 'RELEASE_CHECKLIST_CLEARED', blockers: [], boundDigests: { 'final-summary': A64 } },
+      finalSummary: { report: 'phase-230-promotion-coordinator-final-summary', overall: 'FINAL_SUMMARY_READY', summaryDigest: B64 },
+      context: GOOD_CONTEXT,
+    }).blockers.includes('FINAL_SUMMARY_BINDING_MISMATCH'),
+  },
+  {
+    id: 'merge-readiness-missing-context', category: 'incomplete-context',
+    rejected: () => buildMergeReadiness({
+      releaseChecklist: { report: 'phase-230-promotion-coordinator-release-checklist', overall: 'RELEASE_CHECKLIST_CLEARED', blockers: [], boundDigests: {} },
+    }).blockers.includes('MERGE_CONTEXT_MISSING'),
+  },
+  {
+    id: 'merge-readiness-not-cleared', category: 'not-ready-upstream',
+    rejected: () => buildMergeReadiness({
+      releaseChecklist: { report: 'phase-230-promotion-coordinator-release-checklist', overall: 'RELEASE_CHECKLIST_BLOCKED', blockers: ['COMMIT_BINDING_MISMATCH'], boundDigests: {} },
+      context: GOOD_CONTEXT,
+    }).blockers.includes('RELEASE_CHECKLIST_NOT_CLEARED'),
   },
 ];
 

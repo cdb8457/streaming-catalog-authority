@@ -1,18 +1,20 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
-import { buildMergeReadiness, type MergeReadinessInput } from './promotion-merge-readiness.js';
+import { buildMergeReadiness, type MergeReadinessInput, type MergeContext } from './promotion-merge-readiness.js';
 
 // Offline merge-readiness DRY-RUN CLI. Reports whether the local evidence preconditions for a merge are
-// met, without performing, staging, or authorizing any merge/tag/master. Never promotes, never touches the
-// real Movies root, never contacts Jellyfin, runs no git action.
+// met, without performing, staging, or authorizing any merge/tag/master. Reads the branch/base/head and
+// commit list from the supplied context file -- it invokes no git. Never promotes, never touches the real
+// Movies root, never contacts Jellyfin.
 
 function usage(): string {
   return [
-    'usage: ops:promotion-merge-readiness --releasechecklist <f> [--finalsummary <f>] [--out <manifest.json>]',
+    'usage: ops:promotion-merge-readiness --releasechecklist <f> --context <f> [--finalsummary <f>] [--out <manifest.json>]',
     '',
-    'Local, non-live DRY RUN: MERGE_DRY_RUN_READY only when the release checklist is CLEARED (and any supplied',
-    'final summary is READY). It performs NO merge/tag/master and authorizes NOTHING live or Phase 231.',
-    'Exit 0 = MERGE_DRY_RUN_READY, 1 = MERGE_DRY_RUN_BLOCKED.',
+    'The context file is { branch, base, head, commits:[{sha,subject}], requiredTests:[...] }.',
+    'Local, non-live DRY RUN: MERGE_DRY_RUN_READY only when the release checklist is CLEARED, the context is',
+    'well-formed, and any supplied final summary is READY and bound to the checklist. It performs NO',
+    'merge/tag/master and authorizes NOTHING live or Phase 231. Exit 0 = READY, 1 = BLOCKED.',
   ].join('\n');
 }
 
@@ -29,15 +31,14 @@ function main(): number {
   const args = process.argv.slice(2);
   if (args.includes('--help')) { console.log(usage()); return 0; }
   const out = valueAfter(args, '--out');
-  const map: Array<[keyof MergeReadinessInput, string]> = [
-    ['releaseChecklist', '--releasechecklist'], ['finalSummary', '--finalsummary'],
-  ];
   const input: MergeReadinessInput = {};
   try {
-    for (const [key, flag] of map) {
-      const p = valueAfter(args, flag);
-      if (p !== undefined) (input as Record<string, unknown>)[key] = readJson(p, key);
-    }
+    const rc = valueAfter(args, '--releasechecklist');
+    if (rc !== undefined) (input as { releaseChecklist?: unknown }).releaseChecklist = readJson(rc, 'releaseChecklist');
+    const fs = valueAfter(args, '--finalsummary');
+    if (fs !== undefined) (input as { finalSummary?: unknown }).finalSummary = readJson(fs, 'finalSummary');
+    const ctx = valueAfter(args, '--context');
+    if (ctx !== undefined) (input as { context?: MergeContext }).context = readJson(ctx, 'context') as MergeContext;
   } catch (err) { console.error((err as Error).message); return 2; }
   const manifest = buildMergeReadiness(input);
   if (out) {
@@ -50,8 +51,14 @@ function main(): number {
     authorization: manifest.authorization,
     redactionSafe: true,
     dryRun: manifest.dryRun,
+    gitInvoked: manifest.gitInvoked,
     mergeActionsPerformed: manifest.mergeActionsPerformed,
-    checks: manifest.checks,
+    branch: manifest.branch,
+    base: manifest.base,
+    head: manifest.head,
+    commitsSinceBase: manifest.commitsSinceBase,
+    requiredTests: manifest.requiredTests,
+    openBlockers: manifest.openBlockers,
     blockers: manifest.blockers,
     manifestDigest: manifest.manifestDigest,
     ...(out ? { outputWritten: true } : {}),

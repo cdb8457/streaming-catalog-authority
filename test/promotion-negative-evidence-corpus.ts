@@ -27,9 +27,12 @@ test('CORPUS_HELD: every adversarial sample is rejected by its validator', () =>
   const c = buildNegativeEvidenceCorpus();
   assertEq(c.overall, 'CORPUS_HELD', `held (breaches: ${c.breaches.join(',')})`);
   assertEq(c.authorization, 'NONE', 'authorizes nothing');
-  assert(c.count >= 8 && c.count === NEGATIVE_SAMPLE_COUNT, 'a substantial sample set');
+  assert(c.count >= 15 && c.count === NEGATIVE_SAMPLE_COUNT, 'a substantial sample set');
   assert(c.samples.every((s) => s.rejected), 'every sample rejected');
-  assert(Object.keys(c.categories).length >= 4, 'several adversarial categories');
+  assert(Object.keys(c.categories).length >= 6, 'several adversarial categories');
+  const ids = new Set(c.samples.map((s) => s.sample));
+  assert(ids.has('release-checklist-commit-binding-mismatch') && ids.has('merge-readiness-final-summary-unbound'), 'covers release-checklist + merge-readiness binding blockers');
+  assert(ids.has('archive-evidence-ledger-mismatch') && ids.has('review-bundle-archive-component-mismatch') && ids.has('matrix-review-archive-mismatch'), 'covers stale/mismatch green-looking artifacts');
   assert(/^[0-9a-f]{64}$/.test(c.corpusDigest), 'corpus digest present');
 });
 
