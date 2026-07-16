@@ -36,6 +36,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-bundle-replay.ts', 'src/ops/promotion-bundle-replay-cli.ts',
   'src/ops/promotion-evidence-packet.ts', 'src/ops/promotion-evidence-packet-cli.ts',
   'src/ops/promotion-bundle-diff.ts', 'src/ops/promotion-bundle-diff-cli.ts',
+  'src/ops/promotion-tamper-corpus.ts', 'src/ops/promotion-tamper-corpus-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -69,6 +70,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_BUNDLE_REPLAY.md',
   'docs/PHASE_230_PROMOTION_EVIDENCE_PACKET.md',
   'docs/PHASE_230_PROMOTION_BUNDLE_DIFF.md',
+  'docs/PHASE_230_PROMOTION_TAMPER_CORPUS.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');
