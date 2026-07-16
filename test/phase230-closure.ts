@@ -40,6 +40,7 @@ const TOOLS: Array<{ base: string; doc: string }> = [
   { base: 'promotion-bundle-diff', doc: 'PHASE_230_PROMOTION_BUNDLE_DIFF' },
   { base: 'promotion-tamper-corpus', doc: 'PHASE_230_PROMOTION_TAMPER_CORPUS' },
   { base: 'promotion-review-transcript', doc: 'PHASE_230_PROMOTION_REVIEW_TRANSCRIPT' },
+  { base: 'promotion-provenance-ledger', doc: 'PHASE_230_PROMOTION_PROVENANCE_LEDGER' },
 ];
 
 // Test-only local suites (no module/CLI/ops script).

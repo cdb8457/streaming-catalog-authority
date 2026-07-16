@@ -33,6 +33,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-bundle-diff` | PHASE_230_PROMOTION_BUNDLE_DIFF |
 | `promotion-tamper-corpus` | PHASE_230_PROMOTION_TAMPER_CORPUS |
 | `promotion-review-transcript` | PHASE_230_PROMOTION_REVIEW_TRANSCRIPT |
+| `promotion-provenance-ledger` | PHASE_230_PROMOTION_PROVENANCE_LEDGER |
 
 ## Test-only local suites
 
