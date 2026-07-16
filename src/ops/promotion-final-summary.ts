@@ -89,7 +89,9 @@ export function buildFinalSummary(input: FinalSummaryInput): FinalSummary {
     }
   }
 
-  // Required: the review transcript pins the exact reviewed commit and the test results.
+  // Required: the review transcript must pin an EXACT reviewed commit and non-empty, well-formed test
+  // results. A clean transcript with a malformed/missing commit or missing/empty/malformed results still
+  // fails closed -- the summary must never claim readiness it cannot substantiate.
   let reviewedCommit: string | null = null;
   let testResults: SummaryTestResult[] = [];
   const tr = input.transcript;
@@ -100,9 +102,17 @@ export function buildFinalSummary(input: FinalSummaryInput): FinalSummary {
     else {
       const clean = o.verdict === 'REVIEW_CLEAN';
       if (!clean) blockers.push('TRANSCRIPT_NOT_CLEAN');
-      reviewedCommit = typeof o.reviewedCommit === 'string' && /^[0-9a-f]{40}$/.test(o.reviewedCommit) ? o.reviewedCommit : null;
-      testResults = normalizeTestResults(o.testResults);
       checks.push({ check: 'transcript', present: true, ok: clean });
+
+      const commitOk = typeof o.reviewedCommit === 'string' && /^[0-9a-f]{40}$/.test(o.reviewedCommit);
+      if (commitOk) reviewedCommit = o.reviewedCommit as string;
+      else blockers.push('REVIEWED_COMMIT_INVALID');
+      checks.push({ check: 'reviewed-commit', present: true, ok: commitOk });
+
+      const validated = validateTestResults(o.testResults);
+      if (validated === null) blockers.push('TEST_RESULTS_INVALID');
+      else testResults = validated;
+      checks.push({ check: 'test-results', present: true, ok: validated !== null });
     }
   }
   const testsPassed = testResults.reduce((a, t) => a + t.passed, 0);
@@ -138,18 +148,22 @@ export function buildFinalSummary(input: FinalSummaryInput): FinalSummary {
   return { ...withoutDigest, summaryDigest: digest('phase-230-final-summary', JSON.stringify(withoutDigest)) };
 }
 
-// Only well-formed, redaction-safe test-result rows survive: a fixed command label and non-negative counts.
-function normalizeTestResults(value: unknown): SummaryTestResult[] {
-  if (!Array.isArray(value)) return [];
+// Strict validation: the test results must be a NON-EMPTY array of well-formed, redaction-safe rows -- a
+// non-empty path-free command label and non-negative integer passed/failed counts. Any deviation (missing,
+// empty, non-array, bad command, or malformed counts) returns null so the caller blocks.
+function validateTestResults(value: unknown): SummaryTestResult[] | null {
+  if (!Array.isArray(value) || value.length === 0) return null;
   const out: SummaryTestResult[] = [];
   for (const r of value) {
     const o = asObject(r);
-    const command = typeof o.command === 'string' && !looksLikePath(o.command) ? o.command : '<redacted>';
-    const passed = typeof o.passed === 'number' && o.passed >= 0 ? o.passed : 0;
-    const failed = typeof o.failed === 'number' && o.failed >= 0 ? o.failed : 0;
-    out.push({ command, passed, failed });
+    if (typeof o.command !== 'string' || o.command.length === 0 || looksLikePath(o.command)) return null;
+    if (!isNonNegInt(o.passed) || !isNonNegInt(o.failed)) return null;
+    out.push({ command: o.command, passed: o.passed as number, failed: o.failed as number });
   }
   return out;
+}
+function isNonNegInt(v: unknown): boolean {
+  return typeof v === 'number' && Number.isInteger(v) && v >= 0;
 }
 function looksLikePath(s: string): boolean {
   return /^\//.test(s) || /[A-Za-z]:[\\/]/.test(s) || /\/mnt\//.test(s) || /\\mnt\\/.test(s)

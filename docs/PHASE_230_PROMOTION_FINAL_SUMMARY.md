@@ -13,17 +13,21 @@ the constant `NONE`).
 ## Green criteria
 
 `FINAL_SUMMARY_READY` requires the review bundle to be present, valid, and `REVIEW_BUNDLE_READY`; the
-review transcript to be present, valid, and `REVIEW_CLEAN`; and every *supplied* optional check to be green
-(`MATRIX_CONSISTENT`, `ALL_VERIFIED`, `TAXONOMY_CONSISTENT`). An optional check that is simply absent does
-not block. Otherwise the summary is `FINAL_SUMMARY_BLOCKED` with generic blockers
-(`REVIEW_BUNDLE_MISSING/INVALID/NOT_READY`, `TRANSCRIPT_MISSING/INVALID/NOT_CLEAN`,
-`MATRIX_NOT_CONSISTENT`, `SELF_DIGEST_NOT_VERIFIED`, `TAXONOMY_NOT_CONSISTENT`, and the `*_INVALID`
-variants).
+review transcript to be present, valid, and `REVIEW_CLEAN`; **and that transcript to actually substantiate
+the review** — an exact reviewed commit and non-empty, well-formed test results; and every *supplied*
+optional check to be green (`MATRIX_CONSISTENT`, `ALL_VERIFIED`, `TAXONOMY_CONSISTENT`). An optional check
+that is simply absent does not block. Otherwise the summary is `FINAL_SUMMARY_BLOCKED` with generic blockers
+(`REVIEW_BUNDLE_MISSING/INVALID/NOT_READY`, `TRANSCRIPT_MISSING/INVALID/NOT_CLEAN`, `REVIEWED_COMMIT_INVALID`,
+`TEST_RESULTS_INVALID`, `MATRIX_NOT_CONSISTENT`, `SELF_DIGEST_NOT_VERIFIED`, `TAXONOMY_NOT_CONSISTENT`, and
+the `*_INVALID` variants).
 
 The summary pins the **exact reviewed commit** (`reviewedCommit`, a 40-hex sha) and the **test results**
-(`testResults`, each a fixed command label with non-negative `passed`/`failed` counts, plus `testsPassed`
-/`testsFailed` totals) taken from the transcript. Command labels are re-validated as path-free before
-being carried, so the summary stays redaction-safe.
+(`testResults`, each a non-empty path-free command label with non-negative integer `passed`/`failed`
+counts, plus `testsPassed`/`testsFailed` totals) taken from the transcript. These are validated strictly
+and **fail closed**: a clean transcript whose commit is malformed/missing, or whose results are
+missing/empty/malformed, blocks with `REVIEWED_COMMIT_INVALID` / `TEST_RESULTS_INVALID` rather than
+claiming a readiness it cannot substantiate. Command labels are re-checked as path-free, so the summary
+stays redaction-safe.
 
 Every summary — ready or blocked — restates the four remaining **human gates** (approval authoring; the
 Phase 229-defined live promotion, out of scope; coordinator ACCEPT; and Phase 231 authorization, not
@@ -35,8 +39,10 @@ check enums/booleans and fixed-language strings (no raw digests/paths/titles).
 - `src/ops/promotion-final-summary.ts` — `buildFinalSummary(input)`, `FINAL_SUMMARY_HUMAN_GATES`,
   `FINAL_SUMMARY_DISCLAIMERS`.
 - `src/ops/promotion-final-summary-cli.ts` — CLI wrapper.
-- `test/promotion-final-summary.ts` — 7 tests: all-green READY, exact commit/results surfaced, a missing
-  transcript, a not-ready review bundle, a failing optional check, empty input, and a spawned CLI run.
+- `test/promotion-final-summary.ts` — 10 tests: all-green READY, exact commit/results surfaced, a missing
+  transcript, a malformed reviewed commit, missing/empty/malformed test results, the exact coordinator
+  repro (clean transcript + bogus commit + no tests), a not-ready review bundle, a failing optional check,
+  empty input, and a spawned CLI run.
 
 ## Usage
 

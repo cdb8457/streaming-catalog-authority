@@ -31,6 +31,17 @@ function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-summar
 function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 17, 14, 0, i++)); }
 const COMMIT = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
 
+// A raw REVIEW_CLEAN transcript object (bypassing the transcript builder's own sanitization) so we can
+// prove the final summary fails closed on a clean-but-unsubstantiated transcript.
+function cleanTranscript(over: Record<string, unknown>): Record<string, unknown> {
+  return {
+    report: 'phase-230-promotion-review-transcript', version: 1, redactionSafe: true,
+    verdict: 'REVIEW_CLEAN', reviewedCommit: COMMIT,
+    testResults: [{ command: 'npm run test:phase230-local', passed: 5, failed: 0 }],
+    blockers: [], transcriptDigest: 'a'.repeat(64), ...over,
+  };
+}
+
 async function greenAll(root: string) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'summary', now: makeNow() })));
   const replay = replayFixtureBundle(bundle);
@@ -74,7 +85,8 @@ await test('surfaces the exact reviewed commit and test results from the transcr
     assertEq(s.testResults[0]!.command, 'npm run test:phase230-local', 'command carried');
     assertEq(s.testsPassed, 5, 'passed total');
     assertEq(s.testsFailed, 0, 'failed total');
-    assert(s.checks.filter((c) => c.check !== 'reviewBundle' && c.check !== 'transcript').every((c) => !c.present && c.ok), 'optionals absent, not blocking');
+    const optionalNames = new Set(['consistencyMatrix', 'selfDigest', 'taxonomy']);
+    assert(s.checks.filter((c) => optionalNames.has(c.check)).every((c) => !c.present && c.ok), 'optionals absent, not blocking');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -87,6 +99,50 @@ await test('BLOCKED when the transcript is missing (commit/results unknown)', as
     assert(s.blockers.includes('TRANSCRIPT_MISSING'), 'transcript-missing blocker');
     assertEq(s.reviewedCommit, null, 'no commit without a transcript');
     assertEq(s.testResults.length, 0, 'no test results without a transcript');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when a clean transcript has a malformed reviewed commit', async () => {
+  const root = workspace();
+  try {
+    const g = await greenAll(root);
+    const s = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: cleanTranscript({ reviewedCommit: 'not-a-sha' }) });
+    assertEq(s.overall, 'FINAL_SUMMARY_BLOCKED', 'blocked');
+    assert(s.blockers.includes('REVIEWED_COMMIT_INVALID'), 'reviewed-commit-invalid blocker');
+    assertEq(s.reviewedCommit, null, 'no commit surfaced');
+    assert(s.checks.some((c) => c.check === 'reviewed-commit' && !c.ok), 'reviewed-commit check fails');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when a clean transcript has missing/empty/malformed test results', async () => {
+  const root = workspace();
+  try {
+    const g = await greenAll(root);
+    const empty = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: cleanTranscript({ testResults: [] }) });
+    assertEq(empty.overall, 'FINAL_SUMMARY_BLOCKED', 'empty results blocked');
+    assert(empty.blockers.includes('TEST_RESULTS_INVALID'), 'empty -> test-results-invalid');
+
+    const missing = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: cleanTranscript({ testResults: undefined }) });
+    assert(missing.blockers.includes('TEST_RESULTS_INVALID'), 'missing -> test-results-invalid');
+
+    const badCount = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: cleanTranscript({ testResults: [{ command: 'npm test', passed: -1, failed: 0 }] }) });
+    assert(badCount.blockers.includes('TEST_RESULTS_INVALID'), 'negative count -> test-results-invalid');
+
+    const nonInt = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: cleanTranscript({ testResults: [{ command: 'npm test', passed: '5', failed: 0 }] }) });
+    assert(nonInt.blockers.includes('TEST_RESULTS_INVALID'), 'non-integer count -> test-results-invalid');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('the exact coordinator repro (clean transcript, bogus commit, no tests) fails closed', async () => {
+  const root = workspace();
+  try {
+    const g = await greenAll(root);
+    const s = buildFinalSummary({ reviewBundle: g.reviewBundle, transcript: cleanTranscript({ reviewedCommit: 'not-a-sha', testResults: [] }) });
+    assertEq(s.overall, 'FINAL_SUMMARY_BLOCKED', 'blocked, not READY');
+    assert(s.blockers.includes('REVIEWED_COMMIT_INVALID') && s.blockers.includes('TEST_RESULTS_INVALID'), 'both blockers present');
+    assertEq(s.reviewedCommit, null, 'no commit');
+    assertEq(s.testsPassed, 0, 'no passed total');
+    assertEq(s.testsFailed, 0, 'no failed total');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
