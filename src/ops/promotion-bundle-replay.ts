@@ -40,6 +40,11 @@ export function replayFixtureBundle(candidate: unknown): BundleReplayReport {
     return finalize(['BUNDLE_REPORT_INVALID'], []);
   }
 
+  // Verify the bundle's own self-seal: recompute bundleDigest over the body (excluding bundleDigest).
+  // Catches a tampered bundleDigest or any tampered bundle-level field.
+  checks.push('bundle-self-digest');
+  if (!selfDigestValid(bundle, 'bundleDigest', 'phase-230-fixture-bundle')) problems.push('BUNDLE_SELF_DIGEST_MISMATCH');
+
   const artifacts = asObject(bundle.artifacts);
   const reports = asObject(bundle.reports);
   const manifest = asObject(bundle.rehearsalManifest);

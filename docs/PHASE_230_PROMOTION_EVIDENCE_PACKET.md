@@ -4,7 +4,7 @@ Report id: `phase-230-promotion-coordinator-evidence-packet`
 
 Status: `PHASE_230_PROMOTION_EVIDENCE_PACKET_READY`
 
-Summarizes a fixture evidence bundle (and, optionally, its replay result) into a compact,
+Summarizes a fixture evidence bundle and its (**required**) replay result into a compact,
 **redaction-safe, deterministic** coordinator packet: the key digests, the local test commands to
 reproduce, the remaining human gates, and explicit no-live / no-Phase-231 language. It reads parsed
 JSON only; it performs no promotion, never touches `/mnt/user/media/Movies`, never contacts Jellyfin,
@@ -12,9 +12,10 @@ and **never authorizes Phase 231 or live promotion** (`authorization` is the con
 
 ## Contents
 
-- `overall`: `EVIDENCE_COMPLETE` iff the bundle is `BUNDLE_READY` and any supplied replay is `ok`;
+- `overall`: `EVIDENCE_COMPLETE` iff the bundle is `BUNDLE_READY` **and** a replay is supplied and `ok`;
   otherwise `EVIDENCE_INCOMPLETE` with generic `blockers` (`BUNDLE_INVALID`, `BUNDLE_NOT_READY`,
-  `REPLAY_INVALID`, `REPLAY_NOT_OK`, `RAW_PATH_IN_PACKET`).
+  `REPLAY_MISSING`, `REPLAY_INVALID`, `REPLAY_NOT_OK`, `RAW_PATH_IN_PACKET`). A replay is **required** —
+  a complete packet must carry a passing bundle-replay result.
 - `digests`: `bundle`, `manifest`, `matrix`, `integrity`, `schema`, `handoff`, `dashboard`, and (when a
   replay is supplied) `replay` — SHA-256 digests lifted from the bundle/replay.
 - `testCommands`: the exact local commands to reproduce (`test:phase230-local`, the fixture-bundle and
@@ -31,9 +32,9 @@ destination.
 
 - `src/ops/promotion-evidence-packet.ts` — `buildCoordinatorEvidencePacket(input)` + the fixed constants.
 - `src/ops/promotion-evidence-packet-cli.ts` — CLI wrapper.
-- `test/promotion-evidence-packet.ts` — 6 tests: complete packet with digests/commands/gates/disclaimers,
-  incomplete on not-ready bundle / not-ok replay / invalid bundle, redaction-safety + deterministic
-  digest, and a spawned CLI run.
+- `test/promotion-evidence-packet.ts` — 7 tests: complete packet with digests/commands/gates/disclaimers,
+  incomplete on not-ready bundle / missing replay / not-ok replay / invalid bundle, redaction-safety +
+  deterministic digest, and a spawned CLI run.
 
 ## Usage
 

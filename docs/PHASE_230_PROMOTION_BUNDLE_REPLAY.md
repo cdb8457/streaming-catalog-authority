@@ -16,6 +16,7 @@ wrong-report, or mismatch. It reads parsed JSON only; it performs no promotion, 
 | Check | Fails with |
 |-------|-----------|
 | bundle report id / version | `BUNDLE_REPORT_INVALID` |
+| bundle self-seal (recompute `bundleDigest` over the body) | `BUNDLE_SELF_DIGEST_MISMATCH` |
 | each artifact present | `APPROVAL_EVIDENCE_MISSING`, `PROMOTION_EVIDENCE_MISSING`, … |
 | stored report ids | `INTEGRITY_REPORT_WRONG`, `SCHEMA_REPORT_WRONG`, `MATRIX_REPORT_WRONG`, `HANDOFF_REPORT_WRONG`, `DASHBOARD_REPORT_WRONG` |
 | integrity re-derived from artifacts matches stored | `INTEGRITY_REPLAY_MISMATCH` |
@@ -32,9 +33,9 @@ wrong-report, or mismatch. It reads parsed JSON only; it performs no promotion, 
 
 - `src/ops/promotion-bundle-replay.ts` — `replayFixtureBundle(candidate)`.
 - `src/ops/promotion-bundle-replay-cli.ts` — CLI wrapper.
-- `test/promotion-bundle-replay.ts` — 9 tests: clean bundle, non-bundle input, missing artifact,
-  tampered integrity/dashboard digest, wrong report, tampered matrix self-seal, manifest stage mismatch,
-  and a spawned CLI clean/tamper run.
+- `test/promotion-bundle-replay.ts` — 11 tests: clean bundle, tampered bundle self-seal (digest and a
+  top-level field), non-bundle input, missing artifact, tampered integrity/dashboard digest, wrong
+  report, tampered matrix self-seal, manifest stage mismatch, and a spawned CLI clean/tamper run.
 
 ## Usage
 

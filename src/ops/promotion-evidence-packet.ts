@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 
-// Local, non-live final coordinator evidence packet. It summarizes a fixture evidence bundle (and,
-// optionally, its replay result) into a compact redaction-safe packet: the key digests, the local test
+// Local, non-live final coordinator evidence packet. It summarizes a fixture evidence bundle and its
+// (required) replay result into a compact redaction-safe packet: the key digests, the local test
 // commands to reproduce, the remaining human gates, and explicit no-live / no-Phase-231 language. It is
 // deterministic (a pure function of its inputs). It reads parsed JSON only; it performs no promotion,
 // never touches the real Movies root, never contacts Jellyfin, and authorizes nothing live.
@@ -56,7 +56,10 @@ export function buildCoordinatorEvidencePacket(input: EvidencePacketInput): Coor
   if (!bundleValid) blockers.push('BUNDLE_INVALID');
   else if (bundle!.outcome !== 'BUNDLE_READY') blockers.push('BUNDLE_NOT_READY');
 
-  if (replay !== undefined) {
+  // A replay is REQUIRED: a complete coordinator packet must include a passing bundle-replay result.
+  if (replay === undefined) {
+    blockers.push('REPLAY_MISSING');
+  } else {
     const replayValid = replay.report === 'phase-230-promotion-bundle-replay';
     if (!replayValid) blockers.push('REPLAY_INVALID');
     else if (replay.ok !== true) blockers.push('REPLAY_NOT_OK');

@@ -50,10 +50,20 @@ await test('EVIDENCE_COMPLETE for a ready bundle + ok replay, with digests, comm
 });
 
 await test('EVIDENCE_INCOMPLETE when the bundle is not ready', () => {
-  const packet = buildCoordinatorEvidencePacket({ bundle: { report: 'phase-230-promotion-fixture-evidence-bundle', outcome: 'BUNDLE_INCOMPLETE' } });
+  const packet = buildCoordinatorEvidencePacket({ bundle: { report: 'phase-230-promotion-fixture-evidence-bundle', outcome: 'BUNDLE_INCOMPLETE' }, replay: { report: 'phase-230-promotion-bundle-replay', ok: true, replayDigest: 'a'.repeat(64) } });
   assertEq(packet.overall, 'EVIDENCE_INCOMPLETE', 'incomplete');
   assert(packet.blockers.includes('BUNDLE_NOT_READY'), 'bundle-not-ready blocker');
   assertEq(packet.disclaimers.length, EVIDENCE_DISCLAIMERS.length, 'disclaimers still present');
+});
+
+await test('EVIDENCE_INCOMPLETE when the replay is missing (replay is required)', async () => {
+  const root = workspace();
+  try {
+    const { bundle } = await bundleAndReplay(root);
+    const packet = buildCoordinatorEvidencePacket({ bundle });
+    assertEq(packet.overall, 'EVIDENCE_INCOMPLETE', 'incomplete without replay');
+    assert(packet.blockers.includes('REPLAY_MISSING'), 'replay-missing blocker');
+  } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
 await test('EVIDENCE_INCOMPLETE when a supplied replay is not ok', async () => {

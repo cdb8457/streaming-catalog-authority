@@ -43,6 +43,28 @@ await test('accepts a clean, self-consistent bundle', async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('detects a tampered bundleDigest (bundle self-seal)', async () => {
+  const root = workspace();
+  try {
+    const b = await bundle(root);
+    b.bundleDigest = '9'.repeat(64);
+    const rep = replayFixtureBundle(b);
+    assert(!rep.ok, 'rejected');
+    assert(rep.problems.includes('BUNDLE_SELF_DIGEST_MISMATCH'), 'bundle self-digest mismatch reported');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('detects a tampered bundle-level field (self-seal no longer recomputes)', async () => {
+  const root = workspace();
+  try {
+    const b = await bundle(root);
+    b.outcome = 'BUNDLE_INCOMPLETE'; // change a top-level field without re-sealing bundleDigest
+    const rep = replayFixtureBundle(b);
+    assert(!rep.ok, 'rejected');
+    assert(rep.problems.includes('BUNDLE_SELF_DIGEST_MISMATCH'), 'bundle self-digest mismatch reported');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('BUNDLE_REPORT_INVALID on a non-bundle input, no throw', () => {
   for (const bogus of [null, 7, 'nope', {}, { report: 'x', version: 1 }]) {
     const rep = replayFixtureBundle(bogus);
