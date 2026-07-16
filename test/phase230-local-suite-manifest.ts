@@ -52,6 +52,7 @@ const LOCAL_SUITES = [
   'test/promotion-determinism.ts',
   'test/promotion-blocker-taxonomy.ts',
   'test/promotion-final-summary.ts',
+  'test/promotion-closure-hygiene.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',

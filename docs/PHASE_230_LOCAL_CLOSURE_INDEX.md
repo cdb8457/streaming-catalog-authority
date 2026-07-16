@@ -46,6 +46,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-determinism` | PHASE_230_PROMOTION_DETERMINISM |
 | `promotion-blocker-taxonomy` | PHASE_230_PROMOTION_BLOCKER_TAXONOMY |
 | `promotion-final-summary` | PHASE_230_PROMOTION_FINAL_SUMMARY |
+| `promotion-closure-hygiene` | PHASE_230_PROMOTION_CLOSURE_HYGIENE |
 
 ## Test-only local suites
 
