@@ -69,7 +69,7 @@ writes them when `--artifacts-dir` is given (mode 0600), and treats them as oper
 
 - `src/ops/promotion-rehearsal.ts` — `runPromotionRehearsal(input)`.
 - `src/ops/promotion-rehearsal-cli.ts` — CLI wrapper.
-- `test/promotion-rehearsal.ts` — 6 tests: full pass, ephemeral cleanup, keep-sandbox clean tree, redaction-safety, real-Movies work-dir refusal, and a spawned CLI end-to-end run.
+- `test/promotion-rehearsal.ts` — 14 tests: full pass, ephemeral cleanup, keep-sandbox clean tree, redaction-safety, real-Movies work-dir refusal, the four failure scenarios, manifest-digest recomputation, cross-run determinism, and spawned CLI runs (success, failing scenario, invalid scenario).
 
 ## Usage
 
