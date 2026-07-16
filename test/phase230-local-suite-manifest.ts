@@ -47,6 +47,7 @@ const LOCAL_SUITES = [
   'test/promotion-injection-corpus.ts',
   'test/promotion-review-bundle.ts',
   'test/promotion-consistency-matrix.ts',
+  'test/promotion-self-digest-verifier.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',
