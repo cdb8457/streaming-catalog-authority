@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 
 // Local, non-live merge-review evidence pack. It assembles the seven closing records -- the coordinator
 // final summary, the release checklist, the merge-readiness dry-run manifest, the artifact chain bundle,
@@ -91,14 +92,19 @@ export function buildReviewerPack(input: ReviewerPackInput): ReviewerPack {
     const obj = asObject(value);
     if (obj.report !== spec.report) { blockers.push(spec.invalid); return { component: spec.component, present: true, ok: false }; }
     parsed[spec.key] = obj;
-    // Fail closed on binding evidence: every present component must carry a valid sha256 self-digest.
+    // Fail closed on binding evidence: every present component must carry a valid sha256 self-digest that
+    // actually RECOMPUTES against its body (delegated to the authoritative self-digest verifier). A green
+    // status paired with a well-formed but wrong digest -- a tampered/forged body -- fails here, so the pack
+    // never packs a forged-but-green record as ok.
     const rawDigest = obj[spec.digestField];
     const d = asSha256(rawDigest);
+    const digestVerified = d !== undefined && verifySelfDigests([obj]).results[0]?.verified === true;
     if (rawDigest === undefined) blockers.push('COMPONENT_DIGEST_MISSING');
     else if (d === undefined) blockers.push('COMPONENT_DIGEST_INVALID');
+    else if (!digestVerified) blockers.push('COMPONENT_DIGEST_MISMATCH');
     const okState = spec.ok(obj);
     if (!okState) blockers.push(spec.notOk);
-    return { component: spec.component, present: true, ok: okState && d !== undefined, ...(d ? { digest: d } : {}) };
+    return { component: spec.component, present: true, ok: okState && digestVerified, ...(digestVerified ? { digest: d } : {}) };
   });
 
   // Full-mesh digest bindings: every downstream record must have been built over the exact upstream ones.

@@ -219,6 +219,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'BOUNDARY_POLICY_VIOLATED', op: 'reviewer-pack' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'reviewer-pack' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'reviewer-pack' },
+  { code: 'COMPONENT_DIGEST_MISMATCH', op: 'reviewer-pack' },
   { code: 'REVIEWER_PACK_MISSING', op: 'acceptance-preflight' },
   { code: 'REVIEWER_PACK_INVALID', op: 'acceptance-preflight' },
   { code: 'REVIEWER_PACK_NOT_READY', op: 'acceptance-preflight' },
