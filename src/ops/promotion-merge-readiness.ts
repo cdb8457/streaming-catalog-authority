@@ -84,6 +84,16 @@ export function buildMergeReadiness(input: MergeReadinessInput): MergeReadinessM
     }
   }
 
+  // A checklist that claims CLEARED must actually carry the required run bindings; otherwise it cannot be
+  // trusted as a merge precondition (defends against a forged/stale "cleared" checklist).
+  if (checklistObj && checklistObj.overall === 'RELEASE_CHECKLIST_CLEARED') {
+    const bd = asObject(checklistObj.boundDigests);
+    const requiredBindings = ['review-bundle', 'transcript', 'final-summary', 'closure-hygiene', 'negative-evidence-corpus'];
+    const complete = requiredBindings.every((k) => asSha256(bd[k]) !== undefined);
+    if (!complete) blockers.push('CHECKLIST_BINDING_INCOMPLETE');
+    checks.push({ check: 'checklist-bindings-complete', present: true, pass: complete });
+  }
+
   // Optional: a supplied final summary must be READY and must bind to the checklist it was cleared under.
   const fs = input.finalSummary;
   if (fs !== undefined) {

@@ -33,6 +33,7 @@ test('CORPUS_HELD: every adversarial sample is rejected by its validator', () =>
   const ids = new Set(c.samples.map((s) => s.sample));
   assert(ids.has('release-checklist-commit-binding-mismatch') && ids.has('merge-readiness-final-summary-unbound'), 'covers release-checklist + merge-readiness binding blockers');
   assert(ids.has('archive-evidence-ledger-mismatch') && ids.has('review-bundle-archive-component-mismatch') && ids.has('matrix-review-archive-mismatch'), 'covers stale/mismatch green-looking artifacts');
+  assert(ids.has('release-checklist-digestless-required') && ids.has('merge-readiness-checklist-bindings-incomplete'), 'covers digestless required binding evidence');
   assert(/^[0-9a-f]{64}$/.test(c.corpusDigest), 'corpus digest present');
 });
 

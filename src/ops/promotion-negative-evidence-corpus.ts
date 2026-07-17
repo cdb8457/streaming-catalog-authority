@@ -150,6 +150,24 @@ const SAMPLES: readonly NegativeSample[] = [
       context: GOOD_CONTEXT,
     }).blockers.includes('RELEASE_CHECKLIST_NOT_CLEARED'),
   },
+  {
+    // Coordinator repro: required artifacts READY/OK but carrying no binding digest must NOT clear.
+    id: 'release-checklist-digestless-required', category: 'missing-binding-digest',
+    rejected: () => buildReleaseChecklist({
+      reviewBundle: { report: 'phase-230-promotion-coordinator-review-bundle', overall: 'REVIEW_BUNDLE_READY', components: [{ component: 'transcript', digest: T64 }] },
+      transcript: { report: 'phase-230-promotion-review-transcript', verdict: 'REVIEW_CLEAN', reviewedCommit: VALID_SHA, testResults: [{ command: 'x', passed: 1, failed: 0 }], transcriptDigest: T64 },
+      finalSummary: { report: 'phase-230-promotion-coordinator-final-summary', overall: 'FINAL_SUMMARY_READY', reviewedCommit: VALID_SHA, testsPassed: 1, testsFailed: 0 },
+      closureHygiene: OK_HYGIENE,
+      negativeCorpus: HELD_CORPUS,
+    }).blockers.includes('REQUIRED_DIGEST_MISSING'),
+  },
+  {
+    id: 'merge-readiness-checklist-bindings-incomplete', category: 'missing-binding-digest',
+    rejected: () => buildMergeReadiness({
+      releaseChecklist: { report: 'phase-230-promotion-coordinator-release-checklist', overall: 'RELEASE_CHECKLIST_CLEARED', blockers: [], boundDigests: { transcript: T64 } },
+      context: GOOD_CONTEXT,
+    }).blockers.includes('CHECKLIST_BINDING_INCOMPLETE'),
+  },
 ];
 
 export const NEGATIVE_SAMPLE_COUNT = SAMPLES.length;

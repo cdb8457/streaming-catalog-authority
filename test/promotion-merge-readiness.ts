@@ -106,6 +106,14 @@ await test('BLOCKED when the release checklist is not cleared (open blockers sur
   assertEq(m.mergeActionsPerformed.length, 0, 'still performs no merge');
 });
 
+test('BLOCKED when a "cleared" checklist lacks complete run bindings', () => {
+  const forged = { report: 'phase-230-promotion-coordinator-release-checklist', overall: 'RELEASE_CHECKLIST_CLEARED', blockers: [], boundDigests: { transcript: 'c'.repeat(64) } };
+  const m = buildMergeReadiness({ releaseChecklist: forged, context: goodContext() });
+  assertEq(m.overall, 'MERGE_DRY_RUN_BLOCKED', 'blocked');
+  assert(m.blockers.includes('CHECKLIST_BINDING_INCOMPLETE'), 'checklist-binding-incomplete blocker');
+  assertEq(m.mergeActionsPerformed.length, 0, 'still performs no merge');
+});
+
 await test('BLOCKED when the dry-run context is missing or malformed', async () => {
   const root = workspace();
   try {

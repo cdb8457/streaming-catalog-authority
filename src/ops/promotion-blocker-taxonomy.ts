@@ -126,6 +126,8 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'TRANSCRIPT_BUNDLE_MISMATCH', op: 'release-checklist' },
   { code: 'COMMIT_BINDING_MISMATCH', op: 'release-checklist' },
   { code: 'TEST_RESULTS_BINDING_MISMATCH', op: 'release-checklist' },
+  { code: 'REQUIRED_DIGEST_MISSING', op: 'release-checklist' },
+  { code: 'REQUIRED_DIGEST_INVALID', op: 'release-checklist' },
   { code: 'MERGE_DRY_RUN_BLOCKED', op: 'merge-readiness' },
   { code: 'RELEASE_CHECKLIST_MISSING', op: 'merge-readiness' },
   { code: 'RELEASE_CHECKLIST_INVALID', op: 'merge-readiness' },
@@ -136,6 +138,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'FINAL_SUMMARY_INVALID', op: 'merge-readiness' },
   { code: 'FINAL_SUMMARY_NOT_READY', op: 'merge-readiness' },
   { code: 'FINAL_SUMMARY_BINDING_MISMATCH', op: 'merge-readiness' },
+  { code: 'CHECKLIST_BINDING_INCOMPLETE', op: 'merge-readiness' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

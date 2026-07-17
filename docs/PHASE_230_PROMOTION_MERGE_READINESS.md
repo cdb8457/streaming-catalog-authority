@@ -27,12 +27,15 @@ manifest is advisory evidence, never an action.
 
 ## Readiness criteria
 
-`MERGE_DRY_RUN_READY` requires the release checklist to be present, valid, and `RELEASE_CHECKLIST_CLEARED`;
-the context to be present and well-formed; and any supplied final summary to be `FINAL_SUMMARY_READY` **and
-bound to the checklist** (its `summaryDigest` must equal the checklist's `boundDigests['final-summary']`).
-Otherwise the manifest is `MERGE_DRY_RUN_BLOCKED` with generic blockers
-(`RELEASE_CHECKLIST_MISSING/INVALID/NOT_CLEARED`, `MERGE_CONTEXT_MISSING/INVALID`,
-`FINAL_SUMMARY_INVALID/NOT_READY`, `FINAL_SUMMARY_BINDING_MISMATCH`). Either way the manifest restates the
+`MERGE_DRY_RUN_READY` requires the release checklist to be present, valid, and `RELEASE_CHECKLIST_CLEARED`
+**with complete run bindings** (its `boundDigests` must carry valid sha256s for review-bundle, transcript,
+final-summary, closure-hygiene, and negative-evidence-corpus, else `CHECKLIST_BINDING_INCOMPLETE` — a
+defense against a forged/stale "cleared" checklist); the context to be present and well-formed; and any
+supplied final summary to be `FINAL_SUMMARY_READY` **and bound to the checklist** (its `summaryDigest` must
+equal the checklist's `boundDigests['final-summary']`). Otherwise the manifest is `MERGE_DRY_RUN_BLOCKED`
+with generic blockers (`RELEASE_CHECKLIST_MISSING/INVALID/NOT_CLEARED`, `CHECKLIST_BINDING_INCOMPLETE`,
+`MERGE_CONTEXT_MISSING/INVALID`, `FINAL_SUMMARY_INVALID/NOT_READY`, `FINAL_SUMMARY_BINDING_MISMATCH`).
+Either way the manifest restates the
 remaining human gates — chief among them that **the merge/tag/push itself is a human operator step performed
 outside this tooling and is not authorized here** — and the fixed dry-run / non-live disclaimers, and is
 sealed with a `manifestDigest`.
@@ -42,9 +45,10 @@ sealed with a `manifestDigest`.
 - `src/ops/promotion-merge-readiness.ts` — `buildMergeReadiness(input)`, `MERGE_READINESS_HUMAN_GATES`,
   `MERGE_READINESS_DISCLAIMERS`, `FULL_NPM_TEST_CAVEAT`.
 - `src/ops/promotion-merge-readiness-cli.ts` — CLI wrapper.
-- `test/promotion-merge-readiness.ts` — 6 tests: ready + performs-no-merge (records branch/base/head/
-  commits/tests/caveat), an unbound final summary, a not-cleared checklist (open blockers surfaced), a
-  missing/malformed context, empty input, and a spawned CLI run.
+- `test/promotion-merge-readiness.ts` — 7 tests: ready + performs-no-merge (records branch/base/head/
+  commits/tests/caveat), an unbound final summary, a "cleared" checklist with incomplete run bindings, a
+  not-cleared checklist (open blockers surfaced), a missing/malformed context, empty input, and a spawned
+  CLI run.
 
 ## Usage
 

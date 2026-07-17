@@ -86,11 +86,16 @@ export function buildReleaseChecklist(input: ReleaseChecklistInput): ReleaseChec
     const obj = asObject(value);
     if (obj.report !== spec.report) { blockers.push(spec.invalid); return { item: spec.item, present: true, pass: false }; }
     parsed[spec.key] = obj;
-    const d = asSha256(obj[spec.digestField]);
+    // Fail closed on binding evidence: a present artifact (required OR supplied-optional) must carry a
+    // valid sha256 digest, else the run cannot be bound and the checklist must not clear.
+    const rawDigest = obj[spec.digestField];
+    const d = asSha256(rawDigest);
+    if (rawDigest === undefined) blockers.push('REQUIRED_DIGEST_MISSING');
+    else if (d === undefined) blockers.push('REQUIRED_DIGEST_INVALID');
     if (d) boundDigests[spec.item] = d;
-    const pass = spec.ok(obj);
-    if (!pass) blockers.push(spec.notOk);
-    return { item: spec.item, present: true, pass };
+    const okState = spec.ok(obj);
+    if (!okState) blockers.push(spec.notOk);
+    return { item: spec.item, present: true, pass: okState && d !== undefined };
   });
 
   // Binding cross-checks: the review bundle, transcript, and final summary must describe the same run.

@@ -35,9 +35,17 @@ records the exact input digests in `boundDigests`:
 - `final-summary.tests=transcript.tests` — the final summary's `testsPassed`/`testsFailed` totals must
   equal the sums over the transcript's `testResults` (else `TEST_RESULTS_BINDING_MISMATCH`).
 
-`overall` is `RELEASE_CHECKLIST_CLEARED` iff every required item is present, valid, and passing, every
-supplied optional item passes, and every binding holds; otherwise `RELEASE_CHECKLIST_BLOCKED` with generic
-blockers (`*_MISSING`, `*_INVALID`, `REVIEW_BUNDLE_NOT_READY`, `TRANSCRIPT_NOT_CLEAN`,
+Binding evidence **fails closed**: every present artifact (each required item, and a supplied optional
+`self-digest`) must carry a valid sha256 in its digest field — `reviewBundleDigest`, `transcriptDigest`,
+`summaryDigest`, `hygieneDigest`, `corpusDigest`, and `verifierDigest` respectively. A READY/OK artifact
+that is missing that digest, or carries a malformed one, blocks with `REQUIRED_DIGEST_MISSING` /
+`REQUIRED_DIGEST_INVALID` and is never recorded in `boundDigests` — so the checklist cannot clear with an
+unbound artifact.
+
+`overall` is `RELEASE_CHECKLIST_CLEARED` iff every required item is present, valid, passing, and carries a
+valid binding digest, every supplied optional item passes with a valid digest, and every binding holds;
+otherwise `RELEASE_CHECKLIST_BLOCKED` with generic blockers (`*_MISSING`, `*_INVALID`,
+`REQUIRED_DIGEST_MISSING`, `REQUIRED_DIGEST_INVALID`, `REVIEW_BUNDLE_NOT_READY`, `TRANSCRIPT_NOT_CLEAN`,
 `FINAL_SUMMARY_NOT_READY`, `NEGATIVE_CORPUS_BREACHED`, `CLOSURE_HYGIENE_NOT_OK`, `SELF_DIGEST_NOT_VERIFIED`,
 `TRANSCRIPT_BUNDLE_MISMATCH`, `COMMIT_BINDING_MISMATCH`, `TEST_RESULTS_BINDING_MISMATCH`). Every checklist
 restates the remaining human gates and the fixed non-live / no-merge disclaimers and is sealed with a
@@ -48,9 +56,10 @@ restates the remaining human gates and the fixed non-live / no-merge disclaimers
 - `src/ops/promotion-release-checklist.ts` — `buildReleaseChecklist(input)`, `RELEASE_CHECKLIST_HUMAN_GATES`,
   `RELEASE_CHECKLIST_DISCLAIMERS`.
 - `src/ops/promotion-release-checklist-cli.ts` — CLI wrapper.
-- `test/promotion-release-checklist.ts` — 7 tests: all-cleared with bindings, a stale-commit binding
-  mismatch, a review-bundle/transcript binding mismatch, a missing required item, a corpus breach, empty
-  input, and a spawned CLI run.
+- `test/promotion-release-checklist.ts` — 10 tests: all-cleared with bindings, a digestless required
+  READY artifact (coordinator repro), a malformed required digest, a malformed supplied optional digest, a
+  stale-commit binding mismatch, a review-bundle/transcript binding mismatch, a missing required item, a
+  corpus breach, empty input, and a spawned CLI run.
 
 ## Usage
 

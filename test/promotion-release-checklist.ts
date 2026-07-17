@@ -34,6 +34,17 @@ function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026,
 const COMMIT = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
 const COMMIT_ALT = 'a1b2c3d4e5f6071829304152637485960a1b2c3d';
 
+function without(obj: unknown, field: string): Record<string, unknown> {
+  const c = JSON.parse(JSON.stringify(obj)) as Record<string, unknown>;
+  delete c[field];
+  return c;
+}
+function withField(obj: unknown, field: string, value: unknown): Record<string, unknown> {
+  const c = JSON.parse(JSON.stringify(obj)) as Record<string, unknown>;
+  c[field] = value;
+  return c;
+}
+
 async function greenInputs(root: string, commit = COMMIT) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'release', now: makeNow() })));
   const replay = replayFixtureBundle(bundle);
@@ -66,6 +77,46 @@ await test('RELEASE_CHECKLIST_CLEARED when every item passes and the artifacts b
     assertEq(verifySelfDigests([c]).overall, 'ALL_VERIFIED', 'checklist self-verifies');
     assertEq(c.humanGates.length, RELEASE_CHECKLIST_HUMAN_GATES.length, 'human gates restated');
     assertEq(c.disclaimers.length, RELEASE_CHECKLIST_DISCLAIMERS.length, 'disclaimers present');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when a required READY artifact carries no binding digest (coordinator repro)', async () => {
+  const root = workspace();
+  try {
+    const { reviewBundle, transcript, finalSummary, closureHygiene, negativeCorpus } = await greenInputs(root);
+    // review bundle / final summary / hygiene / corpus are all READY/OK but carry no digest field
+    const c = buildReleaseChecklist({
+      reviewBundle: without(reviewBundle, 'reviewBundleDigest'),
+      transcript,
+      finalSummary: without(finalSummary, 'summaryDigest'),
+      closureHygiene: without(closureHygiene, 'hygieneDigest'),
+      negativeCorpus: without(negativeCorpus, 'corpusDigest'),
+    });
+    assertEq(c.overall, 'RELEASE_CHECKLIST_BLOCKED', 'must not clear without binding digests');
+    assert(c.blockers.includes('REQUIRED_DIGEST_MISSING'), 'required-digest-missing blocker');
+    assertEq(Object.keys(c.boundDigests).length, 1, 'only the transcript binds');
+    assert(c.boundDigests['transcript'] !== undefined && c.boundDigests['review-bundle'] === undefined, 'no review-bundle binding recorded');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when a required artifact has a malformed digest field', async () => {
+  const root = workspace();
+  try {
+    const g = await greenInputs(root);
+    const c = buildReleaseChecklist({ ...g, finalSummary: withField(g.finalSummary, 'summaryDigest', 'not-a-sha256') });
+    assertEq(c.overall, 'RELEASE_CHECKLIST_BLOCKED', 'blocked');
+    assert(c.blockers.includes('REQUIRED_DIGEST_INVALID'), 'required-digest-invalid blocker');
+    assert(c.boundDigests['final-summary'] === undefined, 'malformed digest not recorded as bound');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when the optional self-digest is supplied with a malformed digest', async () => {
+  const root = workspace();
+  try {
+    const g = await greenInputs(root);
+    const c = buildReleaseChecklist({ ...g, selfDigest: withField(g.selfDigest, 'verifierDigest', 'nope') });
+    assertEq(c.overall, 'RELEASE_CHECKLIST_BLOCKED', 'blocked');
+    assert(c.blockers.includes('REQUIRED_DIGEST_INVALID'), 'supplied optional digest must be valid');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
