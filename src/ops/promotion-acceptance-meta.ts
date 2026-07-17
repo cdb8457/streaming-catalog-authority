@@ -67,6 +67,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-terminal-closure', doc: 'PHASE_230_PROMOTION_TERMINAL_CLOSURE' },
   { base: 'promotion-pack-component-integrity', doc: 'PHASE_230_PROMOTION_PACK_COMPONENT_INTEGRITY' },
   { base: 'promotion-aggregator-digest-audit', doc: 'PHASE_230_PROMOTION_AGGREGATOR_DIGEST_AUDIT' },
+  { base: 'promotion-artifact-export-manifest', doc: 'PHASE_230_PROMOTION_ARTIFACT_EXPORT_MANIFEST' },
 ];
 
 export interface OpMetaCheck {

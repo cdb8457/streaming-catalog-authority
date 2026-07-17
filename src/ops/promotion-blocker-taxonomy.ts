@@ -325,6 +325,11 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'MISMATCH_NOT_ENFORCED', op: 'aggregator-digest-audit' },
   { code: 'MISMATCH_UNTESTED', op: 'aggregator-digest-audit' },
   { code: 'NO_BINDERS_FOUND', op: 'aggregator-digest-audit' },
+  { code: 'ARTIFACT_REPORT_UNREGISTERED', op: 'artifact-export-manifest' },
+  { code: 'ARTIFACT_NOT_GENERATABLE', op: 'artifact-export-manifest' },
+  { code: 'ARTIFACT_EXPORT_UNSUPPORTED', op: 'artifact-export-manifest' },
+  { code: 'ARTIFACT_CLI_NONCONFORMANT', op: 'artifact-export-manifest' },
+  { code: 'NO_ARTIFACTS_FOUND', op: 'artifact-export-manifest' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
