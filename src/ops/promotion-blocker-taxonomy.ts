@@ -279,6 +279,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'HEAD_MISMATCH', op: 'transcript-verifier' },
   { code: 'COMMAND_MISSING', op: 'transcript-verifier' },
   { code: 'TEST_EXIT_NONZERO', op: 'transcript-verifier' },
+  { code: 'MINIMIZED_LEAK', op: 'evidence-minimizer' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

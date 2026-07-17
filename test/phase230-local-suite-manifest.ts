@@ -70,6 +70,7 @@ const LOCAL_SUITES = [
   'test/promotion-boundary-audit.ts',
   'test/promotion-coordinator-readiness.ts',
   'test/promotion-transcript-verifier.ts',
+  'test/promotion-evidence-minimizer.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',

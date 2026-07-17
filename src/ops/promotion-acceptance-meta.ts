@@ -61,6 +61,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-boundary-audit', doc: 'PHASE_230_PROMOTION_BOUNDARY_AUDIT' },
   { base: 'promotion-coordinator-readiness', doc: 'PHASE_230_PROMOTION_COORDINATOR_READINESS' },
   { base: 'promotion-transcript-verifier', doc: 'PHASE_230_PROMOTION_TRANSCRIPT_VERIFIER' },
+  { base: 'promotion-evidence-minimizer', doc: 'PHASE_230_PROMOTION_EVIDENCE_MINIMIZER' },
 ];
 
 export interface OpMetaCheck {

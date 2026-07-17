@@ -64,6 +64,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-boundary-audit` | PHASE_230_PROMOTION_BOUNDARY_AUDIT |
 | `promotion-coordinator-readiness` | PHASE_230_PROMOTION_COORDINATOR_READINESS |
 | `promotion-transcript-verifier` | PHASE_230_PROMOTION_TRANSCRIPT_VERIFIER |
+| `promotion-evidence-minimizer` | PHASE_230_PROMOTION_EVIDENCE_MINIMIZER |
 
 ## Test-only local suites
 
