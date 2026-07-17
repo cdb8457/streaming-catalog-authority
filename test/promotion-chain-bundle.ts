@@ -98,6 +98,17 @@ await test('BLOCKED when a component carries no/malformed binding digest', async
     const b = buildChainBundle({ ...g, mergeReadiness: stripped });
     assertEq(b.overall, 'CHAIN_BUNDLE_BLOCKED', 'blocked');
     assert(b.blockers.includes('COMPONENT_DIGEST_MISSING'), 'component-digest-missing blocker');
+
+    // Green status (MERGE_DRY_RUN_READY) + a well-formed but wrong digest: a real recompute catches the
+    // tampered body -> COMPONENT_DIGEST_MISMATCH, and the tampered component carries no bound digest.
+    const tampered = JSON.parse(JSON.stringify(g.mergeReadiness)) as Record<string, unknown>;
+    assertEq(tampered.overall, 'MERGE_DRY_RUN_READY', 'precondition: component is green');
+    assert(/^[0-9a-f]{64}$/.test(String(tampered.manifestDigest)), 'precondition: well-formed digest');
+    tampered.injectedClaim = 'smuggled-through-a-green-status';
+    const t = buildChainBundle({ ...g, mergeReadiness: tampered });
+    assertEq(t.overall, 'CHAIN_BUNDLE_BLOCKED', 'green-body tamper blocked');
+    assert(t.blockers.includes('COMPONENT_DIGEST_MISMATCH'), 'green-body tamper -> digest mismatch');
+    assert(!t.components.some((c) => c.component === 'merge-readiness' && c.digest !== undefined), 'tampered component not digest-bound');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

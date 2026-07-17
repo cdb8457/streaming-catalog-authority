@@ -132,6 +132,45 @@ await test('NOT_CONFIRMED when a component is missing, not green, or digestless'
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('fails closed on a forged component digest: missing, malformed, wrong report id, and green-body-tamper', async () => {
+  const root = workspace();
+  try {
+    const g = await greenInputs(root);
+
+    // (1) missing digest -> COMPONENT_DIGEST_MISSING.
+    const noDigest = JSON.parse(JSON.stringify(g.transcriptVerification)) as Record<string, unknown>;
+    delete noDigest.verificationDigest;
+    const rMissing = buildTerminalClosure({ ...g, transcriptVerification: noDigest });
+    assert(rMissing.blockers.includes('COMPONENT_DIGEST_MISSING'), 'missing digest blocks');
+    assertEq(rMissing.overall, 'TERMINAL_CLOSURE_NOT_CONFIRMED', 'missing digest not confirmed');
+
+    // (2) malformed (non-sha256) digest -> COMPONENT_DIGEST_INVALID.
+    const badHex = JSON.parse(JSON.stringify(g.transcriptVerification)) as Record<string, unknown>;
+    badHex.verificationDigest = 'not-a-sha256';
+    const rInvalid = buildTerminalClosure({ ...g, transcriptVerification: badHex });
+    assert(rInvalid.blockers.includes('COMPONENT_DIGEST_INVALID'), 'malformed digest blocks');
+
+    // (3) wrong report id in a slot -> the slot's INVALID blocker (report-id mismatch), never bound.
+    const wrongId = JSON.parse(JSON.stringify(g.transcriptVerification)) as Record<string, unknown>;
+    wrongId.report = 'phase-230-promotion-evidence-minimizer';
+    const rWrongId = buildTerminalClosure({ ...g, transcriptVerification: wrongId });
+    assert(rWrongId.blockers.includes('TRANSCRIPT_VERIFICATION_INVALID'), 'wrong report id blocks');
+    assert(!('transcript-verification' in rWrongId.boundDigests), 'wrong-id component not digest-bound');
+
+    // (4) THE security case: overall stays green (TRANSCRIPT_VERIFIED) and the sha256 digest is well-formed,
+    // but the body was tampered so the stated digest no longer recomputes. Presence/format checks pass; only
+    // a real recompute catches it -> COMPONENT_DIGEST_MISMATCH, and the forged digest is NOT bound.
+    const tampered = JSON.parse(JSON.stringify(g.transcriptVerification)) as Record<string, unknown>;
+    assertEq(tampered.overall, 'TRANSCRIPT_VERIFIED', 'precondition: component is green');
+    assert(/^[0-9a-f]{64}$/.test(String(tampered.verificationDigest)), 'precondition: digest is well-formed sha256');
+    tampered.injectedClaim = 'smuggled-through-a-green-status';
+    const rTamper = buildTerminalClosure({ ...g, transcriptVerification: tampered });
+    assert(rTamper.blockers.includes('COMPONENT_DIGEST_MISMATCH'), 'green-body tamper blocks on digest mismatch');
+    assertEq(rTamper.overall, 'TERMINAL_CLOSURE_NOT_CONFIRMED', 'green-body tamper not confirmed');
+    assert(!('transcript-verification' in rTamper.boundDigests), 'tampered component not digest-bound');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('NOT_CONFIRMED and redaction-safe on empty input (human gates + boundary still stated)', () => {
   const m = buildTerminalClosure({});
   assertEq(m.overall, 'TERMINAL_CLOSURE_NOT_CONFIRMED', 'not confirmed');

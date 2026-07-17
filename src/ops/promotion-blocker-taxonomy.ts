@@ -174,6 +174,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'GATE_COVERAGE_INCOMPLETE', op: 'chain-bundle' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'chain-bundle' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'chain-bundle' },
+  { code: 'COMPONENT_DIGEST_MISMATCH', op: 'chain-bundle' },
   { code: 'FINAL_SUMMARY_BINDING_MISMATCH', op: 'chain-bundle' },
   { code: 'LEAK_NOT_DETECTED', op: 'redaction-corpus' },
   { code: 'SAFE_VALUE_FLAGGED', op: 'redaction-corpus' },
@@ -192,6 +193,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'BOUNDARY_POLICY_VIOLATED', op: 'review-automation' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'review-automation' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'review-automation' },
+  { code: 'COMPONENT_DIGEST_MISMATCH', op: 'review-automation' },
   { code: 'REVIEWER_PACK_BLOCKED', op: 'reviewer-pack' },
   { code: 'PACK_BINDING_MISMATCH', op: 'reviewer-pack' },
   { code: 'FINAL_SUMMARY_MISSING', op: 'reviewer-pack' },
@@ -272,6 +274,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'CLI_ERGONOMICS_NOT_OK', op: 'coordinator-readiness' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'coordinator-readiness' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'coordinator-readiness' },
+  { code: 'COMPONENT_DIGEST_MISMATCH', op: 'coordinator-readiness' },
   { code: 'TRANSCRIPT_MISSING', op: 'transcript-verifier' },
   { code: 'TRANSCRIPT_INVALID', op: 'transcript-verifier' },
   { code: 'TRANSCRIPT_NOT_CLEAN', op: 'transcript-verifier' },
@@ -306,6 +309,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COORDINATOR_READINESS_NOT_CONFIRMED', op: 'terminal-closure' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'terminal-closure' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'terminal-closure' },
+  { code: 'COMPONENT_DIGEST_MISMATCH', op: 'terminal-closure' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

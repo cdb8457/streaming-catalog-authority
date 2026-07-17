@@ -117,6 +117,17 @@ await test('NOT_CONFIRMED when an input is missing, not green, or digestless', a
     delete stripped.failureMatrixDigest;
     const digestless = buildCoordinatorReadiness({ ...g, failureMatrix: stripped });
     assert(digestless.blockers.includes('COMPONENT_DIGEST_MISSING'), 'component-digest-missing blocker');
+
+    // Green status (FAILURE_MATRIX_COMPLETE) + a well-formed but wrong digest: a real recompute catches the
+    // tampered body -> COMPONENT_DIGEST_MISMATCH, and the forged digest is not bound.
+    const tampered = JSON.parse(JSON.stringify(g.failureMatrix)) as Record<string, unknown>;
+    assertEq(tampered.overall, 'FAILURE_MATRIX_COMPLETE', 'precondition: component is green');
+    assert(/^[0-9a-f]{64}$/.test(String(tampered.failureMatrixDigest)), 'precondition: well-formed digest');
+    tampered.injectedClaim = 'smuggled-through-a-green-status';
+    const t = buildCoordinatorReadiness({ ...g, failureMatrix: tampered });
+    assertEq(t.overall, 'COORDINATOR_READINESS_NOT_CONFIRMED', 'green-body tamper not confirmed');
+    assert(t.blockers.includes('COMPONENT_DIGEST_MISMATCH'), 'green-body tamper -> digest mismatch');
+    assert(!('failure-matrix' in t.boundDigests), 'tampered component not digest-bound');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

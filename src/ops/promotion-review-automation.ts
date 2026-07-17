@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 
 // Local, non-live coordinator review automation checklist. It composes the automated closing evidence --
 // the artifact chain bundle, the redaction regression corpus, and the static boundary policy report --
@@ -69,15 +70,19 @@ export function buildReviewAutomation(input: ReviewAutomationInput): ReviewAutom
     if (value === undefined) { blockers.push(spec.missing); return { check: spec.check, present: false, pass: false }; }
     const obj = asObject(value);
     if (obj.report !== spec.report) { blockers.push(spec.invalid); return { check: spec.check, present: true, pass: false }; }
-    // Fail closed on the binding digest: a present input must carry a valid sha256.
+    // Fail closed on the binding digest: a present input must carry a valid sha256 self-digest that
+    // actually RECOMPUTES against its body (delegated to the authoritative self-digest verifier). A green
+    // status paired with a well-formed but wrong digest -- a tampered/forged body -- fails here.
     const rawDigest = obj[spec.digestField];
     const d = asSha256(rawDigest);
+    const digestVerified = d !== undefined && verifySelfDigests([obj]).results[0]?.verified === true;
     if (rawDigest === undefined) blockers.push('COMPONENT_DIGEST_MISSING');
     else if (d === undefined) blockers.push('COMPONENT_DIGEST_INVALID');
-    if (d) boundDigests[spec.check] = d;
+    else if (!digestVerified) blockers.push('COMPONENT_DIGEST_MISMATCH');
+    if (digestVerified) boundDigests[spec.check] = d;
     const okState = spec.ok(obj);
     if (!okState) blockers.push(spec.notOk);
-    return { check: spec.check, present: true, pass: okState && d !== undefined };
+    return { check: spec.check, present: true, pass: okState && digestVerified };
   });
 
   const overall: ReviewAutomationReport['overall'] = blockers.length === 0 ? 'REVIEW_AUTOMATION_PASSED' : 'REVIEW_AUTOMATION_BLOCKED';

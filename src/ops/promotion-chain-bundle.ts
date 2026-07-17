@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 
 // Local, non-live artifact chain bundle packer for coordinator handoff. It packs the top-level closing
 // records -- the coordinator final summary, the release checklist, the merge-readiness dry-run manifest,
@@ -61,14 +62,18 @@ export function buildChainBundle(input: ChainBundleInput): ChainBundle {
     const obj = asObject(value);
     if (obj.report !== spec.report) { blockers.push(spec.invalid); return { component: spec.component, present: true, ok: false }; }
     parsed[spec.key] = obj;
-    // Fail closed on the binding digest: a present component must carry a valid sha256.
+    // Fail closed on the binding digest: a present component must carry a valid sha256 self-digest that
+    // actually RECOMPUTES against its body (delegated to the authoritative self-digest verifier). A green
+    // status paired with a well-formed but wrong digest -- a tampered/forged body -- fails here.
     const rawDigest = obj[spec.digestField];
     const d = asSha256(rawDigest);
+    const digestVerified = d !== undefined && verifySelfDigests([obj]).results[0]?.verified === true;
     if (rawDigest === undefined) blockers.push('COMPONENT_DIGEST_MISSING');
     else if (d === undefined) blockers.push('COMPONENT_DIGEST_INVALID');
+    else if (!digestVerified) blockers.push('COMPONENT_DIGEST_MISMATCH');
     const okState = spec.ok(obj);
     if (!okState) blockers.push(spec.notOk);
-    return { component: spec.component, present: true, ok: okState && d !== undefined, ...(d ? { digest: d } : {}) };
+    return { component: spec.component, present: true, ok: okState && digestVerified, ...(digestVerified ? { digest: d } : {}) };
   });
 
   // Binding: the release checklist must have cleared the exact final summary packed here.

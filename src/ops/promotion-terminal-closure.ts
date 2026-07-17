@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 
 // Local, non-live TERMINAL closure manifest -- the final record tying together all the local evidence. It
 // consumes the transcript verification, the evidence minimizer / redaction proof, the commit-range closure,
@@ -79,14 +80,19 @@ export function buildTerminalClosure(input: TerminalClosureInput): TerminalClosu
     if (value === undefined) { blockers.push(spec.missing); return { component: spec.component, present: false, ok: false }; }
     const obj = asObject(value);
     if (obj.report !== spec.report) { blockers.push(spec.invalid); return { component: spec.component, present: true, ok: false }; }
+    // Fail closed on the binding digest: a present component must carry a valid sha256 self-digest that
+    // actually RECOMPUTES against its body (delegated to the authoritative self-digest verifier). A green
+    // status paired with a well-formed but wrong digest -- i.e. a tampered/forged body -- fails here.
     const rawDigest = obj[spec.digestField];
     const d = asSha256(rawDigest);
+    const digestVerified = d !== undefined && verifySelfDigests([obj]).results[0]?.verified === true;
     if (rawDigest === undefined) blockers.push('COMPONENT_DIGEST_MISSING');
     else if (d === undefined) blockers.push('COMPONENT_DIGEST_INVALID');
-    if (d) boundDigests[spec.component] = d;
+    else if (!digestVerified) blockers.push('COMPONENT_DIGEST_MISMATCH');
+    if (digestVerified) boundDigests[spec.component] = d;
     const okState = spec.ok(obj);
     if (!okState) blockers.push(spec.notOk);
-    return { component: spec.component, present: true, ok: okState && d !== undefined };
+    return { component: spec.component, present: true, ok: okState && digestVerified };
   });
 
   const uniqueBlockers = [...new Set(blockers)];

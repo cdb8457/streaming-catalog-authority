@@ -8,8 +8,11 @@ The terminal record that ties together all the local evidence. It consumes the *
 the **evidence minimizer / redaction proof**, the **commit-range closure**, the **regression oracle**, and
 the **coordinator readiness** manifest, and confirms terminal closure only when every one is present, valid,
 green (`TRANSCRIPT_VERIFIED`, `MINIMIZED_CLEAN`, `RANGE_CLOSED`, `ORACLE_COMPLETE`,
-`COORDINATOR_READINESS_CONFIRMED`), and carries a valid sha256 self-digest (recorded in `boundDigests`;
-else `COMPONENT_DIGEST_MISSING/INVALID`). It reads parsed JSON only; it performs no promotion, never
+`COORDINATOR_READINESS_CONFIRMED`), and carries a sha256 self-digest that actually **recomputes against its
+body** — the recompute is delegated to the authoritative self-digest verifier, so a green status paired with
+a well-formed but wrong digest (a tampered/forged body) fails closed with `COMPONENT_DIGEST_MISMATCH`. Only a
+genuinely-verified digest is recorded in `boundDigests` (`COMPONENT_DIGEST_MISSING` when absent,
+`COMPONENT_DIGEST_INVALID` when not a sha256). It reads parsed JSON only; it performs no promotion, never
 touches `/mnt/user/media/Movies`, never contacts Jellyfin, and authorizes nothing live (`authorization` is
 the constant `NONE`).
 

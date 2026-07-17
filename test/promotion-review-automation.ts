@@ -116,6 +116,17 @@ await test('BLOCKED when an input carries no/malformed binding digest', async ()
     const a = buildReviewAutomation({ ...g, redactionCorpus: stripped });
     assertEq(a.overall, 'REVIEW_AUTOMATION_BLOCKED', 'blocked');
     assert(a.blockers.includes('COMPONENT_DIGEST_MISSING'), 'component-digest-missing blocker');
+
+    // Green status (REDACTION_CORPUS_HELD) + a well-formed but wrong digest: only a real recompute catches
+    // the tampered body -> COMPONENT_DIGEST_MISMATCH, and the forged digest is not bound.
+    const tampered = JSON.parse(JSON.stringify(g.redactionCorpus)) as Record<string, unknown>;
+    assertEq(tampered.overall, 'REDACTION_CORPUS_HELD', 'precondition: component is green');
+    assert(/^[0-9a-f]{64}$/.test(String(tampered.redactionDigest)), 'precondition: well-formed digest');
+    tampered.injectedClaim = 'smuggled-through-a-green-status';
+    const t = buildReviewAutomation({ ...g, redactionCorpus: tampered });
+    assertEq(t.overall, 'REVIEW_AUTOMATION_BLOCKED', 'green-body tamper blocked');
+    assert(t.blockers.includes('COMPONENT_DIGEST_MISMATCH'), 'green-body tamper -> digest mismatch');
+    assert(!('redaction-corpus' in t.boundDigests), 'tampered component not digest-bound');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
