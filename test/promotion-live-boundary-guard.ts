@@ -60,6 +60,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-failure-matrix.ts', 'src/ops/promotion-failure-matrix-cli.ts',
   'src/ops/promotion-cli-ergonomics.ts', 'src/ops/promotion-cli-ergonomics-cli.ts',
   'src/ops/promotion-report-schema.ts', 'src/ops/promotion-report-schema-cli.ts',
+  'src/ops/promotion-boundary-audit.ts', 'src/ops/promotion-boundary-audit-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -118,6 +119,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_FAILURE_MATRIX.md',
   'docs/PHASE_230_PROMOTION_CLI_ERGONOMICS.md',
   'docs/PHASE_230_PROMOTION_REPORT_SCHEMA.md',
+  'docs/PHASE_230_PROMOTION_BOUNDARY_AUDIT.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');

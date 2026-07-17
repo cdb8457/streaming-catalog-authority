@@ -236,6 +236,11 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'UNKNOWN_KEY', op: 'report-schema' },
   { code: 'REPORT_STATUS_INVALID', op: 'report-schema' },
   { code: 'REPORT_DIGEST_INVALID', op: 'report-schema' },
+  { code: 'AUDIT_POLICY_VIOLATED', op: 'boundary-audit' },
+  { code: 'AUDIT_NETWORK_URL_FOUND', op: 'boundary-audit' },
+  { code: 'AUDIT_ENV_READ_FOUND', op: 'boundary-audit' },
+  { code: 'AUDIT_NON_LOCAL_SUITE', op: 'boundary-audit' },
+  { code: 'AUDIT_DOC_DRIFT', op: 'boundary-audit' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
