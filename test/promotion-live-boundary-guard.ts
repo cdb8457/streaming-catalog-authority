@@ -66,6 +66,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-evidence-minimizer.ts', 'src/ops/promotion-evidence-minimizer-cli.ts',
   'src/ops/promotion-commit-range-closure.ts', 'src/ops/promotion-commit-range-closure-cli.ts',
   'src/ops/promotion-regression-oracle.ts', 'src/ops/promotion-regression-oracle-cli.ts',
+  'src/ops/promotion-terminal-closure.ts', 'src/ops/promotion-terminal-closure-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -131,6 +132,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_EVIDENCE_MINIMIZER.md',
   'docs/PHASE_230_PROMOTION_COMMIT_RANGE_CLOSURE.md',
   'docs/PHASE_230_PROMOTION_REGRESSION_ORACLE.md',
+  'docs/PHASE_230_PROMOTION_TERMINAL_CLOSURE.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');

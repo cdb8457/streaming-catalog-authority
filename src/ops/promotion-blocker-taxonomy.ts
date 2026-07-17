@@ -289,6 +289,23 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'BLOCKER_UNCATALOGUED', op: 'regression-oracle' },
   { code: 'REPRO_MISSING_TEST', op: 'regression-oracle' },
   { code: 'FINDING_WITHOUT_REPRO', op: 'regression-oracle' },
+  { code: 'TRANSCRIPT_VERIFICATION_MISSING', op: 'terminal-closure' },
+  { code: 'TRANSCRIPT_VERIFICATION_INVALID', op: 'terminal-closure' },
+  { code: 'TRANSCRIPT_VERIFICATION_NOT_VERIFIED', op: 'terminal-closure' },
+  { code: 'EVIDENCE_MINIMIZER_MISSING', op: 'terminal-closure' },
+  { code: 'EVIDENCE_MINIMIZER_INVALID', op: 'terminal-closure' },
+  { code: 'EVIDENCE_MINIMIZER_NOT_CLEAN', op: 'terminal-closure' },
+  { code: 'COMMIT_RANGE_CLOSURE_MISSING', op: 'terminal-closure' },
+  { code: 'COMMIT_RANGE_CLOSURE_INVALID', op: 'terminal-closure' },
+  { code: 'COMMIT_RANGE_NOT_CLOSED', op: 'terminal-closure' },
+  { code: 'REGRESSION_ORACLE_MISSING', op: 'terminal-closure' },
+  { code: 'REGRESSION_ORACLE_INVALID', op: 'terminal-closure' },
+  { code: 'REGRESSION_ORACLE_INCOMPLETE', op: 'terminal-closure' },
+  { code: 'COORDINATOR_READINESS_MISSING', op: 'terminal-closure' },
+  { code: 'COORDINATOR_READINESS_INVALID', op: 'terminal-closure' },
+  { code: 'COORDINATOR_READINESS_NOT_CONFIRMED', op: 'terminal-closure' },
+  { code: 'COMPONENT_DIGEST_MISSING', op: 'terminal-closure' },
+  { code: 'COMPONENT_DIGEST_INVALID', op: 'terminal-closure' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
