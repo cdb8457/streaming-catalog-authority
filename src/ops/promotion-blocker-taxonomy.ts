@@ -272,6 +272,13 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'CLI_ERGONOMICS_NOT_OK', op: 'coordinator-readiness' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'coordinator-readiness' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'coordinator-readiness' },
+  { code: 'TRANSCRIPT_MISSING', op: 'transcript-verifier' },
+  { code: 'TRANSCRIPT_INVALID', op: 'transcript-verifier' },
+  { code: 'TRANSCRIPT_NOT_CLEAN', op: 'transcript-verifier' },
+  { code: 'EXPECTED_COMMANDS_MISSING', op: 'transcript-verifier' },
+  { code: 'HEAD_MISMATCH', op: 'transcript-verifier' },
+  { code: 'COMMAND_MISSING', op: 'transcript-verifier' },
+  { code: 'TEST_EXIT_NONZERO', op: 'transcript-verifier' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
