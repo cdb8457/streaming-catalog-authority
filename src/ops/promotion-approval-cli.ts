@@ -82,6 +82,7 @@ function emitCapture(mode: 'build' | 'validate', evidence: ApprovalEvidence, evi
 
 function main(): number {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
   const sub = args[0];
 
   if (sub === 'build') {

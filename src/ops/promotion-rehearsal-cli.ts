@@ -28,6 +28,7 @@ function valueAfter(args: readonly string[], flag: string): string | undefined {
 
 async function main(): Promise<number> {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
   const out = valueAfter(args, '--out');
   const artifactsDir = valueAfter(args, '--artifacts-dir');
   const yearRaw = valueAfter(args, '--year');

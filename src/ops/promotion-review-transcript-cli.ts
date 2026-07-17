@@ -24,6 +24,7 @@ function valueAfter(args: readonly string[], flag: string): string | undefined {
 
 function main(): number {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
   const reviewedCommit = valueAfter(args, '--reviewed-commit');
   const inputPath = valueAfter(args, '--input');
   const out = valueAfter(args, '--out');

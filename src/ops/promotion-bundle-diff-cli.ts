@@ -27,6 +27,7 @@ function readJson(path: string, label: string): unknown {
 
 function main(): number {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
   const aPath = valueAfter(args, '--a');
   const bPath = valueAfter(args, '--b');
   const out = valueAfter(args, '--out');

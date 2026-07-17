@@ -28,6 +28,7 @@ function readJson(path: string, label: string): unknown {
 
 function main(): number {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
   const acceptancePath = valueAfter(args, '--acceptance-packet');
   const rehearsalPath = valueAfter(args, '--rehearsal-manifest');
   const integrityPath = valueAfter(args, '--integrity-report');

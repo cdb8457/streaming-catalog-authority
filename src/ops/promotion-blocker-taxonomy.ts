@@ -229,6 +229,8 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'STALE_TAXONOMY', op: 'failure-matrix' },
   { code: 'MISSING_TEST_PATH', op: 'failure-matrix' },
   { code: 'BLOCKER_WITHOUT_EVIDENCE', op: 'failure-matrix' },
+  { code: 'USAGE_MISSING', op: 'cli-ergonomics' },
+  { code: 'HELP_MISSING', op: 'cli-ergonomics' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

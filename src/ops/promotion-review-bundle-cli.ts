@@ -27,6 +27,7 @@ function readJson(path: string, label: string): unknown {
 
 function main(): number {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
   const out = valueAfter(args, '--out');
   const map: Array<[keyof ReviewBundleInput, string]> = [['evidence', '--evidence'], ['transcript', '--transcript'], ['ledger', '--ledger'], ['dag', '--dag'], ['archive', '--archive']];
   const input: ReviewBundleInput = {};

@@ -22,6 +22,7 @@ function valueAfter(args: readonly string[], flag: string): string | undefined {
 
 function main(): number {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
   const bundlePath = valueAfter(args, '--bundle');
   const out = valueAfter(args, '--out');
   if (!bundlePath) { console.error(usage()); return 2; }

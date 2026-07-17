@@ -59,6 +59,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-reviewer-pack` | PHASE_230_PROMOTION_REVIEWER_PACK |
 | `promotion-acceptance-preflight` | PHASE_230_PROMOTION_ACCEPTANCE_PREFLIGHT |
 | `promotion-failure-matrix` | PHASE_230_PROMOTION_FAILURE_MATRIX |
+| `promotion-cli-ergonomics` | PHASE_230_PROMOTION_CLI_ERGONOMICS |
 
 ## Test-only local suites
 

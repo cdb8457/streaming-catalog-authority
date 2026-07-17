@@ -28,6 +28,7 @@ function readJson(path: string, label: string): unknown {
 
 function main(): number {
   const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
   const bundlePath = valueAfter(args, '--bundle');
   const replayPath = valueAfter(args, '--replay');
   const out = valueAfter(args, '--out');
