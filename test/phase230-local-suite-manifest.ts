@@ -59,6 +59,7 @@ const LOCAL_SUITES = [
   'test/promotion-provenance-diff.ts',
   'test/promotion-gate-coverage.ts',
   'test/promotion-chain-bundle.ts',
+  'test/promotion-redaction-corpus.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',

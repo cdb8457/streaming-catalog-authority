@@ -53,6 +53,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-provenance-diff` | PHASE_230_PROMOTION_PROVENANCE_DIFF |
 | `promotion-gate-coverage` | PHASE_230_PROMOTION_GATE_COVERAGE |
 | `promotion-chain-bundle` | PHASE_230_PROMOTION_CHAIN_BUNDLE |
+| `promotion-redaction-corpus` | PHASE_230_PROMOTION_REDACTION_CORPUS |
 
 ## Test-only local suites
 

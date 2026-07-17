@@ -175,6 +175,8 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COMPONENT_DIGEST_MISSING', op: 'chain-bundle' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'chain-bundle' },
   { code: 'FINAL_SUMMARY_BINDING_MISMATCH', op: 'chain-bundle' },
+  { code: 'LEAK_NOT_DETECTED', op: 'redaction-corpus' },
+  { code: 'SAFE_VALUE_FLAGGED', op: 'redaction-corpus' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
