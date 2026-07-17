@@ -177,6 +177,9 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'FINAL_SUMMARY_BINDING_MISMATCH', op: 'chain-bundle' },
   { code: 'LEAK_NOT_DETECTED', op: 'redaction-corpus' },
   { code: 'SAFE_VALUE_FLAGGED', op: 'redaction-corpus' },
+  { code: 'FORBIDDEN_HOOK_FOUND', op: 'boundary-policy' },
+  { code: 'BOUNDARY_LANGUAGE_MISSING', op: 'boundary-policy' },
+  { code: 'UNSANDBOXED_PROMOTION_CALL', op: 'boundary-policy' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

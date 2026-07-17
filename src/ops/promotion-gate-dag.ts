@@ -64,6 +64,7 @@ const NODES: readonly GateNode[] = [
   { id: 'gate-coverage', test: 'test/promotion-gate-coverage.ts', dependsOn: ['gate-dag', 'blocker-taxonomy'], blockers: ['MISSING_WIRING', 'GATE_NOT_IN_LOCAL_SUITE'] },
   { id: 'chain-bundle', test: 'test/promotion-chain-bundle.ts', dependsOn: ['final-summary', 'release-checklist', 'merge-readiness', 'negative-evidence-corpus', 'provenance-diff', 'gate-coverage'], blockers: ['CHAIN_BUNDLE_BLOCKED', 'FINAL_SUMMARY_BINDING_MISMATCH', 'COMPONENT_DIGEST_MISSING'] },
   { id: 'redaction-corpus', test: 'test/promotion-redaction-corpus.ts', dependsOn: [], blockers: ['LEAK_NOT_DETECTED', 'SAFE_VALUE_FLAGGED'] },
+  { id: 'boundary-policy', test: 'test/promotion-boundary-policy.ts', dependsOn: [], blockers: ['FORBIDDEN_HOOK_FOUND', 'BOUNDARY_LANGUAGE_MISSING', 'UNSANDBOXED_PROMOTION_CALL'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];

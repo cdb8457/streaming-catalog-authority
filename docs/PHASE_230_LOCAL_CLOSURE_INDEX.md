@@ -54,6 +54,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-gate-coverage` | PHASE_230_PROMOTION_GATE_COVERAGE |
 | `promotion-chain-bundle` | PHASE_230_PROMOTION_CHAIN_BUNDLE |
 | `promotion-redaction-corpus` | PHASE_230_PROMOTION_REDACTION_CORPUS |
+| `promotion-boundary-policy` | PHASE_230_PROMOTION_BOUNDARY_POLICY |
 
 ## Test-only local suites
 
