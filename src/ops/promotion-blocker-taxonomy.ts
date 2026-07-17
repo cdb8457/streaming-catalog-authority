@@ -139,6 +139,16 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'FINAL_SUMMARY_NOT_READY', op: 'merge-readiness' },
   { code: 'FINAL_SUMMARY_BINDING_MISMATCH', op: 'merge-readiness' },
   { code: 'CHECKLIST_BINDING_INCOMPLETE', op: 'merge-readiness' },
+  { code: 'BRANCH_MISSING', op: 'provenance-diff' },
+  { code: 'BASE_MISSING', op: 'provenance-diff' },
+  { code: 'HEAD_MISSING', op: 'provenance-diff' },
+  { code: 'COMMIT_SHA_MALFORMED', op: 'provenance-diff' },
+  { code: 'RAW_PATH_LEAK', op: 'provenance-diff' },
+  { code: 'TRANSCRIPT_MISSING', op: 'provenance-diff' },
+  { code: 'TRANSCRIPT_INVALID', op: 'provenance-diff' },
+  { code: 'HEAD_REVIEWED_COMMIT_MISMATCH', op: 'provenance-diff' },
+  { code: 'REVIEWED_COMMIT_NOT_IN_RANGE', op: 'provenance-diff' },
+  { code: 'STALE_ARTIFACT', op: 'provenance-diff' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

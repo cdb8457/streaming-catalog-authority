@@ -56,6 +56,7 @@ const LOCAL_SUITES = [
   'test/promotion-negative-evidence-corpus.ts',
   'test/promotion-release-checklist.ts',
   'test/promotion-merge-readiness.ts',
+  'test/promotion-provenance-diff.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',

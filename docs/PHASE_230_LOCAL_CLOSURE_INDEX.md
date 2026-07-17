@@ -50,6 +50,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-negative-evidence-corpus` | PHASE_230_PROMOTION_NEGATIVE_EVIDENCE_CORPUS |
 | `promotion-release-checklist` | PHASE_230_PROMOTION_RELEASE_CHECKLIST |
 | `promotion-merge-readiness` | PHASE_230_PROMOTION_MERGE_READINESS |
+| `promotion-provenance-diff` | PHASE_230_PROMOTION_PROVENANCE_DIFF |
 
 ## Test-only local suites
 

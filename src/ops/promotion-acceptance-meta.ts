@@ -47,6 +47,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-negative-evidence-corpus', doc: 'PHASE_230_PROMOTION_NEGATIVE_EVIDENCE_CORPUS' },
   { base: 'promotion-release-checklist', doc: 'PHASE_230_PROMOTION_RELEASE_CHECKLIST' },
   { base: 'promotion-merge-readiness', doc: 'PHASE_230_PROMOTION_MERGE_READINESS' },
+  { base: 'promotion-provenance-diff', doc: 'PHASE_230_PROMOTION_PROVENANCE_DIFF' },
 ];
 
 export interface OpMetaCheck {
