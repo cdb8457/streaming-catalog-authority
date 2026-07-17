@@ -70,6 +70,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-pack-component-integrity.ts', 'src/ops/promotion-pack-component-integrity-cli.ts',
   'src/ops/promotion-aggregator-digest-audit.ts', 'src/ops/promotion-aggregator-digest-audit-cli.ts',
   'src/ops/promotion-artifact-export-manifest.ts', 'src/ops/promotion-artifact-export-manifest-cli.ts',
+  'src/ops/promotion-watchdog-hygiene.ts', 'src/ops/promotion-watchdog-hygiene-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -139,6 +140,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_PACK_COMPONENT_INTEGRITY.md',
   'docs/PHASE_230_PROMOTION_AGGREGATOR_DIGEST_AUDIT.md',
   'docs/PHASE_230_PROMOTION_ARTIFACT_EXPORT_MANIFEST.md',
+  'docs/PHASE_230_PROMOTION_WATCHDOG_HYGIENE.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');

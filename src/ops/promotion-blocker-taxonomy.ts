@@ -330,6 +330,18 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'ARTIFACT_EXPORT_UNSUPPORTED', op: 'artifact-export-manifest' },
   { code: 'ARTIFACT_CLI_NONCONFORMANT', op: 'artifact-export-manifest' },
   { code: 'NO_ARTIFACTS_FOUND', op: 'artifact-export-manifest' },
+  { code: 'WATCHER_CONFIG_MISSING', op: 'watchdog-hygiene' },
+  { code: 'WATCHER_DEBOUNCE_MISSING', op: 'watchdog-hygiene' },
+  { code: 'WATCHER_NOT_IDEMPOTENT', op: 'watchdog-hygiene' },
+  { code: 'WATCHER_AUTO_PROMOTE_ENABLED', op: 'watchdog-hygiene' },
+  { code: 'WATCHER_LIVE_BOUNDARY_UNGUARDED', op: 'watchdog-hygiene' },
+  { code: 'WATCHER_DEDUPE_DISABLED', op: 'watchdog-hygiene' },
+  { code: 'QUEUE_MISSING', op: 'watchdog-hygiene' },
+  { code: 'ENTRY_DIGEST_MALFORMED', op: 'watchdog-hygiene' },
+  { code: 'ENTRY_STATUS_INVALID', op: 'watchdog-hygiene' },
+  { code: 'ENTRY_RUN_MISSING', op: 'watchdog-hygiene' },
+  { code: 'DUPLICATE_QUEUE_ENTRY', op: 'watchdog-hygiene' },
+  { code: 'STALE_QUEUE_ENTRY', op: 'watchdog-hygiene' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
