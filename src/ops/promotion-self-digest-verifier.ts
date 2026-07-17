@@ -57,6 +57,7 @@ const REGISTRY: Readonly<Record<string, DigestSpec>> = {
   'phase-230-promotion-coordinator-readiness-manifest': { field: 'readinessDigest', scope: 'phase-230-coordinator-readiness' },
   'phase-230-promotion-transcript-verification': { field: 'verificationDigest', scope: 'phase-230-transcript-verifier' },
   'phase-230-promotion-evidence-minimizer': { field: 'minimizerDigest', scope: 'phase-230-evidence-minimizer' },
+  'phase-230-promotion-commit-range-closure': { field: 'closureDigest', scope: 'phase-230-commit-range-closure' },
 };
 
 export const KNOWN_REPORT_IDS: readonly string[] = Object.keys(REGISTRY);

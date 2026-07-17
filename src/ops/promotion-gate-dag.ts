@@ -75,6 +75,7 @@ const NODES: readonly GateNode[] = [
   { id: 'coordinator-readiness', test: 'test/promotion-coordinator-readiness.ts', dependsOn: ['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics'], blockers: ['ACCEPTANCE_PREFLIGHT_NOT_READY', 'BOUNDARY_AUDIT_FAILED', 'REPORT_SCHEMA_NOT_OK'] },
   { id: 'transcript-verifier', test: 'test/promotion-transcript-verifier.ts', dependsOn: ['review-transcript'], blockers: ['HEAD_MISMATCH', 'COMMAND_MISSING', 'TEST_EXIT_NONZERO'] },
   { id: 'evidence-minimizer', test: 'test/promotion-evidence-minimizer.ts', dependsOn: [], blockers: ['MINIMIZED_LEAK'] },
+  { id: 'commit-range-closure', test: 'test/promotion-commit-range-closure.ts', dependsOn: [], blockers: ['COMMIT_UNCATEGORIZED', 'COMMIT_SUBJECT_LEAK', 'COMMIT_SHA_MALFORMED'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];

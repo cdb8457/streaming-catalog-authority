@@ -280,6 +280,12 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COMMAND_MISSING', op: 'transcript-verifier' },
   { code: 'TEST_EXIT_NONZERO', op: 'transcript-verifier' },
   { code: 'MINIMIZED_LEAK', op: 'evidence-minimizer' },
+  { code: 'BASE_MISSING', op: 'commit-range-closure' },
+  { code: 'HEAD_MISSING', op: 'commit-range-closure' },
+  { code: 'NO_COMMITS', op: 'commit-range-closure' },
+  { code: 'COMMIT_SHA_MALFORMED', op: 'commit-range-closure' },
+  { code: 'COMMIT_SUBJECT_LEAK', op: 'commit-range-closure' },
+  { code: 'COMMIT_UNCATEGORIZED', op: 'commit-range-closure' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
