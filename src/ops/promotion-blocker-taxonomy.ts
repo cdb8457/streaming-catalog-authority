@@ -321,6 +321,10 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COMPONENT_NOT_GREEN', op: 'pack-component-integrity' },
   { code: 'PACK_DIGEST_UNBOUND', op: 'pack-component-integrity' },
   { code: 'PACK_COMPONENT_DIGEST_MISMATCH', op: 'pack-component-integrity' },
+  { code: 'RECOMPUTE_ABSENT', op: 'aggregator-digest-audit' },
+  { code: 'MISMATCH_NOT_ENFORCED', op: 'aggregator-digest-audit' },
+  { code: 'MISMATCH_UNTESTED', op: 'aggregator-digest-audit' },
+  { code: 'NO_BINDERS_FOUND', op: 'aggregator-digest-audit' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

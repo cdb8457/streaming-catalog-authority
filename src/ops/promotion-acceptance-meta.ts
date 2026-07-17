@@ -66,6 +66,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-regression-oracle', doc: 'PHASE_230_PROMOTION_REGRESSION_ORACLE' },
   { base: 'promotion-terminal-closure', doc: 'PHASE_230_PROMOTION_TERMINAL_CLOSURE' },
   { base: 'promotion-pack-component-integrity', doc: 'PHASE_230_PROMOTION_PACK_COMPONENT_INTEGRITY' },
+  { base: 'promotion-aggregator-digest-audit', doc: 'PHASE_230_PROMOTION_AGGREGATOR_DIGEST_AUDIT' },
 ];
 
 export interface OpMetaCheck {

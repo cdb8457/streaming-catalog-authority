@@ -69,6 +69,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-regression-oracle` | PHASE_230_PROMOTION_REGRESSION_ORACLE |
 | `promotion-terminal-closure` | PHASE_230_PROMOTION_TERMINAL_CLOSURE |
 | `promotion-pack-component-integrity` | PHASE_230_PROMOTION_PACK_COMPONENT_INTEGRITY |
+| `promotion-aggregator-digest-audit` | PHASE_230_PROMOTION_AGGREGATOR_DIGEST_AUDIT |
 
 ## Test-only local suites
 
