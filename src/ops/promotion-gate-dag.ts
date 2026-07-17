@@ -62,6 +62,7 @@ const NODES: readonly GateNode[] = [
   { id: 'merge-readiness', test: 'test/promotion-merge-readiness.ts', dependsOn: ['release-checklist'], blockers: ['MERGE_DRY_RUN_BLOCKED', 'RELEASE_CHECKLIST_NOT_CLEARED', 'MERGE_CONTEXT_INVALID', 'FINAL_SUMMARY_BINDING_MISMATCH', 'CHECKLIST_BINDING_INCOMPLETE'] },
   { id: 'provenance-diff', test: 'test/promotion-provenance-diff.ts', dependsOn: ['review-transcript'], blockers: ['HEAD_REVIEWED_COMMIT_MISMATCH', 'STALE_ARTIFACT', 'COMMIT_SHA_MALFORMED'] },
   { id: 'gate-coverage', test: 'test/promotion-gate-coverage.ts', dependsOn: ['gate-dag', 'blocker-taxonomy'], blockers: ['MISSING_WIRING', 'GATE_NOT_IN_LOCAL_SUITE'] },
+  { id: 'chain-bundle', test: 'test/promotion-chain-bundle.ts', dependsOn: ['final-summary', 'release-checklist', 'merge-readiness', 'negative-evidence-corpus', 'provenance-diff', 'gate-coverage'], blockers: ['CHAIN_BUNDLE_BLOCKED', 'FINAL_SUMMARY_BINDING_MISMATCH', 'COMPONENT_DIGEST_MISSING'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];

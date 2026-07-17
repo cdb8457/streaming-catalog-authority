@@ -49,6 +49,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-merge-readiness', doc: 'PHASE_230_PROMOTION_MERGE_READINESS' },
   { base: 'promotion-provenance-diff', doc: 'PHASE_230_PROMOTION_PROVENANCE_DIFF' },
   { base: 'promotion-gate-coverage', doc: 'PHASE_230_PROMOTION_GATE_COVERAGE' },
+  { base: 'promotion-chain-bundle', doc: 'PHASE_230_PROMOTION_CHAIN_BUNDLE' },
 ];
 
 export interface OpMetaCheck {
