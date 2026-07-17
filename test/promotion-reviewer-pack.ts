@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { buildReviewerPack, REVIEWER_PACK_DISCLAIMERS } from '../src/ops/promotion-reviewer-pack.js';
+import { buildReviewerPack, REVIEWER_PACK_DISCLAIMERS, EXPECTED_PACK_COMPONENTS, EXPECTED_PACK_BINDINGS } from '../src/ops/promotion-reviewer-pack.js';
 import { buildFixtureEvidenceBundle } from '../src/ops/promotion-fixture-bundle.js';
 import { replayFixtureBundle } from '../src/ops/promotion-bundle-replay.js';
 import { buildCoordinatorEvidencePacket } from '../src/ops/promotion-evidence-packet.js';
@@ -80,6 +80,15 @@ await test('REVIEWER_PACK_READY when all seven components are green and the mesh
     assert(p.components.every((c) => c.present && c.ok && /^[0-9a-f]{64}$/.test(c.digest ?? '')), 'all components green with digests');
     assertEq(p.bindings.length, 7, 'the full binding mesh evaluated');
     assert(p.bindings.every((b) => b.ok), 'every binding holds');
+    // the pack carries the exact canonical component + binding names, for a consumer to fail closed on
+    assertEq([...new Set(p.components.map((c) => c.component))].sort().join(','), [...EXPECTED_PACK_COMPONENTS].sort().join(','), 'exact expected component set');
+    assertEq([...new Set(p.bindings.map((b) => b.binding))].sort().join(','), [...EXPECTED_PACK_BINDINGS].sort().join(','), 'exact expected binding mesh');
+    // redaction-safe provenance carried from the packed merge-readiness
+    assertEq(p.provenance.branch, 'work/phase-230', 'branch provenance');
+    assertEq(p.provenance.base, BASE, 'base provenance');
+    assertEq(p.provenance.head, HEAD, 'head provenance');
+    assertEq(p.provenance.commitCount, 1, 'commit count provenance');
+    assert(p.provenance.requiredTests.includes('npm run test:phase230-local'), 'required tests provenance');
     assertEq(p.disclaimers.length, REVIEWER_PACK_DISCLAIMERS.length, 'disclaimers present');
     assertEq(verifySelfDigests([p]).overall, 'ALL_VERIFIED', 'pack self-verifies');
     assert(/^[0-9a-f]{64}$/.test(p.packDigest), 'pack digest present');

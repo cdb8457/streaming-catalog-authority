@@ -1,4 +1,6 @@
 import { createHash } from 'node:crypto';
+import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+import { EXPECTED_PACK_COMPONENTS, EXPECTED_PACK_BINDINGS } from './promotion-reviewer-pack.js';
 
 // Local, non-live Phase 230 acceptance preflight. A deterministic ready/not-ready report for coordinator
 // review: it consumes the merge-review evidence pack (AW) plus the branch/base/head/test context and states
@@ -59,29 +61,59 @@ export function buildAcceptancePreflight(input: AcceptancePreflightInput): Accep
   const blockers: string[] = [];
   const machineGates: MachineGate[] = [];
 
-  // Required: the merge-review evidence pack, valid, digest-bound, and READY.
+  // Required: the merge-review evidence pack -- valid, self-digest recomputes, READY, with the EXACT
+  // expected component set and binding mesh (no missing/unknown/failing). Provenance is trusted only from
+  // a self-consistent pack.
+  let packProvenance: Record<string, unknown> = {};
   const rp = input.reviewerPack;
   if (rp === undefined) { blockers.push('REVIEWER_PACK_MISSING'); machineGates.push({ gate: 'reviewer-pack', passed: false }); }
   else {
     const o = asObject(rp);
     if (o.report !== 'phase-230-promotion-merge-review-evidence-pack') { blockers.push('REVIEWER_PACK_INVALID'); machineGates.push({ gate: 'reviewer-pack', passed: false }); }
     else {
-      const rawDigest = o.packDigest;
-      const d = asSha256(rawDigest);
-      if (rawDigest === undefined) blockers.push('COMPONENT_DIGEST_MISSING');
-      else if (d === undefined) blockers.push('COMPONENT_DIGEST_INVALID');
+      // The stated self-digest must recompute -- a forged pack with a made-up (or missing) digest fails.
+      const digestOk = verifySelfDigests([o]).overall === 'ALL_VERIFIED';
+      if (!digestOk) blockers.push('REVIEWER_PACK_DIGEST_MISMATCH');
       const ready = o.overall === 'REVIEWER_PACK_READY';
       if (!ready) blockers.push('REVIEWER_PACK_NOT_READY');
-      machineGates.push({ gate: 'reviewer-pack', passed: ready && d !== undefined });
-      // Surface each packed component and the binding mesh as individual machine gates.
-      const comps = Array.isArray(o.components) ? o.components : [];
-      for (const c of comps) {
+      machineGates.push({ gate: 'reviewer-pack', passed: ready && digestOk });
+
+      // Exact expected component set: each expected present + ok; no unknown component names.
+      const compOk = new Map<string, boolean>();
+      const compNames: string[] = [];
+      for (const c of (Array.isArray(o.components) ? o.components : [])) {
         const co = asObject(c);
-        if (typeof co.component === 'string') machineGates.push({ gate: co.component, passed: co.ok === true });
+        if (typeof co.component === 'string') { compNames.push(co.component); compOk.set(co.component, co.ok === true); }
       }
-      const bindings = Array.isArray(o.bindings) ? o.bindings : [];
-      const bindingsOk = bindings.length > 0 && bindings.every((b) => asObject(b).ok === true);
-      machineGates.push({ gate: 'pack-binding-mesh', passed: bindingsOk });
+      let componentsComplete = true;
+      for (const name of EXPECTED_PACK_COMPONENTS) {
+        const ok = compOk.get(name) === true;
+        if (!ok) componentsComplete = false;
+        machineGates.push({ gate: `component:${name}`, passed: ok });
+      }
+      if (!componentsComplete) blockers.push('PACK_COMPONENT_INCOMPLETE');
+      if (compNames.some((n) => !EXPECTED_PACK_COMPONENTS.includes(n))) blockers.push('PACK_COMPONENT_UNKNOWN');
+
+      // Exact expected binding mesh: each expected present + ok; no missing/unknown/failing bindings.
+      const bindOk = new Map<string, boolean>();
+      const bindNames: string[] = [];
+      for (const b of (Array.isArray(o.bindings) ? o.bindings : [])) {
+        const bo = asObject(b);
+        if (typeof bo.binding === 'string') { bindNames.push(bo.binding); bindOk.set(bo.binding, bo.ok === true); }
+      }
+      let bindingsMissing = false;
+      let bindingsFailing = false;
+      for (const name of EXPECTED_PACK_BINDINGS) {
+        if (!bindOk.has(name)) bindingsMissing = true;
+        else if (bindOk.get(name) !== true) bindingsFailing = true;
+      }
+      const bindingsUnknown = bindNames.some((n) => !EXPECTED_PACK_BINDINGS.includes(n));
+      if (bindingsMissing) blockers.push('PACK_BINDING_MISSING');
+      if (bindingsFailing) blockers.push('PACK_BINDING_FAILED');
+      if (bindingsUnknown) blockers.push('PACK_BINDING_UNKNOWN');
+      machineGates.push({ gate: 'pack-binding-mesh', passed: !bindingsMissing && !bindingsFailing && !bindingsUnknown });
+
+      if (digestOk) packProvenance = asObject(o.provenance);
     }
   }
 
@@ -105,6 +137,22 @@ export function buildAcceptancePreflight(input: AcceptancePreflightInput): Accep
     const ctxOk = branchOk && base !== null && head !== null && commitsOk && testsOk;
     if (!ctxOk) blockers.push('PREFLIGHT_CONTEXT_INVALID');
     machineGates.push({ gate: 'context', passed: ctxOk });
+
+    // Bind the supplied context to the pack's authoritative provenance (from the digest-bound
+    // merge-readiness). A branch/base/head/required-tests that does not match the packed evidence fails.
+    const provBranch = pathFreeString(packProvenance.branch);
+    const provBase = asSha40(packProvenance.base) ?? null;
+    const provHead = asSha40(packProvenance.head) ?? null;
+    const provTests = Array.isArray(packProvenance.requiredTests) ? packProvenance.requiredTests.filter((t): t is string => typeof t === 'string') : [];
+    const branchBound = provBranch !== null && pathFreeString(ctx.branch) === provBranch;
+    if (!branchBound) blockers.push('CONTEXT_BRANCH_MISMATCH');
+    const baseBound = provBase !== null && base === provBase;
+    if (!baseBound) blockers.push('CONTEXT_BASE_MISMATCH');
+    const headBound = provHead !== null && head === provHead;
+    if (!headBound) blockers.push('CONTEXT_HEAD_MISMATCH');
+    const testsBound = provTests.length > 0 && sameStringSet(requiredTests, provTests);
+    if (!testsBound) blockers.push('CONTEXT_REQUIRED_TESTS_MISMATCH');
+    machineGates.push({ gate: 'context-bound-to-evidence', passed: branchBound && baseBound && headBound && testsBound });
   }
 
   if (machineGates.some((g) => !g.passed)) blockers.push('MACHINE_GATE_FAILED');
@@ -139,8 +187,10 @@ function pathFreeString(value: unknown): string | null {
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
-function asSha256(value: unknown): string | undefined {
-  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
+function sameStringSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = new Set(a);
+  const sb = new Set(b);
+  return sa.size === sb.size && [...sa].every((x) => sb.has(x));
 }
 function asSha40(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value) ? value : undefined;

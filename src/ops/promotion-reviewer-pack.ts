@@ -31,6 +31,21 @@ export const REVIEWER_PACK_DISCLAIMERS: readonly string[] = [
 export interface PackComponent { readonly component: string; readonly present: boolean; readonly ok: boolean; readonly digest?: string; }
 export interface PackBinding { readonly binding: string; readonly ok: boolean; }
 
+// The canonical component set and binding mesh a complete pack must carry -- exported so a consumer can
+// fail closed on any missing, unknown, or failing component/binding.
+export const EXPECTED_PACK_COMPONENTS: readonly string[] = ['final-summary', 'release-checklist', 'merge-readiness', 'chain-bundle', 'review-automation', 'redaction-corpus', 'boundary-policy'];
+export const EXPECTED_PACK_BINDINGS: readonly string[] = ['release-checklist=final-summary', 'chain-bundle=final-summary', 'chain-bundle=release-checklist', 'chain-bundle=merge-readiness', 'review-automation=chain-bundle', 'review-automation=redaction-corpus', 'review-automation=boundary-policy'];
+
+// Redaction-safe provenance carried from the packed (digest-bound) merge-readiness manifest, so a consumer
+// can bind a supplied review context (branch/base/head/required tests) to the authoritative evidence.
+export interface PackProvenance {
+  readonly branch: string | null;
+  readonly base: string | null;
+  readonly head: string | null;
+  readonly commitCount: number;
+  readonly requiredTests: readonly string[];
+}
+
 export interface ReviewerPack {
   readonly report: 'phase-230-promotion-merge-review-evidence-pack';
   readonly version: 1;
@@ -39,6 +54,7 @@ export interface ReviewerPack {
   readonly overall: 'REVIEWER_PACK_READY' | 'REVIEWER_PACK_BLOCKED';
   readonly components: readonly PackComponent[];
   readonly bindings: readonly PackBinding[];
+  readonly provenance: PackProvenance;
   readonly blockers: readonly string[];
   readonly disclaimers: readonly string[];
   readonly packDigest: string;
@@ -106,6 +122,16 @@ export function buildReviewerPack(input: ReviewerPackInput): ReviewerPack {
   if (ra && rd) bind('review-automation=redaction-corpus', asSha256(asObject(ra.boundDigests)['redaction-corpus']), asSha256(rd.redactionDigest));
   if (ra && bp) bind('review-automation=boundary-policy', asSha256(asObject(ra.boundDigests)['boundary-policy']), asSha256(bp.policyDigest));
 
+  // Provenance from the packed merge-readiness manifest (itself digest-bound above). All fields are
+  // redaction-safe: hex shas, a path-free branch name, a count, and path-free command labels.
+  const provenance: PackProvenance = {
+    branch: mr ? pathFreeString(mr.branch) : null,
+    base: mr ? asSha40(mr.base) ?? null : null,
+    head: mr ? asSha40(mr.head) ?? null : null,
+    commitCount: mr && Array.isArray(mr.commitsSinceBase) ? mr.commitsSinceBase.length : 0,
+    requiredTests: mr && Array.isArray(mr.requiredTests) ? mr.requiredTests.filter((t): t is string => typeof t === 'string' && pathFreeString(t) !== null) : [],
+  };
+
   const overall: ReviewerPack['overall'] = blockers.length === 0 ? 'REVIEWER_PACK_READY' : 'REVIEWER_PACK_BLOCKED';
   const withoutDigest: Omit<ReviewerPack, 'packDigest'> = {
     report: 'phase-230-promotion-merge-review-evidence-pack',
@@ -115,6 +141,7 @@ export function buildReviewerPack(input: ReviewerPackInput): ReviewerPack {
     overall,
     components,
     bindings,
+    provenance,
     blockers: [...new Set(blockers)],
     disclaimers: REVIEWER_PACK_DISCLAIMERS,
   };
@@ -132,6 +159,15 @@ function asObject(value: unknown): Record<string, unknown> {
 }
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
+}
+function asSha40(value: unknown): string | undefined {
+  return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value) ? value : undefined;
+}
+function pathFreeString(value: unknown): string | null {
+  if (typeof value !== 'string' || value.length === 0) return null;
+  if (/^\//.test(value) || /[A-Za-z]:[\\/]/.test(value) || /\/mnt\//.test(value) || /\\mnt\\/.test(value)
+    || value.includes('catalog-authority-test-library') || /\.(mkv|mp4|avi|mov|m4v|ts|webm)$/i.test(value)) return null;
+  return value;
 }
 function digest(scope: string, value: string): string {
   return createHash('sha256').update(`${scope}:${value}`).digest('hex');

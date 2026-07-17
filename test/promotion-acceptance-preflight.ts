@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -46,6 +47,13 @@ const BASE = '1111111111111111111111111111111111111111';
 function goodContext() {
   return { branch: 'work/phase-230', base: BASE, head: HEAD, commits: [{ sha: HEAD, subject: 'a commit' }], requiredTests: ['npm run test:phase230-local', 'npm run typecheck'] };
 }
+// Recompute a reviewer pack's self-digest over its (possibly-mutated) body, exactly as the verifier does,
+// so a forged pack still passes the digest recompute and the specific component/binding blocker isolates.
+function reseal(pack: Record<string, unknown>): Record<string, unknown> {
+  const body: Record<string, unknown> = {};
+  for (const k of Object.keys(pack)) if (k !== 'packDigest') body[k] = pack[k];
+  return { ...body, packDigest: createHash('sha256').update(`phase-230-reviewer-pack:${JSON.stringify(body)}`).digest('hex') };
+}
 
 async function readyPack(root: string) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'preflight', now: makeNow() })));
@@ -82,9 +90,9 @@ await test('PREFLIGHT_READY with a READY pack + valid context; machine vs human 
     assertEq(p.overall, 'PREFLIGHT_READY', `ready (blockers: ${p.blockers.join(',')})`);
     assertEq(p.authorization, 'NONE', 'authorizes nothing');
     assertEq(p.approvalsGranted.length, 0, 'approves NOTHING');
-    assert(p.machineGates.length >= 10 && p.machineGates.every((g) => g.passed), 'every machine gate passed');
+    assert(p.machineGates.length >= 11 && p.machineGates.every((g) => g.passed), 'every machine gate passed');
     const gateNames = new Set(p.machineGates.map((g) => g.gate));
-    assert(gateNames.has('reviewer-pack') && gateNames.has('pack-binding-mesh') && gateNames.has('context') && gateNames.has('final-summary') && gateNames.has('boundary-policy'), 'machine gates enumerated per component');
+    assert(gateNames.has('reviewer-pack') && gateNames.has('pack-binding-mesh') && gateNames.has('context') && gateNames.has('component:final-summary') && gateNames.has('component:boundary-policy') && gateNames.has('context-bound-to-evidence'), 'machine gates enumerated per component + context binding');
     assertEq(p.humanGatesRemaining.length, PREFLIGHT_HUMAN_GATES.length, 'human gates enumerated');
     assert(p.humanGatesRemaining.some((h) => /Phase 231/.test(h)) && p.humanGatesRemaining.some((h) => /push-to-master/.test(h)), 'merge + Phase 231 stay human');
     assertEq(p.base, BASE, 'base echoed');
@@ -110,13 +118,62 @@ await test('NOT_READY when the pack is blocked or its digest is stripped', async
     const p = buildAcceptancePreflight({ reviewerPack: blocked, context: goodContext() });
     assertEq(p.overall, 'PREFLIGHT_NOT_READY', 'not ready');
     assert(p.blockers.includes('REVIEWER_PACK_NOT_READY') && p.blockers.includes('MACHINE_GATE_FAILED'), 'pack + machine-gate blockers');
-    assert(p.machineGates.some((g) => g.gate === 'final-summary' && !g.passed), 'failing component surfaced as a machine gate');
+    assert(p.machineGates.some((g) => g.gate === 'component:final-summary' && !g.passed), 'failing component surfaced as a machine gate');
 
     const pack = await readyPack(root);
     const stripped = JSON.parse(JSON.stringify(pack)) as Record<string, unknown>;
     delete stripped.packDigest;
     const digestless = buildAcceptancePreflight({ reviewerPack: stripped, context: goodContext() });
-    assert(digestless.blockers.includes('COMPONENT_DIGEST_MISSING'), 'stripped pack digest blocks');
+    assert(digestless.blockers.includes('REVIEWER_PACK_DIGEST_MISMATCH'), 'stripped pack digest fails the recompute');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('NOT_READY on a forged minimal ready pack (self-digest does not recompute)', async () => {
+  const forged = { report: 'phase-230-promotion-merge-review-evidence-pack', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'REVIEWER_PACK_READY', components: [], bindings: [], provenance: { branch: 'work/phase-230', base: BASE, head: HEAD, commitCount: 1, requiredTests: ['npm run test:phase230-local', 'npm run typecheck'] }, blockers: [], disclaimers: [], packDigest: 'a'.repeat(64) };
+  const p = buildAcceptancePreflight({ reviewerPack: forged, context: goodContext() });
+  assertEq(p.overall, 'PREFLIGHT_NOT_READY', 'not ready');
+  assert(p.blockers.includes('REVIEWER_PACK_DIGEST_MISMATCH'), 'forged digest rejected');
+  assert(p.blockers.includes('PACK_COMPONENT_INCOMPLETE') && p.blockers.includes('PACK_BINDING_MISSING'), 'empty component/binding sets rejected');
+});
+
+await test('NOT_READY on incomplete/failing/missing/unknown components and bindings (resealed)', async () => {
+  const root = workspace();
+  try {
+    const pack = JSON.parse(JSON.stringify(await readyPack(root))) as Record<string, unknown>;
+    const comps = pack.components as Array<Record<string, unknown>>;
+    const binds = pack.bindings as Array<Record<string, unknown>>;
+
+    // incomplete component: a genuine component flipped to not-ok, then resealed
+    const incomplete = reseal({ ...pack, components: comps.map((c) => c.component === 'final-summary' ? { ...c, ok: false } : c) });
+    assert(buildAcceptancePreflight({ reviewerPack: incomplete, context: goodContext() }).blockers.includes('PACK_COMPONENT_INCOMPLETE'), 'incomplete component rejected');
+
+    // unknown component name
+    const unknownComp = reseal({ ...pack, components: [...comps, { component: 'bogus-component', present: true, ok: true, digest: 'a'.repeat(64) }] });
+    assert(buildAcceptancePreflight({ reviewerPack: unknownComp, context: goodContext() }).blockers.includes('PACK_COMPONENT_UNKNOWN'), 'unknown component rejected');
+
+    // missing binding name
+    const missingBind = reseal({ ...pack, bindings: binds.filter((b) => b.binding !== 'chain-bundle=merge-readiness') });
+    assert(buildAcceptancePreflight({ reviewerPack: missingBind, context: goodContext() }).blockers.includes('PACK_BINDING_MISSING'), 'missing binding rejected');
+
+    // unknown binding name
+    const unknownBind = reseal({ ...pack, bindings: [...binds, { binding: 'bogus=binding', ok: true }] });
+    assert(buildAcceptancePreflight({ reviewerPack: unknownBind, context: goodContext() }).blockers.includes('PACK_BINDING_UNKNOWN'), 'unknown binding rejected');
+
+    // failing binding
+    const failingBind = reseal({ ...pack, bindings: binds.map((b) => b.binding === 'review-automation=chain-bundle' ? { ...b, ok: false } : b) });
+    assert(buildAcceptancePreflight({ reviewerPack: failingBind, context: goodContext() }).blockers.includes('PACK_BINDING_FAILED'), 'failing binding rejected');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('NOT_READY when the context does not bind to the packed provenance', async () => {
+  const root = workspace();
+  try {
+    const pack = await readyPack(root);
+    const otherSha = 'a1b2c3d4e5f6071829304152637485960a1b2c3d';
+    assert(buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), branch: 'work/other-branch' } }).blockers.includes('CONTEXT_BRANCH_MISMATCH'), 'branch mismatch rejected');
+    assert(buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), base: otherSha } }).blockers.includes('CONTEXT_BASE_MISMATCH'), 'base mismatch rejected');
+    assert(buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), head: otherSha, commits: [{ sha: otherSha, subject: 'x' }] } }).blockers.includes('CONTEXT_HEAD_MISMATCH'), 'head mismatch rejected');
+    assert(buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), requiredTests: ['npm run something-else'] } }).blockers.includes('CONTEXT_REQUIRED_TESTS_MISMATCH'), 'required-tests mismatch rejected');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

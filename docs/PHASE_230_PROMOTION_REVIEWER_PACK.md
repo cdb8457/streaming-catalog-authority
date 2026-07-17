@@ -31,6 +31,12 @@ otherwise `REVIEWER_PACK_BLOCKED` with generic blockers (`*_MISSING`, `*_INVALID
 `COMPONENT_DIGEST_MISSING/INVALID`, `PACK_BINDING_MISMATCH`). Sealed with a `packDigest`; the fixed
 non-live / no-merge disclaimers are always present.
 
+The canonical component and binding names are exported as `EXPECTED_PACK_COMPONENTS` and
+`EXPECTED_PACK_BINDINGS`, so a consumer (the acceptance preflight) can fail closed on any missing, unknown,
+or failing component/binding. The pack also carries a redaction-safe `provenance` block — `branch`, `base`,
+`head`, `commitCount`, `requiredTests` — extracted from the packed (digest-bound) merge-readiness manifest,
+so a consumer can bind a supplied review context to the authoritative evidence.
+
 ## Files
 
 - `src/ops/promotion-reviewer-pack.ts` — `buildReviewerPack(input)`, `REVIEWER_PACK_DISCLAIMERS`.

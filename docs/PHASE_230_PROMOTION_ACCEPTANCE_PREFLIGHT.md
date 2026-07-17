@@ -13,12 +13,17 @@ hex shas, counts, and fixed-language strings.
 
 ## Machine gates
 
-The reviewer pack must be present, valid, digest-bound, and `REVIEWER_PACK_READY`
-(`REVIEWER_PACK_MISSING/INVALID/NOT_READY`, `COMPONENT_DIGEST_MISSING/INVALID`); each packed component and
-the binding mesh are surfaced as individual `machineGates` entries. The context must be well-formed —
-path-free branch, 40-hex base/head, validated commits and required tests
-(`PREFLIGHT_CONTEXT_MISSING/INVALID`). Any failing machine gate adds `MACHINE_GATE_FAILED`; `overall` is
-`PREFLIGHT_READY` iff no blocker fires, else `PREFLIGHT_NOT_READY`.
+The reviewer pack must be present, valid, `REVIEWER_PACK_READY`, and its **self-digest must recompute**
+(delegated to the self-digest verifier — a forged pack with a made-up or missing digest fails with
+`REVIEWER_PACK_DIGEST_MISMATCH`). It must carry the **exact** expected component set (each present + ok,
+no unknown — `PACK_COMPONENT_INCOMPLETE` / `PACK_COMPONENT_UNKNOWN`) and the **exact** expected binding
+mesh (no missing/failing/unknown — `PACK_BINDING_MISSING` / `PACK_BINDING_FAILED` / `PACK_BINDING_UNKNOWN`);
+each is surfaced as an individual `machineGates` entry. The context must be well-formed — path-free branch,
+40-hex base/head, validated commits and required tests (`PREFLIGHT_CONTEXT_MISSING/INVALID`) — **and bind to
+the pack's authoritative provenance**: the branch/base/head/required-tests must match the values carried
+from the packed merge-readiness manifest (`CONTEXT_BRANCH_MISMATCH`, `CONTEXT_BASE_MISMATCH`,
+`CONTEXT_HEAD_MISMATCH`, `CONTEXT_REQUIRED_TESTS_MISMATCH`). Any failing machine gate adds
+`MACHINE_GATE_FAILED`; `overall` is `PREFLIGHT_READY` iff no blocker fires, else `PREFLIGHT_NOT_READY`.
 
 ## Human gates (always enumerated, never automated)
 
@@ -31,8 +36,10 @@ here. Sealed with a `preflightDigest`; identical inputs always produce identical
 - `src/ops/promotion-acceptance-preflight.ts` — `buildAcceptancePreflight(input)`,
   `PREFLIGHT_HUMAN_GATES`, `PREFLIGHT_DISCLAIMERS`.
 - `src/ops/promotion-acceptance-preflight-cli.ts` — CLI wrapper.
-- `test/promotion-acceptance-preflight.ts` — 6 tests: ready with exact machine/human gate enumeration,
-  determinism, a blocked/digestless pack, a missing/malformed context, empty input, and a spawned CLI run.
+- `test/promotion-acceptance-preflight.ts` — 9 tests: ready with exact machine/human gate enumeration,
+  determinism, a blocked/digestless pack, a forged minimal ready pack, incomplete/unknown/missing/failing
+  components and bindings (resealed), a context that does not bind to the packed provenance, a
+  missing/malformed context, empty input, and a spawned CLI run.
 
 ## Usage
 

@@ -51,6 +51,7 @@ function main(): number {
     redactionSafe: true,
     components: pack.components.map((c) => ({ component: c.component, present: c.present, ok: c.ok })),
     bindings: pack.bindings,
+    provenance: pack.provenance,
     blockers: pack.blockers,
     packDigest: pack.packDigest,
     ...(out ? { outputWritten: true } : {}),
