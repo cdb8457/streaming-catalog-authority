@@ -286,6 +286,9 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COMMIT_SHA_MALFORMED', op: 'commit-range-closure' },
   { code: 'COMMIT_SUBJECT_LEAK', op: 'commit-range-closure' },
   { code: 'COMMIT_UNCATEGORIZED', op: 'commit-range-closure' },
+  { code: 'BLOCKER_UNCATALOGUED', op: 'regression-oracle' },
+  { code: 'REPRO_MISSING_TEST', op: 'regression-oracle' },
+  { code: 'FINDING_WITHOUT_REPRO', op: 'regression-oracle' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

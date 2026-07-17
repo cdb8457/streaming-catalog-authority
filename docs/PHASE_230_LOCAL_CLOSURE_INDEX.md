@@ -66,6 +66,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-transcript-verifier` | PHASE_230_PROMOTION_TRANSCRIPT_VERIFIER |
 | `promotion-evidence-minimizer` | PHASE_230_PROMOTION_EVIDENCE_MINIMIZER |
 | `promotion-commit-range-closure` | PHASE_230_PROMOTION_COMMIT_RANGE_CLOSURE |
+| `promotion-regression-oracle` | PHASE_230_PROMOTION_REGRESSION_ORACLE |
 
 ## Test-only local suites
 

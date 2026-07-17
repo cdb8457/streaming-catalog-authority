@@ -76,6 +76,7 @@ const NODES: readonly GateNode[] = [
   { id: 'transcript-verifier', test: 'test/promotion-transcript-verifier.ts', dependsOn: ['review-transcript'], blockers: ['HEAD_MISMATCH', 'COMMAND_MISSING', 'TEST_EXIT_NONZERO'] },
   { id: 'evidence-minimizer', test: 'test/promotion-evidence-minimizer.ts', dependsOn: [], blockers: ['MINIMIZED_LEAK'] },
   { id: 'commit-range-closure', test: 'test/promotion-commit-range-closure.ts', dependsOn: [], blockers: ['COMMIT_UNCATEGORIZED', 'COMMIT_SUBJECT_LEAK', 'COMMIT_SHA_MALFORMED'] },
+  { id: 'regression-oracle', test: 'test/promotion-regression-oracle.ts', dependsOn: ['blocker-taxonomy'], blockers: ['BLOCKER_UNCATALOGUED', 'REPRO_MISSING_TEST', 'FINDING_WITHOUT_REPRO'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];

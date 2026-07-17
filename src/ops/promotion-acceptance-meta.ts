@@ -63,6 +63,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-transcript-verifier', doc: 'PHASE_230_PROMOTION_TRANSCRIPT_VERIFIER' },
   { base: 'promotion-evidence-minimizer', doc: 'PHASE_230_PROMOTION_EVIDENCE_MINIMIZER' },
   { base: 'promotion-commit-range-closure', doc: 'PHASE_230_PROMOTION_COMMIT_RANGE_CLOSURE' },
+  { base: 'promotion-regression-oracle', doc: 'PHASE_230_PROMOTION_REGRESSION_ORACLE' },
 ];
 
 export interface OpMetaCheck {
