@@ -60,6 +60,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-acceptance-preflight` | PHASE_230_PROMOTION_ACCEPTANCE_PREFLIGHT |
 | `promotion-failure-matrix` | PHASE_230_PROMOTION_FAILURE_MATRIX |
 | `promotion-cli-ergonomics` | PHASE_230_PROMOTION_CLI_ERGONOMICS |
+| `promotion-report-schema` | PHASE_230_PROMOTION_REPORT_SCHEMA |
 
 ## Test-only local suites
 

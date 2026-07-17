@@ -57,6 +57,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-acceptance-preflight', doc: 'PHASE_230_PROMOTION_ACCEPTANCE_PREFLIGHT' },
   { base: 'promotion-failure-matrix', doc: 'PHASE_230_PROMOTION_FAILURE_MATRIX' },
   { base: 'promotion-cli-ergonomics', doc: 'PHASE_230_PROMOTION_CLI_ERGONOMICS' },
+  { base: 'promotion-report-schema', doc: 'PHASE_230_PROMOTION_REPORT_SCHEMA' },
 ];
 
 export interface OpMetaCheck {

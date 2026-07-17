@@ -231,6 +231,11 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'BLOCKER_WITHOUT_EVIDENCE', op: 'failure-matrix' },
   { code: 'USAGE_MISSING', op: 'cli-ergonomics' },
   { code: 'HELP_MISSING', op: 'cli-ergonomics' },
+  { code: 'REPORT_UNRECOGNIZED', op: 'report-schema' },
+  { code: 'REPORT_SHAPE_INVALID', op: 'report-schema' },
+  { code: 'UNKNOWN_KEY', op: 'report-schema' },
+  { code: 'REPORT_STATUS_INVALID', op: 'report-schema' },
+  { code: 'REPORT_DIGEST_INVALID', op: 'report-schema' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

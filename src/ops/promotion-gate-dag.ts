@@ -70,6 +70,7 @@ const NODES: readonly GateNode[] = [
   { id: 'acceptance-preflight', test: 'test/promotion-acceptance-preflight.ts', dependsOn: ['reviewer-pack'], blockers: ['REVIEWER_PACK_NOT_READY', 'PREFLIGHT_CONTEXT_INVALID', 'MACHINE_GATE_FAILED'] },
   { id: 'failure-matrix', test: 'test/promotion-failure-matrix.ts', dependsOn: ['gate-dag', 'blocker-taxonomy'], blockers: ['UNMAPPED_BLOCKER', 'BLOCKER_WITHOUT_EVIDENCE'] },
   { id: 'cli-ergonomics', test: 'test/promotion-cli-ergonomics.ts', dependsOn: [], blockers: ['USAGE_MISSING', 'HELP_MISSING'] },
+  { id: 'report-schema', test: 'test/promotion-report-schema.ts', dependsOn: [], blockers: ['REPORT_SHAPE_INVALID', 'UNKNOWN_KEY'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];
