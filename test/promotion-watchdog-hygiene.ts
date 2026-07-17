@@ -69,6 +69,16 @@ await test('VIOLATED on a malformed entry digest, an invalid status, and a missi
   assert(noQueue.blockers.includes('QUEUE_MISSING'), 'queue-missing blocker');
 });
 
+await test('a path-bearing status is rejected AND never echoed (redaction leak closed)', () => {
+  const leak = '/mnt/user/media/Movies/leak.mkv';
+  const r = buildWatchdogHygiene({ config: SAFE_CONFIG, queue: [{ itemDigest: A64, status: leak, run: RUN }], currentRun: RUN });
+  assertEq(r.overall, 'WATCHDOG_HYGIENE_VIOLATED', 'invalid status violates');
+  assert(r.blockers.includes('ENTRY_STATUS_INVALID'), 'entry-status-invalid blocker');
+  // The raw status must NOT be echoed anywhere in the redaction-safe report.
+  assertEq(r.entries[0]!.status, null, 'invalid status surfaced as null, not the raw string');
+  assert(!JSON.stringify(r).includes('/mnt/') && !JSON.stringify(r).includes('.mkv'), 'no raw status fragment leaks into the report');
+});
+
 test('VIOLATED and redaction-safe on empty input (config + queue both missing)', () => {
   const r = buildWatchdogHygiene({});
   assertEq(r.overall, 'WATCHDOG_HYGIENE_VIOLATED', 'violated');

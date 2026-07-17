@@ -78,13 +78,16 @@ export function buildWatchdogHygiene(input: WatchdogHygieneInput): WatchdogHygie
   const entries: QueueEntryResult[] = (rawQueue ?? []).map((e) => {
     const o = asObject(e);
     const itemDigest = asSha256(o.itemDigest) ?? null;
-    const status = typeof o.status === 'string' ? o.status : null;
+    // Echo only a VALIDATED status enum -- never the raw input string. A malformed/path-bearing status must
+    // not leak into this redaction-safe report; it is surfaced as `null` + ENTRY_STATUS_INVALID instead.
+    const statusValid = typeof o.status === 'string' && ALLOWED_STATUS.includes(o.status);
+    const status = statusValid ? (o.status as string) : null;
     const run = pathFreeString(o.run);
-    const wellFormed = itemDigest !== null && status !== null && ALLOWED_STATUS.includes(status) && run !== null;
+    const wellFormed = itemDigest !== null && statusValid && run !== null;
     const duplicate = itemDigest !== null && (seen.get(itemDigest) ?? 0) > 1;
     const fresh = run !== null && (currentRun === null || run === currentRun);
     if (itemDigest === null) blockers.push('ENTRY_DIGEST_MALFORMED');
-    if (status === null || !ALLOWED_STATUS.includes(status ?? '')) blockers.push('ENTRY_STATUS_INVALID');
+    if (!statusValid) blockers.push('ENTRY_STATUS_INVALID');
     if (run === null) blockers.push('ENTRY_RUN_MISSING');
     if (duplicate) blockers.push('DUPLICATE_QUEUE_ENTRY');
     if (run !== null && currentRun !== null && run !== currentRun) blockers.push('STALE_QUEUE_ENTRY');
