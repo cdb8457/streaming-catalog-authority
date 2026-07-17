@@ -70,7 +70,7 @@ const NODES: readonly GateNode[] = [
   { id: 'acceptance-preflight', test: 'test/promotion-acceptance-preflight.ts', dependsOn: ['reviewer-pack'], blockers: ['REVIEWER_PACK_NOT_READY', 'PREFLIGHT_CONTEXT_INVALID', 'MACHINE_GATE_FAILED'] },
   { id: 'failure-matrix', test: 'test/promotion-failure-matrix.ts', dependsOn: ['gate-dag', 'blocker-taxonomy'], blockers: ['UNMAPPED_BLOCKER', 'BLOCKER_WITHOUT_EVIDENCE'] },
   { id: 'cli-ergonomics', test: 'test/promotion-cli-ergonomics.ts', dependsOn: [], blockers: ['USAGE_MISSING', 'HELP_MISSING'] },
-  { id: 'report-schema', test: 'test/promotion-report-schema.ts', dependsOn: [], blockers: ['REPORT_SHAPE_INVALID', 'UNKNOWN_KEY'] },
+  { id: 'report-schema', test: 'test/promotion-report-schema.ts', dependsOn: [], blockers: ['REPORT_SHAPE_INVALID', 'UNKNOWN_KEY', 'REPORT_DIGEST_MISMATCH'] },
   { id: 'boundary-audit', test: 'test/promotion-boundary-audit.ts', dependsOn: ['boundary-policy'], blockers: ['AUDIT_POLICY_VIOLATED', 'AUDIT_NETWORK_URL_FOUND', 'AUDIT_NON_LOCAL_SUITE'] },
   { id: 'coordinator-readiness', test: 'test/promotion-coordinator-readiness.ts', dependsOn: ['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics'], blockers: ['ACCEPTANCE_PREFLIGHT_NOT_READY', 'BOUNDARY_AUDIT_FAILED', 'REPORT_SCHEMA_NOT_OK'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },

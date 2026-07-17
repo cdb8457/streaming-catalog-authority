@@ -7,6 +7,8 @@ import { buildFinalSummary } from './promotion-final-summary.js';
 import { verifyCliContract } from './promotion-cli-contract.js';
 import { buildReleaseChecklist } from './promotion-release-checklist.js';
 import { buildMergeReadiness } from './promotion-merge-readiness.js';
+import { buildReportSchema } from './promotion-report-schema.js';
+import { buildCoordinatorReadiness } from './promotion-coordinator-readiness.js';
 
 // Local, non-live negative-evidence adversarial corpus. Each sample is a deliberately malformed or
 // adversarial evidence artifact (a tampered self-digest, an unknown report id, a stitched-together set, an
@@ -26,6 +28,17 @@ const READY_BUNDLE = { report: 'phase-230-promotion-coordinator-review-bundle', 
 const GOOD_CONTEXT = { branch: 'work/branch', base: '1'.repeat(40), head: '2'.repeat(40), commits: [{ sha: VALID_SHA, subject: 'a commit' }], requiredTests: ['npm run test:phase230-local'] };
 const HELD_CORPUS = { report: 'phase-230-promotion-negative-evidence-corpus', overall: 'CORPUS_HELD' };
 const OK_HYGIENE = { report: 'phase-230-promotion-closure-hygiene', overall: 'HYGIENE_OK' };
+
+// A shape-valid CLI-ergonomics report (an AP-AZ schema type) with an overridable field, for schema probes.
+const ergoReport = (over: Record<string, unknown>): Record<string, unknown> => ({ report: 'phase-230-promotion-cli-ergonomics', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'CLI_ERGONOMICS_OK', cliCount: 1, results: [], gaps: [], ergonomicsDigest: A64, ...over });
+// A shape-valid set of readiness components (report id + green status + valid-format digest).
+const readinessGreen = () => ({
+  acceptancePreflight: { report: 'phase-230-promotion-acceptance-preflight', overall: 'PREFLIGHT_READY', preflightDigest: A64 },
+  failureMatrix: { report: 'phase-230-promotion-failure-mode-matrix', overall: 'FAILURE_MATRIX_COMPLETE', failureMatrixDigest: A64 },
+  reportSchema: { report: 'phase-230-promotion-report-schema', overall: 'REPORT_SCHEMA_OK', reportSchemaDigest: A64 },
+  boundaryAudit: { report: 'phase-230-promotion-boundary-audit', overall: 'BOUNDARY_AUDIT_CLEAN', auditDigest: A64 },
+  cliErgonomics: { report: 'phase-230-promotion-cli-ergonomics', overall: 'CLI_ERGONOMICS_OK', ergonomicsDigest: A64 },
+});
 
 interface NegativeSample {
   readonly id: string;
@@ -167,6 +180,31 @@ const SAMPLES: readonly NegativeSample[] = [
       releaseChecklist: { report: 'phase-230-promotion-coordinator-release-checklist', overall: 'RELEASE_CHECKLIST_CLEARED', blockers: [], boundDigests: { transcript: T64 } },
       context: GOOD_CONTEXT,
     }).blockers.includes('CHECKLIST_BINDING_INCOMPLETE'),
+  },
+  // BA scope: a green-looking AP-AZ report with a wrong-but-well-formed self-digest must fail closed.
+  {
+    id: 'report-schema-forged-self-digest', category: 'forged-digest',
+    rejected: () => buildReportSchema([ergoReport({})]).violations.includes('REPORT_DIGEST_MISMATCH'),
+  },
+  {
+    id: 'report-schema-malformed-digest', category: 'malformed-schema',
+    rejected: () => buildReportSchema([ergoReport({ ergonomicsDigest: 'not-a-sha256' })]).violations.includes('REPORT_DIGEST_INVALID'),
+  },
+  {
+    id: 'report-schema-unknown-key', category: 'malformed-schema',
+    rejected: () => buildReportSchema([ergoReport({ smuggledField: 1 })]).violations.includes('UNKNOWN_KEY'),
+  },
+  {
+    id: 'report-schema-wrong-report-id', category: 'unknown-report',
+    rejected: () => buildReportSchema([{ report: 'phase-230-promotion-not-a-real-report', ergonomicsDigest: A64 }]).violations.includes('REPORT_UNRECOGNIZED'),
+  },
+  {
+    id: 'readiness-not-ready-where-green-required', category: 'not-ready-upstream',
+    rejected: () => buildCoordinatorReadiness({ ...readinessGreen(), boundaryAudit: { report: 'phase-230-promotion-boundary-audit', overall: 'BOUNDARY_AUDIT_FAILED', auditDigest: A64 } }).blockers.includes('BOUNDARY_AUDIT_FAILED'),
+  },
+  {
+    id: 'readiness-missing-component-digest', category: 'missing-binding-digest',
+    rejected: () => buildCoordinatorReadiness({ ...readinessGreen(), failureMatrix: { report: 'phase-230-promotion-failure-mode-matrix', overall: 'FAILURE_MATRIX_COMPLETE' } }).blockers.includes('COMPONENT_DIGEST_MISSING'),
   },
 ];
 

@@ -118,6 +118,24 @@ await test('VIOLATION on unknown key, missing key, bad status, bad digest, unkno
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('VIOLATION on a wrong-but-well-formed self-digest (recompute delegated to self-digest verifier)', async () => {
+  const root = workspace();
+  try {
+    const reports = await allReports(root);
+    for (const genuine of reports) {
+      // the report is shape-valid and its digest field is a valid sha256, but not the correct one
+      const g = genuine as unknown as Record<string, unknown>;
+      const digestKey = Object.keys(g).find((k) => /Digest$/.test(k))!;
+      const forged = { ...g, [digestKey]: 'f'.repeat(64) };
+      const s = buildReportSchema([forged]);
+      assertEq(s.overall, 'REPORT_SCHEMA_VIOLATION', `forged ${g.report} blocked`);
+      assert(s.violations.includes('REPORT_DIGEST_MISMATCH'), `forged ${g.report} -> REPORT_DIGEST_MISMATCH`);
+      // and the genuine report, unchanged, still passes (its digest recomputes)
+      assert(buildReportSchema([genuine]).results[0]!.valid, `genuine ${g.report} still valid`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('VIOLATION when the fixed literals drift (authorization/redactionSafe/version)', () => {
   const shaped = { report: 'phase-230-promotion-cli-ergonomics', version: 1, redactionSafe: true, authorization: 'SOME', overall: 'CLI_ERGONOMICS_OK', cliCount: 1, results: [], gaps: [], ergonomicsDigest: 'a'.repeat(64) };
   const s = buildReportSchema([shaped]);

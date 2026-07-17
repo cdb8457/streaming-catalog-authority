@@ -1,11 +1,15 @@
 import { createHash } from 'node:crypto';
+import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 
 // Local, non-live report schema strictness pass for the AP-AZ report types. Every report is validated
 // against a STRICT schema: the exact top-level key set (no missing keys, no unknown keys), the fixed
 // literals (version 1, redactionSafe true, authorization NONE), the overall enum, and a well-formed sha256
-// self-digest. This catches malformed-but-plausible reports that the green checks alone would accept. It
-// reads parsed JSON only; it performs no promotion, never touches the real Movies root, never contacts
-// Jellyfin, and authorizes nothing live.
+// self-digest. For a report that is otherwise shape-valid, the stated self-digest is then re-verified by
+// recomputing it under the report's correct scope/field (delegated to the self-digest verifier), so a
+// wrong-but-well-formed digest is caught with REPORT_DIGEST_MISMATCH rather than passing. This catches
+// malformed-but-plausible reports that the green checks alone would accept. It reads parsed JSON only; it
+// performs no promotion, never touches the real Movies root, never contacts Jellyfin, and authorizes
+// nothing live.
 
 interface ReportSchema {
   readonly keys: readonly string[];
@@ -64,6 +68,9 @@ export function buildReportSchema(reports: readonly unknown[]): ReportSchemaRepo
     if (typeof obj.overall !== 'string' || !schema.overall.includes(obj.overall)) problems.push('REPORT_STATUS_INVALID');
     if (!isSha256(obj[schema.digestField])) problems.push('REPORT_DIGEST_INVALID');
     const unique = [...new Set(problems)];
+    // Shape/format are sound: now re-verify the digest actually recomputes under the correct scope/field.
+    // A wrong-but-well-formed self-digest fails closed here rather than passing the format check.
+    if (unique.length === 0 && verifySelfDigests([obj]).overall !== 'ALL_VERIFIED') unique.push('REPORT_DIGEST_MISMATCH');
     return { report: id, valid: unique.length === 0, problems: unique };
   });
 

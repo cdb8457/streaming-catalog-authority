@@ -28,7 +28,13 @@ Each sample carries a fixed `id` and `category` and asserts its validator reject
   (`TRANSCRIPT_BUNDLE_MISMATCH`), and a merge-readiness manifest whose final summary is unbound from the
   cleared checklist (`FINAL_SUMMARY_BINDING_MISMATCH`).
 - **Incomplete / not-ready upstream** — a merge-readiness manifest with a missing context
-  (`MERGE_CONTEXT_MISSING`) or a not-cleared release checklist (`RELEASE_CHECKLIST_NOT_CLEARED`).
+  (`MERGE_CONTEXT_MISSING`) or a not-cleared release checklist (`RELEASE_CHECKLIST_NOT_CLEARED`); a
+  coordinator-readiness input where a green-required component is not ready (`BOUNDARY_AUDIT_FAILED`).
+- **AP-AZ green-looking artifacts** — an AP-AZ report with a wrong-but-well-formed self-digest
+  (`REPORT_DIGEST_MISMATCH`), a malformed digest (`REPORT_DIGEST_INVALID`), an unknown key (`UNKNOWN_KEY`),
+  an unknown report id (`REPORT_UNRECOGNIZED`), and a readiness component missing its digest
+  (`COMPONENT_DIGEST_MISSING`) — covering the schema strictness dimensions plus wrong binding and payload
+  leak (shared with the other samples).
 
 `overall` is `CORPUS_HELD` only when **every** sample is rejected, else `CORPUS_BREACHED` with the breaching
 sample ids. The report carries only fixed sample ids, categories, counts, and booleans — **never the

@@ -34,6 +34,14 @@ test('CORPUS_HELD: every adversarial sample is rejected by its validator', () =>
   assert(ids.has('release-checklist-commit-binding-mismatch') && ids.has('merge-readiness-final-summary-unbound'), 'covers release-checklist + merge-readiness binding blockers');
   assert(ids.has('archive-evidence-ledger-mismatch') && ids.has('review-bundle-archive-component-mismatch') && ids.has('matrix-review-archive-mismatch'), 'covers stale/mismatch green-looking artifacts');
   assert(ids.has('release-checklist-digestless-required') && ids.has('merge-readiness-checklist-bindings-incomplete'), 'covers digestless required binding evidence');
+  // BA scope: green-looking AP-AZ artifacts fail closed across every dimension.
+  assert(ids.has('report-schema-forged-self-digest'), 'covers wrong-but-valid self-digest');            // forged digest
+  assert(ids.has('report-schema-malformed-digest'), 'covers missing/malformed digest');                 // missing digest
+  assert(ids.has('report-schema-wrong-report-id'), 'covers wrong report id');                           // wrong report id
+  assert(ids.has('readiness-not-ready-where-green-required'), 'covers not-ready-where-green-required');  // not-ready status
+  assert(ids.has('readiness-missing-component-digest'), 'covers missing component digest');
+  assert(ids.has('release-checklist-commit-binding-mismatch') && ids.has('merge-readiness-final-summary-unbound'), 'covers wrong binding'); // wrong binding
+  assert(ids.has('cli-capture-redaction-leak'), 'covers payload/path leak');                            // payload/path leak
   assert(/^[0-9a-f]{64}$/.test(c.corpusDigest), 'corpus digest present');
 });
 
