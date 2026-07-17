@@ -23,6 +23,9 @@ nothing live.
 `promotion-injection-corpus`, `promotion-review-bundle`, `promotion-consistency-matrix`,
 `promotion-self-digest-verifier`, `promotion-cli-contract`, `promotion-determinism`,
 `promotion-blocker-taxonomy`, `promotion-final-summary`, `promotion-closure-hygiene`,
+`promotion-negative-evidence-corpus`, `promotion-release-checklist`, `promotion-merge-readiness`,
+`promotion-provenance-diff`, `promotion-gate-coverage`, `promotion-chain-bundle`,
+`promotion-redaction-corpus`, `promotion-boundary-policy`, `promotion-review-automation`,
 `promotion-live-boundary-guard`, `phase230-closure`, and the `phase230-local-suite-manifest` guard itself.
 
 ## Excluded (by design)

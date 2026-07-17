@@ -43,6 +43,15 @@ for all of this tooling and **not authorized** by any of it.
 | Blocker taxonomy index | `ops:promotion-blocker-taxonomy` | [taxonomy](PHASE_230_PROMOTION_BLOCKER_TAXONOMY.md) | Catalogue of every blocker code, attributed and categorized |
 | Coordinator final summary | `ops:promotion-final-summary` | [summary](PHASE_230_PROMOTION_FINAL_SUMMARY.md) | One-page verdict over review bundle + optional cross-checks |
 | Closure / dependency hygiene | `ops:promotion-closure-hygiene` | [hygiene](PHASE_230_PROMOTION_CLOSURE_HYGIENE.md) | DAG + taxonomy + registry + wiring are mutually consistent |
+| Negative-evidence adversarial corpus | `ops:promotion-negative-evidence-corpus` | [neg-corpus](PHASE_230_PROMOTION_NEGATIVE_EVIDENCE_CORPUS.md) | Every adversarial/malformed sample is rejected by its validator |
+| Evidence release checklist | `ops:promotion-release-checklist` | [release](PHASE_230_PROMOTION_RELEASE_CHECKLIST.md) | Binds bundle/transcript/summary/hygiene/corpus to one run → go/no-go |
+| Merge-readiness dry run | `ops:promotion-merge-readiness` | [merge-dry-run](PHASE_230_PROMOTION_MERGE_READINESS.md) | Advisory dry run: branch/base/head + no merge performed or authorized |
+| Provenance diff / alignment | `ops:promotion-provenance-diff` | [prov-diff](PHASE_230_PROMOTION_PROVENANCE_DIFF.md) | head = reviewed commit, in range, artifacts fresh, no leaks |
+| Gate coverage completeness | `ops:promotion-gate-coverage` | [coverage](PHASE_230_PROMOTION_GATE_COVERAGE.md) | Every op/gate/blocker/doc has test + taxonomy coverage |
+| Artifact chain bundle | `ops:promotion-chain-bundle` | [chain](PHASE_230_PROMOTION_CHAIN_BUNDLE.md) | Packs the closing records into one digest-bound handoff manifest |
+| Redaction regression corpus | `ops:promotion-redaction-corpus` | [redaction](PHASE_230_PROMOTION_REDACTION_CORPUS.md) | Every leak payload flagged by every detector; safe values pass |
+| Boundary policy compiler | `ops:promotion-boundary-policy` | [policy](PHASE_230_PROMOTION_BOUNDARY_POLICY.md) | The closed-live-boundary policy, compiled + statically enforced |
+| Review automation checklist | `ops:promotion-review-automation` | [automation](PHASE_230_PROMOTION_REVIEW_AUTOMATION.md) | Machine-verified review steps vs the human steps that remain |
 | Live-boundary guard | `test:promotion-live-boundary-guard` | [guard](PHASE_230_PROMOTION_LIVE_BOUNDARY_GUARD.md) | Static guard that the local tools/docs hold no live hooks |
 | Local closure guard | `test:phase230-closure` | [closure](PHASE_230_LOCAL_CLOSURE_INDEX.md) | Every op fully mapped; gate holds only local suites |
 | Local safety suite | `test:phase230-local` | [suite](PHASE_230_LOCAL_SAFETY_SUITE.md) | Fast regression gate over only the local safety suites |
