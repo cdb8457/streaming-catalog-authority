@@ -52,6 +52,12 @@ for all of this tooling and **not authorized** by any of it.
 | Redaction regression corpus | `ops:promotion-redaction-corpus` | [redaction](PHASE_230_PROMOTION_REDACTION_CORPUS.md) | Every leak payload flagged by every detector; safe values pass |
 | Boundary policy compiler | `ops:promotion-boundary-policy` | [policy](PHASE_230_PROMOTION_BOUNDARY_POLICY.md) | The closed-live-boundary policy, compiled + statically enforced |
 | Review automation checklist | `ops:promotion-review-automation` | [automation](PHASE_230_PROMOTION_REVIEW_AUTOMATION.md) | Machine-verified review steps vs the human steps that remain |
+| Merge-review evidence pack | `ops:promotion-reviewer-pack` | [pack](PHASE_230_PROMOTION_REVIEWER_PACK.md) | The seven closing records, digest-bound into one reviewer pack |
+| Acceptance preflight | `ops:promotion-acceptance-preflight` | [preflight](PHASE_230_PROMOTION_ACCEPTANCE_PREFLIGHT.md) | Machine gates passed vs human gates remaining; approves nothing |
+| Failure-mode matrix | `ops:promotion-failure-matrix` | [failure-matrix](PHASE_230_PROMOTION_FAILURE_MATRIX.md) | Every blocker mapped to test + doc + gate with evidence |
+| CLI ergonomics guard | `ops:promotion-cli-ergonomics` | [ergonomics](PHASE_230_PROMOTION_CLI_ERGONOMICS.md) | Every CLI defines usage() and handles --help |
+| Report schema strictness | `ops:promotion-report-schema` | [report-schema](PHASE_230_PROMOTION_REPORT_SCHEMA.md) | AP-AZ reports match exact key sets, enums, and digests |
+| Final boundary audit | `ops:promotion-boundary-audit` | [audit](PHASE_230_PROMOTION_BOUNDARY_AUDIT.md) | Policy + network/env/gate/doc audit over the whole toolchain |
 | Live-boundary guard | `test:promotion-live-boundary-guard` | [guard](PHASE_230_PROMOTION_LIVE_BOUNDARY_GUARD.md) | Static guard that the local tools/docs hold no live hooks |
 | Local closure guard | `test:phase230-closure` | [closure](PHASE_230_LOCAL_CLOSURE_INDEX.md) | Every op fully mapped; gate holds only local suites |
 | Local safety suite | `test:phase230-local` | [suite](PHASE_230_LOCAL_SAFETY_SUITE.md) | Fast regression gate over only the local safety suites |

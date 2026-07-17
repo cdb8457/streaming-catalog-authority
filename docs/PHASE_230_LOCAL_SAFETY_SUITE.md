@@ -26,6 +26,8 @@ nothing live.
 `promotion-negative-evidence-corpus`, `promotion-release-checklist`, `promotion-merge-readiness`,
 `promotion-provenance-diff`, `promotion-gate-coverage`, `promotion-chain-bundle`,
 `promotion-redaction-corpus`, `promotion-boundary-policy`, `promotion-review-automation`,
+`promotion-reviewer-pack`, `promotion-acceptance-preflight`, `promotion-failure-matrix`,
+`promotion-cli-ergonomics`, `promotion-report-schema`, `promotion-boundary-audit`,
 `promotion-live-boundary-guard`, `phase230-closure`, and the `phase230-local-suite-manifest` guard itself.
 
 ## Excluded (by design)
