@@ -78,6 +78,7 @@ const LOCAL_SUITES = [
   'test/promotion-aggregator-digest-audit.ts',
   'test/promotion-artifact-export-manifest.ts',
   'test/promotion-watchdog-hygiene.ts',
+  'test/promotion-terminal-readiness-v2.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',
