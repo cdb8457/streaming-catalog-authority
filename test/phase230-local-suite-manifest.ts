@@ -74,6 +74,7 @@ const LOCAL_SUITES = [
   'test/promotion-commit-range-closure.ts',
   'test/promotion-regression-oracle.ts',
   'test/promotion-terminal-closure.ts',
+  'test/promotion-pack-component-integrity.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',

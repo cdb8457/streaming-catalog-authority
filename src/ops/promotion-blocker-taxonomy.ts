@@ -310,6 +310,16 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COMPONENT_DIGEST_MISSING', op: 'terminal-closure' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'terminal-closure' },
   { code: 'COMPONENT_DIGEST_MISMATCH', op: 'terminal-closure' },
+  { code: 'PACK_MISSING', op: 'pack-component-integrity' },
+  { code: 'PACK_INVALID', op: 'pack-component-integrity' },
+  { code: 'PACK_DIGEST_MISMATCH', op: 'pack-component-integrity' },
+  { code: 'PACK_NOT_READY', op: 'pack-component-integrity' },
+  { code: 'COMPONENT_REPORT_MISSING', op: 'pack-component-integrity' },
+  { code: 'COMPONENT_REPORT_INVALID', op: 'pack-component-integrity' },
+  { code: 'COMPONENT_DIGEST_MISMATCH', op: 'pack-component-integrity' },
+  { code: 'COMPONENT_NOT_GREEN', op: 'pack-component-integrity' },
+  { code: 'PACK_DIGEST_UNBOUND', op: 'pack-component-integrity' },
+  { code: 'PACK_COMPONENT_DIGEST_MISMATCH', op: 'pack-component-integrity' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

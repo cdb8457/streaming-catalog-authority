@@ -78,6 +78,7 @@ const NODES: readonly GateNode[] = [
   { id: 'commit-range-closure', test: 'test/promotion-commit-range-closure.ts', dependsOn: [], blockers: ['COMMIT_UNCATEGORIZED', 'COMMIT_SUBJECT_LEAK', 'COMMIT_SHA_MALFORMED'] },
   { id: 'regression-oracle', test: 'test/promotion-regression-oracle.ts', dependsOn: ['blocker-taxonomy'], blockers: ['BLOCKER_UNCATALOGUED', 'REPRO_MISSING_TEST', 'FINDING_WITHOUT_REPRO'] },
   { id: 'terminal-closure', test: 'test/promotion-terminal-closure.ts', dependsOn: ['transcript-verifier', 'evidence-minimizer', 'commit-range-closure', 'regression-oracle', 'coordinator-readiness'], blockers: ['TRANSCRIPT_VERIFICATION_NOT_VERIFIED', 'COMMIT_RANGE_NOT_CLOSED', 'COORDINATOR_READINESS_NOT_CONFIRMED'] },
+  { id: 'pack-component-integrity', test: 'test/promotion-pack-component-integrity.ts', dependsOn: ['reviewer-pack'], blockers: ['PACK_DIGEST_MISMATCH', 'COMPONENT_DIGEST_MISMATCH', 'COMPONENT_NOT_GREEN', 'PACK_COMPONENT_DIGEST_MISMATCH'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];
