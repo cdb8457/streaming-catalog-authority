@@ -42,6 +42,12 @@ test('CORPUS_HELD: every adversarial sample is rejected by its validator', () =>
   assert(ids.has('readiness-missing-component-digest'), 'covers missing component digest');
   assert(ids.has('release-checklist-commit-binding-mismatch') && ids.has('merge-readiness-final-summary-unbound'), 'covers wrong binding'); // wrong binding
   assert(ids.has('cli-capture-redaction-leak'), 'covers payload/path leak');                            // payload/path leak
+  // BS scope: forged-but-green components fail closed on a real recompute across terminal/pack/aggregators.
+  assert(ids.has('terminal-closure-forged-green-component'), 'covers forged-green terminal component');
+  assert(ids.has('reviewer-pack-forged-green-component'), 'covers forged-green pack component');
+  assert(ids.has('pack-integrity-forged-green-component') && ids.has('pack-integrity-forged-pack-digest'), 'covers forged-green pack-integrity + forged pack digest');
+  assert(ids.has('chain-bundle-forged-green-component') && ids.has('readiness-forged-green-component'), 'covers forged-green aggregator components');
+  assert((c.categories['forged-green-component'] ?? 0) >= 6, 'a substantial forged-green-component set');
   assert(/^[0-9a-f]{64}$/.test(c.corpusDigest), 'corpus digest present');
 });
 

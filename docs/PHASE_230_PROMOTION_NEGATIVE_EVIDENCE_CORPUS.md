@@ -35,6 +35,12 @@ Each sample carries a fixed `id` and `category` and asserts its validator reject
   an unknown report id (`REPORT_UNRECOGNIZED`), and a readiness component missing its digest
   (`COMPONENT_DIGEST_MISSING`) — covering the schema strictness dimensions plus wrong binding and payload
   leak (shared with the other samples).
+- **Forged-but-green components (final evidence chain)** — a component with the correct report id, a green
+  status, and a well-formed **but non-recomputing** self-digest, fed to the terminal-closure manifest, the
+  reviewer pack, the pack-component-integrity verifier, and the closure aggregators (chain-bundle,
+  coordinator-readiness). Each must fail closed on a real recompute (`COMPONENT_DIGEST_MISMATCH`), plus a
+  green-looking pack whose own self-digest does not recompute (`PACK_DIGEST_MISMATCH`). Presence/format
+  checks alone would accept these — only recompute rejects them.
 
 `overall` is `CORPUS_HELD` only when **every** sample is rejected, else `CORPUS_BREACHED` with the breaching
 sample ids. The report carries only fixed sample ids, categories, counts, and booleans — **never the
@@ -44,8 +50,9 @@ payloads themselves** — plus a `corpusDigest`.
 
 - `src/ops/promotion-negative-evidence-corpus.ts` — `buildNegativeEvidenceCorpus()`, `NEGATIVE_SAMPLE_COUNT`.
 - `src/ops/promotion-negative-evidence-corpus-cli.ts` — CLI wrapper.
-- `test/promotion-negative-evidence-corpus.ts` — 4 tests: all-held, discriminating predicates (green input
-  is not rejected), a self-verifiable + leak-free report, and a spawned CLI run.
+- `test/promotion-negative-evidence-corpus.ts` — 4 tests: all-held (asserting the forged-green-component
+  coverage), discriminating predicates (green input is not rejected), a self-verifiable + leak-free report,
+  and a spawned CLI run.
 
 ## Usage
 

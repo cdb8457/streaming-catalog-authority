@@ -9,6 +9,10 @@ import { buildReleaseChecklist } from './promotion-release-checklist.js';
 import { buildMergeReadiness } from './promotion-merge-readiness.js';
 import { buildReportSchema } from './promotion-report-schema.js';
 import { buildCoordinatorReadiness } from './promotion-coordinator-readiness.js';
+import { buildChainBundle } from './promotion-chain-bundle.js';
+import { buildReviewerPack } from './promotion-reviewer-pack.js';
+import { buildTerminalClosure } from './promotion-terminal-closure.js';
+import { buildPackComponentIntegrity } from './promotion-pack-component-integrity.js';
 
 // Local, non-live negative-evidence adversarial corpus. Each sample is a deliberately malformed or
 // adversarial evidence artifact (a tampered self-digest, an unknown report id, a stitched-together set, an
@@ -205,6 +209,44 @@ const SAMPLES: readonly NegativeSample[] = [
   {
     id: 'readiness-missing-component-digest', category: 'missing-binding-digest',
     rejected: () => buildCoordinatorReadiness({ ...readinessGreen(), failureMatrix: { report: 'phase-230-promotion-failure-mode-matrix', overall: 'FAILURE_MATRIX_COMPLETE' } }).blockers.includes('COMPONENT_DIGEST_MISSING'),
+  },
+  // BS scope: a forged-but-GREEN component (correct report id, green status, well-formed but non-recomputing
+  // self-digest) must fail closed on a real recompute -- across the terminal manifest, the reviewer pack, the
+  // pack-component-integrity verifier, and the closure aggregators. Presence/format checks alone would pass.
+  {
+    id: 'terminal-closure-forged-green-component', category: 'forged-green-component',
+    rejected: () => buildTerminalClosure({
+      transcriptVerification: { report: 'phase-230-promotion-transcript-verification', overall: 'TRANSCRIPT_VERIFIED', verificationDigest: A64 },
+    }).blockers.includes('COMPONENT_DIGEST_MISMATCH'),
+  },
+  {
+    id: 'reviewer-pack-forged-green-component', category: 'forged-green-component',
+    rejected: () => buildReviewerPack({
+      finalSummary: { report: 'phase-230-promotion-coordinator-final-summary', overall: 'FINAL_SUMMARY_READY', summaryDigest: A64 },
+    }).blockers.includes('COMPONENT_DIGEST_MISMATCH'),
+  },
+  {
+    id: 'pack-integrity-forged-green-component', category: 'forged-green-component',
+    rejected: () => buildPackComponentIntegrity({
+      finalSummary: { report: 'phase-230-promotion-coordinator-final-summary', overall: 'FINAL_SUMMARY_READY', summaryDigest: A64 },
+    }).blockers.includes('COMPONENT_DIGEST_MISMATCH'),
+  },
+  {
+    id: 'chain-bundle-forged-green-component', category: 'forged-green-component',
+    rejected: () => buildChainBundle({
+      finalSummary: { report: 'phase-230-promotion-coordinator-final-summary', overall: 'FINAL_SUMMARY_READY', summaryDigest: A64 },
+    }).blockers.includes('COMPONENT_DIGEST_MISMATCH'),
+  },
+  {
+    id: 'readiness-forged-green-component', category: 'forged-green-component',
+    rejected: () => buildCoordinatorReadiness(readinessGreen()).blockers.includes('COMPONENT_DIGEST_MISMATCH'),
+  },
+  {
+    // A green-looking pack whose own self-digest does not recompute fails the integrity verifier closed.
+    id: 'pack-integrity-forged-pack-digest', category: 'forged-green-component',
+    rejected: () => buildPackComponentIntegrity({
+      reviewerPack: { report: 'phase-230-promotion-merge-review-evidence-pack', overall: 'REVIEWER_PACK_READY', components: [], packDigest: A64 },
+    }).blockers.includes('PACK_DIGEST_MISMATCH'),
   },
 ];
 
