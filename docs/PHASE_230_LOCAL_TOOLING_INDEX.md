@@ -58,6 +58,7 @@ for all of this tooling and **not authorized** by any of it.
 | CLI ergonomics guard | `ops:promotion-cli-ergonomics` | [ergonomics](PHASE_230_PROMOTION_CLI_ERGONOMICS.md) | Every CLI defines usage() and handles --help |
 | Report schema strictness | `ops:promotion-report-schema` | [report-schema](PHASE_230_PROMOTION_REPORT_SCHEMA.md) | AP-AZ reports match exact key sets, enums, and digests |
 | Final boundary audit | `ops:promotion-boundary-audit` | [audit](PHASE_230_PROMOTION_BOUNDARY_AUDIT.md) | Policy + network/env/gate/doc audit over the whole toolchain |
+| Coordinator readiness manifest | `ops:promotion-coordinator-readiness` | [readiness](PHASE_230_PROMOTION_COORDINATOR_READINESS.md) | Terminal record: hardening evidence complete; NOT an approval |
 | Live-boundary guard | `test:promotion-live-boundary-guard` | [guard](PHASE_230_PROMOTION_LIVE_BOUNDARY_GUARD.md) | Static guard that the local tools/docs hold no live hooks |
 | Local closure guard | `test:phase230-closure` | [closure](PHASE_230_LOCAL_CLOSURE_INDEX.md) | Every op fully mapped; gate holds only local suites |
 | Local safety suite | `test:phase230-local` | [suite](PHASE_230_LOCAL_SAFETY_SUITE.md) | Fast regression gate over only the local safety suites |

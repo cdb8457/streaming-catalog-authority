@@ -62,6 +62,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-cli-ergonomics` | PHASE_230_PROMOTION_CLI_ERGONOMICS |
 | `promotion-report-schema` | PHASE_230_PROMOTION_REPORT_SCHEMA |
 | `promotion-boundary-audit` | PHASE_230_PROMOTION_BOUNDARY_AUDIT |
+| `promotion-coordinator-readiness` | PHASE_230_PROMOTION_COORDINATOR_READINESS |
 
 ## Test-only local suites
 

@@ -241,6 +241,23 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'AUDIT_ENV_READ_FOUND', op: 'boundary-audit' },
   { code: 'AUDIT_NON_LOCAL_SUITE', op: 'boundary-audit' },
   { code: 'AUDIT_DOC_DRIFT', op: 'boundary-audit' },
+  { code: 'ACCEPTANCE_PREFLIGHT_MISSING', op: 'coordinator-readiness' },
+  { code: 'ACCEPTANCE_PREFLIGHT_INVALID', op: 'coordinator-readiness' },
+  { code: 'ACCEPTANCE_PREFLIGHT_NOT_READY', op: 'coordinator-readiness' },
+  { code: 'FAILURE_MATRIX_MISSING', op: 'coordinator-readiness' },
+  { code: 'FAILURE_MATRIX_INVALID', op: 'coordinator-readiness' },
+  { code: 'FAILURE_MATRIX_INCOMPLETE', op: 'coordinator-readiness' },
+  { code: 'REPORT_SCHEMA_MISSING', op: 'coordinator-readiness' },
+  { code: 'REPORT_SCHEMA_INVALID', op: 'coordinator-readiness' },
+  { code: 'REPORT_SCHEMA_NOT_OK', op: 'coordinator-readiness' },
+  { code: 'BOUNDARY_AUDIT_MISSING', op: 'coordinator-readiness' },
+  { code: 'BOUNDARY_AUDIT_INVALID', op: 'coordinator-readiness' },
+  { code: 'BOUNDARY_AUDIT_FAILED', op: 'coordinator-readiness' },
+  { code: 'CLI_ERGONOMICS_MISSING', op: 'coordinator-readiness' },
+  { code: 'CLI_ERGONOMICS_INVALID', op: 'coordinator-readiness' },
+  { code: 'CLI_ERGONOMICS_NOT_OK', op: 'coordinator-readiness' },
+  { code: 'COMPONENT_DIGEST_MISSING', op: 'coordinator-readiness' },
+  { code: 'COMPONENT_DIGEST_INVALID', op: 'coordinator-readiness' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

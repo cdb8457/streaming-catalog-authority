@@ -28,7 +28,8 @@ nothing live.
 `promotion-redaction-corpus`, `promotion-boundary-policy`, `promotion-review-automation`,
 `promotion-reviewer-pack`, `promotion-acceptance-preflight`, `promotion-failure-matrix`,
 `promotion-cli-ergonomics`, `promotion-report-schema`, `promotion-boundary-audit`,
-`promotion-live-boundary-guard`, `phase230-closure`, and the `phase230-local-suite-manifest` guard itself.
+`promotion-coordinator-readiness`, `promotion-live-boundary-guard`, `phase230-closure`, and the
+`phase230-local-suite-manifest` guard itself.
 
 ## Excluded (by design)
 
