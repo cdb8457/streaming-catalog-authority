@@ -53,6 +53,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-redaction-corpus', doc: 'PHASE_230_PROMOTION_REDACTION_CORPUS' },
   { base: 'promotion-boundary-policy', doc: 'PHASE_230_PROMOTION_BOUNDARY_POLICY' },
   { base: 'promotion-review-automation', doc: 'PHASE_230_PROMOTION_REVIEW_AUTOMATION' },
+  { base: 'promotion-reviewer-pack', doc: 'PHASE_230_PROMOTION_REVIEWER_PACK' },
 ];
 
 export interface OpMetaCheck {

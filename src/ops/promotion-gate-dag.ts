@@ -66,6 +66,7 @@ const NODES: readonly GateNode[] = [
   { id: 'redaction-corpus', test: 'test/promotion-redaction-corpus.ts', dependsOn: [], blockers: ['LEAK_NOT_DETECTED', 'SAFE_VALUE_FLAGGED'] },
   { id: 'boundary-policy', test: 'test/promotion-boundary-policy.ts', dependsOn: [], blockers: ['FORBIDDEN_HOOK_FOUND', 'BOUNDARY_LANGUAGE_MISSING', 'UNSANDBOXED_PROMOTION_CALL'] },
   { id: 'review-automation', test: 'test/promotion-review-automation.ts', dependsOn: ['chain-bundle', 'redaction-corpus', 'boundary-policy'], blockers: ['CHAIN_BUNDLE_NOT_READY', 'REDACTION_CORPUS_BREACHED', 'BOUNDARY_POLICY_VIOLATED'] },
+  { id: 'reviewer-pack', test: 'test/promotion-reviewer-pack.ts', dependsOn: ['final-summary', 'release-checklist', 'merge-readiness', 'chain-bundle', 'review-automation', 'redaction-corpus', 'boundary-policy'], blockers: ['PACK_BINDING_MISMATCH', 'COMPONENT_DIGEST_MISSING', 'REVIEW_AUTOMATION_NOT_PASSED'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];

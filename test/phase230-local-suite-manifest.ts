@@ -62,6 +62,7 @@ const LOCAL_SUITES = [
   'test/promotion-redaction-corpus.ts',
   'test/promotion-boundary-policy.ts',
   'test/promotion-review-automation.ts',
+  'test/promotion-reviewer-pack.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',
