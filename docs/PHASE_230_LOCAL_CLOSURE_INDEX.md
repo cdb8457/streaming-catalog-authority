@@ -51,6 +51,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-release-checklist` | PHASE_230_PROMOTION_RELEASE_CHECKLIST |
 | `promotion-merge-readiness` | PHASE_230_PROMOTION_MERGE_READINESS |
 | `promotion-provenance-diff` | PHASE_230_PROMOTION_PROVENANCE_DIFF |
+| `promotion-gate-coverage` | PHASE_230_PROMOTION_GATE_COVERAGE |
 
 ## Test-only local suites
 

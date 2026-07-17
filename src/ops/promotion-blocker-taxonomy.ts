@@ -149,6 +149,10 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'HEAD_REVIEWED_COMMIT_MISMATCH', op: 'provenance-diff' },
   { code: 'REVIEWED_COMMIT_NOT_IN_RANGE', op: 'provenance-diff' },
   { code: 'STALE_ARTIFACT', op: 'provenance-diff' },
+  { code: 'MISSING_WIRING', op: 'gate-coverage' },
+  { code: 'GATE_NOT_IN_LOCAL_SUITE', op: 'gate-coverage' },
+  { code: 'UNCATALOGUED_BLOCKER', op: 'gate-coverage' },
+  { code: 'UNKNOWN_TAXONOMY_OP', op: 'gate-coverage' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
