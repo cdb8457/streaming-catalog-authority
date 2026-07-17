@@ -217,6 +217,14 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'BOUNDARY_POLICY_VIOLATED', op: 'reviewer-pack' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'reviewer-pack' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'reviewer-pack' },
+  { code: 'REVIEWER_PACK_MISSING', op: 'acceptance-preflight' },
+  { code: 'REVIEWER_PACK_INVALID', op: 'acceptance-preflight' },
+  { code: 'REVIEWER_PACK_NOT_READY', op: 'acceptance-preflight' },
+  { code: 'PREFLIGHT_CONTEXT_MISSING', op: 'acceptance-preflight' },
+  { code: 'PREFLIGHT_CONTEXT_INVALID', op: 'acceptance-preflight' },
+  { code: 'MACHINE_GATE_FAILED', op: 'acceptance-preflight' },
+  { code: 'COMPONENT_DIGEST_MISSING', op: 'acceptance-preflight' },
+  { code: 'COMPONENT_DIGEST_INVALID', op: 'acceptance-preflight' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

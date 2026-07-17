@@ -67,6 +67,7 @@ const NODES: readonly GateNode[] = [
   { id: 'boundary-policy', test: 'test/promotion-boundary-policy.ts', dependsOn: [], blockers: ['FORBIDDEN_HOOK_FOUND', 'BOUNDARY_LANGUAGE_MISSING', 'UNSANDBOXED_PROMOTION_CALL'] },
   { id: 'review-automation', test: 'test/promotion-review-automation.ts', dependsOn: ['chain-bundle', 'redaction-corpus', 'boundary-policy'], blockers: ['CHAIN_BUNDLE_NOT_READY', 'REDACTION_CORPUS_BREACHED', 'BOUNDARY_POLICY_VIOLATED'] },
   { id: 'reviewer-pack', test: 'test/promotion-reviewer-pack.ts', dependsOn: ['final-summary', 'release-checklist', 'merge-readiness', 'chain-bundle', 'review-automation', 'redaction-corpus', 'boundary-policy'], blockers: ['PACK_BINDING_MISMATCH', 'COMPONENT_DIGEST_MISSING', 'REVIEW_AUTOMATION_NOT_PASSED'] },
+  { id: 'acceptance-preflight', test: 'test/promotion-acceptance-preflight.ts', dependsOn: ['reviewer-pack'], blockers: ['REVIEWER_PACK_NOT_READY', 'PREFLIGHT_CONTEXT_INVALID', 'MACHINE_GATE_FAILED'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];
