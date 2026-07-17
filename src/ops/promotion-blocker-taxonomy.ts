@@ -225,6 +225,10 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'MACHINE_GATE_FAILED', op: 'acceptance-preflight' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'acceptance-preflight' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'acceptance-preflight' },
+  { code: 'UNMAPPED_BLOCKER', op: 'failure-matrix' },
+  { code: 'STALE_TAXONOMY', op: 'failure-matrix' },
+  { code: 'MISSING_TEST_PATH', op: 'failure-matrix' },
+  { code: 'BLOCKER_WITHOUT_EVIDENCE', op: 'failure-matrix' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

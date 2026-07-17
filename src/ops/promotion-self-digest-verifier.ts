@@ -50,6 +50,7 @@ const REGISTRY: Readonly<Record<string, DigestSpec>> = {
   'phase-230-promotion-review-automation': { field: 'automationDigest', scope: 'phase-230-review-automation' },
   'phase-230-promotion-merge-review-evidence-pack': { field: 'packDigest', scope: 'phase-230-reviewer-pack' },
   'phase-230-promotion-acceptance-preflight': { field: 'preflightDigest', scope: 'phase-230-acceptance-preflight' },
+  'phase-230-promotion-failure-mode-matrix': { field: 'failureMatrixDigest', scope: 'phase-230-failure-matrix' },
 };
 
 export const KNOWN_REPORT_IDS: readonly string[] = Object.keys(REGISTRY);
