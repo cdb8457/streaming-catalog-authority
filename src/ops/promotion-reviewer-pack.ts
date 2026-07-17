@@ -43,6 +43,7 @@ export interface PackProvenance {
   readonly base: string | null;
   readonly head: string | null;
   readonly commitCount: number;
+  readonly commitShas: readonly string[];
   readonly requiredTests: readonly string[];
 }
 
@@ -124,11 +125,15 @@ export function buildReviewerPack(input: ReviewerPackInput): ReviewerPack {
 
   // Provenance from the packed merge-readiness manifest (itself digest-bound above). All fields are
   // redaction-safe: hex shas, a path-free branch name, a count, and path-free command labels.
+  const commitShas = mr && Array.isArray(mr.commitsSinceBase)
+    ? mr.commitsSinceBase.map((c) => asSha40(asObject(c).sha)).filter((s): s is string => s !== undefined)
+    : [];
   const provenance: PackProvenance = {
     branch: mr ? pathFreeString(mr.branch) : null,
     base: mr ? asSha40(mr.base) ?? null : null,
     head: mr ? asSha40(mr.head) ?? null : null,
-    commitCount: mr && Array.isArray(mr.commitsSinceBase) ? mr.commitsSinceBase.length : 0,
+    commitCount: commitShas.length,
+    commitShas,
     requiredTests: mr && Array.isArray(mr.requiredTests) ? mr.requiredTests.filter((t): t is string => typeof t === 'string' && pathFreeString(t) !== null) : [],
   };
 

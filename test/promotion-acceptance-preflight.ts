@@ -44,8 +44,10 @@ function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026,
 const HEAD = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
 const BASE = '1111111111111111111111111111111111111111';
 
+const C1 = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+// A two-commit range whose terminal (tip) sha equals head -- the reviewed commit.
 function goodContext() {
-  return { branch: 'work/phase-230', base: BASE, head: HEAD, commits: [{ sha: HEAD, subject: 'a commit' }], requiredTests: ['npm run test:phase230-local', 'npm run typecheck'] };
+  return { branch: 'work/phase-230', base: BASE, head: HEAD, commits: [{ sha: C1, subject: 'first' }, { sha: HEAD, subject: 'second (tip)' }], requiredTests: ['npm run test:phase230-local', 'npm run typecheck'] };
 }
 // Recompute a reviewer pack's self-digest over its (possibly-mutated) body, exactly as the verifier does,
 // so a forged pack still passes the digest recompute and the specific component/binding blocker isolates.
@@ -97,7 +99,8 @@ await test('PREFLIGHT_READY with a READY pack + valid context; machine vs human 
     assert(p.humanGatesRemaining.some((h) => /Phase 231/.test(h)) && p.humanGatesRemaining.some((h) => /push-to-master/.test(h)), 'merge + Phase 231 stay human');
     assertEq(p.base, BASE, 'base echoed');
     assertEq(p.head, HEAD, 'head echoed');
-    assertEq(p.commitCount, 1, 'commit count echoed');
+    assertEq(p.commitCount, 2, 'commit count echoed');
+    assert(gateNames.has('commits-bound-to-evidence'), 'commit range bound to evidence');
     assertEq(p.disclaimers.length, PREFLIGHT_DISCLAIMERS.length, 'disclaimers present');
     assertEq(verifySelfDigests([p]).overall, 'ALL_VERIFIED', 'preflight self-verifies');
     assert(/^[0-9a-f]{64}$/.test(p.preflightDigest), 'preflight digest present');
@@ -174,6 +177,35 @@ await test('NOT_READY when the context does not bind to the packed provenance', 
     assert(buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), base: otherSha } }).blockers.includes('CONTEXT_BASE_MISMATCH'), 'base mismatch rejected');
     assert(buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), head: otherSha, commits: [{ sha: otherSha, subject: 'x' }] } }).blockers.includes('CONTEXT_HEAD_MISMATCH'), 'head mismatch rejected');
     assert(buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), requiredTests: ['npm run something-else'] } }).blockers.includes('CONTEXT_REQUIRED_TESTS_MISMATCH'), 'required-tests mismatch rejected');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('commit range binds by ordered sha + count + terminal head (subject is cosmetic)', async () => {
+  const root = workspace();
+  const otherSha = 'a1b2c3d4e5f6071829304152637485960a1b2c3d';
+  try {
+    const pack = await readyPack(root);
+    // same branch/base/head/tests + same ordered shas but an altered commit subject -> still READY (cosmetic)
+    const alteredSubject = buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), commits: [{ sha: C1, subject: 'reworded' }, { sha: HEAD, subject: 'also reworded' }] } });
+    assertEq(alteredSubject.overall, 'PREFLIGHT_READY', `altered subject stays ready (blockers: ${alteredSubject.blockers.join(',')})`);
+    assert(!alteredSubject.blockers.includes('CONTEXT_COMMITS_MISMATCH'), 'subject change is not a commit mismatch');
+
+    // extra commit -> count + list mismatch
+    const extra = buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), commits: [{ sha: C1, subject: 'first' }, { sha: otherSha, subject: 'extra' }, { sha: HEAD, subject: 'tip' }] } });
+    assertEq(extra.overall, 'PREFLIGHT_NOT_READY', 'extra commit blocked');
+    assert(extra.blockers.includes('CONTEXT_COMMIT_COUNT_MISMATCH'), 'extra commit -> count mismatch');
+
+    // missing commit -> count + list mismatch
+    const missing = buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), commits: [{ sha: HEAD, subject: 'tip only' }] } });
+    assert(missing.blockers.includes('CONTEXT_COMMIT_COUNT_MISMATCH'), 'missing commit -> count mismatch');
+
+    // reordered shas (same count) -> list mismatch
+    const reordered = buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), commits: [{ sha: HEAD, subject: 'first' }, { sha: C1, subject: 'second' }] } });
+    assert(reordered.blockers.includes('CONTEXT_COMMITS_MISMATCH'), 'reordered shas -> list mismatch');
+
+    // different sha in the range (same count) -> list mismatch
+    const different = buildAcceptancePreflight({ reviewerPack: pack, context: { ...goodContext(), commits: [{ sha: otherSha, subject: 'first' }, { sha: HEAD, subject: 'tip' }] } });
+    assert(different.blockers.includes('CONTEXT_COMMITS_MISMATCH'), 'different sha -> list mismatch');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

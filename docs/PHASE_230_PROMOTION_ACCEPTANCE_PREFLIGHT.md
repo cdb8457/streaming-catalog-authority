@@ -22,7 +22,10 @@ each is surfaced as an individual `machineGates` entry. The context must be well
 40-hex base/head, validated commits and required tests (`PREFLIGHT_CONTEXT_MISSING/INVALID`) — **and bind to
 the pack's authoritative provenance**: the branch/base/head/required-tests must match the values carried
 from the packed merge-readiness manifest (`CONTEXT_BRANCH_MISMATCH`, `CONTEXT_BASE_MISMATCH`,
-`CONTEXT_HEAD_MISMATCH`, `CONTEXT_REQUIRED_TESTS_MISMATCH`). Any failing machine gate adds
+`CONTEXT_HEAD_MISMATCH`, `CONTEXT_REQUIRED_TESTS_MISMATCH`). The **exact ordered commit range** is bound
+too — the commit count and the ordered sha list must equal the packed `commitShas`, and `head` must equal
+the terminal (tip) commit sha (`CONTEXT_COMMIT_COUNT_MISMATCH`, `CONTEXT_COMMITS_MISMATCH`,
+`HEAD_NOT_TERMINAL_COMMIT`); a commit subject is cosmetic and is not bound. Any failing machine gate adds
 `MACHINE_GATE_FAILED`; `overall` is `PREFLIGHT_READY` iff no blocker fires, else `PREFLIGHT_NOT_READY`.
 
 ## Human gates (always enumerated, never automated)
@@ -36,10 +39,11 @@ here. Sealed with a `preflightDigest`; identical inputs always produce identical
 - `src/ops/promotion-acceptance-preflight.ts` — `buildAcceptancePreflight(input)`,
   `PREFLIGHT_HUMAN_GATES`, `PREFLIGHT_DISCLAIMERS`.
 - `src/ops/promotion-acceptance-preflight-cli.ts` — CLI wrapper.
-- `test/promotion-acceptance-preflight.ts` — 9 tests: ready with exact machine/human gate enumeration,
+- `test/promotion-acceptance-preflight.ts` — 10 tests: ready with exact machine/human gate enumeration,
   determinism, a blocked/digestless pack, a forged minimal ready pack, incomplete/unknown/missing/failing
-  components and bindings (resealed), a context that does not bind to the packed provenance, a
-  missing/malformed context, empty input, and a spawned CLI run.
+  components and bindings (resealed), a context that does not bind to the packed provenance, commit-range
+  binding (altered subject stays ready; extra/missing/reordered/different sha blocks), a missing/malformed
+  context, empty input, and a spawned CLI run.
 
 ## Usage
 

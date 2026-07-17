@@ -88,6 +88,7 @@ await test('REVIEWER_PACK_READY when all seven components are green and the mesh
     assertEq(p.provenance.base, BASE, 'base provenance');
     assertEq(p.provenance.head, HEAD, 'head provenance');
     assertEq(p.provenance.commitCount, 1, 'commit count provenance');
+    assert(p.provenance.commitShas.length === 1 && p.provenance.commitShas[0] === HEAD, 'ordered commit shas provenance');
     assert(p.provenance.requiredTests.includes('npm run test:phase230-local'), 'required tests provenance');
     assertEq(p.disclaimers.length, REVIEWER_PACK_DISCLAIMERS.length, 'disclaimers present');
     assertEq(verifySelfDigests([p]).overall, 'ALL_VERIFIED', 'pack self-verifies');

@@ -153,6 +153,17 @@ export function buildAcceptancePreflight(input: AcceptancePreflightInput): Accep
     const testsBound = provTests.length > 0 && sameStringSet(requiredTests, provTests);
     if (!testsBound) blockers.push('CONTEXT_REQUIRED_TESTS_MISMATCH');
     machineGates.push({ gate: 'context-bound-to-evidence', passed: branchBound && baseBound && headBound && testsBound });
+
+    // Bind the exact ordered commit range: count, the ordered sha list, and head == the terminal commit.
+    const ctxCommitShas = commits.map((c) => asSha40(asObject(c).sha)).filter((s): s is string => s !== undefined);
+    const provShas = Array.isArray(packProvenance.commitShas) ? packProvenance.commitShas.filter((s): s is string => typeof s === 'string' && /^[0-9a-f]{40}$/.test(s)) : [];
+    const countBound = provShas.length > 0 && ctxCommitShas.length === provShas.length;
+    if (!countBound) blockers.push('CONTEXT_COMMIT_COUNT_MISMATCH');
+    const listBound = countBound && ctxCommitShas.every((s, i) => s === provShas[i]);
+    if (!listBound) blockers.push('CONTEXT_COMMITS_MISMATCH');
+    const terminalBound = provShas.length > 0 && head !== null && head === provShas[provShas.length - 1];
+    if (!terminalBound) blockers.push('HEAD_NOT_TERMINAL_COMMIT');
+    machineGates.push({ gate: 'commits-bound-to-evidence', passed: countBound && listBound && terminalBound });
   }
 
   if (machineGates.some((g) => !g.passed)) blockers.push('MACHINE_GATE_FAILED');

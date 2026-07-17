@@ -34,8 +34,9 @@ non-live / no-merge disclaimers are always present.
 The canonical component and binding names are exported as `EXPECTED_PACK_COMPONENTS` and
 `EXPECTED_PACK_BINDINGS`, so a consumer (the acceptance preflight) can fail closed on any missing, unknown,
 or failing component/binding. The pack also carries a redaction-safe `provenance` block — `branch`, `base`,
-`head`, `commitCount`, `requiredTests` — extracted from the packed (digest-bound) merge-readiness manifest,
-so a consumer can bind a supplied review context to the authoritative evidence.
+`head`, `commitCount`, the **ordered `commitShas`**, and `requiredTests` — extracted from the packed
+(digest-bound) merge-readiness manifest, so a consumer can bind a supplied review context (including the
+exact ordered commit range) to the authoritative evidence.
 
 ## Files
 
