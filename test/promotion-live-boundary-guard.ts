@@ -54,6 +54,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-chain-bundle.ts', 'src/ops/promotion-chain-bundle-cli.ts',
   'src/ops/promotion-redaction-corpus.ts', 'src/ops/promotion-redaction-corpus-cli.ts',
   'src/ops/promotion-boundary-policy.ts', 'src/ops/promotion-boundary-policy-cli.ts',
+  'src/ops/promotion-review-automation.ts', 'src/ops/promotion-review-automation-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -106,6 +107,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_CHAIN_BUNDLE.md',
   'docs/PHASE_230_PROMOTION_REDACTION_CORPUS.md',
   'docs/PHASE_230_PROMOTION_BOUNDARY_POLICY.md',
+  'docs/PHASE_230_PROMOTION_REVIEW_AUTOMATION.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');

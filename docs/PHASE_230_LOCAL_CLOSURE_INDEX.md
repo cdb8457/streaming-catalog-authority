@@ -55,6 +55,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-chain-bundle` | PHASE_230_PROMOTION_CHAIN_BUNDLE |
 | `promotion-redaction-corpus` | PHASE_230_PROMOTION_REDACTION_CORPUS |
 | `promotion-boundary-policy` | PHASE_230_PROMOTION_BOUNDARY_POLICY |
+| `promotion-review-automation` | PHASE_230_PROMOTION_REVIEW_AUTOMATION |
 
 ## Test-only local suites
 

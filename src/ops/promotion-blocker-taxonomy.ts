@@ -180,6 +180,18 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'FORBIDDEN_HOOK_FOUND', op: 'boundary-policy' },
   { code: 'BOUNDARY_LANGUAGE_MISSING', op: 'boundary-policy' },
   { code: 'UNSANDBOXED_PROMOTION_CALL', op: 'boundary-policy' },
+  { code: 'REVIEW_AUTOMATION_BLOCKED', op: 'review-automation' },
+  { code: 'CHAIN_BUNDLE_MISSING', op: 'review-automation' },
+  { code: 'CHAIN_BUNDLE_INVALID', op: 'review-automation' },
+  { code: 'CHAIN_BUNDLE_NOT_READY', op: 'review-automation' },
+  { code: 'REDACTION_CORPUS_MISSING', op: 'review-automation' },
+  { code: 'REDACTION_CORPUS_INVALID', op: 'review-automation' },
+  { code: 'REDACTION_CORPUS_BREACHED', op: 'review-automation' },
+  { code: 'BOUNDARY_POLICY_MISSING', op: 'review-automation' },
+  { code: 'BOUNDARY_POLICY_INVALID', op: 'review-automation' },
+  { code: 'BOUNDARY_POLICY_VIOLATED', op: 'review-automation' },
+  { code: 'COMPONENT_DIGEST_MISSING', op: 'review-automation' },
+  { code: 'COMPONENT_DIGEST_INVALID', op: 'review-automation' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }
