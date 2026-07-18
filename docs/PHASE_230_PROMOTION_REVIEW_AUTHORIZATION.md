@@ -28,6 +28,11 @@ Every consumed report's self-digest is recomputed (`COMPONENT_DIGEST_MISSING/INV
   evidence that readiness was actually built over.
 - **Authoritative context** — the commit range (`base` / `head` / ordered commit shas) comes from the
   commit-range closure and the required **test set** from the transcript verification's `commandResults`.
+- **Cross-component head binding** — terminal closure only digest-binds independently-green components, so a
+  `RANGE_CLOSED` commit range for head A and a `TRANSCRIPT_VERIFIED` transcript for head B can both be validly
+  bound in one genuine terminal closure. The commit range and the transcript must review the **same head**
+  (`CONTEXT_TRANSCRIPT_HEAD_MISMATCH`) before the context can be authoritative — otherwise the authoritative
+  commits and the authoritative test set would describe two different reviews.
 - **Exact matrix binding** — the review matrix (present/valid/`READY`) must match the authoritative context
   exactly: `base` (`CONTEXT_BASE_MISMATCH`), `head` (`CONTEXT_HEAD_MISMATCH`), the **ordered** commit shas
   (`CONTEXT_COMMITS_MISMATCH`), and the test set (`CONTEXT_REQUIRED_TESTS_MISMATCH`). The context is compared
@@ -45,10 +50,11 @@ live. It restates the remaining human gates and the closed live boundary and is 
 
 - `src/ops/promotion-review-authorization.ts` — `buildReviewAuthorization(input)` + gates/boundary/disclaimers.
 - `src/ops/promotion-review-authorization-cli.ts` — CLI wrapper.
-- `test/promotion-review-authorization.ts` — 6 tests: authorized only with valid chained evidence + a matrix
+- `test/promotion-review-authorization.ts` — 7 tests: authorized only with valid chained evidence + a matrix
   bound to the authoritative context; not-authorized by default; the green-body tamper (digest recompute)
   case; the adversarial stale-head / reordered-commits / altered-tests cases; a genuine-but-unrelated
-  (forged/resealed) context caught by the chain; and a spawned CLI run.
+  (forged/resealed) context caught by the chain; a fully-valid chain whose transcript reviews a different
+  head than the commit range (cross-component head binding); and a spawned CLI run.
 
 ## Usage
 

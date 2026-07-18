@@ -394,6 +394,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'CONTEXT_HEAD_MISMATCH', op: 'review-authorization' },
   { code: 'CONTEXT_COMMITS_MISMATCH', op: 'review-authorization' },
   { code: 'CONTEXT_REQUIRED_TESTS_MISMATCH', op: 'review-authorization' },
+  { code: 'CONTEXT_TRANSCRIPT_HEAD_MISMATCH', op: 'review-authorization' },
   { code: 'COMPONENT_DIGEST_MISSING', op: 'review-authorization' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'review-authorization' },
   { code: 'COMPONENT_DIGEST_MISMATCH', op: 'review-authorization' },

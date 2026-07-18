@@ -69,7 +69,7 @@ const SAFE_CONFIG = { debounceMs: 500, idempotent: true, autoPromote: false, res
 // The authoritative commit range for the whole chain: base BASE, ordered commits C1, C2, HEAD (head last).
 const CHAIN_COMMITS = [{ sha: C1, subject: 'c1 (phase BU)' }, { sha: C2, subject: 'c2 (phase BU)' }, { sha: HEAD, subject: 'c3 (phase BU)' }];
 
-async function chainEvidence(root: string) {
+async function chainEvidence(root: string, transcriptHead: string = HEAD) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'reviewauth', now: makeNow() })));
   const replay = replayFixtureBundle(bundle);
   const evidence = buildCoordinatorEvidencePacket({ bundle, replay });
@@ -98,7 +98,10 @@ async function chainEvidence(root: string) {
   const reportSchema = buildReportSchema([provenanceDiff, gateCoverage, chainBundle, redactionCorpus, boundaryPolicy, reviewAutomation, reviewerPack, acceptancePreflight, failureMatrix, cliErgonomics]);
   const boundaryAudit = buildBoundaryAudit(projectRoot);
   const coordinatorReadiness = buildCoordinatorReadiness({ acceptancePreflight, failureMatrix, reportSchema, boundaryAudit, cliErgonomics });
-  const transcriptVerification = buildTranscriptVerification({ transcript, head: HEAD, expectedCommands: [CMD] });
+  // The transcript verification may deliberately review a DIFFERENT head than the commit range, to exercise
+  // the cross-component head binding. The rest of the chain stays on HEAD and remains internally coherent.
+  const tvTranscript = transcriptHead === HEAD ? transcript : buildReviewTranscript({ reviewedCommit: transcriptHead, testResults: [{ command: CMD, passed: 5, failed: 0 }] });
+  const transcriptVerification = buildTranscriptVerification({ transcript: tvTranscript, head: transcriptHead, expectedCommands: [CMD] });
   const commitRangeClosure = buildCommitRangeClosure(context);
   const terminalClosure = buildTerminalClosure({ transcriptVerification, evidenceMinimizer: buildEvidenceMinimizer([finalSummary, reviewBundle, dag]), commitRangeClosure, regressionOracle: buildRegressionOracle(projectRoot), coordinatorReadiness });
   const packComponentIntegrity = buildPackComponentIntegrity({ reviewerPack, finalSummary, releaseChecklist, mergeReadiness, chainBundle, reviewAutomation, redactionCorpus, boundaryPolicy });
@@ -190,6 +193,26 @@ await test('adversarial: a genuine-but-unrelated (forged/resealed) context is ca
     const a = buildReviewAuthorization({ ...e, commitRangeClosure: foreignRange, reviewMatrix: matrixFrom({ head: OTHER, commits: [{ sha: OTHER }] }) });
     assertEq(a.overall, 'LOCAL_REVIEW_NOT_AUTHORIZED', 'unrelated context not authorized');
     assert(a.blockers.includes('COMMIT_RANGE_NOT_BOUND'), 'unrelated commit-range -> COMMIT_RANGE_NOT_BOUND');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('adversarial: a fully valid chain whose transcript reviews a different head than the commit range fails closed', async () => {
+  const root = workspace();
+  try {
+    // The ENTIRE chain is genuine and self-consistent -- terminalClosure is freshly built over a RANGE_CLOSED
+    // commit range for HEAD and a TRANSCRIPT_VERIFIED transcript for OTHER, both validly digest-bound (this is
+    // NOT a stale component swapped under an old terminal digest). readiness is genuinely CONFIRMED.
+    const e = await chainEvidence(root, OTHER);
+    assertEq(e.readiness.overall, 'TERMINAL_READINESS_V2_CONFIRMED', 'precondition: readiness genuinely confirmed');
+    // A matrix matching the commit-range head (HEAD) plus the transcript's tests would otherwise authorize.
+    const a = buildReviewAuthorization({ ...e, reviewMatrix: matrixFrom() });
+    assertEq(a.overall, 'LOCAL_REVIEW_NOT_AUTHORIZED', 'mismatched-head chain not authorized');
+    assert(a.blockers.includes('CONTEXT_TRANSCRIPT_HEAD_MISMATCH'), 'cross-component head mismatch blocker');
+    assert(!a.contextBound, 'context not bound on a head-mismatched chain');
+    // Prove it is specifically the cross-head binding: the digest chain is otherwise fully intact.
+    for (const code of ['TERMINAL_CLOSURE_NOT_BOUND', 'COMMIT_RANGE_NOT_BOUND', 'TRANSCRIPT_VERIFICATION_NOT_BOUND', 'COMPONENT_DIGEST_MISMATCH', 'CONTEXT_COMMITS_MISMATCH', 'CONTEXT_REQUIRED_TESTS_MISMATCH']) {
+      assert(!a.blockers.includes(code), `chain otherwise intact: no ${code}`);
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

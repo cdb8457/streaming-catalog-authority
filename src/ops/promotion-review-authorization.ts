@@ -116,6 +116,20 @@ export function buildReviewAuthorization(input: ReviewAuthorizationInput): Revie
   let contextBound = false;
   const chainIntact = evidenceValid && terminalClosure.ok && terminalBound
     && commitRange.ok && commitRangeBound && transcript.ok && transcriptBound;
+
+  // Cross-component head binding. Terminal closure only digest-binds independently-green components, so a
+  // RANGE_CLOSED commit range for head A and a TRANSCRIPT_VERIFIED transcript for head B can BOTH be validly
+  // bound inside one genuine terminal closure. Require the commit range and the transcript to review the
+  // SAME head before the context can be authoritative -- otherwise the "authoritative" base/head/commits and
+  // the "authoritative" test set describe two different reviews.
+  let headConsistent = false;
+  if (chainIntact) {
+    const crHead = asSha40(commitRange.obj.head);
+    const tvHead = asSha40(transcript.obj.head);
+    headConsistent = crHead !== undefined && tvHead !== undefined && crHead === tvHead;
+    if (!headConsistent) blockers.push('CONTEXT_TRANSCRIPT_HEAD_MISMATCH');
+  }
+
   if (chainIntact && matrixValid) {
     const authBase = asSha40(commitRange.obj.base);
     const authHead = asSha40(commitRange.obj.head);
@@ -138,7 +152,7 @@ export function buildReviewAuthorization(input: ReviewAuthorizationInput): Revie
     const testsMatch = authTests.length > 0 && sameStringSet(mTests, authTests);
     if (!testsMatch) blockers.push('CONTEXT_REQUIRED_TESTS_MISMATCH');
 
-    contextBound = (authBase !== undefined && mBase === authBase) && (authHead !== undefined && mHead === authHead) && commitsMatch && testsMatch;
+    contextBound = headConsistent && (authBase !== undefined && mBase === authBase) && (authHead !== undefined && mHead === authHead) && commitsMatch && testsMatch;
   }
 
   const uniqueBlockers = [...new Set(blockers)];
