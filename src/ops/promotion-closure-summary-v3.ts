@@ -84,14 +84,15 @@ export function buildClosureSummaryV3(input: ClosureSummaryV3Input): ClosureSumm
   const observedStatePresent = input.observedState !== undefined && os.observed === true;
   if (!observedStatePresent) blockers.push('OBSERVED_STATE_MISSING');
 
-  // Live-boundary escape: any input claiming authorization other than NONE/PENDING, or an observed-state
-  // source pointing at a live / network / media surface, is an escape.
+  // Live-boundary escape: any input claiming authorization other than NONE/PENDING, or ANY string anywhere
+  // in the (untrusted, coordinator-supplied) observed-state record that names a live / network / media
+  // surface or a raw path -- not merely the `source` field.
   let liveEscape = false;
   for (const value of [input.reviewAuthorization, input.coordinatorReadiness, input.observedState]) {
     const a = asObject(value).authorization;
     if (typeof a === 'string' && !ALLOWED_AUTHORIZATION.includes(a)) liveEscape = true;
   }
-  if (typeof os.source === 'string' && (pathFree(os.source) === null || isLiveSurface(os.source))) liveEscape = true;
+  if (deepLiveEscape(input.observedState, 0)) liveEscape = true;
   if (liveEscape) blockers.push('LIVE_BOUNDARY_ESCAPE');
 
   // Exact commit/test visibility from the (verified, authorized) review-authorization placeholders.
@@ -160,6 +161,15 @@ function sha40(value: unknown): string | undefined {
 }
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);
+}
+// Recursively flag any string anywhere in the observed-state record that names a live/network/media surface
+// or a raw path, so a live indicator smuggled into a field other than `source` still fails closed.
+function deepLiveEscape(value: unknown, depth: number): boolean {
+  if (depth > 6) return false;
+  if (typeof value === 'string') return value.length > 0 && (isLiveSurface(value) || pathFree(value) === null);
+  if (Array.isArray(value)) return value.some((v) => deepLiveEscape(v, depth + 1));
+  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepLiveEscape(v, depth + 1));
+  return false;
 }
 function pathFree(value: unknown): string | null {
   if (typeof value !== 'string' || value.length === 0) return null;

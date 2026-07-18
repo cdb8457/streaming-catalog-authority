@@ -28,9 +28,10 @@ Each report's self-digest is recomputed. `CLOSURE_SUMMARY_READY` only when all h
 - **Observed-state requirement** — a record with `observed === true` is supplied (`OBSERVED_STATE_MISSING`).
 - **Verified component digests** — a present bounded input that does not recompute is
   `COMPONENT_DIGEST_UNVERIFIED`.
-- **Live-boundary closed** — any input claiming `authorization` other than `NONE`/`PENDING`, or an
-  observed-state `source` pointing at a live/network/media surface (Jellyfin, an http(s) URL, an Emby token,
-  a `/mnt/` path, …), is a `LIVE_BOUNDARY_ESCAPE`.
+- **Live-boundary closed** — any input claiming `authorization` other than `NONE`/`PENDING`, or **any string
+  anywhere in the observed-state record** (a deep, recursive scan — not merely the `source` field) that names
+  a live/network/media surface (Jellyfin, an http(s) URL, an Emby token, a `library/Refresh`, a `/mnt/` path)
+  or a raw path, is a `LIVE_BOUNDARY_ESCAPE`.
 
 ## Output
 

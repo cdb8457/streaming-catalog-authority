@@ -179,8 +179,14 @@ await test('BLOCKED on a live-boundary escape (observed-state source points at a
     assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'live escape blocked');
     assert(s.blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'LIVE_BOUNDARY_ESCAPE');
     assert(s.failureEvidence.some((c) => c.check === 'live-boundary-closed' && !c.ok), 'live-boundary-closed evidence false');
-    assert(!JSON.stringify(s).includes('jellyfin') || true, 'no raw source needed'); // source is never echoed
     assert(!s.blockers.some((x) => x.includes('/')), 'blockers are codes, not raw');
+
+    // A live/media indicator smuggled into a NON-source field (a deep scan, not just `source`) still fails.
+    const deep = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'local-observation', target: '/mnt/user/media/Movies/x.mkv' } });
+    assert(deep.blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'deep live-boundary escape caught in a non-source field');
+    assert(!JSON.stringify(deep).includes('/mnt/') && !JSON.stringify(deep).includes('.mkv'), 'the raw escape value is never echoed');
+    const nested = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'local', meta: { probe: 'http://192.168.1.10/library/Refresh' } } });
+    assert(nested.blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'deep live-boundary escape caught in a nested field');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
