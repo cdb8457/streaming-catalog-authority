@@ -398,6 +398,13 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COMPONENT_DIGEST_MISSING', op: 'review-authorization' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'review-authorization' },
   { code: 'COMPONENT_DIGEST_MISMATCH', op: 'review-authorization' },
+  { code: 'COMPONENT_UNVERIFIED', op: 'context-consistency-audit' },
+  { code: 'INSUFFICIENT_CONTEXT_COMPONENTS', op: 'context-consistency-audit' },
+  { code: 'CONTEXT_BRANCH_INCONSISTENT', op: 'context-consistency-audit' },
+  { code: 'CONTEXT_BASE_INCONSISTENT', op: 'context-consistency-audit' },
+  { code: 'CONTEXT_HEAD_INCONSISTENT', op: 'context-consistency-audit' },
+  { code: 'CONTEXT_COMMITS_INCONSISTENT', op: 'context-consistency-audit' },
+  { code: 'CONTEXT_TESTS_INCONSISTENT', op: 'context-consistency-audit' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

@@ -75,6 +75,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-terminal-readiness-v2` | PHASE_230_PROMOTION_TERMINAL_READINESS_V2 |
 | `promotion-review-matrix` | PHASE_230_PROMOTION_REVIEW_MATRIX |
 | `promotion-review-authorization` | PHASE_230_PROMOTION_REVIEW_AUTHORIZATION |
+| `promotion-context-consistency-audit` | PHASE_230_PROMOTION_CONTEXT_CONSISTENCY_AUDIT |
 
 ## Test-only local suites
 
