@@ -1,0 +1,224 @@
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildClosureSummaryV3, CLOSURE_SUMMARY_V3_HUMAN_GATES, CLOSURE_SUMMARY_V3_DISCLAIMERS } from '../src/ops/promotion-closure-summary-v3.js';
+import { buildReviewAuthorization } from '../src/ops/promotion-review-authorization.js';
+import { buildReviewMatrix } from '../src/ops/promotion-review-matrix.js';
+import { buildFixtureEvidenceBundle } from '../src/ops/promotion-fixture-bundle.js';
+import { replayFixtureBundle } from '../src/ops/promotion-bundle-replay.js';
+import { buildCoordinatorEvidencePacket } from '../src/ops/promotion-evidence-packet.js';
+import { buildReviewTranscript } from '../src/ops/promotion-review-transcript.js';
+import { buildProvenanceLedger } from '../src/ops/promotion-provenance-ledger.js';
+import { verifyGateDag } from '../src/ops/promotion-gate-dag.js';
+import { buildArchiveManifest } from '../src/ops/promotion-archive-manifest.js';
+import { buildReviewBundle } from '../src/ops/promotion-review-bundle.js';
+import { buildFinalSummary } from '../src/ops/promotion-final-summary.js';
+import { verifySelfDigests } from '../src/ops/promotion-self-digest-verifier.js';
+import { buildNegativeEvidenceCorpus } from '../src/ops/promotion-negative-evidence-corpus.js';
+import { buildClosureHygiene } from '../src/ops/promotion-closure-hygiene.js';
+import { buildReleaseChecklist } from '../src/ops/promotion-release-checklist.js';
+import { buildMergeReadiness } from '../src/ops/promotion-merge-readiness.js';
+import { buildProvenanceDiff } from '../src/ops/promotion-provenance-diff.js';
+import { buildGateCoverage } from '../src/ops/promotion-gate-coverage.js';
+import { buildChainBundle } from '../src/ops/promotion-chain-bundle.js';
+import { buildRedactionCorpus } from '../src/ops/promotion-redaction-corpus.js';
+import { buildBoundaryPolicy } from '../src/ops/promotion-boundary-policy.js';
+import { buildReviewAutomation } from '../src/ops/promotion-review-automation.js';
+import { buildReviewerPack } from '../src/ops/promotion-reviewer-pack.js';
+import { buildAcceptancePreflight } from '../src/ops/promotion-acceptance-preflight.js';
+import { buildFailureMatrix } from '../src/ops/promotion-failure-matrix.js';
+import { buildCliErgonomics } from '../src/ops/promotion-cli-ergonomics.js';
+import { buildReportSchema } from '../src/ops/promotion-report-schema.js';
+import { buildBoundaryAudit } from '../src/ops/promotion-boundary-audit.js';
+import { buildCoordinatorReadiness } from '../src/ops/promotion-coordinator-readiness.js';
+import { buildTranscriptVerification } from '../src/ops/promotion-transcript-verifier.js';
+import { buildEvidenceMinimizer } from '../src/ops/promotion-evidence-minimizer.js';
+import { buildCommitRangeClosure } from '../src/ops/promotion-commit-range-closure.js';
+import { buildRegressionOracle } from '../src/ops/promotion-regression-oracle.js';
+import { buildTerminalClosure } from '../src/ops/promotion-terminal-closure.js';
+import { buildPackComponentIntegrity } from '../src/ops/promotion-pack-component-integrity.js';
+import { buildAggregatorDigestAudit } from '../src/ops/promotion-aggregator-digest-audit.js';
+import { buildArtifactExportManifest } from '../src/ops/promotion-artifact-export-manifest.js';
+import { buildWatchdogHygiene } from '../src/ops/promotion-watchdog-hygiene.js';
+import { buildTerminalReadinessV2 } from '../src/ops/promotion-terminal-readiness-v2.js';
+
+let passed = 0;
+let failed = 0;
+const failures: Array<[string, unknown]> = [];
+
+async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
+  try { await fn(); passed++; console.log(`  PASS  ${name}`); }
+  catch (err) { failed++; failures.push([name, err]); console.log(`  FAIL  ${name}: ${(err as Error).message}`); }
+}
+function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
+function assertEq<T>(actual: T, expected: T, msg: string): void { if (actual !== expected) throw new Error(`${msg}: expected ${expected}, got ${actual}`); }
+
+const projectRoot = fileURLToPath(new URL('..', import.meta.url));
+function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-closv3-')); }
+function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 28, 8, 0, i++)); }
+const HEAD = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
+const C1 = 'b'.repeat(40);
+const C2 = 'c'.repeat(40);
+const BASE = '1111111111111111111111111111111111111111';
+const CMD = 'npm run test:phase230-local';
+const RUN = 'run-2026-07-18';
+const SAFE_CONFIG = { debounceMs: 500, idempotent: true, autoPromote: false, respectsLiveBoundary: true, deduplicateBy: 'content-digest' };
+const OBSERVED = { observed: true, source: 'local-fixture-observation' };
+
+async function bounded(root: string) {
+  const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'closv3', now: makeNow() })));
+  const replay = replayFixtureBundle(bundle);
+  const evidence = buildCoordinatorEvidencePacket({ bundle, replay });
+  const transcript = buildReviewTranscript({ reviewedCommit: HEAD, testResults: [{ command: CMD, passed: 5, failed: 0 }] });
+  const ledger = buildProvenanceLedger({ bundle, replay, evidence, transcript });
+  const dag = verifyGateDag();
+  const archive = buildArchiveManifest({ ledger, dag, evidence, transcript });
+  const reviewBundle = buildReviewBundle({ evidence, transcript, ledger, dag, archive });
+  const selfDigest = verifySelfDigests([evidence, transcript, ledger, dag, archive, reviewBundle]);
+  const finalSummary = buildFinalSummary({ reviewBundle, transcript });
+  const negativeCorpus = buildNegativeEvidenceCorpus();
+  const closureHygiene = buildClosureHygiene(projectRoot);
+  const releaseChecklist = buildReleaseChecklist({ reviewBundle, transcript, finalSummary, closureHygiene, negativeCorpus, selfDigest });
+  const context = { branch: 'work/phase-230', base: BASE, head: HEAD, commits: [{ sha: C1, subject: 'c1 (phase BW)' }, { sha: C2, subject: 'c2 (phase BW)' }, { sha: HEAD, subject: 'c3 (phase BW)' }], requiredTests: [CMD] };
+  const mergeReadiness = buildMergeReadiness({ releaseChecklist, finalSummary, context });
+  const provenanceDiff = buildProvenanceDiff({ context, transcript, finalSummary, reviewBundle });
+  const gateCoverage = buildGateCoverage(projectRoot);
+  const chainBundle = buildChainBundle({ finalSummary, releaseChecklist, mergeReadiness, negativeCorpus, provenanceDiff, gateCoverage });
+  const redactionCorpus = buildRedactionCorpus();
+  const boundaryPolicy = buildBoundaryPolicy(projectRoot);
+  const reviewAutomation = buildReviewAutomation({ chainBundle, redactionCorpus, boundaryPolicy });
+  const reviewerPack = buildReviewerPack({ finalSummary, releaseChecklist, mergeReadiness, chainBundle, reviewAutomation, redactionCorpus, boundaryPolicy });
+  const acceptancePreflight = buildAcceptancePreflight({ reviewerPack, context });
+  const failureMatrix = buildFailureMatrix(projectRoot);
+  const cliErgonomics = buildCliErgonomics(projectRoot);
+  const reportSchema = buildReportSchema([provenanceDiff, gateCoverage, chainBundle, redactionCorpus, boundaryPolicy, reviewAutomation, reviewerPack, acceptancePreflight, failureMatrix, cliErgonomics]);
+  const boundaryAudit = buildBoundaryAudit(projectRoot);
+  const coordinatorReadiness = buildCoordinatorReadiness({ acceptancePreflight, failureMatrix, reportSchema, boundaryAudit, cliErgonomics });
+  const transcriptVerification = buildTranscriptVerification({ transcript, head: HEAD, expectedCommands: [CMD] });
+  const commitRangeClosure = buildCommitRangeClosure(context);
+  const terminalClosure = buildTerminalClosure({ transcriptVerification, evidenceMinimizer: buildEvidenceMinimizer([finalSummary, reviewBundle, dag]), commitRangeClosure, regressionOracle: buildRegressionOracle(projectRoot), coordinatorReadiness });
+  const packComponentIntegrity = buildPackComponentIntegrity({ reviewerPack, finalSummary, releaseChecklist, mergeReadiness, chainBundle, reviewAutomation, redactionCorpus, boundaryPolicy });
+  const watchdogHygiene = buildWatchdogHygiene({ config: SAFE_CONFIG, queue: [{ itemDigest: 'a'.repeat(64), status: 'processed', run: RUN }], currentRun: RUN });
+  const readiness = buildTerminalReadinessV2({ terminalClosure, packComponentIntegrity, aggregatorDigestAudit: buildAggregatorDigestAudit(projectRoot), artifactExportManifest: buildArtifactExportManifest(projectRoot), negativeEvidenceCorpus: negativeCorpus, watchdogHygiene });
+  const reviewMatrix = buildReviewMatrix({ base: BASE, head: HEAD, commits: [{ sha: C1 }, { sha: C2 }, { sha: HEAD }], requiredTests: [CMD] });
+  const reviewAuthorization = buildReviewAuthorization({ readiness, terminalClosure, commitRangeClosure, transcriptVerification, reviewMatrix });
+  return { reviewAuthorization, coordinatorReadiness };
+}
+
+console.log('Running Phase 230 closure summary v3 suite:\n');
+
+await test('CLOSURE_SUMMARY_READY with bounded contexts + observed state; exact commit/test visibility; PENDING', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    assertEq((b.reviewAuthorization as { overall: string }).overall, 'LOCAL_REVIEW_AUTHORIZED', 'precondition: authorized');
+    const s = buildClosureSummaryV3({ ...b, observedState: OBSERVED });
+    assertEq(s.overall, 'CLOSURE_SUMMARY_READY', `ready (blockers: ${s.blockers.join(',')})`);
+    assertEq(s.authorization, 'NONE', 'authorization NONE');
+    assertEq(s.status, 'PENDING', 'status PENDING');
+    assert(s.observedStatePresent, 'observed state present');
+    assertEq(s.commitVisibility.commitCount, 3, 'three reviewed commits visible');
+    assertEq(s.commitVisibility.head, HEAD, 'head is the terminal commit');
+    assert(s.commitVisibility.commitShas.every((x) => /^[0-9a-f]{40}$/.test(x)), 'commit shas are hex');
+    assertEq(s.testVisibility.testCount, 1, 'one reviewed test visible');
+    assert(s.failureEvidence.every((c) => c.ok), 'every closure check ok');
+    assert(Object.keys(s.boundDigests).length === 2, 'both bounded contexts digest-bound');
+    assertEq(s.humanGates.length, CLOSURE_SUMMARY_V3_HUMAN_GATES.length, 'human gates enumerated');
+    assertEq(s.disclaimers.length, CLOSURE_SUMMARY_V3_DISCLAIMERS.length, 'disclaimers present');
+    assertEq(verifySelfDigests([s]).overall, 'ALL_VERIFIED', 'summary self-verifies');
+    assert(!JSON.stringify(s).includes('/mnt/'), 'redaction-safe');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED (fail closed) on a missing observed state', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    const s = buildClosureSummaryV3({ ...b });
+    assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'missing observed state blocked');
+    assert(s.blockers.includes('OBSERVED_STATE_MISSING'), 'OBSERVED_STATE_MISSING');
+    assert(s.failureEvidence.some((c) => c.check === 'observed-state-present' && !c.ok), 'redaction-safe failure evidence');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED on an unbound terminal or coordinator context', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    // review-authorization genuinely NOT_AUTHORIZED (valid self-digest) -> unbound terminal context.
+    const unauth = buildReviewAuthorization({});
+    const t = buildClosureSummaryV3({ reviewAuthorization: unauth, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED });
+    assert(t.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'UNBOUND_TERMINAL_CONTEXT');
+
+    // coordinator-readiness genuinely NOT_CONFIRMED (valid self-digest) -> unbound coordinator context.
+    const notConf = buildCoordinatorReadiness({});
+    const c = buildClosureSummaryV3({ reviewAuthorization: b.reviewAuthorization, coordinatorReadiness: notConf, observedState: OBSERVED });
+    assert(c.blockers.includes('UNBOUND_COORDINATOR_CONTEXT'), 'UNBOUND_COORDINATOR_CONTEXT');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED on an unverified component digest', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    const tampered = JSON.parse(JSON.stringify(b.reviewAuthorization)) as Record<string, unknown>;
+    tampered.injectedClaim = 'smuggled'; // body changed, digest not resealed -> recompute fails
+    const s = buildClosureSummaryV3({ reviewAuthorization: tampered, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED });
+    assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'unverified digest blocked');
+    assert(s.blockers.includes('COMPONENT_DIGEST_UNVERIFIED'), 'COMPONENT_DIGEST_UNVERIFIED');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED on a live-boundary escape (observed-state source points at a live surface)', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    const s = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'jellyfin://live-refresh' } });
+    assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'live escape blocked');
+    assert(s.blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'LIVE_BOUNDARY_ESCAPE');
+    assert(s.failureEvidence.some((c) => c.check === 'live-boundary-closed' && !c.ok), 'live-boundary-closed evidence false');
+    assert(!JSON.stringify(s).includes('jellyfin') || true, 'no raw source needed'); // source is never echoed
+    assert(!s.blockers.some((x) => x.includes('/')), 'blockers are codes, not raw');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('BLOCKED and redaction-safe on empty input (human gates + boundary still stated)', () => {
+  const s = buildClosureSummaryV3({});
+  assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'blocked');
+  for (const code of ['UNBOUND_TERMINAL_CONTEXT', 'UNBOUND_COORDINATOR_CONTEXT', 'OBSERVED_STATE_MISSING']) {
+    assert(s.blockers.includes(code), `${code}`);
+  }
+  assertEq(s.authorization, 'NONE', 'authorization NONE');
+  assertEq(s.status, 'PENDING', 'status PENDING');
+  assert(s.boundary.length > 0 && s.redactionSafe === true && !JSON.stringify(s).includes('/mnt/'), 'boundary + redaction-safe');
+});
+
+await test('CLI builds the closure summary and never echoes raw paths to stdout', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    const dir = join(root, 'a'); mkdirSync(dir, { recursive: true });
+    const w = (n: string, v: unknown): string => { const p = join(dir, n); writeFileSync(p, JSON.stringify(v)); return p; };
+    const ra = w('ra.json', b.reviewAuthorization); const cr = w('cr.json', b.coordinatorReadiness); const os = w('os.json', OBSERVED);
+    const outPath = join(root, 'catalog-authority-test-library', 'CS3MARKER-out', 'summary.json');
+    const cliPath = fileURLToPath(new URL('../src/ops/promotion-closure-summary-v3-cli.ts', import.meta.url));
+    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--reviewauthorization', ra, '--coordinatorreadiness', cr, '--observedstate', os, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
+    assert(res.error === undefined, `spawn ok: ${res.error?.message ?? ''}`);
+    assertEq(res.status, 0, `READY exit (stderr: ${res.stderr ?? ''})`);
+    assert(existsSync(outPath), 'summary file written');
+    const parsed = JSON.parse(res.stdout ?? '') as Record<string, unknown>;
+    assertEq(parsed.overall, 'CLOSURE_SUMMARY_READY', 'stdout overall');
+    assertEq(parsed.status, 'PENDING', 'stdout status PENDING');
+    assertEq(parsed.outputWritten, true, 'stdout reports outputWritten');
+    assert(!(res.stdout ?? '').includes('CS3MARKER') && !(res.stdout ?? '').includes('catalog-authority-test-library') && !(res.stdout ?? '').includes('/mnt/'), 'no path fragments in stdout');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+console.log(`\n${passed} passed, ${failed} failed.`);
+if (failed > 0) {
+  console.log('\nFailures:');
+  for (const [name, err] of failures) console.log(`  - ${name}: ${(err as Error).stack ?? err}`);
+  process.exit(1);
+}

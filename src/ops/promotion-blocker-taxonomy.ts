@@ -406,6 +406,11 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'CONTEXT_COMMITS_INCONSISTENT', op: 'context-consistency-audit' },
   { code: 'CONTEXT_TESTS_INCONSISTENT', op: 'context-consistency-audit' },
   { code: 'CONTEXT_HEAD_NOT_TERMINAL', op: 'context-consistency-audit' },
+  { code: 'UNBOUND_TERMINAL_CONTEXT', op: 'closure-summary-v3' },
+  { code: 'UNBOUND_COORDINATOR_CONTEXT', op: 'closure-summary-v3' },
+  { code: 'OBSERVED_STATE_MISSING', op: 'closure-summary-v3' },
+  { code: 'COMPONENT_DIGEST_UNVERIFIED', op: 'closure-summary-v3' },
+  { code: 'LIVE_BOUNDARY_ESCAPE', op: 'closure-summary-v3' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

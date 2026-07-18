@@ -73,6 +73,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-review-matrix', doc: 'PHASE_230_PROMOTION_REVIEW_MATRIX' },
   { base: 'promotion-review-authorization', doc: 'PHASE_230_PROMOTION_REVIEW_AUTHORIZATION' },
   { base: 'promotion-context-consistency-audit', doc: 'PHASE_230_PROMOTION_CONTEXT_CONSISTENCY_AUDIT' },
+  { base: 'promotion-closure-summary-v3', doc: 'PHASE_230_PROMOTION_CLOSURE_SUMMARY_V3' },
 ];
 
 export interface OpMetaCheck {
