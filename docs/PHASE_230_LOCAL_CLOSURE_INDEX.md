@@ -74,6 +74,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-watchdog-hygiene` | PHASE_230_PROMOTION_WATCHDOG_HYGIENE |
 | `promotion-terminal-readiness-v2` | PHASE_230_PROMOTION_TERMINAL_READINESS_V2 |
 | `promotion-review-matrix` | PHASE_230_PROMOTION_REVIEW_MATRIX |
+| `promotion-review-authorization` | PHASE_230_PROMOTION_REVIEW_AUTHORIZATION |
 
 ## Test-only local suites
 

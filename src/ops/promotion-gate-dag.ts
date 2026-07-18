@@ -84,6 +84,7 @@ const NODES: readonly GateNode[] = [
   { id: 'watchdog-hygiene', test: 'test/promotion-watchdog-hygiene.ts', dependsOn: [], blockers: ['WATCHER_CONFIG_MISSING', 'WATCHER_AUTO_PROMOTE_ENABLED', 'DUPLICATE_QUEUE_ENTRY', 'STALE_QUEUE_ENTRY', 'ENTRY_DIGEST_MALFORMED'] },
   { id: 'terminal-readiness-v2', test: 'test/promotion-terminal-readiness-v2.ts', dependsOn: ['terminal-closure', 'pack-component-integrity', 'aggregator-digest-audit', 'artifact-export-manifest', 'negative-evidence-corpus', 'watchdog-hygiene'], blockers: ['TERMINAL_CLOSURE_NOT_CONFIRMED', 'PACK_INTEGRITY_NOT_VERIFIED', 'AGGREGATOR_AUDIT_NOT_CLEAN', 'WATCHDOG_HYGIENE_VIOLATED', 'COMPONENT_DIGEST_MISMATCH'] },
   { id: 'review-matrix', test: 'test/promotion-review-matrix.ts', dependsOn: ['commit-range-closure'], blockers: ['BASE_MISSING', 'HEAD_NOT_TERMINAL_COMMIT', 'COMMIT_SUBJECT_LEAK', 'NO_TESTS', 'TEST_NAME_LEAK'] },
+  { id: 'review-authorization', test: 'test/promotion-review-authorization.ts', dependsOn: ['terminal-readiness-v2', 'review-matrix'], blockers: ['READINESS_NOT_CONFIRMED', 'REVIEW_MATRIX_NOT_READY', 'COMPONENT_DIGEST_MISMATCH'] },
   { id: 'closure', test: 'test/phase230-closure.ts', dependsOn: [], blockers: ['OP_NOT_FULLY_MAPPED', 'GATE_REFERENCES_NON_LOCAL_SUITE'] },
   { id: 'live-boundary', test: 'test/promotion-live-boundary-guard.ts', dependsOn: [], blockers: ['FORBIDDEN_LIVE_HOOK', 'MISSING_BOUNDARY_LANGUAGE'] },
 ];

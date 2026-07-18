@@ -71,6 +71,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-watchdog-hygiene', doc: 'PHASE_230_PROMOTION_WATCHDOG_HYGIENE' },
   { base: 'promotion-terminal-readiness-v2', doc: 'PHASE_230_PROMOTION_TERMINAL_READINESS_V2' },
   { base: 'promotion-review-matrix', doc: 'PHASE_230_PROMOTION_REVIEW_MATRIX' },
+  { base: 'promotion-review-authorization', doc: 'PHASE_230_PROMOTION_REVIEW_AUTHORIZATION' },
 ];
 
 export interface OpMetaCheck {

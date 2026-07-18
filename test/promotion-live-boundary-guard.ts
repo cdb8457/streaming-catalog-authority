@@ -73,6 +73,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-watchdog-hygiene.ts', 'src/ops/promotion-watchdog-hygiene-cli.ts',
   'src/ops/promotion-terminal-readiness-v2.ts', 'src/ops/promotion-terminal-readiness-v2-cli.ts',
   'src/ops/promotion-review-matrix.ts', 'src/ops/promotion-review-matrix-cli.ts',
+  'src/ops/promotion-review-authorization.ts', 'src/ops/promotion-review-authorization-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -145,6 +146,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_WATCHDOG_HYGIENE.md',
   'docs/PHASE_230_PROMOTION_TERMINAL_READINESS_V2.md',
   'docs/PHASE_230_PROMOTION_REVIEW_MATRIX.md',
+  'docs/PHASE_230_PROMOTION_REVIEW_AUTHORIZATION.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');
