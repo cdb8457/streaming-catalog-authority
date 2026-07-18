@@ -364,6 +364,14 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COMPONENT_DIGEST_MISSING', op: 'terminal-readiness-v2' },
   { code: 'COMPONENT_DIGEST_INVALID', op: 'terminal-readiness-v2' },
   { code: 'COMPONENT_DIGEST_MISMATCH', op: 'terminal-readiness-v2' },
+  { code: 'BASE_MISSING', op: 'review-matrix' },
+  { code: 'HEAD_MISSING', op: 'review-matrix' },
+  { code: 'NO_COMMITS', op: 'review-matrix' },
+  { code: 'COMMIT_SHA_MALFORMED', op: 'review-matrix' },
+  { code: 'COMMIT_SUBJECT_LEAK', op: 'review-matrix' },
+  { code: 'HEAD_NOT_TERMINAL_COMMIT', op: 'review-matrix' },
+  { code: 'NO_TESTS', op: 'review-matrix' },
+  { code: 'TEST_NAME_LEAK', op: 'review-matrix' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

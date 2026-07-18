@@ -73,6 +73,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-artifact-export-manifest` | PHASE_230_PROMOTION_ARTIFACT_EXPORT_MANIFEST |
 | `promotion-watchdog-hygiene` | PHASE_230_PROMOTION_WATCHDOG_HYGIENE |
 | `promotion-terminal-readiness-v2` | PHASE_230_PROMOTION_TERMINAL_READINESS_V2 |
+| `promotion-review-matrix` | PHASE_230_PROMOTION_REVIEW_MATRIX |
 
 ## Test-only local suites
 
