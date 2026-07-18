@@ -79,6 +79,14 @@ await test('a path-bearing status is rejected AND never echoed (redaction leak c
   assert(!JSON.stringify(r).includes('/mnt/') && !JSON.stringify(r).includes('.mkv'), 'no raw status fragment leaks into the report');
 });
 
+await test('VIOLATED on a config that declares the safe fields but smuggles an unknown dangerous directive', () => {
+  const dangerous = { ...SAFE_CONFIG, autoPromoteOverride: true };
+  const r = buildWatchdogHygiene({ config: dangerous, queue: cleanQueue(), currentRun: RUN });
+  assertEq(r.overall, 'WATCHDOG_HYGIENE_VIOLATED', 'a smuggled directive fails closed');
+  assert(r.blockers.includes('WATCHER_CONFIG_UNKNOWN_FIELD'), 'unknown-field blocker');
+  assert(!r.configSafe, 'config is not certified safe');
+});
+
 test('VIOLATED and redaction-safe on empty input (config + queue both missing)', () => {
   const r = buildWatchdogHygiene({});
   assertEq(r.overall, 'WATCHDOG_HYGIENE_VIOLATED', 'violated');

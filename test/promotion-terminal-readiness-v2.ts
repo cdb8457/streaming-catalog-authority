@@ -137,6 +137,14 @@ await test('NOT_CONFIRMED when a component is missing or not green', async () =>
     const violatedWatchdog = buildWatchdogHygiene({}); // genuinely VIOLATED, valid self-digest
     const notGreen = buildTerminalReadinessV2({ ...g, watchdogHygiene: violatedWatchdog });
     assert(notGreen.blockers.includes('WATCHDOG_HYGIENE_VIOLATED'), 'not-green watchdog blocker');
+
+    // A self-digested watchdog report built from a config that smuggles a dangerous directive is VIOLATED
+    // (not CLEAN), so readiness v2 recomputes its valid digest, sees it is not green, and refuses to confirm.
+    const dangerousWatchdog = buildWatchdogHygiene({ config: { debounceMs: 500, idempotent: true, autoPromote: false, respectsLiveBoundary: true, deduplicateBy: 'content-digest', autoPromoteOverride: true }, queue: [{ itemDigest: 'a'.repeat(64), status: 'queued', run: RUN }], currentRun: RUN });
+    assertEq((dangerousWatchdog as { overall: string }).overall, 'WATCHDOG_HYGIENE_VIOLATED', 'dangerous config -> violated watchdog');
+    const dangerous = buildTerminalReadinessV2({ ...g, watchdogHygiene: dangerousWatchdog });
+    assertEq(dangerous.overall, 'TERMINAL_READINESS_V2_NOT_CONFIRMED', 'dangerous-config watchdog is not confirmed');
+    assert(dangerous.blockers.includes('WATCHDOG_HYGIENE_VIOLATED'), 'dangerous-config watchdog rejected');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

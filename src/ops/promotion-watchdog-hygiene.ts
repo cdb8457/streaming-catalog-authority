@@ -17,6 +17,10 @@ export interface WatchdogHygieneInput {
 }
 
 const ALLOWED_STATUS: readonly string[] = ['queued', 'processed', 'skipped'];
+// The config is a STRICT schema: only these safe-behavior fields are permitted. Any extra key is a smuggled
+// (potentially dangerous) directive and fails closed, so a config cannot pass by declaring the safe fields
+// while carrying an un-inspected dangerous one.
+const ALLOWED_CONFIG_KEYS: readonly string[] = ['debounceMs', 'idempotent', 'autoPromote', 'respectsLiveBoundary', 'deduplicateBy'];
 
 export const WATCHDOG_DISCLAIMERS: readonly string[] = [
   'A CLEAN watchdog report does NOT authorize any promotion, merge, or live action.',
@@ -63,8 +67,12 @@ export function buildWatchdogHygiene(input: WatchdogHygieneInput): WatchdogHygie
     if (config.autoPromote !== false) blockers.push('WATCHER_AUTO_PROMOTE_ENABLED');
     if (config.respectsLiveBoundary !== true) blockers.push('WATCHER_LIVE_BOUNDARY_UNGUARDED');
     if (config.deduplicateBy !== 'content-digest') blockers.push('WATCHER_DEDUPE_DISABLED');
+    // Strict schema: an unknown key is a smuggled directive -> fail closed (a dangerous config cannot ride
+    // through by declaring only the safe fields).
+    const noUnknownFields = Object.keys(config).every((k) => ALLOWED_CONFIG_KEYS.includes(k));
+    if (!noUnknownFields) blockers.push('WATCHER_CONFIG_UNKNOWN_FIELD');
     configSafe = debounceOk && config.idempotent === true && config.autoPromote === false
-      && config.respectsLiveBoundary === true && config.deduplicateBy === 'content-digest';
+      && config.respectsLiveBoundary === true && config.deduplicateBy === 'content-digest' && noUnknownFields;
   }
 
   // 2) The work queue must carry no malformed, duplicate, or stale entries.

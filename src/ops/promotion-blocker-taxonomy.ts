@@ -336,6 +336,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'WATCHER_AUTO_PROMOTE_ENABLED', op: 'watchdog-hygiene' },
   { code: 'WATCHER_LIVE_BOUNDARY_UNGUARDED', op: 'watchdog-hygiene' },
   { code: 'WATCHER_DEDUPE_DISABLED', op: 'watchdog-hygiene' },
+  { code: 'WATCHER_CONFIG_UNKNOWN_FIELD', op: 'watchdog-hygiene' },
   { code: 'QUEUE_MISSING', op: 'watchdog-hygiene' },
   { code: 'ENTRY_DIGEST_MALFORMED', op: 'watchdog-hygiene' },
   { code: 'ENTRY_STATUS_INVALID', op: 'watchdog-hygiene' },

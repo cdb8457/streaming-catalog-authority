@@ -20,7 +20,10 @@ only when all hold, else `WATCHDOG_HYGIENE_VIOLATED`:
 - **Config declares the safe invariants** — a positive `debounceMs` (`WATCHER_DEBOUNCE_MISSING`),
   `idempotent: true` (`WATCHER_NOT_IDEMPOTENT`), `autoPromote: false` (`WATCHER_AUTO_PROMOTE_ENABLED`),
   `respectsLiveBoundary: true` (`WATCHER_LIVE_BOUNDARY_UNGUARDED`), and `deduplicateBy: 'content-digest'`
-  (`WATCHER_DEDUPE_DISABLED`); a missing config is `WATCHER_CONFIG_MISSING`.
+  (`WATCHER_DEDUPE_DISABLED`); a missing config is `WATCHER_CONFIG_MISSING`. The config is a **strict
+  schema** — any key outside those five is a smuggled directive and fails closed
+  (`WATCHER_CONFIG_UNKNOWN_FIELD`), so a dangerous config cannot ride through by declaring only the safe
+  fields.
 - **Queue is present** (`QUEUE_MISSING`) and every entry is well-formed — a sha256 `itemDigest`
   (`ENTRY_DIGEST_MALFORMED`), an allowed `status` of `queued`/`processed`/`skipped`
   (`ENTRY_STATUS_INVALID`), and a path-free `run` (`ENTRY_RUN_MISSING`).
