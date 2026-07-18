@@ -405,6 +405,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'CONTEXT_HEAD_INCONSISTENT', op: 'context-consistency-audit' },
   { code: 'CONTEXT_COMMITS_INCONSISTENT', op: 'context-consistency-audit' },
   { code: 'CONTEXT_TESTS_INCONSISTENT', op: 'context-consistency-audit' },
+  { code: 'CONTEXT_HEAD_NOT_TERMINAL', op: 'context-consistency-audit' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

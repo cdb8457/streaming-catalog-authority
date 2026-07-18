@@ -150,6 +150,25 @@ await test('adversarial: a resealed pack with altered tests, and a resealed matr
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('adversarial: a consistent head that is NOT the terminal of the consistent commit list fails closed', async () => {
+  const root = workspace();
+  try {
+    const c = await chain(root);
+    // Reseal commit-range-closure so its ordered commits end in OTHER while it (and everything else) still
+    // reports head HEAD: head stays consistent, the commit list stays internally consistent, but HEAD is no
+    // longer the terminal commit -> CONTEXT_HEAD_NOT_TERMINAL. (transcript-verification supplies head HEAD.)
+    const skewed = reseal(c.commitRangeClosure, 'closureDigest', 'phase-230-commit-range-closure', (o) => {
+      const results = o.results as Array<Record<string, unknown>>;
+      results[results.length - 1]!.sha = OTHER; // head stays HEAD, terminal commit becomes OTHER
+    });
+    assertEq(verifySelfDigests([skewed]).overall, 'ALL_VERIFIED', 'resealed range is individually valid');
+    const a = buildContextConsistencyAudit({ reports: [skewed, c.transcriptVerification] });
+    assertEq(a.overall, 'CONTEXT_INCONSISTENT', 'head-not-terminal fails closed');
+    assert(a.blockers.includes('CONTEXT_HEAD_NOT_TERMINAL'), 'CONTEXT_HEAD_NOT_TERMINAL');
+    assert(!a.blockers.includes('CONTEXT_HEAD_INCONSISTENT') && !a.blockers.includes('CONTEXT_COMMITS_INCONSISTENT'), 'head + commits each internally consistent');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('a supplied context report that does NOT recompute fails closed as unverified', async () => {
   const root = workspace();
   try {

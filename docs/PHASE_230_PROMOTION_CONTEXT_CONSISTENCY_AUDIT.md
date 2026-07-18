@@ -27,7 +27,10 @@ Given a bundle (array) of Phase 230 reports, it recomputes each supplied report'
 - fewer than two verified context components → `INSUFFICIENT_CONTEXT_COMPONENTS` (no vacuous pass);
 - `branch` (`CONTEXT_BRANCH_INCONSISTENT`), `base` (`CONTEXT_BASE_INCONSISTENT`), `head` /reviewed-commit
   (`CONTEXT_HEAD_INCONSISTENT`), the **ordered** commit shas (`CONTEXT_COMMITS_INCONSISTENT`), and the test
-  set (`CONTEXT_TESTS_INCONSISTENT`) — every contributing report must agree.
+  set (`CONTEXT_TESTS_INCONSISTENT`) — every contributing report must agree;
+- cross-field: the agreed head must be the **terminal** commit of the agreed ordered commit list
+  (`CONTEXT_HEAD_NOT_TERMINAL`) — a consistent head A paired with a consistent commit list ending in C != A
+  still describes an incoherent range.
 
 `overall` is `CONTEXT_CONSISTENT` only when no blocker fires. Reconciled report ids and their projected
 fields: `merge-readiness-dry-run`, `merge-review-evidence-pack` (provenance), `acceptance-preflight`,
@@ -43,9 +46,10 @@ path-free labels, counts, and booleans — never a raw path or title — and is 
 
 - `src/ops/promotion-context-consistency-audit.ts` — `buildContextConsistencyAudit(input)`.
 - `src/ops/promotion-context-consistency-audit-cli.ts` — CLI wrapper.
-- `test/promotion-context-consistency-audit.ts` — 6 tests: consistent over the full chain; a freshly-resealed
+- `test/promotion-context-consistency-audit.ts` — 7 tests: consistent over the full chain; a freshly-resealed
   final-summary reviewing a different head; a resealed pack with altered tests + a resealed matrix with
-  altered commits; an unverified component; fewer than two components; and a spawned CLI run.
+  altered commits; a consistent head that is not the terminal of the consistent commit list; an unverified
+  component; fewer than two components; and a spawned CLI run.
 
 ## Usage
 

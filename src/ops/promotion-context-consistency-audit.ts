@@ -106,6 +106,14 @@ export function buildContextConsistencyAudit(input: ContextConsistencyInput): Co
   if (!commitsConsistent) blockers.push('CONTEXT_COMMITS_INCONSISTENT');
   fieldConsistency.push({ field: 'commitShas', contributors: commitLists.length, consistent: commitsConsistent });
 
+  // Cross-field: the agreed head must be the TERMINAL commit of the agreed ordered commit list. head and
+  // commitShas are each internally consistent above, but a consistent head A paired with a consistent commit
+  // list ending in C (!= A) still describes an incoherent range -- fail closed.
+  if (reconciled.head !== null && commitsConsistent && commitLists.length > 0) {
+    const list = commitLists[0]!;
+    if (list.length === 0 || list[list.length - 1] !== reconciled.head) blockers.push('CONTEXT_HEAD_NOT_TERMINAL');
+  }
+
   // Required tests: every contributing set must be equal.
   const testSets = projections.map((p) => p.requiredTests).filter((v): v is readonly string[] => v !== undefined);
   const testsConsistent = testSets.length <= 1 || testSets.every((s) => sameSet(s, testSets[0]!));
