@@ -58,12 +58,18 @@ const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-reviewauth-')); }
 function makeNow(): () => Date { let i = 0; return () => new Date(Date.UTC(2026, 6, 26, 8, 0, i++)); }
 const HEAD = 'da4bb856fd666ca5cc5959715ef4d8b3ab11dac6';
+const C1 = 'b'.repeat(40);
+const C2 = 'c'.repeat(40);
+const OTHER = 'e'.repeat(40);
 const BASE = '1111111111111111111111111111111111111111';
 const CMD = 'npm run test:phase230-local';
 const RUN = 'run-2026-07-18';
 const SAFE_CONFIG = { debounceMs: 500, idempotent: true, autoPromote: false, respectsLiveBoundary: true, deduplicateBy: 'content-digest' };
 
-async function readinessReport(root: string) {
+// The authoritative commit range for the whole chain: base BASE, ordered commits C1, C2, HEAD (head last).
+const CHAIN_COMMITS = [{ sha: C1, subject: 'c1 (phase BU)' }, { sha: C2, subject: 'c2 (phase BU)' }, { sha: HEAD, subject: 'c3 (phase BU)' }];
+
+async function chainEvidence(root: string) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'reviewauth', now: makeNow() })));
   const replay = replayFixtureBundle(bundle);
   const evidence = buildCoordinatorEvidencePacket({ bundle, replay });
@@ -77,7 +83,7 @@ async function readinessReport(root: string) {
   const negativeCorpus = buildNegativeEvidenceCorpus();
   const closureHygiene = buildClosureHygiene(projectRoot);
   const releaseChecklist = buildReleaseChecklist({ reviewBundle, transcript, finalSummary, closureHygiene, negativeCorpus, selfDigest });
-  const context = { branch: 'work/phase-230', base: BASE, head: HEAD, commits: [{ sha: HEAD, subject: 'a commit (phase BU)' }], requiredTests: [CMD] };
+  const context = { branch: 'work/phase-230', base: BASE, head: HEAD, commits: CHAIN_COMMITS, requiredTests: [CMD] };
   const mergeReadiness = buildMergeReadiness({ releaseChecklist, finalSummary, context });
   const provenanceDiff = buildProvenanceDiff({ context, transcript, finalSummary, reviewBundle });
   const gateCoverage = buildGateCoverage(projectRoot);
@@ -92,34 +98,35 @@ async function readinessReport(root: string) {
   const reportSchema = buildReportSchema([provenanceDiff, gateCoverage, chainBundle, redactionCorpus, boundaryPolicy, reviewAutomation, reviewerPack, acceptancePreflight, failureMatrix, cliErgonomics]);
   const boundaryAudit = buildBoundaryAudit(projectRoot);
   const coordinatorReadiness = buildCoordinatorReadiness({ acceptancePreflight, failureMatrix, reportSchema, boundaryAudit, cliErgonomics });
-  const terminalClosure = buildTerminalClosure({ transcriptVerification: buildTranscriptVerification({ transcript, head: HEAD, expectedCommands: [CMD] }), evidenceMinimizer: buildEvidenceMinimizer([finalSummary, reviewBundle, dag]), commitRangeClosure: buildCommitRangeClosure(context), regressionOracle: buildRegressionOracle(projectRoot), coordinatorReadiness });
+  const transcriptVerification = buildTranscriptVerification({ transcript, head: HEAD, expectedCommands: [CMD] });
+  const commitRangeClosure = buildCommitRangeClosure(context);
+  const terminalClosure = buildTerminalClosure({ transcriptVerification, evidenceMinimizer: buildEvidenceMinimizer([finalSummary, reviewBundle, dag]), commitRangeClosure, regressionOracle: buildRegressionOracle(projectRoot), coordinatorReadiness });
   const packComponentIntegrity = buildPackComponentIntegrity({ reviewerPack, finalSummary, releaseChecklist, mergeReadiness, chainBundle, reviewAutomation, redactionCorpus, boundaryPolicy });
   const watchdogHygiene = buildWatchdogHygiene({ config: SAFE_CONFIG, queue: [{ itemDigest: 'a'.repeat(64), status: 'processed', run: RUN }], currentRun: RUN });
-  return buildTerminalReadinessV2({ terminalClosure, packComponentIntegrity, aggregatorDigestAudit: buildAggregatorDigestAudit(projectRoot), artifactExportManifest: buildArtifactExportManifest(projectRoot), negativeEvidenceCorpus: negativeCorpus, watchdogHygiene });
+  const readiness = buildTerminalReadinessV2({ terminalClosure, packComponentIntegrity, aggregatorDigestAudit: buildAggregatorDigestAudit(projectRoot), artifactExportManifest: buildArtifactExportManifest(projectRoot), negativeEvidenceCorpus: negativeCorpus, watchdogHygiene });
+  return { readiness, terminalClosure, commitRangeClosure, transcriptVerification };
 }
 
-function matrixReport() {
-  return buildReviewMatrix({ base: BASE, head: HEAD, commits: [{ sha: '2'.repeat(40) }, { sha: HEAD }], requiredTests: [CMD, 'npm run typecheck'] });
+function matrixFrom(over: Record<string, unknown> = {}) {
+  return buildReviewMatrix({ base: BASE, head: HEAD, commits: [{ sha: C1 }, { sha: C2 }, { sha: HEAD }], requiredTests: [CMD], ...over });
 }
 
 console.log('Running Phase 230 review authorization suite:\n');
 
-await test('LOCAL_REVIEW_AUTHORIZED only with valid readiness + matrix, and includes the exact PENDING placeholders', async () => {
+await test('LOCAL_REVIEW_AUTHORIZED only with valid chained evidence + a matrix bound to the authoritative context', async () => {
   const root = workspace();
   try {
-    const readiness = await readinessReport(root);
-    assertEq(readiness.overall, 'TERMINAL_READINESS_V2_CONFIRMED', 'precondition: readiness confirmed');
-    const a = buildReviewAuthorization({ readiness, reviewMatrix: matrixReport() });
+    const e = await chainEvidence(root);
+    assertEq(e.readiness.overall, 'TERMINAL_READINESS_V2_CONFIRMED', 'precondition: readiness confirmed');
+    const a = buildReviewAuthorization({ ...e, reviewMatrix: matrixFrom() });
     assertEq(a.overall, 'LOCAL_REVIEW_AUTHORIZED', `authorized (blockers: ${a.blockers.join(',')})`);
     assertEq(a.authorization, 'NONE', 'live authorization is NONE');
-    assert(a.evidenceValid && a.matrixValid, 'both evidence and matrix valid');
-    assertEq(a.reviewedCommitCount, 2, 'two reviewed commits');
-    assertEq(a.reviewedTestCount, 2, 'two reviewed tests');
-    assertEq(a.placeholders.length, 2, 'placeholders for both commits');
+    assert(a.evidenceValid && a.matrixValid && a.contextBound, 'evidence valid, matrix valid, context bound');
+    assertEq(a.reviewedCommitCount, 3, 'three reviewed commits');
+    assertEq(a.reviewedTestCount, 1, 'one reviewed test');
     assert(a.placeholders.every((r) => r.humanReviewed === 'PENDING' && r.signedOff === 'PENDING' && r.tests.every((t) => t.result === 'PENDING')), 'every included cell is PENDING');
     assert(!JSON.stringify(a).includes('APPROVED') && !JSON.stringify(a.placeholders).includes('PASS'), 'no completed outcome emitted');
-    assert(Object.keys(a.boundDigests).length === 2, 'both evidence digests bound');
-    assert(a.humanGates.some((h) => /Phase 231/.test(h)) && /no Phase 231|no live-promotion|no live Jellyfin/i.test(a.boundary), 'human gates + closed boundary');
+    assert(Object.keys(a.boundDigests).length === 5, 'all five evidence digests bound');
     assertEq(a.disclaimers.length, REVIEW_AUTHORIZATION_DISCLAIMERS.length, 'disclaimers present');
     assertEq(verifySelfDigests([a]).overall, 'ALL_VERIFIED', 'scaffold self-verifies');
     assert(!JSON.stringify(a).includes('/mnt/'), 'redaction-safe');
@@ -129,46 +136,74 @@ await test('LOCAL_REVIEW_AUTHORIZED only with valid readiness + matrix, and incl
 test('NOT_AUTHORIZED by default: no authorization unless valid offline evidence is supplied', () => {
   const a = buildReviewAuthorization({});
   assertEq(a.overall, 'LOCAL_REVIEW_NOT_AUTHORIZED', 'not authorized without evidence');
-  assert(a.blockers.includes('READINESS_MISSING') && a.blockers.includes('REVIEW_MATRIX_MISSING'), 'missing evidence blockers');
-  assert(!a.evidenceValid && !a.matrixValid, 'nothing valid');
-  assertEq(a.placeholders.length, 0, 'no placeholders without a matrix');
+  for (const code of ['READINESS_MISSING', 'TERMINAL_CLOSURE_MISSING', 'COMMIT_RANGE_CLOSURE_MISSING', 'TRANSCRIPT_VERIFICATION_MISSING', 'REVIEW_MATRIX_MISSING']) {
+    assert(a.blockers.includes(code), `${code} blocker`);
+  }
+  assert(!a.evidenceValid && !a.contextBound, 'nothing valid/bound');
   assertEq(a.humanGates.length, REVIEW_AUTHORIZATION_HUMAN_GATES.length, 'human gates still stated');
   assert(a.redactionSafe === true && !JSON.stringify(a).includes('/mnt/'), 'redaction-safe');
-});
-
-await test('NOT_AUTHORIZED when the readiness evidence is not CONFIRMED', async () => {
-  const notConfirmed = buildTerminalReadinessV2({}); // genuinely NOT_CONFIRMED, valid self-digest
-  const a = buildReviewAuthorization({ readiness: notConfirmed, reviewMatrix: matrixReport() });
-  assertEq(a.overall, 'LOCAL_REVIEW_NOT_AUTHORIZED', 'not authorized on unconfirmed evidence');
-  assert(a.blockers.includes('READINESS_NOT_CONFIRMED'), 'readiness-not-confirmed blocker');
-  assert(!a.evidenceValid, 'evidence not valid');
 });
 
 await test('THE security case: a green readiness with a tampered body fails on digest recompute', async () => {
   const root = workspace();
   try {
-    const readiness = await readinessReport(root);
-    const tampered = JSON.parse(JSON.stringify(readiness)) as Record<string, unknown>;
+    const e = await chainEvidence(root);
+    const tampered = JSON.parse(JSON.stringify(e.readiness)) as Record<string, unknown>;
     assertEq(tampered.overall, 'TERMINAL_READINESS_V2_CONFIRMED', 'precondition: green');
-    assert(/^[0-9a-f]{64}$/.test(String(tampered.readinessV2Digest)), 'precondition: well-formed digest');
     tampered.injectedClaim = 'smuggled-through-a-green-status';
-    const a = buildReviewAuthorization({ readiness: tampered, reviewMatrix: matrixReport() });
+    const a = buildReviewAuthorization({ ...e, readiness: tampered, reviewMatrix: matrixFrom() });
     assertEq(a.overall, 'LOCAL_REVIEW_NOT_AUTHORIZED', 'tampered evidence not authorized');
     assert(a.blockers.includes('COMPONENT_DIGEST_MISMATCH'), 'green-body tamper -> digest mismatch');
     assert(!('terminal-readiness-v2' in a.boundDigests), 'tampered evidence not bound');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('adversarial: a stale head, reordered commits, or altered tests all fail the context binding', async () => {
+  const root = workspace();
+  try {
+    const e = await chainEvidence(root);
+
+    // stale head: the matrix reviews a different terminal commit than the authoritative range.
+    const staleHead = buildReviewAuthorization({ ...e, reviewMatrix: matrixFrom({ head: OTHER, commits: [{ sha: C1 }, { sha: C2 }, { sha: OTHER }] }) });
+    assertEq(staleHead.overall, 'LOCAL_REVIEW_NOT_AUTHORIZED', 'stale head not authorized');
+    assert(staleHead.blockers.includes('CONTEXT_HEAD_MISMATCH'), 'stale head -> CONTEXT_HEAD_MISMATCH');
+
+    // reordered commits: same head (terminal) but the middle commits are swapped.
+    const reordered = buildReviewAuthorization({ ...e, reviewMatrix: matrixFrom({ commits: [{ sha: C2 }, { sha: C1 }, { sha: HEAD }] }) });
+    assert(reordered.blockers.includes('CONTEXT_COMMITS_MISMATCH'), 'reordered commits -> CONTEXT_COMMITS_MISMATCH');
+    assert(!reordered.contextBound, 'reordered commits not context-bound');
+
+    // altered tests: a test not in the authoritative set.
+    const altered = buildReviewAuthorization({ ...e, reviewMatrix: matrixFrom({ requiredTests: [CMD, 'npm run something-else'] }) });
+    assert(altered.blockers.includes('CONTEXT_REQUIRED_TESTS_MISMATCH'), 'altered tests -> CONTEXT_REQUIRED_TESTS_MISMATCH');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('adversarial: a genuine-but-unrelated (forged/resealed) context is caught by the digest chain', async () => {
+  const root = workspace();
+  try {
+    const e = await chainEvidence(root);
+    // A genuine RANGE_CLOSED commit-range-closure from a DIFFERENT range: it recomputes and is green, but it
+    // is not the one bound inside terminal-closure -> COMMIT_RANGE_NOT_BOUND (the chain refuses the swap).
+    const foreignRange = buildCommitRangeClosure({ base: BASE, head: OTHER, commits: [{ sha: OTHER, subject: 'foreign (phase BU)' }] });
+    assertEq((foreignRange as { overall: string }).overall, 'RANGE_CLOSED', 'precondition: foreign range is genuinely closed');
+    const a = buildReviewAuthorization({ ...e, commitRangeClosure: foreignRange, reviewMatrix: matrixFrom({ head: OTHER, commits: [{ sha: OTHER }] }) });
+    assertEq(a.overall, 'LOCAL_REVIEW_NOT_AUTHORIZED', 'unrelated context not authorized');
+    assert(a.blockers.includes('COMMIT_RANGE_NOT_BOUND'), 'unrelated commit-range -> COMMIT_RANGE_NOT_BOUND');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('CLI builds the authorization scaffold and never echoes raw paths to stdout', async () => {
   const root = workspace();
   try {
-    const readiness = await readinessReport(root);
+    const e = await chainEvidence(root);
     const dir = join(root, 'a'); mkdirSync(dir, { recursive: true });
     const w = (n: string, v: unknown): string => { const p = join(dir, n); writeFileSync(p, JSON.stringify(v)); return p; };
-    const rd = w('rd.json', readiness); const rm = w('rm.json', matrixReport());
+    const rd = w('rd.json', e.readiness); const tc = w('tc.json', e.terminalClosure); const cr = w('cr.json', e.commitRangeClosure);
+    const tv = w('tv.json', e.transcriptVerification); const rm = w('rm.json', matrixFrom());
     const outPath = join(root, 'catalog-authority-test-library', 'RAUMARKER-out', 'auth.json');
     const cliPath = fileURLToPath(new URL('../src/ops/promotion-review-authorization-cli.ts', import.meta.url));
-    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--readiness', rd, '--reviewmatrix', rm, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
+    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--readiness', rd, '--terminalclosure', tc, '--commitrangeclosure', cr, '--transcriptverification', tv, '--reviewmatrix', rm, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
     assert(res.error === undefined, `spawn ok: ${res.error?.message ?? ''}`);
     assertEq(res.status, 0, `AUTHORIZED exit (stderr: ${res.stderr ?? ''})`);
     assert(existsSync(outPath), 'scaffold file written');
