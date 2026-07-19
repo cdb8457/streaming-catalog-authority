@@ -73,7 +73,7 @@ const CHILDREN: Readonly<Record<string, ReadonlyArray<{ key: string; childId: st
 // The roots that must be mesh-valid for the bundle to be VERIFIED.
 export const BUNDLE_ROOTS: readonly string[] = ['phase-230-promotion-review-authorization', 'phase-230-promotion-coordinator-readiness-manifest', 'phase-230-promotion-terminal-readiness-v2'];
 
-export interface BundleReportResult { readonly report: string; readonly meshValid: boolean; }
+export interface BundleReportResult { readonly report: string; readonly meshValid: boolean; readonly duplicate: boolean; }
 
 export interface ClosureInputBundleAuditReport {
   readonly report: 'phase-230-promotion-closure-input-bundle-audit';
@@ -88,51 +88,77 @@ export interface ClosureInputBundleAuditReport {
   readonly auditDigest: string;
 }
 
-// Pure predicate used by both this op and its consumers: is the supplied bundle a genuine, fully-resolved
-// mesh whose roots (RA, CR, terminal-readiness-v2) are all mesh-valid?
-export function meshValidReports(reports: readonly unknown[]): Set<string> {
-  const byId = new Map<string, Record<string, unknown>>();
-  for (const r of reports) { const o = asObject(r); if (typeof o.report === 'string') byId.set(o.report, o); }
+export interface MeshResult {
+  // The recomputed self-DIGESTS (not report ids) of the reports that are mesh-valid. Consumers bind validity
+  // to the EXACT supplied object's digest -- never to report-id membership -- so a genuine same-id anchor
+  // cannot vouch for a different forged top-level object with the same id.
+  readonly validDigests: ReadonlySet<string>;
+  readonly validIds: ReadonlySet<string>;
+  // report ids supplied more than once with CONFLICTING content (a second copy that is missing/not-green or
+  // carries a different self-digest). Such ids are ambiguous and are never mesh-valid -- fail closed.
+  readonly duplicateIds: readonly string[];
+}
 
-  const recomputesGreen = (id: string): boolean => {
-    const o = byId.get(id); const meta = META[id];
-    if (!o || !meta) return false;
-    return verifySelfDigests([o]).results[0]?.verified === true && meta.green(o);
-  };
-  const digestOf = (id: string): string | undefined => {
-    const o = byId.get(id); const meta = META[id];
-    return o && meta ? asSha256(o[meta.digestField]) : undefined;
-  };
+// Pure predicate used by both this op and its consumers.
+export function meshValidReports(reports: readonly unknown[]): MeshResult {
+  const groups = new Map<string, Record<string, unknown>[]>();
+  for (const r of reports) {
+    const o = asObject(r);
+    const id = typeof o.report === 'string' ? o.report : '';
+    if (!META[id]) continue;
+    if (!groups.has(id)) groups.set(id, []);
+    groups.get(id)!.push(o);
+  }
+
+  // Canonical report per id: usable only when EVERY supplied copy recomputes + is green AND they all carry
+  // the same self-digest (identical copies are fine; a conflicting copy makes the id a duplicate).
+  const canonicalObj = new Map<string, Record<string, unknown>>();
+  const canonicalDigest = new Map<string, string>();
+  const duplicateIds: string[] = [];
+  for (const [id, objs] of groups) {
+    const meta = META[id]!;
+    const okCopies = objs.filter((o) => verifySelfDigests([o]).results[0]?.verified === true && meta.green(o));
+    const digests = new Set(okCopies.map((o) => asSha256(o[meta.digestField])).filter((d): d is string => d !== undefined));
+    if (okCopies.length === objs.length && digests.size === 1) {
+      canonicalObj.set(id, okCopies[0]!);
+      canonicalDigest.set(id, [...digests][0]!);
+    } else if (objs.length > 1) {
+      duplicateIds.push(id); // ambiguous / conflicting duplicate -> fail closed
+    }
+  }
 
   const valid = new Map<string, boolean>();
-  for (const id of byId.keys()) valid.set(id, recomputesGreen(id) && !(id in CHILDREN));
+  for (const id of canonicalObj.keys()) valid.set(id, !(id in CHILDREN));
   let changed = true;
   while (changed) {
     changed = false;
     for (const id of Object.keys(CHILDREN)) {
-      if (!byId.has(id)) continue;
-      const bd = asObject(byId.get(id)!.boundDigests);
+      if (!canonicalObj.has(id)) continue;
+      const bd = asObject(canonicalObj.get(id)!.boundDigests);
       const childrenOk = CHILDREN[id]!.every((ch) => {
         const claimed = asSha256(bd[ch.key]);
-        const childDigest = digestOf(ch.childId);
+        const childDigest = canonicalDigest.get(ch.childId);
         return claimed !== undefined && childDigest !== undefined && claimed === childDigest && valid.get(ch.childId) === true;
       });
-      const next = recomputesGreen(id) && childrenOk;
-      if (valid.get(id) !== next) { valid.set(id, next); changed = true; }
+      if (valid.get(id) !== childrenOk) { valid.set(id, childrenOk); changed = true; }
     }
   }
-  return new Set([...valid.entries()].filter(([, v]) => v).map(([k]) => k));
+  const validIds = new Set([...valid.entries()].filter(([, v]) => v).map(([k]) => k));
+  const validDigests = new Set([...validIds].map((id) => canonicalDigest.get(id)).filter((d): d is string => d !== undefined));
+  return { validDigests, validIds, duplicateIds };
 }
 
 export function buildClosureInputBundleAudit(input: ClosureInputBundleAuditInput): ClosureInputBundleAuditReport {
   const reports = Array.isArray(input.reports) ? input.reports : [];
   const ids: string[] = [];
   for (const r of reports) { const o = asObject(r); if (typeof o.report === 'string') ids.push(o.report); }
-  const meshValid = meshValidReports(reports);
+  const mesh = meshValidReports(reports);
+  const duplicates = new Set(mesh.duplicateIds);
 
-  const results: BundleReportResult[] = [...new Set(ids)].sort().map((report) => ({ report: report.replace(/^phase-230-promotion-/, ''), meshValid: meshValid.has(report) }));
+  const results: BundleReportResult[] = [...new Set(ids)].sort().map((report) => ({ report: report.replace(/^phase-230-promotion-/, ''), meshValid: mesh.validIds.has(report), duplicate: duplicates.has(report) }));
   const blockers: string[] = [];
-  for (const root of BUNDLE_ROOTS) if (!meshValid.has(root)) blockers.push('BUNDLE_ROOT_UNRESOLVED');
+  for (const root of BUNDLE_ROOTS) if (!mesh.validIds.has(root)) blockers.push('BUNDLE_ROOT_UNRESOLVED');
+  if (mesh.duplicateIds.length > 0) blockers.push('DUPLICATE_REPORT_ID');
   if (results.length === 0) blockers.push('NO_REPORTS');
 
   const uniqueBlockers = [...new Set(blockers)];

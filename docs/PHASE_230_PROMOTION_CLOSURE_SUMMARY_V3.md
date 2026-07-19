@@ -36,10 +36,13 @@ Each report's self-digest is recomputed. `CLOSURE_SUMMARY_READY` only when all h
   (`acceptance-preflight`, `failure-matrix`, `report-schema`, `boundary-audit`, `cli-ergonomics`) present + ok
   with a matching `boundDigests` entry (`UNBOUND_COORDINATOR_CONTEXT`). A forged minimal self-sealed report is
   rejected.
-- **Bindings proven by exact equality (not self-claimed)** — because even a full-shape self-sealed report can
-  fabricate sha256-shaped `boundDigests`, every RA/CR binding must **exactly equal** the recomputed self-digest
-  of the actual underlying report supplied in `anchorReports` (each anchor must itself recompute and be green).
-  A fabricated binding matches no real anchor, so a FULL-SHAPE forged self-sealed RA/CR is rejected
+- **Full input mesh, keyed by exact digest** — because even a full-shape self-sealed report can fabricate
+  sha256-shaped `boundDigests`, and even a genuine anchor can be a forged child, the whole bundle
+  (RA + CR + `anchorReports`) is validated once by `promotion-closure-input-bundle-audit`: each aggregator's
+  bindings must resolve to supplied, green, recomputing, **mesh-valid** children. RA/CR are context-bound only
+  when **this exact top-level object's self-digest** is mesh-valid — never by report-id membership — so a
+  genuine same-id anchor cannot shadow a different forged/stale top-level RA/CR, and a conflicting duplicate id
+  fails closed. Forged full/shallow anchors and duplicate-id shadowing are all rejected
   (`UNBOUND_TERMINAL_CONTEXT` / `UNBOUND_COORDINATOR_CONTEXT`).
 - **Observed-state requirement** — a record with `observed === true` is supplied (`OBSERVED_STATE_MISSING`)
   and is **bound to the authoritative reviewed head**: its `head` must equal the terminal reviewed commit

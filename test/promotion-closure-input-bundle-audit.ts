@@ -146,6 +146,21 @@ await test('CLOSURE_BUNDLE_BROKEN when an aggregator\'s deep children are missin
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('CLOSURE_BUNDLE_BROKEN + DUPLICATE_REPORT_ID on a conflicting duplicate report id', async () => {
+  const root = workspace();
+  try {
+    const all = await fullBundle(root);
+    const F = (c: string) => c.repeat(64);
+    // A second review-authorization with the same id but different content/digest (a forged shadow).
+    const forgedRA = seal('phase-230-review-authorization', { report: 'phase-230-promotion-review-authorization', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'LOCAL_REVIEW_AUTHORIZED', evidenceValid: true, matrixValid: true, contextBound: true, reviewedCommitCount: 1, reviewedTestCount: 1, placeholders: [{ sha: 'e'.repeat(40), humanReviewed: 'PENDING', signedOff: 'PENDING', tests: [{ test: CMD, result: 'PENDING' }] }], boundDigests: { 'terminal-readiness-v2': F('1'), 'terminal-closure': F('2'), 'commit-range-closure': F('3'), 'transcript-verification': F('4'), 'review-matrix': F('5') } }, 'authorizationDigest');
+    const a = buildClosureInputBundleAudit({ reports: [...all, forgedRA] });
+    assertEq(a.overall, 'CLOSURE_BUNDLE_BROKEN', 'conflicting duplicate id broken');
+    assert(a.blockers.includes('DUPLICATE_REPORT_ID'), 'DUPLICATE_REPORT_ID');
+    assert(a.blockers.includes('BUNDLE_ROOT_UNRESOLVED'), 'the duplicated root is no longer mesh-valid');
+    assert(a.results.some((r) => r.report === 'review-authorization' && r.duplicate && !r.meshValid), 'RA flagged duplicate + not mesh-valid');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('CLOSURE_BUNDLE_BROKEN and redaction-safe on empty input', () => {
   const a = buildClosureInputBundleAudit({ reports: [] });
   assertEq(a.overall, 'CLOSURE_BUNDLE_BROKEN', 'empty broken');

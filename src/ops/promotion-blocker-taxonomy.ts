@@ -413,6 +413,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'COMPONENT_DIGEST_UNVERIFIED', op: 'closure-summary-v3' },
   { code: 'LIVE_BOUNDARY_ESCAPE', op: 'closure-summary-v3' },
   { code: 'BUNDLE_ROOT_UNRESOLVED', op: 'closure-input-bundle-audit' },
+  { code: 'DUPLICATE_REPORT_ID', op: 'closure-input-bundle-audit' },
   { code: 'NO_REPORTS', op: 'closure-input-bundle-audit' },
 ];
 

@@ -179,6 +179,26 @@ test('BLOCKED on forged full RA/CR + forged green self-sealed anchors whose deep
   assert(s.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'forged-anchor mesh does not resolve -> UNBOUND_TERMINAL_CONTEXT');
 });
 
+await test('BLOCKED: forged/stale top-level RA/CR shadowed by genuine same-id anchors (duplicate-id)', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    const stale = 'e'.repeat(40); const F = (c: string) => c.repeat(64);
+    // Forged FULL-SHAPE top-level RA with a stale head -- it passes shape + self-digest + green on its own,
+    // but its digest differs from the genuine RA. The genuine RA is ALSO supplied as a same-id anchor.
+    const forgedRA = seal('phase-230-review-authorization', { report: 'phase-230-promotion-review-authorization', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'LOCAL_REVIEW_AUTHORIZED', evidenceValid: true, matrixValid: true, contextBound: true, reviewedCommitCount: 1, reviewedTestCount: 1, placeholders: [{ sha: stale, humanReviewed: 'PENDING', signedOff: 'PENDING', tests: [{ test: CMD, result: 'PENDING' }] }], boundDigests: { 'terminal-readiness-v2': F('1'), 'terminal-closure': F('2'), 'commit-range-closure': F('3'), 'transcript-verification': F('4'), 'review-matrix': F('5') } }, 'authorizationDigest');
+    const forgedCR = seal('phase-230-coordinator-readiness', { report: 'phase-230-promotion-coordinator-readiness-manifest', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'COORDINATOR_READINESS_CONFIRMED', components: ['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics'].map((c) => ({ component: c, present: true, ok: true })), boundDigests: { 'acceptance-preflight': F('6'), 'failure-matrix': F('7'), 'report-schema': F('8'), 'boundary-audit': F('9'), 'cli-ergonomics': F('a') } }, 'readinessDigest');
+    // The bundle carries BOTH the forged top-level RA/CR and the genuine RA/CR (same ids) as anchors.
+    const s = buildClosureSummaryV3({ reviewAuthorization: forgedRA, coordinatorReadiness: forgedCR, observedState: { observed: true, source: 'local', head: stale }, anchorReports: [...b.anchorReports, b.reviewAuthorization, b.coordinatorReadiness] });
+    assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'forged top-level shadowed by genuine same-id anchor must block');
+    assert(s.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'forged RA digest not mesh-valid -> UNBOUND_TERMINAL_CONTEXT');
+    assert(s.blockers.includes('UNBOUND_COORDINATOR_CONTEXT'), 'forged CR digest not mesh-valid -> UNBOUND_COORDINATOR_CONTEXT');
+    assert(!('review-authorization' in s.boundDigests) && !('coordinator-readiness' in s.boundDigests), 'forged digests not recorded');
+    // the stale/forged head must never be surfaced as bound commit visibility
+    assert(!JSON.stringify(s.commitVisibility).includes(stale), 'forged head not surfaced');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('CLOSURE_SUMMARY_READY with bounded contexts + observed state; exact commit/test visibility; PENDING', async () => {
   const root = workspace();
   try {

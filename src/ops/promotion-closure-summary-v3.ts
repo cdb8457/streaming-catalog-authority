@@ -74,25 +74,25 @@ export function buildClosureSummaryV3(input: ClosureSummaryV3Input): ClosureSumm
 
   // Validate the FULL input mesh once (RA + CR + every supplied anchor). A report is mesh-valid only when it
   // recomputes, is green, and -- for each aggregator -- every declared child binding exactly equals the
-  // recomputed digest of a SUPPLIED child that is itself mesh-valid. So a forged green self-sealed anchor
-  // (whose own children are missing or shallow-forged) cannot make RA/CR context-bound.
-  const meshValid = meshValidReports([input.reviewAuthorization, input.coordinatorReadiness, ...(Array.isArray(input.anchorReports) ? input.anchorReports : [])]);
+  // recomputed digest of a SUPPLIED child that is itself mesh-valid. Validity is keyed by the EXACT self-
+  // digest (not report id): the specific top-level RA/CR object must itself be mesh-valid, so a genuine
+  // same-id anchor cannot shadow a different forged top-level object, and conflicting duplicate ids fail closed.
+  const mesh = meshValidReports([input.reviewAuthorization, input.coordinatorReadiness, ...(Array.isArray(input.anchorReports) ? input.anchorReports : [])]);
 
   // Authoritative bounded input #1: the review-authorization scaffold. Right id + recomputing self-digest +
-  // LOCAL_REVIEW_AUTHORIZED + authoritative shape, AND mesh-valid within the supplied bundle. Only a
-  // truly-bound report's digest is recorded.
+  // LOCAL_REVIEW_AUTHORIZED + authoritative shape, AND this exact object's digest is mesh-valid in the bundle.
   const ra = bound(input.reviewAuthorization, 'phase-230-promotion-review-authorization', 'authorizationDigest',
     (o) => o.overall === 'LOCAL_REVIEW_AUTHORIZED' && reviewAuthorizationAuthoritative(o));
-  const raContextBound = ra.ok && meshValid.has('phase-230-promotion-review-authorization');
+  const raContextBound = ra.ok && ra.digest !== undefined && mesh.validDigests.has(ra.digest);
   if (raContextBound && ra.digest) boundDigests['review-authorization'] = ra.digest;
   if (!ra.digestVerified && ra.present && ra.rightId) blockers.push('COMPONENT_DIGEST_UNVERIFIED');
   if (!raContextBound) blockers.push('UNBOUND_TERMINAL_CONTEXT');
 
   // Authoritative bounded input #2: the coordinator readiness manifest -- likewise authoritative in shape and
-  // mesh-valid within the supplied bundle.
+  // this exact object's digest mesh-valid in the bundle.
   const cr = bound(input.coordinatorReadiness, 'phase-230-promotion-coordinator-readiness-manifest', 'readinessDigest',
     (o) => o.overall === 'COORDINATOR_READINESS_CONFIRMED' && coordinatorReadinessAuthoritative(o));
-  const crContextBound = cr.ok && meshValid.has('phase-230-promotion-coordinator-readiness-manifest');
+  const crContextBound = cr.ok && cr.digest !== undefined && mesh.validDigests.has(cr.digest);
   if (crContextBound && cr.digest) boundDigests['coordinator-readiness'] = cr.digest;
   if (!cr.digestVerified && cr.present && cr.rightId) blockers.push('COMPONENT_DIGEST_UNVERIFIED');
   if (!crContextBound) blockers.push('UNBOUND_COORDINATOR_CONTEXT');

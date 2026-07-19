@@ -26,9 +26,14 @@ aggregator-digest-audit, artifact-export-manifest, negative-evidence-corpus, wat
 coordinator-readiness; `coordinator-readiness` → acceptance-preflight, failure-mode-matrix, report-schema,
 boundary-audit, cli-ergonomics.
 
+Validity is keyed by the **exact recomputed self-digest**, never by report-id membership, and a report id
+supplied more than once with **conflicting** content (a copy that is missing/not-green or carries a different
+self-digest) is **ambiguous and never mesh-valid** (`DUPLICATE_REPORT_ID`) — so a genuine same-id anchor
+cannot shadow a different forged top-level object. Identical duplicate copies are permitted.
+
 `overall` is `CLOSURE_BUNDLE_VERIFIED` only when the roots — `review-authorization`, `coordinator-readiness`,
-and `terminal-readiness-v2` — are all mesh-valid (`BUNDLE_ROOT_UNRESOLVED` otherwise; `NO_REPORTS` guards an
-empty bundle). It reads parsed JSON only; it performs no promotion, never touches the real Movies root, never
+and `terminal-readiness-v2` — are all mesh-valid (`BUNDLE_ROOT_UNRESOLVED` otherwise; `DUPLICATE_REPORT_ID` on
+a conflicting duplicate; `NO_REPORTS` guards an empty bundle). It reads parsed JSON only; it performs no promotion, never touches the real Movies root, never
 contacts Jellyfin, and its `authorization` field is the constant `NONE`. It echoes only report short-names,
 booleans, and counts — never a raw path — and is sealed with an `auditDigest`. `closure-summary-v3` consumes
 this auditor (over its RA/CR + anchor bundle) so RA/CR are context-bound only when the mesh fully resolves.
@@ -43,8 +48,9 @@ op closes the practical forged-anchor class (aggregators forged, real children a
 - `src/ops/promotion-closure-input-bundle-audit.ts` — `buildClosureInputBundleAudit(input)`,
   `meshValidReports(reports)`, `BUNDLE_ROOTS`.
 - `src/ops/promotion-closure-input-bundle-audit-cli.ts` — CLI wrapper.
-- `test/promotion-closure-input-bundle-audit.ts` — 4 tests: verified on the genuine full mesh; broken when an
-  aggregator's deep children are missing (forged shallow anchors); empty input; and a spawned CLI run.
+- `test/promotion-closure-input-bundle-audit.ts` — 5 tests: verified on the genuine full mesh; broken when an
+  aggregator's deep children are missing (forged shallow anchors); broken with `DUPLICATE_REPORT_ID` on a
+  conflicting duplicate id; empty input; and a spawned CLI run.
 
 ## Usage
 
