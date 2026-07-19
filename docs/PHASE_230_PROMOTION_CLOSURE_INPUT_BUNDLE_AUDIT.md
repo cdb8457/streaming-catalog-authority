@@ -22,7 +22,12 @@ Given a bundle (array) of the closure input reports, a report is **mesh-valid** 
   `{ report, version, redactionSafe, authorization, overall, <digest> }` carries no content and fails this, so
   green alone is **not** enough; and
 - for each aggregator, **every** declared child binding exactly equals the recomputed self-digest of a
-  **supplied** child report that is **itself mesh-valid** — a fixpoint over the bundle (the DAG has no cycles).
+  **supplied** child report that is **itself mesh-valid** — a fixpoint over the bundle (the DAG has no cycles);
+  and
+- a **cross-content** check where an aggregator surfaces reviewed context: `review-authorization`'s ordered
+  placeholder shas must be valid sha40 and equal the authoritative `commit-range-closure` **and**
+  `review-matrix` ordered shas, and its placeholder test set must equal the `transcript-verification` commands
+  — so a forged RA with genuine children but invalid/mismatched own placeholders is rejected.
 
 Aggregator child sets: `review-authorization` → terminal-readiness-v2, terminal-closure, commit-range-closure,
 transcript-verification, review-matrix; `terminal-readiness-v2` → terminal-closure, pack-component-integrity,
@@ -55,10 +60,11 @@ case by requiring branch/base/head/ordered-commits/test agreement across the mes
 - `src/ops/promotion-closure-input-bundle-audit.ts` — `buildClosureInputBundleAudit(input)`,
   `meshValidReports(reports)`, `BUNDLE_ROOTS`.
 - `src/ops/promotion-closure-input-bundle-audit-cli.ts` — CLI wrapper.
-- `test/promotion-closure-input-bundle-audit.ts` — 6 tests: verified on the genuine full mesh; broken when an
+- `test/promotion-closure-input-bundle-audit.ts` — 7 tests: verified on the genuine full mesh; broken when an
   aggregator's deep children are missing (forged shallow anchors); broken on a fully-fabricated deep green
-  bundle of minimal leaves (content shape); broken with `DUPLICATE_REPORT_ID` on a conflicting duplicate id;
-  empty input; and a spawned CLI run.
+  bundle of minimal leaves (content shape); broken when RA placeholders mismatch the authoritative commit
+  range (cross-content); broken with `DUPLICATE_REPORT_ID` on a conflicting duplicate id; empty input; and a
+  spawned CLI run.
 
 ## Usage
 

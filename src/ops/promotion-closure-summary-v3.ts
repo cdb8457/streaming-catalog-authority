@@ -185,7 +185,7 @@ function reviewAuthorizationAuthoritative(o: Record<string, unknown>): boolean {
   if (!RA_REQUIRED_BINDINGS.every((k) => sha256(bd[k]) !== undefined)) return false;
   const rows = Array.isArray(o.placeholders) ? o.placeholders : [];
   if (rows.length !== cc) return false;
-  return rows.every((r) => { const t = asObject(r).tests; return Array.isArray(t) && t.length === tc; });
+  return rows.every((r) => { const ro = asObject(r); const t = ro.tests; return sha40(ro.sha) !== undefined && Array.isArray(t) && t.length === tc; });
 }
 // A genuine coordinator-readiness: every expected component present + ok, with a matching non-empty binding.
 function coordinatorReadinessAuthoritative(o: Record<string, unknown>): boolean {

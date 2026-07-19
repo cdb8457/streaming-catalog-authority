@@ -174,7 +174,38 @@ function fabricatedDeepBundle() {
   return { ra, cr, anchors: [bt, tc, crc, tv, rm, em, ro, pci, ada, aem, nec, wh, ap, fm, rs, ba, ce] };
 }
 
+// Re-seal a genuine review-authorization with replaced placeholders (keeping its genuine boundDigests, so
+// its digest-mesh children still resolve -- only its own placeholder content is tampered).
+function resealRA(ra: Record<string, unknown>, placeholders: unknown[]): Record<string, unknown> {
+  const clone = JSON.parse(JSON.stringify(ra)) as Record<string, unknown>;
+  clone.placeholders = placeholders;
+  delete clone.authorizationDigest;
+  return seal('phase-230-review-authorization', clone, 'authorizationDigest');
+}
+function ph(sha: string): Record<string, unknown> { return { sha, humanReviewed: 'PENDING', signedOff: 'PENDING', tests: [{ test: CMD, result: 'PENDING' }] }; }
+
 console.log('Running Phase 230 closure summary v3 suite:\n');
+
+await test('BLOCKED: otherwise-green mesh with invalid RA placeholder shas / mismatched ordered commit list', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+
+    // (1) invalid RA placeholder shas + an arbitrary/stale observed head: RA is not authoritative -> unbound.
+    const genuineRA = b.reviewAuthorization as unknown as Record<string, unknown>;
+    const invalidRA = resealRA(genuineRA, [ph('z'.repeat(40)), ph('z'.repeat(40)), ph('z'.repeat(40))]);
+    const s1 = buildClosureSummaryV3({ reviewAuthorization: invalidRA, coordinatorReadiness: b.coordinatorReadiness, observedState: { observed: true, source: 'local', head: 'e'.repeat(40) }, anchorReports: b.anchorReports });
+    assertEq(s1.overall, 'CLOSURE_SUMMARY_BLOCKED', 'invalid RA placeholder shas must block');
+    assert(s1.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'invalid placeholder shas -> UNBOUND_TERMINAL_CONTEXT');
+
+    // (2) valid-looking but mismatched RA ordered commit list against CRC/RM/TV (reordered middle commits).
+    const mismatchRA = resealRA(genuineRA, [ph(C2), ph(C1), ph(HEAD)]);
+    const s2 = buildClosureSummaryV3({ reviewAuthorization: mismatchRA, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED, anchorReports: b.anchorReports });
+    assertEq(s2.overall, 'CLOSURE_SUMMARY_BLOCKED', 'mismatched RA ordered commit list must block');
+    assert(s2.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'RA commit list != CRC/RM ordered shas -> UNBOUND_TERMINAL_CONTEXT');
+    assert(!s2.blockers.includes('OBSERVED_STATE_MISSING'), 'observed state itself is well-formed');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 test('BLOCKED on a forged minimal self-sealed RA/CR even when observedState.head matches the forged RA head', () => {
   const fsha = 'a'.repeat(40);

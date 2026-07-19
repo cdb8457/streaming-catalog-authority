@@ -27,7 +27,7 @@ const TC_KEYS = ['transcript-verification', 'evidence-minimizer', 'commit-range-
 // content and fails `shape`, so a fully-fabricated deep green bundle cannot resolve the mesh. `green` alone is
 // not enough.
 const META: Readonly<Record<string, ReportMeta>> = {
-  'phase-230-promotion-review-authorization': { digestField: 'authorizationDigest', green: (o) => o.overall === 'LOCAL_REVIEW_AUTHORIZED', shape: (o) => o.evidenceValid === true && o.matrixValid === true && o.contextBound === true && posNum(o.reviewedCommitCount) && posNum(o.reviewedTestCount) && nonEmpty(o.placeholders) && boundHas(o, RA_KEYS) },
+  'phase-230-promotion-review-authorization': { digestField: 'authorizationDigest', green: (o) => o.overall === 'LOCAL_REVIEW_AUTHORIZED', shape: (o) => { const p = arr(o.placeholders); return o.evidenceValid === true && o.matrixValid === true && o.contextBound === true && posNum(o.reviewedCommitCount) && posNum(o.reviewedTestCount) && p !== null && p.length > 0 && p.every((r) => sha40(asObject(r).sha) && nonEmpty(asObject(r).tests)) && boundHas(o, RA_KEYS); } },
   'phase-230-promotion-coordinator-readiness-manifest': { digestField: 'readinessDigest', green: (o) => o.overall === 'COORDINATOR_READINESS_CONFIRMED', shape: (o) => componentsOk(o, CR_KEYS) && boundHas(o, CR_KEYS) },
   'phase-230-promotion-terminal-readiness-v2': { digestField: 'readinessV2Digest', green: (o) => o.overall === 'TERMINAL_READINESS_V2_CONFIRMED', shape: (o) => componentsOk(o, BT_KEYS) && boundHas(o, BT_KEYS) },
   'phase-230-promotion-terminal-closure-manifest': { digestField: 'terminalDigest', green: (o) => o.overall === 'TERMINAL_CLOSURE_CONFIRMED', shape: (o) => componentsOk(o, TC_KEYS) && boundHas(o, TC_KEYS) },
@@ -79,6 +79,26 @@ const CHILDREN: Readonly<Record<string, ReadonlyArray<{ key: string; childId: st
     { key: 'cli-ergonomics', childId: 'phase-230-promotion-cli-ergonomics' },
   ],
 };
+// Cross-report CONTENT consistency an aggregator must satisfy beyond digest-binding its children -- so a
+// forged parent with genuine children (but fabricated/mismatched own content) is rejected. review-authorization
+// surfaces the reviewed commit/test visibility, so its ordered placeholder shas must equal the authoritative
+// commit-range-closure AND review-matrix ordered shas, and its placeholder test set must equal the transcript
+// verification's commands.
+const CROSS: Readonly<Record<string, (self: Record<string, unknown>, canon: (id: string) => Record<string, unknown> | undefined) => boolean>> = {
+  'phase-230-promotion-review-authorization': (self, canon) => {
+    const crc = canon('phase-230-promotion-commit-range-closure');
+    const rm = canon('phase-230-promotion-review-matrix');
+    const tv = canon('phase-230-promotion-transcript-verification');
+    if (!crc || !rm || !tv) return false;
+    const raShas = shaSeq(self.placeholders);
+    const crcShas = shaSeq(crc.results);
+    const rmShas = shaSeq(rm.rows);
+    const raTests = placeholderTests(self.placeholders);
+    const tvTests = commandSet(tv.commandResults);
+    return raShas.length > 0 && sameOrdered(raShas, crcShas) && sameOrdered(raShas, rmShas) && sameSet(raTests, tvTests);
+  },
+};
+
 // The roots that must be mesh-valid for the bundle to be VERIFIED.
 export const BUNDLE_ROOTS: readonly string[] = ['phase-230-promotion-review-authorization', 'phase-230-promotion-coordinator-readiness-manifest', 'phase-230-promotion-terminal-readiness-v2'];
 
@@ -149,7 +169,10 @@ export function meshValidReports(reports: readonly unknown[]): MeshResult {
         const childDigest = canonicalDigest.get(ch.childId);
         return claimed !== undefined && childDigest !== undefined && claimed === childDigest && valid.get(ch.childId) === true;
       });
-      if (valid.get(id) !== childrenOk) { valid.set(id, childrenOk); changed = true; }
+      const cross = CROSS[id];
+      const crossOk = cross === undefined || cross(canonicalObj.get(id)!, (cid) => canonicalObj.get(cid));
+      const next = childrenOk && crossOk;
+      if (valid.get(id) !== next) { valid.set(id, next); changed = true; }
     }
   }
   const validIds = new Set([...valid.entries()].filter(([, v]) => v).map(([k]) => k));
@@ -199,6 +222,36 @@ function nonEmpty(value: unknown): boolean { return Array.isArray(value) && valu
 function boundHas(o: Record<string, unknown>, keys: readonly string[]): boolean {
   const bd = asObject(o.boundDigests);
   return keys.every((k) => asSha256(bd[k]) !== undefined);
+}
+function sha40s(value: unknown): string | undefined { return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value) ? value : undefined; }
+// Ordered sha40 sequence from an array of { sha } records; returns [] with a marker if any element is not sha40.
+function shaSeq(value: unknown): string[] {
+  const a = arr(value);
+  if (a === null) return [];
+  const out: string[] = [];
+  for (const x of a) { const s = sha40s(asObject(x).sha); if (s === undefined) return ['<invalid>']; out.push(s); }
+  return out;
+}
+function placeholderTests(value: unknown): string[] {
+  const a = arr(value);
+  if (a === null) return [];
+  const set = new Set<string>();
+  for (const row of a) for (const t of (arr(asObject(row).tests) ?? [])) { const c = asObject(t).test; if (typeof c === 'string') set.add(c); }
+  return [...set];
+}
+function commandSet(value: unknown): string[] {
+  const a = arr(value);
+  if (a === null) return [];
+  const set = new Set<string>();
+  for (const c of a) { const cmd = asObject(c).command; if (typeof cmd === 'string') set.add(cmd); }
+  return [...set];
+}
+function sameOrdered(a: readonly string[], b: readonly string[]): boolean {
+  return a.length > 0 && a.length === b.length && a.every((x, i) => x === b[i]) && !a.includes('<invalid>');
+}
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+  const sa = new Set(a); const sb = new Set(b);
+  return sa.size > 0 && sa.size === sb.size && [...sa].every((x) => sb.has(x));
 }
 // Every expected component present + ok, for the aggregator manifests that carry a components[] list.
 function componentsOk(o: Record<string, unknown>, keys: readonly string[]): boolean {

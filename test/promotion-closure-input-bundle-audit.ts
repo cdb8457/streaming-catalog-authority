@@ -202,6 +202,25 @@ test('CLOSURE_BUNDLE_BROKEN on a fully-fabricated deep green bundle of minimal l
   assert(!a.results.some((r) => r.report === 'review-authorization' && r.meshValid), 'RA not mesh-valid');
 });
 
+await test('CLOSURE_BUNDLE_BROKEN when RA placeholders mismatch the authoritative commit range (cross-content)', async () => {
+  const root = workspace();
+  try {
+    const all = await fullBundle(root);
+    const ra = all.find((r) => (r as { report: string }).report === 'phase-230-promotion-review-authorization') as Record<string, unknown>;
+    const rest = all.filter((r) => (r as { report: string }).report !== 'phase-230-promotion-review-authorization');
+    // Re-seal RA with a reordered (valid sha40) placeholder list that no longer matches commit-range/matrix.
+    const clone = JSON.parse(JSON.stringify(ra)) as Record<string, unknown>;
+    const rows = clone.placeholders as Array<Record<string, unknown>>;
+    if (rows.length >= 2) { const t = rows[0]!.sha; rows[0]!.sha = rows[1]!.sha; rows[1]!.sha = t; }
+    delete clone.authorizationDigest;
+    const mismatchRA = seal('phase-230-review-authorization', clone, 'authorizationDigest');
+    const a = buildClosureInputBundleAudit({ reports: [...rest, mismatchRA] });
+    assertEq(a.overall, 'CLOSURE_BUNDLE_BROKEN', 'RA content mismatch broken');
+    assert(a.blockers.includes('BUNDLE_ROOT_UNRESOLVED'), 'RA root not mesh-valid');
+    assert(!a.results.some((r) => r.report === 'review-authorization' && r.meshValid), 'RA not mesh-valid on cross-content mismatch');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 test('CLOSURE_BUNDLE_BROKEN and redaction-safe on empty input', () => {
   const a = buildClosureInputBundleAudit({ reports: [] });
   assertEq(a.overall, 'CLOSURE_BUNDLE_BROKEN', 'empty broken');
