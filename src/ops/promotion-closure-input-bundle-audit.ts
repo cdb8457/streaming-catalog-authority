@@ -95,7 +95,13 @@ const CROSS: Readonly<Record<string, (self: Record<string, unknown>, canon: (id:
     const rmShas = shaSeq(rm.rows);
     const raTests = placeholderTests(self.placeholders);
     const tvTests = commandSet(tv.commandResults);
-    return raShas.length > 0 && sameOrdered(raShas, crcShas) && sameOrdered(raShas, rmShas) && sameSet(raTests, tvTests);
+    if (raShas.length === 0 || !sameOrdered(raShas, crcShas) || !sameOrdered(raShas, rmShas) || !sameSet(raTests, tvTests)) return false;
+    const terminal = crcShas[crcShas.length - 1];
+    // The transcript must have reviewed the SAME terminal commit, and the commit-range and review-matrix must
+    // agree on the base -- so a transcript resealed onto a different head, or a base mismatch with matching
+    // rows, is rejected.
+    return sha40s(tv.head) !== undefined && sha40s(tv.head) === terminal
+      && sha40s(crc.base) !== undefined && sha40s(crc.base) === sha40s(rm.base);
   },
 };
 

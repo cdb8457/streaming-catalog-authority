@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildClosureSummaryV3, CLOSURE_SUMMARY_V3_HUMAN_GATES, CLOSURE_SUMMARY_V3_DISCLAIMERS } from '../src/ops/promotion-closure-summary-v3.js';
+import { buildClosureInputBundleAudit } from '../src/ops/promotion-closure-input-bundle-audit.js';
 import { buildReviewAuthorization } from '../src/ops/promotion-review-authorization.js';
 import { buildReviewMatrix } from '../src/ops/promotion-review-matrix.js';
 import { buildFixtureEvidenceBundle } from '../src/ops/promotion-fixture-bundle.js';
@@ -183,8 +184,53 @@ function resealRA(ra: Record<string, unknown>, placeholders: unknown[]): Record<
   return seal('phase-230-review-authorization', clone, 'authorizationDigest');
 }
 function ph(sha: string): Record<string, unknown> { return { sha, humanReviewed: 'PENDING', signedOff: 'PENDING', tests: [{ test: CMD, result: 'PENDING' }] }; }
+// Mutate a genuine report's body and re-seal it (recompute its self-digest with the correct scope).
+function resealReport(short: string, obj: Record<string, unknown>, mutate: (o: Record<string, unknown>) => void): Record<string, unknown> {
+  const clone = JSON.parse(JSON.stringify(obj)) as Record<string, unknown>;
+  mutate(clone);
+  const [scope, field] = SEAL[short]!;
+  delete clone[field];
+  return seal(scope, clone, field);
+}
 
 console.log('Running Phase 230 closure summary v3 suite:\n');
+
+await test('BLOCKED: TV resealed onto a different head (chain rebound) and CRC/RM base mismatch', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    const anchors = b.anchorReports as unknown as Array<Record<string, unknown>>;
+    const genRA = b.reviewAuthorization as unknown as Record<string, unknown>;
+    const find = (id: string) => anchors.find((r) => r.report === id)!;
+    const withReplaced = (...reps: Record<string, unknown>[]) => { const m = new Map(anchors.map((r) => [r.report as string, r])); for (const rp of reps) m.set(rp.report as string, rp); return [...m.values()]; };
+    const bd = (o: Record<string, unknown>) => o.boundDigests as Record<string, unknown>;
+
+    // (1) reseal transcript-verification onto a DIFFERENT sha40 head (commands preserved), then rebind/reseal
+    // the dependent TC -> readiness -> RA chain. The commit range still reviews the original head.
+    const tv = find('phase-230-promotion-transcript-verification');
+    const tc = find('phase-230-promotion-terminal-closure-manifest');
+    const bt = find('phase-230-promotion-terminal-readiness-v2');
+    const tv2 = resealReport('transcript-verification', tv, (o) => { o.head = 'f'.repeat(40); });
+    const tc2 = resealReport('terminal-closure-manifest', tc, (o) => { bd(o)['transcript-verification'] = tv2.verificationDigest; });
+    const bt2 = resealReport('terminal-readiness-v2', bt, (o) => { bd(o)['terminal-closure'] = tc2.terminalDigest; });
+    const ra2 = resealReport('review-authorization', genRA, (o) => { bd(o)['transcript-verification'] = tv2.verificationDigest; bd(o)['terminal-closure'] = tc2.terminalDigest; bd(o)['terminal-readiness-v2'] = bt2.readinessV2Digest; });
+    const s1 = buildClosureSummaryV3({ reviewAuthorization: ra2, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED, anchorReports: withReplaced(tv2, tc2, bt2) });
+    assertEq(s1.overall, 'CLOSURE_SUMMARY_BLOCKED', 'TV resealed onto a different head must block');
+    assert(s1.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'transcript head != terminal reviewed commit -> UNBOUND_TERMINAL_CONTEXT');
+    const a1 = buildClosureInputBundleAudit({ reports: [ra2, b.coordinatorReadiness as unknown as Record<string, unknown>, ...withReplaced(tv2, tc2, bt2)] });
+    assertEq(a1.overall, 'CLOSURE_BUNDLE_BROKEN', 'closure-input audit blocks TV head reseal');
+
+    // (2) reseal commit-range-closure with a DIFFERENT base (ordered results/head preserved), rebind the chain.
+    const crc = find('phase-230-promotion-commit-range-closure');
+    const crc2 = resealReport('commit-range-closure', crc, (o) => { o.base = '9'.repeat(40); });
+    const tc3 = resealReport('terminal-closure-manifest', tc, (o) => { bd(o)['commit-range-closure'] = crc2.closureDigest; });
+    const bt3 = resealReport('terminal-readiness-v2', bt, (o) => { bd(o)['terminal-closure'] = tc3.terminalDigest; });
+    const ra3 = resealReport('review-authorization', genRA, (o) => { bd(o)['commit-range-closure'] = crc2.closureDigest; bd(o)['terminal-closure'] = tc3.terminalDigest; bd(o)['terminal-readiness-v2'] = bt3.readinessV2Digest; });
+    const s2 = buildClosureSummaryV3({ reviewAuthorization: ra3, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED, anchorReports: withReplaced(crc2, tc3, bt3) });
+    assertEq(s2.overall, 'CLOSURE_SUMMARY_BLOCKED', 'CRC/RM base mismatch (matching rows/head) must block');
+    assert(s2.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'commit-range base != review-matrix base -> UNBOUND_TERMINAL_CONTEXT');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
 
 await test('BLOCKED: otherwise-green mesh with invalid RA placeholder shas / mismatched ordered commit list', async () => {
   const root = workspace();
