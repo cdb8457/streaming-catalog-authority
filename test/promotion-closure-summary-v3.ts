@@ -106,7 +106,8 @@ async function bounded(root: string) {
   const readiness = buildTerminalReadinessV2({ terminalClosure, packComponentIntegrity, aggregatorDigestAudit: buildAggregatorDigestAudit(projectRoot), artifactExportManifest: buildArtifactExportManifest(projectRoot), negativeEvidenceCorpus: negativeCorpus, watchdogHygiene });
   const reviewMatrix = buildReviewMatrix({ base: BASE, head: HEAD, commits: [{ sha: C1 }, { sha: C2 }, { sha: HEAD }], requiredTests: [CMD] });
   const reviewAuthorization = buildReviewAuthorization({ readiness, terminalClosure, commitRangeClosure, transcriptVerification, reviewMatrix });
-  return { reviewAuthorization, coordinatorReadiness };
+  const anchorReports = [readiness, terminalClosure, commitRangeClosure, transcriptVerification, reviewMatrix, acceptancePreflight, failureMatrix, reportSchema, boundaryAudit, cliErgonomics];
+  return { reviewAuthorization, coordinatorReadiness, anchorReports };
 }
 
 // Self-seal a body: recompute its self-digest with the correct scope so it is individually verifiable.
@@ -129,6 +130,32 @@ test('BLOCKED on a forged minimal self-sealed RA/CR even when observedState.head
   assert(s.failureEvidence.some((c) => c.check === 'terminal-context-bound' && !c.ok), 'terminal-context-bound false');
   assert(s.failureEvidence.some((c) => c.check === 'coordinator-context-bound' && !c.ok), 'coordinator-context-bound false');
   assert(!('review-authorization' in s.boundDigests), 'forged RA digest not recorded');
+});
+
+test('BLOCKED on a FULL-SHAPE forged self-sealed RA/CR (fabricated boundDigests, no real anchors)', () => {
+  const fsha = 'a'.repeat(40);
+  const F = (c: string) => c.repeat(64);
+  // A FULL-SHAPE review-authorization: authoritative shape (evidenceValid/matrixValid/contextBound, counts,
+  // placeholders) AND five sha256-shaped boundDigests -- but the bindings are fabricated, matching no real
+  // report. It self-seals cleanly.
+  const ra = seal('phase-230-review-authorization', {
+    report: 'phase-230-promotion-review-authorization', version: 1, redactionSafe: true, authorization: 'NONE',
+    overall: 'LOCAL_REVIEW_AUTHORIZED', evidenceValid: true, matrixValid: true, contextBound: true,
+    reviewedCommitCount: 1, reviewedTestCount: 1,
+    placeholders: [{ sha: fsha, humanReviewed: 'PENDING', signedOff: 'PENDING', tests: [{ test: CMD, result: 'PENDING' }] }],
+    boundDigests: { 'terminal-readiness-v2': F('1'), 'terminal-closure': F('2'), 'commit-range-closure': F('3'), 'transcript-verification': F('4'), 'review-matrix': F('5') },
+  }, 'authorizationDigest');
+  const cr = seal('phase-230-coordinator-readiness', {
+    report: 'phase-230-promotion-coordinator-readiness-manifest', version: 1, redactionSafe: true, authorization: 'NONE',
+    overall: 'COORDINATOR_READINESS_CONFIRMED',
+    components: ['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics'].map((c) => ({ component: c, present: true, ok: true })),
+    boundDigests: { 'acceptance-preflight': F('6'), 'failure-matrix': F('7'), 'report-schema': F('8'), 'boundary-audit': F('9'), 'cli-ergonomics': F('b') },
+  }, 'readinessDigest');
+  const s = buildClosureSummaryV3({ reviewAuthorization: ra, coordinatorReadiness: cr, observedState: { observed: true, source: 'local-forged-observation', head: fsha } });
+  assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'full-shape forged self-sealed RA/CR must block');
+  assert(s.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'fabricated RA bindings -> UNBOUND_TERMINAL_CONTEXT');
+  assert(s.blockers.includes('UNBOUND_COORDINATOR_CONTEXT'), 'fabricated CR bindings -> UNBOUND_COORDINATOR_CONTEXT');
+  assert(!('review-authorization' in s.boundDigests) && !('coordinator-readiness' in s.boundDigests), 'no forged digest recorded');
 });
 
 await test('CLOSURE_SUMMARY_READY with bounded contexts + observed state; exact commit/test visibility; PENDING', async () => {
@@ -186,12 +213,12 @@ await test('BLOCKED on an unbound terminal or coordinator context', async () => 
     const b = await bounded(root);
     // review-authorization genuinely NOT_AUTHORIZED (valid self-digest) -> unbound terminal context.
     const unauth = buildReviewAuthorization({});
-    const t = buildClosureSummaryV3({ reviewAuthorization: unauth, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED });
+    const t = buildClosureSummaryV3({ reviewAuthorization: unauth, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED, anchorReports: b.anchorReports });
     assert(t.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'UNBOUND_TERMINAL_CONTEXT');
 
     // coordinator-readiness genuinely NOT_CONFIRMED (valid self-digest) -> unbound coordinator context.
     const notConf = buildCoordinatorReadiness({});
-    const c = buildClosureSummaryV3({ reviewAuthorization: b.reviewAuthorization, coordinatorReadiness: notConf, observedState: OBSERVED });
+    const c = buildClosureSummaryV3({ reviewAuthorization: b.reviewAuthorization, coordinatorReadiness: notConf, observedState: OBSERVED, anchorReports: b.anchorReports });
     assert(c.blockers.includes('UNBOUND_COORDINATOR_CONTEXT'), 'UNBOUND_COORDINATOR_CONTEXT');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
@@ -202,7 +229,7 @@ await test('BLOCKED on an unverified component digest', async () => {
     const b = await bounded(root);
     const tampered = JSON.parse(JSON.stringify(b.reviewAuthorization)) as Record<string, unknown>;
     tampered.injectedClaim = 'smuggled'; // body changed, digest not resealed -> recompute fails
-    const s = buildClosureSummaryV3({ reviewAuthorization: tampered, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED });
+    const s = buildClosureSummaryV3({ reviewAuthorization: tampered, coordinatorReadiness: b.coordinatorReadiness, observedState: OBSERVED, anchorReports: b.anchorReports });
     assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'unverified digest blocked');
     assert(s.blockers.includes('COMPONENT_DIGEST_UNVERIFIED'), 'COMPONENT_DIGEST_UNVERIFIED');
   } finally { rmSync(root, { recursive: true, force: true }); }
@@ -244,10 +271,10 @@ await test('CLI builds the closure summary and never echoes raw paths to stdout'
     const b = await bounded(root);
     const dir = join(root, 'a'); mkdirSync(dir, { recursive: true });
     const w = (n: string, v: unknown): string => { const p = join(dir, n); writeFileSync(p, JSON.stringify(v)); return p; };
-    const ra = w('ra.json', b.reviewAuthorization); const cr = w('cr.json', b.coordinatorReadiness); const os = w('os.json', OBSERVED);
+    const ra = w('ra.json', b.reviewAuthorization); const cr = w('cr.json', b.coordinatorReadiness); const os = w('os.json', OBSERVED); const an = w('an.json', b.anchorReports);
     const outPath = join(root, 'catalog-authority-test-library', 'CS3MARKER-out', 'summary.json');
     const cliPath = fileURLToPath(new URL('../src/ops/promotion-closure-summary-v3-cli.ts', import.meta.url));
-    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--reviewauthorization', ra, '--coordinatorreadiness', cr, '--observedstate', os, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
+    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--reviewauthorization', ra, '--coordinatorreadiness', cr, '--observedstate', os, '--anchors', an, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
     assert(res.error === undefined, `spawn ok: ${res.error?.message ?? ''}`);
     assertEq(res.status, 0, `READY exit (stderr: ${res.stderr ?? ''})`);
     assert(existsSync(outPath), 'summary file written');

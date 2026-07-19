@@ -16,6 +16,9 @@ fail-closed and authorizes nothing: `authorization` is the constant `NONE` and `
 - `coordinatorReadiness` — the coordinator readiness manifest.
 - `observedState` — a locally observed-state record `{ observed, head, source?, stateDigest? }`, where `head`
   is the reviewed commit the state was observed at.
+- `anchorReports` — an array of the ACTUAL underlying reports RA/CR claim to bind (terminal-readiness-v2,
+  terminal-closure, commit-range-closure, transcript-verification, review-matrix; acceptance-preflight,
+  failure-mode-matrix, report-schema, boundary-audit, cli-ergonomics), for the exact-equality cross-check.
 
 ## What it checks (fail closed)
 
@@ -33,6 +36,11 @@ Each report's self-digest is recomputed. `CLOSURE_SUMMARY_READY` only when all h
   (`acceptance-preflight`, `failure-matrix`, `report-schema`, `boundary-audit`, `cli-ergonomics`) present + ok
   with a matching `boundDigests` entry (`UNBOUND_COORDINATOR_CONTEXT`). A forged minimal self-sealed report is
   rejected.
+- **Bindings proven by exact equality (not self-claimed)** — because even a full-shape self-sealed report can
+  fabricate sha256-shaped `boundDigests`, every RA/CR binding must **exactly equal** the recomputed self-digest
+  of the actual underlying report supplied in `anchorReports` (each anchor must itself recompute and be green).
+  A fabricated binding matches no real anchor, so a FULL-SHAPE forged self-sealed RA/CR is rejected
+  (`UNBOUND_TERMINAL_CONTEXT` / `UNBOUND_COORDINATOR_CONTEXT`).
 - **Observed-state requirement** — a record with `observed === true` is supplied (`OBSERVED_STATE_MISSING`)
   and is **bound to the authoritative reviewed head**: its `head` must equal the terminal reviewed commit
   (`OBSERVED_STATE_UNBOUND`), so a stale observation of a different head cannot pass.
@@ -68,7 +76,7 @@ authorize Phase 231 / any live promotion.**
 
 ```
 npm run ops:promotion-closure-summary-v3 -- --reviewauthorization ra.json --coordinatorreadiness cr.json \
-    --observedstate os.json [--out summary.json]
+    --observedstate os.json --anchors anchors.json [--out summary.json]
 ```
 
 Exit `0` = `CLOSURE_SUMMARY_READY`, `1` = `CLOSURE_SUMMARY_BLOCKED`.

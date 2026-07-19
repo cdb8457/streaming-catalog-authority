@@ -10,11 +10,14 @@ import { buildClosureSummaryV3, type ClosureSummaryV3Input } from './promotion-c
 
 function usage(): string {
   return [
-    'usage: ops:promotion-closure-summary-v3 --reviewauthorization <f> --coordinatorreadiness <f> --observedstate <f> [--out <summary.json>]',
+    'usage: ops:promotion-closure-summary-v3 --reviewauthorization <f> --coordinatorreadiness <f> \\',
+    '         --observedstate <f> --anchors <bundle.json> [--out <summary.json>]',
     '',
-    'Local, non-live: CLOSURE_SUMMARY_READY only when both bounded contexts recompute and are green, an',
-    'observed-state record is present, every component digest verifies, and no live-boundary escape is found.',
-    'authorization stays NONE / status PENDING; it does NOT authorize Phase 231. Exit 0 = READY, 1 = BLOCKED.',
+    'anchors is a JSON array of the actual underlying reports RA/CR claim to bind. Local, non-live:',
+    'CLOSURE_SUMMARY_READY only when both bounded contexts recompute, are authoritative in shape, and every',
+    'claimed binding EXACTLY equals a recomputed anchor digest; an observed-state record bound to the reviewed',
+    'head is present; every component digest verifies; and no live-boundary escape is found. authorization',
+    'stays NONE / status PENDING; it does NOT authorize Phase 231. Exit 0 = READY, 1 = BLOCKED.',
   ].join('\n');
 }
 
@@ -33,7 +36,7 @@ function main(): number {
   const out = valueAfter(args, '--out');
   const input: ClosureSummaryV3Input = {};
   const map: Array<[keyof ClosureSummaryV3Input, string]> = [
-    ['reviewAuthorization', '--reviewauthorization'], ['coordinatorReadiness', '--coordinatorreadiness'], ['observedState', '--observedstate'],
+    ['reviewAuthorization', '--reviewauthorization'], ['coordinatorReadiness', '--coordinatorreadiness'], ['observedState', '--observedstate'], ['anchorReports', '--anchors'],
   ];
   try {
     for (const [key, flag] of map) {
