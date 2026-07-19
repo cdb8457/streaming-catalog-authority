@@ -77,6 +77,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-review-authorization` | PHASE_230_PROMOTION_REVIEW_AUTHORIZATION |
 | `promotion-context-consistency-audit` | PHASE_230_PROMOTION_CONTEXT_CONSISTENCY_AUDIT |
 | `promotion-closure-summary-v3` | PHASE_230_PROMOTION_CLOSURE_SUMMARY_V3 |
+| `promotion-closure-input-bundle-audit` | PHASE_230_PROMOTION_CLOSURE_INPUT_BUNDLE_AUDIT |
 
 ## Test-only local suites
 

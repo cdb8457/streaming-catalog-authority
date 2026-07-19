@@ -1,0 +1,56 @@
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { buildClosureInputBundleAudit, type ClosureInputBundleAuditInput } from './promotion-closure-input-bundle-audit.js';
+
+// Offline closure-input-bundle auditor CLI. Given a bundle (JSON array) of the Phase 230 closure input
+// reports, it validates the whole mesh once: every aggregator's child bindings must resolve by exact equality
+// to supplied, green, recomputing, mesh-valid reports. It authorizes nothing and does not authorize Phase
+// 231. Never touches the real Movies root, never contacts Jellyfin.
+
+function usage(): string {
+  return [
+    'usage: ops:promotion-closure-input-bundle-audit --reports <bundle.json> [--out <audit.json>]',
+    '',
+    'bundle.json is a JSON array of the closure input reports (review-authorization, coordinator-readiness,',
+    'terminal-readiness-v2, terminal-closure and their children). Local, non-live: CLOSURE_BUNDLE_VERIFIED',
+    'only when the roots (RA, CR, terminal-readiness-v2) are mesh-valid -- each recomputes, is green, and every',
+    'aggregator binding resolves to a supplied mesh-valid child. It authorizes NOTHING and does not authorize',
+    'Phase 231. Exit 0 = VERIFIED, 1 = BROKEN.',
+  ].join('\n');
+}
+
+function valueAfter(args: readonly string[], flag: string): string | undefined {
+  const idx = args.indexOf(flag);
+  return idx < 0 ? undefined : args[idx + 1];
+}
+
+function main(): number {
+  const args = process.argv.slice(2);
+  if (args.includes('--help')) { console.log(usage()); return 0; }
+  const out = valueAfter(args, '--out');
+  const input: ClosureInputBundleAuditInput = {};
+  try {
+    const reports = valueAfter(args, '--reports');
+    if (reports !== undefined) (input as Record<string, unknown>).reports = JSON.parse(readFileSync(reports, 'utf8'));
+  } catch { console.error('reports file is missing or not valid JSON'); return 2; }
+  const audit = buildClosureInputBundleAudit(input);
+  if (out) {
+    mkdirSync(dirname(out), { recursive: true });
+    writeFileSync(out, `${JSON.stringify(audit, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
+  }
+  console.log(JSON.stringify({
+    report: 'phase-230-promotion-closure-input-bundle-audit-capture',
+    overall: audit.overall,
+    authorization: audit.authorization,
+    redactionSafe: true,
+    reportCount: audit.reportCount,
+    meshValidCount: audit.meshValidCount,
+    results: audit.results,
+    blockers: audit.blockers,
+    auditDigest: audit.auditDigest,
+    ...(out ? { outputWritten: true } : {}),
+  }, null, 2));
+  return audit.overall === 'CLOSURE_BUNDLE_VERIFIED' ? 0 : 1;
+}
+
+process.exit(main());

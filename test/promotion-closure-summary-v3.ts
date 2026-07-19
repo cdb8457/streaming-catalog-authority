@@ -100,13 +100,18 @@ async function bounded(root: string) {
   const coordinatorReadiness = buildCoordinatorReadiness({ acceptancePreflight, failureMatrix, reportSchema, boundaryAudit, cliErgonomics });
   const transcriptVerification = buildTranscriptVerification({ transcript, head: HEAD, expectedCommands: [CMD] });
   const commitRangeClosure = buildCommitRangeClosure(context);
-  const terminalClosure = buildTerminalClosure({ transcriptVerification, evidenceMinimizer: buildEvidenceMinimizer([finalSummary, reviewBundle, dag]), commitRangeClosure, regressionOracle: buildRegressionOracle(projectRoot), coordinatorReadiness });
+  const evidenceMinimizer = buildEvidenceMinimizer([finalSummary, reviewBundle, dag]);
+  const regressionOracle = buildRegressionOracle(projectRoot);
+  const terminalClosure = buildTerminalClosure({ transcriptVerification, evidenceMinimizer, commitRangeClosure, regressionOracle, coordinatorReadiness });
   const packComponentIntegrity = buildPackComponentIntegrity({ reviewerPack, finalSummary, releaseChecklist, mergeReadiness, chainBundle, reviewAutomation, redactionCorpus, boundaryPolicy });
+  const aggregatorDigestAudit = buildAggregatorDigestAudit(projectRoot);
+  const artifactExportManifest = buildArtifactExportManifest(projectRoot);
   const watchdogHygiene = buildWatchdogHygiene({ config: SAFE_CONFIG, queue: [{ itemDigest: 'a'.repeat(64), status: 'processed', run: RUN }], currentRun: RUN });
-  const readiness = buildTerminalReadinessV2({ terminalClosure, packComponentIntegrity, aggregatorDigestAudit: buildAggregatorDigestAudit(projectRoot), artifactExportManifest: buildArtifactExportManifest(projectRoot), negativeEvidenceCorpus: negativeCorpus, watchdogHygiene });
+  const readiness = buildTerminalReadinessV2({ terminalClosure, packComponentIntegrity, aggregatorDigestAudit, artifactExportManifest, negativeEvidenceCorpus: negativeCorpus, watchdogHygiene });
   const reviewMatrix = buildReviewMatrix({ base: BASE, head: HEAD, commits: [{ sha: C1 }, { sha: C2 }, { sha: HEAD }], requiredTests: [CMD] });
   const reviewAuthorization = buildReviewAuthorization({ readiness, terminalClosure, commitRangeClosure, transcriptVerification, reviewMatrix });
-  const anchorReports = [readiness, terminalClosure, commitRangeClosure, transcriptVerification, reviewMatrix, acceptancePreflight, failureMatrix, reportSchema, boundaryAudit, cliErgonomics];
+  // The FULL input mesh: RA/CR's anchors AND those anchors' own children, so the bundle audit fully resolves.
+  const anchorReports = [readiness, terminalClosure, commitRangeClosure, transcriptVerification, reviewMatrix, acceptancePreflight, failureMatrix, reportSchema, boundaryAudit, cliErgonomics, coordinatorReadiness, evidenceMinimizer, regressionOracle, packComponentIntegrity, aggregatorDigestAudit, artifactExportManifest, negativeCorpus, watchdogHygiene];
   return { reviewAuthorization, coordinatorReadiness, anchorReports };
 }
 
@@ -156,6 +161,22 @@ test('BLOCKED on a FULL-SHAPE forged self-sealed RA/CR (fabricated boundDigests,
   assert(s.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'fabricated RA bindings -> UNBOUND_TERMINAL_CONTEXT');
   assert(s.blockers.includes('UNBOUND_COORDINATOR_CONTEXT'), 'fabricated CR bindings -> UNBOUND_COORDINATOR_CONTEXT');
   assert(!('review-authorization' in s.boundDigests) && !('coordinator-readiness' in s.boundDigests), 'no forged digest recorded');
+});
+
+test('BLOCKED on forged full RA/CR + forged green self-sealed anchors whose deep children are absent', () => {
+  const fsha = 'a'.repeat(40); const F = (c: string) => c.repeat(64);
+  // Forged green self-sealed DIRECT anchors of RA -- but their own deep children (pack-component-integrity,
+  // evidence-minimizer, ...) are NOT supplied, so the bundle mesh cannot resolve.
+  const bt = seal('phase-230-terminal-readiness-v2', { report: 'phase-230-promotion-terminal-readiness-v2', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'TERMINAL_READINESS_V2_CONFIRMED', boundDigests: { 'terminal-closure': F('1'), 'pack-component-integrity': F('2'), 'aggregator-digest-audit': F('3'), 'artifact-export-manifest': F('4'), 'negative-evidence-corpus': F('5'), 'watchdog-hygiene': F('6') } }, 'readinessV2Digest');
+  const tc = seal('phase-230-terminal-closure', { report: 'phase-230-promotion-terminal-closure-manifest', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'TERMINAL_CLOSURE_CONFIRMED', boundDigests: { 'transcript-verification': F('7'), 'evidence-minimizer': F('8'), 'commit-range-closure': F('9'), 'regression-oracle': F('c'), 'coordinator-readiness': F('d') } }, 'terminalDigest');
+  const crc = seal('phase-230-commit-range-closure', { report: 'phase-230-promotion-commit-range-closure', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'RANGE_CLOSED', base: BASE, head: fsha, results: [{ sha: fsha, category: 'phase-op' }] }, 'closureDigest');
+  const tv = seal('phase-230-transcript-verifier', { report: 'phase-230-promotion-transcript-verification', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'TRANSCRIPT_VERIFIED', head: fsha }, 'verificationDigest');
+  const rm = seal('phase-230-review-matrix', { report: 'phase-230-promotion-review-matrix', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'REVIEW_MATRIX_READY', base: BASE, head: fsha, rows: [{ sha: fsha, humanReviewed: 'PENDING', signedOff: 'PENDING', tests: [{ test: CMD, result: 'PENDING' }] }] }, 'reviewMatrixDigest');
+  const ra = seal('phase-230-review-authorization', { report: 'phase-230-promotion-review-authorization', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'LOCAL_REVIEW_AUTHORIZED', evidenceValid: true, matrixValid: true, contextBound: true, reviewedCommitCount: 1, reviewedTestCount: 1, placeholders: [{ sha: fsha, humanReviewed: 'PENDING', signedOff: 'PENDING', tests: [{ test: CMD, result: 'PENDING' }] }], boundDigests: { 'terminal-readiness-v2': bt.readinessV2Digest, 'terminal-closure': tc.terminalDigest, 'commit-range-closure': crc.closureDigest, 'transcript-verification': tv.verificationDigest, 'review-matrix': rm.reviewMatrixDigest } }, 'authorizationDigest');
+  const cr = seal('phase-230-coordinator-readiness', { report: 'phase-230-promotion-coordinator-readiness-manifest', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'COORDINATOR_READINESS_CONFIRMED', components: ['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics'].map((c) => ({ component: c, present: true, ok: true })), boundDigests: { 'acceptance-preflight': F('e'), 'failure-matrix': F('f'), 'report-schema': F('0'), 'boundary-audit': F('1'), 'cli-ergonomics': F('2') } }, 'readinessDigest');
+  const s = buildClosureSummaryV3({ reviewAuthorization: ra, coordinatorReadiness: cr, observedState: { observed: true, source: 'local-forged', head: fsha }, anchorReports: [bt, tc, crc, tv, rm] });
+  assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'forged green self-sealed anchors (deep children absent) must block');
+  assert(s.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'forged-anchor mesh does not resolve -> UNBOUND_TERMINAL_CONTEXT');
 });
 
 await test('CLOSURE_SUMMARY_READY with bounded contexts + observed state; exact commit/test visibility; PENDING', async () => {

@@ -412,6 +412,8 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'OBSERVED_STATE_UNBOUND', op: 'closure-summary-v3' },
   { code: 'COMPONENT_DIGEST_UNVERIFIED', op: 'closure-summary-v3' },
   { code: 'LIVE_BOUNDARY_ESCAPE', op: 'closure-summary-v3' },
+  { code: 'BUNDLE_ROOT_UNRESOLVED', op: 'closure-input-bundle-audit' },
+  { code: 'NO_REPORTS', op: 'closure-input-bundle-audit' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

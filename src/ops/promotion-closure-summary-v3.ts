@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+import { meshValidReports } from './promotion-closure-input-bundle-audit.js';
 
 // Local, non-live closure summary v3. It summarizes the Phase 230 local-only closure state from AUTHORITATIVE
 // BOUNDED inputs -- the review-authorization scaffold (which itself chained the terminal readiness to the
@@ -27,24 +28,6 @@ const ALLOWED_AUTHORIZATION: readonly string[] = ['NONE', 'PENDING'];
 // authoritative internal structure is a forgery and must not be treated as a bound context.
 const RA_REQUIRED_BINDINGS: readonly string[] = ['terminal-readiness-v2', 'terminal-closure', 'commit-range-closure', 'transcript-verification', 'review-matrix'];
 const CR_REQUIRED_COMPONENTS: readonly string[] = ['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics'];
-
-// Even a FULL-SHAPE self-sealed report can fabricate its boundDigests -- sha256-shaped but not corresponding
-// to any real report. So RA/CR are only context-bound when every claimed binding EXACTLY equals the
-// recomputed self-digest of the actual underlying report supplied as an anchor. report id -> its bound-key,
-// digest field, and expected green overall.
-interface AnchorSpec { readonly key: string; readonly digestField: string; readonly green: (o: Record<string, unknown>) => boolean; }
-const ANCHOR_SPECS: Readonly<Record<string, AnchorSpec>> = {
-  'phase-230-promotion-terminal-readiness-v2': { key: 'terminal-readiness-v2', digestField: 'readinessV2Digest', green: (o) => o.overall === 'TERMINAL_READINESS_V2_CONFIRMED' },
-  'phase-230-promotion-terminal-closure-manifest': { key: 'terminal-closure', digestField: 'terminalDigest', green: (o) => o.overall === 'TERMINAL_CLOSURE_CONFIRMED' },
-  'phase-230-promotion-commit-range-closure': { key: 'commit-range-closure', digestField: 'closureDigest', green: (o) => o.overall === 'RANGE_CLOSED' },
-  'phase-230-promotion-transcript-verification': { key: 'transcript-verification', digestField: 'verificationDigest', green: (o) => o.overall === 'TRANSCRIPT_VERIFIED' },
-  'phase-230-promotion-review-matrix': { key: 'review-matrix', digestField: 'reviewMatrixDigest', green: (o) => o.overall === 'REVIEW_MATRIX_READY' },
-  'phase-230-promotion-acceptance-preflight': { key: 'acceptance-preflight', digestField: 'preflightDigest', green: (o) => o.overall === 'PREFLIGHT_READY' },
-  'phase-230-promotion-failure-mode-matrix': { key: 'failure-matrix', digestField: 'failureMatrixDigest', green: (o) => o.overall === 'FAILURE_MATRIX_COMPLETE' },
-  'phase-230-promotion-report-schema': { key: 'report-schema', digestField: 'reportSchemaDigest', green: (o) => o.overall === 'REPORT_SCHEMA_OK' },
-  'phase-230-promotion-boundary-audit': { key: 'boundary-audit', digestField: 'auditDigest', green: (o) => o.overall === 'BOUNDARY_AUDIT_CLEAN' },
-  'phase-230-promotion-cli-ergonomics': { key: 'cli-ergonomics', digestField: 'ergonomicsDigest', green: (o) => o.overall === 'CLI_ERGONOMICS_OK' },
-};
 
 export const CLOSURE_SUMMARY_V3_HUMAN_GATES: readonly string[] = [
   'Human review of the exact reviewed commits and test set surfaced here.',
@@ -89,38 +72,27 @@ export function buildClosureSummaryV3(input: ClosureSummaryV3Input): ClosureSumm
   const blockers: string[] = [];
   const boundDigests: Record<string, string> = {};
 
-  // Index the supplied anchor reports (the ACTUAL reports RA/CR claim to bind) by their bound-key, keeping a
-  // digest only for a report that recomputes AND is green. RA/CR boundDigests are then bound by EXACT
-  // EQUALITY to these -- a fabricated (sha256-shaped but unreal) boundDigest matches no real anchor.
-  const anchorByKey = new Map<string, string | undefined>();
-  for (const a of (Array.isArray(input.anchorReports) ? input.anchorReports : [])) {
-    const o = asObject(a);
-    const spec = ANCHOR_SPECS[typeof o.report === 'string' ? o.report : ''];
-    if (!spec) continue;
-    const verified = verifySelfDigests([o]).results[0]?.verified === true;
-    anchorByKey.set(spec.key, verified && spec.green(o) ? sha256(o[spec.digestField]) : undefined);
-  }
-  const meshBound = (claimed: unknown, keys: readonly string[]): boolean => {
-    const bd = asObject(claimed);
-    return keys.every((key) => { const c = sha256(bd[key]); const anchor = anchorByKey.get(key); return c !== undefined && anchor !== undefined && anchor === c; });
-  };
+  // Validate the FULL input mesh once (RA + CR + every supplied anchor). A report is mesh-valid only when it
+  // recomputes, is green, and -- for each aggregator -- every declared child binding exactly equals the
+  // recomputed digest of a SUPPLIED child that is itself mesh-valid. So a forged green self-sealed anchor
+  // (whose own children are missing or shallow-forged) cannot make RA/CR context-bound.
+  const meshValid = meshValidReports([input.reviewAuthorization, input.coordinatorReadiness, ...(Array.isArray(input.anchorReports) ? input.anchorReports : [])]);
 
-  // Authoritative bounded input #1: the review-authorization scaffold. Beyond right id + recomputing
-  // self-digest + LOCAL_REVIEW_AUTHORIZED + authoritative shape, every claimed binding must EXACTLY equal the
-  // recomputed digest of the real anchor report -- so neither a minimal nor a FULL-SHAPE forged self-sealed
-  // report can pose as a bound terminal context. Only a truly-bound report's digest is recorded.
+  // Authoritative bounded input #1: the review-authorization scaffold. Right id + recomputing self-digest +
+  // LOCAL_REVIEW_AUTHORIZED + authoritative shape, AND mesh-valid within the supplied bundle. Only a
+  // truly-bound report's digest is recorded.
   const ra = bound(input.reviewAuthorization, 'phase-230-promotion-review-authorization', 'authorizationDigest',
     (o) => o.overall === 'LOCAL_REVIEW_AUTHORIZED' && reviewAuthorizationAuthoritative(o));
-  const raContextBound = ra.ok && meshBound(ra.obj.boundDigests, RA_REQUIRED_BINDINGS);
+  const raContextBound = ra.ok && meshValid.has('phase-230-promotion-review-authorization');
   if (raContextBound && ra.digest) boundDigests['review-authorization'] = ra.digest;
   if (!ra.digestVerified && ra.present && ra.rightId) blockers.push('COMPONENT_DIGEST_UNVERIFIED');
   if (!raContextBound) blockers.push('UNBOUND_TERMINAL_CONTEXT');
 
   // Authoritative bounded input #2: the coordinator readiness manifest -- likewise authoritative in shape and
-  // bound by exact equality to the real anchor component reports.
+  // mesh-valid within the supplied bundle.
   const cr = bound(input.coordinatorReadiness, 'phase-230-promotion-coordinator-readiness-manifest', 'readinessDigest',
     (o) => o.overall === 'COORDINATOR_READINESS_CONFIRMED' && coordinatorReadinessAuthoritative(o));
-  const crContextBound = cr.ok && meshBound(cr.obj.boundDigests, CR_REQUIRED_COMPONENTS);
+  const crContextBound = cr.ok && meshValid.has('phase-230-promotion-coordinator-readiness-manifest');
   if (crContextBound && cr.digest) boundDigests['coordinator-readiness'] = cr.digest;
   if (!cr.digestVerified && cr.present && cr.rightId) blockers.push('COMPONENT_DIGEST_UNVERIFIED');
   if (!crContextBound) blockers.push('UNBOUND_COORDINATOR_CONTEXT');

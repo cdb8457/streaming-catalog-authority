@@ -83,6 +83,7 @@ const LOCAL_SUITES = [
   'test/promotion-review-authorization.ts',
   'test/promotion-context-consistency-audit.ts',
   'test/promotion-closure-summary-v3.ts',
+  'test/promotion-closure-input-bundle-audit.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',
