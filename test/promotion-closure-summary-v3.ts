@@ -65,7 +65,8 @@ const BASE = '1111111111111111111111111111111111111111';
 const CMD = 'npm run test:phase230-local';
 const RUN = 'run-2026-07-18';
 const SAFE_CONFIG = { debounceMs: 500, idempotent: true, autoPromote: false, respectsLiveBoundary: true, deduplicateBy: 'content-digest' };
-const OBSERVED = { observed: true, source: 'local-fixture-observation' };
+const OBSERVED = { observed: true, source: 'local-fixture-observation', head: HEAD };
+const OTHER = 'e'.repeat(40);
 
 async function bounded(root: string) {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'closv3', now: makeNow() })));
@@ -140,6 +141,21 @@ await test('BLOCKED (fail closed) on a missing observed state', async () => {
     assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'missing observed state blocked');
     assert(s.blockers.includes('OBSERVED_STATE_MISSING'), 'OBSERVED_STATE_MISSING');
     assert(s.failureEvidence.some((c) => c.check === 'observed-state-present' && !c.ok), 'redaction-safe failure evidence');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED when the observed state is not bound to the authoritative reviewed head', async () => {
+  const root = workspace();
+  try {
+    const b = await bounded(root);
+    // A well-formed observation of a DIFFERENT head must not pass (stale/unrelated observation).
+    const staleHead = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'local', head: OTHER } });
+    assertEq(staleHead.overall, 'CLOSURE_SUMMARY_BLOCKED', 'stale observed head blocked');
+    assert(staleHead.blockers.includes('OBSERVED_STATE_UNBOUND'), 'OBSERVED_STATE_UNBOUND on head mismatch');
+    // An observation that declares no head at all cannot bind -> unbound.
+    const noHead = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'local' } });
+    assert(noHead.blockers.includes('OBSERVED_STATE_UNBOUND'), 'OBSERVED_STATE_UNBOUND when no head declared');
+    assert(noHead.failureEvidence.some((c) => c.check === 'observed-state-bound-to-head' && !c.ok), 'redaction-safe bound-check evidence');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

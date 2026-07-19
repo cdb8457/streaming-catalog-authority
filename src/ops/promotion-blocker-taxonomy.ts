@@ -409,6 +409,7 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'UNBOUND_TERMINAL_CONTEXT', op: 'closure-summary-v3' },
   { code: 'UNBOUND_COORDINATOR_CONTEXT', op: 'closure-summary-v3' },
   { code: 'OBSERVED_STATE_MISSING', op: 'closure-summary-v3' },
+  { code: 'OBSERVED_STATE_UNBOUND', op: 'closure-summary-v3' },
   { code: 'COMPONENT_DIGEST_UNVERIFIED', op: 'closure-summary-v3' },
   { code: 'LIVE_BOUNDARY_ESCAPE', op: 'closure-summary-v3' },
 ];

@@ -14,7 +14,8 @@ fail-closed and authorizes nothing: `authorization` is the constant `NONE` and `
   the commit-range / transcript evidence and bound a review matrix to the authoritative context. Its
   placeholders carry the exact reviewed commit shas + test labels.
 - `coordinatorReadiness` — the coordinator readiness manifest.
-- `observedState` — a locally observed-state record `{ observed, source?, stateDigest? }`.
+- `observedState` — a locally observed-state record `{ observed, head, source?, stateDigest? }`, where `head`
+  is the reviewed commit the state was observed at.
 
 ## What it checks (fail closed)
 
@@ -25,7 +26,9 @@ Each report's self-digest is recomputed. `CLOSURE_SUMMARY_READY` only when all h
   `LOCAL_REVIEW_AUTHORIZED` (`UNBOUND_TERMINAL_CONTEXT`).
 - **Bounded coordinator context** — coordinator-readiness present, right id, digest recomputes,
   `COORDINATOR_READINESS_CONFIRMED` (`UNBOUND_COORDINATOR_CONTEXT`).
-- **Observed-state requirement** — a record with `observed === true` is supplied (`OBSERVED_STATE_MISSING`).
+- **Observed-state requirement** — a record with `observed === true` is supplied (`OBSERVED_STATE_MISSING`)
+  and is **bound to the authoritative reviewed head**: its `head` must equal the terminal reviewed commit
+  (`OBSERVED_STATE_UNBOUND`), so a stale observation of a different head cannot pass.
 - **Verified component digests** — a present bounded input that does not recompute is
   `COMPONENT_DIGEST_UNVERIFIED`.
 - **Live-boundary closed** — any input claiming `authorization` other than `NONE`/`PENDING`, or **any string
@@ -38,7 +41,8 @@ Each report's self-digest is recomputed. `CLOSURE_SUMMARY_READY` only when all h
 Exact **commit visibility** (`head`, ordered commit shas, count) and **test visibility** (test labels, count)
 are surfaced from the verified review-authorization placeholders. Failure evidence is a set of per-check
 booleans (`terminal-context-bound`, `coordinator-context-bound`, `observed-state-present`,
-`component-digests-verified`, `live-boundary-closed`) — **codes and booleans only, never a raw path, title,
+`observed-state-bound-to-head`, `component-digests-verified`, `live-boundary-closed`) — **codes and booleans
+only, never a raw path, title,
 or the observed-state source**. Only verified digests are recorded in `boundDigests`. It reads parsed JSON
 only; it performs no promotion, never touches the real Movies root, never contacts Jellyfin, and is sealed
 with a `summaryV3Digest`. **READY summarizes local closure for a human; it does NOT approve, merge, or
@@ -48,9 +52,10 @@ authorize Phase 231 / any live promotion.**
 
 - `src/ops/promotion-closure-summary-v3.ts` — `buildClosureSummaryV3(input)` + gates/boundary/disclaimers.
 - `src/ops/promotion-closure-summary-v3-cli.ts` — CLI wrapper.
-- `test/promotion-closure-summary-v3.ts` — 7 tests: ready with bounded contexts + observed state (exact
-  commit/test visibility, PENDING); missing observed state; unbound terminal / coordinator context;
-  unverified component digest; live-boundary escape; empty input; and a spawned CLI run.
+- `test/promotion-closure-summary-v3.ts` — 8 tests: ready with bounded contexts + observed state (exact
+  commit/test visibility, PENDING); missing observed state; observed state not bound to the reviewed head;
+  unbound terminal / coordinator context; unverified component digest; live-boundary escape (incl. deep /
+  nested and non-source fields); empty input; and a spawned CLI run.
 
 ## Usage
 

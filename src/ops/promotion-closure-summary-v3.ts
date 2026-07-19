@@ -79,22 +79,6 @@ export function buildClosureSummaryV3(input: ClosureSummaryV3Input): ClosureSumm
   if (!cr.digestVerified && cr.present && cr.rightId) blockers.push('COMPONENT_DIGEST_UNVERIFIED');
   if (!cr.ok) blockers.push('UNBOUND_COORDINATOR_CONTEXT');
 
-  // Observed-state requirement: a locally observed state must be supplied and must be a local observation.
-  const os = asObject(input.observedState);
-  const observedStatePresent = input.observedState !== undefined && os.observed === true;
-  if (!observedStatePresent) blockers.push('OBSERVED_STATE_MISSING');
-
-  // Live-boundary escape: any input claiming authorization other than NONE/PENDING, or ANY string anywhere
-  // in the (untrusted, coordinator-supplied) observed-state record that names a live / network / media
-  // surface or a raw path -- not merely the `source` field.
-  let liveEscape = false;
-  for (const value of [input.reviewAuthorization, input.coordinatorReadiness, input.observedState]) {
-    const a = asObject(value).authorization;
-    if (typeof a === 'string' && !ALLOWED_AUTHORIZATION.includes(a)) liveEscape = true;
-  }
-  if (deepLiveEscape(input.observedState, 0)) liveEscape = true;
-  if (liveEscape) blockers.push('LIVE_BOUNDARY_ESCAPE');
-
   // Exact commit/test visibility from the (verified, authorized) review-authorization placeholders.
   let commitShas: string[] = [];
   let tests: string[] = [];
@@ -109,10 +93,32 @@ export function buildClosureSummaryV3(input: ClosureSummaryV3Input): ClosureSumm
   }
   const head = commitShas.length > 0 ? commitShas[commitShas.length - 1]! : null;
 
+  // Observed-state requirement: a locally observed state must be supplied, be a local observation, AND be
+  // BOUND to the authoritative reviewed head (the terminal reviewed commit). A stale observation of a
+  // different head -- individually well-formed -- must not pass.
+  const os = asObject(input.observedState);
+  const observedStatePresent = input.observedState !== undefined && os.observed === true;
+  if (!observedStatePresent) blockers.push('OBSERVED_STATE_MISSING');
+  const osHead = sha40(os.head);
+  const observedStateBound = observedStatePresent && osHead !== undefined && (head === null || osHead === head);
+  if (observedStatePresent && !observedStateBound) blockers.push('OBSERVED_STATE_UNBOUND');
+
+  // Live-boundary escape: any input claiming authorization other than NONE/PENDING, or ANY string anywhere
+  // in the (untrusted, coordinator-supplied) observed-state record that names a live / network / media
+  // surface or a raw path -- not merely the `source` field.
+  let liveEscape = false;
+  for (const value of [input.reviewAuthorization, input.coordinatorReadiness, input.observedState]) {
+    const a = asObject(value).authorization;
+    if (typeof a === 'string' && !ALLOWED_AUTHORIZATION.includes(a)) liveEscape = true;
+  }
+  if (deepLiveEscape(input.observedState, 0)) liveEscape = true;
+  if (liveEscape) blockers.push('LIVE_BOUNDARY_ESCAPE');
+
   const failureEvidence: ClosureCheck[] = [
     { check: 'terminal-context-bound', ok: ra.ok },
     { check: 'coordinator-context-bound', ok: cr.ok },
     { check: 'observed-state-present', ok: observedStatePresent },
+    { check: 'observed-state-bound-to-head', ok: observedStateBound },
     { check: 'component-digests-verified', ok: (!ra.present || ra.digestVerified) && (!cr.present || cr.digestVerified) },
     { check: 'live-boundary-closed', ok: !liveEscape },
   ];
