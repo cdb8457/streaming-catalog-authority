@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -108,7 +109,27 @@ async function bounded(root: string) {
   return { reviewAuthorization, coordinatorReadiness };
 }
 
+// Self-seal a body: recompute its self-digest with the correct scope so it is individually verifiable.
+function seal(scope: string, body: Record<string, unknown>, field: string): Record<string, unknown> {
+  return { ...body, [field]: createHash('sha256').update(`${scope}:${JSON.stringify(body)}`).digest('hex') };
+}
+
 console.log('Running Phase 230 closure summary v3 suite:\n');
+
+test('BLOCKED on a forged minimal self-sealed RA/CR even when observedState.head matches the forged RA head', () => {
+  const fsha = 'a'.repeat(40);
+  // A minimal review-authorization: right id, LOCAL_REVIEW_AUTHORIZED, a valid self-digest -- but none of the
+  // authoritative internal structure (evidenceValid/matrixValid/contextBound, boundDigests, counts).
+  const ra = seal('phase-230-review-authorization', { report: 'phase-230-promotion-review-authorization', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'LOCAL_REVIEW_AUTHORIZED', placeholders: [{ sha: fsha, tests: [{ test: CMD }] }] }, 'authorizationDigest');
+  const cr = seal('phase-230-coordinator-readiness', { report: 'phase-230-promotion-coordinator-readiness-manifest', version: 1, redactionSafe: true, authorization: 'NONE', overall: 'COORDINATOR_READINESS_CONFIRMED' }, 'readinessDigest');
+  const s = buildClosureSummaryV3({ reviewAuthorization: ra, coordinatorReadiness: cr, observedState: { observed: true, source: 'local-forged-observation', head: fsha } });
+  assertEq(s.overall, 'CLOSURE_SUMMARY_BLOCKED', 'forged minimal self-sealed RA/CR must block');
+  assert(s.blockers.includes('UNBOUND_TERMINAL_CONTEXT'), 'forged RA -> UNBOUND_TERMINAL_CONTEXT');
+  assert(s.blockers.includes('UNBOUND_COORDINATOR_CONTEXT'), 'forged CR -> UNBOUND_COORDINATOR_CONTEXT');
+  assert(s.failureEvidence.some((c) => c.check === 'terminal-context-bound' && !c.ok), 'terminal-context-bound false');
+  assert(s.failureEvidence.some((c) => c.check === 'coordinator-context-bound' && !c.ok), 'coordinator-context-bound false');
+  assert(!('review-authorization' in s.boundDigests), 'forged RA digest not recorded');
+});
 
 await test('CLOSURE_SUMMARY_READY with bounded contexts + observed state; exact commit/test visibility; PENDING', async () => {
   const root = workspace();

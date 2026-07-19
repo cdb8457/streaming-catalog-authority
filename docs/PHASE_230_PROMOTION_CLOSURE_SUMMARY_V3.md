@@ -23,9 +23,16 @@ Each report's self-digest is recomputed. `CLOSURE_SUMMARY_READY` only when all h
 `CLOSURE_SUMMARY_BLOCKED`:
 
 - **Bounded terminal context** — review-authorization present, right id, digest recomputes,
-  `LOCAL_REVIEW_AUTHORIZED` (`UNBOUND_TERMINAL_CONTEXT`).
+  `LOCAL_REVIEW_AUTHORIZED`, **and authoritative in shape**: `evidenceValid` / `matrixValid` / `contextBound`
+  all true, a non-empty reviewed commit/test range, `boundDigests` containing sha256 for `terminal-readiness-v2`,
+  `terminal-closure`, `commit-range-closure`, `transcript-verification`, `review-matrix`, and placeholder
+  counts consistent with the reported visibility (`UNBOUND_TERMINAL_CONTEXT`). A forged **minimal self-sealed**
+  report (right id + recomputing digest + green overall, but none of this structure) is rejected.
 - **Bounded coordinator context** — coordinator-readiness present, right id, digest recomputes,
-  `COORDINATOR_READINESS_CONFIRMED` (`UNBOUND_COORDINATOR_CONTEXT`).
+  `COORDINATOR_READINESS_CONFIRMED`, **and authoritative in shape**: every expected component
+  (`acceptance-preflight`, `failure-matrix`, `report-schema`, `boundary-audit`, `cli-ergonomics`) present + ok
+  with a matching `boundDigests` entry (`UNBOUND_COORDINATOR_CONTEXT`). A forged minimal self-sealed report is
+  rejected.
 - **Observed-state requirement** — a record with `observed === true` is supplied (`OBSERVED_STATE_MISSING`)
   and is **bound to the authoritative reviewed head**: its `head` must equal the terminal reviewed commit
   (`OBSERVED_STATE_UNBOUND`), so a stale observation of a different head cannot pass.

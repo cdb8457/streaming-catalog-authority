@@ -21,6 +21,11 @@ export interface ClosureSummaryV3Input {
 }
 
 const ALLOWED_AUTHORIZATION: readonly string[] = ['NONE', 'PENDING'];
+// The bindings a genuine review-authorization records, and the components a genuine coordinator-readiness
+// carries. A minimal self-sealed report (right id + recomputing self-digest + green overall) that lacks this
+// authoritative internal structure is a forgery and must not be treated as a bound context.
+const RA_REQUIRED_BINDINGS: readonly string[] = ['terminal-readiness-v2', 'terminal-closure', 'commit-range-closure', 'transcript-verification', 'review-matrix'];
+const CR_REQUIRED_COMPONENTS: readonly string[] = ['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics'];
 
 export const CLOSURE_SUMMARY_V3_HUMAN_GATES: readonly string[] = [
   'Human review of the exact reviewed commits and test set surfaced here.',
@@ -65,17 +70,22 @@ export function buildClosureSummaryV3(input: ClosureSummaryV3Input): ClosureSumm
   const blockers: string[] = [];
   const boundDigests: Record<string, string> = {};
 
-  // Authoritative bounded input #1: the review-authorization scaffold (terminal context + commit/test).
+  // Authoritative bounded input #1: the review-authorization scaffold. Beyond right id + recomputing
+  // self-digest + LOCAL_REVIEW_AUTHORIZED, it must carry the AUTHORITATIVE internal structure a genuine
+  // review-authorization has -- so a forged minimal self-sealed report cannot pose as a bound terminal
+  // context. Only a fully-authoritative report's digest is recorded.
   const ra = bound(input.reviewAuthorization, 'phase-230-promotion-review-authorization', 'authorizationDigest',
-    (o) => o.overall === 'LOCAL_REVIEW_AUTHORIZED');
-  if (ra.digest) boundDigests['review-authorization'] = ra.digest;
+    (o) => o.overall === 'LOCAL_REVIEW_AUTHORIZED' && reviewAuthorizationAuthoritative(o));
+  if (ra.ok && ra.digest) boundDigests['review-authorization'] = ra.digest;
   if (!ra.digestVerified && ra.present && ra.rightId) blockers.push('COMPONENT_DIGEST_UNVERIFIED');
   if (!ra.ok) blockers.push('UNBOUND_TERMINAL_CONTEXT');
 
-  // Authoritative bounded input #2: the coordinator readiness manifest.
+  // Authoritative bounded input #2: the coordinator readiness manifest -- likewise, its expected components
+  // must be present + ok with matching bindings, so a forged minimal self-sealed report cannot pose as a
+  // bound coordinator context.
   const cr = bound(input.coordinatorReadiness, 'phase-230-promotion-coordinator-readiness-manifest', 'readinessDigest',
-    (o) => o.overall === 'COORDINATOR_READINESS_CONFIRMED');
-  if (cr.digest) boundDigests['coordinator-readiness'] = cr.digest;
+    (o) => o.overall === 'COORDINATOR_READINESS_CONFIRMED' && coordinatorReadinessAuthoritative(o));
+  if (cr.ok && cr.digest) boundDigests['coordinator-readiness'] = cr.digest;
   if (!cr.digestVerified && cr.present && cr.rightId) blockers.push('COMPONENT_DIGEST_UNVERIFIED');
   if (!cr.ok) blockers.push('UNBOUND_COORDINATOR_CONTEXT');
 
@@ -155,6 +165,27 @@ function bound(value: unknown, reportId: string, digestField: string, green: (o:
   const digestVerified = d !== undefined && verifySelfDigests([obj]).results[0]?.verified === true;
   const ok = present && rightId && digestVerified && green(obj);
   return { obj, present, rightId, digestVerified, ok, digest: digestVerified ? d : undefined };
+}
+// A genuine review-authorization: evidence + matrix + context bound, a non-empty reviewed commit/test range,
+// the full binding mesh, and placeholders whose counts are consistent with the reported visibility.
+function reviewAuthorizationAuthoritative(o: Record<string, unknown>): boolean {
+  if (o.evidenceValid !== true || o.matrixValid !== true || o.contextBound !== true) return false;
+  const cc = o.reviewedCommitCount;
+  const tc = o.reviewedTestCount;
+  if (typeof cc !== 'number' || cc <= 0 || typeof tc !== 'number' || tc <= 0) return false;
+  const bd = asObject(o.boundDigests);
+  if (!RA_REQUIRED_BINDINGS.every((k) => sha256(bd[k]) !== undefined)) return false;
+  const rows = Array.isArray(o.placeholders) ? o.placeholders : [];
+  if (rows.length !== cc) return false;
+  return rows.every((r) => { const t = asObject(r).tests; return Array.isArray(t) && t.length === tc; });
+}
+// A genuine coordinator-readiness: every expected component present + ok, with a matching non-empty binding.
+function coordinatorReadinessAuthoritative(o: Record<string, unknown>): boolean {
+  const comps = Array.isArray(o.components) ? o.components : [];
+  const okByName = new Map<string, boolean>();
+  for (const c of comps) { const co = asObject(c); if (typeof co.component === 'string') okByName.set(co.component, co.ok === true); }
+  const bd = asObject(o.boundDigests);
+  return CR_REQUIRED_COMPONENTS.every((k) => okByName.get(k) === true && sha256(bd[k]) !== undefined);
 }
 function asObject(value: unknown): Record<string, unknown> {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : {};
