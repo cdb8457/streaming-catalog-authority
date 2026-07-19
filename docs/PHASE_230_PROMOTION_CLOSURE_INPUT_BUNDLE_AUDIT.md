@@ -15,7 +15,12 @@ forges the aggregators but omits (or shallow-forges) their real children fails c
 
 Given a bundle (array) of the closure input reports, a report is **mesh-valid** only when:
 
-- it recomputes (self-digest) and is green (its expected overall), and
+- it recomputes (self-digest), is green (its expected overall), **and is authoritative in CONTENT** — each
+  report type must carry its real structural fields (e.g. commit-range-closure needs a sha40 `base`/`head` and
+  a non-empty ordered `results` whose terminal sha equals `head`; transcript-verification needs a `head` and
+  non-empty `commandResults`; every leaf has an analogous content check). A minimal self-sealed leaf
+  `{ report, version, redactionSafe, authorization, overall, <digest> }` carries no content and fails this, so
+  green alone is **not** enough; and
 - for each aggregator, **every** declared child binding exactly equals the recomputed self-digest of a
   **supplied** child report that is **itself mesh-valid** — a fixpoint over the bundle (the DAG has no cycles).
 
@@ -38,19 +43,22 @@ contacts Jellyfin, and its `authorization` field is the constant `NONE`. It echo
 booleans, and counts — never a raw path — and is sealed with an `auditDigest`. `closure-summary-v3` consumes
 this auditor (over its RA/CR + anchor bundle) so RA/CR are context-bound only when the mesh fully resolves.
 
-**Residual (documented, not a defect):** a *fully-consistent deep forgery* — every report at every level
-forged, self-sealed, and mutually consistent — cannot be distinguished from a genuine bundle by any pure
-JSON-parsing tool; that is the signing problem and is out of scope for a local, trust-root-free auditor. This
-op closes the practical forged-anchor class (aggregators forged, real children absent or shallow-forged).
+**Residual (documented, not a defect):** a forgery that additionally fabricates *authoritative content* for
+every leaf that is also mutually self-consistent (real base/head/ordered commits/test set agreeing across all
+reports) cannot be distinguished from a genuine bundle by any pure JSON-parsing tool without a trust root —
+that is the signing problem. This op closes the fabricated-minimal-leaf and forged-anchor classes; the
+context-consistency audit (`promotion-context-consistency-audit`) further constrains the fabricated-content
+case by requiring branch/base/head/ordered-commits/test agreement across the mesh.
 
 ## Files
 
 - `src/ops/promotion-closure-input-bundle-audit.ts` — `buildClosureInputBundleAudit(input)`,
   `meshValidReports(reports)`, `BUNDLE_ROOTS`.
 - `src/ops/promotion-closure-input-bundle-audit-cli.ts` — CLI wrapper.
-- `test/promotion-closure-input-bundle-audit.ts` — 5 tests: verified on the genuine full mesh; broken when an
-  aggregator's deep children are missing (forged shallow anchors); broken with `DUPLICATE_REPORT_ID` on a
-  conflicting duplicate id; empty input; and a spawned CLI run.
+- `test/promotion-closure-input-bundle-audit.ts` — 6 tests: verified on the genuine full mesh; broken when an
+  aggregator's deep children are missing (forged shallow anchors); broken on a fully-fabricated deep green
+  bundle of minimal leaves (content shape); broken with `DUPLICATE_REPORT_ID` on a conflicting duplicate id;
+  empty input; and a spawned CLI run.
 
 ## Usage
 

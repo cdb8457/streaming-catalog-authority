@@ -70,6 +70,37 @@ function seal(scope: string, body: Record<string, unknown>, field: string): Reco
   return { ...body, [field]: createHash('sha256').update(`${scope}:${JSON.stringify(body)}`).digest('hex') };
 }
 
+const SEAL: Record<string, [string, string]> = {
+  'review-authorization': ['phase-230-review-authorization', 'authorizationDigest'], 'coordinator-readiness-manifest': ['phase-230-coordinator-readiness', 'readinessDigest'],
+  'terminal-readiness-v2': ['phase-230-terminal-readiness-v2', 'readinessV2Digest'], 'terminal-closure-manifest': ['phase-230-terminal-closure', 'terminalDigest'],
+  'commit-range-closure': ['phase-230-commit-range-closure', 'closureDigest'], 'transcript-verification': ['phase-230-transcript-verifier', 'verificationDigest'],
+  'review-matrix': ['phase-230-review-matrix', 'reviewMatrixDigest'], 'pack-component-integrity': ['phase-230-pack-component-integrity', 'integrityDigest'],
+  'aggregator-digest-audit': ['phase-230-aggregator-digest-audit', 'auditDigest'], 'artifact-export-manifest': ['phase-230-artifact-export-manifest', 'exportDigest'],
+  'negative-evidence-corpus': ['phase-230-negative-evidence-corpus', 'corpusDigest'], 'watchdog-hygiene': ['phase-230-watchdog-hygiene', 'watchdogDigest'],
+  'evidence-minimizer': ['phase-230-evidence-minimizer', 'minimizerDigest'], 'regression-oracle': ['phase-230-regression-oracle', 'oracleDigest'],
+  'acceptance-preflight': ['phase-230-acceptance-preflight', 'preflightDigest'], 'failure-mode-matrix': ['phase-230-failure-matrix', 'failureMatrixDigest'],
+  'report-schema': ['phase-230-report-schema', 'reportSchemaDigest'], 'boundary-audit': ['phase-230-boundary-audit', 'auditDigest'], 'cli-ergonomics': ['phase-230-cli-ergonomics', 'ergonomicsDigest'],
+};
+function minimal(short: string, overall: string, extra: Record<string, unknown> = {}): Record<string, unknown> {
+  const [scope, field] = SEAL[short]!;
+  return seal(scope, { report: `phase-230-promotion-${short}`, version: 1, redactionSafe: true, authorization: 'NONE', overall, ...extra }, field);
+}
+const okComps = (keys: string[]) => keys.map((c) => ({ component: c, present: true, ok: true }));
+// Fully-fabricated deep green bundle: minimal leaves (no authoritative content) + aggregators with consistent
+// boundDigests -- the mesh would resolve on green-only, but the leaves fail content-shape validation.
+function fabricatedDeepBundle(): unknown[] {
+  const crc = minimal('commit-range-closure', 'RANGE_CLOSED'), tv = minimal('transcript-verification', 'TRANSCRIPT_VERIFIED'), rm = minimal('review-matrix', 'REVIEW_MATRIX_READY');
+  const em = minimal('evidence-minimizer', 'MINIMIZED_CLEAN'), ro = minimal('regression-oracle', 'ORACLE_COMPLETE'), pci = minimal('pack-component-integrity', 'PACK_INTEGRITY_VERIFIED');
+  const ada = minimal('aggregator-digest-audit', 'AGGREGATOR_AUDIT_CLEAN'), aem = minimal('artifact-export-manifest', 'ARTIFACT_EXPORT_MANIFEST_COMPLETE'), nec = minimal('negative-evidence-corpus', 'CORPUS_HELD');
+  const wh = minimal('watchdog-hygiene', 'WATCHDOG_HYGIENE_CLEAN'), ap = minimal('acceptance-preflight', 'PREFLIGHT_READY'), fm = minimal('failure-mode-matrix', 'FAILURE_MATRIX_COMPLETE');
+  const rs = minimal('report-schema', 'REPORT_SCHEMA_OK'), ba = minimal('boundary-audit', 'BOUNDARY_AUDIT_CLEAN'), ce = minimal('cli-ergonomics', 'CLI_ERGONOMICS_OK');
+  const cr = minimal('coordinator-readiness-manifest', 'COORDINATOR_READINESS_CONFIRMED', { components: okComps(['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics']), boundDigests: { 'acceptance-preflight': ap.preflightDigest, 'failure-matrix': fm.failureMatrixDigest, 'report-schema': rs.reportSchemaDigest, 'boundary-audit': ba.auditDigest, 'cli-ergonomics': ce.ergonomicsDigest } });
+  const tc = minimal('terminal-closure-manifest', 'TERMINAL_CLOSURE_CONFIRMED', { components: okComps(['transcript-verification', 'evidence-minimizer', 'commit-range-closure', 'regression-oracle', 'coordinator-readiness']), boundDigests: { 'transcript-verification': tv.verificationDigest, 'evidence-minimizer': em.minimizerDigest, 'commit-range-closure': crc.closureDigest, 'regression-oracle': ro.oracleDigest, 'coordinator-readiness': cr.readinessDigest } });
+  const bt = minimal('terminal-readiness-v2', 'TERMINAL_READINESS_V2_CONFIRMED', { components: okComps(['terminal-closure', 'pack-component-integrity', 'aggregator-digest-audit', 'artifact-export-manifest', 'negative-evidence-corpus', 'watchdog-hygiene']), boundDigests: { 'terminal-closure': tc.terminalDigest, 'pack-component-integrity': pci.integrityDigest, 'aggregator-digest-audit': ada.auditDigest, 'artifact-export-manifest': aem.exportDigest, 'negative-evidence-corpus': nec.corpusDigest, 'watchdog-hygiene': wh.watchdogDigest } });
+  const ra = minimal('review-authorization', 'LOCAL_REVIEW_AUTHORIZED', { evidenceValid: true, matrixValid: true, contextBound: true, reviewedCommitCount: 1, reviewedTestCount: 1, placeholders: [{ sha: 'a'.repeat(40), humanReviewed: 'PENDING', signedOff: 'PENDING', tests: [{ test: CMD, result: 'PENDING' }] }], boundDigests: { 'terminal-readiness-v2': bt.readinessV2Digest, 'terminal-closure': tc.terminalDigest, 'commit-range-closure': crc.closureDigest, 'transcript-verification': tv.verificationDigest, 'review-matrix': rm.reviewMatrixDigest } });
+  return [ra, cr, bt, tc, crc, tv, rm, em, ro, pci, ada, aem, nec, wh, ap, fm, rs, ba, ce];
+}
+
 async function fullBundle(root: string): Promise<unknown[]> {
   const bundle = JSON.parse(JSON.stringify(await buildFixtureEvidenceBundle({ workDir: root, runId: 'bundleaudit', now: makeNow() })));
   const replay = replayFixtureBundle(bundle);
@@ -159,6 +190,16 @@ await test('CLOSURE_BUNDLE_BROKEN + DUPLICATE_REPORT_ID on a conflicting duplica
     assert(a.blockers.includes('BUNDLE_ROOT_UNRESOLVED'), 'the duplicated root is no longer mesh-valid');
     assert(a.results.some((r) => r.report === 'review-authorization' && r.duplicate && !r.meshValid), 'RA flagged duplicate + not mesh-valid');
   } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+test('CLOSURE_BUNDLE_BROKEN on a fully-fabricated deep green bundle of minimal leaves', () => {
+  // Every child is supplied and boundDigests resolve, but the minimal leaves carry no authoritative content,
+  // so shape validation fails and no root is mesh-valid.
+  const a = buildClosureInputBundleAudit({ reports: fabricatedDeepBundle() });
+  assertEq(a.overall, 'CLOSURE_BUNDLE_BROKEN', 'fabricated minimal-leaf bundle broken');
+  assert(a.blockers.includes('BUNDLE_ROOT_UNRESOLVED'), 'no root mesh-valid');
+  assert(!a.results.some((r) => r.report === 'commit-range-closure' && r.meshValid), 'minimal commit-range-closure not mesh-valid');
+  assert(!a.results.some((r) => r.report === 'review-authorization' && r.meshValid), 'RA not mesh-valid');
 });
 
 test('CLOSURE_BUNDLE_BROKEN and redaction-safe on empty input', () => {

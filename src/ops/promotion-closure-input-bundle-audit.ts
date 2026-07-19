@@ -15,28 +15,37 @@ import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 
 export interface ClosureInputBundleAuditInput { readonly reports?: unknown; }
 
-interface ReportMeta { readonly digestField: string; readonly green: (o: Record<string, unknown>) => boolean; }
-// report id -> its self-digest field + expected green overall.
+interface ReportMeta { readonly digestField: string; readonly green: (o: Record<string, unknown>) => boolean; readonly shape: (o: Record<string, unknown>) => boolean; }
+
+const RA_KEYS = ['terminal-readiness-v2', 'terminal-closure', 'commit-range-closure', 'transcript-verification', 'review-matrix'];
+const CR_KEYS = ['acceptance-preflight', 'failure-matrix', 'report-schema', 'boundary-audit', 'cli-ergonomics'];
+const BT_KEYS = ['terminal-closure', 'pack-component-integrity', 'aggregator-digest-audit', 'artifact-export-manifest', 'negative-evidence-corpus', 'watchdog-hygiene'];
+const TC_KEYS = ['transcript-verification', 'evidence-minimizer', 'commit-range-closure', 'regression-oracle', 'coordinator-readiness'];
+
+// report id -> self-digest field, expected green overall, AND an authoritative-CONTENT shape check. A minimal
+// self-sealed leaf { report, version, redactionSafe, authorization, overall, <digest> } carries no real
+// content and fails `shape`, so a fully-fabricated deep green bundle cannot resolve the mesh. `green` alone is
+// not enough.
 const META: Readonly<Record<string, ReportMeta>> = {
-  'phase-230-promotion-review-authorization': { digestField: 'authorizationDigest', green: (o) => o.overall === 'LOCAL_REVIEW_AUTHORIZED' },
-  'phase-230-promotion-coordinator-readiness-manifest': { digestField: 'readinessDigest', green: (o) => o.overall === 'COORDINATOR_READINESS_CONFIRMED' },
-  'phase-230-promotion-terminal-readiness-v2': { digestField: 'readinessV2Digest', green: (o) => o.overall === 'TERMINAL_READINESS_V2_CONFIRMED' },
-  'phase-230-promotion-terminal-closure-manifest': { digestField: 'terminalDigest', green: (o) => o.overall === 'TERMINAL_CLOSURE_CONFIRMED' },
-  'phase-230-promotion-commit-range-closure': { digestField: 'closureDigest', green: (o) => o.overall === 'RANGE_CLOSED' },
-  'phase-230-promotion-transcript-verification': { digestField: 'verificationDigest', green: (o) => o.overall === 'TRANSCRIPT_VERIFIED' },
-  'phase-230-promotion-review-matrix': { digestField: 'reviewMatrixDigest', green: (o) => o.overall === 'REVIEW_MATRIX_READY' },
-  'phase-230-promotion-pack-component-integrity': { digestField: 'integrityDigest', green: (o) => o.overall === 'PACK_INTEGRITY_VERIFIED' },
-  'phase-230-promotion-aggregator-digest-audit': { digestField: 'auditDigest', green: (o) => o.overall === 'AGGREGATOR_AUDIT_CLEAN' },
-  'phase-230-promotion-artifact-export-manifest': { digestField: 'exportDigest', green: (o) => o.overall === 'ARTIFACT_EXPORT_MANIFEST_COMPLETE' },
-  'phase-230-promotion-negative-evidence-corpus': { digestField: 'corpusDigest', green: (o) => o.overall === 'CORPUS_HELD' },
-  'phase-230-promotion-watchdog-hygiene': { digestField: 'watchdogDigest', green: (o) => o.overall === 'WATCHDOG_HYGIENE_CLEAN' },
-  'phase-230-promotion-evidence-minimizer': { digestField: 'minimizerDigest', green: (o) => o.overall === 'MINIMIZED_CLEAN' },
-  'phase-230-promotion-regression-oracle': { digestField: 'oracleDigest', green: (o) => o.overall === 'ORACLE_COMPLETE' },
-  'phase-230-promotion-acceptance-preflight': { digestField: 'preflightDigest', green: (o) => o.overall === 'PREFLIGHT_READY' },
-  'phase-230-promotion-failure-mode-matrix': { digestField: 'failureMatrixDigest', green: (o) => o.overall === 'FAILURE_MATRIX_COMPLETE' },
-  'phase-230-promotion-report-schema': { digestField: 'reportSchemaDigest', green: (o) => o.overall === 'REPORT_SCHEMA_OK' },
-  'phase-230-promotion-boundary-audit': { digestField: 'auditDigest', green: (o) => o.overall === 'BOUNDARY_AUDIT_CLEAN' },
-  'phase-230-promotion-cli-ergonomics': { digestField: 'ergonomicsDigest', green: (o) => o.overall === 'CLI_ERGONOMICS_OK' },
+  'phase-230-promotion-review-authorization': { digestField: 'authorizationDigest', green: (o) => o.overall === 'LOCAL_REVIEW_AUTHORIZED', shape: (o) => o.evidenceValid === true && o.matrixValid === true && o.contextBound === true && posNum(o.reviewedCommitCount) && posNum(o.reviewedTestCount) && nonEmpty(o.placeholders) && boundHas(o, RA_KEYS) },
+  'phase-230-promotion-coordinator-readiness-manifest': { digestField: 'readinessDigest', green: (o) => o.overall === 'COORDINATOR_READINESS_CONFIRMED', shape: (o) => componentsOk(o, CR_KEYS) && boundHas(o, CR_KEYS) },
+  'phase-230-promotion-terminal-readiness-v2': { digestField: 'readinessV2Digest', green: (o) => o.overall === 'TERMINAL_READINESS_V2_CONFIRMED', shape: (o) => componentsOk(o, BT_KEYS) && boundHas(o, BT_KEYS) },
+  'phase-230-promotion-terminal-closure-manifest': { digestField: 'terminalDigest', green: (o) => o.overall === 'TERMINAL_CLOSURE_CONFIRMED', shape: (o) => componentsOk(o, TC_KEYS) && boundHas(o, TC_KEYS) },
+  'phase-230-promotion-commit-range-closure': { digestField: 'closureDigest', green: (o) => o.overall === 'RANGE_CLOSED', shape: (o) => { const r = arr(o.results); return sha40(o.base) && sha40(o.head) && r !== null && r.length > 0 && r.every((x) => sha40(asObject(x).sha) && typeof asObject(x).category === 'string') && asObject(r[r.length - 1]).sha === o.head; } },
+  'phase-230-promotion-transcript-verification': { digestField: 'verificationDigest', green: (o) => o.overall === 'TRANSCRIPT_VERIFIED', shape: (o) => { const c = arr(o.commandResults); return sha40(o.head) && c !== null && c.length > 0 && c.every((x) => typeof asObject(x).command === 'string' && typeof asObject(x).passed === 'number' && typeof asObject(x).failed === 'number') && arr(o.checks) !== null; } },
+  'phase-230-promotion-review-matrix': { digestField: 'reviewMatrixDigest', green: (o) => o.overall === 'REVIEW_MATRIX_READY', shape: (o) => { const r = arr(o.rows); return sha40(o.base) && sha40(o.head) && r !== null && r.length > 0 && r.every((x) => sha40(asObject(x).sha) && arr(asObject(x).tests) !== null) && asObject(r[r.length - 1]).sha === o.head; } },
+  'phase-230-promotion-pack-component-integrity': { digestField: 'integrityDigest', green: (o) => o.overall === 'PACK_INTEGRITY_VERIFIED', shape: (o) => o.packVerified === true && nonEmpty(o.components) && posNum(o.verifiedCount) },
+  'phase-230-promotion-aggregator-digest-audit': { digestField: 'auditDigest', green: (o) => o.overall === 'AGGREGATOR_AUDIT_CLEAN', shape: (o) => posNum(o.binderCount) && o.conformantCount === o.binderCount && nonEmpty(o.aggregators) },
+  'phase-230-promotion-artifact-export-manifest': { digestField: 'exportDigest', green: (o) => o.overall === 'ARTIFACT_EXPORT_MANIFEST_COMPLETE', shape: (o) => posNum(o.artifactCount) && o.exportableCount === o.artifactCount && nonEmpty(o.artifacts) },
+  'phase-230-promotion-negative-evidence-corpus': { digestField: 'corpusDigest', green: (o) => o.overall === 'CORPUS_HELD', shape: (o) => posNum(o.count) && nonEmpty(o.samples) },
+  'phase-230-promotion-watchdog-hygiene': { digestField: 'watchdogDigest', green: (o) => o.overall === 'WATCHDOG_HYGIENE_CLEAN', shape: (o) => o.configSafe === true && posNum(o.queueCount) && nonEmpty(o.entries) },
+  'phase-230-promotion-evidence-minimizer': { digestField: 'minimizerDigest', green: (o) => o.overall === 'MINIMIZED_CLEAN', shape: (o) => posNum(o.count) && nonEmpty(o.entries) && nonEmpty(o.packedKinds) },
+  'phase-230-promotion-regression-oracle': { digestField: 'oracleDigest', green: (o) => o.overall === 'ORACLE_COMPLETE', shape: (o) => nonEmpty(o.entries) },
+  'phase-230-promotion-acceptance-preflight': { digestField: 'preflightDigest', green: (o) => o.overall === 'PREFLIGHT_READY', shape: (o) => sha40(o.base) && sha40(o.head) && nonEmpty(o.requiredTests) && nonEmpty(o.machineGates) },
+  'phase-230-promotion-failure-mode-matrix': { digestField: 'failureMatrixDigest', green: (o) => o.overall === 'FAILURE_MATRIX_COMPLETE', shape: (o) => posNum(o.codeCount) && nonEmpty(o.entries) },
+  'phase-230-promotion-report-schema': { digestField: 'reportSchemaDigest', green: (o) => o.overall === 'REPORT_SCHEMA_OK', shape: (o) => posNum(o.count) && nonEmpty(o.results) },
+  'phase-230-promotion-boundary-audit': { digestField: 'auditDigest', green: (o) => o.overall === 'BOUNDARY_AUDIT_CLEAN', shape: (o) => posNum(o.ruleCount) && nonEmpty(o.rules) && posNum(o.scannedSources) },
+  'phase-230-promotion-cli-ergonomics': { digestField: 'ergonomicsDigest', green: (o) => o.overall === 'CLI_ERGONOMICS_OK', shape: (o) => posNum(o.cliCount) && nonEmpty(o.results) },
 };
 // aggregator report id -> its declared child bindings { boundDigests key -> child report id }.
 const CHILDREN: Readonly<Record<string, ReadonlyArray<{ key: string; childId: string }>>> = {
@@ -117,7 +126,7 @@ export function meshValidReports(reports: readonly unknown[]): MeshResult {
   const duplicateIds: string[] = [];
   for (const [id, objs] of groups) {
     const meta = META[id]!;
-    const okCopies = objs.filter((o) => verifySelfDigests([o]).results[0]?.verified === true && meta.green(o));
+    const okCopies = objs.filter((o) => verifySelfDigests([o]).results[0]?.verified === true && meta.green(o) && meta.shape(o));
     const digests = new Set(okCopies.map((o) => asSha256(o[meta.digestField])).filter((d): d is string => d !== undefined));
     if (okCopies.length === objs.length && digests.size === 1) {
       canonicalObj.set(id, okCopies[0]!);
@@ -182,6 +191,22 @@ function asObject(value: unknown): Record<string, unknown> {
 }
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
+}
+function sha40(value: unknown): boolean { return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value); }
+function posNum(value: unknown): boolean { return typeof value === 'number' && Number.isFinite(value) && value > 0; }
+function arr(value: unknown): unknown[] | null { return Array.isArray(value) ? value : null; }
+function nonEmpty(value: unknown): boolean { return Array.isArray(value) && value.length > 0; }
+function boundHas(o: Record<string, unknown>, keys: readonly string[]): boolean {
+  const bd = asObject(o.boundDigests);
+  return keys.every((k) => asSha256(bd[k]) !== undefined);
+}
+// Every expected component present + ok, for the aggregator manifests that carry a components[] list.
+function componentsOk(o: Record<string, unknown>, keys: readonly string[]): boolean {
+  const comps = arr(o.components);
+  if (comps === null) return false;
+  const okByName = new Map<string, boolean>();
+  for (const c of comps) { const co = asObject(c); if (typeof co.component === 'string') okByName.set(co.component, co.ok === true); }
+  return keys.every((k) => okByName.get(k) === true);
 }
 function digest(scope: string, value: string): string {
   return createHash('sha256').update(`${scope}:${value}`).digest('hex');
