@@ -480,6 +480,9 @@ const BLOCKERS: readonly BlockerEntry[] = [
   { code: 'REDACTION_NOT_PROVEN', op: 'final-coordinator-readiness-bundle' },
   { code: 'COMPONENT_DIGEST_UNVERIFIED', op: 'final-coordinator-readiness-bundle' },
   { code: 'LIVE_AUTHORIZATION_CLAIMED', op: 'final-coordinator-readiness-bundle' },
+  { code: 'ACCEPTANCE_TRACE_COMPONENT_MISMATCH', op: 'final-coordinator-readiness-bundle' },
+  { code: 'REVIEWED_COMMIT_MISMATCH', op: 'final-coordinator-readiness-bundle' },
+  { code: 'SELF_DIGEST_BINDING_MISMATCH', op: 'final-coordinator-readiness-bundle' },
 ];
 
 export interface CategorizedBlocker { readonly code: string; readonly op: string; readonly category: string; }

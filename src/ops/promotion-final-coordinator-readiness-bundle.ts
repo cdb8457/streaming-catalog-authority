@@ -74,7 +74,7 @@ export function buildFinalCoordinatorReadinessBundle(input: FinalReadinessBundle
   const trace = verifyComponent(input.acceptanceTrace, TRACE_ID, 'traceDigest',
     (o) => o.overall === 'ACCEPTANCE_TRACE_READY' && o.status === 'PENDING' && o.authorization === 'NONE',
     'acceptance-trace', 'ACCEPTANCE_TRACE_MISSING', 'ACCEPTANCE_TRACE_INVALID', 'ACCEPTANCE_TRACE_NOT_READY', blockers, components);
-  verifyComponent(input.noLiveGuard, NO_LIVE_ID, 'noLiveDigest',
+  const noLive = verifyComponent(input.noLiveGuard, NO_LIVE_ID, 'noLiveDigest',
     (o) => o.overall === 'NO_LIVE_AUTHORIZATION_CLEAN',
     'no-live-guard', 'NO_LIVE_GUARD_MISSING', 'NO_LIVE_GUARD_INVALID', 'NO_LIVE_GUARD_VIOLATED', blockers, components);
   const preflight = verifyComponent(input.livePreflight, PREFLIGHT_ID, 'planDigest',
@@ -83,10 +83,10 @@ export function buildFinalCoordinatorReadinessBundle(input: FinalReadinessBundle
   const approval = verifyComponent(input.approvalRequest, APPROVAL_ID, 'packetDigest',
     (o) => o.overall === 'APPROVAL_REQUEST_READY' && o.status === 'PENDING' && o.authorization === 'NONE',
     'approval-request', 'APPROVAL_REQUEST_MISSING', 'APPROVAL_REQUEST_INVALID', 'APPROVAL_REQUEST_NOT_READY', blockers, components);
-  verifyComponent(input.reviewChecklistV2, CHECKLIST_ID, 'checklistV2Digest',
+  const checklist = verifyComponent(input.reviewChecklistV2, CHECKLIST_ID, 'checklistV2Digest',
     (o) => o.overall === 'CHECKLIST_READY' && o.status === 'PENDING' && o.authorization === 'NONE',
     'review-checklist-v2', 'CHECKLIST_MISSING', 'CHECKLIST_INVALID', 'CHECKLIST_NOT_READY', blockers, components);
-  verifyComponent(input.selfDigest, SELF_DIGEST_ID, 'verifierDigest',
+  const selfD = verifyComponent(input.selfDigest, SELF_DIGEST_ID, 'verifierDigest',
     (o) => o.overall === 'ALL_VERIFIED',
     'self-digest', 'SELF_DIGEST_MISSING', 'SELF_DIGEST_INVALID', 'SELF_DIGEST_NOT_VERIFIED', blockers, components);
 
@@ -95,6 +95,34 @@ export function buildFinalCoordinatorReadinessBundle(input: FinalReadinessBundle
     const checks = Array.isArray(asObject(input.livePreflight).policyChecks) ? asObject(input.livePreflight).policyChecks as unknown[] : [];
     const observed = checks.some((c) => asObject(c).policy === 'observed-state-required' && asObject(c).ok === true);
     if (!observed) blockers.push('OBSERVED_STATE_REQUIREMENT_MISSING');
+  }
+
+  // COORDINATOR BINDING: individually-green components are not enough -- they must be the SAME evidence. The
+  // acceptance trace's recorded per-component self-digests must EXACTLY equal the directly-supplied component
+  // digests (so a genuine READY trace cannot be paired with a mismatched-but-green guard/preflight/approval/
+  // checklist), and the reviewed commit the trace carries must equal the approval packet's.
+  if (trace.ok && approval.ok && preflight.ok && noLive.ok && checklist.ok) {
+    const traceDigests = new Map<string, string | null>();
+    for (const c of (Array.isArray(asObject(input.acceptanceTrace).components) ? asObject(input.acceptanceTrace).components as unknown[] : [])) {
+      const co = asObject(c);
+      if (typeof co.key === 'string') traceDigests.set(co.key, typeof co.digest === 'string' ? co.digest : null);
+    }
+    const bindings: Array<[string, string | undefined]> = [
+      ['approval-request', asSha256(asObject(input.approvalRequest).packetDigest)],
+      ['live-preflight', asSha256(asObject(input.livePreflight).planDigest)],
+      ['no-live-guard', asSha256(asObject(input.noLiveGuard).noLiveDigest)],
+      ['review-checklist-v2', asSha256(asObject(input.reviewChecklistV2).checklistV2Digest)],
+    ];
+    if (!bindings.every(([key, d]) => d !== undefined && traceDigests.get(key) === d)) blockers.push('ACCEPTANCE_TRACE_COMPONENT_MISMATCH');
+    if (asSha40(asObject(input.acceptanceTrace).reviewedCommit) !== asSha40(asObject(input.approvalRequest).reviewedCommit)) blockers.push('REVIEWED_COMMIT_MISMATCH');
+  }
+
+  // COORDINATOR BINDING: the supplied self-digest verification must cover EXACTLY the supplied guard
+  // components (in canonical order) -- an ALL_VERIFIED report over an unrelated green set does not bind these
+  // ones. Recompute over the supplied components and require an exact self-digest match.
+  if (selfD.ok && trace.ok && approval.ok && preflight.ok && noLive.ok && checklist.ok) {
+    const recomputed = verifySelfDigests([input.approvalRequest, input.livePreflight, input.noLiveGuard, input.reviewChecklistV2, input.acceptanceTrace]);
+    if (recomputed.overall !== 'ALL_VERIFIED' || recomputed.verifierDigest !== asSha256(asObject(input.selfDigest).verifierDigest)) blockers.push('SELF_DIGEST_BINDING_MISMATCH');
   }
 
   const present = [input.acceptanceTrace, input.noLiveGuard, input.livePreflight, input.approvalRequest, input.reviewChecklistV2, input.selfDigest].filter((c) => c !== undefined);

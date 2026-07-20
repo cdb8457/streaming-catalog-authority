@@ -80,6 +80,35 @@ await test('BLOCKED on missing input, forged component, claim, redaction-unsafe 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('BLOCKED on a genuine READY trace paired with a mismatched-but-green component (coordinator binding)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'catalog-finalbundle-'));
+  try {
+    const i = await inputs(root);
+    // A DIFFERENT but individually-green no-live guard (clean, self-verifying) -- its digest differs from the
+    // one the acceptance trace was built from, so the trace<->component binding must fail closed.
+    const otherClean = buildNoLiveAuthorizationGuard({ artifacts: [...sampleCleanArtifacts(), { report: 'phase-230-promotion-x', authorization: 'NONE', status: 'PENDING', overall: 'CHECKLIST_READY' }] });
+    assertEq(otherClean.overall, 'NO_LIVE_AUTHORIZATION_CLEAN', 'the swapped guard is itself clean + green');
+    assert(otherClean.noLiveDigest !== i.noLiveGuard.noLiveDigest, 'and has a different self-digest');
+    const b = buildFinalCoordinatorReadinessBundle({ ...i, noLiveGuard: otherClean });
+    assertEq(b.overall, 'FINAL_READINESS_BUNDLE_BLOCKED', 'mismatched component blocks');
+    assert(b.openBlockers.includes('ACCEPTANCE_TRACE_COMPONENT_MISMATCH'), 'ACCEPTANCE_TRACE_COMPONENT_MISMATCH');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED on a self-digest verification that does not cover exactly the supplied components', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'catalog-finalbundle-'));
+  try {
+    const i = await inputs(root);
+    // ALL_VERIFIED, but computed over a different set (omitting the acceptance trace) -> its verifierDigest
+    // does not bind these components, so it must fail closed.
+    const unboundSelfDigest = verifySelfDigests([i.approvalRequest, i.livePreflight, i.noLiveGuard, i.reviewChecklistV2]);
+    assertEq(unboundSelfDigest.overall, 'ALL_VERIFIED', 'the swapped self-digest is itself ALL_VERIFIED');
+    const b = buildFinalCoordinatorReadinessBundle({ ...i, selfDigest: unboundSelfDigest });
+    assertEq(b.overall, 'FINAL_READINESS_BUNDLE_BLOCKED', 'unbound self-digest blocks');
+    assert(b.openBlockers.includes('SELF_DIGEST_BINDING_MISMATCH'), 'SELF_DIGEST_BINDING_MISMATCH');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('CLI builds the bundle and never echoes raw paths to stdout', async () => {
   const root = mkdtempSync(join(tmpdir(), 'catalog-finalbundle-'));
   try {

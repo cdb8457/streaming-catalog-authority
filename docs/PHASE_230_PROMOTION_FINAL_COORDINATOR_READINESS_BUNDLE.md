@@ -31,6 +31,17 @@ safety is not proven for every component (`REDACTION_NOT_PROVEN`), or if the obs
 missing from the preflight plan (`OBSERVED_STATE_REQUIREMENT_MISSING`). When blocked, the next action is
 `REMEDIATE_BLOCKERS` — still never live execution.
 
+### Coordinator binding
+
+Individually-green components are not enough — they must be the **same** evidence. The bundle cross-binds:
+
+- `ACCEPTANCE_TRACE_COMPONENT_MISMATCH` — the acceptance trace's recorded per-component self-digests must
+  **exactly** equal the directly-supplied component digests (approval / preflight / no-live / checklist), so a
+  genuine READY trace cannot be paired with a mismatched-but-green component set;
+- `REVIEWED_COMMIT_MISMATCH` — the reviewed commit the trace carries must equal the approval packet's;
+- `SELF_DIGEST_BINDING_MISMATCH` — the supplied self-digest verification must cover **exactly** the supplied
+  guard components (recomputed over them in canonical order), not an unrelated ALL_VERIFIED set.
+
 ## Files
 
 - `src/ops/promotion-final-coordinator-readiness-bundle.ts` — `buildFinalCoordinatorReadinessBundle(input)`.
