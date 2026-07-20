@@ -15,9 +15,10 @@ A **claim** is any of: an `authorization` / `status` / `overall` equal to `APPRO
 
 ### Hard claim vs textual claim
 
-- A **hard claim** — a forbidden token used as the *value* of a claim field (`authorization`/`status`/
-  `overall`), a truthy claim flag, or an **object key** that reduces to a forbidden token with a truthy value —
-  is detected **recursively at any nesting depth** and **never** exempt.
+- A **hard claim** — a forbidden token carried in the *subtree* of a claim field (`authorization`/`status`/
+  `overall`) whether as a bare string, or wrapped in an array/object (e.g. `overall: ['LIVE_READY']`,
+  `overall: { v: 'PHASE_231_AUTHORIZED' }`); a truthy claim flag; or an **object key** that reduces to a
+  forbidden token with a truthy value — is detected **recursively at any nesting depth** and **never** exempt.
 - A **textual claim** — a forbidden token appearing merely as a prose string elsewhere in the body — is the
   only thing a PENDING human gate may LIST as a pending step.
 

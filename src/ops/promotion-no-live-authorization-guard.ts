@@ -134,27 +134,44 @@ export function buildNoLiveAuthorizationGuard(input: NoLiveAuthorizationGuardInp
   return { ...withoutDigest, noLiveDigest: digest('phase-230-no-live-authorization-guard', JSON.stringify(withoutDigest)) };
 }
 
-// A HARD live-authorization claim: a forbidden token used as the value of a claim field
-// (authorization / status / overall), a truthy claim flag, OR an object KEY that reduces to a forbidden token
-// with a truthy value. Checked RECURSIVELY over the whole artifact tree so a claim nested inside a sub-object
-// (e.g. { gate: { approved: true } }, { step: { status: 'LIVE_READY' } } or { meta: { live_ready: 1 } }) still
-// fails closed. This is never exempt by the human gate. (A forbidden token appearing merely as a prose string
-// -- not as a claim-field value, truthy flag, or truthy key -- remains a TEXTUAL claim a pending gate may
-// list.)
+// A HARD live-authorization claim: a forbidden token carried in the SUBTREE of a claim field
+// (authorization / status / overall) -- as a string, or wrapped in an array/object -- a truthy claim flag, OR
+// an object KEY that reduces to a forbidden token with a truthy value. Checked RECURSIVELY over the whole
+// artifact tree so a claim nested inside a sub-object (e.g. { gate: { approved: true } },
+// { step: { status: 'LIVE_READY' } }, { meta: { live_ready: 1 } } or { overall: ['LIVE_READY'] }) still fails
+// closed. This is never exempt by the human gate. (A forbidden token appearing merely as a prose string
+// OUTSIDE a claim field -- not a claim-field subtree token, truthy flag, or truthy key -- remains a TEXTUAL
+// claim a pending gate may list.)
 const CLAIM_FIELDS: readonly string[] = ['authorization', 'status', 'overall'];
 function hasHardClaim(value: unknown, depth = 0): boolean {
   if (depth > 8) return false;
   if (Array.isArray(value)) return value.some((v) => hasHardClaim(v, depth + 1));
   if (!value || typeof value !== 'object') return false;
   const o = value as Record<string, unknown>;
+  // A claim field whose subtree carries a forbidden token (string, or wrapped in an array/object) is hard --
+  // NOT just when the value is a bare string. Prose is still safe because `matchesForbidden` is whole-string
+  // for sentences.
   for (const field of CLAIM_FIELDS) {
-    if (typeof o[field] === 'string' && matchesForbidden(o[field] as string)) return true;
+    if (field in o && subtreeHasForbidden(o[field], depth)) return true;
   }
   for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
   // Object KEY named after a forbidden token, set to a truthy value, is a hard claim (scoped by the same
   // word-boundary rule so unrelated review fields such as reviewAuthorization are not flagged).
   for (const [k, v] of Object.entries(o)) if (isTruthy(v) && matchesForbidden(k)) return true;
   return Object.values(o).some((v) => hasHardClaim(v, depth + 1));
+}
+// Deep scan of a claim-field subtree: a forbidden token as any string value, or a truthy forbidden-token key.
+function subtreeHasForbidden(value: unknown, depth: number): boolean {
+  if (depth > 8) return false;
+  if (typeof value === 'string') return matchesForbidden(value);
+  if (Array.isArray(value)) return value.some((v) => subtreeHasForbidden(v, depth + 1));
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (isTruthy(v) && matchesForbidden(k)) return true;
+      if (subtreeHasForbidden(v, depth + 1)) return true;
+    }
+  }
+  return false;
 }
 function deepHasToken(value: unknown, depth: number): boolean {
   if (depth > 8) return false;

@@ -139,6 +139,27 @@ test('variant tokens listed as PENDING steps are exempt inside a human gate, but
   assertEq(buildNoLiveAuthorizationGuard({ artifacts: [notAGate] }).overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'same list outside a gate fails closed');
 });
 
+test('VIOLATED on a claim-field token WRAPPED in an array/object (not a bare string), even inside a gate', () => {
+  // A claim field (authorization/status/overall) whose value is an array/object embedding a forbidden token is
+  // a HARD claim -- it must not fall through to the exemptable textual path.
+  const wrapped: unknown[] = [
+    { report: 'x', overall: ['LIVE_READY'] },
+    { report: 'x', status: ['x', 'PHASE_231_AUTHORIZED'] },
+    { report: 'x', overall: { value: 'phase-231-authorized' } },
+    { report: 'x', authorization: { decided: 'APPROVED' } },
+    { report: 'x', overall: [{ token: 'live_ready' }] },
+    // the core repro: a valid-looking PENDING human gate with an array/object-wrapped claim-field token
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', overall: ['LIVE_READY'] },
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', overall: { result: 'PHASE_231_AUTHORIZED' } },
+  ];
+  for (const c of wrapped) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `wrapped claim-field flagged: ${JSON.stringify(c).slice(0, 60)}`);
+    assert(r.verdicts[0]!.hardClaim === true, 'hard claim');
+    assert(!r.verdicts[0]!.pendingGateExempt, 'gate exemption refused');
+  }
+});
+
 test('VIOLATED on a forbidden token smuggled as an OBJECT KEY with a truthy value', () => {
   // The claim is carried as a KEY name (variant/camelCase/separator) rather than a value. All are hard claims.
   const keyed: unknown[] = [
