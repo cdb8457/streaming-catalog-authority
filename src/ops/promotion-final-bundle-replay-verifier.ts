@@ -160,15 +160,16 @@ export function verifyFinalBundleReplay(input: FinalBundleReplayVerifierInput): 
   return { ...withoutDigest, replayVerifierDigest: digest('phase-230-final-bundle-replay-verifier', JSON.stringify(withoutDigest)) };
 }
 
-// Recursively scan an artifact tree for a raw-path marker in any string value (keys or values).
-function hasRawPath(value: unknown, depth = 0): boolean {
-  if (depth > 8) return false;
+// Recursively scan an artifact tree for a raw-path marker in any string value (keys or values). CLI inputs are
+// JSON.parse results (acyclic finite trees), so the full tree is scanned with no depth cutoff -- a raw path
+// nested at any depth must fail closed, matching the documented "no raw path anywhere" guarantee.
+function hasRawPath(value: unknown): boolean {
   if (typeof value === 'string') return RAW_PATH_MARKERS.some((m) => value.includes(m));
-  if (Array.isArray(value)) return value.some((v) => hasRawPath(v, depth + 1));
+  if (Array.isArray(value)) return value.some((v) => hasRawPath(v));
   if (value && typeof value === 'object') {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (RAW_PATH_MARKERS.some((m) => k.includes(m))) return true;
-      if (hasRawPath(v, depth + 1)) return true;
+      if (hasRawPath(v)) return true;
     }
   }
   return false;

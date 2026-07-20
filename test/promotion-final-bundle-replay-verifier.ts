@@ -149,6 +149,21 @@ await test('BLOCKED on a raw path / redaction-unsafe input', async () => {
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+await test('BLOCKED on a raw path nested deeper than the old depth cutoff (full-tree scan)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'catalog-replayverify-'));
+  try {
+    const i = await inputs(root);
+    // Bury a raw path 12 levels deep -- past the removed depth-8 cutoff. The redaction scan must still catch it.
+    let nested: Record<string, unknown> = { leaf: '/mnt/user/media/Movies buried deep' };
+    for (let d = 0; d < 12; d++) nested = { child: nested };
+    const leaky = JSON.parse(JSON.stringify(i.noLiveGuard)) as Record<string, unknown>;
+    leaky.deep = nested;
+    const r = verifyFinalBundleReplay({ ...i, noLiveGuard: leaky });
+    assertEq(r.overall, 'FINAL_BUNDLE_REPLAY_BLOCKED', 'deeply-nested raw path blocks');
+    assert(r.blockers.includes('REPLAY_REDACTION_UNSAFE'), 'REPLAY_REDACTION_UNSAFE on deep nesting');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('BLOCKED when the preflight plan drops the observed-state requirement', async () => {
   const root = mkdtempSync(join(tmpdir(), 'catalog-replayverify-'));
   try {
