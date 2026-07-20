@@ -7,12 +7,12 @@ import { createHash } from 'node:crypto';
 // one of those tokens anywhere in its body -- fails closed.
 //
 // The ONLY exemption is a PENDING human gate doc (`humanGate: true`, `status: 'PENDING'`, `authorization`
-// NONE/PENDING), and it is DELIBERATELY NARROW: it may LIST the forbidden tokens as textual pending steps
-// (a token appearing as prose somewhere in the body), but it may NEVER exempt a HARD claim -- a forbidden
-// token used as the value of the `authorization` / `status` / `overall` claim fields, or a truthy claim
-// flag, anywhere in the artifact tree (top-level OR nested in a sub-object/array). A hard claim inside a
-// human-gate artifact (e.g. `approved: true`, or `gate: { status: 'LIVE_READY' }`) always fails closed, so a
-// pending gate cannot smuggle an actual live-authorization claim past the guard.
+// NONE/PENDING), and it is DELIBERATELY NARROW: it may LIST the forbidden tokens ONLY as ARRAY ELEMENTS (a
+// list of pending step names, e.g. `pendingGates: ['PHASE_231_AUTHORIZED']`) or inside multi-word PROSE. It
+// may NEVER exempt a HARD claim -- a forbidden token that is the scalar VALUE of any field (e.g.
+// `decision: 'APPROVED'`), a token in a claim-field subtree, a truthy claim flag, or a truthy token-named key
+// -- anywhere in the artifact tree (top-level OR nested). A hard claim inside a human-gate artifact always
+// fails closed, so a pending gate cannot smuggle an actual live-authorization claim past the guard.
 //
 // It reads parsed JSON only; it performs no promotion, never touches the real Movies root, never contacts
 // Jellyfin, and `authorization` is the constant NONE. It echoes only report short-names and booleans --
@@ -134,30 +134,40 @@ export function buildNoLiveAuthorizationGuard(input: NoLiveAuthorizationGuardInp
   return { ...withoutDigest, noLiveDigest: digest('phase-230-no-live-authorization-guard', JSON.stringify(withoutDigest)) };
 }
 
-// A HARD live-authorization claim: a forbidden token carried in the SUBTREE of a claim field
-// (authorization / status / overall) -- as a string, or wrapped in an array/object -- a truthy claim flag, OR
-// an object KEY that reduces to a forbidden token with a truthy value. Checked RECURSIVELY over the whole
-// artifact tree so a claim nested inside a sub-object (e.g. { gate: { approved: true } },
-// { step: { status: 'LIVE_READY' } }, { meta: { live_ready: 1 } } or { overall: ['LIVE_READY'] }) still fails
-// closed. This is never exempt by the human gate. (A forbidden token appearing merely as a prose string
-// OUTSIDE a claim field -- not a claim-field subtree token, truthy flag, or truthy key -- remains a TEXTUAL
-// claim a pending gate may list.)
+// A HARD live-authorization claim -- never exempt by the human gate -- is any of:
+//   * a forbidden token that is the scalar STRING VALUE of ANY object field (not just authorization / status /
+//     overall) -- e.g. { decision: 'APPROVED' }, { result: 'PHASE_231_AUTHORIZED' }. A field whose whole
+//     value is a live-authorization token is a structural claim, whatever the field is named;
+//   * a forbidden token in the SUBTREE of a claim field (authorization / status / overall) wrapped in an
+//     array/object -- e.g. { overall: ['LIVE_READY'] }, { status: { v: 'PHASE_231_AUTHORIZED' } };
+//   * a truthy claim flag (approved / execute / liveReady / phase231Authorized / liveAuthorized);
+//   * an object KEY that reduces to a forbidden token with a truthy value -- e.g. { live_ready: true }.
+// Checked RECURSIVELY over the whole artifact tree so a nested claim still fails closed.
+//
+// The ONLY thing a pending human gate may exempt is a forbidden token that appears as an ARRAY ELEMENT (a
+// list of pending step names, e.g. pendingGates: ['PHASE_231_AUTHORIZED']) or inside multi-word PROSE. A
+// bare token as an array element is NOT a hard claim; a bare token as a scalar field value IS.
 const CLAIM_FIELDS: readonly string[] = ['authorization', 'status', 'overall'];
 function hasHardClaim(value: unknown, depth = 0): boolean {
   if (depth > 8) return false;
+  // Arrays: recurse into element objects only. A string element is a listable step, never a hard claim here.
   if (Array.isArray(value)) return value.some((v) => hasHardClaim(v, depth + 1));
   if (!value || typeof value !== 'object') return false;
   const o = value as Record<string, unknown>;
-  // A claim field whose subtree carries a forbidden token (string, or wrapped in an array/object) is hard --
-  // NOT just when the value is a bare string. Prose is still safe because `matchesForbidden` is whole-string
-  // for sentences.
+  for (const [k, v] of Object.entries(o)) {
+    // A forbidden token as the scalar value of ANY field is a structural claim (prose stays safe because
+    // `matchesForbidden` is whole-string for sentences).
+    if (typeof v === 'string' && matchesForbidden(v)) return true;
+    // An object KEY that reduces to a forbidden token with a truthy value is a claim (scoped by the same
+    // word-boundary rule, so unrelated review fields such as reviewAuthorization are not flagged).
+    if (isTruthy(v) && matchesForbidden(k)) return true;
+  }
+  for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
+  // A claim field whose value is an array/object embedding a forbidden token is hard (arrays elsewhere are
+  // listable, but under a claim field they are a wrapped claim value).
   for (const field of CLAIM_FIELDS) {
     if (field in o && subtreeHasForbidden(o[field], depth)) return true;
   }
-  for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
-  // Object KEY named after a forbidden token, set to a truthy value, is a hard claim (scoped by the same
-  // word-boundary rule so unrelated review fields such as reviewAuthorization are not flagged).
-  for (const [k, v] of Object.entries(o)) if (isTruthy(v) && matchesForbidden(k)) return true;
   return Object.values(o).some((v) => hasHardClaim(v, depth + 1));
 }
 // Deep scan of a claim-field subtree: a forbidden token as any string value, or a truthy forbidden-token key.

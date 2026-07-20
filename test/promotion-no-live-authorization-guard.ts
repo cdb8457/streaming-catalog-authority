@@ -139,6 +139,31 @@ test('variant tokens listed as PENDING steps are exempt inside a human gate, but
   assertEq(buildNoLiveAuthorizationGuard({ artifacts: [notAGate] }).overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'same list outside a gate fails closed');
 });
 
+test('VIOLATED on a forbidden token as the scalar value of a NON-canonical field, even inside a gate', () => {
+  // A token that is the whole value of ANY field (not just authorization/status/overall) is a structural hard
+  // claim -- it must not fall through to the exemptable textual path just because the field name is arbitrary.
+  const scalar: unknown[] = [
+    { report: 'x', decision: 'APPROVED' },
+    { report: 'x', result: 'PHASE_231_AUTHORIZED' },
+    { report: 'x', verdict: 'live_ready' },
+    { report: 'x', state: 'phase-231-authorized' },
+    { report: 'x', liveDecision: 'APPROVED_FOR_LIVE' },
+    { report: 'x', nested: { outcome: 'GRANTED' } },
+    // the core repro: valid-looking PENDING human gate carrying a scalar token in a non-canonical field
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', decision: 'APPROVED' },
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', gate: { result: 'phase-231-authorized' } },
+  ];
+  for (const c of scalar) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `scalar-field token flagged: ${JSON.stringify(c).slice(0, 60)}`);
+    assert(r.verdicts[0]!.hardClaim === true, 'hard claim');
+    assert(!r.verdicts[0]!.pendingGateExempt, 'gate exemption refused');
+  }
+  // ...but the SAME tokens listed as ARRAY ELEMENTS remain exemptable pending-step listings inside a gate.
+  const listing = { report: 'phase-230-promotion-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', pendingGates: ['APPROVED', 'PHASE_231_AUTHORIZED', 'live_ready'] };
+  assertEq(buildNoLiveAuthorizationGuard({ artifacts: [listing] }).overall, 'NO_LIVE_AUTHORIZATION_CLEAN', 'array-element listing stays exempt in a gate');
+});
+
 test('VIOLATED on a claim-field token WRAPPED in an array/object (not a bare string), even inside a gate', () => {
   // A claim field (authorization/status/overall) whose value is an array/object embedding a forbidden token is
   // a HARD claim -- it must not fall through to the exemptable textual path.
