@@ -13,6 +13,7 @@ import { buildChainBundle } from './promotion-chain-bundle.js';
 import { buildReviewerPack } from './promotion-reviewer-pack.js';
 import { buildTerminalClosure } from './promotion-terminal-closure.js';
 import { buildPackComponentIntegrity } from './promotion-pack-component-integrity.js';
+import { buildNoLiveAuthorizationGuard } from './promotion-no-live-authorization-guard.js';
 
 // Local, non-live negative-evidence adversarial corpus. Each sample is a deliberately malformed or
 // adversarial evidence artifact (a tampered self-digest, an unknown report id, a stitched-together set, an
@@ -247,6 +248,19 @@ const SAMPLES: readonly NegativeSample[] = [
     rejected: () => buildPackComponentIntegrity({
       reviewerPack: { report: 'phase-230-promotion-merge-review-evidence-pack', overall: 'REVIEWER_PACK_READY', components: [], packDigest: A64 },
     }).blockers.includes('PACK_DIGEST_MISMATCH'),
+  },
+  // A live-authorization claim smuggled into an artifact must fail the no-live guard closed.
+  {
+    id: 'artifact-claims-approved', category: 'live-authorization-claim',
+    rejected: () => buildNoLiveAuthorizationGuard({ artifacts: [{ report: 'phase-230-promotion-thing', authorization: 'APPROVED' }] }).overall === 'NO_LIVE_AUTHORIZATION_VIOLATED',
+  },
+  {
+    id: 'artifact-claims-phase-231-authorized', category: 'live-authorization-claim',
+    rejected: () => buildNoLiveAuthorizationGuard({ artifacts: [{ report: 'phase-230-promotion-thing', authorization: 'NONE', overall: 'PHASE_231_AUTHORIZED' }] }).overall === 'NO_LIVE_AUTHORIZATION_VIOLATED',
+  },
+  {
+    id: 'artifact-claims-live-ready-flag', category: 'live-authorization-claim',
+    rejected: () => buildNoLiveAuthorizationGuard({ artifacts: [{ report: 'phase-230-promotion-thing', authorization: 'NONE', liveReady: true }] }).overall === 'NO_LIVE_AUTHORIZATION_VIOLATED',
   },
 ];
 

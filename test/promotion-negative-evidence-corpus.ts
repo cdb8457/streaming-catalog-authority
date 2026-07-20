@@ -48,6 +48,8 @@ test('CORPUS_HELD: every adversarial sample is rejected by its validator', () =>
   assert(ids.has('pack-integrity-forged-green-component') && ids.has('pack-integrity-forged-pack-digest'), 'covers forged-green pack-integrity + forged pack digest');
   assert(ids.has('chain-bundle-forged-green-component') && ids.has('readiness-forged-green-component'), 'covers forged-green aggregator components');
   assert((c.categories['forged-green-component'] ?? 0) >= 6, 'a substantial forged-green-component set');
+  // No-live guard: artifacts claiming a live authorization are rejected.
+  assert(ids.has('artifact-claims-approved') && ids.has('artifact-claims-phase-231-authorized') && ids.has('artifact-claims-live-ready-flag'), 'covers live-authorization claims');
   assert(/^[0-9a-f]{64}$/.test(c.corpusDigest), 'corpus digest present');
 });
 

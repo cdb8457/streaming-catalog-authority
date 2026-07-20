@@ -1,0 +1,88 @@
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { buildNoLiveAuthorizationGuard } from '../src/ops/promotion-no-live-authorization-guard.js';
+import { verifySelfDigests } from '../src/ops/promotion-self-digest-verifier.js';
+
+let passed = 0;
+let failed = 0;
+const failures: Array<[string, unknown]> = [];
+
+async function test(name: string, fn: () => void | Promise<void>): Promise<void> {
+  try { await fn(); passed++; console.log(`  PASS  ${name}`); }
+  catch (err) { failed++; failures.push([name, err]); console.log(`  FAIL  ${name}: ${(err as Error).message}`); }
+}
+function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
+function assertEq<T>(actual: T, expected: T, msg: string): void { if (actual !== expected) throw new Error(`${msg}: expected ${expected}, got ${actual}`); }
+
+const projectRoot = fileURLToPath(new URL('..', import.meta.url));
+const clean = (report: string, overall: string) => ({ report, version: 1, redactionSafe: true, authorization: 'NONE', status: 'PENDING', overall });
+
+console.log('Running Phase 230 no-live-authorization guard suite:\n');
+
+test('NO_LIVE_AUTHORIZATION_CLEAN for artifacts that claim no live authorization', () => {
+  const r = buildNoLiveAuthorizationGuard({ artifacts: [clean('phase-230-promotion-closure-summary-v3', 'CLOSURE_SUMMARY_READY'), clean('phase-230-promotion-review-authorization', 'LOCAL_REVIEW_AUTHORIZED')] });
+  assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_CLEAN', `clean (blockers: ${r.blockers.join(',')})`);
+  assertEq(r.authorization, 'NONE', 'authorizes nothing');
+  assert(r.verdicts.every((v) => !v.claimsLiveAuthorization), 'no live-authorization claims');
+  assertEq(verifySelfDigests([r]).overall, 'ALL_VERIFIED', 'self-verifies');
+});
+
+test('VIOLATED on any artifact claiming APPROVED / EXECUTE / LIVE_READY / PHASE_231_AUTHORIZED', () => {
+  const cases: unknown[] = [
+    { report: 'x', authorization: 'APPROVED' },
+    { report: 'x', status: 'EXECUTE' },
+    { report: 'x', overall: 'LIVE_READY' },
+    { report: 'x', authorization: 'NONE', phase231Authorized: true },
+    { report: 'x', authorization: 'NONE', gates: ['PHASE_231_AUTHORIZED'] },
+    { report: 'x', approved: true },
+  ];
+  for (const c of cases) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `violated for ${JSON.stringify(c).slice(0, 40)}`);
+    assert(r.blockers.includes('LIVE_AUTHORIZATION_CLAIMED'), 'LIVE_AUTHORIZATION_CLAIMED');
+    assert(!JSON.stringify(r).includes('APPROVED') && !JSON.stringify(r).includes('LIVE_READY') && !JSON.stringify(r).includes('PHASE_231_AUTHORIZED'), 'offending value never echoed');
+  }
+});
+
+test('a PENDING human gate doc may LIST the tokens as pending steps (exempt)', () => {
+  const gateDoc = { report: 'phase-230-promotion-human-gate', authorization: 'NONE', status: 'PENDING', humanGate: true, pendingGates: ['PHASE_231_AUTHORIZED', 'APPROVED'] };
+  const r = buildNoLiveAuthorizationGuard({ artifacts: [gateDoc] });
+  assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_CLEAN', 'pending gate doc is exempt');
+  assert(r.verdicts[0]!.pendingGateExempt && !r.verdicts[0]!.claimsLiveAuthorization, 'exempt, not a claim');
+  // but a gate doc that actually claims APPROVED authorization is NOT exempt
+  const fakeGate = { report: 'x', authorization: 'APPROVED', status: 'PENDING', humanGate: true };
+  assertEq(buildNoLiveAuthorizationGuard({ artifacts: [fakeGate] }).overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'authorization claim not exempt');
+});
+
+test('VIOLATED (fail closed) on no artifacts, redaction-safe', () => {
+  const r = buildNoLiveAuthorizationGuard({ artifacts: [] });
+  assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'no artifacts fails closed');
+  assert(r.blockers.includes('NO_ARTIFACTS'), 'NO_ARTIFACTS');
+  assert(r.redactionSafe === true && !JSON.stringify(r).includes('/mnt/'), 'redaction-safe');
+});
+
+await test('CLI runs the guard and never echoes raw paths to stdout', () => {
+  const root = mkdtempSync(join(tmpdir(), 'catalog-nolive-'));
+  try {
+    const bundlePath = join(root, 'artifacts.json'); writeFileSync(bundlePath, JSON.stringify([clean('phase-230-promotion-closure-summary-v3', 'CLOSURE_SUMMARY_READY')]));
+    const outPath = join(root, 'catalog-authority-test-library', 'NLMARKER-out', 'guard.json');
+    const cliPath = fileURLToPath(new URL('../src/ops/promotion-no-live-authorization-guard-cli.ts', import.meta.url));
+    const res = spawnSync(process.execPath, ['--import', 'tsx', cliPath, '--artifacts', bundlePath, '--out', outPath], { cwd: projectRoot, encoding: 'utf8' });
+    assert(res.error === undefined, `spawn ok: ${res.error?.message ?? ''}`);
+    assertEq(res.status, 0, `CLEAN exit (stderr: ${res.stderr ?? ''})`);
+    assert(existsSync(outPath), 'guard report written');
+    const parsed = JSON.parse(res.stdout ?? '') as Record<string, unknown>;
+    assertEq(parsed.overall, 'NO_LIVE_AUTHORIZATION_CLEAN', 'stdout overall');
+    assert(!(res.stdout ?? '').includes('NLMARKER') && !(res.stdout ?? '').includes('/mnt/'), 'no path fragments in stdout');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+console.log(`\n${passed} passed, ${failed} failed.`);
+if (failed > 0) {
+  console.log('\nFailures:');
+  for (const [name, err] of failures) console.log(`  - ${name}: ${(err as Error).stack ?? err}`);
+  process.exit(1);
+}

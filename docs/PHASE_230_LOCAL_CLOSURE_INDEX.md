@@ -78,6 +78,10 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-context-consistency-audit` | PHASE_230_PROMOTION_CONTEXT_CONSISTENCY_AUDIT |
 | `promotion-closure-summary-v3` | PHASE_230_PROMOTION_CLOSURE_SUMMARY_V3 |
 | `promotion-closure-input-bundle-audit` | PHASE_230_PROMOTION_CLOSURE_INPUT_BUNDLE_AUDIT |
+| `promotion-approval-request-packet` | PHASE_230_PROMOTION_APPROVAL_REQUEST_PACKET |
+| `promotion-live-preflight-plan` | PHASE_230_PROMOTION_LIVE_PREFLIGHT_PLAN |
+| `promotion-no-live-authorization-guard` | PHASE_230_PROMOTION_NO_LIVE_AUTHORIZATION_GUARD |
+| `promotion-review-checklist-v2` | PHASE_230_PROMOTION_REVIEW_CHECKLIST_V2 |
 
 ## Test-only local suites
 

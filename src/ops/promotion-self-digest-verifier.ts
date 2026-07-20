@@ -70,6 +70,10 @@ const REGISTRY: Readonly<Record<string, DigestSpec>> = {
   'phase-230-promotion-context-consistency-audit': { field: 'auditDigest', scope: 'phase-230-context-consistency-audit' },
   'phase-230-promotion-closure-summary-v3': { field: 'summaryV3Digest', scope: 'phase-230-closure-summary-v3' },
   'phase-230-promotion-closure-input-bundle-audit': { field: 'auditDigest', scope: 'phase-230-closure-input-bundle-audit' },
+  'phase-230-promotion-approval-request-packet': { field: 'packetDigest', scope: 'phase-230-approval-request-packet' },
+  'phase-230-promotion-live-preflight-plan': { field: 'planDigest', scope: 'phase-230-live-preflight-plan' },
+  'phase-230-promotion-no-live-authorization-guard': { field: 'noLiveDigest', scope: 'phase-230-no-live-authorization-guard' },
+  'phase-230-promotion-coordinator-review-checklist-v2': { field: 'checklistV2Digest', scope: 'phase-230-review-checklist-v2' },
 };
 
 export const KNOWN_REPORT_IDS: readonly string[] = Object.keys(REGISTRY);

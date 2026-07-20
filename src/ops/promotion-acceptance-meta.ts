@@ -75,6 +75,10 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-context-consistency-audit', doc: 'PHASE_230_PROMOTION_CONTEXT_CONSISTENCY_AUDIT' },
   { base: 'promotion-closure-summary-v3', doc: 'PHASE_230_PROMOTION_CLOSURE_SUMMARY_V3' },
   { base: 'promotion-closure-input-bundle-audit', doc: 'PHASE_230_PROMOTION_CLOSURE_INPUT_BUNDLE_AUDIT' },
+  { base: 'promotion-approval-request-packet', doc: 'PHASE_230_PROMOTION_APPROVAL_REQUEST_PACKET' },
+  { base: 'promotion-live-preflight-plan', doc: 'PHASE_230_PROMOTION_LIVE_PREFLIGHT_PLAN' },
+  { base: 'promotion-no-live-authorization-guard', doc: 'PHASE_230_PROMOTION_NO_LIVE_AUTHORIZATION_GUARD' },
+  { base: 'promotion-review-checklist-v2', doc: 'PHASE_230_PROMOTION_REVIEW_CHECKLIST_V2' },
 ];
 
 export interface OpMetaCheck {
