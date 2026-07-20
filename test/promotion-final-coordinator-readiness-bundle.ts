@@ -1,4 +1,5 @@
 import { spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -91,6 +92,25 @@ await test('BLOCKED on a genuine READY trace paired with a mismatched-but-green 
     assert(otherClean.noLiveDigest !== i.noLiveGuard.noLiveDigest, 'and has a different self-digest');
     const b = buildFinalCoordinatorReadinessBundle({ ...i, noLiveGuard: otherClean });
     assertEq(b.overall, 'FINAL_READINESS_BUNDLE_BLOCKED', 'mismatched component blocks');
+    assert(b.openBlockers.includes('ACCEPTANCE_TRACE_COMPONENT_MISMATCH'), 'ACCEPTANCE_TRACE_COMPONENT_MISMATCH');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('BLOCKED on a self-sealed FORGED trace whose self-reported digests look right (recompute > self-report)', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'catalog-finalbundle-'));
+  try {
+    const i = await inputs(root);
+    // Take the genuine READY trace, tamper a builder-fixed field, and RE-SEAL its self-digest so it still
+    // self-verifies and still reports the correct component digests. The old self-reported-digest binding
+    // would have accepted it; the recompute-from-supplied-components binding must reject it.
+    const scope = 'phase-230-operator-acceptance-trace';
+    const tampered = { ...JSON.parse(JSON.stringify(i.acceptanceTrace)), disclaimers: [...i.acceptanceTrace.disclaimers, 'smuggled disclaimer'] } as Record<string, unknown>;
+    delete tampered.traceDigest;
+    tampered.traceDigest = createHash('sha256').update(`${scope}:${JSON.stringify(tampered)}`).digest('hex');
+    // sanity: the forged trace self-verifies in isolation and still reports the genuine component digests
+    assertEq(verifySelfDigests([tampered]).overall, 'ALL_VERIFIED', 'forged trace self-verifies');
+    const b = buildFinalCoordinatorReadinessBundle({ ...i, acceptanceTrace: tampered });
+    assertEq(b.overall, 'FINAL_READINESS_BUNDLE_BLOCKED', 'forged-but-self-consistent trace blocks');
     assert(b.openBlockers.includes('ACCEPTANCE_TRACE_COMPONENT_MISMATCH'), 'ACCEPTANCE_TRACE_COMPONENT_MISMATCH');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });

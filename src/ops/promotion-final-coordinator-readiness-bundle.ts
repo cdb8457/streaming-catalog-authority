@@ -1,6 +1,7 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 import { buildNoLiveAuthorizationGuard } from './promotion-no-live-authorization-guard.js';
+import { buildOperatorAcceptanceTrace } from './promotion-operator-acceptance-trace.js';
 
 // Local, non-live FINAL coordinator readiness bundle. It consumes the operator acceptance trace, the no-live
 // authorization guard, the live-execution preflight plan, the approval-request packet, the coordinator review
@@ -97,23 +98,21 @@ export function buildFinalCoordinatorReadinessBundle(input: FinalReadinessBundle
     if (!observed) blockers.push('OBSERVED_STATE_REQUIREMENT_MISSING');
   }
 
-  // COORDINATOR BINDING: individually-green components are not enough -- they must be the SAME evidence. The
-  // acceptance trace's recorded per-component self-digests must EXACTLY equal the directly-supplied component
-  // digests (so a genuine READY trace cannot be paired with a mismatched-but-green guard/preflight/approval/
-  // checklist), and the reviewed commit the trace carries must equal the approval packet's.
+  // COORDINATOR BINDING: individually-green components are not enough -- they must be the SAME evidence, and
+  // the acceptance trace's self-REPORTED component digests cannot be trusted (the trace is a self-sealed
+  // artifact: an attacker can forge a READY trace that reports any digests). So RE-DERIVE the trace from the
+  // directly-supplied components and require the recompute to be READY and its self-digest to EXACTLY equal
+  // the supplied trace's -- authenticity, not just integrity. A mismatched-but-green component set, or a
+  // forged/tampered-but-self-consistent trace, then fails closed.
   if (trace.ok && approval.ok && preflight.ok && noLive.ok && checklist.ok) {
-    const traceDigests = new Map<string, string | null>();
-    for (const c of (Array.isArray(asObject(input.acceptanceTrace).components) ? asObject(input.acceptanceTrace).components as unknown[] : [])) {
-      const co = asObject(c);
-      if (typeof co.key === 'string') traceDigests.set(co.key, typeof co.digest === 'string' ? co.digest : null);
+    const recomputedTrace = buildOperatorAcceptanceTrace({
+      approvalRequest: input.approvalRequest, livePreflight: input.livePreflight,
+      noLiveGuard: input.noLiveGuard, reviewChecklistV2: input.reviewChecklistV2,
+    });
+    if (recomputedTrace.overall !== 'ACCEPTANCE_TRACE_READY' || recomputedTrace.traceDigest !== asSha256(asObject(input.acceptanceTrace).traceDigest)) {
+      blockers.push('ACCEPTANCE_TRACE_COMPONENT_MISMATCH');
     }
-    const bindings: Array<[string, string | undefined]> = [
-      ['approval-request', asSha256(asObject(input.approvalRequest).packetDigest)],
-      ['live-preflight', asSha256(asObject(input.livePreflight).planDigest)],
-      ['no-live-guard', asSha256(asObject(input.noLiveGuard).noLiveDigest)],
-      ['review-checklist-v2', asSha256(asObject(input.reviewChecklistV2).checklistV2Digest)],
-    ];
-    if (!bindings.every(([key, d]) => d !== undefined && traceDigests.get(key) === d)) blockers.push('ACCEPTANCE_TRACE_COMPONENT_MISMATCH');
+    // Explicit reviewed-commit cross-check (the recompute subsumes this, but it is a clear focused invariant).
     if (asSha40(asObject(input.acceptanceTrace).reviewedCommit) !== asSha40(asObject(input.approvalRequest).reviewedCommit)) blockers.push('REVIEWED_COMMIT_MISMATCH');
   }
 

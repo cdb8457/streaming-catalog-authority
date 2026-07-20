@@ -35,9 +35,11 @@ missing from the preflight plan (`OBSERVED_STATE_REQUIREMENT_MISSING`). When blo
 
 Individually-green components are not enough — they must be the **same** evidence. The bundle cross-binds:
 
-- `ACCEPTANCE_TRACE_COMPONENT_MISMATCH` — the acceptance trace's recorded per-component self-digests must
-  **exactly** equal the directly-supplied component digests (approval / preflight / no-live / checklist), so a
-  genuine READY trace cannot be paired with a mismatched-but-green component set;
+- `ACCEPTANCE_TRACE_COMPONENT_MISMATCH` — the acceptance trace is **re-derived** from the directly-supplied
+  components (approval / preflight / no-live / checklist) and its recompute must be READY with a self-digest
+  that **exactly** equals the supplied trace's. The trace's own self-reported digests are never trusted (a
+  self-sealed artifact proves integrity, not authenticity), so neither a mismatched-but-green component set nor
+  a forged/tampered-but-self-consistent trace can pass;
 - `REVIEWED_COMMIT_MISMATCH` — the reviewed commit the trace carries must equal the approval packet's;
 - `SELF_DIGEST_BINDING_MISMATCH` — the supplied self-digest verification must cover **exactly** the supplied
   guard components (recomputed over them in canonical order), not an unrelated ALL_VERIFIED set.
