@@ -85,6 +85,7 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-operator-acceptance-trace` | PHASE_230_PROMOTION_OPERATOR_ACCEPTANCE_TRACE |
 | `promotion-guard-adversarial-corpus-v2` | PHASE_230_PROMOTION_GUARD_ADVERSARIAL_CORPUS_V2 |
 | `promotion-final-coordinator-readiness-bundle` | PHASE_230_PROMOTION_FINAL_COORDINATOR_READINESS_BUNDLE |
+| `promotion-final-bundle-replay-verifier` | PHASE_230_PROMOTION_FINAL_BUNDLE_REPLAY_VERIFIER |
 
 ## Test-only local suites
 

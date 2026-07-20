@@ -84,6 +84,7 @@ const LOCAL_TOOL_SOURCES = [
   'src/ops/promotion-operator-acceptance-trace.ts', 'src/ops/promotion-operator-acceptance-trace-cli.ts',
   'src/ops/promotion-guard-adversarial-corpus-v2.ts', 'src/ops/promotion-guard-adversarial-corpus-v2-cli.ts',
   'src/ops/promotion-final-coordinator-readiness-bundle.ts', 'src/ops/promotion-final-coordinator-readiness-bundle-cli.ts',
+  'src/ops/promotion-final-bundle-replay-verifier.ts', 'src/ops/promotion-final-bundle-replay-verifier-cli.ts',
 ];
 
 const FORBIDDEN_LIVE_HOOKS = [
@@ -167,6 +168,7 @@ const LOCAL_TOOL_DOCS = [
   'docs/PHASE_230_PROMOTION_OPERATOR_ACCEPTANCE_TRACE.md',
   'docs/PHASE_230_PROMOTION_GUARD_ADVERSARIAL_CORPUS_V2.md',
   'docs/PHASE_230_PROMOTION_FINAL_COORDINATOR_READINESS_BUNDLE.md',
+  'docs/PHASE_230_PROMOTION_FINAL_BUNDLE_REPLAY_VERIFIER.md',
 ];
 
 console.log('Running Phase 230 live-boundary guard suite:\n');

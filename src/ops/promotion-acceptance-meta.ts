@@ -82,6 +82,7 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-operator-acceptance-trace', doc: 'PHASE_230_PROMOTION_OPERATOR_ACCEPTANCE_TRACE' },
   { base: 'promotion-guard-adversarial-corpus-v2', doc: 'PHASE_230_PROMOTION_GUARD_ADVERSARIAL_CORPUS_V2' },
   { base: 'promotion-final-coordinator-readiness-bundle', doc: 'PHASE_230_PROMOTION_FINAL_COORDINATOR_READINESS_BUNDLE' },
+  { base: 'promotion-final-bundle-replay-verifier', doc: 'PHASE_230_PROMOTION_FINAL_BUNDLE_REPLAY_VERIFIER' },
 ];
 
 export interface OpMetaCheck {

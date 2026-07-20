@@ -91,6 +91,7 @@ const LOCAL_SUITES = [
   'test/promotion-operator-acceptance-trace.ts',
   'test/promotion-guard-adversarial-corpus-v2.ts',
   'test/promotion-final-coordinator-readiness-bundle.ts',
+  'test/promotion-final-bundle-replay-verifier.ts',
   'test/promotion-live-boundary-guard.ts',
   'test/phase230-local-suite-manifest.ts',
   'test/phase230-closure.ts',
