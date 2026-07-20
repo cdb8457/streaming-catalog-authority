@@ -57,6 +57,31 @@ test('a PENDING human gate doc may LIST the tokens as pending steps (exempt)', (
   assertEq(buildNoLiveAuthorizationGuard({ artifacts: [fakeGate] }).overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'authorization claim not exempt');
 });
 
+test('a PENDING human gate can NEVER smuggle a hard claim flag or forbidden claim-field value', () => {
+  // Every one of these is a valid-looking PENDING human gate (humanGate:true, status/authorization ok) that
+  // ALSO carries an actual live-authorization claim. The gate exemption must be refused for all of them.
+  const base = { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE' } as const;
+  const smugglers: Array<Record<string, unknown>> = [
+    { ...base, approved: true },
+    { ...base, execute: true },
+    { ...base, liveReady: true },
+    { ...base, phase231Authorized: true },
+    { ...base, liveAuthorized: true },
+    // forbidden token as a claim-field VALUE (status/overall) while still passing the gate's PENDING check on
+    // the other fields -- overall is not part of the gate predicate, so it must fail closed on its own.
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', overall: 'LIVE_READY' },
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'PENDING', overall: 'PHASE_231_AUTHORIZED' },
+  ];
+  for (const c of smugglers) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `gate cannot smuggle ${JSON.stringify(c).slice(0, 60)}`);
+    assert(r.blockers.includes('LIVE_AUTHORIZATION_CLAIMED'), 'LIVE_AUTHORIZATION_CLAIMED');
+    assert(r.verdicts[0]!.hardClaim === true, 'flagged as a hard claim');
+    assert(!r.verdicts[0]!.pendingGateExempt, 'gate exemption refused');
+    assert(!JSON.stringify(r).includes('LIVE_READY') && !JSON.stringify(r).includes('PHASE_231_AUTHORIZED'), 'offending value never echoed');
+  }
+});
+
 test('VIOLATED (fail closed) on no artifacts, redaction-safe', () => {
   const r = buildNoLiveAuthorizationGuard({ artifacts: [] });
   assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'no artifacts fails closed');

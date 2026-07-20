@@ -3,11 +3,18 @@ import { createHash } from 'node:crypto';
 // Local, non-live FINAL no-live-authorization guard. Any Phase 230/231-ish artifact that CLAIMS a live
 // authorization -- an `authorization` / `status` / `overall` of APPROVED, EXECUTE, LIVE_READY,
 // PHASE_231_AUTHORIZED or GRANTED, a truthy approved / execute / liveReady / phase231Authorized flag, or one
-// of those exact tokens anywhere in its body -- fails closed, UNLESS it is explicitly a PENDING human gate
-// doc (`humanGate: true`, `status: 'PENDING'`, `authorization` NONE/PENDING), which may LIST those tokens as
-// pending steps. It reads parsed JSON only; it performs no promotion, never touches the real Movies root,
-// never contacts Jellyfin, and `authorization` is the constant NONE. It echoes only report short-names and
-// booleans -- never the offending value.
+// of those exact tokens anywhere in its body -- fails closed.
+//
+// The ONLY exemption is a PENDING human gate doc (`humanGate: true`, `status: 'PENDING'`, `authorization`
+// NONE/PENDING), and it is DELIBERATELY NARROW: it may LIST the forbidden tokens as textual pending steps
+// (a token appearing as prose somewhere in the body), but it may NEVER exempt a HARD claim -- a forbidden
+// token used as the value of the `authorization` / `status` / `overall` claim fields, or a truthy claim
+// flag. A hard claim inside a human-gate artifact (e.g. `approved: true`) always fails closed, so a pending
+// gate cannot smuggle an actual live-authorization claim past the guard.
+//
+// It reads parsed JSON only; it performs no promotion, never touches the real Movies root, never contacts
+// Jellyfin, and `authorization` is the constant NONE. It echoes only report short-names and booleans --
+// never the offending value.
 
 export interface NoLiveAuthorizationGuardInput { readonly artifacts?: unknown; }
 
@@ -17,7 +24,14 @@ const FORBIDDEN_TOKENS: readonly string[] = ['APPROVED', 'EXECUTE', 'LIVE_READY'
 const CLAIM_FLAGS: readonly string[] = ['approved', 'execute', 'liveReady', 'phase231Authorized', 'liveAuthorized'];
 const ALLOWED_AUTHORIZATION: readonly string[] = ['NONE', 'PENDING'];
 
-export interface ArtifactVerdict { readonly artifact: string; readonly claimsLiveAuthorization: boolean; readonly pendingGateExempt: boolean; }
+export interface ArtifactVerdict {
+  readonly artifact: string;
+  readonly claimsLiveAuthorization: boolean;
+  readonly pendingGateExempt: boolean;
+  // A hard claim (claim field with a forbidden token, or a truthy claim flag) that fails closed even inside a
+  // human gate. When true and the artifact is a human gate, the gate exemption was refused.
+  readonly hardClaim: boolean;
+}
 
 export interface NoLiveAuthorizationGuardReport {
   readonly report: 'phase-230-promotion-no-live-authorization-guard';
@@ -39,12 +53,17 @@ export function buildNoLiveAuthorizationGuard(input: NoLiveAuthorizationGuardInp
   const verdicts: ArtifactVerdict[] = artifacts.map((a, i) => {
     const o = asObject(a);
     const id = typeof o.report === 'string' ? o.report.replace(/^phase-230-promotion-/, '') : `artifact-${i}`;
-    const pendingGateExempt = o.humanGate === true && o.status === 'PENDING'
+    const isPendingGate = o.humanGate === true && o.status === 'PENDING'
       && typeof o.authorization === 'string' && ALLOWED_AUTHORIZATION.includes(o.authorization);
-    const claim = hasClaim(o);
-    const claimsLiveAuthorization = claim && !pendingGateExempt;
+    // A HARD claim -- claim field with a forbidden token, or a truthy claim flag -- is NEVER exempt.
+    const hardClaim = hasHardClaim(o);
+    // A TEXTUAL claim -- a forbidden token appearing as prose anywhere in the body -- may be a listed pending
+    // step, so the pending human gate may exempt it (but never the hard claim above).
+    const textualClaim = deepHasToken(o, 0);
+    const pendingGateExempt = isPendingGate && !hardClaim;
+    const claimsLiveAuthorization = hardClaim || (textualClaim && !pendingGateExempt);
     if (claimsLiveAuthorization) blockers.push('LIVE_AUTHORIZATION_CLAIMED');
-    return { artifact: id, claimsLiveAuthorization, pendingGateExempt };
+    return { artifact: id, claimsLiveAuthorization, pendingGateExempt, hardClaim };
   });
 
   const uniqueBlockers = [...new Set(blockers)];
@@ -62,14 +81,14 @@ export function buildNoLiveAuthorizationGuard(input: NoLiveAuthorizationGuardInp
   return { ...withoutDigest, noLiveDigest: digest('phase-230-no-live-authorization-guard', JSON.stringify(withoutDigest)) };
 }
 
-// A live-authorization CLAIM: a forbidden token as authorization/status/overall, a truthy claim flag, or one
-// of the exact tokens present anywhere in the body.
-function hasClaim(o: Record<string, unknown>): boolean {
+// A HARD live-authorization claim: a forbidden token used as the value of a claim field
+// (authorization / status / overall), or a truthy claim flag. This is never exempt by the human gate.
+function hasHardClaim(o: Record<string, unknown>): boolean {
   for (const field of ['authorization', 'status', 'overall']) {
     if (typeof o[field] === 'string' && FORBIDDEN_TOKENS.includes(o[field] as string)) return true;
   }
   for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
-  return deepHasToken(o, 0);
+  return false;
 }
 function deepHasToken(value: unknown, depth: number): boolean {
   if (depth > 8) return false;
