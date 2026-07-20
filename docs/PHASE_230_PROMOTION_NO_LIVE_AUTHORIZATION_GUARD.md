@@ -16,24 +16,34 @@ A **claim** is any of: an `authorization` / `status` / `overall` equal to `APPRO
 ### Hard claim vs textual claim
 
 - A **hard claim** — a forbidden token used as the *value* of a claim field (`authorization`/`status`/
-  `overall`), or a truthy claim flag — is detected **recursively at any nesting depth** and **never** exempt.
+  `overall`), a truthy claim flag, or an **object key** that reduces to a forbidden token with a truthy value —
+  is detected **recursively at any nesting depth** and **never** exempt.
 - A **textual claim** — a forbidden token appearing merely as a prose string elsewhere in the body — is the
   only thing a PENDING human gate may LIST as a pending step.
 
 ### Token matching (normalization-aware, false-positive-safe)
 
-Tokens are normalized before comparison: lower-cased, every run of non-alphanumerics collapsed to a single
-`_`, leading/trailing `_` trimmed. So `APPROVED`, `approved`, `live_ready`, `live-ready`, `LIVE READY`,
-`phase_231_authorized` and `phase-231-authorized` all normalize onto the canonical tokens.
+Each string (value **or object key**) is reduced to a **word-boundary** form — camelCase / digit boundaries
+split (`LiveReady` → `live_ready`, `phase231Authorized` → `phase_231_authorized`), lower-cased,
+non-alphanumerics collapsed to single `_`, trimmed — and to a **compact** form (all non-alphanumerics
+stripped). So `APPROVED`, `approved`, `live_ready`, `live-ready`, `LIVE READY`, `LiveReady`, `LIVEREADY`,
+`phase_231_authorized` and `phase-231-authorized` all reduce onto the canonical tokens.
 
-- **Identifier-like strings** (no interior whitespace — enum values, flags, standalone list tokens) match on a
-  **word boundary**, so affixed variants like `APPROVED_FOR_LIVE` also fail closed.
-- **Prose strings** (any interior whitespace — sentences) match **only** when the whole normalized string
-  equals a canonical token. This is a deliberate **exact-token policy for prose**: it keeps
-  `LOCAL_REVIEW_AUTHORIZED` and negative prose such as "Phase 231 authorization is NOT granted" from
+- A token matches when the whole boundary form equals it, the whole compact form equals its compact form
+  (catches separator-free camelCase), or — for **identifier-like strings** (no interior whitespace: enum
+  values, flags, **object keys**, standalone list tokens) — the token appears at a `_`-delimited **word
+  boundary**, so affixed variants like `APPROVED_FOR_LIVE` also fail closed. The `_`-delimited boundary means
+  `unapproved` and `local_review_authorized` do **not** match `approved`.
+- **Prose strings** (any interior whitespace — sentences) only ever match on the two **whole-string** forms;
+  the word-boundary affix rule is identifier-only. This is a deliberate **exact-token policy for prose**: it
+  keeps `LOCAL_REVIEW_AUTHORIZED` and negative prose such as "Phase 231 authorization is NOT granted" from
   false-positiving (a sentence never equals a token, and `granted` inside "NOT granted" is not matched as a
-  word because prose is whole-string-only). The bare word `AUTHORIZED` is deliberately **not** a token — only
-  `PHASE_231_AUTHORIZED` as a whole token.
+  word). The bare word `AUTHORIZED` is deliberately **not** a token — only `PHASE_231_AUTHORIZED` as a whole
+  token.
+- **Object keys**: a key that reduces to a forbidden token with a *truthy* value is a hard claim
+  (`{ live_ready: true }`, `{ approved_for_live: {...} }`, `{ LiveReady: 1 }`). A forbidden-token key set to a
+  *falsy* value (e.g. `approved: false`) is not a claim. Scoped by the same word-boundary rule, so unrelated
+  review fields (`reviewAuthorization`, `localReviewAuthorized`, `unapproved`) are not flagged.
 
 An artifact that makes a claim is a `LIVE_AUTHORIZATION_CLAIMED` violation **unless** it is an explicit PENDING
 human gate doc — `humanGate: true`, `status: 'PENDING'`, `authorization` in `NONE`/`PENDING` — which may LIST

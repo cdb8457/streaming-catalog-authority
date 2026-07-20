@@ -115,8 +115,12 @@ test('VIOLATED on case / separator / affix VARIANTS of the forbidden tokens (cla
     { report: 'x', overall: 'live_ready' },
     { report: 'x', status: 'live-ready' },
     { report: 'x', overall: 'Live Ready' },
+    { report: 'x', overall: 'LiveReady' },
+    { report: 'x', status: 'LIVEREADY' },
+    { report: 'x', authorization: 'phase231Authorized' },
     { report: 'x', status: 'granted' },
-    { report: 'x', overall: 'ExEcUtE' },
+    { report: 'x', overall: 'Execute' },
+    { report: 'x', overall: 'EXECUTE' },
     // nested variant claim-field value, inside a would-be pending gate -> still a hard claim
     { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', gate: { overall: 'phase-231-authorized' } },
   ];
@@ -135,6 +139,31 @@ test('variant tokens listed as PENDING steps are exempt inside a human gate, but
   assertEq(buildNoLiveAuthorizationGuard({ artifacts: [notAGate] }).overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'same list outside a gate fails closed');
 });
 
+test('VIOLATED on a forbidden token smuggled as an OBJECT KEY with a truthy value', () => {
+  // The claim is carried as a KEY name (variant/camelCase/separator) rather than a value. All are hard claims.
+  const keyed: unknown[] = [
+    { report: 'x', live_ready: true },
+    { report: 'x', 'live-ready': 1 },
+    { report: 'x', LiveReady: true },
+    { report: 'x', approved_for_live: { detail: 'x' } },
+    { report: 'x', approvedForLive: 'yes' },
+    { report: 'x', phase231Authorized: true },
+    { report: 'x', 'phase-231-authorized': 1 },
+    { report: 'x', GRANTED: true },
+    // nested inside a would-be PENDING human gate -> still a hard claim, NOT exempt
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', meta: { live_ready: true } },
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', gates: [{ approved_for_live: 1 }] },
+  ];
+  for (const c of keyed) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `keyed claim flagged: ${JSON.stringify(c).slice(0, 60)}`);
+    assert(r.verdicts[0]!.hardClaim === true, 'hard claim');
+    assert(!r.verdicts[0]!.pendingGateExempt, 'gate exemption refused');
+  }
+  // ...but a forbidden-token key explicitly set to a FALSY value is NOT a claim (e.g. "approved: false").
+  assertEq(buildNoLiveAuthorizationGuard({ artifacts: [{ report: 'x', authorization: 'NONE', approved: false, live_ready: 0 }] }).overall, 'NO_LIVE_AUTHORIZATION_CLEAN', 'falsy token key is not a claim');
+});
+
 test('no FALSE POSITIVES on local review terms or negative prose', () => {
   const benign: unknown[] = [
     { report: 'phase-230-promotion-review-authorization', authorization: 'NONE', status: 'PENDING', overall: 'LOCAL_REVIEW_AUTHORIZED' },
@@ -142,6 +171,9 @@ test('no FALSE POSITIVES on local review terms or negative prose', () => {
     { report: 'x', authorization: 'NONE', note: 'Live promotion has not been approved; approval is pending human review.' },
     { report: 'x', authorization: 'NONE', overall: 'CLOSURE_SUMMARY_READY', detail: 'readiness verified locally' },
     { report: 'x', authorization: 'NONE', note: 'authorization and authorized are not tokens on their own' },
+    // benign object KEYS that must NOT be flagged, even though truthy
+    { report: 'phase-230-promotion-review-authorization', authorization: 'NONE', reviewAuthorization: { ok: true }, localReviewAuthorized: true },
+    { report: 'x', authorization: 'NONE', readinessVerified: true, unapproved: true, approvalPending: true },
   ];
   for (const b of benign) {
     const r = buildNoLiveAuthorizationGuard({ artifacts: [b] });

@@ -19,43 +19,63 @@ import { createHash } from 'node:crypto';
 // never the offending value.
 //
 // TOKEN-MATCHING POLICY (normalization-aware, false-positive-safe):
-//  * Tokens are normalized before comparison -- lower-cased, every run of non-alphanumerics collapsed to a
-//    single `_`, leading/trailing `_` trimmed. So APPROVED, approved, Approved, live_ready, live-ready,
-//    LIVE READY, phase_231_authorized and phase-231-authorized all normalize onto the canonical tokens.
-//  * IDENTIFIER-like strings (no interior whitespace -- enum values, flags, standalone list tokens) match on
-//    a WORD-BOUNDARY substring, so affixed variants like APPROVED_FOR_LIVE / live-ready-now also fail closed.
-//  * PROSE strings (any interior whitespace -- sentences) match ONLY when the WHOLE normalized string equals
-//    a canonical token. This is the deliberate exact-token policy for prose: it is what keeps
-//    LOCAL_REVIEW_AUTHORIZED (no 'approved'/'granted'... token as a word) and negative prose such as
-//    "Phase 231 authorization is NOT granted" from false-positiving -- the sentence never equals a token, and
-//    'granted' inside "NOT granted" is not matched as a word because prose is whole-string-only.
+//  * A string is normalized to a WORD-BOUNDARY form -- camelCase / digit boundaries split (LiveReady ->
+//    live_ready, phase231Authorized -> phase_231_authorized), lower-cased, every run of non-alphanumerics
+//    collapsed to a single `_`, trimmed -- and to a COMPACT form (all non-alphanumerics stripped). So
+//    APPROVED, approved, Approved, live_ready, live-ready, LIVE READY, LiveReady, phase_231_authorized and
+//    phase-231-authorized all reduce onto the canonical tokens.
+//  * A canonical token matches a string when: the whole boundary form equals it, OR the whole compact form
+//    equals its compact form (catches separator-free camelCase like LIVEREADY), OR -- for IDENTIFIER-like
+//    strings (no interior whitespace: enum values, flags, OBJECT KEYS, standalone list tokens) -- the token
+//    appears at a `_`-delimited WORD boundary, so affixed variants like APPROVED_FOR_LIVE also fail closed.
+//    The `_`-delimited boundary means `unapproved` / `local_review_authorized` do NOT match `approved`.
+//  * PROSE strings (any interior whitespace -- sentences) only ever match on the two WHOLE-string forms; the
+//    word-boundary affix rule is identifier-only. This is what keeps LOCAL_REVIEW_AUTHORIZED and negative
+//    prose such as "Phase 231 authorization is NOT granted" from false-positiving -- a sentence never equals a
+//    token, and 'granted' inside "NOT granted" is not matched as a word because prose is whole-string-only.
 //  * The canonical set is deliberately NOT bare 'AUTHORIZED' -- only PHASE_231_AUTHORIZED as a whole token --
 //    so LOCAL_REVIEW_AUTHORIZED and "authorization" prose are never flagged.
+//  * OBJECT KEYS are matched too: a key that reduces to a forbidden token with a truthy value is a HARD claim
+//    ({ live_ready: true }, { approved_for_live: {...} }, { LiveReady: 1 }). Scoped by the same boundary rule,
+//    so unrelated review fields (reviewAuthorization, localReviewAuthorized, ...) are not flagged.
 
 export interface NoLiveAuthorizationGuardInput { readonly artifacts?: unknown; }
 
-// The canonical live-authorization claim tokens (normalized form). Variants/casings/separators of these are
-// matched via `matchesForbidden`. Deliberately NOT bare 'authorized' alone (see policy above).
+// The canonical live-authorization claim tokens (word-boundary form). Variants/casings/separators/camelCase of
+// these are matched via `matchesForbidden`. Deliberately NOT bare 'authorized' alone (see policy above).
 const FORBIDDEN_TOKENS: readonly string[] = ['approved', 'execute', 'live_ready', 'phase_231_authorized', 'granted'];
 const CLAIM_FLAGS: readonly string[] = ['approved', 'execute', 'liveReady', 'phase231Authorized', 'liveAuthorized'];
 const ALLOWED_AUTHORIZATION: readonly string[] = ['NONE', 'PENDING'];
 
-// Normalize a token for comparison: lower-case, collapse non-alphanumerics to single `_`, trim `_`.
-function normToken(s: string): string {
-  return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_+|_+$/g, '');
+// Word-boundary normal form: split camelCase + letter/digit boundaries, lower-case, collapse non-alphanumerics
+// to single `_`, trim. e.g. 'LiveReady' -> 'live_ready', 'phase231Authorized' -> 'phase_231_authorized'.
+function normBoundary(s: string): string {
+  return s
+    .replace(/([a-z0-9])([A-Z])/g, '$1_$2')
+    .replace(/([a-zA-Z])([0-9])/g, '$1_$2')
+    .replace(/([0-9])([a-zA-Z])/g, '$1_$2')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, '_')
+    .replace(/^_+|_+$/g, '');
 }
-// Does a string value carry a forbidden live-authorization token, per the policy above?
+// Compact normal form: strip every non-alphanumeric. e.g. 'LIVEREADY' / 'live-ready' -> 'liveready'.
+function compact(s: string): string { return s.toLowerCase().replace(/[^a-z0-9]+/g, ''); }
+
+// Does a string (value OR object key) carry a forbidden live-authorization token, per the policy above?
 function matchesForbidden(s: string): boolean {
-  const norm = normToken(s);
-  if (norm === '') return false;
+  const boundary = normBoundary(s);
+  if (boundary === '') return false;
+  const comp = compact(s);
   const identifierLike = !/\s/.test(s.trim());
-  const wrapped = `_${norm}_`;
+  const wrapped = `_${boundary}_`;
   for (const t of FORBIDDEN_TOKENS) {
-    if (norm === t) return true;                                 // whole-string match (prose + identifiers)
-    if (identifierLike && wrapped.includes(`_${t}_`)) return true; // word-boundary variant match (identifiers only)
+    if (boundary === t) return true;                               // whole boundary match (prose + identifiers)
+    if (comp === t.replace(/_/g, '')) return true;                 // whole compact match (separator-free variants)
+    if (identifierLike && wrapped.includes(`_${t}_`)) return true; // word-boundary affix match (identifiers only)
   }
   return false;
 }
+function isTruthy(v: unknown): boolean { return v !== undefined && v !== null && v !== false && v !== 0 && v !== ''; }
 
 export interface ArtifactVerdict {
   readonly artifact: string;
@@ -115,11 +135,12 @@ export function buildNoLiveAuthorizationGuard(input: NoLiveAuthorizationGuardInp
 }
 
 // A HARD live-authorization claim: a forbidden token used as the value of a claim field
-// (authorization / status / overall), or a truthy claim flag. Checked RECURSIVELY over the whole artifact
-// tree so a claim nested inside a sub-object (e.g. { gate: { approved: true } } or { step: { status:
-// 'LIVE_READY' } }) still fails closed. This is never exempt by the human gate. (A forbidden token appearing
-// merely as a prose string -- not as a claim-field value or truthy flag -- remains a TEXTUAL claim that a
-// pending gate may list.)
+// (authorization / status / overall), a truthy claim flag, OR an object KEY that reduces to a forbidden token
+// with a truthy value. Checked RECURSIVELY over the whole artifact tree so a claim nested inside a sub-object
+// (e.g. { gate: { approved: true } }, { step: { status: 'LIVE_READY' } } or { meta: { live_ready: 1 } }) still
+// fails closed. This is never exempt by the human gate. (A forbidden token appearing merely as a prose string
+// -- not as a claim-field value, truthy flag, or truthy key -- remains a TEXTUAL claim a pending gate may
+// list.)
 const CLAIM_FIELDS: readonly string[] = ['authorization', 'status', 'overall'];
 function hasHardClaim(value: unknown, depth = 0): boolean {
   if (depth > 8) return false;
@@ -130,6 +151,9 @@ function hasHardClaim(value: unknown, depth = 0): boolean {
     if (typeof o[field] === 'string' && matchesForbidden(o[field] as string)) return true;
   }
   for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
+  // Object KEY named after a forbidden token, set to a truthy value, is a hard claim (scoped by the same
+  // word-boundary rule so unrelated review fields such as reviewAuthorization are not flagged).
+  for (const [k, v] of Object.entries(o)) if (isTruthy(v) && matchesForbidden(k)) return true;
   return Object.values(o).some((v) => hasHardClaim(v, depth + 1));
 }
 function deepHasToken(value: unknown, depth: number): boolean {
