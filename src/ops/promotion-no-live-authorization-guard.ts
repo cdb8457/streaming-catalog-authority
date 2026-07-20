@@ -9,8 +9,9 @@ import { createHash } from 'node:crypto';
 // NONE/PENDING), and it is DELIBERATELY NARROW: it may LIST the forbidden tokens as textual pending steps
 // (a token appearing as prose somewhere in the body), but it may NEVER exempt a HARD claim -- a forbidden
 // token used as the value of the `authorization` / `status` / `overall` claim fields, or a truthy claim
-// flag. A hard claim inside a human-gate artifact (e.g. `approved: true`) always fails closed, so a pending
-// gate cannot smuggle an actual live-authorization claim past the guard.
+// flag, anywhere in the artifact tree (top-level OR nested in a sub-object/array). A hard claim inside a
+// human-gate artifact (e.g. `approved: true`, or `gate: { status: 'LIVE_READY' }`) always fails closed, so a
+// pending gate cannot smuggle an actual live-authorization claim past the guard.
 //
 // It reads parsed JSON only; it performs no promotion, never touches the real Movies root, never contacts
 // Jellyfin, and `authorization` is the constant NONE. It echoes only report short-names and booleans --
@@ -82,13 +83,22 @@ export function buildNoLiveAuthorizationGuard(input: NoLiveAuthorizationGuardInp
 }
 
 // A HARD live-authorization claim: a forbidden token used as the value of a claim field
-// (authorization / status / overall), or a truthy claim flag. This is never exempt by the human gate.
-function hasHardClaim(o: Record<string, unknown>): boolean {
-  for (const field of ['authorization', 'status', 'overall']) {
+// (authorization / status / overall), or a truthy claim flag. Checked RECURSIVELY over the whole artifact
+// tree so a claim nested inside a sub-object (e.g. { gate: { approved: true } } or { step: { status:
+// 'LIVE_READY' } }) still fails closed. This is never exempt by the human gate. (A forbidden token appearing
+// merely as a prose string -- not as a claim-field value or truthy flag -- remains a TEXTUAL claim that a
+// pending gate may list.)
+const CLAIM_FIELDS: readonly string[] = ['authorization', 'status', 'overall'];
+function hasHardClaim(value: unknown, depth = 0): boolean {
+  if (depth > 8) return false;
+  if (Array.isArray(value)) return value.some((v) => hasHardClaim(v, depth + 1));
+  if (!value || typeof value !== 'object') return false;
+  const o = value as Record<string, unknown>;
+  for (const field of CLAIM_FIELDS) {
     if (typeof o[field] === 'string' && FORBIDDEN_TOKENS.includes(o[field] as string)) return true;
   }
   for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
-  return false;
+  return Object.values(o).some((v) => hasHardClaim(v, depth + 1));
 }
 function deepHasToken(value: unknown, depth: number): boolean {
   if (depth > 8) return false;

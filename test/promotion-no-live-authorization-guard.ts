@@ -82,6 +82,29 @@ test('a PENDING human gate can NEVER smuggle a hard claim flag or forbidden clai
   }
 });
 
+test('a PENDING human gate can NEVER smuggle a NESTED hard claim (flag or forbidden claim-field value)', () => {
+  // Same smuggle attempt as above, but the claim is buried inside a sub-object/array so a top-level-only check
+  // would miss it. All must fail closed as hard claims.
+  const base = { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE' } as const;
+  const smugglers: Array<Record<string, unknown>> = [
+    { ...base, gate: { approved: true } },
+    { ...base, decision: { detail: { execute: true } } },
+    { ...base, steps: [{ note: 'x' }, { phase231Authorized: true }] },
+    { ...base, meta: { liveAuthorized: true } },
+    { ...base, decision: { status: 'LIVE_READY' } },
+    { ...base, gate: { result: { overall: 'PHASE_231_AUTHORIZED' } } },
+    { ...base, rows: [{ status: 'PHASE_231_AUTHORIZED' }] },
+  ];
+  for (const c of smugglers) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `gate cannot smuggle nested ${JSON.stringify(c).slice(0, 60)}`);
+    assert(r.blockers.includes('LIVE_AUTHORIZATION_CLAIMED'), 'LIVE_AUTHORIZATION_CLAIMED');
+    assert(r.verdicts[0]!.hardClaim === true, 'flagged as a hard claim');
+    assert(!r.verdicts[0]!.pendingGateExempt, 'gate exemption refused');
+    assert(!JSON.stringify(r).includes('LIVE_READY') && !JSON.stringify(r).includes('PHASE_231_AUTHORIZED'), 'offending value never echoed');
+  }
+});
+
 test('VIOLATED (fail closed) on no artifacts, redaction-safe', () => {
   const r = buildNoLiveAuthorizationGuard({ artifacts: [] });
   assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'no artifacts fails closed');
