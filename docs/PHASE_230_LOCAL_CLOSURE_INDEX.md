@@ -82,6 +82,9 @@ Each tool has `src/ops/<base>.ts`, `src/ops/<base>-cli.ts`, `test/<base>.ts`, a 
 | `promotion-live-preflight-plan` | PHASE_230_PROMOTION_LIVE_PREFLIGHT_PLAN |
 | `promotion-no-live-authorization-guard` | PHASE_230_PROMOTION_NO_LIVE_AUTHORIZATION_GUARD |
 | `promotion-review-checklist-v2` | PHASE_230_PROMOTION_REVIEW_CHECKLIST_V2 |
+| `promotion-operator-acceptance-trace` | PHASE_230_PROMOTION_OPERATOR_ACCEPTANCE_TRACE |
+| `promotion-guard-adversarial-corpus-v2` | PHASE_230_PROMOTION_GUARD_ADVERSARIAL_CORPUS_V2 |
+| `promotion-final-coordinator-readiness-bundle` | PHASE_230_PROMOTION_FINAL_COORDINATOR_READINESS_BUNDLE |
 
 ## Test-only local suites
 

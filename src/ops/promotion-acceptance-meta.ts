@@ -79,6 +79,9 @@ export const LOCAL_OPS_REGISTRY: readonly LocalOp[] = [
   { base: 'promotion-live-preflight-plan', doc: 'PHASE_230_PROMOTION_LIVE_PREFLIGHT_PLAN' },
   { base: 'promotion-no-live-authorization-guard', doc: 'PHASE_230_PROMOTION_NO_LIVE_AUTHORIZATION_GUARD' },
   { base: 'promotion-review-checklist-v2', doc: 'PHASE_230_PROMOTION_REVIEW_CHECKLIST_V2' },
+  { base: 'promotion-operator-acceptance-trace', doc: 'PHASE_230_PROMOTION_OPERATOR_ACCEPTANCE_TRACE' },
+  { base: 'promotion-guard-adversarial-corpus-v2', doc: 'PHASE_230_PROMOTION_GUARD_ADVERSARIAL_CORPUS_V2' },
+  { base: 'promotion-final-coordinator-readiness-bundle', doc: 'PHASE_230_PROMOTION_FINAL_COORDINATOR_READINESS_BUNDLE' },
 ];
 
 export interface OpMetaCheck {

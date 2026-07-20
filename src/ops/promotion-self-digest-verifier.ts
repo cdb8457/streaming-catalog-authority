@@ -74,6 +74,9 @@ const REGISTRY: Readonly<Record<string, DigestSpec>> = {
   'phase-230-promotion-live-preflight-plan': { field: 'planDigest', scope: 'phase-230-live-preflight-plan' },
   'phase-230-promotion-no-live-authorization-guard': { field: 'noLiveDigest', scope: 'phase-230-no-live-authorization-guard' },
   'phase-230-promotion-coordinator-review-checklist-v2': { field: 'checklistV2Digest', scope: 'phase-230-review-checklist-v2' },
+  'phase-230-promotion-operator-acceptance-trace': { field: 'traceDigest', scope: 'phase-230-operator-acceptance-trace' },
+  'phase-230-promotion-guard-adversarial-corpus-v2': { field: 'corpusV2Digest', scope: 'phase-230-guard-adversarial-corpus-v2' },
+  'phase-230-promotion-final-coordinator-readiness-bundle': { field: 'readinessBundleDigest', scope: 'phase-230-final-coordinator-readiness-bundle' },
 };
 
 export const KNOWN_REPORT_IDS: readonly string[] = Object.keys(REGISTRY);
