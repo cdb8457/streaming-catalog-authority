@@ -105,6 +105,51 @@ test('a PENDING human gate can NEVER smuggle a NESTED hard claim (flag or forbid
   }
 });
 
+test('VIOLATED on case / separator / affix VARIANTS of the forbidden tokens (claim fields + flags)', () => {
+  // Adversarial variant corpus: each is a hard claim carried in a claim FIELD as a token variant.
+  const variants: unknown[] = [
+    { report: 'x', status: 'approved_for_live' },
+    { report: 'x', overall: 'APPROVED_FOR_LIVE' },
+    { report: 'x', authorization: 'phase_231_authorized' },
+    { report: 'x', status: 'phase-231-authorized' },
+    { report: 'x', overall: 'live_ready' },
+    { report: 'x', status: 'live-ready' },
+    { report: 'x', overall: 'Live Ready' },
+    { report: 'x', status: 'granted' },
+    { report: 'x', overall: 'ExEcUtE' },
+    // nested variant claim-field value, inside a would-be pending gate -> still a hard claim
+    { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', gate: { overall: 'phase-231-authorized' } },
+  ];
+  for (const c of variants) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `variant flagged: ${JSON.stringify(c).slice(0, 60)}`);
+    assert(r.verdicts[0]!.hardClaim === true, 'hard claim');
+    assert(!/live[_ -]?ready|phase[_ -]?231|approved|granted|execute/i.test(JSON.stringify(r.verdicts)) , 'offending value never echoed');
+  }
+});
+
+test('variant tokens listed as PENDING steps are exempt inside a human gate, but not elsewhere', () => {
+  const gateDoc = { report: 'phase-230-promotion-human-gate', authorization: 'NONE', status: 'PENDING', humanGate: true, pendingGates: ['phase-231-authorized', 'approved_for_live', 'live-ready'] };
+  assertEq(buildNoLiveAuthorizationGuard({ artifacts: [gateDoc] }).overall, 'NO_LIVE_AUTHORIZATION_CLEAN', 'variant tokens may be LISTED as pending steps in a gate');
+  const notAGate = { report: 'x', pendingGates: ['phase-231-authorized'] };
+  assertEq(buildNoLiveAuthorizationGuard({ artifacts: [notAGate] }).overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'same list outside a gate fails closed');
+});
+
+test('no FALSE POSITIVES on local review terms or negative prose', () => {
+  const benign: unknown[] = [
+    { report: 'phase-230-promotion-review-authorization', authorization: 'NONE', status: 'PENDING', overall: 'LOCAL_REVIEW_AUTHORIZED' },
+    { report: 'x', authorization: 'NONE', note: 'Phase 231 authorization is NOT granted' },
+    { report: 'x', authorization: 'NONE', note: 'Live promotion has not been approved; approval is pending human review.' },
+    { report: 'x', authorization: 'NONE', overall: 'CLOSURE_SUMMARY_READY', detail: 'readiness verified locally' },
+    { report: 'x', authorization: 'NONE', note: 'authorization and authorized are not tokens on their own' },
+  ];
+  for (const b of benign) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [b] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_CLEAN', `benign not flagged: ${JSON.stringify(b).slice(0, 60)}`);
+    assert(!r.verdicts[0]!.hardClaim && !r.verdicts[0]!.claimsLiveAuthorization, 'no claim');
+  }
+});
+
 test('VIOLATED (fail closed) on no artifacts, redaction-safe', () => {
   const r = buildNoLiveAuthorizationGuard({ artifacts: [] });
   assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'no artifacts fails closed');

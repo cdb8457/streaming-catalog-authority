@@ -11,14 +11,35 @@ authorization fails closed — unless it is explicitly a PENDING human gate doc.
 
 A **claim** is any of: an `authorization` / `status` / `overall` equal to `APPROVED`, `EXECUTE`, `LIVE_READY`,
 `PHASE_231_AUTHORIZED`, or `GRANTED`; a truthy `approved` / `execute` / `liveReady` / `phase231Authorized` /
-`liveAuthorized` flag; or one of those exact tokens appearing anywhere in the artifact body. (The bare word
-`AUTHORIZED` is deliberately **not** flagged, so `LOCAL_REVIEW_AUTHORIZED` and prose like "Phase 231
-authorization is NOT granted" are not false positives.)
+`liveAuthorized` flag; or one of those tokens appearing anywhere in the artifact body.
+
+### Hard claim vs textual claim
+
+- A **hard claim** — a forbidden token used as the *value* of a claim field (`authorization`/`status`/
+  `overall`), or a truthy claim flag — is detected **recursively at any nesting depth** and **never** exempt.
+- A **textual claim** — a forbidden token appearing merely as a prose string elsewhere in the body — is the
+  only thing a PENDING human gate may LIST as a pending step.
+
+### Token matching (normalization-aware, false-positive-safe)
+
+Tokens are normalized before comparison: lower-cased, every run of non-alphanumerics collapsed to a single
+`_`, leading/trailing `_` trimmed. So `APPROVED`, `approved`, `live_ready`, `live-ready`, `LIVE READY`,
+`phase_231_authorized` and `phase-231-authorized` all normalize onto the canonical tokens.
+
+- **Identifier-like strings** (no interior whitespace — enum values, flags, standalone list tokens) match on a
+  **word boundary**, so affixed variants like `APPROVED_FOR_LIVE` also fail closed.
+- **Prose strings** (any interior whitespace — sentences) match **only** when the whole normalized string
+  equals a canonical token. This is a deliberate **exact-token policy for prose**: it keeps
+  `LOCAL_REVIEW_AUTHORIZED` and negative prose such as "Phase 231 authorization is NOT granted" from
+  false-positiving (a sentence never equals a token, and `granted` inside "NOT granted" is not matched as a
+  word because prose is whole-string-only). The bare word `AUTHORIZED` is deliberately **not** a token — only
+  `PHASE_231_AUTHORIZED` as a whole token.
 
 An artifact that makes a claim is a `LIVE_AUTHORIZATION_CLAIMED` violation **unless** it is an explicit PENDING
 human gate doc — `humanGate: true`, `status: 'PENDING'`, `authorization` in `NONE`/`PENDING` — which may LIST
-those tokens as pending future steps. `NO_ARTIFACTS` guards an empty set. `overall` is
-`NO_LIVE_AUTHORIZATION_CLEAN` only when no artifact claims a live authorization.
+those tokens (including variants) as pending future steps. A hard claim inside such a doc still fails closed.
+`NO_ARTIFACTS` guards an empty set. `overall` is `NO_LIVE_AUTHORIZATION_CLEAN` only when no artifact claims a
+live authorization.
 
 It reads parsed JSON only; it performs no promotion, never touches the real Movies root, never contacts
 Jellyfin, and echoes only report short-names and booleans — never the offending value. A CLEAN result is not
@@ -28,10 +49,15 @@ an approval and does not authorize Phase 231.
 
 - `src/ops/promotion-no-live-authorization-guard.ts` — `buildNoLiveAuthorizationGuard(input)`.
 - `src/ops/promotion-no-live-authorization-guard-cli.ts` — CLI wrapper.
-- `test/promotion-no-live-authorization-guard.ts` — 5 tests: clean; violated on
+- `test/promotion-no-live-authorization-guard.ts` — clean; violated on
   APPROVED/EXECUTE/LIVE_READY/PHASE_231_AUTHORIZED claims; a PENDING gate doc listing the tokens is exempt
-  (but an actual authorization claim is not); no artifacts; and a spawned CLI run. Negative-evidence-corpus
-  samples also exercise the guard.
+  (but an actual authorization claim is not); hard claims (top-level and nested) cannot be smuggled inside a
+  human gate; a **case/separator/affix variant corpus** (`approved_for_live`, `phase-231-authorized`,
+  `live-ready`, `Live Ready`, `ExEcUtE`, …) fails closed; **false-positive corpus** (`LOCAL_REVIEW_AUTHORIZED`,
+  "Phase 231 authorization is NOT granted", "…not been approved…") stays clean; no artifacts; and a spawned
+  CLI run. Negative-evidence-corpus samples also exercise the guard. The variant/false-positive corpus is the
+  trace the coordinator can run during final review via
+  `npm run test:promotion-no-live-authorization-guard`.
 
 ## Usage
 
