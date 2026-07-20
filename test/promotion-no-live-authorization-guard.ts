@@ -139,6 +139,27 @@ test('variant tokens listed as PENDING steps are exempt inside a human gate, but
   assertEq(buildNoLiveAuthorizationGuard({ artifacts: [notAGate] }).overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'same list outside a gate fails closed');
 });
 
+test('VIOLATED on whitespace-affixed claim-field hard claims, even nested inside a PENDING gate', () => {
+  // Claim fields (authorization/status/overall) are structured data, not prose, so a whitespace-affixed token
+  // in one must be matched structurally (word-boundary/affix regardless of whitespace).
+  const ws: unknown[] = [
+    { report: 'x', status: 'APPROVED FOR LIVE' },
+    { report: 'x', overall: 'LIVE READY NOW' },
+    { report: 'x', authorization: 'PHASE 231 AUTHORIZED' },
+  ];
+  for (const c of ws) {
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `ws-affixed claim field flagged: ${JSON.stringify(c).slice(0, 60)}`);
+    assert(r.verdicts[0]!.hardClaim === true, 'hard claim');
+  }
+  // the core repro: whitespace-affixed claim-field token nested inside a valid-looking PENDING human gate
+  const gated = { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', meta: { status: 'APPROVED FOR LIVE' } };
+  const g = buildNoLiveAuthorizationGuard({ artifacts: [gated] });
+  assertEq(g.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'nested ws-affixed claim in a gate fails closed');
+  assert(g.verdicts[0]!.hardClaim === true, 'hardClaim true');
+  assert(g.verdicts[0]!.pendingGateExempt === false, 'pendingGateExempt false');
+});
+
 test('VIOLATED on a forbidden token as the scalar value of a NON-canonical field, even inside a gate', () => {
   // A token that is the whole value of ANY field (not just authorization/status/overall) is a structural hard
   // claim -- it must not fall through to the exemptable textual path just because the field name is arbitrary.

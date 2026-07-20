@@ -77,6 +77,24 @@ function matchesForbidden(s: string): boolean {
 }
 function isTruthy(v: unknown): boolean { return v !== undefined && v !== null && v !== false && v !== 0 && v !== ''; }
 
+// STRUCTURAL matcher for CLAIM-FIELD values (authorization / status / overall). Unlike `matchesForbidden`,
+// it performs word-boundary/affix matching REGARDLESS of whitespace -- a claim field is structured data, not
+// prose, so 'APPROVED FOR LIVE' -> approved, 'LIVE READY NOW' -> live_ready, 'PHASE 231 AUTHORIZED' ->
+// phase_231_authorized all fail closed. Deliberately used ONLY for claim fields (never for note/description/
+// evidence prose, where the affix rule would make negative prose fragile).
+function matchesForbiddenClaimFieldValue(s: string): boolean {
+  const boundary = normBoundary(s);
+  if (boundary === '') return false;
+  const comp = compact(s);
+  const wrapped = `_${boundary}_`;
+  for (const t of FORBIDDEN_TOKENS) {
+    if (boundary === t) return true;                 // whole boundary match
+    if (comp === t.replace(/_/g, '')) return true;   // whole compact match
+    if (wrapped.includes(`_${t}_`)) return true;     // word-boundary affix match (whitespace allowed)
+  }
+  return false;
+}
+
 export interface ArtifactVerdict {
   readonly artifact: string;
   readonly claimsLiveAuthorization: boolean;
@@ -155,25 +173,27 @@ function hasHardClaim(value: unknown, depth = 0): boolean {
   if (!value || typeof value !== 'object') return false;
   const o = value as Record<string, unknown>;
   for (const [k, v] of Object.entries(o)) {
-    // A forbidden token as the scalar value of ANY field is a structural claim (prose stays safe because
-    // `matchesForbidden` is whole-string for sentences).
-    if (typeof v === 'string' && matchesForbidden(v)) return true;
+    // A forbidden token as the scalar value of a NON-claim field is a structural claim, using the prose-safe
+    // matcher (whole-string for sentences). Claim fields (authorization/status/overall) are handled below by
+    // the whitespace-affix structural matcher.
+    if (!CLAIM_FIELDS.includes(k) && typeof v === 'string' && matchesForbidden(v)) return true;
     // An object KEY that reduces to a forbidden token with a truthy value is a claim (scoped by the same
     // word-boundary rule, so unrelated review fields such as reviewAuthorization are not flagged).
     if (isTruthy(v) && matchesForbidden(k)) return true;
   }
   for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
-  // A claim field whose value is an array/object embedding a forbidden token is hard (arrays elsewhere are
-  // listable, but under a claim field they are a wrapped claim value).
+  // A claim field's value (scalar, or array/object-wrapped) is matched STRUCTURALLY -- whitespace-affixed
+  // tokens like 'APPROVED FOR LIVE' fail closed because a claim field is structured data, not prose.
   for (const field of CLAIM_FIELDS) {
     if (field in o && subtreeHasForbidden(o[field], depth)) return true;
   }
   return Object.values(o).some((v) => hasHardClaim(v, depth + 1));
 }
-// Deep scan of a claim-field subtree: a forbidden token as any string value, or a truthy forbidden-token key.
+// Deep scan of a claim-field subtree: a forbidden token as any string value (matched STRUCTURALLY, so
+// whitespace-affixed variants fail closed), or a truthy forbidden-token key.
 function subtreeHasForbidden(value: unknown, depth: number): boolean {
   if (depth > 8) return false;
-  if (typeof value === 'string') return matchesForbidden(value);
+  if (typeof value === 'string') return matchesForbiddenClaimFieldValue(value);
   if (Array.isArray(value)) return value.some((v) => subtreeHasForbidden(v, depth + 1));
   if (value && typeof value === 'object') {
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {

@@ -44,6 +44,12 @@ stripped). So `APPROVED`, `approved`, `live_ready`, `live-ready`, `LIVE READY`, 
   false-positiving (a sentence never equals a token, and `granted` inside "NOT granted" is not matched as a
   word). The bare word `AUTHORIZED` is deliberately **not** a token — only `PHASE_231_AUTHORIZED` as a whole
   token.
+- **Claim-field values are matched structurally.** The values of `authorization` / `status` / `overall` are
+  structured data, not prose, so they match on a word boundary **even with interior whitespace** — a separate
+  `matchesForbiddenClaimFieldValue` makes `'APPROVED FOR LIVE'` → `approved`, `'LIVE READY NOW'` →
+  `live_ready` and `'PHASE 231 AUTHORIZED'` → `phase_231_authorized` all fail closed. This structural matcher
+  is used **only** for claim fields (never for prose fields like `note`/`description`/`evidence`, where the
+  affix rule would make negative prose fragile).
 - **Object keys**: a key that reduces to a forbidden token with a *truthy* value is a hard claim
   (`{ live_ready: true }`, `{ approved_for_live: {...} }`, `{ LiveReady: 1 }`). A forbidden-token key set to a
   *falsy* value (e.g. `approved: false`) is not a claim. Scoped by the same word-boundary rule, so unrelated
