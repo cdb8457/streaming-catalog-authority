@@ -2,7 +2,7 @@
 
 Report id: `phase-230-promotion-safety-remediation`
 
-Status: `PHASE_230_PROMOTION_SAFETY_REMEDIATION_IN_REVIEW`
+Status: `PHASE_230_PROMOTION_SAFETY_REMEDIATION_REVIEWED`
 
 Phase type: safety remediation of the guarded real-library promotion service first implemented in
 commit `015b3ef`, hardened across three review passes. No runtime, Docker Compose, custody-mode,
@@ -11,8 +11,8 @@ the third pass **removes** the previously-present Jellyfin scan/refresh write pa
 strictly read-only against the media server. Changes touch the promotion service
 (`src/ops/real-library-promotion.ts`), its CLI (`src/ops/real-library-promotion-cli.ts`), the Unraid
 launcher (`deploy/unraid-real-library-promotion.sh`), and the test suite
-(`test/real-library-promotion.ts`). Status stays `IN_REVIEW` until the coordinator security review
-clears; this document does not assert the review has passed.
+(`test/real-library-promotion.ts`). The coordinator security re-review is complete: the final replay
+verifier, including its full-tree redaction behavior, passed independent review and validation.
 
 ## Why this pass exists
 
@@ -83,8 +83,8 @@ failures remain).
 
 ## Exit status
 
-The six coordinator P0/security items are addressed and covered by regression tests; status is
-`IN_REVIEW` pending the coordinator's re-review. No live promotion was run and no Phase 231
+The six coordinator P0/security items are addressed and covered by regression tests; coordinator
+re-review is complete with no remaining code findings. No live promotion was run and no Phase 231
 authorization is implied. The single operator-approved live promotion remains gated exactly as defined
 in Phase 229, and now additionally requires a bound approval attestation and observed read-only
 Jellyfin visibility.
