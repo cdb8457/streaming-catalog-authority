@@ -84,6 +84,22 @@ await test('INVALID on a live surface buried DEEPER than the old depth cutoff (f
   assert(!JSON.stringify(r).includes('/mnt/') && !JSON.stringify(r).includes('.mkv'), 'deep poison never echoed');
 });
 
+await test('terminates and fails closed on very-deep and cyclic plans (iterative, cycle-safe)', () => {
+  // The scan is now iterative + cycle-safe: a pathologically deep plan must not overflow the stack and a
+  // cyclic plan must terminate, while a buried live surface still fails closed and benign cycles don't.
+  const DEEP = 50000;
+  let deepChain: Record<string, unknown> = { probe: '/mnt/user/media/Movies/deep.mkv' };
+  for (let d = 0; d < DEEP; d++) deepChain = { child: deepChain };
+  const p1 = validPlan() as Record<string, unknown>; p1.trail = deepChain;
+  assert(buildLivePreflightPlan({ plan: p1 }).blockers.includes('LIVE_SURFACE_IN_PLAN'), 'very-deep acyclic surface found without overflow');
+
+  const p2 = validPlan() as Record<string, unknown>; const cyc: Record<string, unknown> = { probe: 'jellyfin://server' }; cyc.self = cyc; p2.trail = cyc;
+  assert(buildLivePreflightPlan({ plan: p2 }).blockers.includes('LIVE_SURFACE_IN_PLAN'), 'cyclic surface found and terminates');
+
+  const p3 = validPlan() as Record<string, unknown>; const benign: Record<string, unknown> = { note: 'ok' }; benign.self = benign; p3.trail = benign;
+  assert(!buildLivePreflightPlan({ plan: p3 }).blockers.includes('LIVE_SURFACE_IN_PLAN'), 'benign cyclic plan raises no false surface');
+});
+
 test('INVALID and redaction-safe on missing plan / no items', () => {
   assert(buildLivePreflightPlan({}).blockers.includes('PLAN_MISSING'), 'PLAN_MISSING');
   const r = buildLivePreflightPlan({ plan: { noClobber: true, sameChecksum: true, observedStateRequired: true, rollback: { a: 1 }, withdrawal: { a: 1 }, items: [] } });

@@ -207,14 +207,24 @@ function sha40(value: unknown): string | undefined {
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);
 }
-// Recursively flag any string anywhere in the observed-state record that names a live/network/media surface
-// or a raw path, so a live indicator smuggled into a field other than `source` still fails closed. The record
-// is a parsed-JSON / built object (acyclic finite tree), so the scan has NO depth cutoff -- a live surface
-// buried at any depth fails closed.
-function deepLiveEscape(value: unknown): boolean {
-  if (typeof value === 'string') return value.length > 0 && (isLiveSurface(value) || pathFree(value) === null);
-  if (Array.isArray(value)) return value.some((v) => deepLiveEscape(v));
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepLiveEscape(v));
+// Flag any string anywhere in the (untrusted, coordinator-supplied) observed-state record that names a
+// live/network/media surface or a raw path, so a live indicator smuggled into a field other than `source`
+// still fails closed. Traverses ITERATIVELY (explicit stack) with a visited set, so it terminates on any
+// input -- a pathologically deep tree can't overflow the stack and a cyclic/shared-reference record can't
+// loop forever. Skipping an already-visited node is safe (its subtree was fully evaluated on first visit);
+// the result is deterministic and a live surface buried at any depth still fails closed.
+function deepLiveEscape(root: unknown): boolean {
+  const stack: unknown[] = [root];
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (typeof value === 'string') { if (value.length > 0 && (isLiveSurface(value) || pathFree(value) === null)) return true; continue; }
+    if (!value || typeof value !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) { for (const v of value) stack.push(v); continue; }
+    for (const v of Object.values(value as Record<string, unknown>)) stack.push(v);
+  }
   return false;
 }
 function pathFree(value: unknown): string | null {

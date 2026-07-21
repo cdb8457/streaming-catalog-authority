@@ -131,6 +131,39 @@ test('a hard claim buried DEEPER than any depth cutoff still fails closed (full-
   }
 });
 
+test('terminates and fails closed on very-deep acyclic and cyclic artifacts (iterative, cycle-safe)', () => {
+  // Regression: the scanners were recursive, so a pathologically deep artifact overflowed the call stack and
+  // a cyclic artifact recursed forever. The iterative + visited-set traversal must terminate on both while
+  // still detecting a buried hard claim, and must not raise a false claim on benign deep/cyclic input.
+  const DEEP = 50000; // well past Node's recursion limit (~10-15k frames)
+
+  // Very-deep acyclic, poisoned at the bottom -> found without overflowing the stack.
+  let deepPoison: Record<string, unknown> = { phase231Authorized: true };
+  for (let d = 0; d < DEEP; d++) deepPoison = { child: deepPoison };
+  const rp = buildNoLiveAuthorizationGuard({ artifacts: [{ report: 'x', authorization: 'NONE', deep: deepPoison }] });
+  assertEq(rp.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'deep-acyclic poison found');
+  assert(rp.verdicts[0]!.hardClaim === true, 'deep-acyclic flagged as a hard claim');
+
+  // Very-deep acyclic, benign -> terminates and stays clean.
+  let deepBenign: Record<string, unknown> = { note: 'ok' };
+  for (let d = 0; d < DEEP; d++) deepBenign = { child: deepBenign };
+  assertEq(buildNoLiveAuthorizationGuard({ artifacts: [{ report: 'x', authorization: 'NONE', deep: deepBenign }] }).overall,
+    'NO_LIVE_AUTHORIZATION_CLEAN', 'deep-acyclic benign stays clean');
+
+  // Cyclic object carrying a hard claim -> terminates and fails closed.
+  const cyc: Record<string, unknown> = { report: 'x', authorization: 'NONE', decision: 'APPROVED' };
+  cyc.self = cyc;
+  const rc = buildNoLiveAuthorizationGuard({ artifacts: [cyc] });
+  assertEq(rc.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', 'cyclic poison found and terminates');
+  assert(!JSON.stringify(rc).includes('APPROVED'), 'offending value never echoed');
+
+  // Cyclic array, benign -> terminates and stays clean (a self-referential DAG is not a claim).
+  const arr: unknown[] = [{ note: 'ok' }];
+  arr.push(arr);
+  assertEq(buildNoLiveAuthorizationGuard({ artifacts: [{ report: 'x', authorization: 'NONE', trail: arr }] }).overall,
+    'NO_LIVE_AUTHORIZATION_CLEAN', 'benign cyclic array stays clean and terminates');
+});
+
 test('VIOLATED on case / separator / affix VARIANTS of the forbidden tokens (claim fields + flags)', () => {
   // Adversarial variant corpus: each is a hard claim carried in a claim FIELD as a token variant.
   const variants: unknown[] = [

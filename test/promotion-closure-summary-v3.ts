@@ -443,6 +443,20 @@ await test('BLOCKED on a live-boundary escape (observed-state source points at a
     const deepNested = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'local', trail: buried } });
     assert(deepNested.blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'live-boundary escape caught past the old depth cutoff');
     assert(!JSON.stringify(deepNested).includes('/mnt/') && !JSON.stringify(deepNested).includes('.mkv'), 'the deep raw escape value is never echoed');
+
+    // The scan is now iterative + cycle-safe: a pathologically deep record must not overflow the stack and a
+    // cyclic record must terminate, while a buried live surface still fails closed and benign cycles don't.
+    const DEEP = 50000;
+    let deepChain: Record<string, unknown> = { probe: '/mnt/user/media/Movies/x.mkv' };
+    for (let d = 0; d < DEEP; d++) deepChain = { child: deepChain };
+    const veryDeep = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'local', trail: deepChain } });
+    assert(veryDeep.blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'very-deep acyclic escape found without overflow');
+    const cyc: Record<string, unknown> = { observed: true, source: 'local', probe: '/mnt/user/media/Movies/x.mkv' };
+    cyc.self = cyc;
+    assert(buildClosureSummaryV3({ ...b, observedState: cyc }).blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'cyclic escape found and terminates');
+    const benignCyc: Record<string, unknown> = { observed: true, source: 'local' };
+    benignCyc.self = benignCyc;
+    assert(!buildClosureSummaryV3({ ...b, observedState: benignCyc }).blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'benign cyclic record raises no false escape');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
