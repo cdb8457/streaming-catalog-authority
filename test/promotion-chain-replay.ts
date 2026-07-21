@@ -566,6 +566,47 @@ await test('a source record from a different operation does not re-derive its re
 });
 
 // Unproven is not disproven -- but it still caps the verdict. One missing source is enough.
+// THE LIMIT OF THE SEMANTIC PATH, locked so it cannot be quietly re-overclaimed. Re-derivation proves a report
+// is the honest output of its validator over SOME accepted record -- it does NOT pin WHICH record. The phase
+// reports are deliberately redaction-minimal, so a whole cast of different people, at different times, over
+// different observed states, collapses to byte-identical reports and still VERIFIES. If this test ever starts
+// failing, the reports began carrying that detail and the doc's claims must be widened to match.
+await test('the semantic path does NOT pin which record: identities, times and observed states are swappable', () => {
+  const root = workspace();
+  try {
+    const c = fullChain(root);
+    const OTHER = createHash('sha256').update('a-different-person-entirely').digest('hex');
+    const OTHER_BEFORE = createHash('sha256').update('some-other-before-state').digest('hex');
+    const OTHER_AFTER = createHash('sha256').update('some-other-after-state').digest('hex');
+    const s = c.sources;
+
+    // A wholly different operator, observer, reviewer and closer, at wholly different times.
+    const swapped = {
+      ...s,
+      authorizationDecision: { ...(s.authorizationDecision as Rec), operatorDigest: OTHER, decidedAtUtc: '2027-01-01T00:00:00Z' },
+      observation: { ...(s.observation as Rec), observerDigest: OTHER, observedAtUtc: '2027-01-01T01:00:00Z' },
+      disposition: { ...(s.disposition as Rec), reviewerDigest: OTHER, reviewedAtUtc: '2027-01-01T02:00:00Z' },
+      closure: { ...(s.closure as Rec), closerDigest: OTHER, closedAtUtc: '2027-01-01T03:00:00Z' },
+    };
+    const cast = verifyPromotionChainReplay({ ...reportsOnly(c), sources: swapped });
+    assertEq(cast.overall, 'CHAIN_REPLAY_VERIFIED_CLOSED', 'a different cast of people still verifies');
+    assertEq(cast.blockers.length, 0, 'and raises no blocker');
+    assertEq(cast.semanticallyRederived, true, 'because the reports do not carry identity or time');
+
+    // And the observed states themselves: Phase 233 carries only PRESENT/PENDING, never the values.
+    const restated = verifyPromotionChainReplay({
+      ...reportsOnly(c),
+      sources: { ...s, observation: { ...(s.observation as Rec), observedStateBeforeDigest: OTHER_BEFORE, observedStateAfterDigest: OTHER_AFTER } },
+    });
+    assertEq(restated.overall, 'CHAIN_REPLAY_VERIFIED_CLOSED', 'a different observed state still verifies');
+    assertEq(restated.blockers.length, 0, 'the observed-state digests are not pinned by the chain');
+
+    // The verdict must therefore disclaim exactly this, in the artifact itself.
+    assert(CHAIN_REPLAY_DISCLAIMERS.some((d) => d.includes('does NOT pin WHICH source record')),
+      'the emitted report disclaims that it pins which record');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('a single missing source record caps the whole verdict at STRUCTURAL_ONLY', () => {
   const root = workspace();
   try {

@@ -147,9 +147,25 @@ record recomputes, every link re-derives against its parent's own digest, the su
 all five phases describe one operation. A spliced chain — the threat no individual phase could see — fails
 here.
 
-It proves **provenance from source records** wherever they are supplied: each report is the genuine output of
-its own phase's validator over the record a human actually wrote. That is what a reseal cannot fake — and why
-a bundle without sources is capped at `STRUCTURAL_ONLY` rather than called verified.
+It proves, wherever sources are supplied, that **each report is the genuine output of its own phase's
+validator over a record that validator accepted** — a report body cannot have been edited after the fact. That
+is what a reseal cannot fake, and why a bundle without sources is capped at `STRUCTURAL_ONLY` rather than
+called verified.
+
+It does **not** pin *which* record. The phase reports are deliberately redaction-minimal, so several source
+records map to a byte-identical report and the semantic path cannot tell them apart. Verified by test, the
+following can all be swapped in the sources while every report digest — and the `VERIFIED_CLOSED` verdict —
+stays identical:
+
+- `operatorDigest` / `observerDigest` / `reviewerDigest` / `closerDigest` — **a wholly different cast of
+  people still verifies**;
+- `decidedAtUtc` / `observedAtUtc` / `reviewedAtUtc` / `closedAtUtc` — any timestamps;
+- Phase 233's `observedStateBeforeDigest` and `observedStateAfterDigest` — the observed states themselves are
+  carried in the report only as `PRESENT`/`PENDING`, never as values;
+- arbitrary extra keys in the Phase 231 `gateEvidence` bundle, which its validator ignores.
+
+So `VERIFIED_CLOSED` must **not** be read as "these people did these things at these times over this observed
+state". It says the reports are honest outputs of the validators over *some* accepted record set — no more.
 
 It does **not** prove **authorship or authenticity**. These are self-digests, not signatures. A party who
 controls the whole chain — reports *and* source records — can fabricate a self-consistent bundle that

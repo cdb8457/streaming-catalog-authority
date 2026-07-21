@@ -40,6 +40,13 @@ import { buildOperationClosureRecord } from './promotion-operation-closure-recor
 // would require source records that a fail-closed validator would have to have accepted in the first place
 // (e.g. no source can make Phase 233 emit RECORDED over an unapproved Phase 232 authorization).
 //
+// KNOW WHAT THAT DOES NOT SAY. It proves a report is the honest output of its validator over SOME accepted
+// record -- it does NOT pin WHICH record. The phase reports are deliberately redaction-minimal, so many source
+// records collapse to a byte-identical report: the operator/observer/reviewer/closer digests, every timestamp,
+// and Phase 233's observed-state digests (carried in the report only as PRESENT/PENDING) can ALL be swapped
+// and the chain still verifies. VERIFIED_CLOSED therefore never means "these people did these things at these
+// times over this observed state". See the locked non-uniqueness test in the suite.
+//
 // Reusing the phases' exported validators is deliberate: this file states NO phase semantics of its own, so
 // there is no second ruleset here to drift from theirs. It reports the terminal state it finds; it does not
 // decide it.
@@ -107,7 +114,8 @@ export const CHAIN_REPLAY_DISCLAIMERS: readonly string[] = [
   'This verifier replays records and does nothing else: it performs no run, captures no state, and closes, archives and authorizes nothing.',
   'CHAIN_REPLAY_VERIFIED_OPEN is a normal state, not a defect: the chain is consistent as far as it goes but the operation is not closed out.',
   'CHAIN_REPLAY_STRUCTURAL_ONLY means the bundle is self-consistent but UNVERIFIED: structural checks are resealable, so a complete-looking chain earns no VERIFIED verdict without its source records.',
-  'A VERIFIED verdict requires re-running each phase own validator over the source record it consumed and reproducing that report digest exactly -- structure alone never earns it.',
+  'A VERIFIED verdict requires re-running each phase own validator over a supplied source record and reproducing that report digest exactly -- structure alone never earns it.',
+  'A VERIFIED verdict does NOT pin WHICH source record: the phase reports are redaction-minimal, so the identities, the timestamps and the observed-state digests can all differ between two source records that produce a byte-identical report. It never means "these people did these things at these times".',
   'CHAIN_REPLAY_VERIFIED_CLOSED means only that the supplied reports re-derive into one consistent chain over one operation that a human closed out -- it is not itself evidence that any of it happened.',
   'It re-runs the phases own exported validators rather than restating their semantics, so this verifier holds no ruleset of its own that could drift from theirs.',
   'Self-digests are not signatures. This raises the cost of forging a chain; it does not establish authorship of any record in it.',
