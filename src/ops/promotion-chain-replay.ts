@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+// The phases' OWN validators, reused rather than reimplemented: re-running them is what makes the semantic
+// path non-resealable, and reusing them means there is no second ruleset here to drift from theirs.
+import { buildExecutionAuthorization, type ExecutionAuthorizationInput } from './promotion-execution-authorization.js';
+import { buildExecutionAuthorizationRecord } from './promotion-execution-authorization-record.js';
+import { buildPostRunObservationRecord } from './promotion-post-run-observation-record.js';
+import { buildPostRunDispositionRecord } from './promotion-post-run-disposition-record.js';
+import { buildOperationClosureRecord } from './promotion-operation-closure-record.js';
 
 // Phase 236: local, non-live END-TO-END PROMOTION CHAIN REPLAY VERIFIER. It takes a bundle of the five chain
 // reports -- Phase 231 gate, 232 authorization, 233 observation, 234 disposition, 235 closure -- and RE-DERIVES
@@ -21,10 +28,21 @@ import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 // -- consistent as far as it goes -- never a defect. Only a chain that is internally inconsistent, has a
 // skipped link, or drifts in operation identity is CHAIN_NOT_REPLAYABLE.
 //
-// Scope: this verifier checks the chain's STRUCTURE -- recomputation, linkage, identity, contiguity, redaction.
-// It deliberately does NOT re-litigate each phase's internal verdict; every phase already enforces its own
-// semantics fail-closed, and duplicating them here would create a second, drifting source of truth. It reports
-// the terminal state it finds; it does not decide it.
+// STRUCTURE IS NOT ENOUGH, and this verifier says so out loud. Recomputation, linkage and identity are all
+// RESEALABLE: a party holding the whole bundle can edit any report body and recompute its self-digest, then
+// fix up the links and identity digests, and a purely structural replay waves it through. So a structural pass
+// alone is reported as CHAIN_REPLAY_STRUCTURAL_ONLY and NEVER as VERIFIED_CLOSED or VERIFIED_OPEN.
+//
+// A VERIFIED_* verdict additionally requires the SEMANTIC path: for every supplied phase, the caller also
+// supplies the SOURCE record that phase consumed, and this verifier RE-RUNS that phase's own exported
+// validator over it and requires the result to reproduce the supplied report's self-digest exactly. That is
+// not resealable -- the validators are deterministic functions of their inputs, so producing a doctored report
+// would require source records that a fail-closed validator would have to have accepted in the first place
+// (e.g. no source can make Phase 233 emit RECORDED over an unapproved Phase 232 authorization).
+//
+// Reusing the phases' exported validators is deliberate: this file states NO phase semantics of its own, so
+// there is no second ruleset here to drift from theirs. It reports the terminal state it finds; it does not
+// decide it.
 //
 // It replays records and does nothing else: `performedByThisTool`, `capturedByThisTool` and `selfAuthorized`
 // are the constants false. It never runs the promotion launcher, reads or writes the real Movies library,
@@ -33,12 +51,23 @@ import { verifySelfDigests } from './promotion-self-digest-verifier.js';
 // The emitted report is redaction-safe: chain digests, fixed codes, phase numbers and booleans only -- never a
 // raw path, raw item id, raw approval id, or any operator / observer / reviewer / closer identity.
 
+// The SOURCE records each phase consumed. Supplying them unlocks the non-resealable semantic path; omitting
+// any of them caps the verdict at STRUCTURAL_ONLY. These are inputs to the phases, not reports.
+export interface ChainReplaySources {
+  readonly gateEvidence?: unknown;          // the Phase 231 ExecutionAuthorizationInput bundle
+  readonly authorizationDecision?: unknown; // the human decision record Phase 232 consumed
+  readonly observation?: unknown;           // the human observation record Phase 233 consumed
+  readonly disposition?: unknown;           // the human disposition record Phase 234 consumed
+  readonly closure?: unknown;               // the human closure record Phase 235 consumed
+}
+
 export interface ChainReplayInput {
   readonly gate?: unknown;           // phase-231-promotion-execution-authorization
   readonly authorization?: unknown;  // phase-232-promotion-execution-authorization-record
   readonly observation?: unknown;    // phase-233-promotion-post-run-observation-record
   readonly disposition?: unknown;    // phase-234-promotion-post-run-disposition-record
   readonly closure?: unknown;        // phase-235-promotion-operation-closure-record
+  readonly sources?: ChainReplaySources;
 }
 
 // The five operation digests, as they are named inside the Phase 231 template.
@@ -77,9 +106,11 @@ export const CHAIN_REPLAY_BOUNDARY =
 export const CHAIN_REPLAY_DISCLAIMERS: readonly string[] = [
   'This verifier replays records and does nothing else: it performs no run, captures no state, and closes, archives and authorizes nothing.',
   'CHAIN_REPLAY_VERIFIED_OPEN is a normal state, not a defect: the chain is consistent as far as it goes but the operation is not closed out.',
+  'CHAIN_REPLAY_STRUCTURAL_ONLY means the bundle is self-consistent but UNVERIFIED: structural checks are resealable, so a complete-looking chain earns no VERIFIED verdict without its source records.',
+  'A VERIFIED verdict requires re-running each phase own validator over the source record it consumed and reproducing that report digest exactly -- structure alone never earns it.',
   'CHAIN_REPLAY_VERIFIED_CLOSED means only that the supplied reports re-derive into one consistent chain over one operation that a human closed out -- it is not itself evidence that any of it happened.',
-  'It checks the chain structure -- recomputation, linkage, operation identity, contiguity, redaction -- and does NOT re-decide any phase internal verdict.',
-  'Self-digests are not signatures. This raises the cost of splicing a chain together; it does not establish authorship of any record in it.',
+  'It re-runs the phases own exported validators rather than restating their semantics, so this verifier holds no ruleset of its own that could drift from theirs.',
+  'Self-digests are not signatures. This raises the cost of forging a chain; it does not establish authorship of any record in it.',
 ];
 
 export interface ChainPhaseState {
@@ -89,6 +120,8 @@ export interface ChainPhaseState {
   readonly verified: boolean;
   readonly linkedToParent: boolean | null;   // null for Phase 231: it is the anchor and has no parent
   readonly identityMatched: boolean | null;  // null when identity could not be anchored at all
+  // null when no source record was supplied for this phase: unproven is not the same as disproven.
+  readonly rederivedFromSource: boolean | null;
 }
 
 export interface ChainReplayReport {
@@ -102,11 +135,14 @@ export interface ChainReplayReport {
   readonly overall:
     | 'CHAIN_REPLAY_VERIFIED_CLOSED'
     | 'CHAIN_REPLAY_VERIFIED_OPEN'
+    | 'CHAIN_REPLAY_STRUCTURAL_ONLY'
     | 'CHAIN_NOT_REPLAYABLE'
     | 'CHAIN_REPLAY_NO_INPUT';
   readonly terminalPhase: number | null;
   readonly chainComplete: boolean;
   readonly operationClosed: boolean;
+  // True only when EVERY supplied phase was re-derived by re-running its own validator over its source record.
+  readonly semanticallyRederived: boolean;
   readonly identityAnchored: boolean;
   readonly suppliedCount: number;
   readonly phases: readonly ChainPhaseState[];
@@ -201,7 +237,30 @@ export function verifyPromotionChainReplay(input: ChainReplayInput): ChainReplay
     identityMatched.push(matches);
   });
 
-  // (6) Redaction, defence in depth: every supplied report must declare itself redaction-safe and no raw path
+  // (6) THE NON-RESEALABLE PATH. Everything above is resealable: a party holding the bundle can edit a report,
+  //     recompute its digest and fix up the links and identity digests. So for each supplied phase whose SOURCE
+  //     record was also supplied, re-run that phase's OWN exported validator over that source and require the
+  //     result to reproduce the supplied report's self-digest exactly. Reusing the phases' validators means no
+  //     phase semantics are restated here, so nothing can drift from them.
+  const sources = input.sources ?? {};
+  const sourceValues: readonly unknown[] = [
+    sources.gateEvidence, sources.authorizationDecision, sources.observation, sources.disposition, sources.closure,
+  ];
+  const rederived: Array<boolean | null> = [];
+  CHAIN.forEach((spec, i) => {
+    // No report, or no source for it: unproven, which is NOT disproven -- null, never false.
+    if (supplied[i] === undefined || sourceValues[i] === undefined) { rederived.push(null); return; }
+    let produced: string | undefined;
+    try { produced = rederiveSelfDigest(i, sourceValues[i], supplied); } catch { produced = undefined; }
+    const ok = produced !== undefined && selfDigests[i] !== undefined && produced === selfDigests[i];
+    if (!ok) blockers.push(`CHAIN_PHASE_${spec.phase}_NOT_REDERIVED_FROM_SOURCE`);
+    rederived.push(ok);
+  });
+  // Every supplied phase must have been re-derived; a single unproven phase caps the whole verdict.
+  const semanticallyRederived = suppliedCount > 0
+    && CHAIN.every((_spec, i) => supplied[i] === undefined || rederived[i] === true);
+
+  // (7) Redaction, defence in depth: every supplied report must declare itself redaction-safe and no raw path
   //     may appear anywhere in the bundle.
   const present = supplied.filter((v) => v !== undefined);
   if (present.length > 0) {
@@ -217,6 +276,7 @@ export function verifyPromotionChainReplay(input: ChainReplayInput): ChainReplay
     verified: verified[i]!,
     linkedToParent: linked[i]!,
     identityMatched: identityMatched[i]!,
+    rederivedFromSource: rederived[i]!,
   }));
 
   const chainComplete = uniqueBlockers.length === 0
@@ -226,11 +286,15 @@ export function verifyPromotionChainReplay(input: ChainReplayInput): ChainReplay
     && phases.every((p) => p.linkedToParent !== false && p.identityMatched !== false);
   const operationClosed = chainComplete && asObject(supplied[CHAIN.length - 1]).overall === CLOSED_OVERALL;
 
+  // Conservative by construction: a VERIFIED_* verdict is refused unless the non-resealable semantic path
+  // succeeded for every supplied phase. Structure alone earns STRUCTURAL_ONLY and nothing more, however
+  // complete and self-consistent the bundle looks.
   const overall: ChainReplayReport['overall'] =
     suppliedCount === 0 ? 'CHAIN_REPLAY_NO_INPUT'
       : uniqueBlockers.length > 0 ? 'CHAIN_NOT_REPLAYABLE'
-        : operationClosed ? 'CHAIN_REPLAY_VERIFIED_CLOSED'
-          : 'CHAIN_REPLAY_VERIFIED_OPEN';
+        : !semanticallyRederived ? 'CHAIN_REPLAY_STRUCTURAL_ONLY'
+          : operationClosed ? 'CHAIN_REPLAY_VERIFIED_CLOSED'
+            : 'CHAIN_REPLAY_VERIFIED_OPEN';
 
   const withoutDigest: Omit<ChainReplayReport, 'replayDigest'> = {
     report: 'phase-236-promotion-chain-replay-verification',
@@ -244,6 +308,7 @@ export function verifyPromotionChainReplay(input: ChainReplayInput): ChainReplay
     terminalPhase: overall === 'CHAIN_REPLAY_NO_INPUT' ? null : terminalPhase,
     chainComplete,
     operationClosed,
+    semanticallyRederived,
     identityAnchored,
     suppliedCount,
     phases,
@@ -255,6 +320,20 @@ export function verifyPromotionChainReplay(input: ChainReplayInput): ChainReplay
     disclaimers: CHAIN_REPLAY_DISCLAIMERS,
   };
   return { ...withoutDigest, replayDigest: digest('phase-236-chain-replay', JSON.stringify(withoutDigest)) };
+}
+
+// Re-run phase `i`'s OWN exported validator over its source record and return the self-digest it produces.
+// Each downstream phase is fed the SUPPLIED parent report, exactly as it was fed in the first place -- so a
+// doctored parent cannot be laundered by re-deriving the child against a clean one.
+function rederiveSelfDigest(i: number, source: unknown, supplied: readonly unknown[]): string | undefined {
+  switch (i) {
+    case 0: return buildExecutionAuthorization(source as ExecutionAuthorizationInput).authorizationDigest;
+    case 1: return buildExecutionAuthorizationRecord({ gate: supplied[0], record: source }).recordDigest;
+    case 2: return buildPostRunObservationRecord({ authorizationRecord: supplied[1], observation: source }).observationDigest;
+    case 3: return buildPostRunDispositionRecord({ observationRecord: supplied[2], disposition: source }).dispositionDigest;
+    case 4: return buildOperationClosureRecord({ dispositionRecord: supplied[3], closure: source }).closureDigest;
+    default: return undefined;
+  }
 }
 
 function asObject(value: unknown): Record<string, unknown> {

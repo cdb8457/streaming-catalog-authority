@@ -37,12 +37,28 @@ approved it, so a Phase 233/234/235 record **cannot exist**. That is `CHAIN_REPL
 blockers — consistent as far as it goes — never a defect. Only an internally inconsistent chain, a skipped
 link, or drifting operation identity is `CHAIN_NOT_REPLAYABLE`.
 
-## Scope: structure, not verdicts
+## Structure is not enough: the non-resealable semantic path
 
-This verifier checks the chain's **structure** — recomputation, linkage, operation identity, contiguity,
-redaction. It deliberately does **not** re-litigate any phase's internal verdict. Every phase already enforces
-its own semantics fail-closed, and duplicating them here would create a second, drifting source of truth. It
-reports the terminal state it finds; it does not decide it.
+Every structural check here is **resealable**. A party holding the bundle can rewrite any report body,
+recompute its self-digest, and fix up the links and identity digests; the result is structurally perfect. So a
+structural pass alone is reported as `CHAIN_REPLAY_STRUCTURAL_ONLY` and **never** as `VERIFIED_CLOSED` or
+`VERIFIED_OPEN`.
+
+A `VERIFIED_*` verdict additionally requires the **semantic path**: for every supplied phase the caller also
+supplies the `sources` record that phase consumed, and this verifier **re-runs that phase's own exported
+validator** over it, requiring the result to reproduce the supplied report's self-digest exactly. That is not
+resealable — the validators are deterministic functions of their inputs, so a doctored report would need
+source records a fail-closed validator would have had to accept in the first place (no source makes Phase 233
+emit `RECORDED` over an unapproved Phase 232 authorization).
+
+One unproven phase caps the whole verdict. Unproven is **not** disproven: a phase with no source supplied
+reports `rederivedFromSource: null` and contributes no blocker — it simply withholds the `VERIFIED_*` verdict.
+A source that is supplied and *fails* to re-derive is `CHAIN_PHASE_<n>_NOT_REDERIVED_FROM_SOURCE` and is
+`NOT_REPLAYABLE`.
+
+**No second ruleset.** This file states no phase semantics of its own; it re-runs the phases' exported
+validators, so there is nothing here that can drift from them. It reports the terminal state it finds; it does
+not decide it.
 
 ## What it checks
 
@@ -78,20 +94,22 @@ matching the Phase 230 final-bundle replay verifier's marker set.
 
 | `overall` | Meaning | Exit |
 | --- | --- | --- |
-| `CHAIN_REPLAY_VERIFIED_CLOSED` | the chain re-derives end to end over one operation, terminating in a `CLOSED` Phase 235 | `0` |
-| `CHAIN_NOT_REPLAYABLE` | fail closed — a report does not recompute, a link does not re-derive, identity drifts, or a link is skipped | `1` |
+| `CHAIN_REPLAY_VERIFIED_CLOSED` | every supplied phase re-derived from its source, over one operation, terminating in a `CLOSED` Phase 235 | `0` |
+| `CHAIN_NOT_REPLAYABLE` | fail closed — a report does not recompute, a link does not re-derive, identity drifts, a link is skipped, or a supplied source does not re-derive its report | `1` |
 | (input read error) | a supplied file is missing or not valid JSON | `2` |
-| `CHAIN_REPLAY_VERIFIED_OPEN` | consistent as far as it goes, but the operation is not closed out | `3` |
+| `CHAIN_REPLAY_VERIFIED_OPEN` | every supplied phase re-derived, but the operation is not closed out | `3` |
 | `CHAIN_REPLAY_NO_INPUT` | nothing supplied | `4` |
+| `CHAIN_REPLAY_STRUCTURAL_ONLY` | self-consistent but **unverified** — source records were not supplied, so nothing is proven beyond resealable structure | `5` |
 
 The report also states `terminalPhase`, per-phase `present`/`reportIdOk`/`verified`/`linkedToParent`/
-`identityMatched`, `chainComplete`, `operationClosed`, `identityAnchored`, the shared `operationDigests` (only
+`identityMatched`/`rederivedFromSource`, `chainComplete`, `operationClosed`, `semanticallyRederived`,
+`identityAnchored`, the shared `operationDigests` (only
 once identity holds across everything supplied), and each phase's own `chainDigests`. Constants:
 `replayedByThisTool: true` — it genuinely does replay — alongside `performedByThisTool: false`,
 `capturedByThisTool: false`, `selfAuthorized: false`.
 
-An absent phase reports `linkedToParent: null` and `identityMatched: null`, never `false`: absence must never
-read as a defect.
+An absent phase reports `linkedToParent: null`, `identityMatched: null` and `rederivedFromSource: null`, never
+`false`: absence must never read as a defect, and neither must an unproven phase.
 
 ## Usage
 
@@ -107,11 +125,16 @@ npm run ops:promotion-chain-replay -- \
 
 ## Current state of the prepared P227-A run
 
-**Consistent, and locked open at Phase 232.** The real chain replays with zero blockers and terminates at
-Phase 232, because no human ever approved the run — so no observation, disposition or closure exists to
-supply. `chainComplete: false`, `operationClosed: false`, `terminalPhase: 232`.
+**Consistent, and locked open at Phase 232.** The real chain terminates at Phase 232, because no human ever
+approved the run — so no observation, disposition or closure exists to supply. `chainComplete: false`,
+`operationClosed: false`, `terminalPhase: 232`.
 
-Both states are locked as offline fixtures: the real chain replaying as `VERIFIED_OPEN`, and the real chain
+Its two reports alone are `STRUCTURAL_ONLY`; supplied together with the real source records (the Phase 231
+evidence bundle and the blank, undecided authorization skeleton — the only authorization record that exists
+for this operation) they genuinely re-derive, giving `VERIFIED_OPEN` at Phase 232 with zero blockers. Neither
+state is ever `VERIFIED_CLOSED`.
+
+Both are locked as offline fixtures, along with the real chain
 **staying** un-closed when handed a synthetic downstream tail — the graft is caught as
 `CHAIN_PHASE_233_OPERATION_IDENTITY_MISMATCH` and `CHAIN_PHASE_233_LINK_NOT_REDERIVED`. No approved
 authorization, recorded observation, accepted disposition, or closed closure is constructed for the real
@@ -124,10 +147,15 @@ record recomputes, every link re-derives against its parent's own digest, the su
 all five phases describe one operation. A spliced chain — the threat no individual phase could see — fails
 here.
 
+It proves **provenance from source records** wherever they are supplied: each report is the genuine output of
+its own phase's validator over the record a human actually wrote. That is what a reseal cannot fake — and why
+a bundle without sources is capped at `STRUCTURAL_ONLY` rather than called verified.
+
 It does **not** prove **authorship or authenticity**. These are self-digests, not signatures. A party who
-controls the whole chain can fabricate a self-consistent five-phase bundle, re-sealing each report as they go,
-and this verifier would replay it cleanly. **This phase raises the cost of splicing; it does not establish who
-wrote anything.** Binding a record to a real human would require out-of-band signing, which this stack
+controls the whole chain — reports *and* source records — can fabricate a self-consistent bundle that
+re-derives cleanly, because the source records are themselves unsigned. **This phase raises the cost of
+forging a chain from resealing one report to fabricating a coherent record set that every fail-closed
+validator accepts; it does not establish who wrote anything.** Binding a record to a real human would require out-of-band signing, which this stack
 deliberately does not attempt; the `operatorDigest` / `observerDigest` / `reviewerDigest` / `closerDigest`
 fields are opaque references to an identity established elsewhere, not proof of it.
 

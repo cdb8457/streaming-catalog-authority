@@ -52,7 +52,10 @@ function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-chainr
 
 type Rec = Record<string, unknown>;
 interface ChainOpts { itemId?: string; approvalId?: string; body?: Buffer; closure?: 'CLOSED' | 'HELD_OPEN' | 'PENDING' }
-interface Chain { gate: Rec; authorization: Rec; observation: Rec; disposition: Rec; closure: Rec }
+interface ChainSources { gateEvidence: Rec; authorizationDecision: Rec; observation: Rec; disposition: Rec; closure: Rec }
+// A chain carries the SOURCE records each phase consumed alongside the reports. Supplying them is what unlocks
+// the non-resealable semantic path; a bundle of reports alone can only ever earn STRUCTURAL_ONLY.
+interface Chain { gate: Rec; authorization: Rec; observation: Rec; disposition: Rec; closure: Rec; sources: ChainSources }
 
 // Build a COMPLETE, genuine, five-phase SYNTHETIC chain. Synthetic on purpose: no approved authorization,
 // recorded observation, accepted disposition or closed closure exists for the real P227-A bundle, and this
@@ -76,69 +79,71 @@ function fullChain(root: string, o: ChainOpts = {}): Chain {
     items: [{ itemId, approvalId, approvalStatus: 'PENDING', sourceDigest: approvalEvidence.sourceRealPathDigest, destinationDigest: approvalEvidence.destinationPathDigest }],
   };
   const preflightReport = buildLivePreflightPlan({ plan });
-  const gate = buildExecutionAuthorization({
+  const gateEvidence = {
     approvalEvidence, approvalValidation, preflightPlan: plan, preflightReport,
     preflightSelfDigest: verifySelfDigests([preflightReport]),
-  });
+  };
+  const gate = buildExecutionAuthorization(gateEvidence);
   assertEq(gate.overall, 'EXECUTION_AUTHORIZATION_TEMPLATE_READY', `precondition: gate ready (${gate.blockers.join(',')})`);
 
-  const authorization = buildExecutionAuthorizationRecord({
-    gate,
-    record: {
-      ...JSON.parse(JSON.stringify(buildExecutionAuthorizationRecordSkeleton(gate)!)) as Rec,
-      decision: 'APPROVED', operatorDigest: OPERATOR_DIGEST, decidedAtUtc: DECIDED_AT,
-      fields: { operatorAuthorized: 'AFFIRMED', observedStateWitnessedBefore: 'AFFIRMED', withdrawalPathRehearsed: 'AFFIRMED', observedStateWitnessedAfter: 'PENDING', runExecutedByHuman: 'PENDING' },
-    },
-  });
+  const authorizationDecision: Rec = {
+    ...JSON.parse(JSON.stringify(buildExecutionAuthorizationRecordSkeleton(gate)!)) as Rec,
+    decision: 'APPROVED', operatorDigest: OPERATOR_DIGEST, decidedAtUtc: DECIDED_AT,
+    fields: { operatorAuthorized: 'AFFIRMED', observedStateWitnessedBefore: 'AFFIRMED', withdrawalPathRehearsed: 'AFFIRMED', observedStateWitnessedAfter: 'PENDING', runExecutedByHuman: 'PENDING' },
+  };
+  const authorization = buildExecutionAuthorizationRecord({ gate, record: authorizationDecision });
   assertEq(authorization.overall, 'EXECUTION_AUTHORIZATION_RECORD_APPROVED', `precondition: approved (${authorization.blockers.join(',')})`);
 
-  const observation = buildPostRunObservationRecord({
-    authorizationRecord: authorization,
-    observation: {
-      ...JSON.parse(JSON.stringify(buildPostRunObservationSkeleton(authorization)!)) as Rec,
-      observedRunOutcome: 'COMPLETED',
-      observedStateBeforeDigest: STATE_BEFORE, observedStateAfterDigest: STATE_AFTER,
-      preexistingPreserved: true, withdrewOnlyRunCreatedMaterialization: true,
-      observerDigest: OBSERVER_DIGEST, observedAtUtc: OBSERVED_AT,
-    },
-  });
+  const observationRecord: Rec = {
+    ...JSON.parse(JSON.stringify(buildPostRunObservationSkeleton(authorization)!)) as Rec,
+    observedRunOutcome: 'COMPLETED',
+    observedStateBeforeDigest: STATE_BEFORE, observedStateAfterDigest: STATE_AFTER,
+    preexistingPreserved: true, withdrewOnlyRunCreatedMaterialization: true,
+    observerDigest: OBSERVER_DIGEST, observedAtUtc: OBSERVED_AT,
+  };
+  const observation = buildPostRunObservationRecord({ authorizationRecord: authorization, observation: observationRecord });
   assertEq(observation.overall, 'POST_RUN_OBSERVATION_RECORDED', `precondition: recorded (${observation.blockers.join(',')})`);
 
-  const disposition = buildPostRunDispositionRecord({
-    observationRecord: observation,
-    disposition: {
-      ...JSON.parse(JSON.stringify(buildPostRunDispositionSkeleton(observation)!)) as Rec,
-      reviewerDigest: REVIEWER_DIGEST, reviewedAtUtc: REVIEWED_AT,
-      fields: {
-        outcomeAccepted: 'AFFIRMED', observedOutcomeReviewed: 'AFFIRMED',
-        preexistingIntegrityConfirmed: 'AFFIRMED', evidenceRetainedOutOfBand: 'AFFIRMED', remediationPerformed: 'PENDING',
-      },
+  const dispositionRecord: Rec = {
+    ...JSON.parse(JSON.stringify(buildPostRunDispositionSkeleton(observation)!)) as Rec,
+    reviewerDigest: REVIEWER_DIGEST, reviewedAtUtc: REVIEWED_AT,
+    fields: {
+      outcomeAccepted: 'AFFIRMED', observedOutcomeReviewed: 'AFFIRMED',
+      preexistingIntegrityConfirmed: 'AFFIRMED', evidenceRetainedOutOfBand: 'AFFIRMED', remediationPerformed: 'PENDING',
     },
-  });
+  };
+  const disposition = buildPostRunDispositionRecord({ observationRecord: observation, disposition: dispositionRecord });
   assertEq(disposition.overall, 'POST_RUN_DISPOSITION_ACCEPTED', `precondition: accepted (${disposition.blockers.join(',')})`);
 
   const want = o.closure ?? 'CLOSED';
   const affirmed = want === 'CLOSED' ? 'AFFIRMED' : want === 'HELD_OPEN' ? 'REFUSED' : 'PENDING';
   const decided = want !== 'PENDING';
-  const closure = buildOperationClosureRecord({
-    dispositionRecord: disposition,
-    closure: {
-      ...JSON.parse(JSON.stringify(buildOperationClosureSkeleton(disposition)!)) as Rec,
-      closerDigest: decided ? CLOSER_DIGEST : 'PENDING', closedAtUtc: decided ? CLOSED_AT : 'PENDING',
-      fields: {
-        closureAffirmed: affirmed,
-        evidenceArchivedOutOfBand: 'AFFIRMED', chainDigestsRecordedInArchive: 'AFFIRMED',
-        noOutstandingRemediation: 'AFFIRMED', evidencePurged: 'PENDING',
-      },
+  const closureRecord: Rec = {
+    ...JSON.parse(JSON.stringify(buildOperationClosureSkeleton(disposition)!)) as Rec,
+    closerDigest: decided ? CLOSER_DIGEST : 'PENDING', closedAtUtc: decided ? CLOSED_AT : 'PENDING',
+    fields: {
+      closureAffirmed: affirmed,
+      evidenceArchivedOutOfBand: 'AFFIRMED', chainDigestsRecordedInArchive: 'AFFIRMED',
+      noOutstandingRemediation: 'AFFIRMED', evidencePurged: 'PENDING',
     },
-  });
+  };
+  const closure = buildOperationClosureRecord({ dispositionRecord: disposition, closure: closureRecord });
   assertEq(closure.overall, `OPERATION_CLOSURE_${want}`, `precondition: closure ${want} (${closure.blockers.join(',')})`);
 
   return {
     gate: gate as unknown as Rec, authorization: authorization as unknown as Rec,
     observation: observation as unknown as Rec, disposition: disposition as unknown as Rec,
     closure: closure as unknown as Rec,
+    sources: {
+      gateEvidence: gateEvidence as unknown as Rec, authorizationDecision,
+      observation: observationRecord, disposition: dispositionRecord, closure: closureRecord,
+    },
   };
+}
+
+// The reports of a chain WITHOUT their source records: structurally perfect, semantically unproven.
+function reportsOnly(c: Chain): Rec {
+  return { gate: c.gate, authorization: c.authorization, observation: c.observation, disposition: c.disposition, closure: c.closure };
 }
 
 // Re-seal a mutated report so it recomputes its own self-digest cleanly. A self-digest is not a signature:
@@ -281,7 +286,7 @@ await test('adversarial: every inter-phase link is re-derived, and each broken l
       ['closure', 'disposition-record', 235, { gate: c.gate, authorization: c.authorization, observation: c.observation, disposition: c.disposition }],
     ];
     for (const [slot, bindingKey, phase, prefix] of cases) {
-      const broken = forge(c[slot as keyof Chain], slot, (o) => { (o.boundDigests as Rec)[bindingKey] = wrong; });
+      const broken = forge((c as unknown as Rec)[slot] as Rec, slot, (o) => { (o.boundDigests as Rec)[bindingKey] = wrong; });
       const r = verifyPromotionChainReplay({ ...prefix, [slot]: broken });
       assertEq(r.overall, 'CHAIN_NOT_REPLAYABLE', `broken ${bindingKey} link caught`);
       assert(r.blockers.includes(`CHAIN_PHASE_${phase}_LINK_NOT_REDERIVED`), `${bindingKey} -> CHAIN_PHASE_${phase}_LINK_NOT_REDERIVED`);
@@ -356,7 +361,8 @@ await test('a chain whose closure is HELD_OPEN or PENDING is verified but OPEN, 
     for (const [want, item] of [['HELD_OPEN', '77777777777777777777777777777777'], ['PENDING', '66666666666666666666666666666666']] as const) {
       const c = fullChain(root, { closure: want, itemId: item, approvalId: `phase-236-${want}`, body: Buffer.concat([MINIMAL_MP4_FIXTURE, Buffer.from(`-${want}`)]) });
       const r = verifyPromotionChainReplay(c);
-      assertEq(r.overall, 'CHAIN_REPLAY_VERIFIED_OPEN', `${want} chain is consistent but open (${r.blockers.join(',')})`);
+      assertEq(r.overall, 'CHAIN_REPLAY_VERIFIED_OPEN', `${want} chain re-derives but is open (${r.blockers.join(',')})`);
+      assertEq(r.semanticallyRederived, true, 'every phase re-derived from its source record');
       assertEq(r.blockers.length, 0, 'an unclosed operation is not a defect');
       assertEq(r.terminalPhase, 235, 'all five phases supplied');
       assertEq(r.chainComplete, true, 'the chain itself is structurally complete');
@@ -369,11 +375,12 @@ await test('every partial prefix of a genuine chain replays as VERIFIED_OPEN', (
   const root = workspace();
   try {
     const c = fullChain(root);
+    const s = c.sources;
     const prefixes: Array<[Rec, number]> = [
-      [{ gate: c.gate }, 231],
-      [{ gate: c.gate, authorization: c.authorization }, 232],
-      [{ gate: c.gate, authorization: c.authorization, observation: c.observation }, 233],
-      [{ gate: c.gate, authorization: c.authorization, observation: c.observation, disposition: c.disposition }, 234],
+      [{ gate: c.gate, sources: { gateEvidence: s.gateEvidence } }, 231],
+      [{ gate: c.gate, authorization: c.authorization, sources: { gateEvidence: s.gateEvidence, authorizationDecision: s.authorizationDecision } }, 232],
+      [{ gate: c.gate, authorization: c.authorization, observation: c.observation, sources: { gateEvidence: s.gateEvidence, authorizationDecision: s.authorizationDecision, observation: s.observation } }, 233],
+      [{ gate: c.gate, authorization: c.authorization, observation: c.observation, disposition: c.disposition, sources: { gateEvidence: s.gateEvidence, authorizationDecision: s.authorizationDecision, observation: s.observation, disposition: s.disposition } }, 234],
     ];
     for (const [bundle, terminal] of prefixes) {
       const r = verifyPromotionChainReplay(bundle);
@@ -395,16 +402,16 @@ await test('adversarial: operation-identity drift is caught at every phase in tu
     const a = fullChain(root);
     const b = fullChain(root, { itemId: '44444444444444444444444444444444', approvalId: 'phase-236-drift', body: Buffer.concat([MINIMAL_MP4_FIXTURE, Buffer.from('-drift')]) });
     const OP_KEYS = ['operation-approval-id', 'operation-item', 'operation-source', 'operation-destination', 'operation-plan'];
-    const cases: Array<[keyof Chain, number, Rec]> = [
+    const cases: Array<[keyof typeof SEAL, number, Rec]> = [
       ['authorization', 232, { gate: a.gate }],
       ['observation', 233, { gate: a.gate, authorization: a.authorization }],
       ['disposition', 234, { gate: a.gate, authorization: a.authorization, observation: a.observation }],
       ['closure', 235, { gate: a.gate, authorization: a.authorization, observation: a.observation, disposition: a.disposition }],
     ];
     for (const [slot, phase, prefix] of cases) {
-      const drifted = forge(a[slot], slot as keyof typeof SEAL, (o) => {
+      const drifted = forge((a as unknown as Rec)[slot] as Rec, slot, (o) => {
         const bound = o.boundDigests as Rec;
-        const other = b[slot].boundDigests as Rec;
+        const other = ((b as unknown as Rec)[slot] as Rec).boundDigests as Rec;
         for (const k of OP_KEYS) bound[k] = other[k];
       });
       const r = verifyPromotionChainReplay({ ...prefix, [slot]: drifted });
@@ -439,14 +446,14 @@ await test('adversarial: a smuggled raw path anywhere in the bundle fails closed
   try {
     const c = fullChain(root);
     const leaky = forge(c.disposition, 'disposition', (o) => { o.blockers = ['/mnt/user/media/Movies/Chainreplay Proof (2026)/source.mp4']; });
-    const r = verifyPromotionChainReplay({ ...c, disposition: leaky });
+    const r = verifyPromotionChainReplay({ ...reportsOnly(c), disposition: leaky });
     assertEq(r.overall, 'CHAIN_NOT_REPLAYABLE', 'a leaking bundle is not replayable');
     assert(r.blockers.includes('CHAIN_REDACTION_UNSAFE'), 'CHAIN_REDACTION_UNSAFE reported');
     const json = JSON.stringify(r);
     assert(!json.includes('/mnt/') && !json.includes('source.mp4'), 'the smuggled path is never echoed back');
     // A report that simply does not declare itself redaction-safe is caught the same way.
     const undeclared = forge(c.closure, 'closure', (o) => { o.redactionSafe = false; });
-    assert(verifyPromotionChainReplay({ ...c, closure: undeclared }).blockers.includes('CHAIN_REDACTION_UNSAFE'), 'undeclared redaction safety reported');
+    assert(verifyPromotionChainReplay({ ...reportsOnly(c), closure: undeclared }).blockers.includes('CHAIN_REDACTION_UNSAFE'), 'undeclared redaction safety reported');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -460,13 +467,26 @@ await test('CLI replays a chain bundle and never echoes raw paths or ids', () =>
       gate: w('gate.json', c.gate), authorization: w('auth.json', c.authorization),
       observation: w('obs.json', c.observation), disposition: w('disp.json', c.disposition),
       closure: w('closure.json', c.closure),
+      srcGate: w('src-gate.json', c.sources.gateEvidence),
+      srcAuth: w('src-auth.json', c.sources.authorizationDecision),
+      srcObs: w('src-obs.json', c.sources.observation),
+      srcDisp: w('src-disp.json', c.sources.disposition),
+      srcClosure: w('src-closure.json', c.sources.closure),
     };
     const outPath = join(root, 'CHAINMARKER-out', 'replay.json');
     const cliPath = fileURLToPath(new URL('../src/ops/promotion-chain-replay-cli.ts', import.meta.url));
     const run = (args: readonly string[]) => spawnSync(process.execPath, ['--import', 'tsx', cliPath, ...args], { cwd: projectRoot, encoding: 'utf8' });
 
-    const ok = run(['--gate', paths.gate, '--authorization', paths.authorization, '--observation', paths.observation,
-      '--disposition', paths.disposition, '--closure', paths.closure, '--out', outPath]);
+    const reportFlags = ['--gate', paths.gate, '--authorization', paths.authorization, '--observation', paths.observation,
+      '--disposition', paths.disposition, '--closure', paths.closure];
+    const sourceFlags = ['--sourcegateevidence', paths.srcGate, '--sourceauthorizationdecision', paths.srcAuth,
+      '--sourceobservation', paths.srcObs, '--sourcedisposition', paths.srcDisp, '--sourceclosure', paths.srcClosure];
+    // Reports alone are resealable, so the CLI refuses a VERIFIED verdict for them: exit 5, not exit 0.
+    const structural = run(reportFlags);
+    assertEq(structural.status, 5, `reports-only exits STRUCTURAL_ONLY (stderr: ${structural.stderr ?? ''})`);
+    assertEq((JSON.parse(structural.stdout ?? '') as Rec).overall, 'CHAIN_REPLAY_STRUCTURAL_ONLY', 'stdout structural-only');
+    assertEq((JSON.parse(structural.stdout ?? '') as Rec).semanticallyRederived, false, 'nothing re-derived without sources');
+    const ok = run([...reportFlags, ...sourceFlags, '--out', outPath]);
     assert(ok.error === undefined, `spawn ok: ${ok.error?.message ?? ''}`);
     assertEq(ok.status, 0, `VERIFIED_CLOSED exit 0 (stderr: ${ok.stderr ?? ''})`);
     assert(existsSync(outPath), 'report written');
@@ -480,12 +500,84 @@ await test('CLI replays a chain bundle and never echoes raw paths or ids', () =>
     assert(!stdout.includes('phase-236-synthetic-test') && !stdout.includes('0a40074065d91a75ad41f33fc212e917'), 'no raw ids in stdout');
     assert(![OPERATOR_DIGEST, OBSERVER_DIGEST, REVIEWER_DIGEST, CLOSER_DIGEST].some((d) => stdout.includes(d)), 'no participant identity in stdout');
 
-    // A partial chain exits 3, nothing supplied exits 4, an unreadable file exits 2.
-    assertEq(run(['--gate', paths.gate, '--authorization', paths.authorization]).status, 3, 'partial chain exits 3');
+    // A partial chain WITH its sources re-derives and exits 3; without them it is only structural, exit 5.
+    assertEq(run(['--gate', paths.gate, '--authorization', paths.authorization,
+      '--sourcegateevidence', paths.srcGate, '--sourceauthorizationdecision', paths.srcAuth]).status, 3, 're-derived partial chain exits 3');
+    assertEq(run(['--gate', paths.gate, '--authorization', paths.authorization]).status, 5, 'partial chain without sources exits 5');
     assertEq(run([]).status, 4, 'empty bundle exits 4');
     assertEq(run(['--gate', join(dir, 'does-not-exist.json')]).status, 2, 'unreadable input exits 2');
     // And a spliced/dis-anchored bundle exits 1.
     assertEq(run(['--authorization', paths.authorization, '--observation', paths.observation]).status, 1, 'headless chain exits 1');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// THE POINT OF THE SEMANTIC PATH. Every structural check in this verifier is RESEALABLE: a party holding the
+// bundle can rewrite a report body, recompute its self-digest, and leave every link and identity digest
+// untouched. Such a forgery is structurally perfect. It must therefore NEVER earn a VERIFIED verdict on
+// structure alone, and must be caught outright the moment the source records are supplied.
+await test('THE reseal: a forged closure that passes every structural check is refused VERIFIED_CLOSED', () => {
+  const root = workspace();
+  try {
+    // A genuine chain a human deliberately did NOT close out.
+    const c = fullChain(root, { closure: 'HELD_OPEN' });
+    assertEq((c.closure as Rec).overall, 'OPERATION_CLOSURE_HELD_OPEN', 'precondition: the operation was held open');
+
+    // Rewrite it to claim closure, then re-seal. Links and identity digests are untouched, so every structural
+    // check still passes -- this is exactly the forgery a purely structural replay would have blessed.
+    const resealed = forge(c.closure, 'closure', (o) => {
+      o.overall = 'OPERATION_CLOSURE_CLOSED';
+      o.recordedClosure = 'CLOSED';
+      o.operationClosed = true;
+    });
+
+    const structural = verifyPromotionChainReplay({ ...reportsOnly(c), closure: resealed });
+    // Structure alone cannot see it: nothing recomputes wrong, nothing is unlinked, identity holds.
+    assertEq(structural.blockers.length, 0, 'the forgery passes every structural check');
+    assert(structural.phases.every((p) => p.verified && p.linkedToParent !== false && p.identityMatched !== false), 'structurally perfect');
+    assertEq(structural.chainComplete, true, 'and looks like a complete chain');
+    assertEq(structural.operationClosed, true, 'and even claims the operation is closed');
+    // ...and is still refused a VERIFIED verdict, because it was never re-derived from a source record.
+    assertEq(structural.overall, 'CHAIN_REPLAY_STRUCTURAL_ONLY', 'a resealed forgery earns no VERIFIED verdict');
+    assertEq(structural.semanticallyRederived, false, 'nothing was re-derived');
+
+    // With the source records supplied, the forgery is caught outright: Phase 235's own validator, re-run over
+    // the closure record the human actually wrote, produces HELD_OPEN -- which cannot reproduce this digest.
+    const caught = verifyPromotionChainReplay({ ...reportsOnly(c), closure: resealed, sources: c.sources });
+    assertEq(caught.overall, 'CHAIN_NOT_REPLAYABLE', 'the semantic path catches the reseal');
+    assert(caught.blockers.includes('CHAIN_PHASE_235_NOT_REDERIVED_FROM_SOURCE'), 'CHAIN_PHASE_235_NOT_REDERIVED_FROM_SOURCE reported');
+    assert(!caught.blockers.includes('CHAIN_PHASE_235_DIGEST_MISMATCH'), 'the digest check still does NOT catch it');
+    assertEq(caught.phases[4]!.rederivedFromSource, false, 'the closure did not come from its source record');
+    assertEq(caught.operationClosed, false, 'nothing is closed by a forgery');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('a source record from a different operation does not re-derive its report', () => {
+  const root = workspace();
+  try {
+    const a = fullChain(root);
+    const b = fullChain(root, { itemId: '12121212121212121212121212121212', approvalId: 'phase-236-othersrc', body: Buffer.concat([MINIMAL_MP4_FIXTURE, Buffer.from('-othersrc')]) });
+    // Chain A's reports, but B's human observation record offered as A's source.
+    const r = verifyPromotionChainReplay({ ...reportsOnly(a), sources: { ...a.sources, observation: b.sources.observation } });
+    assertEq(r.overall, 'CHAIN_NOT_REPLAYABLE', 'a foreign source record is caught');
+    assert(r.blockers.includes('CHAIN_PHASE_233_NOT_REDERIVED_FROM_SOURCE'), 'CHAIN_PHASE_233_NOT_REDERIVED_FROM_SOURCE reported');
+    assertEq(r.phases[2]!.rederivedFromSource, false, 'phase 233 not re-derived');
+    assertEq(r.semanticallyRederived, false, 'the chain as a whole is unproven');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Unproven is not disproven -- but it still caps the verdict. One missing source is enough.
+await test('a single missing source record caps the whole verdict at STRUCTURAL_ONLY', () => {
+  const root = workspace();
+  try {
+    const c = fullChain(root);
+    assertEq(verifyPromotionChainReplay(c).overall, 'CHAIN_REPLAY_VERIFIED_CLOSED', 'precondition: the full chain verifies with every source');
+    const { closure: _dropped, ...missingOne } = c.sources;
+    const r = verifyPromotionChainReplay({ ...reportsOnly(c), sources: missingOne });
+    assertEq(r.overall, 'CHAIN_REPLAY_STRUCTURAL_ONLY', 'one unproven phase caps the verdict');
+    assertEq(r.blockers.length, 0, 'an unproven phase is not a defect -- it is simply unproven');
+    assertEq(r.semanticallyRederived, false, 'the chain is not fully re-derived');
+    assertEq(r.phases[4]!.rederivedFromSource, null, 'unproven is null, never false');
+    assert(r.phases.slice(0, 4).every((p) => p.rederivedFromSource === true), 'the phases that did have sources re-derived');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
@@ -523,25 +615,39 @@ const REAL_PREFLIGHT_PLAN = {
 
 // The real chain, offline and end to end: gate -> Phase 232, where it stops at PENDING. This function never
 // builds an approved authorization, and therefore no observation, disposition or closure can follow it.
-function realChain(): { gate: Rec; authorization: Rec } {
+function realChain(): { gate: Rec; authorization: Rec; sources: Rec } {
   const preflightReport = buildLivePreflightPlan({ plan: REAL_PREFLIGHT_PLAN });
-  const gate = buildExecutionAuthorization({
+  const gateEvidence = {
     approvalEvidence: REAL_APPROVAL_EVIDENCE,
     approvalValidation: REAL_APPROVAL_VALIDATION,
     preflightPlan: REAL_PREFLIGHT_PLAN,
     preflightReport,
     preflightSelfDigest: verifySelfDigests([preflightReport]),
-  });
+  };
+  const gate = buildExecutionAuthorization(gateEvidence);
   assertEq(gate.overall, 'EXECUTION_AUTHORIZATION_TEMPLATE_READY', `precondition: real gate ready (${gate.blockers.join(',')})`);
-  const authorization = buildExecutionAuthorizationRecord({ gate, record: buildExecutionAuthorizationRecordSkeleton(gate)! });
+  // The ONLY authorization record that exists for the real operation: the blank, undecided skeleton.
+  const authorizationDecision = buildExecutionAuthorizationRecordSkeleton(gate)! as unknown as Rec;
+  const authorization = buildExecutionAuthorizationRecord({ gate, record: authorizationDecision });
   assertEq(authorization.overall, 'EXECUTION_AUTHORIZATION_RECORD_PENDING', 'the real run has no human approval');
-  return { gate: gate as unknown as Rec, authorization: authorization as unknown as Rec };
+  return {
+    gate: gate as unknown as Rec,
+    authorization: authorization as unknown as Rec,
+    sources: { gateEvidence: gateEvidence as unknown as Rec, authorizationDecision },
+  };
 }
 
 await test('the actual P227-A chain replays consistently but LOCKS as open, terminating at Phase 232', () => {
-  const { gate, authorization } = realChain();
-  const r = verifyPromotionChainReplay({ gate, authorization });
-  assertEq(r.overall, 'CHAIN_REPLAY_VERIFIED_OPEN', `the real chain is consistent as far as it goes (${r.blockers.join(',')})`);
+  const { gate, authorization, sources } = realChain();
+  // Reports alone are resealable, so the real bundle earns no VERIFIED verdict on its own.
+  const structural = verifyPromotionChainReplay({ gate, authorization });
+  assertEq(structural.overall, 'CHAIN_REPLAY_STRUCTURAL_ONLY', 'reports alone are unverified, however consistent');
+  assertEq(structural.semanticallyRederived, false, 'nothing re-derived without the source records');
+  assertEq(structural.operationClosed, false, 'the real operation is NOT closed');
+  // With the real source records it genuinely re-derives -- and still terminates at Phase 232.
+  const r = verifyPromotionChainReplay({ gate, authorization, sources });
+  assertEq(r.overall, 'CHAIN_REPLAY_VERIFIED_OPEN', `the real chain re-derives as far as it goes (${r.blockers.join(',')})`);
+  assertEq(r.semanticallyRederived, true, 'both real phases re-derive from their own source records');
   assertEq(r.terminalPhase, 232, 'the real chain terminates at Phase 232');
   assertEq(r.chainComplete, false, 'the real chain is NOT complete');
   assertEq(r.operationClosed, false, 'the real operation is NOT closed');
