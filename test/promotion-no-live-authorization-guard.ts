@@ -105,6 +105,32 @@ test('a PENDING human gate can NEVER smuggle a NESTED hard claim (flag or forbid
   }
 });
 
+test('a hard claim buried DEEPER than any depth cutoff still fails closed (full-tree scan)', () => {
+  // Regression: the recursive scanners previously stopped at depth 8, so a claim nested past that silently
+  // passed. Artifacts are acyclic JSON, so the scan must reach any depth. Bury each hard-claim shape 15 levels
+  // deep and require it to fail closed.
+  const bury = (leaf: Record<string, unknown>): Record<string, unknown> => {
+    let node: Record<string, unknown> = leaf;
+    for (let d = 0; d < 15; d++) node = { child: node };
+    return { report: 'phase-230-promotion-fake-human-gate', humanGate: true, status: 'PENDING', authorization: 'NONE', deep: node };
+  };
+  const leaves: Array<Record<string, unknown>> = [
+    { phase231Authorized: true },          // deep truthy claim flag
+    { decision: 'APPROVED' },              // deep forbidden token as a non-claim scalar field value
+    { overall: 'PHASE_231_AUTHORIZED' },   // deep forbidden token in a claim-field value
+    { live_ready: true },                  // deep forbidden token as a truthy object key
+  ];
+  for (const leaf of leaves) {
+    const c = bury(leaf);
+    const r = buildNoLiveAuthorizationGuard({ artifacts: [c] });
+    assertEq(r.overall, 'NO_LIVE_AUTHORIZATION_VIOLATED', `deep claim fails closed: ${JSON.stringify(leaf)}`);
+    assert(r.blockers.includes('LIVE_AUTHORIZATION_CLAIMED'), 'LIVE_AUTHORIZATION_CLAIMED');
+    assert(r.verdicts[0]!.hardClaim === true, 'flagged as a hard claim');
+    assert(!r.verdicts[0]!.pendingGateExempt, 'gate exemption refused');
+    assert(!JSON.stringify(r).includes('APPROVED') && !JSON.stringify(r).includes('PHASE_231_AUTHORIZED'), 'offending value never echoed');
+  }
+});
+
 test('VIOLATED on case / separator / affix VARIANTS of the forbidden tokens (claim fields + flags)', () => {
   // Adversarial variant corpus: each is a hard claim carried in a claim FIELD as a token variant.
   const variants: unknown[] = [

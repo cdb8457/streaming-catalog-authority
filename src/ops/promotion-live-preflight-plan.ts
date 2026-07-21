@@ -50,7 +50,7 @@ export function buildLivePreflightPlan(input: LivePreflightPlanInput): LivePrefl
   if (input.plan === undefined || typeof input.plan !== 'object' || Array.isArray(input.plan)) blockers.push('PLAN_MISSING');
 
   // Live-surface escape: ANY string anywhere in the plan that names a live / network / media surface or raw path.
-  if (deepLiveSurface(input.plan, 0)) blockers.push('LIVE_SURFACE_IN_PLAN');
+  if (deepLiveSurface(input.plan)) blockers.push('LIVE_SURFACE_IN_PLAN');
 
   // Plan-level policy requirements.
   const policyChecks: { policy: string; ok: boolean }[] = [];
@@ -113,11 +113,12 @@ function pathBearing(value: string): boolean {
   return /^\//.test(value) || /[A-Za-z]:[\\/]/.test(value) || /\/mnt\//.test(value) || /\\mnt\\/.test(value)
     || value.includes('catalog-authority-test-library') || /\.(mkv|mp4|avi|mov|m4v|ts|webm)$/i.test(value);
 }
-function deepLiveSurface(value: unknown, depth: number): boolean {
-  if (depth > 8) return false;
+// The plan is a parsed-JSON / built object (acyclic finite tree), so this scan has NO depth cutoff -- a live
+// surface or raw path buried at any depth fails closed.
+function deepLiveSurface(value: unknown): boolean {
   if (typeof value === 'string') return value.length > 0 && (isLiveSurface(value) || pathBearing(value));
-  if (Array.isArray(value)) return value.some((v) => deepLiveSurface(v, depth + 1));
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepLiveSurface(v, depth + 1));
+  if (Array.isArray(value)) return value.some((v) => deepLiveSurface(v));
+  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepLiveSurface(v));
   return false;
 }
 function digest(scope: string, value: string): string {

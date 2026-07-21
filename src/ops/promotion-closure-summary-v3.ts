@@ -129,7 +129,7 @@ export function buildClosureSummaryV3(input: ClosureSummaryV3Input): ClosureSumm
     const a = asObject(value).authorization;
     if (typeof a === 'string' && !ALLOWED_AUTHORIZATION.includes(a)) liveEscape = true;
   }
-  if (deepLiveEscape(input.observedState, 0)) liveEscape = true;
+  if (deepLiveEscape(input.observedState)) liveEscape = true;
   if (liveEscape) blockers.push('LIVE_BOUNDARY_ESCAPE');
 
   const failureEvidence: ClosureCheck[] = [
@@ -208,12 +208,13 @@ function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);
 }
 // Recursively flag any string anywhere in the observed-state record that names a live/network/media surface
-// or a raw path, so a live indicator smuggled into a field other than `source` still fails closed.
-function deepLiveEscape(value: unknown, depth: number): boolean {
-  if (depth > 6) return false;
+// or a raw path, so a live indicator smuggled into a field other than `source` still fails closed. The record
+// is a parsed-JSON / built object (acyclic finite tree), so the scan has NO depth cutoff -- a live surface
+// buried at any depth fails closed.
+function deepLiveEscape(value: unknown): boolean {
   if (typeof value === 'string') return value.length > 0 && (isLiveSurface(value) || pathFree(value) === null);
-  if (Array.isArray(value)) return value.some((v) => deepLiveEscape(v, depth + 1));
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepLiveEscape(v, depth + 1));
+  if (Array.isArray(value)) return value.some((v) => deepLiveEscape(v));
+  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepLiveEscape(v));
   return false;
 }
 function pathFree(value: unknown): string | null {

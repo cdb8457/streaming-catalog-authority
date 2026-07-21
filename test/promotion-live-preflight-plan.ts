@@ -73,6 +73,17 @@ await test('INVALID (fail closed) on any raw path / Jellyfin / network / media s
   }
 });
 
+await test('INVALID on a live surface buried DEEPER than the old depth cutoff (full-tree scan)', () => {
+  // Regression: the plan scan previously stopped at depth 8, so a live surface buried past that silently
+  // passed. The plan is acyclic JSON, so a raw path buried 15 levels deep must still fail closed.
+  let buried: Record<string, unknown> = { probe: '/mnt/user/media/Movies/deep.mkv' };
+  for (let d = 0; d < 15; d++) buried = { child: buried };
+  const p = validPlan() as Record<string, unknown>; (p.items as Array<Record<string, unknown>>)[0]!.trail = buried;
+  const r = buildLivePreflightPlan({ plan: p });
+  assert(r.blockers.includes('LIVE_SURFACE_IN_PLAN'), 'LIVE_SURFACE_IN_PLAN past the old depth cutoff');
+  assert(!JSON.stringify(r).includes('/mnt/') && !JSON.stringify(r).includes('.mkv'), 'deep poison never echoed');
+});
+
 test('INVALID and redaction-safe on missing plan / no items', () => {
   assert(buildLivePreflightPlan({}).blockers.includes('PLAN_MISSING'), 'PLAN_MISSING');
   const r = buildLivePreflightPlan({ plan: { noClobber: true, sameChecksum: true, observedStateRequired: true, rollback: { a: 1 }, withdrawal: { a: 1 }, items: [] } });

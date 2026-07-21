@@ -435,6 +435,14 @@ await test('BLOCKED on a live-boundary escape (observed-state source points at a
     assert(!JSON.stringify(deep).includes('/mnt/') && !JSON.stringify(deep).includes('.mkv'), 'the raw escape value is never echoed');
     const nested = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'local', meta: { probe: 'http://192.168.1.10/library/Refresh' } } });
     assert(nested.blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'deep live-boundary escape caught in a nested field');
+
+    // Regression: the observed-state scan previously stopped at depth 6, so a live surface buried past that
+    // silently passed. The record is acyclic JSON, so a raw path buried 15 levels deep must still fail closed.
+    let buried: Record<string, unknown> = { probe: '/mnt/user/media/Movies/deep.mkv' };
+    for (let d = 0; d < 15; d++) buried = { child: buried };
+    const deepNested = buildClosureSummaryV3({ ...b, observedState: { observed: true, source: 'local', trail: buried } });
+    assert(deepNested.blockers.includes('LIVE_BOUNDARY_ESCAPE'), 'live-boundary escape caught past the old depth cutoff');
+    assert(!JSON.stringify(deepNested).includes('/mnt/') && !JSON.stringify(deepNested).includes('.mkv'), 'the deep raw escape value is never echoed');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
