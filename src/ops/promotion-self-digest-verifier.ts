@@ -87,6 +87,7 @@ const REGISTRY: Readonly<Record<string, DigestSpec>> = {
   'phase-237-promotion-source-record-provenance-commitment': { field: 'provenanceDigest', scope: 'phase-237-source-record-provenance' },
   'phase-238-promotion-supplied-source-record-verification': { field: 'verificationDigest', scope: 'phase-238-supplied-source-record-verification' },
   'phase-239-promotion-chain-custody-ledger': { field: 'ledgerDigest', scope: 'phase-239-custody-ledger' },
+  'phase-240-promotion-evidence-retention-inventory': { field: 'inventoryDigest', scope: 'phase-240-evidence-retention-inventory' },
 };
 
 export const KNOWN_REPORT_IDS: readonly string[] = Object.keys(REGISTRY);
