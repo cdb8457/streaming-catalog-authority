@@ -1,4 +1,11 @@
-import { CONSOLE_PHASES, type ArtifactStatus, type ConsoleOutcome, type OperatorConsoleReport } from './promotion-operator-console.js';
+import type { ProofLimit } from './promotion-audit-closure-packet.js';
+import {
+  CONSOLE_PHASES,
+  type ArtifactStatus,
+  type ConsoleBlocker,
+  type ConsoleOutcome,
+  type OperatorConsoleReport,
+} from './promotion-operator-console.js';
 
 // Phase 243: the local-only, read-only OPERATOR DASHBOARD over the Phase 242 console.
 //
@@ -172,6 +179,85 @@ export function buildDashboardManifest(): DashboardManifest {
   };
 }
 
+export interface DashboardArtifactView {
+  readonly phase: number;
+  readonly status: ArtifactStatus;
+  readonly tone: DashboardTone;
+  readonly mark: string;
+  readonly detail: string;
+}
+
+// EVERYTHING A SURFACE NEEDS TO PRESENT A CHAIN, and nothing a surface has to decide for itself. The standalone
+// Phase 243 page and the authenticated panel in the Phase 147 operator UI both render FROM this, so the
+// headline an operator reads, the caveat attached to it, what each artifact state means and which tone it
+// carries are decided in ONE place. Two surfaces agreeing because they share a view model is a fact; two
+// surfaces agreeing because two people wrote the same sentences twice is a coincidence waiting to end.
+//
+// It is value-free and JSON-safe by construction -- every field is either a fixed string from the tables
+// above, a count, a phase number, or something the Phase 242 report already published.
+export interface DashboardViewModel {
+  readonly overall: ConsoleOutcome;
+  readonly tone: DashboardTone;
+  readonly headline: string;
+  readonly caveat: string;
+  readonly auditOutcome: ConsoleOutcome;
+  readonly outcomeMatchesAudit: boolean;
+  readonly terminalPhase: number | null;
+  readonly nextRequiredPhase: number | null;
+  readonly nextIsUnfinished: boolean;
+  readonly presentCount: number;
+  readonly absentCount: number;
+  readonly malformedCount: number;
+  readonly misfiledCount: number;
+  readonly duplicateCount: number;
+  readonly artifacts: readonly DashboardArtifactView[];
+  readonly blockers: readonly ConsoleBlocker[];
+  readonly nextSteps: readonly string[];
+  readonly proofLimits: readonly ProofLimit[];
+  readonly disclaimers: readonly string[];
+  readonly consoleDigest: string;
+  readonly boundary: string;
+}
+
+export function buildDashboardViewModel(report: OperatorConsoleReport): DashboardViewModel {
+  const view = OUTCOME_VIEW[report.overall];
+  return {
+    overall: report.overall,
+    tone: view.tone,
+    headline: view.headline,
+    caveat: view.caveat,
+    auditOutcome: report.auditOutcome,
+    outcomeMatchesAudit: report.outcomeMatchesAudit,
+    terminalPhase: report.terminalPhase,
+    nextRequiredPhase: report.nextRequiredPhase,
+    nextIsUnfinished: report.nextRequiredPhase !== null && report.nonTerminalPhases.includes(report.nextRequiredPhase),
+    presentCount: report.presentCount,
+    absentCount: report.absentCount,
+    malformedCount: report.malformedCount,
+    misfiledCount: report.misfiledCount,
+    duplicateCount: report.duplicateCount,
+    artifacts: report.artifacts.map((a) => {
+      const status = STATUS_VIEW[a.status];
+      const phase = report.audit.phases.find((p) => p.phase === a.phase);
+      // A present artifact says what the audit made of it; anything else says what its state means.
+      const detail = a.status === 'PRESENT' && phase !== undefined
+        ? [phase.verified ? 'verified' : 'does not recompute',
+          phase.semanticallySound ? 'sound' : 'not sound',
+          phase.terminal ? 'terminal' : 'not terminal',
+          phase.linkedToParent === false ? 'link broken' : '',
+          phase.identityMatched === false ? 'different operation' : ''].filter((f) => f !== '').join(', ')
+        : status.meaning;
+      return { phase: a.phase, status: a.status, tone: status.tone, mark: status.mark, detail };
+    }),
+    blockers: report.blockers,
+    nextSteps: report.nextSteps,
+    proofLimits: report.audit.proofLimits,
+    disclaimers: report.disclaimers,
+    consoleDigest: report.consoleDigest,
+    boundary: DASHBOARD_BOUNDARY,
+  };
+}
+
 // Escaped for HTML text AND attribute context in one pass. Nothing here is ever inserted unescaped.
 export function escapeHtml(value: string): string {
   return value
@@ -222,35 +308,25 @@ const STYLE = [
 // and the proof limits last -- present on the same page as the verdict, so the caveat cannot be screenshotted
 // away from the conclusion.
 export function renderOperatorDashboardHtml(report: OperatorConsoleReport): string {
-  const view = OUTCOME_VIEW[report.overall];
-  const rows = report.artifacts.map((a) => {
-    const s = STATUS_VIEW[a.status];
-    const phase = report.audit.phases.find((p) => p.phase === a.phase);
-    const detail = a.status === 'PRESENT' && phase !== undefined
-      ? [phase.verified ? 'verified' : 'does not recompute',
-        phase.semanticallySound ? 'sound' : 'not sound',
-        phase.terminal ? 'terminal' : 'not terminal',
-        phase.linkedToParent === false ? 'link broken' : '',
-        phase.identityMatched === false ? 'different operation' : ''].filter((f) => f !== '').join(', ')
-      : s.meaning;
-    return `<tr class="${s.tone}"><td class="mark ${s.tone}" aria-hidden="true">${escapeHtml(s.mark)}</td>`
-      + `<th scope="row">Phase ${a.phase}</th>`
-      + `<td>${escapeHtml(a.status)}</td><td>${escapeHtml(detail)}</td></tr>`;
-  }).join('');
+  const model = buildDashboardViewModel(report);
+  const view = { tone: model.tone, headline: model.headline, caveat: model.caveat };
+  const rows = model.artifacts.map((a) => `<tr class="${a.tone}"><td class="mark ${a.tone}" aria-hidden="true">${escapeHtml(a.mark)}</td>`
+    + `<th scope="row">Phase ${a.phase}</th>`
+    + `<td>${escapeHtml(a.status)}</td><td>${escapeHtml(a.detail)}</td></tr>`).join('');
 
-  const blockers = report.blockers.length === 0
+  const blockers = model.blockers.length === 0
     ? '<p>None. Nothing about this chain is contradictory or defective.</p>'
-    : `<ul>${report.blockers.map((b) => `<li class="blocker"><span class="id">${escapeHtml(b.code)}</span>`
+    : `<ul>${model.blockers.map((b) => `<li class="blocker"><span class="id">${escapeHtml(b.code)}</span>`
       + `<p>${escapeHtml(b.meaning)}</p><p class="do"><strong>Do:</strong> ${escapeHtml(b.humanAction)}</p></li>`).join('')}</ul>`;
 
-  const steps = `<ol>${report.nextSteps.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ol>`;
+  const steps = `<ol>${model.nextSteps.map((s) => `<li>${escapeHtml(s)}</li>`).join('')}</ol>`;
 
   const limits = `<table class="limits"><caption>What each phase's green state does and does not establish. This travels with the verdict on purpose.</caption>`
     + '<thead><tr><th scope="col">Phase</th><th scope="col">Establishes</th><th scope="col">Does NOT establish</th></tr></thead><tbody>'
-    + report.audit.proofLimits.map((l) => `<tr><td>${l.phase}</td><td>${escapeHtml(l.establishes)}</td><td>${escapeHtml(l.doesNotEstablish)}</td></tr>`).join('')
+    + model.proofLimits.map((l) => `<tr><td>${l.phase}</td><td>${escapeHtml(l.establishes)}</td><td>${escapeHtml(l.doesNotEstablish)}</td></tr>`).join('')
     + '</tbody></table>';
 
-  const disclaimers = `<ul>${report.disclaimers.map((d) => `<li>${escapeHtml(d)}</li>`).join('')}</ul>`;
+  const disclaimers = `<ul>${model.disclaimers.map((d) => `<li>${escapeHtml(d)}</li>`).join('')}</ul>`;
 
   return `<!doctype html>
 <html lang="en">
@@ -259,7 +335,7 @@ export function renderOperatorDashboardHtml(report: OperatorConsoleReport): stri
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
 <meta name="robots" content="noindex, nofollow">
-<title>Promotion record chain -- ${escapeHtml(report.overall)}</title>
+<title>Promotion record chain -- ${escapeHtml(model.overall)}</title>
 <style>${STYLE}</style>
 </head>
 <body>
@@ -270,7 +346,7 @@ export function renderOperatorDashboardHtml(report: OperatorConsoleReport): stri
 </header>
 <main>
 <section id="outcome" class="verdict ${view.tone}" aria-labelledby="outcome-h">
-<h2 id="outcome-h" class="code">${escapeHtml(report.overall)}</h2>
+<h2 id="outcome-h" class="code">${escapeHtml(model.overall)}</h2>
 <p class="lead">${escapeHtml(view.headline)}</p>
 <p class="caveat">${escapeHtml(view.caveat)}</p>
 </section>
@@ -278,11 +354,11 @@ export function renderOperatorDashboardHtml(report: OperatorConsoleReport): stri
 <section aria-labelledby="where-h">
 <h2 id="where-h">Where the chain stands</h2>
 <dl class="facts">
-<dt>Chain reaches</dt><dd>${report.terminalPhase === null ? 'nothing -- no usable Phase 231 anchor' : `Phase ${report.terminalPhase}`}</dd>
-<dt>Outstanding next</dt><dd>${report.nextRequiredPhase === null ? 'nothing further' : `Phase ${report.nextRequiredPhase}${report.nonTerminalPhases.includes(report.nextRequiredPhase) ? ' -- present, but not finished' : ''}`}</dd>
-<dt>Artifacts</dt><dd>${report.presentCount} present, ${report.absentCount} absent, ${report.malformedCount} malformed, ${report.misfiledCount} misfiled, ${report.duplicateCount} duplicate</dd>
-<dt>Blockers</dt><dd>${report.blockers.length === 0 ? 'none' : String(report.blockers.length)}</dd>
-<dt>Audit verdict</dt><dd>${escapeHtml(report.auditOutcome)}${report.outcomeMatchesAudit ? '' : ' -- the intake itself is defective; see blockers'}</dd>
+<dt>Chain reaches</dt><dd>${model.terminalPhase === null ? 'nothing -- no usable Phase 231 anchor' : `Phase ${model.terminalPhase}`}</dd>
+<dt>Outstanding next</dt><dd>${model.nextRequiredPhase === null ? 'nothing further' : `Phase ${model.nextRequiredPhase}${model.nextIsUnfinished ? ' -- present, but not finished' : ''}`}</dd>
+<dt>Artifacts</dt><dd>${model.presentCount} present, ${model.absentCount} absent, ${model.malformedCount} malformed, ${model.misfiledCount} misfiled, ${model.duplicateCount} duplicate</dd>
+<dt>Blockers</dt><dd>${model.blockers.length === 0 ? 'none' : String(model.blockers.length)}</dd>
+<dt>Audit verdict</dt><dd>${escapeHtml(model.auditOutcome)}${model.outcomeMatchesAudit ? '' : ' -- the intake itself is defective; see blockers'}</dd>
 </dl>
 </section>
 
@@ -315,7 +391,7 @@ ${limits}
 <h2 id="about-h">About this page</h2>
 ${disclaimers}
 <p>Snapshot taken when this server started. It does not change while the server runs, so what was audited is what you are reading; restart the server to re-read the artifacts.</p>
-<p>Console digest: <code>${escapeHtml(report.consoleDigest)}</code></p>
+<p>Console digest: <code>${escapeHtml(model.consoleDigest)}</code></p>
 </section>
 </main>
 <footer><p>${escapeHtml(DASHBOARD_BOUNDARY)}</p></footer>

@@ -11,6 +11,11 @@ import {
   verifyOperatorUiLocalAuthHeader,
 } from './operator-ui-local-auth-runtime.js';
 import { runDoctor, type DoctorReport } from './doctor.js';
+import {
+  buildPromotionChainSnapshot,
+  PromotionRecordsConfigError,
+  resolvePromotionRecordsDir,
+} from './operator-ui-promotion-chain.js';
 
 export const OPERATOR_UI_SERVICE_DEFAULT_HOST = '0.0.0.0';
 export const OPERATOR_UI_SERVICE_DEFAULT_PORT = 8099;
@@ -25,12 +30,16 @@ export interface OperatorUiServiceConfigInput {
   readonly host?: string;
   readonly port?: number;
   readonly operatorSecretFile?: string;
+  readonly promotionRecordsDir?: string;
 }
 
 export interface OperatorUiServiceConfig {
   readonly host: string;
   readonly port: number;
   readonly operatorSecretFile: string;
+  // The container path the promotion record artifacts are mounted at, READ-ONLY. Resolved from configuration
+  // at startup and never from a request, so nothing a browser sends can steer a filesystem read.
+  readonly promotionRecordsDir: string;
 }
 
 export interface OperatorUiServiceLogEntry {
@@ -143,7 +152,19 @@ export function validateOperatorUiServiceConfig(input: OperatorUiServiceConfigIn
   }
   if (operatorSecretFile === undefined || operatorSecretFile.trim() === '') throw new OperatorUiServiceConfigError();
 
-  return { host, port, operatorSecretFile };
+  // A misconfigured artifact directory refuses STARTUP rather than surfacing later as an empty panel. The
+  // narrow validation lives with the promotion-chain module; a rejection there is a config rejection here.
+  let promotionRecordsDir: string;
+  try {
+    promotionRecordsDir = input.promotionRecordsDir === undefined
+      ? resolvePromotionRecordsDir()
+      : resolvePromotionRecordsDir({ PROMOTION_RECORDS_DIR: input.promotionRecordsDir });
+  } catch (err) {
+    if (err instanceof PromotionRecordsConfigError) throw new OperatorUiServiceConfigError();
+    throw err;
+  }
+
+  return { host, port, operatorSecretFile, promotionRecordsDir };
 }
 
 export function createOperatorUiServiceServer(
@@ -165,7 +186,8 @@ export function createOperatorUiServiceServer(
       return;
     }
 
-    const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs';
+    const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs'
+      || path === '/api/promotion-chain';
     if (method === 'HEAD') {
       ignoreRequestBody(req);
       sendPlain(res, known ? 405 : 404, known ? 'method not allowed\n' : 'not found\n', known ? 'GET' : undefined, true);
@@ -205,6 +227,37 @@ export function createOperatorUiServiceServer(
       const status = await buildOperatorUiServiceStatus(config, logs);
       sendJson(res, status.ok ? 200 : 503, status);
       logs.add(status.ok ? 'info' : 'warn', 'operation', 'STATUS_READ', `Served status report with ok=${status.ok}.`);
+      return;
+    }
+
+    // The promotion record chain, behind the SAME token boundary as every other operational route. It is a
+    // read: the artifact directory comes from container configuration, the request contributes nothing to it,
+    // and no method other than GET reaches this point.
+    if (path === '/api/promotion-chain') {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected promotion chain request without a valid operator token.');
+        return;
+      }
+      let snapshot: ReturnType<typeof buildPromotionChainSnapshot>;
+      try {
+        snapshot = buildPromotionChainSnapshot(config.promotionRecordsDir);
+      } catch {
+        // Fail closed and say nothing about the filesystem. A read that surprises us is still not a verdict.
+        sendJson(res, 503, {
+          ok: false,
+          code: 'PROMOTION_CHAIN_UNAVAILABLE',
+          report: 'phase-244-operator-ui-promotion-chain',
+          message: 'The promotion record chain could not be read safely.',
+        });
+        logs.add('warn', 'operation', 'PROMOTION_CHAIN_FAILED', 'Promotion chain read failed safely.');
+        return;
+      }
+      sendJson(res, snapshot.ok ? 200 : 503, snapshot);
+      // The log line carries the verdict and nothing else -- no path, no count that could identify a chain.
+      logs.add(snapshot.ok ? 'info' : 'warn', 'operation', 'PROMOTION_CHAIN_READ',
+        `Served promotion chain snapshot with availability=${snapshot.availability}.`);
       return;
     }
 
@@ -428,12 +481,17 @@ button{border:0;border-radius:6px;background:#1769aa;color:#fff;font-weight:700;
 .metric.ok strong{color:#177245}.metric.warn strong{color:#9b6400}.metric.fail strong{color:#b42318}
 pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color:#eef4f8;border-radius:8px;padding:12px;max-height:380px;overflow:auto;font-size:12px;line-height:1.45}.status{font-size:13px;color:#536173;margin-top:12px;min-height:20px}
 .wide{grid-column:1/-1}.list{display:grid;gap:8px;margin:0;padding:0;list-style:none}.list li{border:1px solid #e0e5ec;border-radius:8px;padding:10px 12px;background:#fbfcfd;font-size:13px;overflow-wrap:anywhere}.muted{color:#637083}
-@media(max-width:760px){main{grid-template-columns:1fr;padding:12px}header{padding:14px 12px}.grid{grid-template-columns:1fr}}
+h3{font-size:13px;margin:16px 0 8px;color:#354154}nav{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}nav a{color:#1769aa}
+ol.list{list-style:decimal;padding-left:22px}ol.list li{list-style:decimal}
+:focus-visible{outline:3px solid #1769aa;outline-offset:2px}
+@media(max-width:760px){main{grid-template-columns:1fr;padding:12px}header{padding:14px 12px;flex-wrap:wrap;gap:10px}.grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="shell">
-<header><h1>Catalog Authority</h1><div class="badge">read-only operator UI</div></header>
+<header><h1>Catalog Authority</h1>
+<nav aria-label="Sections"><a href="#status-panel">Status</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
+<div class="badge">read-only operator UI</div></header>
 <main>
 <section class="panel">
 <h2>Access</h2>
@@ -441,7 +499,7 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color
 <div class="actions"><button id="refresh">Refresh</button><button id="clear" type="button">Clear</button></div>
 <div class="status" id="statusText"></div>
 </section>
-<section class="panel">
+<section class="panel" id="status-panel">
 <h2>Status</h2>
 <div class="grid">
 <div class="metric"><span>Service</span><strong id="service">-</strong></div>
@@ -462,9 +520,29 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color
 <h2>Checks</h2>
 <pre id="checks">No status loaded.</pre>
 </section>
-<section class="panel">
+<section class="panel" id="logs-panel">
 <h2>Logs</h2>
 <pre id="logs">No logs loaded.</pre>
+</section>
+<section class="panel wide" id="promotion-panel">
+<h2>Promotion Record Chain</h2>
+<p class="muted">Phases 231-241, audited from the read-only artifact folder mounted into this container. Nothing on this page changes a record, and the folder cannot be chosen from the browser.</p>
+<div class="grid">
+<div class="metric"><span>Outcome</span><strong id="chainOutcome">-</strong></div>
+<div class="metric"><span>Chain reaches</span><strong id="chainReaches">-</strong></div>
+<div class="metric"><span>Outstanding next</span><strong id="chainNext">-</strong></div>
+<div class="metric"><span>Blockers</span><strong id="chainBlockerCount">-</strong></div>
+</div>
+<p class="status" id="chainHeadline"></p>
+<p class="muted" id="chainCaveat"></p>
+<h3>Artifacts</h3>
+<ul class="list" id="chainArtifacts"><li class="muted">No chain loaded.</li></ul>
+<h3>Blockers</h3>
+<ul class="list" id="chainBlockers"><li class="muted">No chain loaded.</li></ul>
+<h3>Safe next steps for a human</h3>
+<ol class="list" id="chainSteps"><li class="muted">No chain loaded.</li></ol>
+<h3>Proof limits</h3>
+<ul class="list" id="chainLimits"><li class="muted">No chain loaded.</li></ul>
 </section>
 </main>
 </div>
@@ -482,6 +560,16 @@ const logCount = document.getElementById('logCount');
 const attention = document.getElementById('attention');
 const checks = document.getElementById('checks');
 const logs = document.getElementById('logs');
+const chainOutcome = document.getElementById('chainOutcome');
+const chainReaches = document.getElementById('chainReaches');
+const chainNext = document.getElementById('chainNext');
+const chainBlockerCount = document.getElementById('chainBlockerCount');
+const chainHeadline = document.getElementById('chainHeadline');
+const chainCaveat = document.getElementById('chainCaveat');
+const chainArtifacts = document.getElementById('chainArtifacts');
+const chainBlockers = document.getElementById('chainBlockers');
+const chainSteps = document.getElementById('chainSteps');
+const chainLimits = document.getElementById('chainLimits');
 async function getJson(path){
   const value = token.value;
   const res = await fetch(path,{headers:{'${OPERATOR_UI_LOCAL_AUTH_HEADER}':value}});
@@ -511,12 +599,55 @@ function renderLogs(data){
   logCount.textContent = String(entries.length);
   logs.textContent = entries.map(e => e.ts + ' ' + e.level.toUpperCase() + ' ' + e.class + ' ' + e.code + ' ' + e.message).join('\\n') || 'No log entries.';
 }
+// Every list is built with createElement + textContent. Nothing served here is ever parsed as markup, so a
+// value that somehow reached this page could still never execute.
+function setList(target, items){
+  target.replaceChildren();
+  if(items.length === 0){ const li = document.createElement('li'); li.className='muted'; li.textContent='None.'; target.appendChild(li); return; }
+  for(const item of items){ const li = document.createElement('li'); li.textContent = item; target.appendChild(li); }
+}
+// The chain answers 503 for a chain that does not hang together and for a fresh install with no anchor yet.
+// Both are states to SHOW, not request failures to hide, so only a rejected token is treated as an error.
+async function getChain(){
+  const res = await fetch('/api/promotion-chain',{headers:{'${OPERATOR_UI_LOCAL_AUTH_HEADER}':token.value},cache:'no-store'});
+  const body = await res.json();
+  if(res.status === 401) throw new Error(body.message || 'operator token required');
+  return body;
+}
+function renderChain(data){
+  const view = data && data.view;
+  if(!view){
+    chainOutcome.textContent = (data && data.availability) || 'UNAVAILABLE';
+    chainReaches.textContent = '-'; chainNext.textContent = '-'; chainBlockerCount.textContent = '-';
+    chainHeadline.textContent = 'No promotion record chain is readable yet.';
+    chainCaveat.textContent = '';
+    setList(chainArtifacts, (data && data.unavailableGuidance) || []);
+    setList(chainBlockers, []); setList(chainSteps, []); setList(chainLimits, []);
+    return;
+  }
+  chainOutcome.textContent = view.overall;
+  chainHeadline.textContent = view.headline;
+  chainCaveat.textContent = view.caveat;
+  chainReaches.textContent = view.terminalPhase === null ? 'nothing yet' : 'Phase ' + view.terminalPhase;
+  chainNext.textContent = view.nextRequiredPhase === null
+    ? 'nothing further'
+    : 'Phase ' + view.nextRequiredPhase + (view.nextIsUnfinished ? ' (present, not finished)' : '');
+  chainBlockerCount.textContent = String(view.blockers.length);
+  setList(chainArtifacts, view.artifacts.map(a => 'Phase ' + a.phase + ' - ' + a.status + ' - ' + a.detail));
+  setList(chainBlockers, view.blockers.map(b => b.code + ' - ' + b.meaning + ' Do: ' + b.humanAction));
+  setList(chainSteps, view.nextSteps);
+  setList(chainLimits, view.proofLimits.map(l => 'Phase ' + l.phase + ' establishes: ' + l.establishes + ' It does NOT establish: ' + l.doesNotEstablish));
+}
 async function refresh(){
   statusText.textContent = 'Loading...';
-  try{
-    const [s,l] = await Promise.all([getJson('/api/status'), getJson('/api/logs')]);
-    renderStatus(s); renderLogs(l); statusText.textContent = 'Updated.';
-  }catch(err){ statusText.textContent = err.message; }
+  // Settled independently: a stack with no database still has a promotion record chain worth reading, and one
+  // panel failing must not blank the others.
+  const [s,l,c] = await Promise.allSettled([getJson('/api/status'), getJson('/api/logs'), getChain()]);
+  const problems = [];
+  if(s.status === 'fulfilled') renderStatus(s.value); else problems.push(s.reason.message);
+  if(l.status === 'fulfilled') renderLogs(l.value); else problems.push(l.reason.message);
+  if(c.status === 'fulfilled') renderChain(c.value); else problems.push(c.reason.message);
+  statusText.textContent = problems.length === 0 ? 'Updated.' : problems.join(' | ');
 }
 document.getElementById('refresh').addEventListener('click', refresh);
 document.getElementById('clear').addEventListener('click', () => { token.value=''; statusText.textContent=''; });

@@ -3,7 +3,23 @@
 Event-sourced catalog authority core. **No** provider adapters, media servers, HTTP,
 Hermes, job queues, or UI — by design. The core stands alone.
 
-## Run
+## Run the operator UI on an ordinary computer
+
+One authenticated read-only web UI on `http://127.0.0.1:8099/`, including the **Promotion Record Chain**
+panel over your Phase 231–240 artifacts:
+
+```bash
+./deploy/local-runtime-setup.sh                       # generate secrets, create ./promotion-records/
+docker compose -f docker-compose.runtime.yml up -d    # postgres + operator UI
+# open http://127.0.0.1:8099/ and paste the printed operator token
+docker compose -f docker-compose.runtime.yml down
+```
+
+Your artifact folder is mounted **read-only**; the UI performs no mutation, approval, execution or deletion,
+and contacts no media server or provider. Full setup, login, healthcheck, upgrade and hardening notes:
+[docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md).
+
+## Run the tests
 
 ```bash
 npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
