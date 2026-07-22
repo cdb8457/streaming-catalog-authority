@@ -278,13 +278,20 @@ export function buildRetentionInventory(input: RetentionInventoryInput): Retenti
       const fromLedger = ledgerEligible
         ? (phase === 239 ? led.ledgerDigest : phase === 238 ? led.bindings['verification-report'] : undefined)
         : undefined;
-      const fromReport = actualArtifactDigest(phase, supplied[String(phase)]);
+      // A supplied artifact is validated on its own terms -- right report, recomputes, and THIS operation.
+      const artifact = validateSuppliedArtifact(phase, supplied[String(phase)], led.bindings, fromLedger);
+      if (artifact.status === 'INVALID') blockers.push('INVENTORY_SUPPLIED_REPORT_INVALID');
+      if (artifact.status === 'FOREIGN_OPERATION') blockers.push('INVENTORY_SUPPLIED_REPORT_FOREIGN_OPERATION');
+      if (artifact.status === 'CHAIN_MISMATCH') blockers.push('INVENTORY_SUPPLIED_REPORT_CHAIN_MISMATCH');
+      const fromReport = artifact.digest;
 
       let boundVia: EntryBinding = 'UNBOUND';
       if (claimed !== undefined && fromReport !== undefined) {
         if (claimed === fromReport) boundVia = 'REPORT';
         else blockers.push('INVENTORY_ENTRY_DIGEST_MISMATCH');
-      } else if (claimed !== undefined && fromLedger !== undefined) {
+      } else if (claimed !== undefined && fromLedger !== undefined && artifact.status === 'ABSENT') {
+        // Ledger-derived binding is only a fallback for an artifact that was NOT supplied. A supplied artifact
+        // that failed validation must never be rescued by what the ledger happens to know.
         if (claimed === fromLedger) boundVia = 'LEDGER';
         else blockers.push('INVENTORY_ENTRY_DIGEST_MISMATCH');
       }
@@ -542,17 +549,84 @@ function validateInventoryShape(value: unknown, blockers: string[]): ValidatedIn
   return { ok, obj, entries, entriesOk };
 }
 
-// The real self-digest of a supplied chain artifact: right report id for that phase, and it must genuinely
-// recompute. A supplied report that does not verify binds nothing.
-function actualArtifactDigest(phase: number, value: unknown): string | undefined {
-  if (value === undefined) return undefined;
+// Where each phase publishes the five operation digests. THREE different shapes exist across the chain, so
+// this must be a per-phase extractor: Phase 231 carries them inside its emitted template, Phases 232-235 under
+// kebab-case `operation-*` keys in boundDigests, Phase 236 in its own `operationDigests` map, and Phases
+// 237-239 under the plain field names in boundDigests. Getting this wrong would silently return undefined for
+// every field and make the identity check below vacuous, so each shape is taken from its producer module.
+const OPERATION_BINDING_KEYS: Readonly<Record<string, string>> = {
+  approvalIdDigest: 'operation-approval-id',
+  itemDigest: 'operation-item',
+  sourceDigest: 'operation-source',
+  destinationDigest: 'operation-destination',
+  planDigest: 'operation-plan',
+};
+function suppliedOperationDigests(phase: number, obj: Record<string, unknown>): Record<string, string | undefined> {
+  const out: Record<string, string | undefined> = {};
+  if (phase === 231) {
+    const template = asObject(obj.template);
+    for (const f of OPERATION_DIGEST_FIELDS) out[f] = asSha256(template[f]);
+    return out;
+  }
+  if (phase >= 232 && phase <= 235) {
+    const bound = asObject(obj.boundDigests);
+    for (const f of OPERATION_DIGEST_FIELDS) out[f] = asSha256(bound[OPERATION_BINDING_KEYS[f]!]);
+    return out;
+  }
+  if (phase === 236) {
+    const ops = asObject(obj.operationDigests);
+    for (const f of OPERATION_DIGEST_FIELDS) out[f] = asSha256(ops[f]);
+    return out;
+  }
+  const bound = asObject(obj.boundDigests);
+  for (const f of OPERATION_DIGEST_FIELDS) out[f] = asSha256(bound[f]);
+  return out;
+}
+
+export type SuppliedArtifactStatus = 'ABSENT' | 'INVALID' | 'FOREIGN_OPERATION' | 'CHAIN_MISMATCH' | 'OK';
+interface SuppliedArtifact { readonly status: SuppliedArtifactStatus; readonly digest: string | undefined; }
+
+// A supplied chain artifact only binds an entry when it is the right report id for that phase, genuinely
+// recomputes its own self-digest, AND DESCRIBES THIS OPERATION.
+//
+// The last clause is the point. Checking report id plus self-digest alone was a transplantation hole: a
+// perfectly genuine, self-consistent report belonging to a DIFFERENT promotion satisfies both, so it could
+// bind an inventory entry and count toward INVENTORY_COMPLETE while the inventory itself stayed bound to THIS
+// ledger. An inventory would then account for nine artifacts that were never part of the operation it claims
+// to inventory. Every supplied report must therefore carry the same five operation digests the ledger does.
+//
+// Where the ledger already establishes an artifact's digest independently (Phase 239 is the ledger itself,
+// Phase 238 is the verification report it was built over), the supplied report must also BE that artifact --
+// a genuine report of the right operation but the wrong instance is still not the artifact being inventoried.
+//
+// A supplied artifact that fails any of these binds NOTHING and never falls back to a ledger-derived binding:
+// once a custodian hands over an artifact, it is validated on its own terms or it is rejected.
+function validateSuppliedArtifact(
+  phase: number,
+  value: unknown,
+  ledgerOperationDigests: Readonly<Record<string, string | undefined>>,
+  ledgerKnownDigest: string | undefined,
+): SuppliedArtifact {
+  if (value === undefined) return { status: 'ABSENT', digest: undefined };
   const spec = ARTIFACT_SPECS[phase];
-  if (spec === undefined) return undefined;
+  if (spec === undefined) return { status: 'INVALID', digest: undefined };
   const obj = asObject(value);
-  if (obj.report !== spec.reportId) return undefined;
+  if (obj.report !== spec.reportId) return { status: 'INVALID', digest: undefined };
   const stated = asSha256(obj[spec.digestField]);
-  if (stated === undefined) return undefined;
-  return verifySelfDigests([obj]).results[0]?.verified === true ? stated : undefined;
+  if (stated === undefined) return { status: 'INVALID', digest: undefined };
+  if (verifySelfDigests([obj]).results[0]?.verified !== true) return { status: 'INVALID', digest: undefined };
+
+  const ops = suppliedOperationDigests(phase, obj);
+  const sameOperation = OPERATION_DIGEST_FIELDS.every((f) => {
+    const supplied = ops[f];
+    return supplied !== undefined && supplied === ledgerOperationDigests[f];
+  });
+  if (!sameOperation) return { status: 'FOREIGN_OPERATION', digest: undefined };
+
+  if (ledgerKnownDigest !== undefined && stated !== ledgerKnownDigest) {
+    return { status: 'CHAIN_MISMATCH', digest: undefined };
+  }
+  return { status: 'OK', digest: stated };
 }
 
 function screamingSnake(field: string): string {

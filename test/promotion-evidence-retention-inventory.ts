@@ -698,7 +698,10 @@ await test('adversarial: malformed literals, enums and structures fail closed', 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
-await test('adversarial: a supplied artifact that does not itself verify binds nothing', () => {
+// A HANDED-OVER artifact is validated on its own terms. Absence is merely unproven, but a supplied artifact
+// that is broken is a defect in the submission -- the same distinction Phase 236 draws between a source that
+// was never supplied (null, no blocker) and one supplied that fails to re-derive (a blocker).
+await test('adversarial: a supplied artifact that does not itself verify binds nothing and fails closed', () => {
   const root = workspace();
   try {
     const s = fullStack(root);
@@ -706,10 +709,48 @@ await test('adversarial: a supplied artifact that does not itself verify binds n
     const tampered = JSON.parse(JSON.stringify(s.reports['236']!)) as Rec;
     tampered.injectedClaim = 'not-the-artifact-that-was-inventoried';
     const r = buildRetentionInventory({ ledger: s.ledger, inventory: completeInventory(s), reports: { ...s.reports, 236: tampered } });
-    assertEq(r.overall, 'INVENTORY_STRUCTURAL_ONLY', `an unverifiable artifact leaves its entry unbound (${r.blockers.join(',')})`);
+    assertEq(r.overall, 'INVENTORY_INVALID', `a broken supplied artifact fails closed (${r.blockers.join(',')})`);
+    assert(r.blockers.includes('INVENTORY_SUPPLIED_REPORT_INVALID'), 'INVENTORY_SUPPLIED_REPORT_INVALID reported');
     assertEq(r.entries.find((e) => e.phase === 236)!.boundVia, 'UNBOUND', 'the tampered artifact bound nothing');
     assertEq(r.allEntriesBound, false, 'not everything bound');
     assertEq(r.inventoryComplete, false, 'and therefore never COMPLETE');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// THE TRANSPLANTATION CASE, from independent review. Validating a handed-over artifact by report id plus
+// self-digest ALONE was a hole: a perfectly genuine, self-consistent report belonging to a DIFFERENT promotion
+// satisfies both, so it could bind an inventory entry and count toward INVENTORY_COMPLETE while the inventory
+// itself stayed bound to THIS ledger -- an inventory accounting for nine artifacts that were never part of the
+// operation it claims to inventory. Every supplied report must carry this ledger's five operation digests.
+await test('THE transplantation case: a genuine artifact from ANOTHER operation can never bind an entry', () => {
+  const root = workspace();
+  try {
+    const mine = fullStack(root);
+    const foreign = fullStack(root, { itemId: '99999999999999999999999999999999', approvalId: 'phase-240-other-operation', body: Buffer.concat([MINIMAL_MP4_FIXTURE, Buffer.from('-other')]) });
+    // Sanity: the foreign chain is entirely genuine on its own terms.
+    assertEq(buildRetentionInventory({ ledger: foreign.ledger, inventory: completeInventory(foreign), reports: foreign.reports }).overall,
+      'INVENTORY_COMPLETE', 'precondition: the other operation inventories COMPLETE on its own ledger');
+
+    for (const phase of [231, 232, 233, 234, 235, 236, 237, 238, 239]) {
+      const swapped = foreign.reports[String(phase)]!;
+      // Prove the swapped-in artifact is genuine: right report id, and its own self-digest recomputes cleanly.
+      assertEq(verifySelfDigests([swapped]).overall, 'ALL_VERIFIED', `precondition: the foreign phase ${phase} artifact is genuine`);
+      const r = buildRetentionInventory({
+        ledger: mine.ledger,
+        inventory: completeInventory(mine),
+        reports: { ...mine.reports, [String(phase)]: swapped },
+      });
+      assertEq(r.overall, 'INVENTORY_INVALID', `a foreign phase ${phase} artifact is rejected`);
+      assert(r.blockers.includes('INVENTORY_SUPPLIED_REPORT_FOREIGN_OPERATION'), `phase ${phase} -> INVENTORY_SUPPLIED_REPORT_FOREIGN_OPERATION`);
+      // The identity check is what catches this -- NOT the report-id or self-digest checks.
+      assert(!r.blockers.includes('INVENTORY_SUPPLIED_REPORT_INVALID'), `phase ${phase}: the report-id/self-digest check does NOT catch this`);
+      assertEq(r.entries.find((e) => e.phase === phase)!.boundVia, 'UNBOUND', `the foreign phase ${phase} artifact bound nothing`);
+      assertEq(r.allEntriesBound, false, `not everything bound: phase ${phase}`);
+      assertEq(r.inventoryComplete, false, `INVENTORY_COMPLETE is impossible: phase ${phase}`);
+      // And nothing of the foreign operation is echoed back.
+      assert(!JSON.stringify(r).includes('phase-240-other-operation') && !JSON.stringify(r).includes('99999999999999999999999999999999'),
+        `phase ${phase}: the foreign operation is never echoed`);
+    }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
