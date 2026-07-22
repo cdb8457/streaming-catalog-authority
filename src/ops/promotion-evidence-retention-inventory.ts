@@ -87,6 +87,10 @@ const ARTIFACT_SPECS: Readonly<Record<number, ArtifactSpec>> = {
 };
 
 const OPERATION_DIGEST_FIELDS: readonly string[] = ['approvalIdDigest', 'itemDigest', 'sourceDigest', 'destinationDigest', 'planDigest'];
+// The phases each upstream report names explicitly, used to pin one exact chain instance.
+// Phases 237 and 238 both publish `phase-232`..`phase-235`; Phase 236 publishes `phase-231`..`phase-235`.
+const SOURCE_RECORD_PHASES: readonly number[] = [232, 233, 234, 235];
+const REPLAY_CHAIN_PHASES: readonly number[] = [231, 232, 233, 234, 235];
 // Every binding the Phase 239 report must itself carry before an inventory over it can mean anything.
 const LEDGER_BINDING_KEYS: readonly string[] = ['verification-report', 'head-event', ...OPERATION_DIGEST_FIELDS];
 
@@ -264,6 +268,12 @@ export function buildRetentionInventory(input: RetentionInventoryInput): Retenti
     for (const e of inv.entries) if (!byPhase.has(e.phase)) byPhase.set(e.phase, e);
     coverageComplete = inv.entriesOk && INVENTORY_PHASES.every((p) => byPhase.has(p));
 
+    // Pin ONE chain instance before validating any artifact. Operation identity alone cannot distinguish two
+    // genuine chains for the same operation, so each supplied artifact is additionally required to be the
+    // exact instance the chain above it names.
+    const chainExpected = resolveExpectedDigests(led, supplied);
+    if (chainExpected.inconsistent) blockers.push('INVENTORY_SUPPLIED_REPORT_CHAIN_MISMATCH');
+
     let bound = 0;
     let retained = 0;
     for (const phase of INVENTORY_PHASES) {
@@ -278,8 +288,9 @@ export function buildRetentionInventory(input: RetentionInventoryInput): Retenti
       const fromLedger = ledgerEligible
         ? (phase === 239 ? led.ledgerDigest : phase === 238 ? led.bindings['verification-report'] : undefined)
         : undefined;
-      // A supplied artifact is validated on its own terms -- right report, recomputes, and THIS operation.
-      const artifact = validateSuppliedArtifact(phase, supplied[String(phase)], led.bindings, fromLedger);
+      // A supplied artifact is validated on its own terms -- right report, recomputes, THIS operation, and
+      // THIS chain instance (the exact digest the chain above it names).
+      const artifact = validateSuppliedArtifact(phase, supplied[String(phase)], led.bindings, chainExpected.expected[phase] ?? fromLedger);
       if (artifact.status === 'INVALID') blockers.push('INVENTORY_SUPPLIED_REPORT_INVALID');
       if (artifact.status === 'FOREIGN_OPERATION') blockers.push('INVENTORY_SUPPLIED_REPORT_FOREIGN_OPERATION');
       if (artifact.status === 'CHAIN_MISMATCH') blockers.push('INVENTORY_SUPPLIED_REPORT_CHAIN_MISMATCH');
@@ -581,6 +592,65 @@ function suppliedOperationDigests(phase: number, obj: Record<string, unknown>): 
   const bound = asObject(obj.boundDigests);
   for (const f of OPERATION_DIGEST_FIELDS) out[f] = asSha256(bound[f]);
   return out;
+}
+
+// THE EXACT-INSTANCE MAP. Same-operation is not enough. Two GENUINE chains for the SAME operation -- a re-run
+// with a different operator, or different decision times -- carry identical operation digests throughout, so
+// an artifact lifted from an alternate run passes the operation-identity check and would still bind.
+//
+// What pins one chain is that each report names the exact instance beneath it. Walking downward from the
+// ledger: the ledger names its Phase 238 verification; Phase 238 names its Phase 237 commitment and the
+// phase-232..235 reports it verified; Phase 237 names its Phase 236 replay and its own phase-232..235; Phase
+// 236 names phase-231..235 in chainDigests. That yields an exact expected digest for every phase 231-239.
+//
+// A report is only trusted to contribute expectations once it has itself matched the expectation above it, so
+// the walk cannot be bootstrapped from an alternate chain. Where two levels both name a phase, they must
+// AGREE -- a disagreement means the supplied set was assembled from more than one chain.
+interface ExpectedDigests {
+  readonly expected: Readonly<Record<number, string | undefined>>;
+  readonly inconsistent: boolean;
+}
+function resolveExpectedDigests(led: ValidatedLedger, supplied: Record<string, unknown>): ExpectedDigests {
+  const expected: Record<number, string | undefined> = {};
+  let inconsistent = false;
+  expected[239] = led.ledgerDigest;
+  expected[238] = led.bindings['verification-report'];
+
+  // Read a supplied report ONLY if it is the right report id, recomputes, and IS the exact instance expected.
+  const trusted = (phase: number): Record<string, unknown> | undefined => {
+    const want = expected[phase];
+    const value = supplied[String(phase)];
+    if (value === undefined || want === undefined) return undefined;
+    const spec = ARTIFACT_SPECS[phase];
+    if (spec === undefined) return undefined;
+    const obj = asObject(value);
+    if (obj.report !== spec.reportId || asSha256(obj[spec.digestField]) !== want) return undefined;
+    return verifySelfDigests([obj]).results[0]?.verified === true ? obj : undefined;
+  };
+  const adopt = (phase: number, digest: string | undefined): void => {
+    if (digest === undefined) return;
+    if (expected[phase] !== undefined && expected[phase] !== digest) { inconsistent = true; return; }
+    expected[phase] = digest;
+  };
+
+  const r238 = trusted(238);
+  if (r238 !== undefined) {
+    const bound = asObject(r238.boundDigests);
+    adopt(237, asSha256(bound['commitment-report']));
+    for (const p of SOURCE_RECORD_PHASES) adopt(p, asSha256(bound[`phase-${p}`]));
+  }
+  const r237 = trusted(237);
+  if (r237 !== undefined) {
+    const bound = asObject(r237.boundDigests);
+    adopt(236, asSha256(bound['replay-report']));
+    for (const p of SOURCE_RECORD_PHASES) adopt(p, asSha256(bound[`phase-${p}`]));
+  }
+  const r236 = trusted(236);
+  if (r236 !== undefined) {
+    const chain = asObject(r236.chainDigests);
+    for (const p of REPLAY_CHAIN_PHASES) adopt(p, asSha256(chain[`phase-${p}`]));
+  }
+  return { expected, inconsistent };
 }
 
 export type SuppliedArtifactStatus = 'ABSENT' | 'INVALID' | 'FOREIGN_OPERATION' | 'CHAIN_MISMATCH' | 'OK';

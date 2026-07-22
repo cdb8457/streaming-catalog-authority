@@ -82,7 +82,15 @@ const MINIMAL_MP4_FIXTURE = Buffer.concat([
 function workspace(): string { return mkdtempSync(join(tmpdir(), 'catalog-inventory-')); }
 
 type Rec = Record<string, unknown>;
-interface ChainOpts { itemId?: string; approvalId?: string; body?: Buffer; release?: boolean }
+// `witnessedBefore` varies only the observed state the operator witnessed -- never the item, approval or
+// bytes -- so a chain built with a different one is a genuine ALTERNATE chain for the SAME operation:
+// identical operation digests throughout, different report digests at every phase.
+//
+// Note it has to be THIS field and not, say, the operator digest or a timestamp: the reports are deliberately
+// redaction-minimal and echo neither, so two runs differing only in who acted or when are byte-identical and
+// there is no alternate chain to tell apart. Phase 232 publishes the witnessed before-state in boundDigests,
+// so changing it genuinely cascades a different digest down the whole chain.
+interface ChainOpts { itemId?: string; approvalId?: string; body?: Buffer; release?: boolean; witnessedBefore?: string }
 
 // phase -> that report's own self-digest field, for reading an artifact's real digest.
 const DIGEST_FIELD: Readonly<Record<number, string>> = {
@@ -127,7 +135,7 @@ function fullStack(root: string, o: ChainOpts = {}): Stack {
   const authorizationDecision: Rec = {
     ...JSON.parse(JSON.stringify(buildExecutionAuthorizationRecordSkeleton(gate)!)) as Rec,
     decision: 'APPROVED', operatorDigest: OPERATOR_DIGEST, decidedAtUtc: DECIDED_AT,
-    observedStateBeforeDigest: STATE_BEFORE,
+    observedStateBeforeDigest: o.witnessedBefore ?? STATE_BEFORE,
     fields: { operatorAuthorized: 'AFFIRMED', observedStateWitnessedBefore: 'AFFIRMED', withdrawalPathRehearsed: 'AFFIRMED', observedStateWitnessedAfter: 'PENDING', runExecutedByHuman: 'PENDING' },
   };
   const authorization = buildExecutionAuthorizationRecord({ gate, record: authorizationDecision });
@@ -136,7 +144,7 @@ function fullStack(root: string, o: ChainOpts = {}): Stack {
   const observationRecord: Rec = {
     ...JSON.parse(JSON.stringify(buildPostRunObservationSkeleton(authorization)!)) as Rec,
     observedRunOutcome: 'COMPLETED',
-    observedStateBeforeDigest: STATE_BEFORE, observedStateAfterDigest: STATE_AFTER,
+    observedStateBeforeDigest: o.witnessedBefore ?? STATE_BEFORE, observedStateAfterDigest: STATE_AFTER,
     preexistingPreserved: true, withdrewOnlyRunCreatedMaterialization: true,
     observerDigest: OBSERVER_DIGEST, observedAtUtc: OBSERVED_AT,
   };
@@ -750,6 +758,56 @@ await test('THE transplantation case: a genuine artifact from ANOTHER operation 
       // And nothing of the foreign operation is echoed back.
       assert(!JSON.stringify(r).includes('phase-240-other-operation') && !JSON.stringify(r).includes('99999999999999999999999999999999'),
         `phase ${phase}: the foreign operation is never echoed`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// THE SAME-OPERATION ALTERNATE-CHAIN CASE, from independent review. Matching the ledger's operation digests
+// is NOT enough: two genuine chains for the SAME operation -- a re-run by a different operator -- carry
+// identical operation digests at every phase, so an artifact lifted from the alternate run passes the identity
+// check. What pins ONE chain is that each report names the exact instance beneath it: Phase 238 names its
+// Phase 237 commitment and the phase-232..235 reports it verified, Phase 237 names its Phase 236 replay and
+// its own phase-232..235, and Phase 236 names phase-231..235 in chainDigests.
+await test('THE alternate-chain case: a genuine artifact from another RUN of the SAME operation cannot bind', () => {
+  const root = workspace();
+  try {
+    const mine = fullStack(root);
+    // Same item, same approval, same bytes -- only the witnessed before-state differs, so the OPERATION is
+    // identical while every report instance differs.
+    const alternate = fullStack(root, { witnessedBefore: createHash('sha256').update('a-different-observed-before-state').digest('hex') });
+
+    // Precondition 1: the alternate chain is entirely genuine and inventories COMPLETE on its own ledger.
+    assertEq(buildRetentionInventory({ ledger: alternate.ledger, inventory: completeInventory(alternate), reports: alternate.reports }).overall,
+      'INVENTORY_COMPLETE', 'precondition: the alternate run inventories COMPLETE on its own ledger');
+    // Precondition 2: it really is the SAME operation -- the operation digests are identical, so the
+    // foreign-operation check from the previous fix cannot be what catches this.
+    const mineOps = (mine.ledger.boundDigests as Rec);
+    const altOps = (alternate.ledger.boundDigests as Rec);
+    for (const f of ['approvalIdDigest', 'itemDigest', 'sourceDigest', 'destinationDigest', 'planDigest']) {
+      assertEq(altOps[f], mineOps[f], `precondition: ${f} is identical across the two runs`);
+    }
+    // Precondition 3: it is genuinely a DIFFERENT chain -- every artifact digest differs.
+    for (const phase of [232, 233, 234, 235, 236, 237, 238, 239]) {
+      assert(alternate.reports[String(phase)]![DIGEST_FIELD[phase]!] !== mine.reports[String(phase)]![DIGEST_FIELD[phase]!],
+        `precondition: the phase ${phase} artifact differs between runs`);
+    }
+
+    for (const phase of [232, 233, 234, 235, 236, 237, 238]) {
+      const swapped = alternate.reports[String(phase)]!;
+      assertEq(verifySelfDigests([swapped]).overall, 'ALL_VERIFIED', `precondition: the alternate phase ${phase} artifact is genuine`);
+      const r = buildRetentionInventory({
+        ledger: mine.ledger,
+        inventory: completeInventory(mine),
+        reports: { ...mine.reports, [String(phase)]: swapped },
+      });
+      assertEq(r.overall, 'INVENTORY_INVALID', `an alternate-chain phase ${phase} artifact is rejected`);
+      assert(r.blockers.includes('INVENTORY_SUPPLIED_REPORT_CHAIN_MISMATCH'), `phase ${phase} -> INVENTORY_SUPPLIED_REPORT_CHAIN_MISMATCH`);
+      // Neither the operation-identity check nor the self-digest check can see this one.
+      assert(!r.blockers.includes('INVENTORY_SUPPLIED_REPORT_FOREIGN_OPERATION'), `phase ${phase}: it IS the same operation`);
+      assert(!r.blockers.includes('INVENTORY_SUPPLIED_REPORT_INVALID'), `phase ${phase}: the artifact is genuine and recomputes`);
+      assertEq(r.entries.find((e) => e.phase === phase)!.boundVia, 'UNBOUND', `the alternate phase ${phase} artifact bound nothing`);
+      assertEq(r.allEntriesBound, false, `not everything bound: phase ${phase}`);
+      assertEq(r.inventoryComplete, false, `INVENTORY_COMPLETE is impossible: phase ${phase}`);
     }
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
