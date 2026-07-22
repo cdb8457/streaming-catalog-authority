@@ -42,6 +42,13 @@ The report publishes a `sourceCommitmentDigest` — a digest over the ordered
 `(phase, reportDigest, contentDigest)` triples — so a later verifier can recompute it from the manifest and
 detect substitution **without this report ever echoing a committed content digest**.
 
+That "later verifier" now exists: **Phase 238** consumes this report, the manifest it was made over, and the
+four supplied source records, and checks the bytes. The digest function is exported as
+`computeSourceCommitmentDigest` and imported by Phase 238 rather than reimplemented, so there is a single
+triple-hashing rule with no second copy to drift from it. Phase 238 also defines the canonical content-digest
+rule (`canonicalSourceRecordDigest`); a commitment recorded here must have used that rule, since this phase
+accepts whatever digest the human supplies and cannot check.
+
 ## Eligibility, and why it is checked on the whole body
 
 `NOT_ELIGIBLE` means the **chain** has nothing to commit provenance for. It takes **precedence over

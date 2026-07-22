@@ -310,7 +310,7 @@ export function buildProvenanceCommitment(input: ProvenanceCommitmentInput): Pro
     sourceRecords,
     // Published only for a valid COMMITTED manifest: a durable, redaction-safe anchor over exactly what was
     // committed, so a later substitution is detectable without this report echoing any content digest.
-    sourceCommitmentDigest: overall === 'PROVENANCE_COMMITTED' ? commitmentDigest(man.entries) : null,
+    sourceCommitmentDigest: overall === 'PROVENANCE_COMMITTED' ? computeSourceCommitmentDigest(man.entries) : null,
     boundDigests,
     fieldStates,
     remainingHumanSteps: PROVENANCE_COMMITMENT_REMAINING_HUMAN_STEPS,
@@ -500,7 +500,11 @@ function validateManifestShape(value: unknown, blockers: string[]): ValidatedMan
 
 // A digest over exactly what was committed, in phase order. Redaction-safe by construction: it publishes a
 // hash, never the content digests themselves, and a later verifier can recompute it from the manifest.
-function commitmentDigest(entries: readonly ProvenanceSourceRecordEntry[]): string {
+//
+// EXPORTED because Phase 238 recomputes it from the supplied manifest to prove the manifest it was handed is
+// the one this report committed to. Exporting rather than reimplementing keeps a single rule: there is no
+// second copy of the triple-hashing convention that could drift from this one.
+export function computeSourceCommitmentDigest(entries: readonly ProvenanceSourceRecordEntry[]): string {
   const ordered = [...entries].sort((a, b) => a.phase - b.phase)
     .map((e) => `${e.phase}:${e.reportDigest}:${e.contentDigest}`).join('|');
   return digest('phase-237-source-record-commitment', ordered);
