@@ -60,25 +60,68 @@ What `Dockerfile.runtime` guarantees, and what the Phase 245 suite asserts about
 - **startup-compatible** — the same `*_FILE` secret indirection and the same PostgreSQL-backed startup the
   stack has always used. Nothing about configuration changed.
 
-`tsx` moved from `devDependencies` to `dependencies` in this phase. That is not a workaround: every
-entrypoint this project ships is TypeScript executed through `tsx`, so it is a runtime dependency, and saying
-so is what makes `--omit=dev` a minimal image rather than a broken one.
+### What the image actually contains, precisely
+
+`tsx` moved from `devDependencies` to `dependencies` in this phase. That is deliberate and it is not a
+"no-toolchain" image, so here is the exact contract rather than a comfortable summary:
+
+- the runtime dependency closure is **`pg` and `tsx`**, and nothing else — `npm ls --omit=dev` proves it, and
+  the Phase 245 remediation suite runs exactly that command rather than trusting the Dockerfile's wording;
+- **`tsx` is a transpiler and it runs in production.** The entrypoint is `node --import tsx …cli.ts`, so
+  every start-up parses TypeScript and transpiles it in-process (esbuild, in memory — nothing is written to
+  disk, which is why `read_only: true` holds). Claiming the image ships no tooling would be false;
+- what the image does **not** contain: the TypeScript compiler (`typescript`), any `@types/*` package, the
+  embedded PostgreSQL the tests use, the test suite, or a package manager step at run time. `npm` is never
+  invoked after the build;
+- the cost of this choice is a transpile at boot and a supply-chain surface of one extra production package;
+  the benefit is that the artifact runs the same source the tests run, with no build-output drift. A
+  precompile step (`tsc` to `dist/`) is the alternative and it is a larger change than this remediation
+  should carry — several ops modules resolve paths relative to their own source location, so moving them is
+  a separate piece of work with its own risk, not a footnote here.
+
+The bundle, separately, genuinely contains no toolchain at all: it is a Compose file, two setup scripts and
+text.
 
 ## Image, tag and digest policy
 
-The published repository is `ghcr.io/catalog-authority/catalog-authority-ops`, the convention `RELEASE.md`
-has documented since v1.0.0. This release pins:
+The published repository is `ghcr.io/cdb8457/catalog-authority-ops`, and this release pins:
 
 ```
-ghcr.io/catalog-authority/catalog-authority-ops:v1.0.0
+ghcr.io/cdb8457/catalog-authority-ops:v1.0.0
 ```
+
+**This was wrong when the phase first shipped, and the correction is the point of the remediation.** The
+first version published to `ghcr.io/catalog-authority/…`. Earlier phases wrote the convention with a
+placeholder — `ghcr.io/<owner>/catalog-authority-ops:<tag>` — and later documents copied the placeholder as though it
+were a name. Nobody here owns `catalog-authority`, a workflow's `GITHUB_TOKEN` is scoped to its own
+repository's owner and cannot write into an unrelated namespace, and every artifact repeating that string was
+telling users to pull an image that could never exist. The tests passed because they only checked that the
+string was the same everywhere. It was: consistently wrong.
+
+So the owner now lives in exactly one place, `src/ops/release-coordinates.ts`, and everything else reads it:
+the Compose default, the bundle's `.env`/`VERSION`/manifest, this document, the README, and the release
+workflow. Two things keep it honest:
+
+- `npm run ops:release-coordinates -- --repository <owner/name>` fails when the checked-in owner is not the
+  owner the workflow is actually running as. CI runs it on every push, so a fork, a rename or another
+  copied-in placeholder is a failed check on the change that caused it, not a failed release months later.
+- The image name is **validated, not repaired**: lowercased where GHCR requires it (a GitHub owner may
+  legitimately contain uppercase), and otherwise refused. An override that would need rewriting to be legal
+  is rejected rather than silently corrected, so what an operator typed and what gets published are the same
+  string.
+
+**Override.** `CATALOG_AUTHORITY_IMAGE_REPOSITORY` (workflow/CLI) accepts a full `registry/owner/name` and is
+validated identically. Publishing under a different owner needs that owner's credentials: the built-in
+`GITHUB_TOKEN` only works for this repository's own namespace, and the publish job's `packages: write`
+permission only grants that. For any other registry, replace the `docker/login-action` credentials with a
+secret that has package-write there — the workflow will not acquire that permission by itself.
 
 The rules, in full:
 
 1. **Never `latest`.** Not as a default, not as an alias, not as a convenience tag. `docker-compose.runtime.yml`
-   defaults to a concrete `vX.Y.Z`; the bundle assembler refuses to build around `latest`; the release
-   workflow's tag resolver (`deploy/ci/resolve-release-tag.sh`) exits non-zero for `latest`, for a branch
-   name, and for anything that is not `vX.Y.Z`; and the publish step pushes exactly one tag.
+   defaults to a concrete `vX.Y.Z`; the bundle assembler refuses to build around `latest`; the release gate
+   (`src/ops/release-ref.ts`) refuses `latest`, branch names, and anything that is not `vX.Y.Z`; and the
+   publish step pushes exactly one tag.
 2. **A published tag is immutable.** Once `vX.Y.Z` exists in the registry it is never re-pushed with
    different content. A rebuild gets the next version. This is what makes rollback a one-line edit rather
    than an archaeology exercise.
@@ -88,15 +131,21 @@ The rules, in full:
    that variable by hand:
 
    ```
-   CATALOG_AUTHORITY_IMAGE=ghcr.io/catalog-authority/catalog-authority-ops@sha256:<digest>
+   CATALOG_AUTHORITY_IMAGE=ghcr.io/cdb8457/catalog-authority-ops@sha256:<digest>
    ```
 4. **The base image is pinned by digest too.** `Dockerfile.runtime` pins `node:22-slim` by its index digest,
    with the tag written alongside it so a human can read what it is. Moving it is an edit, a review and a
    rebuild — never a surprise on someone else's machine.
-5. **Honesty about what is published.** *No image has been published yet.* This phase builds, tests and
-   assembles; it does not publish, tag or push anything. Until a release runs, the pinned reference names an
-   image that does not exist in the registry, and the way to run the stack from source is the maintainer
-   override below.
+5. **The tag is decided once, and everything carries the same one.** `src/ops/release-ref.ts` reads the event
+   context and returns either a refusal or one tag, one image reference and one asset name.
+   `assertReleaseConsistency` then requires the image tag, the bundle's version metadata and the archive's
+   filename to be that same version, so a release cannot ship half-labelled. Nothing downstream re-derives a
+   tag from `github.ref_name` — that context is a branch on one event and a tag on another, and reading it
+   once "correctly" is luck.
+6. **Honesty about what is published.** *Nothing has been published yet:* no image, no release asset. This
+   phase builds, tests and assembles; it does not publish, tag or push. Until a release runs, the pinned
+   reference names an image that does not exist in the registry, and the way to run the stack from source is
+   the maintainer override below.
 
 ### Architectures
 
@@ -161,6 +210,38 @@ location: in `deploy/` they step up to the repository and print `docker compose 
 up -d`; at a bundle root they stay put and print `docker compose up -d`. Both are executed, in both layouts,
 by the Phase 244 and Phase 245 suites.
 
+### The download itself
+
+The bundle *directory* is what CI inspects. What a user downloads is one file, attached to the GitHub release:
+
+```
+catalog-authority-operator-ui-vX.Y.Z.tar.gz
+catalog-authority-operator-ui-vX.Y.Z.tar.gz.sha256
+```
+
+The first version of this phase attached the bundle with `actions/upload-artifact` and called that the
+delivery. It is not one: an Actions artifact expires, requires a GitHub login, lives behind the Actions UI
+and arrives double-zipped. The per-job artifact is still produced — it is genuinely useful for inspecting a
+CI run — but it is named `ci-inspection-release-bundle` so nothing represents it as the consumer download.
+
+The archive is written by `src/ops/release-archive.ts` rather than shelled out to `tar`, because a release
+asset nobody can reproduce cannot be checked against anything:
+
+- entries **sorted by path**, so ordering never depends on a filesystem's `readdir`;
+- every **timestamp, uid and gid zero**, owner names empty — no build fingerprint, no "who built it";
+- plain **ustar**, no PAX extended headers (which would smuggle timestamps back in), and gzip through node's
+  zlib, which writes no mtime into the header;
+- everything under **one top-level directory**, so extracting cannot scatter files across a working
+  directory; `.sh` files are mode 755, everything else 644.
+
+Two builds of the same bundle are therefore byte-identical, and the published `.sha256` is a fact about the
+contents rather than about the machine. CI verifies this end to end: it extracts the archive with the *system*
+`tar`, `diff -r`s the result against the bundle it just checksummed, runs `docker compose config` inside the
+extracted directory (with no Node.js and no checkout involved), and rebuilds the archive to confirm the digest
+is the same. `deploy/ci/release-asset-upload.sh` re-verifies the checksum before attaching, refuses an archive
+whose name does not carry the release tag, and only ever uploads to a release that already exists — it never
+creates, deletes or moves one.
+
 ## Upgrade and rollback
 
 **Upgrade** is a deliberate change to the pin:
@@ -187,15 +268,25 @@ previous schema, restore the database backup before starting the older image.
 
 | Job | What it does | Runs on |
 | --- | --- | --- |
-| `suites` | typecheck, Phase 245/244/243/242, operator UI auth and boundary suites, Compose config validation | every push and PR |
+| `suites` | typecheck, Phase 245 + release-delivery + 244/243/242, operator UI auth and boundary suites, release guard and versioned release cut, Compose config validation, and the release-coordinates drift check | every push and PR |
 | `image` | `deploy/ci/runtime-image-smoke.sh` — build, container contract, up, `/healthz`, 401 unauthenticated, 200 authenticated, UI shell, graceful stop, down | every push and PR |
-| `bundle` | `deploy/ci/release-bundle-check.sh` — assemble, `sha256sum -c`, no-source/no-secret/no-`latest` checks, `docker compose config` | every push and PR |
-| `publish` | Build and push one immutable tag, then assemble a digest-pinned bundle | **only** a published release, or a manual dispatch that explicitly asks and is running from a `v*` tag |
+| `bundle` | `deploy/ci/release-bundle-check.sh` — assemble, `sha256sum -c`, extract-and-`diff -r`, `docker compose config` in the extracted tree, reproducibility, no-source/no-secret/no-`latest` checks | every push and PR |
+| `publish` | Resolve the tag through the gate, build and push one immutable tag, assemble a digest-pinned bundle and archive, verify it, attach it to the release | **only** a published release, or a manual dispatch that explicitly asks and is running from a `v*` tag |
 
-The gate is structural, not a convention: the workflow's default permission is `contents: read`; only
-`publish` requests `packages: write`; only `publish` logs in to a registry; `publish` needs all three other
-jobs; it runs in a protected `release` environment; and the tag it pushes comes from a validating script that
-refuses anything that is not `vX.Y.Z`. The Phase 245 suite parses the workflow and asserts each of those.
+The gate is structural, not a convention:
+
+- the workflow's default permission is `contents: read`, and **only `publish`** raises it — `contents: write`
+  (to attach the asset) and `packages: write` (to push the image), nothing else, nowhere else;
+- only `publish` logs in to a registry, and only `publish` can run `gh release upload`;
+- `publish` needs all three other jobs and runs in a protected `release` environment;
+- the `if:` on the job is a cheap pre-filter; the real decision is `src/ops/release-ref.ts`, a pure function
+  with adversarial fixtures, which refuses pushes, pull requests, drafts, branch refs, `latest`, malformed
+  versions, a release whose ref names a different tag, a run in the wrong repository, and an image name GHCR
+  would reject. It is runnable locally — `npm run ops:release-ref -- --event release --release-tag v1.2.3
+  --ref refs/tags/v1.2.3` — so the logic is testable without a workflow run.
+
+The Phase 245 remediation suite parses the workflow and asserts each of those, and executes the gate itself
+against every refusal case.
 
 **The daemon-backed results are CI-required.** The machine this phase was developed on has the Docker CLI but
 no running daemon, so the image was never built or run here. That is recorded as an unmet check rather than
@@ -221,5 +312,21 @@ minimal; the bundle's exact contents, checksums, manifest agreement, reproducibi
 of `latest`/bad pins/secrets/source-building Compose, and its upgrade, rollback and token documentation; the
 bundle assembled by the shipping CLI and verified with `sha256sum -c`; **both** setup scripts executed inside
 an extracted bundle, including re-run preservation and the layout-correct start command; and the workflow's
-triggers, permissions, job dependencies, single immutable tag, architecture claim and the executable tag
-validator behind it.
+triggers, permissions, job dependencies, single immutable tag, architecture claim and the executable gate
+behind it.
+
+`npm run test:release-delivery` (also `test:phase245-remediation-local`) — the remediation. The release
+coordinates checked against the repository's own git remote, so a placeholder namespace cannot pass by being
+internally consistent; the image-name validator's lowercasing, its refusals, and its refusal to silently
+repair an override; the release decision against adversarial contexts — pushes, pull requests, drafts, a
+release whose ref names a different tag, a dispatch that did not ask, a dispatch from a branch, `latest`,
+`v1.2`, `v01.2.3`, a bare sha, the wrong repository, an owner that disagrees with its repository, an
+uppercase image override — each expected to refuse, with the CLI executed to confirm it refuses the same
+things the function does; the tag/bundle-version/archive-name/image-tag consistency check; the archive's
+contents, modes, ordering, zeroed timestamps and ownership, reproducibility across builds and across entry
+order, gzip header with no mtime, separately verifiable checksum, and absence of secrets, source and
+toolchain; the same archive read by the *system* `tar` and extracted to the bundle a user would get; the
+workflow's permission split (only `publish` may write anything), its single gate, and the artifact naming
+that stops an expiring Actions upload from being mistaken for the download; and `npm ls --omit=dev` run for
+real to prove the runtime closure is exactly `pg` and `tsx`, with the documentation's transpiler claim held
+to it.

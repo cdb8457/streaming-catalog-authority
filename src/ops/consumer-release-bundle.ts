@@ -1,4 +1,7 @@
 import { createHash } from 'node:crypto';
+import { buildDeterministicArchive, type ArchiveEntry, type ArchiveResult } from './release-archive.js';
+import { RELEASE_IMAGE_REPOSITORY as CANONICAL_IMAGE_REPOSITORY } from './release-coordinates.js';
+import { releaseArchiveName } from './release-ref.js';
 
 // Phase 245 — the distributable install bundle.
 //
@@ -14,8 +17,11 @@ import { createHash } from 'node:crypto';
 
 export class ConsumerReleaseBundleError extends Error {}
 
-/** The published image this release pins to. Never a moving tag. */
-export const RELEASE_IMAGE_REPOSITORY = 'ghcr.io/catalog-authority/catalog-authority-ops';
+/**
+ * The published image this release pins to. Never a moving tag, and never a namespace this repository does
+ * not own — the repository is derived in one place (release-coordinates.ts) and read here.
+ */
+export const RELEASE_IMAGE_REPOSITORY = CANONICAL_IMAGE_REPOSITORY;
 export const RELEASE_IMAGE_TAG = 'v1.0.0';
 export const RELEASE_IMAGE_REF = `${RELEASE_IMAGE_REPOSITORY}:${RELEASE_IMAGE_TAG}`;
 
@@ -321,6 +327,9 @@ export function buildConsumerReleaseBundle(sources: BundleSources, options: Bund
   const checksums = toFile(BUNDLE_CHECKSUM_FILENAME, checksumFile(withManifest));
   const files = [...withManifest, checksums];
   assertNoSecrets(files);
+  if (!/^\S+\/\S+\/\S+$/.test(imageRef.split('@')[0]!.split(':')[0]!)) {
+    throw new ConsumerReleaseBundleError(`the pinned image is not a registry-qualified reference: ${imageRef}`);
+  }
   return {
     name: BUNDLE_NAME,
     image: options.image,
@@ -329,4 +338,20 @@ export function buildConsumerReleaseBundle(sources: BundleSources, options: Bund
     createdAt: options.createdAt,
     files,
   };
+}
+
+/**
+ * The consumer download: the verified bundle, and only the verified bundle, as one deterministic archive.
+ *
+ * Nothing is added on the way in — the archive's entries are exactly the files `buildConsumerReleaseBundle`
+ * produced and its own checksum file already covers, so "what was checked" and "what was published" are the
+ * same set. The scripts a user runs keep their executable bit; nothing else does.
+ */
+export function buildConsumerReleaseArchive(bundle: ConsumerReleaseBundle): ArchiveResult {
+  const entries: ArchiveEntry[] = bundle.files.map((file) => ({
+    path: file.path,
+    contents: file.contents,
+    executable: file.path.endsWith('.sh'),
+  }));
+  return buildDeterministicArchive(`${BUNDLE_NAME}-${bundle.image.tag}`, entries, releaseArchiveName(bundle.image.tag));
 }

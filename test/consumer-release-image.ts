@@ -553,15 +553,18 @@ test('publishing is gated to a release or a deliberate dispatch from a version t
   assert(condition.includes("github.event_name == 'release'"), 'a published release can publish');
   assert(condition.includes('workflow_dispatch') && condition.includes('inputs.publish'),
     'or a manual dispatch that explicitly asks to');
-  assert(condition.includes("startsWith(github.ref, 'refs/tags/v')"), 'and only from a version tag');
   assert(!condition.includes('push') || condition.includes('event_name'), 'a branch push is never a publish trigger');
+  // The `if:` is only a pre-filter; the binding decision is the tested gate, which the remediation suite
+  // exercises against every refusal case (test/release-delivery.ts).
+  assert(steps('publish').some((step) => String(step.run ?? '').includes('ops:release-ref')),
+    'and the real gate — the tested release-ref decision — runs before anything is pushed');
   assertEq(stringList(publish.needs ?? null, 'needs').sort().join(','), 'bundle,image,suites',
     'nothing publishes before the image and the bundle have been checked');
   assertEq(publish.environment, 'release', 'and it runs in a protected environment');
 
   const permissions = asMap(publish.permissions ?? null, 'publish permissions');
   assertEq(permissions.packages, 'write', 'the publish job asks for registry write');
-  assertEq(permissions.contents, 'read', 'and nothing more than read on the repository');
+  assertEq(permissions.contents, 'write', 'and repository write, solely to attach the release asset');
   assertEq(asMap(workflow.permissions ?? null, 'workflow permissions').contents, 'read',
     'while the workflow default is read-only');
   for (const name of ['suites', 'image', 'bundle']) {
@@ -589,19 +592,19 @@ test('a release can only be published under an immutable version tag', () => {
   const withBlock = asMap(push!.with ?? null, 'push inputs');
   const tags = String(withBlock.tags ?? '');
   assert(!/latest/.test(tags), 'no `latest` tag is ever pushed');
-  assert(tags.includes('steps.tag.outputs.tag'), 'the tag comes from the validating step, not from a raw ref');
+  assert(tags.includes('steps.release.outputs.image_ref'), 'the reference comes from the validating gate, not from a raw ref');
   assertEq(tags.split('\n').filter((line) => line.trim() !== '').length, 1, 'exactly one immutable tag is pushed');
   assert(String(withBlock.file) === 'Dockerfile.runtime', 'and it is the production image that is published');
   assert(String(withBlock.platforms).includes('env.PUBLISH_PLATFORMS'),
     'and the architecture comes from the single declared list, not a second copy that can drift');
 
-  // The gate is a script, so it can be tested rather than reasoned about.
-  if (bash === null) { console.log('        (note: tag validator not executed — no usable shell on this host)'); return; }
-  const validator = join(root, 'deploy/ci/resolve-release-tag.sh').replace(/\\/g, '/');
-  for (const [tag, expected] of [['v1.2.3', 0], ['v1.0.0-rc.1', 0], ['latest', 1], ['master', 1], ['', 1], ['v1.2', 1]] as const) {
-    const run = spawnSync(bash.command, [validator, tag], { encoding: 'utf8', timeout: 120000 });
-    assertEq(run.status, expected, `the tag validator ${expected === 0 ? 'accepts' : 'refuses'} "${tag}"`);
-  }
+  // The gate is a module with a CLI, so it can be executed rather than reasoned about. Every refusal case
+  // lives in test/release-delivery.ts; this is the one that matters here — `latest` never resolves.
+  const gate = spawnSync(process.execPath, ['--import', 'tsx', join(root, 'src/ops/release-ref-cli.ts'),
+    '--event', 'release', '--release-tag', 'latest', '--ref', 'refs/tags/latest',
+    '--repository', 'cdb8457/streaming-catalog-authority', '--owner', 'cdb8457'],
+    { cwd: root, encoding: 'utf8', timeout: 300000, env: { ...process.env, GITHUB_OUTPUT: '' } });
+  assertEq(gate.status, 1, 'the gate refuses to resolve `latest` into a release');
 });
 
 test('the architectures published are the ones CI can actually verify, stated as such', () => {

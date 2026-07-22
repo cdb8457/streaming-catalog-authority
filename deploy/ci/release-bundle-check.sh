@@ -1,50 +1,79 @@
 #!/usr/bin/env bash
-# Catalog Authority — assemble the consumer install bundle and check it the way a user would.
+# Catalog Authority — assemble the consumer install bundle and its release archive, then check both the way
+# a user would.
 #
-# The bundle's promise is "you need Docker and nothing else", so this verifies it from OUTSIDE: the
-# checksums are verified with sha256sum, the Compose file is resolved by the Docker CLI with the bundle as
-# the only project directory, and the bundle is searched for anything that would drag a user back to a
-# source checkout or leak a secret.
+# The bundle's promise is "you need Docker and nothing else", so this verifies it from OUTSIDE: checksums are
+# verified with sha256sum, the archive is extracted with the system tar, the extracted tree is compared
+# byte-for-byte against the assembled bundle, and the Docker CLI resolves the stack with the EXTRACTED
+# directory as the whole project. Then the archive is built a second time and the two digests compared,
+# because a release asset nobody can reproduce cannot be checked against anything.
 #
 # Assembling is not publishing. Nothing here pushes, tags or uploads.
 set -euo pipefail
 
 cd "$(dirname "$0")/../.."
+REPO_ROOT="$(pwd)"
 
 OUT="${1:-dist/release-bundle}"
+ARCHIVE_DIR="${2:-dist/release-archive}"
 step() { printf '\n==> %s\n' "$1"; }
+fail() { echo "FAIL: $1" >&2; exit 1; }
 
-step "assemble ${OUT}"
-node --import tsx src/ops/consumer-release-bundle-cli.ts --out "${OUT}" \
+step "assemble ${OUT} and ${ARCHIVE_DIR}"
+rm -rf "${ARCHIVE_DIR}"
+node --import tsx src/ops/consumer-release-bundle-cli.ts --out "${OUT}" --archive-dir "${ARCHIVE_DIR}" \
   ${RELEASE_IMAGE_DIGEST:+--digest "${RELEASE_IMAGE_DIGEST}"} \
-  ${RELEASE_IMAGE_TAG:+--tag "${RELEASE_IMAGE_TAG}"}
+  ${RELEASE_IMAGE_TAG:+--tag "${RELEASE_IMAGE_TAG}"} \
+  ${RELEASE_IMAGE_REPOSITORY:+--repository "${RELEASE_IMAGE_REPOSITORY}"}
 
-cd "${OUT}"
+BUNDLE_DIR="${REPO_ROOT}/${OUT}"
+ARCHIVE_PATH="$(ls "${REPO_ROOT}/${ARCHIVE_DIR}"/*.tar.gz)"
+ARCHIVE_FILE="$(basename "${ARCHIVE_PATH}")"
 
-step "checksums verify with the tool a user would reach for"
-sha256sum -c SHA256SUMS
+step "the bundle's own checksums verify"
+(cd "${BUNDLE_DIR}" && sha256sum -c SHA256SUMS)
 
-step "nothing here needs Node.js or a checkout"
-for forbidden in package.json package-lock.json node_modules src tsconfig.json Dockerfile; do
-  if [ -e "${forbidden}" ]; then echo "FAIL: the bundle ships ${forbidden}" >&2; exit 1; fi
+step "nothing in the bundle needs Node.js or a checkout"
+for forbidden in package.json package-lock.json node_modules src tsconfig.json Dockerfile secrets; do
+  if [ -e "${BUNDLE_DIR}/${forbidden}" ]; then fail "the bundle ships ${forbidden}"; fi
 done
-if ls ./*.ts >/dev/null 2>&1; then echo "FAIL: the bundle ships TypeScript" >&2; exit 1; fi
-echo "  no source, no manifest, no toolchain"
-
-step "no secrets and no build"
-if [ -e secrets ]; then echo "FAIL: the bundle ships a secrets directory" >&2; exit 1; fi
-if grep -RIlqE '^[[:space:]]*build:' docker-compose.yml; then
-  echo "FAIL: the shipped Compose file builds from source" >&2
-  exit 1
+if ls "${BUNDLE_DIR}"/*.ts >/dev/null 2>&1; then fail "the bundle ships TypeScript"; fi
+if grep -qE '^[[:space:]]*build:' "${BUNDLE_DIR}/docker-compose.yml"; then fail "the shipped Compose file builds from source"; fi
+if grep -qE ':latest([^A-Za-z0-9.-]|$)' "${BUNDLE_DIR}/docker-compose.yml" "${BUNDLE_DIR}/.env"; then
+  fail "the bundle points at a floating tag"
 fi
-if grep -RIqE ':latest([^A-Za-z0-9.-]|$)' docker-compose.yml .env; then
-  echo "FAIL: the bundle points at a floating tag" >&2
-  exit 1
-fi
-echo "  no secrets, no build, no floating tag"
+echo "  no source, no manifest, no toolchain, no secrets, no floating tag"
 
-step "the Docker CLI resolves the stack with the bundle as the whole project"
-docker compose config --quiet
-echo "  docker compose config: OK"
+step "the release archive's checksum verifies on its own"
+(cd "${REPO_ROOT}/${ARCHIVE_DIR}" && sha256sum -c "${ARCHIVE_FILE}.sha256")
 
-printf '\nrelease bundle check: PASS\n'
+step "the archive extracts to exactly the bundle that was just checked"
+EXTRACT_DIR="$(mktemp -d)"
+trap 'rm -rf "${EXTRACT_DIR}"' EXIT
+tar -xzf "${ARCHIVE_PATH}" -C "${EXTRACT_DIR}"
+roots="$(ls "${EXTRACT_DIR}")"
+[ "$(printf '%s\n' "${roots}" | wc -l)" -eq 1 ] || fail "the archive does not extract into a single directory: ${roots}"
+EXTRACTED="${EXTRACT_DIR}/${roots}"
+diff -r "${BUNDLE_DIR}" "${EXTRACTED}" || fail "the archive and the checked bundle differ"
+echo "  extracted ${roots} is byte-identical to ${OUT}"
+
+step "the extracted archive stands alone as a Compose project"
+(cd "${EXTRACTED}" && sha256sum -c SHA256SUMS >/dev/null && docker compose config --quiet)
+echo "  docker compose config: OK, with no Node.js and no checkout involved"
+
+step "the archive is reproducible"
+SECOND_DIR="${REPO_ROOT}/${ARCHIVE_DIR}-repeat"
+rm -rf "${SECOND_DIR}" "${REPO_ROOT}/${OUT}-repeat"
+node --import tsx src/ops/consumer-release-bundle-cli.ts --out "${OUT}-repeat" --archive-dir "${ARCHIVE_DIR}-repeat" \
+  --created "$(grep '^built: ' "${BUNDLE_DIR}/VERSION" | cut -d' ' -f2-)" \
+  --revision "$(grep '^source_revision: ' "${BUNDLE_DIR}/VERSION" | cut -d' ' -f2-)" \
+  ${RELEASE_IMAGE_DIGEST:+--digest "${RELEASE_IMAGE_DIGEST}"} \
+  ${RELEASE_IMAGE_TAG:+--tag "${RELEASE_IMAGE_TAG}"} \
+  ${RELEASE_IMAGE_REPOSITORY:+--repository "${RELEASE_IMAGE_REPOSITORY}"} >/dev/null
+first="$(cut -d' ' -f1 < "${REPO_ROOT}/${ARCHIVE_DIR}/${ARCHIVE_FILE}.sha256")"
+second="$(cut -d' ' -f1 < "${SECOND_DIR}/${ARCHIVE_FILE}.sha256")"
+[ "${first}" = "${second}" ] || fail "two builds of the same inputs produced different archives (${first} vs ${second})"
+rm -rf "${SECOND_DIR}" "${REPO_ROOT}/${OUT}-repeat"
+echo "  same inputs, same archive digest: ${first}"
+
+printf '\nrelease bundle check: PASS (%s)\n' "${ARCHIVE_FILE}"

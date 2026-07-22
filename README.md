@@ -11,7 +11,10 @@ nothing else. No checkout, no Node.js, no build.
 
 **Install Docker:** Docker Desktop on Windows or macOS, Docker Engine on Linux. Start it.
 
-**From the release bundle** (`catalog-authority-operator-ui`) — download, extract, then:
+**From the release bundle** — download `catalog-authority-operator-ui-<version>.tar.gz` from the
+[Releases page](https://github.com/cdb8457/streaming-catalog-authority/releases), verify it against the
+`.sha256` published beside it (`sha256sum -c catalog-authority-operator-ui-<version>.tar.gz.sha256`), extract
+it, then:
 
 | | |
 | --- | --- |
@@ -47,8 +50,9 @@ and contacts no media server or provider.
 - Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
 - Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
 
-**No image has been published to the registry yet.** Until a release runs, the pinned reference names an
-image that is not there, so build it from this checkout with the maintainer override:
+**Nothing has been published yet.** Until a release runs there is no `ghcr.io/cdb8457/catalog-authority-ops`
+image and no release asset, so the pinned reference names an image that is not there. Build it from this
+checkout with the maintainer override:
 
 ```bash
 docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
@@ -234,7 +238,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
   `/mnt/user/appdata/catalog` bind mounts, intentional `8099:8099` app port, and
   `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}`). Build `repo-ops:latest` locally with
   `npm run image:build:local`, or set `CATALOG_AUTHORITY_OPS_IMAGE` to a published
-  `ghcr.io/catalog-authority/catalog-authority-ops:<tag>` image. See `RELEASE.md`.
+  `ghcr.io/cdb8457/catalog-authority-ops:<tag>` image. See `RELEASE.md`.
 - **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
   commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`, `ui-live-check`,
   `ui-live-check-save`, `ui-evidence-review`, `o4-o5-evidence-capture`, `o4-o5-packet-review`,
@@ -1445,7 +1449,8 @@ and `restart-ui`, all pointing at the canonical Unraid launcher path.
 Phase 154 adds `RELEASE.md` and `docs/PHASE_154_RELEASE_PACKAGING.md`. Public users run the single
 canonical Unraid compose entrypoint, `docker-compose.unraid.runtime.yml`, from
 `/mnt/user/appdata/catalog/repo`, with `repo-ops:latest` as the local image and
-`ghcr.io/catalog-authority/catalog-authority-ops:<tag>` as the published-image convention.
+`ghcr.io/cdb8457/catalog-authority-ops:<tag>` as the published-image convention (corrected in Phase 245:
+the earlier `catalog-authority/…` namespace was a placeholder this project does not own).
 Phase 155 adds `docs/PHASE_155_PUBLIC_DEPLOY_SMOKE.md` and validates a fresh clone using only
 `docker-compose.unraid.runtime.yml`, a temporary `CATALOG_AUTHORITY_APPDATA_DIR`, a temporary
 `OPERATOR_UI_HOST_PORT`, and a separate Compose project name so production paths are not reused.

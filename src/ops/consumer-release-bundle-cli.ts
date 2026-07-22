@@ -4,12 +4,14 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   BUNDLE_NAME,
-  RELEASE_IMAGE_REPOSITORY,
   RELEASE_IMAGE_TAG,
+  buildConsumerReleaseArchive,
   buildConsumerReleaseBundle,
   ConsumerReleaseBundleError,
   type BundleImagePin,
 } from './consumer-release-bundle.js';
+import { RELEASE_REPOSITORY_OWNER, resolveImageRepository } from './release-coordinates.js';
+import { assertReleaseConsistency } from './release-ref.js';
 
 // Assembles the Phase 245 consumer install bundle from this checkout. Local and offline: it reads three
 // files, writes a folder, and contacts nothing. It publishes nothing, tags nothing and pushes nothing —
@@ -17,7 +19,8 @@ import {
 
 function usage(): string {
   return [
-    'usage: ops:consumer-release-bundle --out <dir> [--tag vX.Y.Z] [--digest sha256:…] [--revision <sha>] [--created <iso>]',
+    'usage: ops:consumer-release-bundle --out <dir> [--archive-dir <dir>] [--tag vX.Y.Z] [--digest sha256:…]',
+    '                                   [--repository registry/owner/name] [--revision <sha>] [--created <iso>]',
     '',
     `Assembles the ${BUNDLE_NAME} bundle: runtime Compose, both setup scripts, the image pin, version`,
     'metadata, checksums and install/upgrade/rollback instructions. The output needs Docker to run and',
@@ -52,8 +55,20 @@ function main(): number {
   const root = fileURLToPath(new URL('../..', import.meta.url));
   const read = (relative: string): string => readFileSync(join(root, relative), 'utf8');
   const digest = valueAfter(args, '--digest');
+  let repository: string;
+  try {
+    // An override goes through the same validation the derived value does: lowercase, canonical, and a real
+    // registry/owner/name. A release must never publish somewhere a typo pointed it.
+    repository = resolveImageRepository({
+      owner: RELEASE_REPOSITORY_OWNER,
+      ...(valueAfter(args, '--repository') === undefined ? {} : { override: valueAfter(args, '--repository') }),
+    });
+  } catch (err) {
+    console.error((err as Error).message);
+    return 2;
+  }
   const image: BundleImagePin = {
-    repository: valueAfter(args, '--repository') ?? RELEASE_IMAGE_REPOSITORY,
+    repository,
     tag: valueAfter(args, '--tag') ?? RELEASE_IMAGE_TAG,
     ...(digest === undefined ? {} : { digest }),
   };
@@ -84,6 +99,23 @@ function main(): number {
     writeFileSync(path, Buffer.from(file.contents, 'utf8'));
   }
 
+  // The consumer download. Written next to the bundle directory unless told otherwise, and never instead of
+  // it: the directory is what CI inspects, the archive is what a user downloads from the release page.
+  const archiveDir = valueAfter(args, '--archive-dir');
+  let archive: ReturnType<typeof buildConsumerReleaseArchive> | undefined;
+  if (archiveDir !== undefined) {
+    archive = buildConsumerReleaseArchive(bundle);
+    assertReleaseConsistency({
+      tag: bundle.image.tag,
+      bundleVersion: bundle.image.tag,
+      archiveName: archive.filename,
+      imageRef: bundle.imageRef,
+    });
+    mkdirSync(resolve(archiveDir), { recursive: true });
+    writeFileSync(join(resolve(archiveDir), archive.filename), archive.bytes);
+    writeFileSync(join(resolve(archiveDir), archive.checksumFilename), Buffer.from(archive.checksum, 'utf8'));
+  }
+
   console.log(JSON.stringify({
     report: 'phase-245-consumer-release-bundle',
     bundle: bundle.name,
@@ -94,6 +126,9 @@ function main(): number {
     createdAt: bundle.createdAt,
     outputDir: target,
     files: bundle.files.map((file) => file.path),
+    ...(archive === undefined ? {} : {
+      archive: { file: archive.filename, sha256: archive.sha256, checksumFile: archive.checksumFilename, dir: resolve(archiveDir!) },
+    }),
     published: false,
   }, null, 2));
   return 0;
