@@ -781,7 +781,10 @@ function deepScan(root: unknown, hit: (s: string) => boolean): boolean {
 function deepDestructionVocabulary(root: unknown): boolean {
   return deepScan(root, hasDestructionWord);
 }
-function deepLocationOrLiveSurface(root: unknown): boolean {
+// Published for callers that must reject a foreign, live or network-bearing payload before it reaches a
+// validator -- Phase 242 screens everything it could not recognise as a chain artifact through this exact
+// predicate rather than restating it.
+export function deepLocationOrLiveSurface(root: unknown): boolean {
   return deepScan(root, (s) => isLiveSurface(s) || pathBearing(s) || isLocationOrEndpoint(s));
 }
 

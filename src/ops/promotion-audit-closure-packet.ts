@@ -141,6 +141,12 @@ const PHASE_SPECS: Readonly<Record<number, PhaseSpec>> = {
   },
 };
 
+// The report id each phase MUST carry, derived from the specs above so it can never drift from what this
+// packet actually checks. Published for callers that have to recognise a chain artifact before handing it
+// here -- Phase 242 uses it to tell an absent artifact from a misfiled one.
+export const AUDIT_PHASE_REPORT_IDS: Readonly<Record<number, string>> =
+  Object.freeze(Object.fromEntries(AUDIT_PHASES.map((p) => [p, PHASE_SPECS[p]!.reportId])));
+
 // Phase 239 is additionally only terminal once custody has actually been RELEASED -- intact but still held is
 // a genuine, non-terminal state, not a defect.
 const CUSTODY_RELEASED = 'CUSTODY_RELEASED';
@@ -424,7 +430,7 @@ export function buildAuditClosurePacket(input: AuditClosurePacketInput): AuditCl
   const suppliedReports = AUDIT_PHASES.map((p) => supplied[String(p)]).filter((v) => v !== undefined);
   if (suppliedReports.length > 0) {
     const declared = suppliedReports.every((v) => asObject(v).redactionSafe === true);
-    if (!declared || deepRawPath(suppliedReports)) blockers.push('AUDIT_REDACTION_UNSAFE');
+    if (!declared || containsRawPathMarker(suppliedReports)) blockers.push('AUDIT_REDACTION_UNSAFE');
   }
 
   const uniqueBlockers = [...new Set(blockers)];
@@ -517,7 +523,7 @@ function hasRawPathMarker(value: string): boolean {
 // Traverses ITERATIVELY with a visited set, so it terminates on any input: a pathologically deep bundle cannot
 // overflow the stack and a cyclic bundle cannot loop forever. Skipping an already-visited node is safe (its
 // subtree was fully evaluated on first visit); a raw path buried at any depth still fails closed.
-function deepRawPath(root: unknown): boolean {
+export function containsRawPathMarker(root: unknown): boolean {
   const stack: unknown[] = [root];
   const seen = new Set<object>();
   while (stack.length > 0) {
