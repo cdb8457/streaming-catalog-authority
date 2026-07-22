@@ -541,10 +541,29 @@ function asObject(value: unknown): Record<string, unknown> {
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
 }
+// EXACT real-calendar validation. The shape regex alone is not enough and neither is Date.parse: for an
+// ISO-shaped string V8 NORMALISES out-of-range components rather than rejecting them, so the old
+// `regex && Number.isFinite(Date.parse(v))` check accepted dates that do not exist --
+// 2026-02-30 became 2026-03-02, 2026-02-29 (not a leap year) became 2026-03-01, 2026-04-31 became
+// 2026-05-01, and 2026-01-01T24:00:00Z silently became the NEXT DAY at 00:00:00.
+//
+// A custody event's time is part of what the ledger pins and what its monotonicity check orders, so a
+// timestamp that names a day which never happened must fail closed rather than be quietly moved. Every
+// component is therefore range-checked and then ROUND-TRIPPED through Date.UTC: if the constructed instant
+// does not report back the exact same six components, the input named a moment that does not exist. That
+// catches impossible days per real month, non-leap 29 February, hour 24, and day 0, without a leap-year
+// table. Years 0000-0099 are also rejected (Date.UTC maps them into the 1900s and the round trip fails),
+// which is correct fail-closed behaviour for this domain.
 function isUtcTimestamp(value: unknown): boolean {
-  return typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
-    && Number.isFinite(Date.parse(value));
+  if (typeof value !== 'string') return false;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z$/.exec(value);
+  if (m === null) return false;
+  const [year, month, day, hour, minute, second] = m.slice(1).map(Number) as [number, number, number, number, number, number];
+  if (month < 1 || month > 12 || day < 1 || day > 31) return false;
+  if (hour > 23 || minute > 59 || second > 59) return false;
+  const utc = new Date(Date.UTC(year, month - 1, day, hour, minute, second));
+  return utc.getUTCFullYear() === year && utc.getUTCMonth() === month - 1 && utc.getUTCDate() === day
+    && utc.getUTCHours() === hour && utc.getUTCMinutes() === minute && utc.getUTCSeconds() === second;
 }
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|wss?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);

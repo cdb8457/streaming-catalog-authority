@@ -638,6 +638,57 @@ await test('adversarial: malformed sequences, enums, digests and timestamps fail
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// REGRESSION, from independent review. The old predicate was `regex && Number.isFinite(Date.parse(v))`, and
+// for an ISO-SHAPED string V8 NORMALISES out-of-range components instead of rejecting them -- so a timestamp
+// naming a day that never happened was ACCEPTED and silently meant a different day: 2026-02-30 became
+// 2026-03-02, 2026-02-29 (not a leap year) became 2026-03-01, 2026-04-31 became 2026-05-01, and
+// 2026-01-01T24:00:00Z became the NEXT DAY at 00:00:00. A custody event's time is pinned by this ledger and
+// ordered by its monotonicity check, so an impossible moment must fail closed rather than be quietly moved.
+// Each case is RESEALED so the event stays self-consistent: only the timestamp check can reject it.
+await test('REGRESSION: an impossible calendar timestamp is rejected, never silently normalised', () => {
+  const root = workspace();
+  try {
+    const verification = verifiedReport(root);
+    const base = ledgerFor(verification, FULL_NARRATIVE.slice(0, 2));
+    const impossible: ReadonlyArray<readonly [string, string]> = [
+      ['30 February', '2026-02-30T12:00:00Z'],
+      ['29 February in a non-leap year', '2026-02-29T12:00:00Z'],
+      ['31 April', '2026-04-31T12:00:00Z'],
+      ['31 June', '2026-06-31T12:00:00Z'],
+      ['31 September', '2026-09-31T12:00:00Z'],
+      ['31 November', '2026-11-31T12:00:00Z'],
+      ['hour 24', '2026-01-01T24:00:00Z'],
+      ['day 00', '2026-01-00T12:00:00Z'],
+      ['month 00', '2026-00-10T12:00:00Z'],
+      ['month 13', '2026-13-01T12:00:00Z'],
+      ['minute 60', '2026-01-01T12:60:00Z'],
+      ['second 60', '2026-01-01T12:00:60Z'],
+    ];
+    for (const [what, stamp] of impossible) {
+      const event = resealEvent(base[1]!, (e) => { e.occurredAtUtc = stamp; });
+      const l = buildCustodyLedger({ verification, events: [base[0]!, event] });
+      assertEq(l.overall, 'CUSTODY_LEDGER_INVALID', `rejected: ${what}`);
+      assert(l.blockers.includes('EVENT_OCCURRED_AT_INVALID'), `${what} -> EVENT_OCCURRED_AT_INVALID`);
+      assert(!l.blockers.includes('LEDGER_RESEAL_DETECTED'), `${what}: the event is self-consistent, so ONLY the timestamp check rejects it`);
+      assertEq(l.ledgerIntact, false, `nothing intact: ${what}`);
+    }
+    // Real moments must still be accepted -- including a genuine leap day, which a naive month/day table
+    // would wrongly reject. These are only asserted not to trip the timestamp check: moving an event's time
+    // can legitimately trip the separate monotonicity rule, which is not what this test is about.
+    const real: ReadonlyArray<readonly [string, string]> = [
+      ['a genuine leap day', '2024-02-29T12:00:00Z'],
+      ['the last second of a year', '2026-12-31T23:59:59Z'],
+      ['midnight', '2026-07-21T00:00:00Z'],
+      ['31 December', '2026-12-31T00:00:00Z'],
+    ];
+    for (const [what, stamp] of real) {
+      const event = resealEvent(base[1]!, (e) => { e.occurredAtUtc = stamp; });
+      const l = buildCustodyLedger({ verification, events: [base[0]!, event] });
+      assert(!l.blockers.includes('EVENT_OCCURRED_AT_INVALID'), `${what} is a real moment and must be accepted`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // A custodian writes these by hand, so an off-allowlist field or a raw path is exactly the leak to expect.
 await test('adversarial: an unknown field and a smuggled raw path fail closed and are never echoed', () => {
   const root = workspace();
