@@ -16,6 +16,22 @@ import {
   PromotionRecordsConfigError,
   resolvePromotionRecordsDir,
 } from './operator-ui-promotion-chain.js';
+import {
+  firstRunChecklist,
+  REPOSITORY_COMPOSE_NOTE,
+  TOKEN_HANDLING_NOTE,
+  troubleshootingTable,
+  type ChecklistStep,
+  type TroubleshootingEntry,
+} from './operator-ui-first-run-checklist.js';
+import {
+  collectStaticFacts,
+  deriveInstallationReadiness,
+  summarizeChainSnapshot,
+  type InstallationReadiness,
+} from './operator-ui-installation-readiness.js';
+import { probeDatabase } from './operator-ui-database-probe.js';
+import { buildRuntimeVersionView } from './operator-ui-runtime-version.js';
 
 export const OPERATOR_UI_SERVICE_DEFAULT_HOST = '0.0.0.0';
 export const OPERATOR_UI_SERVICE_DEFAULT_PORT = 8099;
@@ -187,7 +203,7 @@ export function createOperatorUiServiceServer(
     }
 
     const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs'
-      || path === '/api/promotion-chain';
+      || path === '/api/promotion-chain' || path === '/api/installation' || path === '/api/version';
     if (method === 'HEAD') {
       ignoreRequestBody(req);
       sendPlain(res, known ? 405 : 404, known ? 'method not allowed\n' : 'not found\n', known ? 'GET' : undefined, true);
@@ -261,6 +277,50 @@ export function createOperatorUiServiceServer(
       return;
     }
 
+    // Phase 246. The question this answers -- "is this install usable, and what do I do next?" -- is asked by
+    // someone who has just extracted a bundle, so it is the one route that must work when everything else is
+    // half-configured. It therefore reports states rather than failing: a missing secret file, a database
+    // that is not up and an empty records folder are all ANSWERS here, not errors.
+    if (path === '/api/installation') {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected installation readiness request without a valid operator token.');
+        return;
+      }
+      const readiness = await buildInstallationReadiness(config);
+      // 200 whatever the verdict: NEEDS_SETUP is a correct answer to a correct question, and answering 503
+      // would make a browser treat a fresh install as a broken server.
+      sendJson(res, 200, {
+        ok: readiness.ok,
+        code: 'OPERATOR_UI_INSTALLATION_READINESS',
+        readiness,
+        checklist: firstRunChecklist(),
+        troubleshooting: troubleshootingTable(),
+        notes: { repositoryCompose: REPOSITORY_COMPOSE_NOTE, tokenHandling: TOKEN_HANDLING_NOTE },
+      });
+      // The verdict and nothing else. A component list here would put an installation's shape in the log.
+      logs.add(readiness.ok ? 'info' : 'warn', 'operation', 'INSTALLATION_READ',
+        `Served installation readiness with state=${readiness.state}.`);
+      return;
+    }
+
+    // Deliberately authenticated, like every other operational route. What version something is running is
+    // exactly what an attacker enumerating hosts wants, and there is no consumer for it that does not
+    // already hold the token.
+    if (path === '/api/version') {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected version request without a valid operator token.');
+        return;
+      }
+      const version = buildRuntimeVersionView();
+      sendJson(res, 200, { ok: version.agreement !== 'MISMATCH', code: 'OPERATOR_UI_VERSION', version });
+      logs.add('info', 'operation', 'VERSION_READ', `Served runtime version with provenance=${version.provenance}.`);
+      return;
+    }
+
     if (path === '/api/logs') {
       if (!isAuthorized(req, auth)) {
         ignoreRequestBody(req);
@@ -329,6 +389,39 @@ export async function buildOperatorUiServiceStatus(
     forbidden: FORBIDDEN,
     doctor,
   };
+}
+
+/**
+ * Gather the facts and derive the verdict.
+ *
+ * Every gatherer is wrapped: a readiness endpoint that throws when the thing it is reporting on is broken is
+ * the one endpoint that must never do that. A chain read that fails becomes UNAVAILABLE, a database probe
+ * that fails becomes UNREACHABLE, and the page still renders with the rest intact.
+ */
+export async function buildInstallationReadiness(
+  config: Pick<OperatorUiServiceConfig, 'promotionRecordsDir'>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<InstallationReadiness> {
+  const statics = collectStaticFacts({ promotionRecordsDir: config.promotionRecordsDir, env });
+
+  let chainSummary: ReturnType<typeof summarizeChainSnapshot> = { chain: 'UNAVAILABLE', artifacts: null };
+  try {
+    chainSummary = summarizeChainSnapshot(buildPromotionChainSnapshot(config.promotionRecordsDir));
+  } catch { /* an unreadable chain is a state the records component already reports */ }
+
+  let database: Awaited<ReturnType<typeof probeDatabase>>;
+  try {
+    database = await probeDatabase({ env });
+  } catch {
+    database = 'UNREACHABLE';
+  }
+
+  return deriveInstallationReadiness({
+    ...statics,
+    database,
+    chain: chainSummary.chain,
+    artifacts: chainSummary.artifacts,
+  });
 }
 
 function summarizeDoctor(doctor: OperatorUiServiceStatus['doctor']): OperatorUiServiceStatus['doctorSummary'] {
@@ -462,6 +555,55 @@ function redactLogMessage(message: string): string {
     .replace(/[A-Za-z0-9+/]{32,}={0,2}/g, '[redacted-token]');
 }
 
+/**
+ * The one place a value becomes markup.
+ *
+ * Everything else on this page is built client-side with `textContent`, which cannot produce an element. The
+ * checklist and the troubleshooting table are the exception: they are static guidance that must be readable
+ * BEFORE a token is entered — a person who cannot log in is exactly the person who needs "here is how to
+ * read your token" — so they are rendered into the shell, and therefore have to be escaped.
+ *
+ * The single quote is escaped too. It is not required for text content, but these strings also land in
+ * attribute positions in this file, and an escaper with an exception is an escaper someone will misuse.
+ */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderCommands(commands: ChecklistStep['commands']): string {
+  if (commands === null) return '';
+  const block = (label: string, command: string): string =>
+    `<div class="cmd"><span>${escapeHtml(label)}</span><code>${escapeHtml(command)}</code></div>`;
+  // Two identical blocks under two headings makes a reader hunt for a difference that is not there.
+  const inner = commands.posix === commands.windows
+    ? block('Any platform', commands.posix)
+    : block('Linux / macOS', commands.posix) + block('Windows (PowerShell)', commands.windows);
+  return `<div class="cmds">${inner}</div>`;
+}
+
+function renderChecklist(steps: readonly ChecklistStep[]): string {
+  const item = (step: ChecklistStep): string =>
+    `<li id="step-${escapeHtml(step.id)}"><strong>${escapeHtml(step.title)}</strong>`
+    + `<p class="muted">${escapeHtml(step.why)}</p>${renderCommands(step.commands)}</li>`;
+  const firstRun = steps.filter((step) => step.firstRun);
+  const lifecycle = steps.filter((step) => !step.firstRun);
+  return `<h3>First run — five minutes, in order</h3><ol class="list steps">${firstRun.map(item).join('')}</ol>`
+    + `<h3>Running it afterwards</h3><ul class="list steps">${lifecycle.map(item).join('')}</ul>`;
+}
+
+function renderTroubleshooting(entries: readonly TroubleshootingEntry[]): string {
+  const row = (entry: TroubleshootingEntry): string =>
+    `<li id="trouble-${escapeHtml(entry.id)}"><strong>${escapeHtml(entry.symptom)}</strong>`
+    + `<p class="muted"><em>Likely cause.</em> ${escapeHtml(entry.likelyCause)}</p>`
+    + `<p><em>Do this.</em> ${escapeHtml(entry.fix)}</p>${renderCommands(entry.commands)}</li>`;
+  return `<ul class="list steps">${entries.map(row).join('')}</ul>`;
+}
+
 function buildOperatorUiServiceHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -484,20 +626,64 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color
 h3{font-size:13px;margin:16px 0 8px;color:#354154}nav{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}nav a{color:#1769aa}
 ol.list{list-style:decimal;padding-left:22px}ol.list li{list-style:decimal}
 :focus-visible{outline:3px solid #1769aa;outline-offset:2px}
+.steps li{padding:12px 14px}.steps strong{display:block;margin-bottom:4px;font-size:13px}.steps p{margin:4px 0 8px}
+.cmds{display:grid;gap:6px}.cmd{display:grid;gap:3px}.cmd span{font-size:11px;color:#637083;text-transform:uppercase;letter-spacing:.04em}
+code{display:block;background:#101820;color:#eef4f8;border-radius:6px;padding:8px 10px;font-size:12px;overflow-wrap:anywhere;user-select:all}
+.verdict{display:inline-block;border-radius:999px;padding:6px 14px;font-weight:700;font-size:13px;border:1px solid #b9c2cf;background:#f8fafc}
+.verdict.ready{background:#e7f5ec;border-color:#177245;color:#0f5132}.verdict.setup{background:#fff5e0;border-color:#9b6400;color:#7a4f00}
+.verdict.degraded{background:#fdeceb;border-color:#b42318;color:#8d1a12}
+.hint{font-size:12px;color:#536173;margin:6px 0 0}.err{color:#b42318}.ok-text{color:#177245}
+dl.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:13px}dl.kv dt{color:#637083}dl.kv dd{margin:0;overflow-wrap:anywhere}
 @media(max-width:760px){main{grid-template-columns:1fr;padding:12px}header{padding:14px 12px;flex-wrap:wrap;gap:10px}.grid{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
 <div class="shell">
 <header><h1>Catalog Authority</h1>
-<nav aria-label="Sections"><a href="#status-panel">Status</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
+<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#status-panel">Status</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
 <div class="badge">read-only operator UI</div></header>
 <main>
 <section class="panel">
 <h2>Access</h2>
-<div class="field"><label for="token">Operator token</label><input id="token" type="password" autocomplete="off"></div>
-<div class="actions"><button id="refresh">Refresh</button><button id="clear" type="button">Clear</button></div>
-<div class="status" id="statusText"></div>
+<p class="hint">There is no username and no password. This stack authenticates with a single token that the
+setup script wrote to a file on this machine — <code>./secrets/operator_ui_token</code>. Read it and paste it
+below.</p>
+<div class="field"><label for="token">Operator token</label>
+<input id="token" type="password" autocomplete="off" spellcheck="false" aria-describedby="tokenHelp"></div>
+<p class="hint" id="tokenHelp">${escapeHtml(TOKEN_HANDLING_NOTE)}</p>
+<div class="actions"><button id="refresh">Load everything</button><button id="clear" type="button">Clear</button></div>
+<div class="status" id="statusText" role="status" aria-live="polite"></div>
+</section>
+<section class="panel wide" id="setup-panel">
+<h2>Setup &amp; Diagnostics</h2>
+<p><span class="verdict" id="verdict">Not loaded</span></p>
+<p class="status" id="verdictHeadline">Paste your operator token above and choose <strong>Load everything</strong>.</p>
+<div class="grid">
+<div class="metric"><span>Version</span><strong id="verVersion">-</strong></div>
+<div class="metric"><span>Build</span><strong id="verProvenance">-</strong></div>
+<div class="metric"><span>Bundle agreement</span><strong id="verAgreement">-</strong></div>
+<div class="metric"><span>Image pin</span><strong id="verPin">-</strong></div>
+</div>
+<h3>What is configured</h3>
+<ul class="list" id="components"><li class="muted">Not loaded.</li></ul>
+<h3>Do this next</h3>
+<ol class="list steps" id="nextSteps"><li class="muted">Not loaded.</li></ol>
+<h3>Artifacts found</h3>
+<dl class="kv" id="artifactSummary"><dt>Artifacts</dt><dd>Not loaded.</dd></dl>
+<h3>Notes</h3>
+<ul class="list" id="advisories"><li class="muted">Not loaded.</li></ul>
+<p class="hint" id="authorizationNote"></p>
+</section>
+<section class="panel wide" id="firstrun-panel">
+<h2>First-run checklist</h2>
+<p class="muted">These are the same commands whatever this installation reports, so they are readable without
+a token — the person who cannot log in is the person who needs the "read your token" line.</p>
+${renderChecklist(firstRunChecklist())}
+<p class="hint">${escapeHtml(REPOSITORY_COMPOSE_NOTE)}</p>
+</section>
+<section class="panel wide" id="trouble-panel">
+<h2>Troubleshooting</h2>
+${renderTroubleshooting(troubleshootingTable())}
 </section>
 <section class="panel" id="status-panel">
 <h2>Status</h2>
@@ -570,11 +756,35 @@ const chainArtifacts = document.getElementById('chainArtifacts');
 const chainBlockers = document.getElementById('chainBlockers');
 const chainSteps = document.getElementById('chainSteps');
 const chainLimits = document.getElementById('chainLimits');
+const verdict = document.getElementById('verdict');
+const verdictHeadline = document.getElementById('verdictHeadline');
+const authorizationNote = document.getElementById('authorizationNote');
+const verVersion = document.getElementById('verVersion');
+const verProvenance = document.getElementById('verProvenance');
+const verAgreement = document.getElementById('verAgreement');
+const verPin = document.getElementById('verPin');
+const components = document.getElementById('components');
+const nextSteps = document.getElementById('nextSteps');
+const artifactSummary = document.getElementById('artifactSummary');
+const advisories = document.getElementById('advisories');
+// Error text an operator can act on. A bare "request failed" sends someone to the logs for a problem whose
+// answer is "you pasted a stale token"; the status code already knows which of those it is.
+function describeFailure(status, body){
+  if(status === 401) return 'The operator token was not accepted. Re-read ./secrets/operator_ui_token and paste it with no extra spaces or line breaks.';
+  if(status === 503) return 'The service answered, but a dependency it needs is not ready. See Setup & Diagnostics.';
+  if(status === 0) return 'The server did not answer. Check that the stack is running, then press Load everything again.';
+  return (body && (body.message || body.code)) || ('The request failed with status ' + status + '.');
+}
 async function getJson(path){
   const value = token.value;
-  const res = await fetch(path,{headers:{'${OPERATOR_UI_LOCAL_AUTH_HEADER}':value}});
-  const body = await res.json();
-  if(!res.ok) throw new Error(body.message || body.code || 'request failed');
+  let res;
+  try{
+    res = await fetch(path,{headers:{'${OPERATOR_UI_LOCAL_AUTH_HEADER}':value},cache:'no-store'});
+  }catch(err){
+    throw new Error(describeFailure(0, null));
+  }
+  const body = await res.json().catch(() => null);
+  if(!res.ok) throw new Error(describeFailure(res.status, body));
   return body;
 }
 function renderStatus(data){
@@ -638,19 +848,90 @@ function renderChain(data){
   setList(chainSteps, view.nextSteps);
   setList(chainLimits, view.proofLimits.map(l => 'Phase ' + l.phase + ' establishes: ' + l.establishes + ' It does NOT establish: ' + l.doesNotEstablish));
 }
+const VERDICT_CLASS = { READY: 'verdict ready', NEEDS_SETUP: 'verdict setup', DEGRADED: 'verdict degraded' };
+// Built from the checklist the same response carried, so a step id can never render as a bare identifier.
+function renderInstallation(data){
+  const r = data.readiness;
+  const steps = data.checklist || [];
+  verdict.textContent = r.state;
+  verdict.className = VERDICT_CLASS[r.state] || 'verdict';
+  verdictHeadline.textContent = r.headline;
+  authorizationNote.textContent = r.authorizationNote;
+  const v = r.version;
+  verVersion.textContent = v.version || 'not declared';
+  verProvenance.textContent = v.provenance;
+  verAgreement.textContent = v.agreement;
+  verPin.textContent = v.image.pinnedByDigest ? 'digest' : (v.image.tag || v.image.state.toLowerCase());
+  setList(components, r.components.map(c => c.title + ' - ' + c.state + ' - ' + c.detail));
+  const byId = {};
+  for(const step of steps) byId[step.id] = step;
+  nextSteps.replaceChildren();
+  if(r.nextSteps.length === 0){
+    const li = document.createElement('li'); li.className='muted';
+    li.textContent = 'Nothing outstanding.'; nextSteps.appendChild(li);
+  }else{
+    for(const id of r.nextSteps){
+      const step = byId[id]; if(!step) continue;
+      const li = document.createElement('li');
+      const title = document.createElement('strong'); title.textContent = step.title; li.appendChild(title);
+      const why = document.createElement('p'); why.className='muted'; why.textContent = step.why; li.appendChild(why);
+      if(step.commands){
+        const same = step.commands.posix === step.commands.windows;
+        const pairs = same
+          ? [['Any platform', step.commands.posix]]
+          : [['Linux / macOS', step.commands.posix],['Windows (PowerShell)', step.commands.windows]];
+        for(const [label,value] of pairs){
+          const wrap = document.createElement('div'); wrap.className='cmd';
+          const name = document.createElement('span'); name.textContent = label; wrap.appendChild(name);
+          const code = document.createElement('code'); code.textContent = value; wrap.appendChild(code);
+          li.appendChild(wrap);
+        }
+      }
+      nextSteps.appendChild(li);
+    }
+  }
+  artifactSummary.replaceChildren();
+  const a = r.artifacts;
+  const pairs = a === null
+    ? [['Artifacts','No readable chain yet.']]
+    : [['Present', String(a.present) + ' of ' + String(a.expected)],
+       ['Blockers', String(a.blockers)],
+       ['Chain reaches', a.terminalPhase === null ? 'nothing yet' : 'Phase ' + a.terminalPhase],
+       ['Outstanding next', a.nextRequiredPhase === null ? 'nothing further' : 'Phase ' + a.nextRequiredPhase]];
+  for(const [key,value] of pairs){
+    const dt = document.createElement('dt'); dt.textContent = key; artifactSummary.appendChild(dt);
+    const dd = document.createElement('dd'); dd.textContent = value; artifactSummary.appendChild(dd);
+  }
+  setList(advisories, r.advisories);
+}
 async function refresh(){
+  statusText.className = 'status';
   statusText.textContent = 'Loading...';
+  if(token.value === ''){
+    statusText.className = 'status err';
+    statusText.textContent = 'Paste your operator token first. Read it with: cat ./secrets/operator_ui_token';
+    return;
+  }
   // Settled independently: a stack with no database still has a promotion record chain worth reading, and one
   // panel failing must not blank the others.
-  const [s,l,c] = await Promise.allSettled([getJson('/api/status'), getJson('/api/logs'), getChain()]);
+  const [i,s,l,c] = await Promise.allSettled([
+    getJson('/api/installation'), getJson('/api/status'), getJson('/api/logs'), getChain()]);
   const problems = [];
+  if(i.status === 'fulfilled') renderInstallation(i.value); else problems.push(i.reason.message);
   if(s.status === 'fulfilled') renderStatus(s.value); else problems.push(s.reason.message);
   if(l.status === 'fulfilled') renderLogs(l.value); else problems.push(l.reason.message);
   if(c.status === 'fulfilled') renderChain(c.value); else problems.push(c.reason.message);
-  statusText.textContent = problems.length === 0 ? 'Updated.' : problems.join(' | ');
+  // De-duplicated: four routes rejecting one stale token is one problem, not four lines of the same sentence.
+  const unique = [...new Set(problems)];
+  statusText.className = unique.length === 0 ? 'status ok-text' : 'status err';
+  statusText.textContent = unique.length === 0
+    ? 'Updated. Everything below reflects this moment; press Load everything again after you change anything.'
+    : unique.join(' ');
 }
 document.getElementById('refresh').addEventListener('click', refresh);
-document.getElementById('clear').addEventListener('click', () => { token.value=''; statusText.textContent=''; });
+document.getElementById('clear').addEventListener('click', () => {
+  token.value=''; statusText.className='status'; statusText.textContent='Token cleared from this page.';
+});
 </script>
 </body>
 </html>`;

@@ -51,8 +51,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 245, 245 release delivery, 244, 243, 242
+      - name: Phase 246, 245, 245 release delivery, 244, 243, 242
         run: |
+          npm run test:phase246-local
           npm run test:phase245-local
           npm run test:release-delivery
           npm run test:phase244-local

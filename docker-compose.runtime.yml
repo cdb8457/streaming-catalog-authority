@@ -89,6 +89,13 @@ services:
       OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
       # The fixed container path the promotion record artifacts are mounted at, read-only.
       PROMOTION_RECORDS_DIR: /var/lib/catalog/promotion-records
+      # WHAT THE BUNDLE BELIEVES IT DEPLOYED, and the reference it asked Docker for. Neither of these is the
+      # image's own claim about itself — that is baked into the image by Dockerfile.runtime and cannot be set
+      # from here. Two independent declarations is the whole point: the UI compares them and reports MISMATCH
+      # when a .env was edited without extracting the matching bundle, instead of letting the two drift
+      # silently. Empty is fine and honest: the UI then says the bundle declared nothing.
+      CATALOG_AUTHORITY_BUNDLE_VERSION: ${CATALOG_AUTHORITY_BUNDLE_VERSION:-}
+      CATALOG_AUTHORITY_IMAGE: ${CATALOG_AUTHORITY_IMAGE:-}
       NPM_CONFIG_CACHE: /tmp/npm-cache
       NPM_CONFIG_UPDATE_NOTIFIER: "false"
     volumes:

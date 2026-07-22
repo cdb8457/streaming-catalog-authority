@@ -1,5 +1,10 @@
 import { createHash } from 'node:crypto';
 import { buildDeterministicArchive, type ArchiveEntry, type ArchiveResult } from './release-archive.js';
+import {
+  firstRunChecklist,
+  troubleshootingTable,
+  type ChecklistStep,
+} from './operator-ui-first-run-checklist.js';
 import { RELEASE_IMAGE_REPOSITORY as CANONICAL_IMAGE_REPOSITORY } from './release-coordinates.js';
 import { releaseArchiveName } from './release-ref.js';
 
@@ -123,6 +128,11 @@ function envFile(options: BundleOptions, imageRef: string): string {
     '# `latest`, so `docker compose up -d` cannot quietly move you to a different build.',
     `CATALOG_AUTHORITY_IMAGE=${imageRef}`,
     '',
+    '# The version THIS bundle is. Compose passes it into the container, which compares it against the',
+    '# version baked into the image itself and reports a MISMATCH in Setup & Diagnostics if you change one',
+    '# without the other. Editing this to silence a mismatch does not fix the mismatch.',
+    `CATALOG_AUTHORITY_BUNDLE_VERSION=${options.image.tag}`,
+    '',
     '# Where your Phase 231-240 chain artifacts live on THIS machine. Mounted read-only.',
     'PROMOTION_RECORDS_HOST_DIR=./promotion-records',
     '',
@@ -133,7 +143,7 @@ function envFile(options: BundleOptions, imageRef: string): string {
   ].join('\n');
 }
 
-function envExample(imageRef: string): string {
+function envExample(imageRef: string, tag: string): string {
   return [
     '# Copy to .env and edit. The shipped .env already contains the pinned image for this release.',
     '#',
@@ -142,6 +152,9 @@ function envExample(imageRef: string): string {
     `#   CATALOG_AUTHORITY_IMAGE=${RELEASE_IMAGE_REPOSITORY}@sha256:<digest>`,
     '# Never `latest`.',
     `CATALOG_AUTHORITY_IMAGE=${imageRef}`,
+    '',
+    '# The version this bundle is. Keep it equal to the image above, or the UI will report a MISMATCH.',
+    `CATALOG_AUTHORITY_BUNDLE_VERSION=${tag}`,
     '',
     '# Host folder holding your promotion record artifacts (mounted read-only into the container).',
     'PROMOTION_RECORDS_HOST_DIR=./promotion-records',
@@ -153,6 +166,52 @@ function envExample(imageRef: string): string {
     '# NO SECRETS BELONG IN THIS FILE. The setup script generates them into ./secrets/ as files, which',
     '# Compose mounts as Docker secrets. Nothing that is a secret is ever an environment variable here.',
   ].join('\n');
+}
+
+/**
+ * The install instructions are GENERATED from the same checklist the operator UI renders.
+ *
+ * Written by hand they would be a second copy, and a second copy of a command is a command that is wrong in
+ * one of the two places. The panel a stuck user reads and the README they read before they are stuck now
+ * cannot disagree about what to type — a test asserts the README contains every shipped command verbatim.
+ */
+function stepMarkdown(step: ChecklistStep, index: number | null): string {
+  const heading = index === null ? `### ${step.title}` : `${index}. **${step.title}**`;
+  const body = index === null ? step.why : `\n   ${step.why}`;
+  if (step.commands === null) return `${heading}${index === null ? `\n\n${step.why}` : body}\n`;
+  const fence = (label: string, command: string): string =>
+    index === null
+      ? `\n**${label}**\n\n\`\`\`\n${command}\n\`\`\`\n`
+      : `\n   **${label}**\n\n   \`\`\`\n   ${command}\n   \`\`\`\n`;
+  const { posix, windows } = step.commands;
+  // Most commands are `docker compose ...` and identical everywhere. Printing the same line twice under two
+  // headings makes a reader look for the difference, and there isn't one.
+  const commands = posix === windows
+    ? fence('Any platform', posix)
+    : `${fence('Linux or macOS', posix)}${fence('Windows (PowerShell)', windows)}`;
+  return `${heading}${body}\n${commands}`;
+}
+
+function firstRunMarkdown(): string {
+  const steps = firstRunChecklist();
+  const numbered = steps.filter((step) => step.firstRun)
+    .map((step, index) => stepMarkdown(step, index + 1)).join('\n');
+  const rest = steps.filter((step) => !step.firstRun).map((step) => stepMarkdown(step, null)).join('\n');
+  // A command reference, not a second explanation: the sections further down say WHY an upgrade works the
+  // way it does, and repeating that here would give a reader two places to disagree with each other.
+  return `${numbered}\n## Everyday commands\n\n${rest}`;
+}
+
+/** A pipe inside a cell would end the column early; nothing shipped has one, and this keeps it that way. */
+function cell(text: string): string {
+  return text.replace(/\|/g, '\\|');
+}
+
+function troubleshootingMarkdown(): string {
+  const rows = troubleshootingTable()
+    .map((entry) => `| ${cell(entry.symptom)} | ${cell(entry.likelyCause)} | ${cell(entry.fix)} |`)
+    .join('\n');
+  return `| What you see | Likely cause | Do this |\n| --- | --- | --- |\n${rows}`;
 }
 
 function versionFile(options: BundleOptions, imageRef: string): string {
@@ -175,34 +234,32 @@ Version \`${options.image.tag}\` — image \`${imageRef}\`.
 
 You need **Docker** and nothing else. No source checkout, no Node.js, no build.
 
-## Install
+## Five minutes, start to finish
 
-1. Install Docker (Docker Desktop on Windows or macOS; Docker Engine on Linux) and start it.
-2. Extract this bundle to a folder you own.
-3. Generate secrets and the artifact folder:
+Extract this bundle to a folder you own, then work down this list. When you are done, open
+<http://127.0.0.1:8099/>, paste your operator token, and press **Load everything** — the
+**Setup & Diagnostics** panel tells you whether the installation is READY, what is still missing, and the
+exact command for whatever is left.
 
-   **Linux or macOS**
+${firstRunMarkdown()}
+## When something is wrong
 
-   \`\`\`bash
-   ./setup.sh
-   \`\`\`
+The **Setup & Diagnostics** panel names the component and the next command. This table covers the failures
+that happen before you can see that panel.
 
-   **Windows (PowerShell)**
+${troubleshootingMarkdown()}
 
-   \`\`\`powershell
-   powershell -ExecutionPolicy Bypass -File .\\setup.ps1
-   \`\`\`
+### Getting help
 
-4. Start it, then open the URL it prints:
+Run the diagnostics report and attach its output to your issue:
 
-   \`\`\`
-   docker compose up -d
-   \`\`\`
+\`\`\`
+docker compose exec app npm run ops:support-report
+\`\`\`
 
-5. Open <http://127.0.0.1:8099/> and paste the operator token the setup script printed into the
-   **Operator token** box.
-
-Stop it with \`docker compose down\`. Your secrets, database and artifacts survive that.
+It makes no live calls — it works while the database is down — and it contains no tokens, secret values,
+file paths, URLs, record contents or anything identifying your machine. Add \`-- --text\` for a readable
+version instead of JSON.
 
 ## Where your token is
 
@@ -297,7 +354,7 @@ export function buildConsumerReleaseBundle(sources: BundleSources, options: Bund
     toFile('setup.sh', sources.setupBash),
     toFile('setup.ps1', sources.setupPowerShell),
     toFile('.env', envFile(options, imageRef)),
-    toFile('.env.example', envExample(imageRef)),
+    toFile('.env.example', envExample(imageRef, options.image.tag)),
     toFile('VERSION', versionFile(options, imageRef)),
   ];
 

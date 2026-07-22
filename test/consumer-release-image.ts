@@ -421,7 +421,12 @@ test('the bundle documents where the token lives, how to upgrade, and how to rol
   assert(readme.includes(`sha256sum -c ${BUNDLE_CHECKSUM_FILENAME}`), 'verification is a one-liner');
   assert(/Get-FileHash/.test(readme), 'including on Windows');
   assert(/Docker Desktop on Windows or macOS; Docker Engine on Linux/.test(readme), 'all three platforms are named');
-  assert(!/npm |node |git clone/.test(readme), 'and nothing in the install path needs a toolchain');
+  // The invariant is that nothing asks the USER to install a toolchain. A `docker compose exec app ...` line
+  // runs inside the image, which already contains Node, so it is exempt — but only in that exact form, and
+  // the Phase 246 suite pins the support-report command to it so this exemption cannot be widened by
+  // accident. Everything outside such a line is still held to "Docker and nothing else".
+  const onTheHost = readme.replace(/docker compose exec [^\n]*/g, '');
+  assert(!/npm |node |git clone/.test(onTheHost), 'and nothing in the install path needs a toolchain');
 });
 
 // ---------------------------------------------------------------------------------------------------------

@@ -50,8 +50,19 @@ LABEL org.opencontainers.image.title="catalog-authority-ops" \
       org.opencontainers.image.revision="${IMAGE_REVISION}" \
       org.opencontainers.image.created="${IMAGE_CREATED}"
 
+# The image's own claim about what it is, readable BY THE RUNNING PROCESS. The OCI labels above are build
+# metadata: `docker inspect` can read them, a Node process inside the container cannot, which is why the UI
+# could not answer "what version am I?" before Phase 246. These carry the same three values into the
+# environment, baked into the layer, so nobody who merely runs the container can change them.
+#
+# The defaults are honest placeholders, not a version: a `docker build` with no --build-arg produces an image
+# that reports itself as a development build rather than as some release it is not. See
+# src/ops/operator-ui-runtime-version.ts, which recognises exactly these two values.
 ENV NODE_ENV=production \
     APP_ENV=production \
+    CATALOG_AUTHORITY_VERSION=${IMAGE_VERSION} \
+    CATALOG_AUTHORITY_REVISION=${IMAGE_REVISION} \
+    CATALOG_AUTHORITY_BUILT_AT=${IMAGE_CREATED} \
     NPM_CONFIG_UPDATE_NOTIFIER=false \
     NPM_CONFIG_CACHE=/tmp/npm-cache \
     TMPDIR=/tmp \

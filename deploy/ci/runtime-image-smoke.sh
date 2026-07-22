@@ -29,6 +29,18 @@ docker build \
   --build-arg "IMAGE_REVISION=$(git rev-parse HEAD 2>/dev/null || echo unknown)" \
   .
 
+step "the image can tell a running process what it is"
+# Phase 246. The OCI labels are build metadata that the app inside the container cannot read, so the version
+# is ALSO baked into the environment. This proves the build argument actually reached it: a label-only image
+# would leave the UI unable to answer "what version am I running?", which is the whole defect.
+baked="$(docker run --rm --entrypoint printenv "${IMAGE}" CATALOG_AUTHORITY_VERSION)"
+if [ "${baked}" != "${IMAGE_VERSION:-0.0.0-ci}" ]; then
+  echo "FAIL: the image reports CATALOG_AUTHORITY_VERSION as '${baked}', not the version it was built with" >&2
+  exit 1
+fi
+docker run --rm --entrypoint printenv "${IMAGE}" CATALOG_AUTHORITY_REVISION >/dev/null
+echo "  CATALOG_AUTHORITY_VERSION is baked in and matches the build argument"
+
 step "container contract"
 uid="$(docker run --rm --entrypoint id "${IMAGE}" -u)"
 if [ "${uid}" = "0" ]; then echo "FAIL: the runtime image runs as root" >&2; exit 1; fi
@@ -87,9 +99,60 @@ case "${body}" in
   *) echo "FAIL: authenticated chain read returned no availability field" >&2; exit 1 ;;
 esac
 
+step "the readiness route is authenticated and answers inside a real container"
+# Phase 246. This is the part a file-reading test cannot prove: that the secret files Compose mounts, the
+# read-only records mount and the database service all resolve to the states the panel reports.
+code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/api/installation")"
+if [ "${code}" != "401" ]; then echo "FAIL: unauthenticated readiness read returned ${code}, expected 401" >&2; exit 1; fi
+readiness="$(curl -s -H "X-Operator-UI-Secret: ${TOKEN}" "${BASE_URL}/api/installation")"
+case "${readiness}" in
+  *'"state":"READY"'*|*'"state":"NEEDS_SETUP"'*|*'"state":"DEGRADED"'*) ;;
+  *) echo "FAIL: the readiness route returned no bounded state" >&2; exit 1 ;;
+esac
+# The container has real secrets and a real database here, so the two components a laptop cannot exercise
+# must come back satisfied rather than merely present.
+case "${readiness}" in
+  *'"id":"secrets","title":"Secret files","state":"OK"'*) echo "  secrets resolve to OK from the mounted Docker secrets" ;;
+  *) echo "FAIL: the readiness route did not report the mounted secrets as OK" >&2; echo "${readiness}" >&2; exit 1 ;;
+esac
+case "${readiness}" in
+  *'"id":"database","title":"Database","state":"OK"'*|*'"id":"database","title":"Database","state":"MISSING"'*)
+    echo "  the database was reached" ;;
+  *) echo "FAIL: the readiness route could not reach the database in the compose stack" >&2; exit 1 ;;
+esac
+# And no route may leak what it inspected, however real the values now are.
+case "${readiness}" in
+  *"${TOKEN}"*|*'/run/secrets/'*|*'postgresql://'*)
+    echo "FAIL: the readiness payload leaked a secret, a path or a URL" >&2; exit 1 ;;
+esac
+echo "  readiness answers with a bounded state and leaks nothing"
+
+step "the version route reports the version the image was built with"
+version="$(curl -s -H "X-Operator-UI-Secret: ${TOKEN}" "${BASE_URL}/api/version")"
+case "${version}" in
+  *"\"version\":\"${IMAGE_VERSION:-0.0.0-ci}\""*) echo "  /api/version agrees with the build argument" ;;
+  *) echo "FAIL: /api/version did not report the built version" >&2; echo "${version}" >&2; exit 1 ;;
+esac
+
+step "the support report is produceable from inside the container"
+"${COMPOSE[@]}" exec -T app npm run --silent ops:support-report >/tmp/support-report.json
+grep -q 'phase-246-operator-support-report' /tmp/support-report.json
+if grep -qE 'postgres(ql)?://|/run/secrets/' /tmp/support-report.json; then
+  echo "FAIL: the support report contains a URL or a secret path" >&2
+  exit 1
+fi
+echo "  support report produced, with no URL and no secret path in it"
+
 step "the UI shell is served"
-curl -fsS "${BASE_URL}/" | grep -q 'Promotion Record Chain'
-echo "  the promotion chain panel is present"
+shell="$(curl -fsS "${BASE_URL}/")"
+printf '%s' "${shell}" | grep -q 'Promotion Record Chain'
+printf '%s' "${shell}" | grep -q 'Setup &amp; Diagnostics'
+printf '%s' "${shell}" | grep -q 'First-run checklist'
+if printf '%s' "${shell}" | grep -qF "${TOKEN}"; then
+  echo "FAIL: the served page contains the operator token" >&2
+  exit 1
+fi
+echo "  the promotion chain, setup and checklist panels are present, with no token in the HTML"
 
 step "graceful stop"
 # `docker compose stop` sends SIGTERM. A container that needed to be killed took the full timeout; one that
