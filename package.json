@@ -462,6 +462,7 @@
     "test:promotion-audit-closure-packet": "tsx test/promotion-audit-closure-packet.ts",
     "test:phase241-local": "tsx test/promotion-audit-closure-packet.ts",
     "ops:promotion-operator-console": "tsx src/ops/promotion-operator-console-cli.ts",
+    "ops:promotion-operator-console:help": "tsx src/ops/promotion-operator-console-cli.ts --help",
     "test:promotion-operator-console": "tsx test/promotion-operator-console.ts",
     "test:phase242-local": "tsx test/promotion-operator-console.ts",
     "ops:promotion-context-consistency-audit": "tsx src/ops/promotion-context-consistency-audit-cli.ts",

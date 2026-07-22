@@ -41,10 +41,21 @@ const EXIT: Readonly<Record<string, number>> = {
   NOT_ELIGIBLE: 5,
 };
 
+// HOW TO INVOKE IT, on any shell. `npm run <script> -- <args>` is NOT reliable here: PowerShell consumes the
+// first `--` itself, so npm receives the tool's flags as its OWN and swallows them -- `-- --help` prints npm's
+// help, and `-- --dir X` reaches this tool with no arguments at all. The direct form below has no `--` to lose
+// and behaves identically on PowerShell, cmd and bash, so it is what every usage string and doc quotes.
+const DIRECT_INVOCATION = 'npx tsx src/ops/promotion-operator-console-cli.ts';
+
 function usage(): string {
   return [
-    'usage: ops:promotion-operator-console (--dir <artifact-directory> | --bundle <bundle.json>) \\',
+    `usage: ${DIRECT_INVOCATION} (--dir <artifact-directory> | --bundle <bundle.json>) \\`,
     '         [--out <report.json>] [--json] [--quiet]',
+    '',
+    'Invoke it directly, as above -- that form works on every shell. `npm run ops:promotion-operator-console`',
+    'runs it too, but passing FLAGS through npm is not portable: PowerShell eats the first `--`, so npm takes',
+    '`-- --help` as its own help and `-- --dir X` never reaches this tool at all. For the help text with no',
+    'arguments to lose, `npm run ops:promotion-operator-console:help` is safe on any shell.',
     '',
     'Local, non-live. One command over the whole promotion record chain (Phases 231-241). It collects the',
     'artifacts, hands them to the Phase 241 audit UNCHANGED, and reports the outcome in a form a person can',
@@ -67,9 +78,10 @@ function usage(): string {
     'AUDIT_OPEN with ZERO blockers. The other three are defects.',
     '',
     'It CREATES nothing, DECIDES nothing and INFERS no human decision. Every next step it prints is a fixed',
-    'lookup from the outcome and the first absent phase -- never advice about whether the promotion should',
-    'proceed. AUDIT_CLOSED means the records are mutually consistent; it does NOT mean the promotion happened,',
-    'was correct, or was authorized by anyone in particular.',
+    'lookup from the outcome and the phase actually outstanding -- a phase that is PRESENT but not yet in its',
+    'terminal state comes before the first absent one, because it is the step still open. None of it is advice',
+    'about whether the promotion should proceed. AUDIT_CLOSED means the records are mutually consistent; it does',
+    'NOT mean the promotion happened, was correct, or was authorized by anyone in particular.',
     '',
     'Exit 0 = AUDIT_CLOSED, 1 = AUDIT_INVALID, 2 = usage or input error, 3 = AUDIT_OPEN, 5 = NOT_ELIGIBLE.',
   ].join('\n');
@@ -122,7 +134,15 @@ function main(): number {
     return 2;
   }
   if (dir === undefined && bundlePath === undefined) {
-    console.error('supply an intake: --dir <artifact-directory> or --bundle <bundle.json>. Run with --help for the accepted filenames.');
+    // Reached both by a genuine omission AND by `npm run ... -- --dir X` on PowerShell, where npm swallows the
+    // flags and this tool is invoked bare. An operator who hits the second case sees a working command here,
+    // rather than being told to supply an intake they believe they already supplied.
+    console.error([
+      'supply an intake: --dir <artifact-directory> or --bundle <bundle.json>.',
+      `invoke it directly -- ${DIRECT_INVOCATION} --dir <artifact-directory>`,
+      'passing flags via `npm run ... -- <flags>` is not portable: PowerShell eats the first `--`, so npm takes',
+      'the flags as its own and this tool receives none. `--help` alone: npm run ops:promotion-operator-console:help',
+    ].join('\n'));
     return 2;
   }
 

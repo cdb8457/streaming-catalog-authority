@@ -28,15 +28,27 @@ So the console's whole job is to make that distinction impossible to miss.
 `custodyHeldByThisTool`, `archivedByThisTool`, `judgmentFormedByThisTool`, `humanDecisionInferredByThisTool`,
 `promotionRunByThisTool` and `selfAuthorized` are all the constant `false`.
 
-Every line of guidance it emits is a **fixed lookup** from the outcome and the outstanding phase. It is never a
-recommendation about whether the promotion should proceed, and never an inference about what a human meant.
+Every line of guidance it emits is a **fixed lookup** from the outcome and the phase actually outstanding. It
+is never a recommendation about whether the promotion should proceed, and never an inference about what a
+human meant.
 
 ## Usage
 
+Invoke it **directly**. This form behaves identically on PowerShell, cmd and bash:
+
 ```
-npm run ops:promotion-operator-console -- --dir <artifact-directory> [--out report.json] [--json] [--quiet]
-npm run ops:promotion-operator-console -- --bundle <bundle.json> [--out report.json]
+npx tsx src/ops/promotion-operator-console-cli.ts --dir <artifact-directory> [--out report.json] [--json] [--quiet]
+npx tsx src/ops/promotion-operator-console-cli.ts --bundle <bundle.json> [--out report.json]
+npm run ops:promotion-operator-console:help
 ```
+
+> **Do not pass flags through `npm run … -- <flags>`.** It is not portable. PowerShell consumes the first
+> `--` itself, so npm receives the tool's flags as its **own**: `-- --help` prints *npm's* help, and
+> `-- --dir X` reaches this tool with **no arguments at all** — which reads as the tool ignoring you. The
+> `ops:promotion-operator-console` script still works for a bare run, and
+> `ops:promotion-operator-console:help` bakes `--help` into the script so there is no `--` to lose; for
+> anything with flags, use the direct form above. Running with no intake prints this same guidance on stderr,
+> so an operator who trips over it is handed a working command rather than a puzzle.
 
 | `overall` | Meaning | Exit |
 | --- | --- | --- |
@@ -87,6 +99,9 @@ yet terminal takes precedence over the first absent one**. This is not a detail.
 at an *undecided* Phase 232; reporting Phase 233 as "next" would tell an operator to record an observation of
 a run nobody has authorized. An unfinished phase is finished on its own terms before any later phase can
 exist.
+
+"Outstanding" is therefore **not** a synonym for "absent", and the help text, disclaimers and next steps all
+say *outstanding* — describing it as "the first absent phase" would document a rule the tool does not follow.
 
 ## Rejecting what does not belong
 

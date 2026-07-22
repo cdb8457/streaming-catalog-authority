@@ -530,12 +530,20 @@ await test('CLI: the exit-code contract, the help text, and the output switches'
     assertEq(run(['--out', join(root, 'x.json')]).status, 2, 'no intake is a usage error');
     assertEq(run([]).status, 2, 'no arguments at all is a usage error');
 
+    const noIntake = run(['--out', join(root, 'x.json')]);
+    // The commonest way to land here is not a genuine omission: it is `npm run ... -- --dir X` on PowerShell,
+    // where npm swallows the flags and this tool is invoked bare. So the message hands over a working command.
+    assert(noIntake.stderr.includes('npx tsx src/ops/promotion-operator-console-cli.ts --dir'), 'the no-intake error names a working invocation');
+    assert(noIntake.stderr.includes('PowerShell eats the first `--`'), 'and explains why the npm form may have dropped them');
+
     const help = run(['--help']);
     assertEq(help.status, 0, '--help exits 0');
+    assert(help.stdout.includes('usage: npx tsx src/ops/promotion-operator-console-cli.ts'), '--help leads with the portable invocation');
+    assert(help.stdout.includes('npm run ops:promotion-operator-console:help'), 'and names the argument-free help script');
     for (const phase of CONSOLE_PHASES) {
       for (const name of CONSOLE_ARTIFACT_FILENAMES[phase]!) assert(help.stdout.includes(name), `--help lists ${name}`);
     }
-    for (const phrase of ['Exit 0 = AUDIT_CLOSED', 'CREATES nothing', 'ABSENT, MALFORMED, MISFILED and DUPLICATE', 'never advice about whether the promotion should']) {
+    for (const phrase of ['Exit 0 = AUDIT_CLOSED', 'CREATES nothing', 'ABSENT, MALFORMED, MISFILED and DUPLICATE', 'None of it is advice']) {
       assert(help.stdout.includes(phrase), `--help states: ${phrase}`);
     }
 
@@ -548,6 +556,63 @@ await test('CLI: the exit-code contract, the help text, and the output switches'
     const quiet = run(['--dir', dir, '--quiet']);
     assertEq(quiet.status, 0, '--quiet keeps the exit contract');
     assertEq(quiet.stdout, '', '--quiet prints nothing at all');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Guidance that describes a rule the tool does not follow is worse than no guidance: an operator who believes
+// "the first absent phase" would expect Phase 233 for the real chain, and act on it.
+await test('the documented rule matches the implemented one: OUTSTANDING, never "the first absent phase"', () => {
+  const root = workspace();
+  try {
+    const reports = buildSyntheticChain(root);
+    const real = bundle(buildRealP227AChain());
+    const stuck = bundle(buildSyntheticChain(root, { inventoryReports: false }));
+    const open = bundle(prefixOf(reports, 236));
+    const help = run(['--help']).stdout;
+
+    // Nowhere may the wrong rule be stated -- not in the help, the disclaimers, or any emitted step.
+    const prose = [help, ...real.disclaimers, ...real.nextSteps, ...stuck.nextSteps, ...open.nextSteps, ...real.summary];
+    for (const line of prose) assert(!line.includes('first absent phase'), `states the wrong rule: ${line.slice(0, 80)}`);
+    assert(help.includes('a phase that is PRESENT but not yet in its'), '--help states the precedence');
+    assert(real.disclaimers.some((d) => d.includes('present but not yet terminal comes before the first absent one')), 'the disclaimers state it');
+    assert(real.nextSteps.some((s) => s.includes('is the step still open, and comes before the first absent one')), 'and so do the steps');
+
+    // And the behaviour it describes is the behaviour: present-but-unfinished wins, absent otherwise.
+    assertEq(real.nextRequiredPhase, 232, 'an undecided present phase is what is outstanding');
+    assertEq(stuck.nextRequiredPhase, 240, 'a non-terminal present phase, even with nothing absent');
+    assertEq(open.nextRequiredPhase, 237, 'and the first absent phase only when every present one is terminal');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// The reviewed defect, reproduced on the shell that exhibits it. PowerShell consumes the first `--`, so npm
+// receives the tool's flags as its own: `-- --help` prints npm's help, and `-- --dir X` reaches the tool with
+// nothing. Skipped, visibly, where PowerShell is not available.
+await test('PowerShell: every invocation the docs give reaches the console, not npm', () => {
+  const shell = process.platform === 'win32' ? 'powershell.exe' : null;
+  if (shell === null) { console.log('        (skipped: PowerShell not available on this platform)'); return; }
+  const ps = (command: string) => spawnSync(shell, ['-NoProfile', '-NonInteractive', '-Command', command], { cwd: projectRoot, encoding: 'utf8' });
+
+  const help = ps('npm run --silent ops:promotion-operator-console:help');
+  assert((help.stdout ?? '').includes('usage: npx tsx src/ops/promotion-operator-console-cli.ts'), `the help script reaches the console (got: ${(help.stdout ?? '').slice(0, 120)})`);
+  assert(!(help.stdout ?? '').includes('Run arbitrary package scripts'), 'and never npm\'s own help');
+
+  const direct = ps('npx tsx src/ops/promotion-operator-console-cli.ts --help');
+  assert((direct.stdout ?? '').includes('usage: npx tsx src/ops/promotion-operator-console-cli.ts'), 'the direct form reaches the console');
+
+  // The form the docs now warn against, proven to be worth warning about.
+  const swallowed = ps('npm run --silent ops:promotion-operator-console -- --dir . ; exit $LASTEXITCODE');
+  assertEq(swallowed.status, 2, 'flags passed via `npm run ... --` do not survive PowerShell');
+  assert((swallowed.stderr ?? '').includes('npx tsx src/ops/promotion-operator-console-cli.ts --dir'), 'and the operator is handed the working command instead of a dead end');
+
+  // The direct form with real flags does survive, on the same shell.
+  const root = workspace();
+  try {
+    const dir = join(root, 'p227a');
+    layout(dir, buildRealP227AChain());
+    const real = ps(`npx tsx src/ops/promotion-operator-console-cli.ts --dir '${dir}' ; exit $LASTEXITCODE`);
+    assertEq(real.status, 3, 'the real chain audits AUDIT_OPEN through PowerShell too');
+    assert((real.stdout ?? '').includes('outcome:              AUDIT_OPEN'), 'with the summary intact');
+    assertNoEcho(real.stdout ?? '', 'PowerShell stdout');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

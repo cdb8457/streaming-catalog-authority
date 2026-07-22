@@ -24,8 +24,10 @@ import { deepLocationOrLiveSurface } from './promotion-evidence-retention-invent
 // IT DECIDES NOTHING AND CREATES NOTHING. `approvalCreatedByThisTool`, `executionPerformedByThisTool`,
 // `observationCapturedByThisTool`, `custodyHeldByThisTool`, `archivedByThisTool`, `judgmentFormedByThisTool`,
 // `humanDecisionInferredByThisTool`, `promotionRunByThisTool` and `selfAuthorized` are the constants false.
-// Every line of guidance it emits is a FIXED lookup from the outcome and the first absent phase -- never a
-// recommendation about whether the promotion should proceed, and never an inference about what a human meant.
+// Every line of guidance it emits is a FIXED lookup from the outcome and the phase actually outstanding --
+// never a recommendation about whether the promotion should proceed, and never an inference about what a
+// human meant. "Outstanding" is not the same as "absent": a phase that is PRESENT but not yet terminal is the
+// step still open, and it comes first.
 //
 // ABSENCE IS NORMAL, and this is the single most important thing the console has to communicate. The real
 // P227-A operation stops at Phase 232 because no human approved it. That is AUDIT_OPEN with ZERO blockers,
@@ -74,7 +76,7 @@ export const CONSOLE_DISCLAIMERS: readonly string[] = [
   'AUDIT_OPEN with zero blockers is the normal state of an unfinished chain, not a defect. It means the chain is consistent as far as it goes and simply has not reached a closed terminal state.',
   'AUDIT_CLOSED means the ten records are mutually consistent and each is sound by its own criteria. It does NOT mean the promotion happened, was correct, or was authorized by anyone in particular.',
   'Self-digests are not signatures. A party controlling every artifact can fabricate a bundle that audits as CLOSED; the proof-limit matrix inside the embedded Phase 241 report states each phase\'s honest limit.',
-  'The next steps are a FIXED lookup from the outcome and the first absent phase. They are not advice about whether the promotion should proceed, and no human decision is read, inferred or supplied here.',
+  'The next steps are a FIXED lookup from the outcome and the phase actually outstanding -- a phase that is present but not yet terminal comes before the first absent one. They are not advice about whether the promotion should proceed, and no human decision is read, inferred or supplied here.',
   'The console never echoes its input: no path, directory, filename, item id, approval id or value, identity, timestamp or secret appears in this report.',
 ];
 
@@ -437,9 +439,12 @@ const OUTCOME_STEP: Readonly<Record<ConsoleOutcome, string>> = {
   NOT_ELIGIBLE: 'There is no genuine Phase 231 gate in this intake, so there is no operation identity to audit anything against. Nothing can be concluded about the rest of the artifacts until it is supplied.',
 };
 
+const SHELL_NOTE =
+  'When running any of these tools with flags, invoke them directly -- `npx tsx src/ops/<tool>-cli.ts <flags>` -- which behaves the same on PowerShell, cmd and bash. `npm run <script> -- <flags>` is not portable: PowerShell consumes the first `--`, npm takes the flags as its own, and the tool runs with none of them.';
+
 const STANDING_STEPS: readonly string[] = [
   'Nothing in this console authorizes, schedules, performs or recommends a promotion run. It never reads the real Movies library, contacts Jellyfin, reads the secret approval file, or touches the network.',
-  'Every step above is a fixed lookup from the outcome and the first absent phase. None of it is advice about whether the promotion should proceed, and no human decision is read or inferred here.',
+  'Every step above is a fixed lookup from the outcome and the phase actually outstanding -- a phase that is present but not yet in its terminal state is the step still open, and comes before the first absent one. None of it is advice about whether the promotion should proceed, and no human decision is read or inferred here.',
   'Never delete or archive an artifact to clear a blocker. No valid record in this chain can express destruction, and a missing artifact is a worse position than a failing one.',
 ];
 
@@ -457,6 +462,10 @@ function buildNextSteps(
       // person past the step that is actually outstanding.
       ? `Phase ${nextRequiredPhase} is present and genuine but NOT in its terminal state, which is what holds this chain open. That is not a defect -- it is the step that is actually outstanding, and it is finished on its own terms before any later phase can exist. ${PHASE_NEXT_STEP[nextRequiredPhase]!}`
       : `The next artifact this chain needs is Phase ${nextRequiredPhase}. ${PHASE_NEXT_STEP[nextRequiredPhase]!}`);
+    // Only worth saying when a step above actually asks someone to run something. Passing flags through
+    // `npm run <script> -- <flags>` is not portable -- PowerShell eats the first `--`, npm takes the flags as
+    // its own, and the tool runs with none of them -- which reads as the tool ignoring the operator.
+    steps.push(SHELL_NOTE);
   }
   steps.push(...STANDING_STEPS);
   return steps;
