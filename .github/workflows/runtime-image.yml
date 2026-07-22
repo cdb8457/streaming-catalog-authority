@@ -1,0 +1,151 @@
+# Catalog Authority — production operator UI image and consumer release bundle.
+#
+# The daemon-backed work lives here because it cannot live anywhere else: the machines this project is
+# developed on do not all run a Docker daemon, and a smoke test that silently skips is not a smoke test.
+# Linux with Docker is the environment where "the image works" is a fact rather than a hope.
+#
+# PUBLISHING IS NOT PART OF CI. Building, smoke-testing and assembling run on every push and pull request;
+# pushing an image to a registry runs only for a published GitHub release or a deliberate manual dispatch
+# from a version tag, in a protected environment, and it refuses to publish a floating tag.
+
+name: Runtime image and release bundle
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the runtime image to GHCR. Only valid from a vX.Y.Z tag.
+        type: boolean
+        default: false
+  release:
+    types: [published]
+
+# Read-only by default. The one job that needs more asks for it explicitly.
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  IMAGE_NAME: ghcr.io/catalog-authority/catalog-authority-ops
+  # The only architecture this project can actually verify: it is what the CI runner is, so it is what the
+  # smoke test runs on. See docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md.
+  PUBLISH_PLATFORMS: linux/amd64
+
+jobs:
+  suites:
+    name: Typecheck and Phase 242-245 suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Phase 245, 244, 243, 242
+        run: |
+          npm run test:phase245-local
+          npm run test:phase244-local
+          npm run test:phase243-local
+          npm run test:phase242-local
+      - name: Operator UI authentication and boundary suites
+        run: |
+          npm run test:operator-ui-service
+          npm run test:operator-ui-local-auth-boundary
+          npm run test:operator-ui-auth-access-contract
+      - name: Compose files still resolve
+        run: |
+          docker compose -f docker-compose.runtime.yml config --quiet
+          docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml config --quiet
+
+  image:
+    name: Build and smoke the production image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build, contract-check, up, probe, down
+        run: bash deploy/ci/runtime-image-smoke.sh
+      - name: Container logs on failure
+        if: failure()
+        run: docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml logs --tail 200
+
+  bundle:
+    name: Assemble and validate the release bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Assemble and check
+        run: bash deploy/ci/release-bundle-check.sh dist/release-bundle
+      - name: Keep the bundle for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-authority-operator-ui-bundle
+          path: dist/release-bundle
+          retention-days: 14
+
+  publish:
+    name: Publish the release image
+    needs: [suites, image, bundle]
+    # The gate. A push to master or a pull request can never reach this job: it needs either a published
+    # GitHub release, or a manual dispatch that explicitly asks to publish AND is running from a version tag.
+    if: >-
+      github.event_name == 'release' ||
+      (github.event_name == 'workflow_dispatch' && inputs.publish && startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve and validate the release tag
+        id: tag
+        run: bash deploy/ci/resolve-release-tag.sh "${{ github.ref_name }}"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the pinned tag
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.runtime
+          platforms: ${{ env.PUBLISH_PLATFORMS }}
+          push: true
+          # Exactly one immutable tag. No `latest`, no branch tag, no moving alias.
+          tags: ${{ env.IMAGE_NAME }}:${{ steps.tag.outputs.tag }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.tag.outputs.tag }}
+            IMAGE_REVISION=${{ github.sha }}
+          provenance: true
+          sbom: true
+      - name: Assemble the bundle pinned to the published digest
+        run: bash deploy/ci/release-bundle-check.sh dist/release-bundle
+        env:
+          RELEASE_IMAGE_TAG: ${{ steps.tag.outputs.tag }}
+          RELEASE_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+      - name: Attach the bundle to the run
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-authority-operator-ui-bundle-${{ steps.tag.outputs.tag }}
+          path: dist/release-bundle

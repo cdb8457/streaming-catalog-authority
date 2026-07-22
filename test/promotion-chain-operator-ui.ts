@@ -475,8 +475,17 @@ test('setup, docs and package scripts make the install runnable without reading 
       'docker compose -f docker-compose.runtime.yml up -d', 'http://127.0.0.1:8099/', 'already exists']) {
       assert(setup.includes(required), `${script} covers ${required}`);
     }
-    for (const forbidden of ['unraid-real-library-promotion', '/mnt/user/media/Movies', 'jellyfin', 'git push', 'git tag', 'docker compose up']) {
+    for (const forbidden of ['unraid-real-library-promotion', '/mnt/user/media/Movies', 'jellyfin', 'git push', 'git tag']) {
       assert(!setup.toLowerCase().includes(forbidden.toLowerCase()), `${script} never does ${forbidden}`);
+    }
+    // The setup script prepares a stack; it never STARTS one. Banning the string would ban the instructions
+    // it prints, so the rule is about position: no line may INVOKE docker — at its start, or after a shell
+    // operator, or inside a substitution. A quoted mention inside an echo is exactly what should be there.
+    for (const line of setup.split(/\r?\n/)) {
+      const code = line.trim();
+      if (code.startsWith('#')) continue;
+      assert(!/(?:^|[;&|]\s*|\$\(\s*|`\s*)docker\s/.test(code),
+        `${script} prints docker commands but never runs one: ${code}`);
     }
   }
   const doc = read('docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md');
@@ -575,6 +584,10 @@ function assertBootstrapped(label: string, ws: string, stdout: string): Record<s
   for (const name of ['completion_secret', 'custodian_kek', 'postgres_password', 'admin_database_url', 'database_url'] as const) {
     assert(!stdout.includes(values[name]!), `${label}: ${name} is never printed`);
   }
+  // Staged under deploy/, the script is in a repository layout, where the runtime stack is one compose file
+  // among several and has to be named. (Phase 245 covers the same script at a bundle root, where it is not.)
+  assert(stdout.includes('docker compose -f docker-compose.runtime.yml up -d'),
+    `${label}: the printed start command names the runtime compose file`);
   assert(existsSync(join(ws, 'promotion-records')), `${label}: the artifact folder is created`);
   assertEq(readdirSync(join(ws, 'promotion-records')).length, 0, `${label}: and it is left empty`);
   assertEq(readdirSync(ws).sort().join(','), 'deploy,promotion-records,secrets', `${label}: nothing else is created`);
@@ -649,8 +662,11 @@ await test('end-to-end: the container stack serves the chain behind the token', 
     console.log('        (skipped: set PHASE244_DOCKER_SMOKE=1 to build and run the container stack; it takes minutes)');
     return;
   }
+  // The consumer stack runs a published image and has no build section (Phase 245), so building it from this
+  // checkout is the documented maintainer override — the same pair of files CI uses for its own smoke.
   const compose = (args: readonly string[], timeout = 900000) =>
-    spawnSync('docker', ['compose', '-f', 'docker-compose.runtime.yml', ...args], { cwd: root, encoding: 'utf8', timeout, shell: process.platform === 'win32' });
+    spawnSync('docker', ['compose', '-f', 'docker-compose.runtime.yml', '-f', 'docker-compose.runtime.build.yml', ...args],
+      { cwd: root, encoding: 'utf8', timeout, shell: process.platform === 'win32' });
   const up = compose(['up', '-d', '--build']);
   assertEq(up.status, 0, `stack starts: ${up.stderr ?? ''}`);
   try {

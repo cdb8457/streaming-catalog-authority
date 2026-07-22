@@ -6,9 +6,19 @@ Hermes, job queues, or UI — by design. The core stands alone.
 ## Run the operator UI on an ordinary computer
 
 One authenticated read-only web UI on `http://127.0.0.1:8099/`, including the **Promotion Record Chain**
-panel over your Phase 231–240 artifacts:
+panel over your Phase 231–240 artifacts. It runs a prebuilt, version-pinned image — you need **Docker** and
+nothing else. No checkout, no Node.js, no build.
 
-**Linux or macOS:**
+**Install Docker:** Docker Desktop on Windows or macOS, Docker Engine on Linux. Start it.
+
+**From the release bundle** (`catalog-authority-operator-ui`) — download, extract, then:
+
+| | |
+| --- | --- |
+| Linux, macOS | `./setup.sh` then `docker compose up -d` |
+| Windows | `powershell -ExecutionPolicy Bypass -File .\setup.ps1` then `docker compose up -d` |
+
+**From this checkout** — the same stack, the same pinned image:
 
 ```bash
 ./deploy/local-runtime-setup.sh                       # generate secrets, create ./promotion-records/
@@ -17,18 +27,32 @@ docker compose -f docker-compose.runtime.yml up -d    # postgres + operator UI
 docker compose -f docker-compose.runtime.yml down
 ```
 
-**Windows (Docker Desktop, PowerShell — no Bash needed):**
-
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\deploy\local-runtime-setup.ps1
 docker compose -f docker-compose.runtime.yml up -d
-# open http://127.0.0.1:8099/ and paste the printed operator token
 docker compose -f docker-compose.runtime.yml down
 ```
 
+Then open <http://127.0.0.1:8099/> and paste the operator token the setup script printed. That token lives in
+`./secrets/operator_ui_token` — a local file, mounted as a Docker secret, never an environment variable and
+never in a URL or a log. Re-running setup keeps every secret it already made, so it cannot lock you out.
+
+**Upgrading** is a deliberate edit of the image pin (`CATALOG_AUTHORITY_IMAGE`) followed by
+`docker compose up -d`; **rolling back** is the same edit in reverse, and it works because the pin is an
+immutable version tag or a digest rather than `latest`. Your secrets, database and artifacts survive both.
+
 Your artifact folder is mounted **read-only**; the UI performs no mutation, approval, execution or deletion,
-and contacts no media server or provider. Full setup, login, healthcheck, upgrade and hardening notes:
-[docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md).
+and contacts no media server or provider.
+
+- Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
+- Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
+
+**No image has been published to the registry yet.** Until a release runs, the pinned reference names an
+image that is not there, so build it from this checkout with the maintainer override:
+
+```bash
+docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
+```
 
 ## Run the tests
 

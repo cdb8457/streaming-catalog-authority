@@ -14,6 +14,11 @@
 # the promotion record chain is a panel inside this UI, behind the same operator token as every other
 # operational route.
 #
+# THE APP IMAGE IS PREBUILT AND VERSION-PINNED (never `latest`) — nothing here is built from source, so this
+# file works unchanged inside the release bundle, on a machine with no checkout and no Node.js. Maintainers
+# who want a local build add the override:
+#   docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
+#
 # THE PROMOTION RECORDS FOLDER is yours and is mounted READ-ONLY (`:ro`). The container cannot write to it,
 # and the path is fixed by configuration — no browser input, no upload, no form chooses it. Point it at a
 # different host folder with PROMOTION_RECORDS_HOST_DIR and restart.
@@ -57,7 +62,18 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
   app:
-    build: .
+    # A PREBUILT, VERSION-PINNED image. An ordinary install pulls this and never needs a source checkout, a
+    # Node.js toolchain or a build step. The default is a concrete version tag, never `latest`, so `up -d`
+    # cannot silently move you to a different build.
+    #
+    # Pin harder by digest (what the release bundle records for you):
+    #   CATALOG_AUTHORITY_IMAGE=ghcr.io/catalog-authority/catalog-authority-ops@sha256:<digest>
+    #
+    # Maintainers building from source use the documented override instead — see
+    # docker-compose.runtime.build.yml — which replaces this image with a locally built one.
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/catalog-authority/catalog-authority-ops:v1.0.0}
+    # PID 1 is a real init that reaps orphans; the app process still receives SIGTERM directly.
+    init: true
     restart: unless-stopped
     depends_on:
       postgres:

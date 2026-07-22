@@ -1,5 +1,5 @@
-// A small YAML reader for the Compose files in this repository, so tests can assert what a stack IS rather
-// than how its file happens to be typed.
+// A small YAML reader for the Compose files and CI workflows in this repository, so tests can assert what a
+// stack or a pipeline IS rather than how its file happens to be typed.
 //
 // Substring assertions over compose text are two things at once: a claim about configuration and an
 // accidental claim about formatting. `compose.includes('cap_drop:\n      - ALL')` fails on a CRLF checkout
@@ -7,10 +7,11 @@
 // wrong service. Parsing separates the two: line endings, indentation width, key order and quoting stop
 // mattering, and the assertion lands on the value Docker would actually read.
 //
-// This handles the subset the repository's compose files use — block maps, block sequences, flow sequences
-// and flow maps, quoted and plain scalars, comments — and nothing else. It is deliberately not a general
-// YAML implementation: anchors, multi-line scalars, multiple documents and tags are not compose idioms here,
-// and a parser that silently guessed at them would be worse than one that refuses.
+// This handles the subset those files use — block maps, block sequences, flow sequences and flow maps,
+// quoted and plain scalars, literal/folded block scalars (`run: |`, the shape every workflow step takes),
+// comments — and nothing else. It is deliberately not a general YAML implementation: anchors, multiple
+// documents and tags are not idioms here, and a parser that silently guessed at them would be worse than one
+// that refuses.
 
 export type YamlValue = string | number | boolean | null | YamlValue[] | { readonly [key: string]: YamlValue };
 export type YamlMap = { readonly [key: string]: YamlValue };
@@ -19,7 +20,11 @@ export class ComposeYamlError extends Error {}
 
 interface Line {
   readonly indent: number;
+  /** The line with its comment stripped and left-trimmed — what structure is read from. */
   readonly text: string;
+  /** The line exactly as written, minus trailing whitespace — what a block scalar's content is taken from. */
+  readonly raw: string;
+  readonly isComment: boolean;
   readonly number: number;
 }
 
@@ -43,15 +48,50 @@ function stripComment(raw: string): string {
   return raw;
 }
 
-/** Split on any line ending, so a CRLF checkout parses identically to an LF one. */
+/**
+ * Split on any line ending, so a CRLF checkout parses identically to an LF one. Comment lines are KEPT here
+ * and skipped during structural parsing, because a `#` inside a block scalar is shell, not YAML.
+ */
 function readLines(text: string): Line[] {
   const lines: Line[] = [];
-  text.split(/\r?\n/).forEach((raw, index) => {
-    const withoutComment = stripComment(raw).replace(/\s+$/, '');
-    if (withoutComment.trim() === '') return;
-    lines.push({ indent: withoutComment.length - withoutComment.trimStart().length, text: withoutComment.trimStart(), number: index + 1 });
+  let blockIndent: number | null = null;
+  text.split(/\r?\n/).forEach((source, index) => {
+    const raw = source.replace(/\s+$/, '');
+    if (raw.trim() === '') return;
+    const indent = raw.length - raw.trimStart().length;
+    const inBlockScalar = blockIndent !== null && indent > blockIndent;
+    if (!inBlockScalar) blockIndent = null;
+    const line: Line = {
+      indent,
+      text: stripComment(raw).replace(/\s+$/, '').trimStart(),
+      raw,
+      isComment: raw.trimStart().startsWith('#'),
+      number: index + 1,
+    };
+    if (line.isComment && !inBlockScalar) return;
+    lines.push(line);
+    if (inBlockScalar) return;
+    const key = KEY.exec(line.text);
+    if (key !== null && key[4] !== undefined && BLOCK_SCALAR.test(key[4].trim())) blockIndent = indent;
   });
   return lines;
+}
+
+const BLOCK_SCALAR = /^([|>])([+-]?)(\d*)$/;
+
+/** `key: |` and friends — the content is the more-indented lines below, taken verbatim. */
+function parseBlockScalar(lines: readonly Line[], from: number, parentIndent: number, header: string): { value: string; next: number } {
+  const match = BLOCK_SCALAR.exec(header.trim());
+  if (match === null) throw new ComposeYamlError(`unsupported block scalar header: ${header}`);
+  const [, style, chomping] = match;
+  let end = from;
+  while (end < lines.length && lines[end]!.indent > parentIndent) end++;
+  const body = lines.slice(from, end);
+  if (body.length === 0) return { value: '', next: end };
+  const contentIndent = Math.min(...body.map((line) => line.indent));
+  const rendered = body.map((line) => line.raw.slice(contentIndent));
+  const joined = style === '>' ? rendered.join(' ') : rendered.join('\n');
+  return { value: chomping === '-' ? joined : `${joined}\n`, next: end };
 }
 
 const KEY = /^(?:"([^"]+)"|'([^']+)'|([^\s:#][^:]*?)):(?:\s+(.*))?$/;
@@ -150,6 +190,12 @@ function parseMap(lines: readonly Line[], from: number, indent: number): { value
     if (match === null) throw new ComposeYamlError(`expected a "key: value" mapping on line ${line.number}: ${line.text}`);
     const key = match[1] ?? match[2] ?? match[3]!;
     const inline = match[4];
+    if (inline !== undefined && BLOCK_SCALAR.test(inline.trim())) {
+      const block = parseBlockScalar(lines, i + 1, indent, inline);
+      map[key] = block.value;
+      i = block.next;
+      continue;
+    }
     if (inline !== undefined && inline.trim() !== '') {
       map[key] = parseScalar(inline);
       i++;
@@ -173,12 +219,19 @@ function parseSequence(lines: readonly Line[], from: number, indent: number): { 
   let i = from;
   while (i < lines.length && lines[i]!.indent === indent && (lines[i]!.text.startsWith('- ') || lines[i]!.text === '-')) {
     const line = lines[i]!;
-    const content = line.text === '-' ? '' : line.text.slice(2).trim();
+    const dashOffset = line.text === '-' ? 1 : line.text.length - line.text.slice(1).trimStart().length;
+    const content = line.text.slice(dashOffset).trim();
     // A sequence item that is itself a mapping (`- key: value`) may continue on the following lines, which
     // are indented to the item's content column rather than to the dash.
     if (content !== '' && KEY.exec(content) !== null) {
-      const contentIndent = indent + 2;
-      const synthetic: Line[] = [{ indent: contentIndent, text: content, number: line.number }];
+      const contentIndent = indent + dashOffset;
+      const synthetic: Line[] = [{
+        indent: contentIndent,
+        text: content,
+        raw: `${' '.repeat(contentIndent)}${content}`,
+        isComment: false,
+        number: line.number,
+      }];
       let j = i + 1;
       while (j < lines.length && lines[j]!.indent >= contentIndent) { synthetic.push(lines[j]!); j++; }
       items.push(parseMap(synthetic, 0, contentIndent).value);

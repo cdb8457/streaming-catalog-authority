@@ -75,9 +75,18 @@ docker compose -f docker-compose.runtime.yml ps
 curl -fsS http://127.0.0.1:8099/healthz
 ```
 
-**Upgrading:** `git pull` then `docker compose -f docker-compose.runtime.yml up -d --build`. Your secrets,
-database volume and artifact folder are untouched by a rebuild. Roll back by checking out the previous commit
-and rebuilding.
+**Upgrading and rolling back** are Phase 245's, because the stack no longer builds from source: the app image
+is prebuilt and version-pinned, so an upgrade is a deliberate change to `CATALOG_AUTHORITY_IMAGE` followed by
+`docker compose -f docker-compose.runtime.yml up -d`, and a rollback is the same change in reverse. Your
+secrets, database volume and artifact folder are untouched by either. Maintainers who want to run their own
+build add the documented override:
+
+```bash
+docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
+```
+
+See [PHASE_245_CONSUMER_RELEASE_IMAGE.md](PHASE_245_CONSUMER_RELEASE_IMAGE.md) for the image, tag and digest
+policy and for the download-and-run release bundle.
 
 ### Safe defaults
 

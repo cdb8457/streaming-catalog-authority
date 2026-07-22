@@ -1,8 +1,13 @@
 # Catalog Authority - one-command setup for the ordinary-computer runtime stack (Windows / PowerShell).
 #
+# In this repository, where the runtime stack is one of several compose files and must be named:
 #   powershell -ExecutionPolicy Bypass -File .\deploy\local-runtime-setup.ps1
 #   docker compose -f docker-compose.runtime.yml up -d
 #   open http://127.0.0.1:8099/
+#
+# In the release bundle, where it is the only one:
+#   powershell -ExecutionPolicy Bypass -File .\setup.ps1
+#   docker compose up -d
 #
 # This is the native Windows twin of deploy/local-runtime-setup.sh, for a machine running Docker Desktop
 # without a Bash shell. It does the same things in the same order and produces byte-identical secret files:
@@ -18,7 +23,13 @@
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$RepoRoot = Split-Path -Parent $PSScriptRoot
+# This script ships twice: here under deploy\, and at the root of the release bundle, where there is no
+# deploy\ directory to step out of. Both must land in the folder that holds the Compose file.
+$InRepository = (Split-Path -Leaf $PSScriptRoot) -eq 'deploy'
+$RepoRoot = if ($InRepository) { Split-Path -Parent $PSScriptRoot } else { $PSScriptRoot }
+# The repository holds several compose files, so the runtime one has to be named; the bundle holds exactly
+# one, and `docker compose` finds it by itself.
+$ComposeArgs = if ($InRepository) { '-f docker-compose.runtime.yml ' } else { '' }
 $SecretsDir = Join-Path $RepoRoot 'secrets'
 $RecordsSetting = if ($env:PROMOTION_RECORDS_HOST_DIR) { $env:PROMOTION_RECORDS_HOST_DIR } else { './promotion-records' }
 $RecordsDir = if ([System.IO.Path]::IsPathRooted($RecordsSetting)) { $RecordsSetting } else { Join-Path $RepoRoot $RecordsSetting }
@@ -96,7 +107,7 @@ Write-Host "  ready     $RecordsSetting (mounted read-only into the container)"
 
 Write-Host ''
 Write-Host 'Next:'
-Write-Host '  docker compose -f docker-compose.runtime.yml up -d'
+Write-Host "  docker compose ${ComposeArgs}up -d"
 Write-Host '  open http://127.0.0.1:8099/'
 Write-Host ''
 Write-Host "Your operator token (paste it into the UI's Operator token box):"
@@ -106,4 +117,4 @@ Write-Host ''
 Write-Host "Put your Phase 231-240 chain artifacts in $RecordsSetting to see them in the"
 Write-Host 'Promotion Record Chain panel. The container reads that folder and can never write to it.'
 Write-Host ''
-Write-Host 'Stop with:  docker compose -f docker-compose.runtime.yml down'
+Write-Host "Stop with:  docker compose ${ComposeArgs}down"
