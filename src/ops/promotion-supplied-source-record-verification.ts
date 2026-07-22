@@ -89,6 +89,8 @@ const REPORT_SPECS: Readonly<Record<number, { key: string; reportId: string; dig
   235: { key: 'closure', reportId: 'phase-235-promotion-operation-closure-record', digestField: 'closureDigest' },
 };
 const GATE_REPORT_ID = 'phase-231-promotion-execution-authorization';
+// The five operation digests, named as Phase 237 publishes them in its own bindings.
+const OPERATION_DIGEST_FIELDS: readonly string[] = ['approvalIdDigest', 'itemDigest', 'sourceDigest', 'destinationDigest', 'planDigest'];
 
 export interface SuppliedReports {
   readonly gate?: unknown;
@@ -202,7 +204,14 @@ export interface SuppliedSourceVerificationReport {
 // supplied -- it holds no records and cannot check -- so a commitment computed under any other convention will
 // simply not match here, and that is reported as a mismatch rather than silently tolerated.
 export function canonicalSourceRecordDigest(record: unknown): string {
-  return digest('phase-238-source-record-content', JSON.stringify(canonicalize(record, new WeakSet())));
+  return digest('phase-238-source-record-content', canonicalJson(record));
+}
+
+// The canonicalization itself, exported so any later phase that needs a deterministic serialization uses THIS
+// rule rather than growing a second copy of it. Phase 239 digests its custody events with it under its own
+// scope; the scope differs, the serialization does not.
+export function canonicalJson(value: unknown): string {
+  return JSON.stringify(canonicalize(value, new WeakSet()));
 }
 
 // Key-sorted deep copy. Cycle-safe: a revisited object becomes a fixed marker rather than recursing forever,
@@ -236,6 +245,7 @@ export function buildSuppliedSourceVerification(input: SuppliedSourceVerificatio
   if (commitmentEligible) {
     boundDigests['commitment-report'] = commitment.provenanceDigest!;
     boundDigests['source-commitment'] = commitment.sourceCommitmentDigest!;
+    for (const f of OPERATION_DIGEST_FIELDS) boundDigests[f] = commitment.operationDigests[f]!;
   }
 
   // (2) The manifest the commitment was made over. The Phase 237 report never echoes a committed content
@@ -494,12 +504,17 @@ interface ValidatedCommitment {
   readonly ok: boolean;
   readonly provenanceDigest: string | undefined;
   readonly sourceCommitmentDigest: string | undefined;
+  // The five operation digests, PROPAGATED from the Phase 237 report's own bindings -- which Phase 237
+  // validated against the Phase 236 replay. Republished here so a later phase can bind to this operation
+  // without re-reading an upstream report, and taken from the validated report rather than from the manifest,
+  // whose operation-digest fields are NOT covered by the source-commitment digest.
+  readonly operationDigests: Readonly<Record<string, string | undefined>>;
 }
 
 // The commitment must be the genuine Phase 237 report AND sound on its whole body -- the standing rule since
 // the Phase 234/235 hardening. Every failure here is an INELIGIBLE COMMITMENT, not an invalid submission.
 function validateCommitmentReport(value: unknown, blockers: string[]): ValidatedCommitment {
-  const none: ValidatedCommitment = { ok: false, provenanceDigest: undefined, sourceCommitmentDigest: undefined };
+  const none: ValidatedCommitment = { ok: false, provenanceDigest: undefined, sourceCommitmentDigest: undefined, operationDigests: {} };
   if (value === undefined) { blockers.push('COMMITMENT_RECORD_MISSING'); return none; }
   const obj = asObject(value);
   if (obj.report !== COMMITMENT_REPORT_ID) { blockers.push('COMMITMENT_RECORD_INVALID'); return none; }
@@ -529,7 +544,14 @@ function validateCommitmentReport(value: unknown, blockers: string[]): Validated
   const commitmentDigest = asSha256(obj.sourceCommitmentDigest);
   if (commitmentDigest === undefined) { blockers.push('COMMITMENT_RECORD_COMMITMENT_DIGEST_MISSING'); ok = false; }
 
-  return ok ? { ok: true, provenanceDigest: stated, sourceCommitmentDigest: commitmentDigest } : none;
+  const bound = asObject(obj.boundDigests);
+  const operationDigests: Record<string, string | undefined> = {};
+  for (const f of OPERATION_DIGEST_FIELDS) {
+    operationDigests[f] = asSha256(bound[f]);
+    if (operationDigests[f] === undefined) { blockers.push('COMMITMENT_RECORD_OPERATION_DIGESTS_INCOMPLETE'); ok = false; }
+  }
+
+  return ok ? { ok: true, provenanceDigest: stated, sourceCommitmentDigest: commitmentDigest, operationDigests } : none;
 }
 
 // The manifest's source-record entries, parsed strictly: exactly four, ascending, no duplicates, exactly the
