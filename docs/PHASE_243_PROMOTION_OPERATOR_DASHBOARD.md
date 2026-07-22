@@ -64,13 +64,44 @@ Discovery is the Phase 242 allowlist, shared through `promotion-operator-console
 have one set of semantics rather than two that can drift. Under an allowlisted filename, anything that is not
 a **bounded regular file** is refused rather than followed or read:
 
-* a **symlink** — `lstat`, not `stat`, so a link pointing outside the named directory is never resolved;
+* a **symlink**, so nothing outside the named directory is ever resolved into an artifact;
 * a **directory**, device or socket;
 * a file larger than `CONSOLE_INTAKE_MAX_ARTIFACT_BYTES` (1 MiB — three orders of magnitude above a real
   artifact, and far too small to hurt).
 
 All three are reported as `MALFORMED`, never `ABSENT`: an operator whose artifact was refused must be told,
 not left reading "the phase has not happened yet".
+
+#### The check binds to the object, not the name
+
+Inspecting a path and then separately opening that path is a **check/use race**: between the two calls the
+name can be repointed at a symlink, and the open follows it, so the object validated and the object read are
+different things. A name is not a handle.
+
+The read is therefore anchored to **one opened descriptor**. The name is inspected without following links,
+the descriptor is opened (with `O_NOFOLLOW` where the platform has it), and then everything that matters is
+re-established on the **opened object**: it must be a regular file by `fstat`, and it must be the *same
+object* the no-follow inspection saw — compared on `ino` as a `BigInt`, and on `dev` only when both stats
+report one (a path-based stat leaves `dev` zero on Windows while the handle-based stat fills in the volume
+serial). The bytes are then read from that same descriptor, and it is closed on every path out including
+every refusal.
+
+The property this buys is stronger than "the open did not follow a link": **the bytes parsed came from the
+object that was validated, or nothing was parsed at all.** A swap during the window changes the identity and
+fails closed. A swap to a link pointing back at the very same file is harmless, because that file is the one
+already validated.
+
+`O_NOFOLLOW` does not exist on Windows, so there the identity comparison *is* the whole no-follow guarantee —
+which is why it is not optional. Where identity cannot be established at all (a filesystem reporting no
+inode) **and** the platform has no `O_NOFOLLOW` either, there is no way to know what was opened, so the read
+is refused.
+
+Reads are bounded twice: the buffer is one byte past the size that was just validated, so a file that **grows**
+inside the window fills it and is refused rather than read short — and no amount of growth turns into an
+unbounded allocation, since the buffer is sized by the validated size and capped besides.
+
+`readBoundedRegularFile` accepts an `afterInspect` hook that fires exactly in the window. It exists so the
+race can be driven **deterministically** from a test rather than hoped at; production callers pass nothing.
 
 ## Security headers
 
@@ -123,15 +154,19 @@ to the same bar, and the Phase 242 intake, so discovery is shared rather than co
 
 ## Tests
 
-`npm run test:phase243-local` — 20 cases: the page states the console verdict unchanged for all four outcomes
+`npm run test:phase243-local` — 25 cases: the page states the console verdict unchanged for all four outcomes
 with every blocker, step and proof limit reproduced; an unfinished chain presented as normal; accessibility
 and mobile structure; artifacts stuffed with `<script>`, `onerror=`, `javascript:`, `<iframe>` and `<form>`
 reaching nothing; live/network/location payloads failing closed unechoed; loopback-only binding across eight
 rejected hosts; bounded ports and a port already in use failing safely; traversal, encoded, absolute-URL,
 null-byte, query, fragment and oversized targets all refused over a raw socket; non-GET methods and request
 bodies buying nothing; security headers on every route; the health/status/manifest contracts; symlink,
-directory and oversized-file intake refusal; a TOCTOU case proving the served bytes do not change when the
-directory is rewritten mid-flight; redaction across every route and header; the established operator UI
+directory and oversized-file intake refusal; **four check/use-window cases driven deterministically through
+the read hook** — a name swapped to a symlink, a different regular file atomically renamed over it, a file
+grown past the cap with the allocation measured, and the same treatment for the explicit bundle, each of
+which a stat-then-`readFileSync` reader fails; a descriptor-leak run of 3000 reads across every refusal
+branch; a TOCTOU case proving the served bytes do not change when the directory is rewritten mid-flight
+**after** launch; redaction across every route and header; the established operator UI
 boundaries unrelaxed; clean shutdown with the port provably reusable; and end-to-end launches over the
 **actual P227-A chain** (`AUDIT_OPEN`, healthy, outstanding Phase 232, never headlined closed) and an
 anchorless chain (`NOT_ELIGIBLE`, `503`).

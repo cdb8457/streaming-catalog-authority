@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { connect } from 'node:net';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -10,7 +10,12 @@ import {
   CONSOLE_PHASES,
   type OperatorConsoleReport,
 } from '../src/ops/promotion-operator-console.js';
-import { buildConsoleIntake, CONSOLE_INTAKE_MAX_ARTIFACT_BYTES } from '../src/ops/promotion-operator-console-intake.js';
+import {
+  buildConsoleIntake,
+  CONSOLE_INTAKE_MAX_ARTIFACT_BYTES,
+  ConsoleIntakeError,
+  readBoundedRegularFile,
+} from '../src/ops/promotion-operator-console-intake.js';
 import {
   buildDashboardManifest,
   buildDashboardStatus,
@@ -421,6 +426,166 @@ await test('adversarial: a symlink, a directory or an oversized file under an al
     const big = buildOperatorConsole(buildConsoleIntake({ dir: bigDir }));
     assertEq(big.artifacts.find((a) => a.phase === 237)!.status, 'MALFORMED', 'an oversized artifact is refused');
     assert(!JSON.stringify(big).includes('pppppppppp'), 'and never parsed into anything');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// THE CHECK/USE WINDOW ITSELF. Inspecting a path and then separately opening it is a race: between the two
+// the name can be repointed, and the open follows it. A physical race is not reproducible, so these drive the
+// window deterministically through the read hook, which fires at exactly the moment a swap would have to
+// happen to matter. Every case here passes against a descriptor-anchored read and FAILS against a
+// stat-then-readFileSync one, which is the whole point of having them.
+await test('adversarial: a name swapped to a symlink inside the check/use window is refused, not followed', () => {
+  const root = workspace();
+  try {
+    const chain = buildSyntheticChain(root);
+    const dir = join(root, 'race');
+    layout(dir, chain);
+    const target = join(dir, CONSOLE_ARTIFACT_FILENAMES[235]![0]!);
+
+    const secretPath = join(root, 'outside-the-intake.json');
+    const SECRET = 'artifact-from-outside-the-named-directory';
+    writeFileSync(secretPath, JSON.stringify({ report: 'phase-235-promotion-operation-closure-record', smuggled: SECRET }));
+    const outsideDir = join(root, 'outside-dir');
+    mkdirSync(outsideDir, { recursive: true });
+
+    let linkKind: 'file' | 'junction' | null = null;
+    const report = buildOperatorConsole(buildConsoleIntake({ dir }, {
+      afterInspect: (path) => {
+        if (path !== target || linkKind !== null) return;
+        // The file was a genuine, bounded, regular artifact when it was inspected a moment ago.
+        rmSync(target);
+        try { symlinkSync(secretPath, target, 'file'); linkKind = 'file'; }
+        catch {
+          try { symlinkSync(outsideDir, target, 'junction'); linkKind = 'junction'; }
+          catch { writeFileSync(target, JSON.stringify(chain['235']!)); }
+        }
+      },
+    }));
+
+    if (linkKind === null) { console.log('        (link swap skipped: this host permits no link creation at all)'); return; }
+    assertEq(report.artifacts.find((a) => a.phase === 235)!.status, 'MALFORMED',
+      `a ${linkKind} link swapped in during the window is refused`);
+    assert(report.blockerCodes.includes('CONSOLE_PHASE_235_ARTIFACT_MALFORMED'), 'and reported as a defect');
+    assertEq(report.overall, 'AUDIT_INVALID', 'so the chain never reads as complete over a followed link');
+    if (linkKind === 'file') {
+      assert(!JSON.stringify(report).includes(SECRET), 'and the file outside the intake is never read');
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('adversarial: a different file swapped over the name inside the window is refused on every platform', () => {
+  const root = workspace();
+  try {
+    const chain = buildSyntheticChain(root);
+    const dir = join(root, 'race');
+    layout(dir, chain);
+    const target = join(dir, CONSOLE_ARTIFACT_FILENAMES[236]![0]!);
+
+    // A decoy that exists at the same time as the real artifact, so the two objects are distinct beyond any
+    // doubt -- no inode reuse, no coincidence. It is a PERFECTLY VALID Phase 236 report: the only thing wrong
+    // with it is that it is not the object that was validated.
+    const decoy = join(root, 'decoy.json');
+    writeFileSync(decoy, JSON.stringify(chain['236']!));
+    let swapped = false;
+
+    const report = buildOperatorConsole(buildConsoleIntake({ dir }, {
+      afterInspect: (path) => {
+        if (path !== target || swapped) return;
+        swapped = true;
+        renameSync(decoy, target);   // atomic replace: the name now denotes a different object
+      },
+    }));
+    assertEq(swapped, true, 'precondition: the window was actually driven');
+    assertEq(report.artifacts.find((a) => a.phase === 236)!.status, 'MALFORMED',
+      'the object read must be the object validated, or nothing is read');
+    assertEq(report.overall, 'AUDIT_INVALID', 'and the swap fails closed');
+    // A stat-then-readFileSync implementation would have parsed the decoy happily and reported PRESENT.
+    assert(!report.artifacts.find((a) => a.phase === 236)!.usable, 'the swapped artifact never reaches the audit');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('adversarial: a file that grows inside the window is refused without an unbounded allocation', () => {
+  const root = workspace();
+  try {
+    const chain = buildSyntheticChain(root);
+    const dir = join(root, 'race');
+    layout(dir, chain);
+    const target = join(dir, CONSOLE_ARTIFACT_FILENAMES[237]![0]!);
+    const validatedSize = statSync(target).size;
+    // Built BEFORE anything is measured, so the only buffer allocated inside the measured window is the
+    // reader's own. Appending a Buffer rather than a string keeps the hook itself allocation-free.
+    const growth = Buffer.alloc(CONSOLE_INTAKE_MAX_ARTIFACT_BYTES * 4, 0x78);
+    let grown = false;
+
+    const before = process.memoryUsage().arrayBuffers;
+    const report = buildOperatorConsole(buildConsoleIntake({ dir }, {
+      afterInspect: (path) => {
+        if (path !== target || grown) return;
+        grown = true;
+        appendFileSync(target, growth);   // small and bounded when inspected; 4 MiB by the time it is opened
+      },
+    }));
+    const allocated = process.memoryUsage().arrayBuffers - before;
+
+    assertEq(grown, true, 'precondition: the window was actually driven');
+    assert(statSync(target).size > CONSOLE_INTAKE_MAX_ARTIFACT_BYTES * 4, 'precondition: the file really did grow past the cap');
+    assertEq(report.artifacts.find((a) => a.phase === 237)!.status, 'MALFORMED', 'growth past the validated size is refused');
+    assertEq(report.overall, 'AUDIT_INVALID', 'and fails closed');
+    assert(!JSON.stringify(report).includes('xxxxxxxxxx'), 'none of the appended bytes reach the report');
+    // The read buffer is one byte past the size that was VALIDATED -- a couple of kilobytes -- so a 4 MiB
+    // file cannot cost 4 MiB, or even the 1 MiB cap, of buffer.
+    assert(allocated < CONSOLE_INTAKE_MAX_ARTIFACT_BYTES,
+      `the allocation stays bounded by the validated size (${validatedSize} bytes), not by what the file became: allocated ${allocated}`);
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('adversarial: the explicit bundle is anchored to a descriptor exactly as artifacts are', () => {
+  const root = workspace();
+  try {
+    const chain = buildSyntheticChain(root);
+    const bundlePath = join(root, 'bundle.json');
+    writeFileSync(bundlePath, JSON.stringify({ 231: chain['231']!, 232: chain['232']! }));
+    const decoy = join(root, 'decoy-bundle.json');
+    writeFileSync(decoy, JSON.stringify(chain));
+
+    // Unswapped, it reads normally.
+    const clean = buildOperatorConsole(buildConsoleIntake({ bundle: bundlePath }));
+    assertEq(clean.overall, 'AUDIT_OPEN', 'precondition: the real bundle reads');
+    assertEq(clean.presentCount, 2, 'as a two-artifact prefix');
+
+    // Swapped inside the window, it is refused rather than read -- and the refusal never names the path.
+    let threw: unknown;
+    try {
+      buildConsoleIntake({ bundle: bundlePath }, { afterInspect: () => { renameSync(decoy, bundlePath); } });
+    } catch (err) { threw = err; }
+    assert(threw instanceof ConsoleIntakeError, 'a swapped bundle is refused');
+    assertEq((threw as ConsoleIntakeError).code, 'CONSOLE_INTAKE_BUNDLE_UNREADABLE', 'with the bundle refusal code');
+    assertNoLeak((threw as Error).message, 'bundle refusal message');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+await test('descriptors do not leak: thousands of reads across every refusal branch keep working', () => {
+  const root = workspace();
+  try {
+    const good = join(root, 'good.json');
+    writeFileSync(good, JSON.stringify({ report: 'ok' }));
+    const dirEntry = join(root, 'a-directory');
+    mkdirSync(dirEntry, { recursive: true });
+    const missing = join(root, 'not-there.json');
+    const oversized = join(root, 'oversized.json');
+    writeFileSync(oversized, 'z'.repeat(CONSOLE_INTAKE_MAX_ARTIFACT_BYTES + 1));
+
+    // Every path through the reader, thousands of times. A descriptor left open on any branch exhausts the
+    // process long before this finishes; a leak shows up as EMFILE/EBADF rather than a clean refusal.
+    for (let i = 0; i < 3000; i++) {
+      assertEq(readBoundedRegularFile(good).ok, true, `read ${i} succeeds`);
+      assertEq(readBoundedRegularFile(dirEntry).ok, false, `directory ${i} refused`);
+      assertEq(readBoundedRegularFile(missing).ok, false, `missing ${i} refused`);
+      assertEq(readBoundedRegularFile(oversized).ok, false, `oversized ${i} refused`);
+      assertEq(readBoundedRegularFile(good, { afterInspect: () => { renameSync(good, good); } }).ok, true, `hooked ${i} still succeeds`);
+    }
+    const final = readBoundedRegularFile(good);
+    assert(final.ok && JSON.parse(final.text).report === 'ok', 'and the reader is still healthy at the end');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
