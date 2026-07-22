@@ -288,6 +288,24 @@ The gate is structural, not a convention:
 The Phase 245 remediation suite parses the workflow and asserts each of those, and executes the gate itself
 against every refusal case.
 
+### Running the shell steps on Windows
+
+`bash` on a Windows PATH is normally `C:\Windows\System32\bash.exe` — the WSL launcher, not Git Bash. It
+answers `bash --version` as GNU bash 5.2 and then either cannot open a script at a Windows path (exit 127,
+`No such file or directory`) or, when the path is reachable as `/mnt/c/...`, runs the whole step inside the
+Linux distro against a `node_modules` built for win32 — which surfaces to the operator as a broken esbuild
+install rather than as the wrong shell. Which shell a developer got depended on whether they typed the command
+into PowerShell or into Git Bash.
+
+`src/ops/usable-shell.ts` answers the question once, and answers it by *doing* the thing: it writes a probe
+script into a throwaway directory whose name contains a space, runs each candidate against it, and requires
+the sentinel back on stdout. WSL bash fails that probe and Git for Windows bash passes it; on Linux and macOS
+the first candidate — PATH `bash` — passes immediately, so nothing changes there. `npm run
+release:bundle-check` goes through `src/ops/run-with-bash-cli.ts`, which resolves the shell that way and
+passes the script's exit code back unchanged; the suites that execute shipped scripts resolve theirs the same
+way. A host with no usable bash fails the suites rather than skipping them, because a host that cannot run a
+`.sh` file cannot run this project's release steps either.
+
 **The daemon-backed results are CI-required.** The machine this phase was developed on has the Docker CLI but
 no running daemon, so the image was never built or run here. That is recorded as an unmet check rather than
 papered over: the local suite asserts the *contract* (the Dockerfile's structure, the Compose selection, the

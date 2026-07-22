@@ -9,15 +9,20 @@
 # It requires `contents: write`, which is why no other job has it.
 set -euo pipefail
 
-cd "$(dirname "$0")/../.."
+fail() { echo "FAIL: $1" >&2; exit 1; }
 
+cd "$(dirname "$0")/../.." || fail "cannot reach the repository root from $0"
+
+# Every path is quoted, everywhere, so a directory a user named with a space in it is one argument rather
+# than two. Both `C:/dir` and `C:\dir` reach here intact: the value arrives through argv, so bash performs no
+# escape processing on it, and Git Bash resolves either spelling.
 ARCHIVE_DIR="${1:-dist/release-archive}"
 : "${RELEASE_TAG:?RELEASE_TAG is required — it comes from the release-ref gate, never from github.ref_name}"
 : "${ARCHIVE:?ARCHIVE is required — it comes from the release-ref gate}"
 
-fail() { echo "FAIL: $1" >&2; exit 1; }
-
-cd "${ARCHIVE_DIR}"
+# A missing directory is a stated refusal rather than a raw `cd` error, so a failed release says what to fix.
+[ -d "${ARCHIVE_DIR}" ] || fail "no archive directory at ${ARCHIVE_DIR}"
+cd "${ARCHIVE_DIR}" || fail "cannot enter the archive directory ${ARCHIVE_DIR}"
 
 [ -f "${ARCHIVE}" ] || fail "no archive at ${ARCHIVE_DIR}/${ARCHIVE}"
 [ -f "${ARCHIVE}.sha256" ] || fail "no checksum at ${ARCHIVE_DIR}/${ARCHIVE}.sha256"

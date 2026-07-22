@@ -15,6 +15,15 @@ import {
   type YamlMap,
 } from './helpers/compose-yaml.js';
 import {
+  NO_USABLE_BASH,
+  describeRun,
+  removeQuietly,
+  runScript,
+  usableBash,
+  usablePowerShell,
+  type Shell,
+} from '../src/ops/usable-shell.js';
+import {
   OperatorUiServiceConfigError,
   createOperatorUiServiceServer,
   validateOperatorUiServiceConfig,
@@ -516,8 +525,6 @@ test('the README points an ordinary operator at the runtime stack, on either kin
 // copy cannot reach the repository's real ./secrets, and the test asserts that too.
 // ---------------------------------------------------------------------------------------------------------
 
-interface BootstrapShell { readonly command: string; readonly args: (script: string) => string[] }
-
 /** Stage a setup script alone in a throwaway repository-shaped directory. */
 function stageSetupWorkspace(scriptName: string): string {
   const ws = mkdtempSync(join(tmpdir(), 'phase244-bootstrap-'));
@@ -526,34 +533,25 @@ function stageSetupWorkspace(scriptName: string): string {
   return ws;
 }
 
-/** The first interpreter that can actually execute a staged script here — not merely one that is installed. */
-function usableShell(candidates: readonly BootstrapShell[], probeName: string, probeBody: string): BootstrapShell | null {
-  const ws = mkdtempSync(join(tmpdir(), 'phase244-probe-'));
-  try {
-    const probe = join(ws, probeName);
-    writeFileSync(probe, probeBody);
-    for (const shell of candidates) {
-      const run = spawnSync(shell.command, shell.args(probe.replace(/\\/g, '/')), { cwd: ws, encoding: 'utf8', timeout: 120000 });
-      if (run.status === 0 && (run.stdout ?? '').includes('phase244-ok')) return shell;
-    }
-    return null;
-  } finally { rmSync(ws, { recursive: true, force: true }); }
+// Which interpreter can actually execute a staged script here — not merely which one is installed — is
+// decided by src/ops/usable-shell.ts, the same module the shipped `release:bundle-check` step resolves its
+// bash with. It used to be answered separately in each file, and the copy that answered it with
+// `bash --version` shipped a test that passed or failed depending on which terminal `npm test` was typed
+// into.
+//
+// A missing bash is a failure rather than a skip — every shell step this project ships is bash, so a host
+// that has none cannot run the setup script it is being asked about. PowerShell is genuinely absent on a
+// Linux runner, so that one skips and says so.
+function bashOrFail(): Shell {
+  const shell = usableBash();
+  if (shell === null) throw new Error(NO_USABLE_BASH);
+  return shell;
 }
+const powershellShell = usablePowerShell();
 
-const bashShell = usableShell(
-  [{ command: 'bash', args: (s) => [s] },
-   { command: `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Git\\bin\\bash.exe`, args: (s) => [s] }],
-  'probe.sh', 'echo phase244-ok\n');
-
-const powershellShell = usableShell(
-  [{ command: 'pwsh', args: (s) => ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', s] },
-   { command: 'powershell', args: (s) => ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', s] }],
-  'probe.ps1', "Write-Host 'phase244-ok'\n");
-
-function runSetup(shell: BootstrapShell, ws: string, scriptName: string): string {
-  const run = spawnSync(shell.command, shell.args(join(ws, 'deploy', scriptName).replace(/\\/g, '/')),
-    { cwd: ws, encoding: 'utf8', timeout: 300000 });
-  assertEq(run.status, 0, `${scriptName} exits cleanly: ${run.stderr ?? ''}`);
+function runSetup(shell: Shell, ws: string, scriptName: string): string {
+  const run = runScript(shell, join(ws, 'deploy', scriptName), { cwd: ws });
+  assertEq(run.status, 0, `${scriptName} exits cleanly — ${describeRun(run)}`);
   return run.stdout ?? '';
 }
 
@@ -604,11 +602,12 @@ function repoSecretsFingerprint(): string {
   }).join('|');
 }
 
-for (const [label, scriptName, shell] of [
-  ['the Bash setup script', 'local-runtime-setup.sh', bashShell],
-  ['the PowerShell setup script', 'local-runtime-setup.ps1', powershellShell],
+for (const [label, scriptName, resolve] of [
+  ['the Bash setup script', 'local-runtime-setup.sh', bashOrFail],
+  ['the PowerShell setup script', 'local-runtime-setup.ps1', () => powershellShell],
 ] as const) {
   test(`${label} bootstraps a runnable stack, keeps every existing secret, and starts nothing`, () => {
+    const shell = resolve();
     if (shell === null) { console.log(`        (skipped: no interpreter on this host can run ${scriptName})`); return; }
     const before = repoSecretsFingerprint();
     const ws = stageSetupWorkspace(scriptName);
@@ -625,7 +624,9 @@ for (const [label, scriptName, shell] of [
       }
       assert(second.includes('kept-operator_ui_token'), `${label}: the re-run prints the token that is actually in force`);
       assert(!second.includes(first.operator_ui_token!), `${label}: and not the one it generated the first time`);
-    } finally { rmSync(ws, { recursive: true, force: true }); }
+      // An interpreter that has just exited can still hold a handle here; losing the real failure to an EBUSY
+      // from the cleanup is how this stopped being debuggable the first time.
+    } finally { removeQuietly(ws); }
     assertEq(repoSecretsFingerprint(), before, `${label}: a staged run never touches the repository's own ./secrets`);
   });
 }

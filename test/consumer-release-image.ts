@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,17 @@ import {
   type YamlMap,
   type YamlValue,
 } from './helpers/compose-yaml.js';
+import {
+  NO_USABLE_BASH,
+  SCRIPT_TIMEOUT_MS,
+  SPAWN_DEFAULTS,
+  describeRun,
+  removeQuietly,
+  runScript,
+  usableBash,
+  usablePowerShell,
+  type Shell,
+} from '../src/ops/usable-shell.js';
 import {
   BUNDLE_CHECKSUM_FILENAME,
   BUNDLE_MANIFEST_FILENAME,
@@ -417,30 +428,21 @@ test('the bundle documents where the token lives, how to upgrade, and how to rol
 // The bundle, actually assembled and actually run
 // ---------------------------------------------------------------------------------------------------------
 
-interface Shell { readonly command: string; readonly args: (script: string) => string[] }
+// Which interpreter can actually run a script here is decided once, in src/ops/usable-shell.ts — the same
+// module the shipped `release:bundle-check` step resolves its bash with. This file used to answer it again,
+// and its copy looked only under %ProgramFiles%, so a machine with Git installed under %ProgramW6432% had no
+// bash as far as this suite was concerned.
+//
+// A missing bash is a failure, not a skip: every shell step this project ships is bash, so a host that has
+// none cannot run the release either, and quietly passing would hide precisely that. PowerShell is different
+// — a Linux CI runner genuinely has none — so that one skips and says so.
+const powershell = usablePowerShell();
 
-function usableShell(candidates: readonly Shell[], probeName: string, probeBody: string): Shell | null {
-  const ws = mkdtempSync(join(tmpdir(), 'phase245-probe-'));
-  try {
-    const probe = join(ws, probeName);
-    writeFileSync(probe, probeBody);
-    for (const shell of candidates) {
-      const run = spawnSync(shell.command, shell.args(probe.replace(/\\/g, '/')), { cwd: ws, encoding: 'utf8', timeout: 120000 });
-      if (run.status === 0 && (run.stdout ?? '').includes('phase245-ok')) return shell;
-    }
-    return null;
-  } finally { rmSync(ws, { recursive: true, force: true }); }
+function bashOrFail(): Shell {
+  const shell = usableBash();
+  if (shell === null) throw new Error(NO_USABLE_BASH);
+  return shell;
 }
-
-const bash = usableShell(
-  [{ command: 'bash', args: (s) => [s] },
-   { command: `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Git\\bin\\bash.exe`, args: (s) => [s] }],
-  'probe.sh', 'echo phase245-ok\n');
-
-const powershell = usableShell(
-  [{ command: 'pwsh', args: (s) => ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', s] },
-   { command: 'powershell', args: (s) => ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', s] }],
-  'probe.ps1', "Write-Host 'phase245-ok'\n");
 
 /** Assemble a real bundle on disk with the shipping CLI, exactly as CI does. */
 function assembleBundle(): string {
@@ -462,26 +464,25 @@ test('the shipping CLI writes the bundle the builder describes, with no CR bytes
       assertEq(createHash('sha256').update(raw).digest('hex'), file.sha256, `${file.path} was written verbatim`);
       assert(!raw.includes(0x0d), `${file.path} has no CR byte on disk`);
     }
-    // Checksums are the user's tool, so verify them the way the user would when a shell exists.
-    if (bash !== null) {
-      const verified = spawnSync(bash.command, ['-c', 'sha256sum -c SHA256SUMS'], { cwd: out, encoding: 'utf8', timeout: 120000 });
-      assertEq(verified.status, 0, `sha256sum -c verifies the bundle: ${verified.stdout ?? ''}${verified.stderr ?? ''}`);
-    } else {
-      console.log('        (note: sha256sum -c not exercised — no usable shell on this host)');
-    }
-  } finally { rmSync(join(out, '..'), { recursive: true, force: true }); }
+    // Checksums are the user's tool, so verify them the way the user would.
+    const shell = bashOrFail();
+    const verified = spawnSync(shell.command, ['-c', 'sha256sum -c SHA256SUMS'],
+      { ...SPAWN_DEFAULTS, cwd: out, timeout: SCRIPT_TIMEOUT_MS });
+    assertEq(verified.status, 0, `sha256sum -c verifies the bundle — ${describeRun(verified)}`);
+  } finally { removeQuietly(join(out, '..')); }
 });
 
-for (const [label, script, shell] of [
-  ['Bash', 'setup.sh', bash],
-  ['PowerShell', 'setup.ps1', powershell],
+for (const [label, script, resolve] of [
+  ['Bash', 'setup.sh', bashOrFail],
+  ['PowerShell', 'setup.ps1', () => powershell],
 ] as const) {
   test(`${label} setup runs inside the extracted bundle, where there is no deploy/ directory`, () => {
+    const shell = resolve();
     if (shell === null) { console.log(`        (skipped: no interpreter on this host can run ${script})`); return; }
     const out = assembleBundle();
     try {
-      const run = spawnSync(shell.command, shell.args(join(out, script).replace(/\\/g, '/')), { cwd: out, encoding: 'utf8', timeout: 300000 });
-      assertEq(run.status, 0, `${script} exits cleanly: ${run.stderr ?? ''}`);
+      const run = runScript(shell, join(out, script), { cwd: out });
+      assertEq(run.status, 0, `${script} exits cleanly — ${describeRun(run)}`);
       const stdout = run.stdout ?? '';
 
       for (const name of ['postgres_password', 'admin_database_url', 'database_url', 'completion_secret',
@@ -498,11 +499,11 @@ for (const [label, script, shell] of [
 
       // Idempotency, in the layout a user actually has: a re-run must not lock them out.
       writeFileSync(join(out, 'secrets', 'operator_ui_token'), 'kept-token\n');
-      const again = spawnSync(shell.command, shell.args(join(out, script).replace(/\\/g, '/')), { cwd: out, encoding: 'utf8', timeout: 300000 });
-      assertEq(again.status, 0, `${script} re-runs cleanly`);
+      const again = runScript(shell, join(out, script), { cwd: out });
+      assertEq(again.status, 0, `${script} re-runs cleanly — ${describeRun(again)}`);
       assertEq(readFileSync(join(out, 'secrets', 'operator_ui_token'), 'utf8'), 'kept-token\n', `${label}: the token survives a re-run`);
       assert((again.stdout ?? '').includes('operator_ui_token (already exists)'), `${label}: and the re-run says so`);
-    } finally { rmSync(join(out, '..'), { recursive: true, force: true }); }
+    } finally { removeQuietly(join(out, '..')); }
   });
 }
 

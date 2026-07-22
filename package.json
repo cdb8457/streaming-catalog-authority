@@ -242,7 +242,7 @@
     "image:inspect:local": "docker image inspect repo-ops:latest",
     "image:build:runtime": "docker build -f Dockerfile.runtime -t catalog-authority-ops:dev .",
     "smoke:runtime-image": "bash deploy/ci/runtime-image-smoke.sh",
-    "release:bundle-check": "bash deploy/ci/release-bundle-check.sh",
+    "release:bundle-check": "node --import tsx src/ops/run-with-bash-cli.ts deploy/ci/release-bundle-check.sh",
     "ops:consumer-release-bundle": "tsx src/ops/consumer-release-bundle-cli.ts",
     "ops:release-ref": "tsx src/ops/release-ref-cli.ts",
     "ops:release-coordinates": "tsx src/ops/release-coordinates-cli.ts",

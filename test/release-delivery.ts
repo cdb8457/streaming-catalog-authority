@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,14 @@ import {
   readDeterministicArchive,
   ReleaseArchiveError,
 } from '../src/ops/release-archive.js';
+import {
+  NO_USABLE_BASH,
+  describeRun,
+  removeQuietly,
+  runScript,
+  usableBash,
+  type Shell,
+} from '../src/ops/usable-shell.js';
 import {
   BUNDLE_CHECKSUM_FILENAME,
   BUNDLE_MANIFEST_FILENAME,
@@ -81,6 +89,19 @@ function assertThrows(fn: () => unknown, msg: string): void {
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8');
+
+/**
+ * The bash these tests run shipped scripts with — or a failure, never a skip.
+ *
+ * A host with no usable bash cannot run this repository's release steps either, so pretending the check
+ * passed would hide exactly the defect this suite exists for. See src/ops/usable-shell.ts for why "installed"
+ * and "able to run a script here" are different questions on Windows.
+ */
+function bashOrFail(): Shell {
+  const shell = usableBash();
+  if (shell === null) throw new Error(NO_USABLE_BASH);
+  return shell;
+}
 
 console.log('Running Phase 245 release delivery remediation suite:\n');
 
@@ -425,7 +446,7 @@ test('the system tar agrees with the archive this suite reads', () => {
       'and what lands on disk is the bundle');
     const composeText = readFileSync(join(workspace, rootDir, 'docker-compose.yml'), 'utf8');
     assert(composeText.includes(RELEASE_IMAGE_REPOSITORY), 'with the pinned image an extracted user would run');
-  } finally { rmSync(workspace, { recursive: true, force: true }); }
+  } finally { removeQuietly(workspace); }
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -501,20 +522,85 @@ test('the consumer download is a release asset; the Actions artifact is only for
   }
 
   // The refusal that protects a release from a mislabelled asset happens before `gh` is ever invoked, so it
-  // can be executed here rather than only read.
-  const probe = spawnSync('bash', ['--version'], { encoding: 'utf8', timeout: 60000 });
-  if (probe.status !== 0) { console.log('        (note: upload refusal not executed — no bash on this host)'); return; }
-  const workspace = mkdtempSync(join(tmpdir(), 'phase245-upload-'));
+  // is executed here rather than only read — and executed in a directory whose name contains a space,
+  // because that is a path a user can have and a quoting bug we would otherwise ship.
+  const workspace = mkdtempSync(join(tmpdir(), 'phase245 upload-'));
   try {
     for (const name of ['catalog-authority-operator-ui-v9.9.9.tar.gz', 'catalog-authority-operator-ui-v9.9.9.tar.gz.sha256']) {
       writeFileSync(join(workspace, name), '');
     }
-    const run = spawnSync('bash', [join(root, 'deploy/ci/release-asset-upload.sh').replace(/\\/g, '/'), workspace.replace(/\\/g, '/')],
-      { cwd: root, encoding: 'utf8', timeout: 300000,
-        env: { ...process.env, RELEASE_TAG: 'v1.2.3', ARCHIVE: 'catalog-authority-operator-ui-v9.9.9.tar.gz' } });
-    assertEq(run.status, 1, 'an asset that is not this release\'s is refused');
-    assert(`${run.stderr ?? ''}`.includes('does not carry the release tag'), 'and the refusal names the mismatch');
-  } finally { rmSync(workspace, { recursive: true, force: true }); }
+    const run = runScript(bashOrFail(), join(root, 'deploy/ci/release-asset-upload.sh'), {
+      cwd: root,
+      args: [workspace],
+      env: { ...process.env, RELEASE_TAG: 'v1.2.3', ARCHIVE: 'catalog-authority-operator-ui-v9.9.9.tar.gz' },
+    });
+    assertEq(run.status, 1, `an asset that is not this release's is refused — ${describeRun(run)}`);
+    assert(`${run.stderr ?? ''}`.includes('does not carry the release tag'),
+      `and the refusal names the mismatch — ${describeRun(run)}`);
+    // Nothing on stdout at all: the script announces every step it takes, so silence is proof that it stopped
+    // before the verify step and therefore before `gh` — which is why this test needs no `gh` and no token.
+    assertEq((run.stdout ?? '').trim(), '', `and it refuses before doing anything — ${describeRun(run)}`);
+  } finally { removeQuietly(workspace); }
+});
+
+test('the upload script reads the paths a Windows caller actually has', () => {
+  const workspace = mkdtempSync(join(tmpdir(), 'phase245 paths-'));
+  try {
+    const archive = 'catalog-authority-operator-ui-v1.2.3.tar.gz';
+    writeFileSync(join(workspace, archive), '');
+    writeFileSync(join(workspace, `${archive}.sha256`), '');
+    const env = { ...process.env, RELEASE_TAG: 'v1.2.3', ARCHIVE: archive };
+    const script = join(root, 'deploy/ci/release-asset-upload.sh');
+
+    // A Windows caller has the directory in either spelling, and the workspace name has a space in it. Both
+    // must reach the same directory — proven by getting PAST the directory and filename checks to the verify
+    // step, which is the next thing that can fail. (Neither spelling needs repairing: argv carries the value
+    // with no escape processing, and Git Bash resolves both. This holds that true.)
+    //
+    // The checksum file is empty, so `sha256sum -c` refuses it and the run stops there. That is the point:
+    // the release is reached through the archive checks, and the step that would need a GitHub token is
+    // never reached, which is what lets this run on a laptop with no `gh` installed.
+    for (const spelling of [workspace.replace(/\\/g, '/'), workspace.replace(/\//g, '\\')]) {
+      const run = runScript(bashOrFail(), script, { cwd: root, args: [spelling], env });
+      const output = `${run.stdout ?? ''}${run.stderr ?? ''}`;
+      assert(!output.includes('no archive directory at'), `${spelling} resolves to a directory — ${describeRun(run)}`);
+      assert(!output.includes('no archive at'), `and the archive inside it is found — ${describeRun(run)}`);
+      assert(!output.includes('no checksum at'), `and so is its checksum — ${describeRun(run)}`);
+      assert((run.stdout ?? '').includes('verifying'), `and verification is reached — ${describeRun(run)}`);
+      assertEq(run.status, 1, `where an empty checksum file is refused — ${describeRun(run)}`);
+      assert(!(run.stdout ?? '').includes('confirming release'),
+        `and gh is never consulted — ${describeRun(run)}`);
+    }
+
+    // A directory that is not there is a clear refusal with a reason, not a bare `cd` failure.
+    const missing = runScript(bashOrFail(), script, { cwd: root, args: [join(workspace, 'nowhere')], env });
+    assertEq(missing.status, 1, `a missing archive directory is refused — ${describeRun(missing)}`);
+    assert(`${missing.stderr ?? ''}`.includes('no archive directory at'), `with a reason — ${describeRun(missing)}`);
+  } finally { removeQuietly(workspace); }
+});
+
+test('the shipped bundle check runs under a bash that exists on the operator\'s machine', () => {
+  // `bash <script>` in an npm script is correct on the CI runner and wrong on Windows, where npm hands the
+  // line to cmd.exe and `bash` is the WSL launcher: the check then runs inside a Linux distro against a
+  // win32 node_modules and fails as a broken toolchain rather than as the wrong shell.
+  const script = String((JSON.parse(read('package.json')) as { scripts: Record<string, string> }).scripts['release:bundle-check']);
+  assert(!/^bash\b/.test(script), `release:bundle-check does not assume PATH bash: ${script}`);
+  assert(script.includes('run-with-bash-cli.ts') && script.includes('deploy/ci/release-bundle-check.sh'),
+    `it goes through the resolver instead: ${script}`);
+
+  // And the resolver is executed, not merely referenced: a script staged at a path with a space in it runs,
+  // and its exit code comes back rather than the launcher's.
+  const workspace = mkdtempSync(join(tmpdir(), 'phase245 launcher-'));
+  try {
+    const staged = join(workspace, 'step.sh');
+    writeFileSync(staged, 'echo launcher-reached "$1"\nexit 7\n');
+    const run = spawnSync(process.execPath,
+      ['--import', 'tsx', join(root, 'src/ops/run-with-bash-cli.ts'), staged, 'an argument'],
+      { cwd: root, encoding: 'utf8', timeout: 300000, stdio: ['ignore', 'pipe', 'pipe'] });
+    assert((run.stdout ?? '').includes('launcher-reached an argument'),
+      `the launcher runs the script and passes its arguments through — ${describeRun(run)}`);
+    assertEq(run.status, 7, `and reports the script's exit code, not its own — ${describeRun(run)}`);
+  } finally { removeQuietly(workspace); }
 });
 
 test('the workflow runs the suites that hold all of this together', () => {
