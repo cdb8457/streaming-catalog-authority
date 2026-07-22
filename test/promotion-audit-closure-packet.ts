@@ -86,6 +86,21 @@ type Reports = Record<string, Rec>;
 interface ChainOpts { itemId?: string; approvalId?: string; body?: Buffer; release?: boolean; inventoryReports?: boolean }
 
 // phase -> (its own self-digest field, its hashing scope). Authoritative: taken from the self-digest registry.
+// A genuine NON-terminal headline per phase, for the reverse contradiction: body says every check passed
+// while the headline hides it. Producers compute `overall` FROM those booleans, so this cannot occur honestly.
+const PHASE_NON_TERMINAL: Readonly<Record<number, string>> = {
+  231: 'EXECUTION_AUTHORIZATION_BLOCKED',
+  232: 'EXECUTION_AUTHORIZATION_RECORD_PENDING',
+  233: 'POST_RUN_OBSERVATION_PENDING',
+  234: 'POST_RUN_DISPOSITION_PENDING',
+  235: 'OPERATION_CLOSURE_PENDING',
+  236: 'CHAIN_REPLAY_VERIFIED_OPEN',
+  237: 'PROVENANCE_PENDING',
+  238: 'SOURCE_RECORDS_PENDING',
+  239: 'CUSTODY_LEDGER_PENDING',
+  240: 'INVENTORY_PENDING',
+};
+
 // Each phase's terminal success headline, for asserting a forgery KEEPS it while contradicting its own body.
 const PHASE_TERMINAL: Readonly<Record<number, string>> = {
   231: 'EXECUTION_AUTHORIZATION_TEMPLATE_READY',
@@ -701,6 +716,31 @@ await test('THE laundering case: a terminal headline contradicting its own succe
       assertEq(a.overall, 'AUDIT_INVALID', `a contradictory phase ${phase} report is INVALID, not OPEN`);
       assert(a.blockers.includes(`AUDIT_PHASE_${phase}_STATE_CONTRADICTS_HEADLINE`), `phase ${phase} -> AUDIT_PHASE_${phase}_STATE_CONTRADICTS_HEADLINE`);
       // The digest check cannot see this: the forgery re-seals cleanly.
+      assert(!a.blockers.includes(`AUDIT_PHASE_${phase}_DIGEST_MISMATCH`), `phase ${phase}: the digest check does NOT catch this`);
+      assertEq(a.auditClosed, false, `never closed: phase ${phase}`);
+      assertEq(a.phases.find((x) => x.phase === phase)!.semanticallySound, false, `phase ${phase} is not sound`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// THE REVERSE LAUNDERING CASE. The contradiction rule has to run in BOTH directions. A forger can also keep
+// every success boolean true while DOWNGRADING the headline -- a body saying every check passed, under an
+// `overall` that hides it. Producers compute `overall` FROM those booleans, so this is just as impossible in a
+// genuine report as the forward case, and treating it as honest work-in-progress would let a forged chain sit
+// in AUDIT_OPEN looking exactly like the real P227-A.
+await test('THE reverse laundering case: a non-terminal headline over all-passing booleans is INVALID, not OPEN', () => {
+  const root = workspace();
+  try {
+    const chain = fullChain(root);
+    for (const phase of AUDIT_PHASES) {
+      const downgraded = reseal(phase, chain[String(phase)]!, (r) => { r.overall = PHASE_NON_TERMINAL[phase]!; });
+      // Genuine on its face: recomputes cleanly, and every success boolean still says the checks passed.
+      assertEq(verifySelfDigests([downgraded]).overall, 'ALL_VERIFIED', `precondition: phase ${phase} forgery recomputes`);
+      assertEq((downgraded as Rec).overall, PHASE_NON_TERMINAL[phase], `precondition: phase ${phase} headline is non-terminal`);
+
+      const a = buildAuditClosurePacket({ reports: { ...chain, [String(phase)]: downgraded } });
+      assertEq(a.overall, 'AUDIT_INVALID', `a downgraded phase ${phase} headline is INVALID, not OPEN`);
+      assert(a.blockers.includes(`AUDIT_PHASE_${phase}_STATE_CONTRADICTS_HEADLINE`), `phase ${phase} -> AUDIT_PHASE_${phase}_STATE_CONTRADICTS_HEADLINE`);
       assert(!a.blockers.includes(`AUDIT_PHASE_${phase}_DIGEST_MISMATCH`), `phase ${phase}: the digest check does NOT catch this`);
       assertEq(a.auditClosed, false, `never closed: phase ${phase}`);
       assertEq(a.phases.find((x) => x.phase === phase)!.semanticallySound, false, `phase ${phase} is not sound`);

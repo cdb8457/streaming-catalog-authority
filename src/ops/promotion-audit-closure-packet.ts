@@ -367,12 +367,22 @@ export function buildAuditClosurePacket(input: AuditClosurePacketInput): AuditCl
       const successes = spec.successBooleans.every((f) => obj[f] === true);
       const released = phase !== 239 || obj.terminalTransition === CUSTODY_RELEASED;
       isTerminal = headline && successes && released;
-      // The contradiction is headline-vs-OWN-booleans ONLY. `released` is an ADDITIONAL requirement this audit
+      // The contradiction rule is a BICONDITIONAL: the headline and the report's own success booleans must
+      // agree, in BOTH directions. Every producer computes `overall` FROM those booleans, and every phase's
+      // boolean list here contains a headline-equivalent flag -- authorizationRecorded, observationRecorded,
+      // dispositionAccepted, operationClosed, provenanceCommitted, sourceRecordsVerified, ledgerIntact,
+      // inventoryComplete; for Phases 231 and 236 the whole set plus an empty blocker list implies it. So
+      // BOTH directions are impossible in a genuine report and can only be forged:
+      //   headline && !successes -- claims the terminal state its own body denies
+      //   !headline && successes -- body says every check passed while the headline hides it
+      // Reporting either as merely non-terminal would launder a forgery into AUDIT_OPEN, indistinguishable
+      // from an honest chain still in progress -- which is exactly what the real P227-A chain looks like.
+      //
+      // `released` is deliberately OUTSIDE the biconditional. It is an ADDITIONAL requirement this audit
       // imposes for a closed chain, not something Phase 239's `overall` implies: a ledger is legitimately
       // CUSTODY_LEDGER_INTACT while custody is still open, which Phase 240 already treats as premature rather
-      // than defective. So an unreleased-but-intact ledger stays a genuine non-terminal report and caps the
-      // audit at OPEN; only a headline contradicting the report's own success booleans is forgery.
-      if (headline && !successes) {
+      // than defective. That remains a genuine non-terminal report and caps the audit at OPEN.
+      if (headline !== successes) {
         blockers.push(`AUDIT_PHASE_${phase}_STATE_CONTRADICTS_HEADLINE`);
         sound = false;
       }
