@@ -16,7 +16,13 @@ It adds **no audit semantics**. The intake is Phase 242's, the audit is Phase 24
 view — headlines, caveats, artifact meanings, proof limits — is the Phase 243 view model, shared rather than
 restated.
 
-## Install and run (Linux, macOS, or Windows with Docker Desktop)
+## Install and run
+
+The stack itself is identical on every platform — only the setup step differs, because Windows has no Bash.
+There are two setup scripts and they are one promise made twice: same folders, same secret names, same file
+format (LF, no BOM), same re-run rule, same single printed token.
+
+**Linux or macOS:**
 
 ```bash
 ./deploy/local-runtime-setup.sh                          # 1. generate secrets, create the artifact folder
@@ -25,9 +31,21 @@ docker compose -f docker-compose.runtime.yml up -d       # 2. start postgres + t
 docker compose -f docker-compose.runtime.yml down        # 4. stop it
 ```
 
-The setup script is safe to re-run: existing secrets are **kept, never regenerated**, so a re-run cannot lock
-you out of a running stack. It writes only inside the repository directory, starts nothing, and contacts
-nothing.
+**Windows with Docker Desktop** — native PowerShell, no WSL or Git Bash required:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\local-runtime-setup.ps1
+docker compose -f docker-compose.runtime.yml up -d
+# open http://127.0.0.1:8099/  and paste the token the setup script printed
+docker compose -f docker-compose.runtime.yml down
+```
+
+Either script is safe to re-run: existing secrets are **kept, never regenerated**, so a re-run cannot lock
+you out of a running stack. Each writes only inside the repository directory, starts nothing, and contacts
+nothing. Secrets are drawn from the platform CSPRNG (`openssl`/`/dev/urandom` and .NET
+`RandomNumberGenerator` respectively) and written LF-terminated without a byte-order mark, because Docker
+hands the container the file's bytes exactly as written — a stray CR or BOM would become part of the
+password.
 
 ### Logging in
 
@@ -141,6 +159,19 @@ shown; malformed, duplicate, symlinked and oversized artifacts failing closed; a
 a configuration state; the panel and navigation present with no dynamic `innerHTML`; injected markup reaching
 nothing and the security headers intact; the existing status and logs routes unchanged; the Compose contract
 (`:ro` mount, `read_only`, `cap_drop ALL`, `no-new-privileges`, non-root, bounded resources, loopback
-publishing, unpublished Postgres, no Docker socket); CI and Unraid files untouched; docs and setup script
-runnable; `docker compose config` validation when the Docker CLI is present; and a full container up/down
-smoke behind `PHASE244_DOCKER_SMOKE=1`, which skips with a clear reason when no Docker **daemon** is running.
+publishing, unpublished Postgres, no Docker socket); CI and Unraid files untouched; **both** setup scripts
+executed for real against a throwaway workspace; docs runnable; `docker compose config` validation when the
+Docker CLI is present; and a full container up/down smoke behind `PHASE244_DOCKER_SMOKE=1`, which skips with a
+clear reason when no Docker **daemon** is running.
+
+The Compose assertions **parse** the files rather than matching their text (`test/helpers/compose-yaml.ts`),
+so they prove the configured property — this service drops every capability, this mount carries `ro`, this
+port binds loopback — instead of proving a particular indentation and line ending. A CRLF checkout is the same
+stack as an LF one, and a hardening block moved under the wrong service no longer passes.
+
+The setup scripts are covered by running them, not by reading them. Each is staged alone into a temporary
+directory and executed there, which also proves it cannot reach the repository's real `./secrets`: the run
+must produce six secret files with the right shape (32 random bytes base64; a 32-character URL-safe Postgres
+password embedded in both database URLs), LF-terminated and BOM-free, print the operator token and **only**
+the operator token, create an empty artifact folder and nothing else — and, on a second run with every secret
+replaced by a sentinel, keep all six byte-for-byte and print the token actually in force.

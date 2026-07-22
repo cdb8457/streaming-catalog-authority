@@ -8,9 +8,20 @@ Hermes, job queues, or UI — by design. The core stands alone.
 One authenticated read-only web UI on `http://127.0.0.1:8099/`, including the **Promotion Record Chain**
 panel over your Phase 231–240 artifacts:
 
+**Linux or macOS:**
+
 ```bash
 ./deploy/local-runtime-setup.sh                       # generate secrets, create ./promotion-records/
 docker compose -f docker-compose.runtime.yml up -d    # postgres + operator UI
+# open http://127.0.0.1:8099/ and paste the printed operator token
+docker compose -f docker-compose.runtime.yml down
+```
+
+**Windows (Docker Desktop, PowerShell — no Bash needed):**
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\local-runtime-setup.ps1
+docker compose -f docker-compose.runtime.yml up -d
 # open http://127.0.0.1:8099/ and paste the printed operator token
 docker compose -f docker-compose.runtime.yml down
 ```

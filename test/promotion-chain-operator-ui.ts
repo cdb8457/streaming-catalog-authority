@@ -1,10 +1,19 @@
 import { spawnSync } from 'node:child_process';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  asMap,
+  parseMount,
+  parseYaml,
+  service,
+  stringList,
+  yamlStrings,
+  type YamlMap,
+} from './helpers/compose-yaml.js';
 import {
   OperatorUiServiceConfigError,
   createOperatorUiServiceServer,
@@ -369,57 +378,110 @@ await test('the existing status and logs routes are unchanged by this phase', as
 // Packaging: the Compose stack an operator actually installs
 // ---------------------------------------------------------------------------------------------------------
 
-test('the runtime Compose stack mounts the artifact folder read-only and hardens the app container', () => {
-  const compose = read('docker-compose.runtime.yml');
-  assert(compose.includes(':/var/lib/catalog/promotion-records:ro'), 'the artifact folder is mounted READ-ONLY');
-  assert(compose.includes('PROMOTION_RECORDS_DIR: /var/lib/catalog/promotion-records'), 'and the container is told where it is');
-  assert(compose.includes('${PROMOTION_RECORDS_HOST_DIR:-./promotion-records}'), 'the host folder is operator-selected');
-  assert(compose.includes('read_only: true'), 'the app filesystem is read-only');
-  assert(compose.includes('cap_drop:\n      - ALL'), 'all capabilities dropped');
-  assert(compose.includes('no-new-privileges:true'), 'no privilege escalation');
-  assert(compose.includes('user: "node"'), 'runs as a non-root user');
-  assert(compose.includes('tmpfs:'), 'with a tmpfs for scratch');
-  assert(compose.includes('pids_limit:') && compose.includes('mem_limit:') && compose.includes('cpus:'), 'bounded resources');
-  assert(compose.includes('restart: unless-stopped'), 'restart policy');
-  assert(compose.includes('healthz'), 'healthcheck against the unauthenticated health route');
-  assert(compose.includes('${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}:${OPERATOR_UI_HOST_PORT:-8099}:8099'), 'published to loopback by default');
-  assert(compose.includes('ops:operator-ui-server'), 'runs the EXISTING operator UI service');
-  assert(compose.includes('OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token'), 'behind the existing token file');
-  // No second web server, no escape hatches, no live surfaces.
-  for (const forbidden of ['/var/run/docker.sock', 'docker.sock', 'privileged: true', 'network_mode: host',
-    'promotion-operator-dashboard', 'JELLYFIN_ALLOW_LIVE_PUBLISH=true', 'ops:jellyfin-write-proof',
-    '/mnt/user/media/Movies', 'unraid-real-library-promotion']) {
-    assert(!compose.includes(forbidden), `runtime compose excludes ${forbidden}`);
+const RUNTIME_SECRETS = ['postgres_password', 'admin_database_url', 'database_url',
+  'completion_secret', 'custodian_kek', 'operator_ui_token'] as const;
+
+// These assert what the stack IS, not how its file is typed: the compose files are parsed, so indentation
+// width, key order, quoting and line endings cannot decide the verdict. A CRLF checkout is the same stack as
+// an LF one, and a `cap_drop: [ALL]` under the WRONG service no longer passes for hardening.
+const compose = (name: string): YamlMap => parseYaml(read(name));
+
+/** Searches every CONFIGURED string — comments are excluded, because a comment configures nothing. */
+function assertMentionsNothingOf(doc: YamlMap, forbidden: readonly string[], what: string): void {
+  const strings = yamlStrings(doc).map((s) => s.toLowerCase());
+  for (const term of forbidden) {
+    assert(!strings.some((s) => s.includes(term.toLowerCase())), `${what} configures nothing mentioning ${term}`);
   }
+}
+
+test('the runtime Compose stack mounts the artifact folder read-only and hardens the app container', () => {
+  const doc = compose('docker-compose.runtime.yml');
+  const app = service(doc, 'app');
+  const postgres = service(doc, 'postgres');
+
+  const records = stringList(app.volumes ?? null, 'app volumes').map(parseMount)
+    .find((mount) => mount.target === '/var/lib/catalog/promotion-records');
+  assert(records !== undefined, 'the artifact folder is mounted at the fixed container path');
+  assert(records!.options.includes('ro'), 'the artifact folder is mounted READ-ONLY');
+  assertEq(records!.source, '${PROMOTION_RECORDS_HOST_DIR:-./promotion-records}', 'the host folder is operator-selected');
+  const env = asMap(app.environment ?? null, 'app environment');
+  assertEq(env.PROMOTION_RECORDS_DIR, records!.target, 'and the container is told where it is');
+  assertEq(env.OPERATOR_UI_TOKEN_FILE, '/run/secrets/operator_ui_token', 'behind the existing token file');
+
+  assertEq(app.read_only, true, 'the app filesystem is read-only');
+  assertEq(stringList(app.cap_drop ?? null, 'app cap_drop').join('+'), 'ALL', 'all capabilities dropped');
+  assert(stringList(app.security_opt ?? null, 'app security_opt').includes('no-new-privileges:true'), 'no privilege escalation');
+  assertEq(app.user, 'node', 'runs as a non-root user');
+  assert(stringList(app.tmpfs ?? null, 'app tmpfs').includes('/tmp'), 'with a tmpfs for scratch');
+  for (const bound of ['pids_limit', 'mem_limit', 'cpus']) {
+    assert(app[bound] !== undefined && app[bound] !== null, `bounded resources: ${bound}`);
+  }
+  assertEq(app.restart, 'unless-stopped', 'restart policy');
+  const healthcheck = asMap(app.healthcheck ?? null, 'app healthcheck');
+  assert(stringList(healthcheck.test ?? null, 'healthcheck test').some((part) => part.includes('/healthz')),
+    'healthcheck against the unauthenticated health route');
+
+  const published = stringList(app.ports ?? null, 'app ports').map(parseMount);
+  assertEq(published.length, 1, 'exactly one published port');
+  assertEq(published[0]!.source, '${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}', 'published to loopback by default');
+  assertEq(published[0]!.target, '${OPERATOR_UI_HOST_PORT:-8099}', 'on an operator-selectable host port');
+  assertEq(published[0]!.options.join('+'), '8099', 'forwarding to the service port');
+  assert(stringList(app.command ?? null, 'app command').includes('ops:operator-ui-server'), 'runs the EXISTING operator UI service');
+
+  // No second web server, no escape hatches, no live surfaces.
+  for (const [name, svc] of Object.entries(asMap(doc.services ?? null, 'services'))) {
+    const parsed = asMap(svc, `service ${name}`);
+    assert(parsed.privileged !== true, `${name} is not privileged`);
+    assert(parsed.network_mode === undefined, `${name} does not choose a host network mode`);
+    const mounts = parsed.volumes === undefined || parsed.volumes === null ? [] : stringList(parsed.volumes, `${name} volumes`);
+    for (const mount of mounts.map(parseMount)) {
+      assert(!mount.source.includes('docker.sock') && !mount.target.includes('docker.sock'), `${name} mounts no Docker socket`);
+    }
+  }
+  assertMentionsNothingOf(doc, ['docker.sock', 'promotion-operator-dashboard', 'JELLYFIN_ALLOW_LIVE_PUBLISH',
+    'jellyfin', '/mnt/user/media/Movies', 'unraid-real-library-promotion'], 'the runtime stack');
+
   // Postgres is reachable only from the app, never published to the host.
-  assert(!/postgres:[\s\S]*?ports:/.test(compose.slice(compose.indexOf('postgres:'), compose.indexOf('app:'))), 'postgres is not published to the host');
-  assert(compose.slice(compose.indexOf('postgres:'), compose.indexOf('  app:')).includes('expose:'), 'it is only exposed on the compose network');
+  assertEq(postgres.ports, undefined, 'postgres is not published to the host');
+  assert(stringList(postgres.expose ?? null, 'postgres expose').includes('5432'), 'it is only exposed on the compose network');
+
+  // The secret files the stack declares are the ones the setup scripts write.
+  const declared = Object.keys(asMap(doc.secrets ?? null, 'secrets')).sort();
+  assertEq(declared.join(','), [...RUNTIME_SECRETS].sort().join(','), 'the declared secrets are the generated ones');
+  for (const [name, definition] of Object.entries(asMap(doc.secrets ?? null, 'secrets'))) {
+    assertEq(asMap(definition, `secret ${name}`).file, `./secrets/${name}`, `secret ${name} is a local file`);
+  }
 });
 
 test('the CI and Unraid compose files are left as they were', () => {
-  const ci = read('docker-compose.yml');
-  assert(ci.includes('npm'), 'root compose is still the CI harness');
-  assert(ci.includes('"npm", "run", "ci"'), 'still running the suite');
-  assert(!ci.includes('promotion-records'), 'and is untouched by this phase');
-  assert(!ci.includes('operator-ui-server'), 'the CI harness runs no long-running UI');
-  const unraidRuntime = read('docker-compose.unraid.runtime.yml');
-  assert(unraidRuntime.includes('ops:operator-ui-server'), 'the Unraid runtime still runs the same service');
-  assert(unraidRuntime.includes('8099'), 'on the same port');
-  assert(!unraidRuntime.includes('promotion-records'), 'and is not disturbed by this phase');
-  assert(read('docker-compose.unraid.yml').length > 0 && read('docker-compose.deploy.yml').length > 0, 'the other topologies still exist');
+  const ci = compose('docker-compose.yml');
+  assertEq(stringList(service(ci, 'app').command ?? null, 'CI app command').join(' '), 'npm run ci', 'root compose is still the CI harness running the suite');
+  assertMentionsNothingOf(ci, ['promotion-records', 'operator-ui-server'], 'the CI harness');
+  const unraidRuntime = compose('docker-compose.unraid.runtime.yml');
+  assert(stringList(service(unraidRuntime, 'app').command ?? null, 'Unraid app command').includes('ops:operator-ui-server'),
+    'the Unraid runtime still runs the same service');
+  assert(stringList(service(unraidRuntime, 'app').ports ?? null, 'Unraid app ports').map(parseMount).some((port) => port.target === '8099'),
+    'on the same port');
+  assertMentionsNothingOf(unraidRuntime, ['promotion-records'], 'the Unraid runtime stack');
+  for (const other of ['docker-compose.unraid.yml', 'docker-compose.deploy.yml']) {
+    assert(Object.keys(asMap(compose(other).services ?? null, `${other} services`)).length > 0, `${other} still exists and still declares services`);
+  }
 });
 
 test('setup, docs and package scripts make the install runnable without reading the source', () => {
-  const setup = read('deploy/local-runtime-setup.sh');
-  for (const required of ['operator_ui_token', 'postgres_password', 'completion_secret', 'custodian_kek',
-    'docker compose -f docker-compose.runtime.yml up -d', 'http://127.0.0.1:8099/', 'already exists']) {
-    assert(setup.includes(required), `setup script covers ${required}`);
-  }
-  for (const forbidden of ['unraid-real-library-promotion', '/mnt/user/media/Movies', 'jellyfin', 'git push', 'git tag', 'docker compose up']) {
-    assert(!setup.includes(forbidden), `setup script never does ${forbidden}`);
+  for (const script of ['deploy/local-runtime-setup.sh', 'deploy/local-runtime-setup.ps1']) {
+    const setup = read(script);
+    for (const required of [...RUNTIME_SECRETS,
+      'docker compose -f docker-compose.runtime.yml up -d', 'http://127.0.0.1:8099/', 'already exists']) {
+      assert(setup.includes(required), `${script} covers ${required}`);
+    }
+    for (const forbidden of ['unraid-real-library-promotion', '/mnt/user/media/Movies', 'jellyfin', 'git push', 'git tag', 'docker compose up']) {
+      assert(!setup.toLowerCase().includes(forbidden.toLowerCase()), `${script} never does ${forbidden}`);
+    }
   }
   const doc = read('docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md');
-  for (const required of ['./deploy/local-runtime-setup.sh', 'docker compose -f docker-compose.runtime.yml up -d',
+  for (const required of ['./deploy/local-runtime-setup.sh', '.\\deploy\\local-runtime-setup.ps1',
+    'docker compose -f docker-compose.runtime.yml up -d',
     'docker compose -f docker-compose.runtime.yml down', 'http://127.0.0.1:8099/', 'PROMOTION_RECORDS_HOST_DIR',
     '/var/lib/catalog/promotion-records', ':ro', 'Operator token', 'healthz', 'Upgrading', 'AUDIT_OPEN']) {
     assert(doc.includes(required), `doc covers ${required}`);
@@ -430,11 +492,130 @@ test('setup, docs and package scripts make the install runnable without reading 
   assert((pkg.scripts.test ?? '').includes('tsx test/promotion-operator-dashboard.ts && tsx test/promotion-chain-operator-ui.ts'), 'aggregate order');
 });
 
-test('the README points an ordinary operator at the runtime stack', () => {
+test('the README points an ordinary operator at the runtime stack, on either kind of machine', () => {
   const readme = read('README.md');
   assert(readme.includes('docker-compose.runtime.yml'), 'README names the runtime compose file');
-  assert(readme.includes('deploy/local-runtime-setup.sh'), 'and the one-command setup');
+  assert(readme.includes('deploy/local-runtime-setup.sh'), 'and the one-command setup for Linux and macOS');
+  assert(readme.includes('deploy\\local-runtime-setup.ps1'), 'and the native Windows one');
 });
+
+// ---------------------------------------------------------------------------------------------------------
+// Bootstrap: both setup scripts, run for real against a throwaway workspace
+//
+// The two scripts are one promise made twice. Reading them proves nothing about what they do, so each is
+// staged into a temporary directory and executed there: the scripts resolve their own location, so a staged
+// copy cannot reach the repository's real ./secrets, and the test asserts that too.
+// ---------------------------------------------------------------------------------------------------------
+
+interface BootstrapShell { readonly command: string; readonly args: (script: string) => string[] }
+
+/** Stage a setup script alone in a throwaway repository-shaped directory. */
+function stageSetupWorkspace(scriptName: string): string {
+  const ws = mkdtempSync(join(tmpdir(), 'phase244-bootstrap-'));
+  mkdirSync(join(ws, 'deploy'));
+  writeFileSync(join(ws, 'deploy', scriptName), readFileSync(`${root}/deploy/${scriptName}`));
+  return ws;
+}
+
+/** The first interpreter that can actually execute a staged script here — not merely one that is installed. */
+function usableShell(candidates: readonly BootstrapShell[], probeName: string, probeBody: string): BootstrapShell | null {
+  const ws = mkdtempSync(join(tmpdir(), 'phase244-probe-'));
+  try {
+    const probe = join(ws, probeName);
+    writeFileSync(probe, probeBody);
+    for (const shell of candidates) {
+      const run = spawnSync(shell.command, shell.args(probe.replace(/\\/g, '/')), { cwd: ws, encoding: 'utf8', timeout: 120000 });
+      if (run.status === 0 && (run.stdout ?? '').includes('phase244-ok')) return shell;
+    }
+    return null;
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+}
+
+const bashShell = usableShell(
+  [{ command: 'bash', args: (s) => [s] },
+   { command: `${process.env.ProgramFiles ?? 'C:\\Program Files'}\\Git\\bin\\bash.exe`, args: (s) => [s] }],
+  'probe.sh', 'echo phase244-ok\n');
+
+const powershellShell = usableShell(
+  [{ command: 'pwsh', args: (s) => ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', s] },
+   { command: 'powershell', args: (s) => ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', s] }],
+  'probe.ps1', "Write-Host 'phase244-ok'\n");
+
+function runSetup(shell: BootstrapShell, ws: string, scriptName: string): string {
+  const run = spawnSync(shell.command, shell.args(join(ws, 'deploy', scriptName).replace(/\\/g, '/')),
+    { cwd: ws, encoding: 'utf8', timeout: 300000 });
+  assertEq(run.status, 0, `${scriptName} exits cleanly: ${run.stderr ?? ''}`);
+  return run.stdout ?? '';
+}
+
+/** Everything a generated secret file must be, whichever script wrote it. */
+function assertBootstrapped(label: string, ws: string, stdout: string): Record<string, string> {
+  const values: Record<string, string> = {};
+  for (const name of RUNTIME_SECRETS) {
+    const raw = readFileSync(join(ws, 'secrets', name));
+    assert(raw.length > 0, `${label}: ${name} is not empty`);
+    assert(raw[0] !== 0xef, `${label}: ${name} carries no byte-order mark`);
+    assert(!raw.includes(0x0d), `${label}: ${name} has no CR — the container would read it as part of the value`);
+    assertEq(raw[raw.length - 1], 0x0a, `${label}: ${name} ends with a single newline`);
+    values[name] = raw.toString('utf8').trim();
+  }
+  const password = values.postgres_password!;
+  assert(/^[A-Za-z0-9]{32}$/.test(password), `${label}: the Postgres password is 32 URL-safe characters, got ${password.length}`);
+  for (const url of ['admin_database_url', 'database_url'] as const) {
+    assertEq(values[url], `postgresql://postgres:${password}@postgres:5432/catalog`, `${label}: ${url} uses the generated password`);
+  }
+  for (const name of ['completion_secret', 'custodian_kek', 'operator_ui_token'] as const) {
+    assert(/^[A-Za-z0-9+/]{43}=$/.test(values[name]!), `${label}: ${name} is 32 random bytes, base64`);
+  }
+  const distinct = new Set([values.completion_secret, values.custodian_kek, values.operator_ui_token, password]);
+  assertEq(distinct.size, 4, `${label}: every generated secret is drawn independently`);
+
+  // Only the token an operator has to paste is printed; nothing else reaches the terminal or a scrollback.
+  assert(stdout.includes(values.operator_ui_token!), `${label}: the operator token is printed`);
+  for (const name of ['completion_secret', 'custodian_kek', 'postgres_password', 'admin_database_url', 'database_url'] as const) {
+    assert(!stdout.includes(values[name]!), `${label}: ${name} is never printed`);
+  }
+  assert(existsSync(join(ws, 'promotion-records')), `${label}: the artifact folder is created`);
+  assertEq(readdirSync(join(ws, 'promotion-records')).length, 0, `${label}: and it is left empty`);
+  assertEq(readdirSync(ws).sort().join(','), 'deploy,promotion-records,secrets', `${label}: nothing else is created`);
+  return values;
+}
+
+/** The repository's own secrets, as a fingerprint we can prove a staged run never touched. */
+function repoSecretsFingerprint(): string {
+  const dir = `${root}/secrets`;
+  if (!existsSync(dir)) return 'absent';
+  return readdirSync(dir).sort().map((name) => {
+    const stat = statSync(join(dir, name));
+    return `${name}:${stat.size}:${stat.mtimeMs}`;
+  }).join('|');
+}
+
+for (const [label, scriptName, shell] of [
+  ['the Bash setup script', 'local-runtime-setup.sh', bashShell],
+  ['the PowerShell setup script', 'local-runtime-setup.ps1', powershellShell],
+] as const) {
+  test(`${label} bootstraps a runnable stack, keeps every existing secret, and starts nothing`, () => {
+    if (shell === null) { console.log(`        (skipped: no interpreter on this host can run ${scriptName})`); return; }
+    const before = repoSecretsFingerprint();
+    const ws = stageSetupWorkspace(scriptName);
+    try {
+      const first = assertBootstrapped(label, ws, runSetup(shell, ws, scriptName));
+
+      // Re-running is the dangerous case: a regenerated token locks an operator out of a running stack.
+      // Sentinels prove preservation rather than mere byte-equality of two identical generations.
+      for (const name of RUNTIME_SECRETS) writeFileSync(join(ws, 'secrets', name), `kept-${name}\n`);
+      const second = runSetup(shell, ws, scriptName);
+      for (const name of RUNTIME_SECRETS) {
+        assertEq(readFileSync(join(ws, 'secrets', name), 'utf8'), `kept-${name}\n`, `${label}: ${name} survives a re-run untouched`);
+        assert(second.includes(`${name} (already exists)`), `${label}: the re-run says ${name} was kept`);
+      }
+      assert(second.includes('kept-operator_ui_token'), `${label}: the re-run prints the token that is actually in force`);
+      assert(!second.includes(first.operator_ui_token!), `${label}: and not the one it generated the first time`);
+    } finally { rmSync(ws, { recursive: true, force: true }); }
+    assertEq(repoSecretsFingerprint(), before, `${label}: a staged run never touches the repository's own ./secrets`);
+  });
+}
 
 // ---------------------------------------------------------------------------------------------------------
 // Docker

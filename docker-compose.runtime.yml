@@ -5,6 +5,7 @@
 # docker-compose.unraid.runtime.yml is the Unraid/Arcane launcher stack. Neither is changed by this file.
 #
 #   1. ./deploy/local-runtime-setup.sh          generate secrets + create the artifact folder
+#      (Windows: powershell -ExecutionPolicy Bypass -File .\deploy\local-runtime-setup.ps1)
 #   2. docker compose -f docker-compose.runtime.yml up -d
 #   3. open http://127.0.0.1:8099/  and paste the token from ./secrets/operator_ui_token
 #   4. docker compose -f docker-compose.runtime.yml down
@@ -115,7 +116,7 @@ volumes:
   pgdata:
   keystore:      # kept separate from pgdata so a database backup never contains key material
 
-# Operator-provided files under ./secrets/ (gitignored), created by ./deploy/local-runtime-setup.sh.
+# Operator-provided files under ./secrets/ (gitignored), created by either setup script under ./deploy/.
 secrets:
   postgres_password:
     file: ./secrets/postgres_password
