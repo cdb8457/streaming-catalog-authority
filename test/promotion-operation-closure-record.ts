@@ -98,6 +98,8 @@ function approvedAuthorizationFor(root: string, o: ChainOpts = {}): Rec {
     record: {
       ...JSON.parse(JSON.stringify(skeleton)) as Rec,
       decision: 'APPROVED', operatorDigest: OPERATOR_DIGEST, decidedAtUtc: DECIDED_AT,
+      // The operator pins the state they witnessed; the observation below must report exactly this one.
+      observedStateBeforeDigest: STATE_BEFORE,
       fields: { operatorAuthorized: 'AFFIRMED', observedStateWitnessedBefore: 'AFFIRMED', withdrawalPathRehearsed: 'AFFIRMED', observedStateWitnessedAfter: 'PENDING', runExecutedByHuman: 'PENDING' },
     },
   });

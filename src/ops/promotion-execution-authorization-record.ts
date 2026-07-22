@@ -52,7 +52,7 @@ const OPERATION_DIGEST_FIELDS: readonly string[] = ['approvalIdDigest', 'itemDig
 // Strict top-level allowlist: anything else is smuggled content and fails closed.
 const RECORD_KEYS: readonly string[] = [
   'record', 'version', 'operation', 'sourceGate', 'authorizationDigest',
-  ...OPERATION_DIGEST_FIELDS, 'decision', 'operatorDigest', 'decidedAtUtc', 'fields',
+  ...OPERATION_DIGEST_FIELDS, 'decision', 'operatorDigest', 'decidedAtUtc', 'observedStateBeforeDigest', 'fields',
 ];
 
 export interface ExecutionAuthorizationRecordInput {
@@ -75,6 +75,9 @@ export interface ExecutionAuthorizationRecordSkeleton {
   readonly decision: RecordDecision;
   readonly operatorDigest: string;
   readonly decidedAtUtc: string;
+  // The digest of the observed state the operator WITNESSED at authorization time: a sha256 when APPROVED,
+  // the PENDING placeholder otherwise. Phase 233 binds its own before-state to this exact value.
+  readonly observedStateBeforeDigest: string;
   readonly fields: Readonly<Record<string, RecordFieldState>>;
 }
 
@@ -206,12 +209,27 @@ export function buildExecutionAuthorizationRecord(input: ExecutionAuthorizationR
       : rec.obj.decidedAtUtc === 'PENDING';
     if (!decidedAtOk) blockers.push(decided ? 'RECORD_DECIDED_AT_REQUIRED' : 'RECORD_DECIDED_AT_NOT_PENDING');
 
-    decisionCoherent = postRunPending && decisionMatchesFields && operatorOk && decidedAtOk;
+    // An APPROVED record must PIN the observed state its operator witnessed, because approving requires
+    // `observedStateWitnessedBefore: AFFIRMED` and an affirmation of nothing in particular binds nothing.
+    // Phase 233 later requires its own before-state to equal this. A record that authorized nothing --
+    // DECLINED or PENDING -- witnessed nothing it can pin, so it must claim no digest at all.
+    const approved = decision === 'APPROVED';
+    const witnessedOk = approved
+      ? asSha256(rec.obj.observedStateBeforeDigest) !== undefined
+      : rec.obj.observedStateBeforeDigest === 'PENDING';
+    if (!witnessedOk) blockers.push(approved ? 'RECORD_OBSERVED_STATE_BEFORE_REQUIRED' : 'RECORD_OBSERVED_STATE_BEFORE_NOT_PENDING');
+
+    decisionCoherent = postRunPending && decisionMatchesFields && operatorOk && decidedAtOk && witnessedOk;
   }
 
   const uniqueBlockers = [...new Set(blockers)];
   const valid = uniqueBlockers.length === 0 && gateValid && recordWellFormed && recordRedactionSafe && recordBound && decisionCoherent;
   const recordedDecision: ExecutionAuthorizationRecordReport['recordedDecision'] = valid ? rec.obj.decision as RecordDecision : 'NONE';
+  // Published ONLY for a valid approval: this is the state the operator witnessed, and it is what Phase 233
+  // must later bind its own before-state to. Nothing is published for a record that authorized nothing.
+  if (valid && recordedDecision === 'APPROVED') {
+    boundDigests['observed-state-before'] = asString(rec.obj.observedStateBeforeDigest)!;
+  }
   const overall: ExecutionAuthorizationRecordReport['overall'] =
     !valid ? 'EXECUTION_AUTHORIZATION_RECORD_INVALID'
       : recordedDecision === 'APPROVED' ? 'EXECUTION_AUTHORIZATION_RECORD_APPROVED'
@@ -265,6 +283,8 @@ export function buildExecutionAuthorizationRecordSkeleton(gateValue: unknown): E
     decision: 'PENDING',
     operatorDigest: 'PENDING',
     decidedAtUtc: 'PENDING',
+    // PENDING, never pre-filled: only the human who actually witnessed the state may pin its digest.
+    observedStateBeforeDigest: 'PENDING',
     fields,
   };
 }
@@ -333,6 +353,10 @@ function validateRecordShape(value: unknown, blockers: string[]): ValidatedRecor
   if (typeof obj.decision !== 'string' || !DECISIONS.includes(obj.decision)) { blockers.push('RECORD_DECISION_INVALID'); return none; }
   if (typeof obj.operatorDigest !== 'string') { blockers.push('RECORD_OPERATOR_DIGEST_INVALID'); ok = false; }
   if (typeof obj.decidedAtUtc !== 'string') { blockers.push('RECORD_DECIDED_AT_INVALID'); ok = false; }
+  // A sha256 or the PENDING placeholder and nothing else -- anything else is unreviewable.
+  if (asSha256(obj.observedStateBeforeDigest) === undefined && obj.observedStateBeforeDigest !== 'PENDING') {
+    blockers.push('RECORD_OBSERVED_STATE_BEFORE_INVALID'); ok = false;
+  }
 
   const fields = asObject(obj.fields);
   const fieldKeys = Object.keys(fields);

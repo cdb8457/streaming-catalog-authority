@@ -31,6 +31,8 @@ const projectRoot = fileURLToPath(new URL('..', import.meta.url));
 const APPROVED_ROOT = '/mnt/user/media/Movies';
 const OPERATOR_DIGEST = createHash('sha256').update('phase-232-operator-under-test').digest('hex');
 const DECIDED_AT = '2026-07-21T00:00:00Z';
+// The digest of the observed state an approving operator witnessed. Phase 233 binds to this.
+const WITNESSED_BEFORE = createHash('sha256').update('phase-232-witnessed-before-state').digest('hex');
 
 const MINIMAL_MP4_FIXTURE = Buffer.concat([
   Buffer.from([0x00, 0x00, 0x00, 0x18]),
@@ -89,6 +91,7 @@ function approvedRecord(gate: unknown, over: Rec = {}): Rec {
   const { fields: overFields, ...rest } = over;
   return recordFor(gate, {
     decision: 'APPROVED', operatorDigest: OPERATOR_DIGEST, decidedAtUtc: DECIDED_AT,
+    observedStateBeforeDigest: WITNESSED_BEFORE,
     ...rest,
     fields: { operatorAuthorized: 'AFFIRMED', observedStateWitnessedBefore: 'AFFIRMED', withdrawalPathRehearsed: 'AFFIRMED', ...((overFields as Rec) ?? {}) },
   });
@@ -255,6 +258,47 @@ await test('adversarial: an undecided record that quietly affirms the operator a
 });
 
 // A decided record must say WHO (by digest) and WHEN; an undecided one must claim neither.
+// An approval affirms `observedStateWitnessedBefore` -- so it must say WHICH state was witnessed. An
+// affirmation of nothing in particular binds nothing, and Phase 233 would have nothing to check against.
+await test('an APPROVED record must pin the observed state its operator witnessed', () => {
+  const root = workspace();
+  try {
+    const gate = gateFor(root);
+    // Approved, every field affirmed, but naming no witnessed state.
+    const unpinned = buildExecutionAuthorizationRecord({ gate, record: approvedRecord(gate, { observedStateBeforeDigest: 'PENDING' }) });
+    assertEq(unpinned.overall, 'EXECUTION_AUTHORIZATION_RECORD_INVALID', 'an approval that pins no witnessed state is rejected');
+    assert(unpinned.blockers.includes('RECORD_OBSERVED_STATE_BEFORE_REQUIRED'), 'RECORD_OBSERVED_STATE_BEFORE_REQUIRED reported');
+    assertEq(unpinned.authorizationRecorded, false, 'nothing authorized');
+    assert(!('observed-state-before' in unpinned.boundDigests), 'no witnessed state published');
+
+    // A valid approval publishes it for Phase 233 to bind to.
+    const good = buildExecutionAuthorizationRecord({ gate, record: approvedRecord(gate) });
+    assertEq(good.boundDigests['observed-state-before'], WITNESSED_BEFORE, 'the witnessed state is published');
+
+    // A record that authorized NOTHING witnessed nothing it can pin.
+    const declined = recordFor(gate, {
+      decision: 'DECLINED', operatorDigest: OPERATOR_DIGEST, decidedAtUtc: DECIDED_AT,
+      observedStateBeforeDigest: WITNESSED_BEFORE,
+      fields: { operatorAuthorized: 'REFUSED' },
+    });
+    const d = buildExecutionAuthorizationRecord({ gate, record: declined });
+    assertEq(d.overall, 'EXECUTION_AUTHORIZATION_RECORD_INVALID', 'a refusal may not pin a witnessed state');
+    assert(d.blockers.includes('RECORD_OBSERVED_STATE_BEFORE_NOT_PENDING'), 'RECORD_OBSERVED_STATE_BEFORE_NOT_PENDING reported');
+    const undecided = buildExecutionAuthorizationRecord({ gate, record: recordFor(gate, { observedStateBeforeDigest: WITNESSED_BEFORE }) });
+    assert(undecided.blockers.includes('RECORD_OBSERVED_STATE_BEFORE_NOT_PENDING'), 'an undecided record may not pin one either');
+
+    // Malformed values fail the shape check, and the field sits inside the strict allowlist and redaction scan.
+    for (const bad of ['looked-about-right', 42, null, 'PENDING '] as unknown[]) {
+      const r = buildExecutionAuthorizationRecord({ gate, record: approvedRecord(gate, { observedStateBeforeDigest: bad }) });
+      assertEq(r.overall, 'EXECUTION_AUTHORIZATION_RECORD_INVALID', `malformed witnessed state rejected: ${String(bad)}`);
+      assert(r.blockers.includes('RECORD_OBSERVED_STATE_BEFORE_INVALID'), `RECORD_OBSERVED_STATE_BEFORE_INVALID for ${String(bad)}`);
+    }
+    const leaky = buildExecutionAuthorizationRecord({ gate, record: approvedRecord(gate, { observedStateBeforeDigest: '/mnt/user/media/Movies/witness.mkv' }) });
+    assert(leaky.blockers.includes('RECORD_LIVE_SURFACE'), 'a raw path in the witnessed field is caught by the redaction scan');
+    assert(!JSON.stringify(leaky).includes('/mnt/'), 'and is never echoed');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('adversarial: operator digest and decision time must match the decision state', () => {
   const root = workspace();
   try {
@@ -385,6 +429,13 @@ function realGate(): Record<string, unknown> {
   assertEq(gate.overall, 'EXECUTION_AUTHORIZATION_TEMPLATE_READY', `precondition: real gate ready (${gate.blockers.join(',')})`);
   return gate as unknown as Record<string, unknown>;
 }
+
+// The witnessed-state binding is a Phase 232 change ONLY. Phase 231 is produced before any human witnesses
+// anything, so the real gate must be byte-identical to what it was before that change -- locked here.
+await test('the witnessed-state binding leaves the real P227-A gate completely unchanged', () => {
+  assertEq(realGate().authorizationDigest, 'a128c9d0797afd034615256a59c06c14d9d88187d42c7fdfce0ef0ee6d40cdaa',
+    'the real Phase 231 gate digest is untouched by the Phase 232 witnessed-state field');
+});
 
 await test('the real prepared P227-A run has NO operator record: the validator fails closed', () => {
   const r = buildExecutionAuthorizationRecord({ gate: realGate() });

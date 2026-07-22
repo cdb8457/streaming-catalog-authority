@@ -92,6 +92,8 @@ function approvedAuthorizationFor(root: string, over: { itemId?: string; approva
   const record = {
     ...JSON.parse(JSON.stringify(skeleton)) as Rec,
     decision: 'APPROVED', operatorDigest: OPERATOR_DIGEST, decidedAtUtc: DECIDED_AT,
+    // The operator pins the state they witnessed; the observation below must report exactly this one.
+    observedStateBeforeDigest: STATE_BEFORE,
     fields: { operatorAuthorized: 'AFFIRMED', observedStateWitnessedBefore: 'AFFIRMED', withdrawalPathRehearsed: 'AFFIRMED', observedStateWitnessedAfter: 'PENDING', runExecutedByHuman: 'PENDING' },
   };
   const auth = buildExecutionAuthorizationRecord({ gate, record });
@@ -382,6 +384,58 @@ await test('a FAILED run is recordable, but only with both observed states', () 
     const u = buildPostRunObservationRecord({ authorizationRecord: auth, observation: unobserved });
     assertEq(u.overall, 'POST_RUN_OBSERVATION_INVALID', 'unobserved failure rejected');
     assert(u.blockers.includes('OBSERVATION_FAILED_WITHOUT_OBSERVED_STATE'), 'OBSERVATION_FAILED_WITHOUT_OBSERVED_STATE reported');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// THE WITNESSED-STATE BINDING -- the whole point of the Phase 232<->233 remediation. An operator who witnessed
+// one state when they approved the run may not report a DIFFERENT "before" once the run has happened.
+await test('THE witnessed-state binding: the reported before-state must be the state that was witnessed', () => {
+  const root = workspace();
+  try {
+    const auth = approvedAuthorizationFor(root);
+    assertEq((auth.boundDigests as Rec)['observed-state-before'], STATE_BEFORE, 'precondition: the authorization pinned what was witnessed');
+
+    // Witness one state at authorization, report another afterwards.
+    const OTHER_BEFORE = createHash('sha256').update('a-state-nobody-witnessed').digest('hex');
+    const rewritten = buildPostRunObservationRecord({
+      authorizationRecord: auth,
+      observation: completedObservation(auth, { observedStateBeforeDigest: OTHER_BEFORE }),
+    });
+    assertEq(rewritten.overall, 'POST_RUN_OBSERVATION_INVALID', 'a rewritten before-state is rejected');
+    assert(rewritten.blockers.includes('OBSERVATION_BEFORE_STATE_NOT_WITNESSED'), 'OBSERVATION_BEFORE_STATE_NOT_WITNESSED reported');
+    assertEq(rewritten.observationRecorded, false, 'nothing recorded');
+    // It must fail for THIS reason, not incidentally: the run still changed state, so the COMPLETED rules hold.
+    assert(!rewritten.blockers.includes('OBSERVATION_COMPLETED_WITHOUT_OBSERVED_CHANGE'), 'not an incidental change-detection failure');
+    assert(!rewritten.blockers.includes('OBSERVATION_COMPLETED_WITHOUT_OBSERVED_STATE'), 'not an incidental missing-state failure');
+
+    // The honestly-reported before-state still records.
+    assertEq(buildPostRunObservationRecord({ authorizationRecord: auth, observation: completedObservation(auth) }).overall,
+      'POST_RUN_OBSERVATION_RECORDED', 'the witnessed before-state records');
+
+    // A withdrawal is still proven against the witnessed state, not some other one.
+    const withdrawn = buildPostRunObservationRecord({
+      authorizationRecord: auth,
+      observation: completedObservation(auth, { withdrawal: 'PERFORMED', observedStateAfterWithdrawalDigest: STATE_BEFORE }),
+    });
+    assertEq(withdrawn.withdrawalProven, true, 'withdrawal proven back to the witnessed state');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// NOT_RUN totality is untouched by the binding: nothing ran, so there is no before-state to bind and none is
+// demanded. The binding must not quietly force a digest to appear.
+await test('the witnessed-state binding does not weaken NOT_RUN totality', () => {
+  const root = workspace();
+  try {
+    const auth = approvedAuthorizationFor(root);
+    const o = buildPostRunObservationRecord({ authorizationRecord: auth, observation: skeletonOf(auth) });
+    assertEq(o.overall, 'POST_RUN_OBSERVATION_PENDING', `a blank NOT_RUN observation still validates (${o.blockers.join(',')})`);
+    assertEq(o.blockers.length, 0, 'no blocker for a run that never happened');
+    assert(!o.blockers.includes('OBSERVATION_BEFORE_STATE_NOT_WITNESSED'), 'no before-state is demanded of NOT_RUN');
+    assertEq(o.observedStatePresence.observedStateBeforeDigest, 'PENDING', 'before-state stays PENDING');
+    // And NOT_RUN still may not smuggle in the witnessed state as its "before".
+    const claiming = buildPostRunObservationRecord({ authorizationRecord: auth, observation: observationFor(auth, { observedStateBeforeDigest: STATE_BEFORE }) });
+    assertEq(claiming.overall, 'POST_RUN_OBSERVATION_INVALID', 'NOT_RUN may not claim the witnessed state either');
+    assert(claiming.blockers.includes('OBSERVATION_NOT_RUN_CLAIMS_OBSERVED_STATE'), 'totality still enforced');
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 

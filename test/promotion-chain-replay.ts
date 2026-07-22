@@ -89,6 +89,8 @@ function fullChain(root: string, o: ChainOpts = {}): Chain {
   const authorizationDecision: Rec = {
     ...JSON.parse(JSON.stringify(buildExecutionAuthorizationRecordSkeleton(gate)!)) as Rec,
     decision: 'APPROVED', operatorDigest: OPERATOR_DIGEST, decidedAtUtc: DECIDED_AT,
+    // The operator pins the state they witnessed; the observation below must report exactly this one.
+    observedStateBeforeDigest: STATE_BEFORE,
     fields: { operatorAuthorized: 'AFFIRMED', observedStateWitnessedBefore: 'AFFIRMED', withdrawalPathRehearsed: 'AFFIRMED', observedStateWitnessedAfter: 'PENDING', runExecutedByHuman: 'PENDING' },
   };
   const authorization = buildExecutionAuthorizationRecord({ gate, record: authorizationDecision });
@@ -568,10 +570,14 @@ await test('a source record from a different operation does not re-derive its re
 // Unproven is not disproven -- but it still caps the verdict. One missing source is enough.
 // THE LIMIT OF THE SEMANTIC PATH, locked so it cannot be quietly re-overclaimed. Re-derivation proves a report
 // is the honest output of its validator over SOME accepted record -- it does NOT pin WHICH record. The phase
-// reports are deliberately redaction-minimal, so a whole cast of different people, at different times, over
-// different observed states, collapses to byte-identical reports and still VERIFIES. If this test ever starts
-// failing, the reports began carrying that detail and the doc's claims must be widened to match.
-await test('the semantic path does NOT pin which record: identities, times and observed states are swappable', () => {
+// reports are deliberately redaction-minimal, so a whole cast of different people, at different times,
+// collapses to byte-identical reports and still VERIFIES.
+//
+// The observed BEFORE state is the ONE exception, and only since the Phase 232<->233 witnessed-state binding:
+// Phase 232 now records the state its operator witnessed and Phase 233 must match it, so that value alone is
+// pinned through the chain. The AFTER state is not. If this test ever starts failing, the reports began
+// carrying more detail and the doc's claims must be widened to match.
+await test('the semantic path does NOT pin which record: identities and times are swappable, the before-state is not', () => {
   const root = workspace();
   try {
     const c = fullChain(root);
@@ -594,12 +600,23 @@ await test('the semantic path does NOT pin which record: identities, times and o
     assertEq(cast.semanticallyRederived, true, 'because the reports do not carry identity or time');
 
     // And the observed states themselves: Phase 233 carries only PRESENT/PENDING, never the values.
+    // The AFTER state is still swappable: nothing upstream pins it, and Phase 233 carries it only as
+    // PRESENT/PENDING. (Any distinct value works -- COMPLETED only requires after !== before.)
     const restated = verifyPromotionChainReplay({
       ...reportsOnly(c),
-      sources: { ...s, observation: { ...(s.observation as Rec), observedStateBeforeDigest: OTHER_BEFORE, observedStateAfterDigest: OTHER_AFTER } },
+      sources: { ...s, observation: { ...(s.observation as Rec), observedStateAfterDigest: OTHER_AFTER } },
     });
-    assertEq(restated.overall, 'CHAIN_REPLAY_VERIFIED_CLOSED', 'a different observed state still verifies');
-    assertEq(restated.blockers.length, 0, 'the observed-state digests are not pinned by the chain');
+    assertEq(restated.overall, 'CHAIN_REPLAY_VERIFIED_CLOSED', 'a different observed AFTER state still verifies');
+    assertEq(restated.blockers.length, 0, 'the after-state is not pinned by the chain');
+
+    // The BEFORE state, by contrast, IS pinned -- Phase 232 records the state its operator witnessed and
+    // Phase 233 binds to it, so swapping it is caught. This half of the non-uniqueness is closed.
+    const rewritten = verifyPromotionChainReplay({
+      ...reportsOnly(c),
+      sources: { ...s, observation: { ...(s.observation as Rec), observedStateBeforeDigest: OTHER_BEFORE } },
+    });
+    assertEq(rewritten.overall, 'CHAIN_NOT_REPLAYABLE', 'a different observed BEFORE state does NOT verify');
+    assert(rewritten.blockers.includes('CHAIN_PHASE_233_NOT_REDERIVED_FROM_SOURCE'), 'the rewritten before-state breaks re-derivation');
 
     // The verdict must therefore disclaim exactly this, in the artifact itself.
     assert(CHAIN_REPLAY_DISCLAIMERS.some((d) => d.includes('does NOT pin WHICH source record')),

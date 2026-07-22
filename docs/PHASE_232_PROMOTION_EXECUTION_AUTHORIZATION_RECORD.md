@@ -62,6 +62,7 @@ set fails closed.
   "decision": "PENDING",
   "operatorDigest": "PENDING",
   "decidedAtUtc": "PENDING",
+  "observedStateBeforeDigest": "PENDING",
   "fields": {
     "operatorAuthorized": "PENDING",
     "observedStateWitnessedBefore": "PENDING",
@@ -109,6 +110,14 @@ set fails closed.
      authorization is never inferred from a field;
    - a decided record must name **who** (a sha256 operator digest) and **when** (a strict
      `YYYY-MM-DDTHH:MM:SSZ` timestamp) — `RECORD_OPERATOR_DIGEST_REQUIRED` / `RECORD_DECIDED_AT_REQUIRED`;
+   - **which state was witnessed** — an `APPROVED` record must pin the observed state its operator witnessed,
+     as a sha256 `observedStateBeforeDigest` (`RECORD_OBSERVED_STATE_BEFORE_REQUIRED`). Approving already
+     requires `observedStateWitnessedBefore: AFFIRMED`, and an affirmation of nothing in particular binds
+     nothing. A record that authorized nothing — `DECLINED` or `PENDING` — witnessed nothing it can pin and
+     must leave the field `PENDING` (`RECORD_OBSERVED_STATE_BEFORE_NOT_PENDING`); anything that is neither a
+     sha256 nor `PENDING` is `RECORD_OBSERVED_STATE_BEFORE_INVALID`. A valid approval publishes the value as
+     `boundDigests['observed-state-before']`, which **Phase 233 requires its own before-state to equal** —
+     that binding is what stops an operator witnessing one state and reporting a different one afterwards;
      an undecided one must claim neither (`RECORD_OPERATOR_DIGEST_NOT_PENDING` /
      `RECORD_DECIDED_AT_NOT_PENDING`).
 
@@ -166,3 +175,14 @@ It does not authorize, schedule, or perform the P227-A promotion; it does not cr
 record; it does not mark the prepared run authorized; it does not run the promotion launcher, read or write
 the real Movies library, or contact Jellyfin; it does not read the secret approval file; and it does not
 merge, tag, or push. Those remain separate human steps, preserved behind the live boundary.
+
+### What the witnessed-state binding does and does not give you
+
+It makes the before-state **consistent**, not **trustworthy**. The operator still self-reports both the
+witnessed digest and, later, the observed "before" — so it removes *"witness one state, report another"*, and
+nothing more. It proves nothing about either digest corresponding to the real library at either moment.
+
+It also does not close the Phase 236 non-uniqueness limit in general. Phase 233's report still carries the
+observed states only as `PRESENT`/`PENDING`, so Phase 236's semantic path still cannot pin the observed
+**after** state (see the locked non-uniqueness test in the Phase 236 suite). The **before** state is now the
+one exception, precisely because this binding pins it. Closing this gap did not close that one.

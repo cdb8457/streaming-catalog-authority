@@ -56,7 +56,10 @@ const OPERATION_BINDING_KEYS: Readonly<Record<string, string>> = {
   destinationDigest: 'operation-destination',
   planDigest: 'operation-plan',
 };
-const AUTHORIZATION_BINDING_KEYS: readonly string[] = ['gate-authorization', ...Object.values(OPERATION_BINDING_KEYS)];
+// The digest of the state the operator WITNESSED at authorization time, published by Phase 232 for an
+// APPROVED record. An observed run's own before-state must equal it.
+const WITNESSED_BEFORE_KEY = 'observed-state-before';
+const AUTHORIZATION_BINDING_KEYS: readonly string[] = ['gate-authorization', ...Object.values(OPERATION_BINDING_KEYS), WITNESSED_BEFORE_KEY];
 
 // Strict top-level allowlist: anything else is smuggled content and fails closed.
 const OBSERVATION_KEYS: readonly string[] = [
@@ -207,6 +210,15 @@ export function buildPostRunObservationRecord(input: PostRunObservationInput): P
       blockers.push('OBSERVATION_FAILED_WITHOUT_OBSERVED_STATE'); outcomeCoherent = false;
     }
 
+    // THE WITNESSED-STATE BINDING. Phase 232 pinned the observed state its operator witnessed when approving;
+    // an observation that cites a before-state must cite THAT state. This is what stops an operator witnessing
+    // one state at authorization time and reporting a different "before" afterwards. NOT_RUN is unaffected:
+    // its before-digest is PENDING by the totality rule above, so there is nothing to bind and none is forced.
+    let beforeStateWitnessed = true;
+    if (before !== undefined && authorizationValid && before !== auth.bindings[WITNESSED_BEFORE_KEY]) {
+      blockers.push('OBSERVATION_BEFORE_STATE_NOT_WITNESSED'); beforeStateWitnessed = false;
+    }
+
     // The withdrawal proof. PERFORMED is the only claim that may cite an after-withdrawal state, and it holds
     // only when that state is EXACTLY the state observed before the run.
     let withdrawalCoherent = true;
@@ -239,7 +251,7 @@ export function buildPostRunObservationRecord(input: PostRunObservationInput): P
     const observedAtOk = observed ? isUtcTimestamp(obs.obj.observedAtUtc) : obs.obj.observedAtUtc === 'PENDING';
     if (!observedAtOk) blockers.push(observed ? 'OBSERVATION_OBSERVED_AT_REQUIRED' : 'OBSERVATION_OBSERVED_AT_NOT_PENDING');
 
-    observationCoherent = outcomeCoherent && withdrawalCoherent && assertionsHeld && observerOk && observedAtOk;
+    observationCoherent = outcomeCoherent && withdrawalCoherent && beforeStateWitnessed && assertionsHeld && observerOk && observedAtOk;
   }
 
   const uniqueBlockers = [...new Set(blockers)];

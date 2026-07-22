@@ -161,7 +161,9 @@ stays identical:
   people still verifies**;
 - `decidedAtUtc` / `observedAtUtc` / `reviewedAtUtc` / `closedAtUtc` — any timestamps;
 - Phase 233's `observedStateBeforeDigest` and `observedStateAfterDigest` — the observed states themselves are
-  carried in the report only as `PRESENT`/`PENDING`, never as values;
+  carried in the report only as `PRESENT`/`PENDING`, never as values — **except the observed BEFORE state**,
+  which since the Phase 232↔233 witnessed-state binding IS pinned through the chain and can no longer be
+  swapped;
 - arbitrary extra keys in the Phase 231 `gateEvidence` bundle, which its validator ignores.
 
 So `VERIFIED_CLOSED` must **not** be read as "these people did these things at these times over this observed

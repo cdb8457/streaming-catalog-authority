@@ -128,6 +128,12 @@ that run may make them. A skeleton that pre-filled them as `true` would be pre-f
      `preexistingPreserved: true` and `withdrewOnlyRunCreatedMaterialization: true`
      (`OBSERVATION_PREEXISTING_NOT_PRESERVED` / `OBSERVATION_WITHDREW_BEYOND_RUN_CREATED_MATERIALIZATION`);
      these are never pre-affirmed by anything this module emits;
+   - **the witnessed-state binding** — when the observation cites a before-state at all, it must equal the
+     state the Phase 232 authorization recorded its operator as having witnessed
+     (`boundDigests['observed-state-before']`), or `OBSERVATION_BEFORE_STATE_NOT_WITNESSED`. This is what stops
+     an operator witnessing one state at authorization time and reporting a different "before" once the run has
+     happened. `NOT_RUN` is unaffected: its before-digest is `PENDING` by the totality rule above, so there is
+     nothing to bind and no digest is forced to appear;
    - **who and when** — an observation of a real run names its observer by sha256 digest and a strict
      `YYYY-MM-DDTHH:MM:SSZ` time (`OBSERVATION_OBSERVER_DIGEST_REQUIRED` / `OBSERVATION_OBSERVED_AT_REQUIRED`);
      a `NOT_RUN` observation claims neither (`OBSERVATION_OBSERVER_DIGEST_NOT_PENDING` /
@@ -204,3 +210,14 @@ boundary.
 total — nothing run, nothing observed, nobody named. An abort-after-observing disposition would need its own
 record type rather than a loosened `NOT_RUN`, which would otherwise become a place to park unattributed
 observations.
+
+### What the witnessed-state binding does and does not give you
+
+It makes the before-state **consistent**, not **trustworthy**. The operator still self-reports both the
+witnessed digest and, later, the observed "before" — so it removes *"witness one state, report another"*, and
+nothing more. It proves nothing about either digest corresponding to the real library at either moment.
+
+It also does not close the Phase 236 non-uniqueness limit in general. Phase 233's report still carries the
+observed states only as `PRESENT`/`PENDING`, so Phase 236's semantic path still cannot pin the observed
+**after** state (see the locked non-uniqueness test in the Phase 236 suite). The **before** state is now the
+one exception, precisely because this binding pins it. Closing this gap did not close that one.
