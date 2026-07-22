@@ -530,6 +530,83 @@ await test('CLI records a bound disposition, writes a blank skeleton, and never 
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// UPSTREAM SEMANTIC VALIDATION. A green `overall` on a Phase 233 report is not evidence: the self-digest is
+// not a signature, so a forger can rewrite the body, leave the headline green, and recompute the digest. These
+// forgeries all recompute CLEANLY -- proven explicitly below -- and are caught only because Phase 234 now
+// requires the upstream report's OWN success booleans, its redaction-safety, an empty blocker list, and a
+// withdrawal proof consistent with the withdrawal it claims.
+function forgeObservation(report: Rec, mutate: (r: Rec) => void): Rec {
+  const forged = JSON.parse(JSON.stringify(report)) as Rec;
+  mutate(forged);
+  delete forged.observationDigest;
+  const body: Rec = {};
+  for (const k of Object.keys(forged)) body[k] = forged[k];
+  forged.observationDigest = createHash('sha256').update(`phase-233-post-run-observation-record:${JSON.stringify(body)}`).digest('hex');
+  return forged;
+}
+
+await test('adversarial: a self-digest-valid Phase 233 report whose own success booleans are false is NOT_REVIEWABLE', () => {
+  const root = workspace();
+  try {
+    const obs = recordedObservationFor(root);
+    const cases: Array<[string, (r: Rec) => void, string]> = [
+      ['the report is not redaction-safe', (r) => { r.redactionSafe = false; }, 'OBSERVATION_RECORD_NOT_REDACTION_SAFE'],
+      ['the observation was not well-formed', (r) => { r.observationWellFormed = false; }, 'OBSERVATION_RECORD_NOT_WELL_FORMED'],
+      ['the observation input was not redaction-safe', (r) => { r.observationRedactionSafe = false; }, 'OBSERVATION_RECORD_INPUT_NOT_REDACTION_SAFE'],
+      ['the observation was not bound', (r) => { r.observationBound = false; }, 'OBSERVATION_RECORD_NOT_BOUND'],
+      ['the observation was not coherent', (r) => { r.observationCoherent = false; }, 'OBSERVATION_RECORD_NOT_COHERENT'],
+      ['blockers were recorded under a green headline', (r) => { r.blockers = ['SOMETHING_FAILED']; }, 'OBSERVATION_RECORD_BLOCKERS_PRESENT'],
+      ['blockers is not even a list', (r) => { r.blockers = 'none'; }, 'OBSERVATION_RECORD_BLOCKERS_PRESENT'],
+    ];
+    for (const [what, mutate, code] of cases) {
+      const forged = forgeObservation(obs, mutate);
+      // Prove the forgery is self-digest valid: the digest check cannot see any of this.
+      assertEq(verifySelfDigests([forged]).overall, 'ALL_VERIFIED', `precondition: ${what} recomputes cleanly`);
+      assertEq((forged as Rec).overall, 'POST_RUN_OBSERVATION_RECORDED', `precondition: ${what} keeps a green headline`);
+      const d = buildPostRunDispositionRecord({ observationRecord: forged, disposition: acceptedDisposition(obs) });
+      assertEq(d.overall, 'POST_RUN_DISPOSITION_NOT_REVIEWABLE', `forged upstream rejected: ${what}`);
+      assert(d.blockers.includes(code), `${what} -> ${code}`);
+      assert(!d.blockers.includes('OBSERVATION_RECORD_DIGEST_MISMATCH'), `${what}: the digest check does NOT catch this`);
+      assertEq(d.observationReviewable, false, `not reviewable: ${what}`);
+      assertEq(d.dispositionAccepted, false, `nothing accepted: ${what}`);
+      assertEq(d.recordedDisposition, 'NONE', `no disposition recorded: ${what}`);
+      assertEq(buildPostRunDispositionSkeleton(forged), null, `no skeleton for a forged upstream: ${what}`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
+// Phase 233 makes `withdrawalProven` and `recordedWithdrawal === PERFORMED` biconditional for every valid
+// report, so a divergence in EITHER direction is a forged body.
+await test('adversarial: a Phase 233 report whose withdrawal proof contradicts its withdrawal is NOT_REVIEWABLE', () => {
+  const root = workspace();
+  try {
+    // Direction 1: claims PERFORMED but admits the proof does not hold.
+    const withdrawn = recordedObservationFor(root, { withdrawn: true });
+    assertEq((withdrawn as Rec).recordedWithdrawal, 'PERFORMED', 'precondition: a genuinely proven withdrawal');
+    assertEq((withdrawn as Rec).withdrawalProven, true, 'precondition: proven');
+    const unproven = forgeObservation(withdrawn, (r) => { r.withdrawalProven = false; });
+    assertEq(verifySelfDigests([unproven]).overall, 'ALL_VERIFIED', 'precondition: PERFORMED+false recomputes cleanly');
+    const a = buildPostRunDispositionRecord({ observationRecord: unproven, disposition: acceptedDisposition(withdrawn) });
+    assertEq(a.overall, 'POST_RUN_DISPOSITION_NOT_REVIEWABLE', 'PERFORMED with an unproven withdrawal rejected');
+    assert(a.blockers.includes('OBSERVATION_RECORD_WITHDRAWAL_PROOF_INCONSISTENT'), 'PERFORMED+false -> OBSERVATION_RECORD_WITHDRAWAL_PROOF_INCONSISTENT');
+    assertEq(a.observationReviewable, false, 'not reviewable');
+    assertEq(buildPostRunDispositionSkeleton(unproven), null, 'no skeleton');
+
+    // Direction 2: claims a proof it never earned, over a withdrawal that was never performed.
+    const notWithdrawn = recordedObservationFor(root, { itemId: '77777777777777777777777777777777', approvalId: 'phase-234-proofdir2', body: Buffer.concat([MINIMAL_MP4_FIXTURE, Buffer.from('-proofdir2')]) });
+    assertEq((notWithdrawn as Rec).recordedWithdrawal, 'NOT_REQUIRED', 'precondition: no withdrawal was performed');
+    assertEq((notWithdrawn as Rec).withdrawalProven, false, 'precondition: nothing proven');
+    const overclaimed = forgeObservation(notWithdrawn, (r) => { r.withdrawalProven = true; });
+    assertEq(verifySelfDigests([overclaimed]).overall, 'ALL_VERIFIED', 'precondition: NOT_REQUIRED+true recomputes cleanly');
+    const b = buildPostRunDispositionRecord({ observationRecord: overclaimed, disposition: acceptedDisposition(notWithdrawn) });
+    assertEq(b.overall, 'POST_RUN_DISPOSITION_NOT_REVIEWABLE', 'an unearned withdrawal proof rejected');
+    assert(b.blockers.includes('OBSERVATION_RECORD_WITHDRAWAL_PROOF_INCONSISTENT'), 'NOT_REQUIRED+true -> OBSERVATION_RECORD_WITHDRAWAL_PROOF_INCONSISTENT');
+    assertEq(b.dispositionAccepted, false, 'nothing accepted');
+    assertEq(b.recordedDisposition, 'NONE', 'no disposition recorded');
+    assertEq(buildPostRunDispositionSkeleton(overclaimed), null, 'no skeleton');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // The ACTUAL prepared, redaction-safe P227-A evidence (captured verbatim from the non-live artifacts under
 // evidence/phase-231). Locked here so the validator is exercised against the real chain offline and
 // deterministically -- no SSH, no secret approval file, no live surface. NOTE: no approved authorization, no

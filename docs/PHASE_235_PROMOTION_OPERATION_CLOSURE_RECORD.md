@@ -108,6 +108,14 @@ is being closed, not a judgement about it. The judgement lives entirely in the a
    These semantic checks are not redundant behind the digest check: a self-digest is **not a signature**, so a
    forged disposition that rebuilds its own digest cleanly walks straight into them — which is why they are
    tested against an actual seven-case forgery.
+
+   **Upstream semantic validation.** As in Phase 234, the headline fields alone are not enough: a forged report
+   can keep a green `overall` over a body that failed Phase 234's own checks and recompute its digest cleanly.
+   Phase 235 therefore also requires every upstream success boolean, a decision consistent with that headline,
+   redaction-safety and an empty blocker list — `DISPOSITION_RECORD_NOT_REDACTION_SAFE`,
+   `_DECISION_NOT_ACCEPTED`, `_UPSTREAM_NOT_REVIEWABLE`, `_NOT_WELL_FORMED`, `_INPUT_NOT_REDACTION_SAFE`,
+   `_NOT_BOUND`, `_NOT_COHERENT`, `_BLOCKERS_PRESENT`. All are `NOT_CLOSEABLE`, never `INVALID`.
+
 2. **Closure shape** (`closureWellFormed`) — exactly one object (`CLOSURE_MISSING` / `CLOSURE_NOT_SINGLE` /
    `CLOSURE_INVALID`), only allowlisted keys (`CLOSURE_UNKNOWN_FIELD`), correct fixed literals
    (`CLOSURE_VERSION_UNSUPPORTED` / `_OPERATION_MISMATCH` / `_SOURCE_RECORD_MISMATCH` /

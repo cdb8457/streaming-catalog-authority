@@ -346,6 +346,20 @@ function validateDispositionRecord(value: unknown, blockers: string[]): Validate
   const outcome = typeof obj.reviewedOutcome === 'string' ? obj.reviewedOutcome : undefined;
   if (outcome === undefined || !CLOSED_OUTCOMES.includes(outcome)) { blockers.push('DISPOSITION_RECORD_OUTCOME_INVALID'); ok = false; }
 
+  // UPSTREAM SEMANTIC VALIDATION, the same hardening as Phase 234 applies to its own parent. The headline
+  // fields above are NOT enough: a forged report can recompute its own digest and still carry a green
+  // `overall` over a body that failed Phase 234's own checks. Require every upstream success boolean, the
+  // decision consistent with that headline, redaction-safety, and an empty blocker list.
+  if (obj.redactionSafe !== true) { blockers.push('DISPOSITION_RECORD_NOT_REDACTION_SAFE'); ok = false; }
+  if (obj.recordedDisposition !== 'ACCEPTED') { blockers.push('DISPOSITION_RECORD_DECISION_NOT_ACCEPTED'); ok = false; }
+  // An accepted disposition must have had something reviewable beneath it.
+  if (obj.observationReviewable !== true) { blockers.push('DISPOSITION_RECORD_UPSTREAM_NOT_REVIEWABLE'); ok = false; }
+  if (obj.dispositionWellFormed !== true) { blockers.push('DISPOSITION_RECORD_NOT_WELL_FORMED'); ok = false; }
+  if (obj.dispositionRedactionSafe !== true) { blockers.push('DISPOSITION_RECORD_INPUT_NOT_REDACTION_SAFE'); ok = false; }
+  if (obj.dispositionBound !== true) { blockers.push('DISPOSITION_RECORD_NOT_BOUND'); ok = false; }
+  if (obj.dispositionCoherent !== true) { blockers.push('DISPOSITION_RECORD_NOT_COHERENT'); ok = false; }
+  if (!Array.isArray(obj.blockers) || obj.blockers.length !== 0) { blockers.push('DISPOSITION_RECORD_BLOCKERS_PRESENT'); ok = false; }
+
   const bound = asObject(obj.boundDigests);
   const bindings: Record<string, string | undefined> = {};
   for (const k of DISPOSITION_BINDING_KEYS) {

@@ -103,6 +103,15 @@ withdrawal are closed-enum values with a boolean withdrawal proof (`OBSERVATION_
 `_WITHDRAWAL_INVALID` / `_WITHDRAWAL_PROVEN_INVALID`), and it carries all six chain bindings
 (`OBSERVATION_RECORD_BINDINGS_INCOMPLETE`). **Every failure here yields `NOT_REVIEWABLE`, never `INVALID`.**
 
+   **Upstream semantic validation.** The headline fields are not enough: a self-digest is not a signature, so a
+   forged report can keep a green `overall` over a body that failed Phase 233's own checks and still recompute
+   its digest cleanly. Phase 234 therefore also requires the upstream report's own success booleans and an empty
+   blocker list — `OBSERVATION_RECORD_NOT_REDACTION_SAFE`, `_NOT_WELL_FORMED`, `_INPUT_NOT_REDACTION_SAFE`,
+   `_NOT_BOUND`, `_NOT_COHERENT`, `_BLOCKERS_PRESENT` — plus a withdrawal proof consistent with the withdrawal
+   claimed: `withdrawalProven` must equal `recordedWithdrawal === "PERFORMED"`, biconditionally, or
+   `OBSERVATION_RECORD_WITHDRAWAL_PROOF_INCONSISTENT` fires. Both directions — `PERFORMED` with an unproven
+   withdrawal, and a proof claimed over a withdrawal that never happened — fail closed as `NOT_REVIEWABLE`.
+
 These semantic checks are **not** redundant behind the digest check. A self-digest is **not a signature**, so
 anyone can recompute one: a forged observation claiming it had already performed the run passes the digest
 check cleanly and is stopped only by these checks — which is why they are tested against an actual forgery

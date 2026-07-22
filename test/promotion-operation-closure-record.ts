@@ -576,6 +576,52 @@ await test('CLI records a bound closure, writes a blank skeleton, and never echo
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// UPSTREAM SEMANTIC VALIDATION, the same hardening one layer up. A green `overall` on a Phase 234 report is
+// not evidence: a forger can rewrite the body, keep the headline green, and recompute the digest. These
+// forgeries all recompute CLEANLY -- proven explicitly -- and are caught only because Phase 235 now requires
+// every upstream success boolean, a decision consistent with that headline, redaction-safety, and no blockers.
+function forgeDisposition(report: Rec, mutate: (r: Rec) => void): Rec {
+  const forged = JSON.parse(JSON.stringify(report)) as Rec;
+  mutate(forged);
+  delete forged.dispositionDigest;
+  const body: Rec = {};
+  for (const k of Object.keys(forged)) body[k] = forged[k];
+  forged.dispositionDigest = createHash('sha256').update(`phase-234-post-run-disposition-record:${JSON.stringify(body)}`).digest('hex');
+  return forged;
+}
+
+await test('adversarial: a self-digest-valid Phase 234 report whose own success booleans are false is NOT_CLOSEABLE', () => {
+  const root = workspace();
+  try {
+    const disp = acceptedDispositionFor(root);
+    const cases: Array<[string, (r: Rec) => void, string]> = [
+      ['the report is not redaction-safe', (r) => { r.redactionSafe = false; }, 'DISPOSITION_RECORD_NOT_REDACTION_SAFE'],
+      ['the recorded decision is not ACCEPTED', (r) => { r.recordedDisposition = 'PENDING'; }, 'DISPOSITION_RECORD_DECISION_NOT_ACCEPTED'],
+      ['nothing reviewable sat beneath it', (r) => { r.observationReviewable = false; }, 'DISPOSITION_RECORD_UPSTREAM_NOT_REVIEWABLE'],
+      ['the disposition was not well-formed', (r) => { r.dispositionWellFormed = false; }, 'DISPOSITION_RECORD_NOT_WELL_FORMED'],
+      ['the disposition input was not redaction-safe', (r) => { r.dispositionRedactionSafe = false; }, 'DISPOSITION_RECORD_INPUT_NOT_REDACTION_SAFE'],
+      ['the disposition was not bound', (r) => { r.dispositionBound = false; }, 'DISPOSITION_RECORD_NOT_BOUND'],
+      ['the disposition was not coherent', (r) => { r.dispositionCoherent = false; }, 'DISPOSITION_RECORD_NOT_COHERENT'],
+      ['blockers were recorded under a green headline', (r) => { r.blockers = ['SOMETHING_FAILED']; }, 'DISPOSITION_RECORD_BLOCKERS_PRESENT'],
+      ['blockers is not even a list', (r) => { r.blockers = 'none'; }, 'DISPOSITION_RECORD_BLOCKERS_PRESENT'],
+    ];
+    for (const [what, mutate, code] of cases) {
+      const forged = forgeDisposition(disp, mutate);
+      // Prove the forgery is self-digest valid: the digest check cannot see any of this.
+      assertEq(verifySelfDigests([forged]).overall, 'ALL_VERIFIED', `precondition: ${what} recomputes cleanly`);
+      assertEq((forged as Rec).overall, 'POST_RUN_DISPOSITION_ACCEPTED', `precondition: ${what} keeps a green headline`);
+      const c = buildOperationClosureRecord({ dispositionRecord: forged, closure: closedRecord(disp) });
+      assertEq(c.overall, 'OPERATION_CLOSURE_NOT_CLOSEABLE', `forged upstream rejected: ${what}`);
+      assert(c.blockers.includes(code), `${what} -> ${code}`);
+      assert(!c.blockers.includes('DISPOSITION_RECORD_DIGEST_MISMATCH'), `${what}: the digest check does NOT catch this`);
+      assertEq(c.dispositionCloseable, false, `not closeable: ${what}`);
+      assertEq(c.operationClosed, false, `nothing closed: ${what}`);
+      assertEq(c.recordedClosure, 'NONE', `no closure recorded: ${what}`);
+      assertEq(buildOperationClosureSkeleton(forged), null, `no skeleton for a forged upstream: ${what}`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 // The ACTUAL prepared, redaction-safe P227-A evidence (captured verbatim from the non-live artifacts under
 // evidence/phase-231). Locked here so the validator is exercised against the real chain offline and
 // deterministically -- no SSH, no secret approval file, no live surface. NOTE: no approved authorization, no

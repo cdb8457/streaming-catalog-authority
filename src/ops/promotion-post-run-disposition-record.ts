@@ -353,6 +353,25 @@ function validateObservationRecord(value: unknown, blockers: string[]): Validate
   if (withdrawal === undefined || !REVIEWED_WITHDRAWALS.includes(withdrawal)) { blockers.push('OBSERVATION_RECORD_WITHDRAWAL_INVALID'); ok = false; }
   if (typeof obj.withdrawalProven !== 'boolean') { blockers.push('OBSERVATION_RECORD_WITHDRAWAL_PROVEN_INVALID'); ok = false; }
 
+  // UPSTREAM SEMANTIC VALIDATION. The headline fields above are NOT enough. A forged report can recompute its
+  // own digest and still carry a green `overall` over a body that failed Phase 233's own checks -- so require
+  // the upstream report's OWN success booleans, its redaction-safety, and an empty blocker list. A green
+  // headline over a failed body is caught here rather than trusted.
+  if (obj.redactionSafe !== true) { blockers.push('OBSERVATION_RECORD_NOT_REDACTION_SAFE'); ok = false; }
+  if (obj.observationWellFormed !== true) { blockers.push('OBSERVATION_RECORD_NOT_WELL_FORMED'); ok = false; }
+  if (obj.observationRedactionSafe !== true) { blockers.push('OBSERVATION_RECORD_INPUT_NOT_REDACTION_SAFE'); ok = false; }
+  if (obj.observationBound !== true) { blockers.push('OBSERVATION_RECORD_NOT_BOUND'); ok = false; }
+  if (obj.observationCoherent !== true) { blockers.push('OBSERVATION_RECORD_NOT_COHERENT'); ok = false; }
+  if (!Array.isArray(obj.blockers) || obj.blockers.length !== 0) { blockers.push('OBSERVATION_RECORD_BLOCKERS_PRESENT'); ok = false; }
+
+  // A withdrawal is proven EXACTLY when it was PERFORMED: Phase 233 makes those two biconditional for every
+  // valid report (PERFORMED requires the restore proof to hold, and nothing else can set withdrawalProven).
+  // Any divergence is therefore a forged body, in either direction, and fails closed.
+  if (typeof obj.withdrawalProven === 'boolean' && withdrawal !== undefined
+    && obj.withdrawalProven !== (withdrawal === 'PERFORMED')) {
+    blockers.push('OBSERVATION_RECORD_WITHDRAWAL_PROOF_INCONSISTENT'); ok = false;
+  }
+
   const bound = asObject(obj.boundDigests);
   const bindings: Record<string, string | undefined> = {};
   for (const k of OBSERVATION_BINDING_KEYS) {
