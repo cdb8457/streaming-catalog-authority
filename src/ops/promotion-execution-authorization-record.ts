@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+// The one exact UTC timestamp rule for this chain -- shared, not restated, so it cannot drift per phase.
+import { isExactUtcTimestamp } from './promotion-utc-timestamp.js';
 
 // Phase 232: local, non-live HUMAN EXECUTION-AUTHORIZATION RECORD validator. It consumes the Phase 231
 // digest-bound P227-A execution-authorization template and validates a SEPARATELY SUPPLIED operator
@@ -205,7 +207,7 @@ export function buildExecutionAuthorizationRecord(input: ExecutionAuthorizationR
       : rec.obj.operatorDigest === 'PENDING';
     if (!operatorOk) blockers.push(decided ? 'RECORD_OPERATOR_DIGEST_REQUIRED' : 'RECORD_OPERATOR_DIGEST_NOT_PENDING');
     const decidedAtOk = decided
-      ? isUtcTimestamp(rec.obj.decidedAtUtc)
+      ? isExactUtcTimestamp(rec.obj.decidedAtUtc)
       : rec.obj.decidedAtUtc === 'PENDING';
     if (!decidedAtOk) blockers.push(decided ? 'RECORD_DECIDED_AT_REQUIRED' : 'RECORD_DECIDED_AT_NOT_PENDING');
 
@@ -381,11 +383,6 @@ function asString(value: unknown): string | undefined {
 }
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
-}
-function isUtcTimestamp(value: unknown): boolean {
-  return typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
-    && Number.isFinite(Date.parse(value));
 }
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|wss?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);

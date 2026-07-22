@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+// The one exact UTC timestamp rule for this chain -- shared, not restated, so it cannot drift per phase.
+import { isExactUtcTimestamp } from './promotion-utc-timestamp.js';
 
 // Phase 234: local, non-live POST-RUN DISPOSITION REVIEW RECORD validator. It consumes the Phase 233 post-run
 // observation record (which must be a genuine, RECORDED observation) and validates a SEPARATELY SUPPLIED human
@@ -219,7 +221,7 @@ export function buildPostRunDispositionRecord(input: PostRunDispositionInput): P
     const decided = decision !== 'PENDING';
     const reviewerOk = decided ? asSha256(disp.obj.reviewerDigest) !== undefined : disp.obj.reviewerDigest === 'PENDING';
     if (!reviewerOk) blockers.push(decided ? 'DISPOSITION_REVIEWER_DIGEST_REQUIRED' : 'DISPOSITION_REVIEWER_DIGEST_NOT_PENDING');
-    const reviewedAtOk = decided ? isUtcTimestamp(disp.obj.reviewedAtUtc) : disp.obj.reviewedAtUtc === 'PENDING';
+    const reviewedAtOk = decided ? isExactUtcTimestamp(disp.obj.reviewedAtUtc) : disp.obj.reviewedAtUtc === 'PENDING';
     if (!reviewedAtOk) blockers.push(decided ? 'DISPOSITION_REVIEWED_AT_REQUIRED' : 'DISPOSITION_REVIEWED_AT_NOT_PENDING');
 
     // Cross-record coherence: you must be reviewing the outcome that was actually observed, and -- THE
@@ -431,11 +433,6 @@ function asString(value: unknown): string | undefined {
 }
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
-}
-function isUtcTimestamp(value: unknown): boolean {
-  return typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
-    && Number.isFinite(Date.parse(value));
 }
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|wss?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);

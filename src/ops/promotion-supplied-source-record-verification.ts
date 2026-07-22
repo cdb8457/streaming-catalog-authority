@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+// The one exact UTC timestamp rule for this chain -- shared, not restated, so it cannot drift per phase.
+import { isExactUtcTimestamp } from './promotion-utc-timestamp.js';
 // Phase 237's own commitment-digest rule, imported rather than reimplemented: one rule, no second copy to
 // drift from it.
 import {
@@ -415,7 +417,7 @@ export function buildSuppliedSourceVerification(input: SuppliedSourceVerificatio
     const decided = decision !== 'PENDING';
     const verifierOk = decided ? asSha256(ver.obj.verifierDigest) !== undefined : ver.obj.verifierDigest === PLACEHOLDER;
     if (!verifierOk) blockers.push(decided ? 'VERIFICATION_VERIFIER_DIGEST_REQUIRED' : 'VERIFICATION_VERIFIER_DIGEST_NOT_PENDING');
-    const verifiedAtOk = decided ? isUtcTimestamp(ver.obj.verifiedAtUtc) : ver.obj.verifiedAtUtc === PLACEHOLDER;
+    const verifiedAtOk = decided ? isExactUtcTimestamp(ver.obj.verifiedAtUtc) : ver.obj.verifiedAtUtc === PLACEHOLDER;
     if (!verifiedAtOk) blockers.push(decided ? 'VERIFICATION_VERIFIED_AT_REQUIRED' : 'VERIFICATION_VERIFIED_AT_NOT_PENDING');
 
     verificationCoherent = decisionBacked && verifierOk && verifiedAtOk;
@@ -638,11 +640,6 @@ function asObject(value: unknown): Record<string, unknown> {
 }
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
-}
-function isUtcTimestamp(value: unknown): boolean {
-  return typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
-    && Number.isFinite(Date.parse(value));
 }
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|wss?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);

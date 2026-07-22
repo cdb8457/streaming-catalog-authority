@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+// The one exact UTC timestamp rule for this chain -- shared, not restated, so it cannot drift per phase.
+import { isExactUtcTimestamp } from './promotion-utc-timestamp.js';
 
 // Phase 233: local, non-live POST-RUN OBSERVATION AND WITHDRAWAL RECORD validator. It consumes the Phase 232
 // human execution-authorization record (which must be a valid, digest-bound APPROVED record) and validates a
@@ -248,7 +250,7 @@ export function buildPostRunObservationRecord(input: PostRunObservationInput): P
     // An observation of a real run must name WHO observed it (by digest) and WHEN; NOT_RUN claims neither.
     const observerOk = observed ? asSha256(obs.obj.observerDigest) !== undefined : obs.obj.observerDigest === 'PENDING';
     if (!observerOk) blockers.push(observed ? 'OBSERVATION_OBSERVER_DIGEST_REQUIRED' : 'OBSERVATION_OBSERVER_DIGEST_NOT_PENDING');
-    const observedAtOk = observed ? isUtcTimestamp(obs.obj.observedAtUtc) : obs.obj.observedAtUtc === 'PENDING';
+    const observedAtOk = observed ? isExactUtcTimestamp(obs.obj.observedAtUtc) : obs.obj.observedAtUtc === 'PENDING';
     if (!observedAtOk) blockers.push(observed ? 'OBSERVATION_OBSERVED_AT_REQUIRED' : 'OBSERVATION_OBSERVED_AT_NOT_PENDING');
 
     observationCoherent = outcomeCoherent && withdrawalCoherent && beforeStateWitnessed && assertionsHeld && observerOk && observedAtOk;
@@ -405,11 +407,6 @@ function asString(value: unknown): string | undefined {
 }
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
-}
-function isUtcTimestamp(value: unknown): boolean {
-  return typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
-    && Number.isFinite(Date.parse(value));
 }
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|wss?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);

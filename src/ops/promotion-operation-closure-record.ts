@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+// The one exact UTC timestamp rule for this chain -- shared, not restated, so it cannot drift per phase.
+import { isExactUtcTimestamp } from './promotion-utc-timestamp.js';
 
 // Phase 235: local, non-live OPERATION CLOSURE / ARCHIVAL RECORD validator. It consumes the Phase 234 post-run
 // disposition record (which must be a genuine ACCEPTED disposition) and validates a SEPARATELY SUPPLIED human
@@ -223,7 +225,7 @@ export function buildOperationClosureRecord(input: OperationClosureInput): Opera
     const decided = decision !== 'PENDING';
     const closerOk = decided ? asSha256(clo.obj.closerDigest) !== undefined : clo.obj.closerDigest === 'PENDING';
     if (!closerOk) blockers.push(decided ? 'CLOSURE_CLOSER_DIGEST_REQUIRED' : 'CLOSURE_CLOSER_DIGEST_NOT_PENDING');
-    const closedAtOk = decided ? isUtcTimestamp(clo.obj.closedAtUtc) : clo.obj.closedAtUtc === 'PENDING';
+    const closedAtOk = decided ? isExactUtcTimestamp(clo.obj.closedAtUtc) : clo.obj.closedAtUtc === 'PENDING';
     if (!closedAtOk) blockers.push(decided ? 'CLOSURE_CLOSED_AT_REQUIRED' : 'CLOSURE_CLOSED_AT_NOT_PENDING');
 
     // Cross-record coherence: you must be closing the outcome that was actually dispositioned.
@@ -416,11 +418,6 @@ function asString(value: unknown): string | undefined {
 }
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
-}
-function isUtcTimestamp(value: unknown): boolean {
-  return typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
-    && Number.isFinite(Date.parse(value));
 }
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|wss?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);

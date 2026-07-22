@@ -314,6 +314,42 @@ await test('adversarial: operator digest and decision time must match the decisi
 });
 
 // A human writes this record by hand, so it is the likeliest place for a raw path to leak in.
+// REGRESSION, shared across the chain. The old timestamp check was
+// `shape-regex && Number.isFinite(Date.parse(v))`, and for an ISO-SHAPED string V8 NORMALISES out-of-range
+// components rather than rejecting them -- so a record could pin a moment that never existed and silently mean
+// a different one. A record that says WHEN a human acted must refuse an impossible moment, not relocate it.
+await test('REGRESSION: an impossible calendar decision time is rejected, never silently normalised', () => {
+  const root = workspace();
+  try {
+    const gate = gateFor(root);
+    const IMPOSSIBLE_MOMENTS: readonly string[] = [
+      '2026-02-30T12:00:00Z',  // meant 2026-03-02 under the old check
+      '2026-02-29T12:00:00Z',  // 2026 is not a leap year; meant 2026-03-01
+      '2026-04-31T12:00:00Z',  // meant 2026-05-01
+      '2026-06-31T12:00:00Z',
+      '2026-09-31T12:00:00Z',
+      '2026-11-31T12:00:00Z',
+      '2026-01-01T24:00:00Z',  // hour 24; meant the NEXT DAY at 00:00:00
+      '2026-01-00T12:00:00Z',
+      '2026-00-10T12:00:00Z',
+      '2026-13-01T12:00:00Z',
+      '2026-01-01T12:60:00Z',
+      '2026-01-01T12:00:60Z',
+    ];
+    const REAL_MOMENTS: readonly string[] = ['2024-02-29T12:00:00Z', '2026-12-31T23:59:59Z', '2026-07-21T00:00:00Z'];
+    for (const stamp of IMPOSSIBLE_MOMENTS) {
+      const r = buildExecutionAuthorizationRecord({ gate, record: approvedRecord(gate, { decidedAtUtc: stamp }) });
+      assertEq(r.overall, 'EXECUTION_AUTHORIZATION_RECORD_INVALID', `rejected: ${stamp}`);
+      assert(r.blockers.includes('RECORD_DECIDED_AT_REQUIRED'), `${stamp} -> RECORD_DECIDED_AT_REQUIRED`);
+      assertEq(r.authorizationRecorded, false, `nothing authorized: ${stamp}`);
+    }
+    for (const stamp of REAL_MOMENTS) {
+      const r = buildExecutionAuthorizationRecord({ gate, record: approvedRecord(gate, { decidedAtUtc: stamp }) });
+      assert(!r.blockers.includes('RECORD_DECIDED_AT_REQUIRED'), `a real moment must still be accepted: ${stamp}`);
+    }
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('adversarial: a smuggled raw path in the record fails closed and is never echoed', () => {
   const root = workspace();
   try {

@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 import { verifySelfDigests } from './promotion-self-digest-verifier.js';
+// The one exact UTC timestamp rule for this chain -- shared, not restated, so it cannot drift per phase.
+import { isExactUtcTimestamp } from './promotion-utc-timestamp.js';
 
 // Phase 237: local, non-live SOURCE-RECORD PROVENANCE COMMITMENT validator, layered on the Phase 236 replay.
 //
@@ -271,7 +273,7 @@ export function buildProvenanceCommitment(input: ProvenanceCommitmentInput): Pro
     const decided = decision !== 'PENDING';
     const committerOk = decided ? asSha256(man.obj.committerDigest) !== undefined : man.obj.committerDigest === PLACEHOLDER;
     if (!committerOk) blockers.push(decided ? 'MANIFEST_COMMITTER_DIGEST_REQUIRED' : 'MANIFEST_COMMITTER_DIGEST_NOT_PENDING');
-    const committedAtOk = decided ? isUtcTimestamp(man.obj.committedAtUtc) : man.obj.committedAtUtc === PLACEHOLDER;
+    const committedAtOk = decided ? isExactUtcTimestamp(man.obj.committedAtUtc) : man.obj.committedAtUtc === PLACEHOLDER;
     if (!committedAtOk) blockers.push(decided ? 'MANIFEST_COMMITTED_AT_REQUIRED' : 'MANIFEST_COMMITTED_AT_NOT_PENDING');
 
     manifestCoherent = decisionBacked && contentOk && committerOk && committedAtOk;
@@ -521,11 +523,6 @@ function asString(value: unknown): string | undefined {
 }
 function asSha256(value: unknown): string | undefined {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value) ? value : undefined;
-}
-function isUtcTimestamp(value: unknown): boolean {
-  return typeof value === 'string'
-    && /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(value)
-    && Number.isFinite(Date.parse(value));
 }
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|wss?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);
