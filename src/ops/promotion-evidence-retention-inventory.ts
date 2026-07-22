@@ -194,6 +194,10 @@ export interface RetentionInventoryReport {
   readonly inventoryBound: boolean;
   readonly inventoryCoherent: boolean;
   readonly coverageComplete: boolean;
+  // Value-free continuity status for the top-down expectation walk: NOT_SUPPLIED when no artifacts were
+  // handed over at all, ANCHORED when every supplied artifact had an expected digest to be pinned to, BROKEN
+  // when at least one did not because the report naming it was missing.
+  readonly chainContinuity: 'ANCHORED' | 'BROKEN' | 'NOT_SUPPLIED';
   readonly allEntriesBound: boolean;
   readonly allEntriesRetained: boolean;
   readonly destructionClaimed: false;
@@ -262,6 +266,10 @@ export function buildRetentionInventory(input: RetentionInventoryInput): Retenti
   let coverageComplete = false;
   let allEntriesBound = false;
   let allEntriesRetained = false;
+  // Continuity is reported as a value-free status alongside the blocker: a custodian who omits the report that
+  // names the ones below it breaks the bridge, and every artifact under the break is unanchored.
+  let continuityBroken = false;
+  let anySupplied = false;
   if (inventoryWellFormed) {
     const supplied = asObject(input.reports);
     const byPhase = new Map<number, RetentionInventoryEntry>();
@@ -294,6 +302,8 @@ export function buildRetentionInventory(input: RetentionInventoryInput): Retenti
       if (artifact.status === 'INVALID') blockers.push('INVENTORY_SUPPLIED_REPORT_INVALID');
       if (artifact.status === 'FOREIGN_OPERATION') blockers.push('INVENTORY_SUPPLIED_REPORT_FOREIGN_OPERATION');
       if (artifact.status === 'CHAIN_MISMATCH') blockers.push('INVENTORY_SUPPLIED_REPORT_CHAIN_MISMATCH');
+      if (artifact.status === 'UNANCHORED') { blockers.push('INVENTORY_SUPPLIED_REPORT_CHAIN_UNANCHORED'); continuityBroken = true; }
+      if (artifact.status !== 'ABSENT') anySupplied = true;
       const fromReport = artifact.digest;
 
       let boundVia: EntryBinding = 'UNBOUND';
@@ -383,6 +393,7 @@ export function buildRetentionInventory(input: RetentionInventoryInput): Retenti
     inventoryBound,
     inventoryCoherent,
     coverageComplete,
+    chainContinuity: !anySupplied ? 'NOT_SUPPLIED' : continuityBroken ? 'BROKEN' : 'ANCHORED',
     allEntriesBound,
     allEntriesRetained,
     // Constant: no valid inventory can express a destruction, and this validator performs none.
@@ -653,7 +664,8 @@ function resolveExpectedDigests(led: ValidatedLedger, supplied: Record<string, u
   return { expected, inconsistent };
 }
 
-export type SuppliedArtifactStatus = 'ABSENT' | 'INVALID' | 'FOREIGN_OPERATION' | 'CHAIN_MISMATCH' | 'OK';
+export type SuppliedArtifactStatus =
+  | 'ABSENT' | 'INVALID' | 'FOREIGN_OPERATION' | 'UNANCHORED' | 'CHAIN_MISMATCH' | 'OK';
 interface SuppliedArtifact { readonly status: SuppliedArtifactStatus; readonly digest: string | undefined; }
 
 // A supplied chain artifact only binds an entry when it is the right report id for that phase, genuinely
@@ -693,9 +705,14 @@ function validateSuppliedArtifact(
   });
   if (!sameOperation) return { status: 'FOREIGN_OPERATION', digest: undefined };
 
-  if (ledgerKnownDigest !== undefined && stated !== ledgerKnownDigest) {
-    return { status: 'CHAIN_MISMATCH', digest: undefined };
-  }
+  // CONTINUITY, AND NO FALLBACK LAUNDERING. Same-operation is never sufficient on its own. If the top-down
+  // walk produced no expected digest for this phase -- because the report that names it, Phase 238 or Phase
+  // 237, was not supplied -- then the bridge is broken and there is nothing to pin this artifact to. Binding
+  // on same-operation alone here would hand back exactly the alternate-chain hole the expectation walk exists
+  // to close, and would let a custodian unlock it simply by OMITTING a report. So it fails closed: no
+  // expectation, no REPORT binding, and never COMPLETE.
+  if (ledgerKnownDigest === undefined) return { status: 'UNANCHORED', digest: undefined };
+  if (stated !== ledgerKnownDigest) return { status: 'CHAIN_MISMATCH', digest: undefined };
   return { status: 'OK', digest: stated };
 }
 

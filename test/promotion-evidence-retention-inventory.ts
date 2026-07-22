@@ -812,6 +812,60 @@ await test('THE alternate-chain case: a genuine artifact from another RUN of the
   } finally { rmSync(root, { recursive: true, force: true }); }
 });
 
+// THE MISSING-BRIDGE CASE, from independent review. The expectation walk is top-down: Phase 238 names Phase
+// 237 and phase-232..235, Phase 237 names Phase 236, Phase 236 names phase-231..235. OMIT one of those
+// bridging reports and every phase beneath the break has no expected digest -- at which point binding on
+// same-operation alone would hand back the alternate-chain hole, and would let a custodian UNLOCK it simply by
+// withholding a report. It fails closed instead: no expected digest means no REPORT binding, ever.
+await test('THE missing-bridge case: withholding Phase 238 or 237 unanchors everything beneath it', () => {
+  const root = workspace();
+  try {
+    const mine = fullStack(root);
+    const alternate = fullStack(root, { witnessedBefore: createHash('sha256').update('a-different-observed-before-state').digest('hex') });
+
+    // Withhold the bridging report, and hand over an ALTERNATE-chain artifact beneath the break. Same
+    // operation, genuine, self-consistent -- and with the bridge gone there is nothing left to pin it to.
+    const cases: ReadonlyArray<readonly [string, number, number]> = [
+      ['Phase 238 withheld, alternate Phase 233 supplied', 238, 233],
+      ['Phase 238 withheld, alternate Phase 235 supplied', 238, 235],
+      ['Phase 237 withheld, alternate Phase 231 supplied', 237, 231],
+      ['Phase 237 withheld, alternate Phase 236 supplied', 237, 236],
+      ['Phase 236 withheld, alternate Phase 231 supplied', 236, 231],
+    ];
+    for (const [what, withheld, swapped] of cases) {
+      const reports: Rec = { ...mine.reports, [String(swapped)]: alternate.reports[String(swapped)]! };
+      delete reports[String(withheld)];
+      const r = buildRetentionInventory({ ledger: mine.ledger, inventory: completeInventory(mine), reports });
+      assertEq(r.overall, 'INVENTORY_INVALID', `rejected: ${what}`);
+      assert(r.blockers.includes('INVENTORY_SUPPLIED_REPORT_CHAIN_UNANCHORED'), `${what} -> INVENTORY_SUPPLIED_REPORT_CHAIN_UNANCHORED`);
+      assertEq(r.chainContinuity, 'BROKEN', `continuity is reported BROKEN: ${what}`);
+      assertEq(r.entries.find((e) => e.phase === swapped)!.boundVia, 'UNBOUND', `the unanchored artifact bound nothing: ${what}`);
+      assertEq(r.allEntriesBound, false, `not everything bound: ${what}`);
+      assertEq(r.inventoryComplete, false, `INVENTORY_COMPLETE is impossible: ${what}`);
+    }
+
+    // The same withholding, with the GENUINE artifact beneath the break, is refused identically: the fix is
+    // not "detect the alternate chain", it is "never bind what nothing pins". No fallback laundering.
+    const honest: Rec = { ...mine.reports };
+    delete honest['238'];
+    const h = buildRetentionInventory({ ledger: mine.ledger, inventory: completeInventory(mine), reports: honest });
+    assertEq(h.overall, 'INVENTORY_INVALID', 'a withheld bridge is refused even with genuine artifacts beneath it');
+    assert(h.blockers.includes('INVENTORY_SUPPLIED_REPORT_CHAIN_UNANCHORED'), 'the unanchored blocker fires on genuine artifacts too');
+    assertEq(h.inventoryComplete, false, 'and COMPLETE remains impossible');
+
+    // Supplying NO artifacts at all is still the honest unproven state, not a continuity failure.
+    const none = buildRetentionInventory({ ledger: mine.ledger, inventory: completeInventory(mine) });
+    assertEq(none.chainContinuity, 'NOT_SUPPLIED', 'no artifacts handed over is NOT_SUPPLIED, not BROKEN');
+    assert(!none.blockers.includes('INVENTORY_SUPPLIED_REPORT_CHAIN_UNANCHORED'), 'absence raises no continuity blocker');
+    assertEq(none.overall, 'INVENTORY_STRUCTURAL_ONLY', 'and it stays the honest structural-only verdict');
+
+    // A complete, genuine submission reports ANCHORED.
+    const full = buildRetentionInventory({ ledger: mine.ledger, inventory: completeInventory(mine), reports: mine.reports });
+    assertEq(full.chainContinuity, 'ANCHORED', 'a full genuine submission is ANCHORED');
+    assertEq(full.overall, 'INVENTORY_COMPLETE', 'and still COMPLETE');
+  } finally { rmSync(root, { recursive: true, force: true }); }
+});
+
 await test('CLI validates an inventory, writes a blank one, and never echoes paths, ids or identities', () => {
   const root = workspace();
   try {
