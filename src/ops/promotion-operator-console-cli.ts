@@ -1,12 +1,12 @@
-import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import {
   buildOperatorConsole,
   CONSOLE_ARTIFACT_FILENAMES,
   CONSOLE_PHASES,
-  type ArtifactStatus,
   type OperatorConsoleInput,
 } from './promotion-operator-console.js';
+import { buildConsoleIntake, ConsoleIntakeError } from './promotion-operator-console-intake.js';
 
 // Phase 242 operator console CLI. ONE command over the whole Phase 231-241 chain: point it at a directory of
 // artifacts (or hand it a bundle) and it says what the chain proves, how far it actually reaches, what is
@@ -92,34 +92,6 @@ function valueAfter(args: readonly string[], flag: string): string | undefined {
   return idx < 0 ? undefined : args[idx + 1];
 }
 
-interface Discovered { readonly artifacts: Record<string, { status: ArtifactStatus; report?: unknown }>; readonly unknownFilesIgnored: number }
-
-// Allowlisted discovery. Every candidate path is built from the FIXED filename table joined to the one
-// directory the operator named; nothing here reads a name out of the data. Entries that are not on the
-// allowlist are counted and otherwise ignored -- a directory legitimately holds other things.
-function discover(dir: string): Discovered {
-  const entries = readdirSync(dir);
-  const allowed = new Set<string>();
-  for (const phase of CONSOLE_PHASES) for (const name of CONSOLE_ARTIFACT_FILENAMES[phase]!) allowed.add(name);
-  const artifacts: Record<string, { status: ArtifactStatus; report?: unknown }> = {};
-
-  for (const phase of CONSOLE_PHASES) {
-    const found = CONSOLE_ARTIFACT_FILENAMES[phase]!.filter((name) => {
-      if (!entries.includes(name)) return false;
-      try { return statSync(join(dir, name)).isFile(); } catch { return false; }
-    });
-    if (found.length === 0) continue;                                       // ABSENT: normal, not a defect
-    if (found.length > 1) { artifacts[String(phase)] = { status: 'DUPLICATE' }; continue; }
-    try {
-      artifacts[String(phase)] = { status: 'PRESENT', report: JSON.parse(readFileSync(join(dir, found[0]!), 'utf8')) };
-    } catch {
-      // Unreadable or not JSON. That is a defect in the artifact, NOT an absence, and it is reported as one.
-      artifacts[String(phase)] = { status: 'MALFORMED' };
-    }
-  }
-  return { artifacts, unknownFilesIgnored: entries.filter((e) => !allowed.has(e)).length };
-}
-
 function main(): number {
   const args = process.argv.slice(2);
   if (args.includes('--help') || args.length === 0) { console.log(usage()); return args.length === 0 ? 2 : 0; }
@@ -148,16 +120,10 @@ function main(): number {
 
   let input: OperatorConsoleInput;
   try {
-    if (dir !== undefined) {
-      if (!statSync(dir).isDirectory()) throw new Error('not a directory');
-      const found = discover(dir);
-      input = { mode: 'DIRECTORY', artifacts: found.artifacts, unknownFilesIgnored: found.unknownFilesIgnored };
-    } else {
-      input = { mode: 'BUNDLE', bundle: JSON.parse(readFileSync(bundlePath!, 'utf8')) };
-    }
-  } catch {
+    input = buildConsoleIntake(dir !== undefined ? { dir } : { bundle: bundlePath! });
+  } catch (err) {
     // The offending path is deliberately NOT echoed: it is operator input this tool never reflects back.
-    console.error(dir !== undefined ? 'the artifact directory is missing or not a readable directory' : 'the bundle file is missing or not valid JSON');
+    console.error(err instanceof ConsoleIntakeError ? err.message : 'the intake could not be read');
     return 2;
   }
 
