@@ -51,8 +51,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
         run: |
+          npm run test:phase252-local
           npm run test:phase251-local
           npm run test:phase250-local
           npm run test:phase249-local
@@ -210,6 +211,47 @@ jobs:
         with:
           name: ci-inspection-release-bundle
           path: dist/release-bundle
+          retention-days: 14
+
+  rehearsal:
+    name: Final first-release rehearsal and handoff (Phase 252)
+    # Phase 252. The last check before a human decides: assemble the exact candidate in a fresh directory, run
+    # the offline readiness (Phase 250) and integrity (Phase 251) verifiers against it, and validate — never
+    # fabricate — references to the browser (Phase 248) and lifecycle (Phase 249) acceptances. The references
+    # come from THIS run's job results, which GitHub gates: this job only runs because those needs succeeded,
+    # so passing `needs.*.result` is honest, not invented. It emits a handoff packet and asserts HANDOFF_READY.
+    # It assembles its own bundle offline, so it needs the acceptances (for evidence) and the suites gate, not
+    # the image build or the bundle job.
+    #
+    # It has NO `permissions:` block, so it inherits the workflow default (contents: read) and is structurally
+    # incapable of publishing: no registry login, no push, no tag, no release upload. HANDOFF_READY is evidence
+    # for a human, never approval, and this job never performs the one release action that remains.
+    needs: [suites, release-candidate, lifecycle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Rehearse the release and emit the handoff packet
+        # The candidate commit and both acceptance references are this run's own facts. `needs.*.result` is
+        # "success" precisely because the job reached here; the rehearsal validates that they name this commit.
+        env:
+          CANDIDATE_COMMIT: ${{ github.sha }}
+          PHASE248_REF: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PHASE248_COMMIT: ${{ github.sha }}
+          PHASE248_CONCLUSION: ${{ needs.release-candidate.result }}
+          PHASE249_REF: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PHASE249_COMMIT: ${{ github.sha }}
+          PHASE249_CONCLUSION: ${{ needs.lifecycle.result }}
+        run: npm run ops:release-rehearsal -- --revision "${{ github.sha }}" --out dist/handoff.json
+      - name: Keep the handoff packet for inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-handoff-packet
+          path: dist/handoff.json
           retention-days: 14
 
   publish:
