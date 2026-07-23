@@ -50,10 +50,11 @@ Every check is a single statement that can be false. On a healthy release all pa
 * the assembled bundle carries **no** secret, host path, or live-provider data.
 
 **The publish path — structurally incapable of going out unsafely.**
-* `publish` depends on every gate, *including* the Phase 248 browser acceptance and the Phase 249 lifecycle
-  acceptance;
-* those two gates carry no `if:`, so they run on every event that can reach `publish` and are never
-  conditionally skipped;
+* `publish` depends on every gate — `suites`, `image`, `bundle`, the Phase 248 browser acceptance, the Phase
+  249 lifecycle acceptance, and the Phase 252 `rehearsal` — so a release cannot go out when the final rehearsal
+  blocked; `rehearsal` itself depends on the acceptances, so there is no cycle;
+* those acceptance gates *and* the rehearsal carry no `if:`, so they run on every event that can reach
+  `publish` and are never conditionally skipped;
 * `publish` is gated to a release or a deliberate dispatch, and uses no `always()`/`failure()`/`cancelled()`
   that could let it run over a failed gate;
 * the workflow default permission is `contents: read`; **only** `publish` holds `contents`+`packages` write;

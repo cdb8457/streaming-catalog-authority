@@ -144,18 +144,24 @@ test('a healthy release is READY_FOR_HUMAN_RELEASE_DECISION, and every check pas
 // both endings identically, so passing LF text to the core is faithful.
 const WORKFLOW = read('.github/workflows/runtime-image.yml').replace(/\r\n/g, '\n');
 
+const PUBLISH_NEEDS = 'needs: [suites, image, bundle, release-candidate, lifecycle, rehearsal]';
+
 test('dropping release-candidate from publish.needs blocks the dependency-graph check', () => {
-  const weakened = WORKFLOW.replace(
-    'needs: [suites, image, bundle, release-candidate, lifecycle]',
-    'needs: [suites, image, bundle, lifecycle]');
+  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, lifecycle, rehearsal]');
   assert(weakened !== WORKFLOW, 'the fixture actually changed');
   assertBlocks({ workflowText: weakened }, 'publish-needs-all-gates');
 });
 
 test('dropping lifecycle from publish.needs blocks the dependency-graph check', () => {
-  const weakened = WORKFLOW.replace(
-    'needs: [suites, image, bundle, release-candidate, lifecycle]',
-    'needs: [suites, image, bundle, release-candidate]');
+  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, release-candidate, rehearsal]');
+  assert(weakened !== WORKFLOW, 'the fixture actually changed');
+  assertBlocks({ workflowText: weakened }, 'publish-needs-all-gates');
+});
+
+test('dropping the Phase 252 rehearsal from publish.needs blocks the dependency-graph check', () => {
+  // The exact defect this remediation closes: publish must not be able to run when the final rehearsal failed.
+  // On the pre-fix graph (no rehearsal in publish.needs) this assertion FAILS; with the fix it BLOCKS.
+  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, release-candidate, lifecycle]');
   assert(weakened !== WORKFLOW, 'the fixture actually changed');
   assertBlocks({ workflowText: weakened }, 'publish-needs-all-gates');
 });
@@ -170,6 +176,13 @@ test('giving the release-candidate gate an if: (so it can be skipped) blocks the
 
 test('giving the lifecycle gate an if: blocks the not-skippable check', () => {
   const anchor = 'lifecycle:\n    name: Release lifecycle acceptance (fresh, restart, upgrade, rollback)';
+  const weakened = WORKFLOW.replace(anchor, `${anchor}\n    if: github.event_name == 'release'`);
+  assert(weakened !== WORKFLOW, 'the fixture actually changed');
+  assertBlocks({ workflowText: weakened }, 'acceptance-gates-run-on-every-event');
+});
+
+test('giving the Phase 252 rehearsal gate an if: blocks the not-skippable check', () => {
+  const anchor = 'rehearsal:\n    name: Final first-release rehearsal and handoff (Phase 252)';
   const weakened = WORKFLOW.replace(anchor, `${anchor}\n    if: github.event_name == 'release'`);
   assert(weakened !== WORKFLOW, 'the fixture actually changed');
   assertBlocks({ workflowText: weakened }, 'acceptance-gates-run-on-every-event');

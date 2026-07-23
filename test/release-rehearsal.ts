@@ -44,6 +44,15 @@ function assertEq<T>(actual: T, expected: T, msg: string): void {
 const root = fileURLToPath(new URL('..', import.meta.url));
 const read = (rel: string): string => readFileSync(join(root, rel), 'utf8');
 
+/** Extract a single workflow job's text: from its `  <name>:` line to the next two-space job boundary. */
+function jobBlockOf(workflowText: string, name: string): string | null {
+  const idx = workflowText.indexOf(`\n  ${name}:`);
+  if (idx < 0) return null;
+  const after = workflowText.slice(idx + 1);
+  const next = after.search(/\n {2}\S/);
+  return next < 0 ? after : after.slice(0, next);
+}
+
 console.log('Running Phase 252 release-rehearsal adversarial suite:\n');
 
 const AT = '2020-01-01T00:00:00.000Z';
@@ -332,15 +341,45 @@ test('CI runs the rehearsal suite and wires a read-only rehearsal job with no wr
   assert(wf.includes('test:phase252-local'), 'CI runs test:phase252-local in the suites gate');
   assert(wf.includes('ops:release-rehearsal'), 'CI runs the rehearsal as a job');
   // The rehearsal job must not grant write. Extract its block and confirm no write permission appears in it.
-  const idx = wf.indexOf('\n  rehearsal:');
-  assert(idx >= 0, 'a rehearsal job exists');
-  const after = wf.slice(idx + 1);
-  // The next job starts at a line indented exactly two spaces then a non-space (`  publish:`); deeper-indented
-  // step lines do not match, so this captures the whole rehearsal job and nothing beyond it.
-  const next = after.search(/\n {2}\S/);
-  const jobBlock = next < 0 ? after : after.slice(0, next);
-  assert(!/write/.test(jobBlock), 'the rehearsal job grants no write permission');
-  assert(!/docker\/login-action|build-push-action|gh release upload/.test(jobBlock), 'and it never logs in, pushes, or uploads');
+  const jobBlock = jobBlockOf(wf, 'rehearsal');
+  assert(jobBlock !== null, 'a rehearsal job exists');
+  assert(!/write/.test(jobBlock!), 'the rehearsal job grants no write permission');
+  assert(!/docker\/login-action|build-push-action|gh release upload/.test(jobBlock!), 'and it never logs in, pushes, or uploads');
+  // It has no `if:`, so it can never be conditionally skipped and thereby let publish through.
+  assert(!/\n {4}if:/.test(jobBlock!), 'the rehearsal job carries no if: that could skip it');
+  // Its permissions are inherited (no `permissions:` key of its own).
+  assert(!/\n {4}permissions:/.test(jobBlock!), 'the rehearsal job declares no permissions, inheriting read-only');
+});
+
+test('the rehearsal binds the Phase 248/249 acceptances to this release commit, honestly', () => {
+  const jobBlock = jobBlockOf(read('.github/workflows/runtime-image.yml'), 'rehearsal');
+  assert(jobBlock !== null, 'a rehearsal job exists');
+  // The candidate commit and both acceptance commits are github.sha — the acceptance evidence is tied to the
+  // exact commit being released, so a stale run cannot satisfy it.
+  assert(jobBlock!.includes('CANDIDATE_COMMIT: ${{ github.sha }}'), 'the candidate commit is github.sha');
+  assert(jobBlock!.includes('PHASE248_COMMIT: ${{ github.sha }}'), 'the Phase 248 evidence commit is github.sha');
+  assert(jobBlock!.includes('PHASE249_COMMIT: ${{ github.sha }}'), 'the Phase 249 evidence commit is github.sha');
+  // The conclusions come from the gated job results — honest, not fabricated.
+  assert(jobBlock!.includes('PHASE248_CONCLUSION: ${{ needs.release-candidate.result }}'), 'Phase 248 success comes from the release-candidate job result');
+  assert(jobBlock!.includes('PHASE249_CONCLUSION: ${{ needs.lifecycle.result }}'), 'Phase 249 success comes from the lifecycle job result');
+});
+
+test('publish REQUIRES the rehearsal gate — this fails against the pre-fix graph', () => {
+  const wf = read('.github/workflows/runtime-image.yml');
+  const publishBlock = jobBlockOf(wf, 'publish');
+  assert(publishBlock !== null, 'a publish job exists');
+  const needsLine = publishBlock!.split('\n').find((l) => l.trim().startsWith('needs:'));
+  assert(needsLine !== undefined, 'the publish job declares a needs list');
+  // The exact defect this remediation closed: without rehearsal in publish.needs, publish could run and
+  // succeed while the final rehearsal blocked. The pre-fix list omitted rehearsal, so this assertion fails there.
+  assert(/\brehearsal\b/.test(needsLine!), 'publish depends on the rehearsal gate');
+  for (const gate of ['suites', 'image', 'bundle', 'release-candidate', 'lifecycle', 'rehearsal']) {
+    assert(new RegExp(`\\b${gate}\\b`).test(needsLine!), `publish still depends on ${gate}`);
+  }
+  // No cycle: the rehearsal job must NOT depend on publish.
+  const rehearsalBlock = jobBlockOf(wf, 'rehearsal');
+  const rehearsalNeeds = rehearsalBlock!.split('\n').find((l) => l.trim().startsWith('needs:')) ?? '';
+  assert(!/\bpublish\b/.test(rehearsalNeeds), 'the rehearsal does not depend on publish — no circular dependency');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

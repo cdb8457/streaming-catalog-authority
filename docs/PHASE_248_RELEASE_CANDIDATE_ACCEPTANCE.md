@@ -25,8 +25,9 @@ This is the distinction that matters, and the workflow enforces it structurally:
   `contents: write` / `packages: write`.
 
 **The acceptance is a required gate on publishing.** `publish` declares `needs: [suites, image, bundle,
-release-candidate]`, so a release image and asset can be published only after the real browser+Compose
-acceptance has *succeeded*. Because `release-candidate` carries no `if:`, it runs on every event that can
+release-candidate, lifecycle, rehearsal]`, so a release image and asset can be published only after the real
+browser+Compose acceptance has *succeeded* (alongside the Phase 249 lifecycle acceptance and the Phase 252
+rehearsal). Because `release-candidate` carries no `if:`, it runs on every event that can
 reach `publish` — a published release, or a deliberate dispatch — and is never conditionally skipped; and
 because `publish`'s `if:` uses no `always()`/`failure()` status function, a `release-candidate` that failed,
 was cancelled, or was skipped is not "success", so `publish` is skipped. A release cannot go out over a red

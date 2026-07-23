@@ -476,6 +476,30 @@ test('only the publish job may write anything, and it is the only one that can',
   }
 });
 
+test('publish waits on the Phase 252 rehearsal, which exists, is read-only, and has no if:', () => {
+  // The remediation: before this, publish.needs omitted the rehearsal, so publish could run concurrently and
+  // succeed even when the final Phase 252 handoff rehearsal blocked. Publish must REQUIRE rehearsal. This
+  // asserts the fixed graph and therefore FAILS against the pre-fix graph.
+  const needs = (job('publish').needs as YamlValue[]).map(String);
+  assert(needs.includes('rehearsal'), 'publish depends on the rehearsal gate');
+  for (const gate of ['suites', 'image', 'bundle', 'release-candidate', 'lifecycle', 'rehearsal']) {
+    assert(needs.includes(gate), `publish depends on ${gate}`);
+  }
+  // The rehearsal job exists, inherits read-only permissions, carries no if:, and cannot publish.
+  const rehearsal = job('rehearsal');
+  assertEq(rehearsal.permissions, undefined, 'the rehearsal job declares no permissions, inheriting read-only');
+  assertEq(rehearsal.if, undefined, 'the rehearsal job carries no if: that could skip it');
+  const rehearsalText = jobText('rehearsal');
+  assert(!/docker\/login-action|push: true|docker push|gh release (upload|create|edit|delete)/.test(rehearsalText),
+    'the rehearsal job cannot publish anything');
+  // No cycle: rehearsal never depends on publish.
+  assert(!(rehearsal.needs as YamlValue[]).map(String).includes('publish'), 'no circular dependency: rehearsal does not need publish');
+  // The acceptance evidence is bound to this release commit and comes from the gated job results, not fabricated.
+  assert(rehearsalText.includes('github.sha'), 'the rehearsal binds its evidence to github.sha');
+  assert(rehearsalText.includes('needs.release-candidate.result') && rehearsalText.includes('needs.lifecycle.result'),
+    'and takes the acceptance conclusions from the gated job results');
+});
+
 test('the publish job decides its tag once, with the tested gate, and never re-derives it', () => {
   const publishSteps = steps('publish');
   const gate = publishSteps.find((step) => String(step.run ?? '').includes('ops:release-ref'));

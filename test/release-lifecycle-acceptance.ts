@@ -116,11 +116,12 @@ test('publish cannot run unless the lifecycle acceptance succeeded too', () => {
   const publish = job('publish');
   const needs = stringList(publish.needs ?? null, 'needs');
   assert(needs.includes('lifecycle'), 'publish needs the lifecycle acceptance to have succeeded before it can run');
-  for (const required of ['suites', 'image', 'bundle', 'release-candidate', 'lifecycle']) {
+  // Phase 252 added the final rehearsal as a required gate; publish now depends on all six.
+  for (const required of ['suites', 'image', 'bundle', 'release-candidate', 'lifecycle', 'rehearsal']) {
     assert(needs.includes(required), `publish needs ${required}`);
   }
-  assertEq([...needs].sort().join(','), 'bundle,image,lifecycle,release-candidate,suites',
-    'publish depends on exactly the five gates, nothing more, nothing less');
+  assertEq([...needs].sort().join(','), 'bundle,image,lifecycle,rehearsal,release-candidate,suites',
+    'publish depends on exactly the six gates, nothing more, nothing less');
 
   // Skipped-job semantics: lifecycle carries no `if:`, so it runs on every event that can reach publish and
   // is never conditionally skipped; publish (no status function in its `if:`) is skipped if any need is not

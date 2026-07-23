@@ -564,8 +564,8 @@ test('publishing is gated to a release or a deliberate dispatch from a version t
   // exercises against every refusal case (test/release-delivery.ts).
   assert(steps('publish').some((step) => String(step.run ?? '').includes('ops:release-ref')),
     'and the real gate — the tested release-ref decision — runs before anything is pushed');
-  assertEq(stringList(publish.needs ?? null, 'needs').sort().join(','), 'bundle,image,lifecycle,release-candidate,suites',
-    'nothing publishes before the image, the bundle, the browser acceptance, and the lifecycle acceptance have all been checked');
+  assertEq(stringList(publish.needs ?? null, 'needs').sort().join(','), 'bundle,image,lifecycle,rehearsal,release-candidate,suites',
+    'nothing publishes before the image, the bundle, the browser acceptance, the lifecycle acceptance, and the final Phase 252 rehearsal have all been checked');
   assertEq(publish.environment, 'release', 'and it runs in a protected environment');
 
   const permissions = asMap(publish.permissions ?? null, 'publish permissions');

@@ -76,9 +76,17 @@ fields so the exact handoff can be pinned and re-verified.
 ## CI wiring, without write permission
 
 CI runs `npm run test:phase252-local` in the suites gate, and adds a read-only `rehearsal` job that assembles
-the candidate, runs the rehearsal with this run's evidence, asserts `HANDOFF_READY`, and uploads the handoff
-packet for inspection. The job has **no `permissions:` block**, so it inherits `contents: read` and is
-structurally incapable of publishing — no registry login, no push, no tag, no release upload.
+the candidate, runs the rehearsal with this run's evidence (`github.sha` and `needs.<job>.result`), asserts
+`HANDOFF_READY`, and uploads the handoff packet for inspection. The job has **no `permissions:` block**, so it
+inherits `contents: read` and is structurally incapable of publishing — no registry login, no push, no tag, no
+release upload.
+
+Crucially, **`publish` requires `rehearsal`** — the `rehearsal` job is one of `publish`'s `needs`, alongside
+`suites`, `image`, `bundle`, `release-candidate` and `lifecycle`. A release therefore cannot go out when the
+final rehearsal blocked or was cancelled, and because `rehearsal` itself depends on the acceptances (never on
+`publish`), the graph has no cycle. Neither the rehearsal nor the acceptances carry an `if:`, so none can be
+silently skipped to let `publish` through. This closes the defect where `publish` could run concurrently with,
+and succeed despite, a failing rehearsal.
 
 ## Boundaries
 

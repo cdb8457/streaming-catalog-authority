@@ -126,10 +126,11 @@ test('publish cannot run unless the release-candidate acceptance succeeded too',
   for (const required of ['suites', 'image', 'bundle', 'release-candidate']) {
     assert(needs.includes(required), `publish needs ${required} to have succeeded before it can run`);
   }
-  // Phase 249 added the lifecycle gate; publish now depends on all five. This test keeps proving that the
-  // release-candidate gate in particular is required (its own concern); the exact set is asserted here.
-  assertEq([...needs].sort().join(','), 'bundle,image,lifecycle,release-candidate,suites',
-    'publish depends on exactly the five gates, nothing more, nothing less');
+  // Phase 249 added the lifecycle gate and Phase 252 added the rehearsal gate; publish now depends on all six.
+  // This test keeps proving that the release-candidate gate in particular is required (its own concern); the
+  // exact set is asserted here, so dropping release-candidate (or any gate) FAILS this.
+  assertEq([...needs].sort().join(','), 'bundle,image,lifecycle,rehearsal,release-candidate,suites',
+    'publish depends on exactly the six gates, nothing more, nothing less');
 
   // GitHub skipped-job semantics: a needed job that is SKIPPED causes publish (which has no status function
   // in its `if:`) to be skipped too — so the acceptance must actually RUN on every event that can reach

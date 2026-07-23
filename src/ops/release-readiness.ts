@@ -418,11 +418,11 @@ function viewWorkflow(text: string): WorkflowView | null {
   };
 }
 
-const REQUIRED_PUBLISH_NEEDS = ['suites', 'image', 'bundle', 'release-candidate', 'lifecycle'] as const;
+const REQUIRED_PUBLISH_NEEDS = ['suites', 'image', 'bundle', 'release-candidate', 'lifecycle', 'rehearsal'] as const;
 
 const checkPublishDependencyGraph: Check = (_evidence, workflow) => {
   const id = 'publish-needs-all-gates';
-  const title = 'Publish depends on every gate, including the browser and lifecycle acceptances';
+  const title = 'Publish depends on every gate, including the acceptances and the final rehearsal';
   if (workflow === null) return invalid(id, title, 'the workflow could not be parsed');
   const publish = workflow.jobMap('publish');
   if (publish === null) return invalid(id, title, 'the workflow has no publish job');
@@ -438,21 +438,23 @@ const checkPublishDependencyGraph: Check = (_evidence, workflow) => {
   // should catch it here rather than at release time.
   const dangling = needs.filter((gate) => workflow.jobMap(gate) === null);
   if (dangling.length > 0) return block(id, title, `publish depends on jobs that do not exist: ${dangling.join(', ')}`);
-  return pass(id, title, 'publish requires suites, image, bundle, release-candidate and lifecycle, and all exist');
+  return pass(id, title, 'publish requires suites, image, bundle, release-candidate, lifecycle and rehearsal, and all exist');
 };
 
 const checkAcceptanceGatesNotSkippable: Check = (_evidence, workflow) => {
   const id = 'acceptance-gates-run-on-every-event';
-  const title = 'The acceptance gates carry no `if:` that could conditionally skip them';
+  const title = 'The acceptance and rehearsal gates carry no `if:` that could conditionally skip them';
   if (workflow === null) return invalid(id, title, 'the workflow could not be parsed');
   const skippable: string[] = [];
-  for (const gate of ['release-candidate', 'lifecycle']) {
+  // The two real-Compose acceptances AND the Phase 252 rehearsal: each is a required publish dependency, so an
+  // `if:` on any of them could skip it, making it "not failed", and let publish through over a gate that never ran.
+  for (const gate of ['release-candidate', 'lifecycle', 'rehearsal']) {
     const map = workflow.jobMap(gate);
     if (map === null) return block(id, title, `the ${gate} gate job is missing`);
     if (map.if !== undefined) skippable.push(gate);
   }
   if (skippable.length > 0) return block(id, title, `these gates have an if: and could be skipped, letting publish through: ${skippable.join(', ')}`);
-  return pass(id, title, 'both acceptance gates run on every event that can reach publish');
+  return pass(id, title, 'the acceptance gates and the final rehearsal all run on every event that can reach publish');
 };
 
 const checkPublishFailClosed: Check = (_evidence, workflow) => {

@@ -256,13 +256,16 @@ jobs:
 
   publish:
     name: Publish the release image and asset
-    # Every gate must be green before a byte is published, INCLUDING both real-Compose acceptances: the
-    # release-candidate browser run (Phase 248) AND the lifecycle run (Phase 249) that proves upgrade and
-    # rollback preserve data. Neither `release-candidate` nor `lifecycle` carries an `if:`, so both run on
-    # every event that can reach publish (a release, or a deliberate dispatch) and are never conditionally
-    # skipped; a needed job that failed or was cancelled is not "success", so publish is skipped — a release
-    # cannot go out over a failed or cancelled acceptance.
-    needs: [suites, image, bundle, release-candidate, lifecycle]
+    # Every gate must be green before a byte is published, INCLUDING both real-Compose acceptances AND the
+    # final handoff rehearsal: the release-candidate browser run (Phase 248), the lifecycle run (Phase 249)
+    # that proves upgrade and rollback preserve data, and the Phase 252 `rehearsal` job — publish REQUIRES
+    # rehearsal, so a release cannot go out when the final rehearsal blocked, even though publish keeps its
+    # direct dependencies on release-candidate and lifecycle for defense in depth. None of `release-candidate`,
+    # `lifecycle` or `rehearsal` carries an `if:`, so each runs on every event that can reach publish (a
+    # release, or a deliberate dispatch) and is never conditionally skipped; a needed job that failed or was
+    # cancelled is not "success", so publish is skipped — a release cannot go out over a failed gate. (rehearsal
+    # itself needs release-candidate and lifecycle, so there is no cycle: rehearsal never depends on publish.)
+    needs: [suites, image, bundle, release-candidate, lifecycle, rehearsal]
     # A cheap pre-filter only. The real gate is the release-ref step below, which is a tested function and
     # refuses anything this expression might let through.
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
