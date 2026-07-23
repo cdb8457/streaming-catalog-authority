@@ -30,13 +30,24 @@ REPO_ROOT="$(pwd)"
 REQUIRE_ACCEPTANCE="${REQUIRE_ACCEPTANCE:-0}"
 LOCAL_IMAGE="${CATALOG_AUTHORITY_RC_IMAGE:-catalog-authority-ops:rc-acceptance}"
 BASE_URL="http://127.0.0.1:8099"
+# The directory CI uploads on failure. It is populated ONLY by promoting redaction-passed artifacts out of
+# the staging directory below, so a redaction-gate failure — or a kill before the gate ran — leaves it empty
+# and the upload structurally safe. It is never where the browser or the log writer put anything directly.
 ARTIFACT_DIR="${RC_ARTIFACT_DIR:-${REPO_ROOT}/dist/rc-acceptance-artifacts}"
+# Where the browser and the log writer actually put artifacts. Redacted, then promoted, then removed. Never
+# uploaded directly.
+STAGING_DIR="${RC_STAGING_DIR:-${REPO_ROOT}/dist/rc-acceptance-staging}"
 BUNDLE_DIR="${REPO_ROOT}/dist/rc-acceptance-bundle"
 ARCHIVE_DIR="${REPO_ROOT}/dist/rc-acceptance-archive"
 BROWSER_DIR="${REPO_ROOT}/deploy/ci/acceptance"
-EXTRACTED=""            # set once the archive is extracted, so cleanup can find it
-COMPOSE_UP=0            # set to 1 once the stack is up, so cleanup only tears down what it started
-TOKEN=""               # set once secrets exist; the cleanup trap uses it to gate artifacts
+EXTRACTED=""              # set once the archive is extracted, so cleanup can find it
+RC_COMPOSE_ATTEMPTED=0    # armed to 1 by rc_compose_up BEFORE `up`, so a partial-up failure still tears down
+TOKEN=""                  # set once secrets exist; the cleanup trap uses it to gate artifacts
+
+# The teardown helpers are a sourced, separately-tested library so the arm-before-up ordering has one
+# implementation. Sourcing runs nothing and touches no docker.
+# shellcheck source=deploy/ci/acceptance/rc-teardown.sh
+source "${BROWSER_DIR}/rc-teardown.sh"
 
 step() { printf '\n==> %s\n' "$1"; }
 info() { printf '    %s\n' "$1"; }
@@ -62,27 +73,41 @@ skip() {
 cleanup() {
   local code=$?
   step "teardown (always)"
-  if [ "${COMPOSE_UP}" = "1" ] && [ -n "${EXTRACTED}" ] && [ -d "${EXTRACTED}" ]; then
-    ( cd "${EXTRACTED}" && docker compose down -v --remove-orphans >/dev/null 2>&1 ) || true
-    info "compose stack down, volumes removed"
+  # Tear the stack down whenever `up` was ATTEMPTED — armed before `up`, so a partial-up failure still gets
+  # here. rc_compose_down is idempotent and scoped to the extracted project, so it can never touch anything
+  # else and is safe even if `up` created nothing.
+  if [ "${RC_COMPOSE_ATTEMPTED}" = "1" ]; then
+    rc_compose_down "${EXTRACTED}"
+    info "compose stack torn down (down -v), volumes removed"
   fi
   # The locally-built acceptance image is never pushed and is not a release artifact; remove it.
   docker image rm -f "${LOCAL_IMAGE}" >/dev/null 2>&1 || true
-  # Gate the artifacts BEFORE anything can upload them, on every exit path including a failed one. If the gate
-  # finds token material it removes the offending files and fails; a failed gate must fail the run.
-  if [ -n "${TOKEN}" ] && [ -d "${ARTIFACT_DIR}" ] && [ -f "${BROWSER_DIR}/redact-artifacts.sh" ]; then
-    if ! OPERATOR_UI_ACCEPTANCE_TOKEN="${TOKEN}" bash "${BROWSER_DIR}/redact-artifacts.sh" "${ARTIFACT_DIR}"; then
-      echo "artifact redaction gate failed" >&2
+
+  # Gate then PROMOTE artifacts. The upload directory (ARTIFACT_DIR) is populated ONLY here, ONLY from staging
+  # that passed the redaction gate. If the gate fails, or if we were killed before reaching it, nothing is
+  # promoted and the upload directory stays empty — the upload is structurally safe, not merely scrubbed.
+  if [ -d "${STAGING_DIR}" ] && [ -n "${TOKEN}" ] && [ -f "${BROWSER_DIR}/redact-artifacts.sh" ]; then
+    if OPERATOR_UI_ACCEPTANCE_TOKEN="${TOKEN}" bash "${BROWSER_DIR}/redact-artifacts.sh" "${STAGING_DIR}"; then
+      mkdir -p "${ARTIFACT_DIR}"
+      ( shopt -s dotglob nullglob; mv "${STAGING_DIR}"/* "${ARTIFACT_DIR}/" 2>/dev/null ) || true
+      info "acceptance artifacts passed redaction and were promoted for upload"
+    else
+      echo "artifact redaction gate failed — quarantining all acceptance artifacts, nothing will be uploaded" >&2
+      rm -rf "${ARTIFACT_DIR}"
       [ "${code}" = "0" ] && code=1
     fi
   fi
+
   if [ -n "${EXTRACTED}" ] && [ -d "${EXTRACTED}" ]; then rm -rf "${EXTRACTED}"; fi
-  # The artifact directory is deliberately NOT removed: CI uploads it on failure (after this gate).
-  rm -rf "${BUNDLE_DIR}" "${ARCHIVE_DIR}" "${BUNDLE_DIR}-repeat" "${ARCHIVE_DIR}-repeat" 2>/dev/null || true
-  info "temporary bundle and extraction directories removed"
+  rm -rf "${STAGING_DIR}" "${BUNDLE_DIR}" "${ARCHIVE_DIR}" "${BUNDLE_DIR}-repeat" "${ARCHIVE_DIR}-repeat" 2>/dev/null || true
+  info "temporary bundle, staging and extraction directories removed"
   exit "${code}"
 }
+# The EXIT trap does the work. INT/TERM (a cancelled CI job, or Ctrl-C) re-exit so the EXIT trap runs once —
+# best-effort local cleanup; CI's `if: always()` step is the outer net.
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 # ---------------------------------------------------------------------------------------------------------
 # Prerequisites
@@ -99,7 +124,9 @@ if [ ! -d "${BROWSER_DIR}/node_modules/@playwright/test" ]; then
 fi
 info "pinned Playwright harness present"
 
-mkdir -p "${ARTIFACT_DIR}"
+# Start from a clean staging directory; the upload directory is created only when artifacts pass redaction.
+rm -rf "${STAGING_DIR}" "${ARTIFACT_DIR}"
+mkdir -p "${STAGING_DIR}"
 
 # ---------------------------------------------------------------------------------------------------------
 # 1. Assemble the exact consumer release bundle and archive, from source, the way the release does.
@@ -177,8 +204,8 @@ info "planted a hostile-string record for the browser to render safely"
 # 5. Start the EXTRACTED stack. Standalone: one compose file, no override, no source.
 # ---------------------------------------------------------------------------------------------------------
 step "start the extracted standalone stack"
-( cd "${EXTRACTED}" && docker compose up -d )
-COMPOSE_UP=1
+# rc_compose_up ARMS teardown (RC_COMPOSE_ATTEMPTED=1) BEFORE `up`, so a partial-up failure still tears down.
+rc_compose_up "${EXTRACTED}"
 
 step "wait for /healthz with bounded diagnostics"
 healthy=""
@@ -223,12 +250,13 @@ info "read-only rootfs, non-root, no-new-privileges, cap-drop ALL, no docker soc
 # 7. Drive a REAL headless Chromium browser against the running stack.
 # ---------------------------------------------------------------------------------------------------------
 step "real-browser acceptance (headless Chromium)"
-rm -rf "${ARTIFACT_DIR}"/* 2>/dev/null || true
+# The browser writes into STAGING, never the upload directory. Its artifacts reach the upload directory only
+# after the redaction gate passes, in cleanup.
 set +e
 OPERATOR_UI_ACCEPTANCE_TOKEN="${TOKEN}" \
 OPERATOR_UI_ACCEPTANCE_BASE_URL="${BASE_URL}" \
 OPERATOR_UI_ACCEPTANCE_VERSION="${RC_VERSION}" \
-PLAYWRIGHT_ARTIFACT_DIR="${ARTIFACT_DIR}" \
+PLAYWRIGHT_ARTIFACT_DIR="${STAGING_DIR}" \
   npx --prefix "${BROWSER_DIR}" playwright test \
     --config "${BROWSER_DIR}/playwright.config.mjs"
 browser_status=$?
@@ -238,13 +266,12 @@ set -e
 # 8. Server logs must not contain the token, whatever the browser did.
 # ---------------------------------------------------------------------------------------------------------
 step "server logs carry no token"
-( cd "${EXTRACTED}" && docker compose logs --no-color > "${ARTIFACT_DIR}/server-logs.txt" 2>&1 ) || true
-if grep -qF "${TOKEN}" "${ARTIFACT_DIR}/server-logs.txt"; then
-  # Do not leave the token sitting in an artifact we might upload.
-  rm -f "${ARTIFACT_DIR}/server-logs.txt"
+( cd "${EXTRACTED}" && docker compose logs --no-color > "${STAGING_DIR}/server-logs.txt" 2>&1 ) || true
+if grep -qF "${TOKEN}" "${STAGING_DIR}/server-logs.txt"; then
+  # An early, loud failure. The redaction gate in cleanup is the backstop; this makes the cause explicit.
+  rm -f "${STAGING_DIR}/server-logs.txt"
   fail "the operator token appeared in the server logs"
 fi
-# The saved log is evidence; scrub any accidental token match defensively before it can be uploaded.
 info "no token in server logs"
 
 # ---------------------------------------------------------------------------------------------------------
@@ -263,10 +290,11 @@ after="$(cat "${TOKEN_FILE}")"
 [ "${before}" = "${after}" ] || fail "the operator token did not persist across a restart"
 info "restarted cleanly; operator token persisted"
 
-# The artifacts are gated by the redaction step in the always-cleanup trap, which runs after this point on
-# every exit path — a failed browser run still has its artifacts scrubbed before CI can upload them.
+# The artifacts are gated and promoted by the always-cleanup trap, which runs after this point on every exit
+# path — a failed browser run has its staged artifacts redacted, and only the survivors reach the upload
+# directory.
 if [ "${browser_status}" -ne 0 ]; then
-  fail "the real-browser acceptance reported failures (sanitized artifacts are in ${ARTIFACT_DIR})"
+  fail "the real-browser acceptance reported failures (sanitized diagnostics will be in ${ARTIFACT_DIR})"
 fi
 
 printf '\nrelease-candidate acceptance: PASS (version %s)\n' "${RC_VERSION}"

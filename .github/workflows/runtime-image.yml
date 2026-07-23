@@ -168,7 +168,12 @@ jobs:
 
   publish:
     name: Publish the release image and asset
-    needs: [suites, image, bundle]
+    # Every gate must be green before a byte is published, INCLUDING the release-candidate acceptance: the
+    # real Chromium-against-real-Compose run that proves the artifact works. `release-candidate` has no `if:`,
+    # so it runs on every event that can reach publish (a release, or a deliberate dispatch) and is never
+    # conditionally skipped; a needed job that failed or was cancelled is not "success", so publish is skipped
+    # — a release cannot go out over a failed or cancelled acceptance.
+    needs: [suites, image, bundle, release-candidate]
     # A cheap pre-filter only. The real gate is the release-ref step below, which is a tested function and
     # refuses anything this expression might let through.
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)

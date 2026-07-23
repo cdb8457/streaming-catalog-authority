@@ -105,11 +105,9 @@ test('the release-candidate job always tears down and uploads only sanitized fai
 });
 
 test('adding the job did not weaken the existing publish gate', () => {
-  // The publish job is still the only writer; its needs are unchanged and it still runs in a protected env.
+  // The publish job is still the only writer, and it still runs in a protected env.
   const publish = job('publish');
-  assertEq(stringList(publish.needs ?? null, 'needs').sort().join(','), 'bundle,image,suites',
-    'publish still needs exactly the three checked jobs');
-  assertEq(publish.environment, 'release', 'and still runs in the release environment');
+  assertEq(publish.environment, 'release', 'publish still runs in the release environment');
   const perms = asMap(publish.permissions ?? null, 'publish perms');
   assertEq(perms.contents, 'write', 'publish alone may write contents');
   // Every non-publish job, including the new one, inherits read-only and cannot publish.
@@ -117,6 +115,34 @@ test('adding the job did not weaken the existing publish gate', () => {
     if (name === 'publish') continue;
     assertEq(job(name).permissions, undefined, `${name} inherits read-only`);
   }
+});
+
+test('publish cannot run unless the release-candidate acceptance succeeded too', () => {
+  // The release-gate remediation: before this fix publish needed only suites, image and bundle, so a release
+  // could go out even if the real browser+Compose acceptance failed or was cancelled. It must depend on
+  // release-candidate as well. This assertion FAILS on the pre-fix graph.
+  const publish = job('publish');
+  const needs = stringList(publish.needs ?? null, 'needs');
+  for (const required of ['suites', 'image', 'bundle', 'release-candidate']) {
+    assert(needs.includes(required), `publish needs ${required} to have succeeded before it can run`);
+  }
+  assertEq([...needs].sort().join(','), 'bundle,image,release-candidate,suites',
+    'publish depends on exactly the four gates, nothing more, nothing less');
+
+  // GitHub skipped-job semantics: a needed job that is SKIPPED causes publish (which has no status function
+  // in its `if:`) to be skipped too — so the acceptance must actually RUN on every event that can reach
+  // publish, never be conditionally skipped. It therefore carries no `if:` of its own.
+  assertEq(job('release-candidate').if, undefined,
+    'release-candidate has no if: — it runs on every event, including the release and dispatch that reach publish');
+  // The publish event/ref pre-filter is unchanged: still only a release or a deliberate version-tag dispatch.
+  const condition = String(publish.if ?? '');
+  assert(condition.includes("github.event_name == 'release'"), 'a published release can still publish');
+  assert(condition.includes('workflow_dispatch') && condition.includes('inputs.publish'),
+    'or a deliberate dispatch that asks to');
+  // publish uses no always()/failure() status function, so a failed/cancelled/skipped dependency skips it —
+  // a release can never go out over a red acceptance.
+  assert(!/always\(\)|failure\(\)|cancelled\(\)/.test(condition),
+    'publish uses no status function that would let it run despite a failed dependency');
 });
 
 test('the suites job runs the Phase 248 focused suite', () => {
@@ -160,10 +186,49 @@ test('the orchestrator reads the token without printing it and masks it in CI', 
   assert(!/echo.*\$\{?TOKEN/.test(orchestrator.replace(/::add-mask::\$\{TOKEN\}/g, '')), 'the token is never echoed');
 });
 
-test('the orchestrator always tears down volumes and containers, and gates artifacts on every exit', () => {
+test('the orchestrator arms teardown BEFORE up, tears down on every exit, and gates artifacts', () => {
   assert(/trap cleanup EXIT/.test(orchestrator), 'a cleanup trap runs on every exit');
-  assert(/docker compose down -v/.test(orchestrator), 'teardown removes volumes');
+  assert(/trap 'exit 130' INT/.test(orchestrator) && /trap 'exit 143' TERM/.test(orchestrator),
+    'and cancellation (INT/TERM) re-exits so the same cleanup runs — best-effort on a cancelled run');
+  // The stack is started ONLY through rc_compose_up, which arms RC_COMPOSE_ATTEMPTED before `up`; the
+  // orchestrator itself never runs a bare `docker compose up` that could start resources without arming.
+  assert(/source .*rc-teardown\.sh/.test(orchestrator), 'it sources the shared teardown library');
+  assert(/rc_compose_up "\$\{EXTRACTED\}"/.test(orchestrator), 'the stack is started via the arming helper');
+  assert(!/docker compose up/.test(orchestrator), 'there is no bare `docker compose up` that could start resources unarmed');
+  assert(/rc_compose_down "\$\{EXTRACTED\}"/.test(orchestrator), 'and teardown goes through the scoped helper');
+  assert(/RC_COMPOSE_ATTEMPTED/.test(orchestrator), 'cleanup keys off the armed-before-up flag');
   assert(/redact-artifacts\.sh/.test(orchestrator), 'and the redaction gate runs before anything can upload');
+
+  // The shared library arms the flag BEFORE the up COMMAND, textually — the property the whole fix rests on.
+  const lib = read('deploy/ci/acceptance/rc-teardown.sh');
+  const armAt = lib.indexOf('RC_COMPOSE_ATTEMPTED=1');
+  const upAt = lib.indexOf('docker compose up -d');
+  assert(armAt !== -1 && upAt !== -1 && armAt < upAt, 'rc_compose_up sets the armed flag before it runs `up`');
+});
+
+test('the upload directory is populated only from redaction-passed staging (structurally safe)', () => {
+  // The browser and the log writer put artifacts in STAGING; the upload directory is filled ONLY by
+  // promoting staging that passed the redaction gate. So a gate failure — or a kill before the gate — leaves
+  // the upload directory empty, rather than merely scrubbed.
+  assert(/STAGING_DIR/.test(orchestrator), 'there is a distinct staging directory');
+  assert(/PLAYWRIGHT_ARTIFACT_DIR="\$\{STAGING_DIR\}"/.test(orchestrator), 'the browser writes to staging, not the upload dir');
+  assert(/server-logs\.txt/.test(orchestrator) && /\$\{STAGING_DIR\}\/server-logs\.txt/.test(orchestrator),
+    'and so does the server-log writer');
+  // The redaction gate runs over STAGING, and promotion (mv into ARTIFACT_DIR) happens only when it passes.
+  assert(/redact-artifacts\.sh" "\$\{STAGING_DIR\}"/.test(orchestrator), 'the gate runs over staging');
+  assert(/mv "\$\{STAGING_DIR\}"\/\* "\$\{ARTIFACT_DIR\}\/"/.test(orchestrator), 'artifacts are promoted only after the gate');
+  assert(/rm -rf "\$\{ARTIFACT_DIR\}"/.test(orchestrator), 'and on a gate failure the upload dir is removed, not populated');
+
+  // The redaction gate itself quarantines the whole directory on any detection.
+  const redact = read(REDACT);
+  assert(/-mindepth 1 -delete/.test(redact), 'the redaction gate empties the whole directory on detection');
+
+  // The workflow uploads the promote-target (ARTIFACT_DIR), only on failure, only after the orchestrator ran.
+  const uploadStep = steps('release-candidate').find((s) => String(s.uses ?? '').startsWith('actions/upload-artifact'));
+  assert(uploadStep !== undefined, 'CI has an upload step');
+  const path = String(asMap(uploadStep!.with ?? null, 'with').path);
+  assert(path.includes('rc-acceptance-artifacts') && !path.includes('staging'),
+    'and it uploads the promote-target, never the staging directory');
 });
 
 test('the orchestrator honours no boundary violations', () => {
@@ -286,12 +351,16 @@ test('the redaction gate passes clean artifacts and fails on the exact token', (
     writeFileSync(join(ws, 'traces', 'trace.jpeg'), 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdefghij+/base64image');
     const clean = runRedact(ws, token);
     assertEq(clean.status, 0, `a clean artifact set passes: ${clean.out}`);
+    assert(existsSync(join(ws, 'report.json')), 'a clean pass leaves artifacts in place to be promoted');
 
-    // The exact token in the server log fails collection and removes the file.
+    // The exact token anywhere fails the gate AND quarantines the WHOLE directory — not just the offending
+    // file — so nothing adjacent can be uploaded either.
     writeFileSync(join(ws, 'server-logs.txt'), `leaked ${token} here\n`);
     const leaked = runRedact(ws, token);
     assertEq(leaked.status, 1, 'the exact token fails the gate');
-    assert(!existsSync(join(ws, 'server-logs.txt')), 'and the offending file is removed');
+    assert(!existsSync(join(ws, 'server-logs.txt')), 'the offending file is removed');
+    assert(!existsSync(join(ws, 'report.json')), 'and so is every adjacent artifact — the whole directory is quarantined');
+    assert(!existsSync(join(ws, 'traces', 'trace.jpeg')), 'including nested files');
   } finally { removeQuietly(ws); }
 });
 
@@ -303,6 +372,81 @@ test('the redaction gate fails on token-shaped material in a plain-text log', ()
     writeFileSync(join(ws, 'server-logs.txt'), 'run aGVsbG93b3JsZGxvbmdlbm91Z2hiYXNlNjRydW5oZXJleHl6MTIz end\n');
     const res = runRedact(ws, 'unrelated-token-value');
     assertEq(res.status, 1, 'token-shaped material in a log fails the gate');
+  } finally { removeQuietly(ws); }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Teardown after a partial-up failure — the REAL shared library, driven with an injected compose failure and
+// no Docker daemon.
+// ---------------------------------------------------------------------------------------------------------
+
+test('teardown is attempted after a PARTIAL-up failure, without a Docker daemon', () => {
+  if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  // Drive the REAL shared teardown library the way the orchestrator does — arm-before-up + EXIT trap — with
+  // `docker` overridden by a shell function that makes `compose up` FAIL after "partially" acting. This
+  // proves the EXIT trap still runs `docker compose down` even though `up` never returned success.
+  const ws = mkdtempSync(join(tmpdir(), 'p248-teardown-'));
+  try {
+    const extracted = join(ws, 'project');
+    mkdirSync(extracted, { recursive: true });
+    const logFile = join(ws, 'docker.log').replace(/\\/g, '/');
+    const libPath = join(root, 'deploy/ci/acceptance/rc-teardown.sh').replace(/\\/g, '/');
+    const driver = join(ws, 'driver.sh');
+    // A fake `docker` as a bash function: `compose up` fails (as a partial-up would); `compose down` records
+    // that teardown was attempted. Functions are inherited by the `( … )` subshells the library uses.
+    writeFileSync(driver, [
+      'set -euo pipefail',
+      'docker() {',
+      `  echo "docker $*" >> "${logFile}"`,
+      '  case "$*" in',
+      '    *"compose up"*) return 1 ;;',
+      `    *"compose down"*) echo "DOWN-ATTEMPTED" >> "${logFile}"; return 0 ;;`,
+      '    *) return 0 ;;',
+      '  esac',
+      '}',
+      `source "${libPath}"`,
+      'RC_COMPOSE_ATTEMPTED=0',
+      `EXTRACTED="${extracted.replace(/\\/g, '/')}"`,
+      'cleanup() { local c=$?; if [ "${RC_COMPOSE_ATTEMPTED}" = "1" ]; then rc_compose_down "${EXTRACTED}"; fi; exit "$c"; }',
+      'trap cleanup EXIT',
+      'rc_compose_up "${EXTRACTED}"',
+      `echo "REACHED-PAST-UP" >> "${logFile}"`,
+      '',
+    ].join('\n'));
+
+    const run = runScript(bash, driver, { cwd: ws, timeout: 60000 });
+    assert(run.status !== 0, `the driver fails when up fails: status=${String(run.status)}`);
+    const log = existsSync(join(ws, 'docker.log')) ? readFileSync(join(ws, 'docker.log'), 'utf8') : '';
+    assert(/docker compose up/.test(log), 'up was attempted');
+    assert(/DOWN-ATTEMPTED/.test(log), 'and teardown (down) was attempted after the partial-up failure');
+    assert(!/REACHED-PAST-UP/.test(log), 'the script did not continue past the failed up');
+  } finally { removeQuietly(ws); }
+});
+
+test('teardown is NOT attempted when up was never reached', () => {
+  if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  // The mirror case: if the flag was never armed (a failure BEFORE `up`), cleanup must not call down — there
+  // is nothing to tear down. Proves the armed flag, not merely the trap, gates the teardown.
+  const ws = mkdtempSync(join(tmpdir(), 'p248-noteardown-'));
+  try {
+    const logFile = join(ws, 'docker.log').replace(/\\/g, '/');
+    const libPath = join(root, 'deploy/ci/acceptance/rc-teardown.sh').replace(/\\/g, '/');
+    const driver = join(ws, 'driver.sh');
+    writeFileSync(driver, [
+      'set -euo pipefail',
+      `docker() { echo "docker $*" >> "${logFile}"; case "$*" in *"compose down"*) echo "DOWN-ATTEMPTED" >> "${logFile}" ;; esac; return 0; }`,
+      `source "${libPath}"`,
+      'RC_COMPOSE_ATTEMPTED=0',
+      `EXTRACTED="${join(ws, 'project').replace(/\\/g, '/')}"`,
+      'cleanup() { local c=$?; if [ "${RC_COMPOSE_ATTEMPTED}" = "1" ]; then rc_compose_down "${EXTRACTED}"; fi; exit "$c"; }',
+      'trap cleanup EXIT',
+      'false  # fail BEFORE arming/up',
+      '',
+    ].join('\n'));
+    const run = runScript(bash, driver, { cwd: ws, timeout: 60000 });
+    assert(run.status !== 0, 'the driver failed before up');
+    const log = existsSync(join(ws, 'docker.log')) ? readFileSync(join(ws, 'docker.log'), 'utf8') : '';
+    assert(!/DOWN-ATTEMPTED/.test(log), 'teardown was not attempted because up was never armed');
   } finally { removeQuietly(ws); }
 });
 

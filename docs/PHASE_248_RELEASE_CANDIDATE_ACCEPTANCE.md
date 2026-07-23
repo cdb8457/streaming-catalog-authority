@@ -24,6 +24,14 @@ This is the distinction that matters, and the workflow enforces it structurally:
   a deliberate version-tag dispatch, gated by the tested `release-ref` decision, and it is the only job with
   `contents: write` / `packages: write`.
 
+**The acceptance is a required gate on publishing.** `publish` declares `needs: [suites, image, bundle,
+release-candidate]`, so a release image and asset can be published only after the real browser+Compose
+acceptance has *succeeded*. Because `release-candidate` carries no `if:`, it runs on every event that can
+reach `publish` — a published release, or a deliberate dispatch — and is never conditionally skipped; and
+because `publish`'s `if:` uses no `always()`/`failure()` status function, a `release-candidate` that failed,
+was cancelled, or was skipped is not "success", so `publish` is skipped. A release cannot go out over a red
+acceptance.
+
 Assembling and running are not publishing. Nothing in Phase 248 publishes, pushes, tags, merges or deploys.
 
 ## What the acceptance run proves
@@ -70,7 +78,9 @@ so a failing assertion can never echo it.
 | First-run UX end to end | `operator-ui.spec.mjs` — UX tests |
 | Security in the real browser | `operator-ui.spec.mjs` — security tests |
 | Standalone bundle + container contract | orchestrator steps 2, 6, 9 |
-| Failure-only, sanitized, redacted artifacts | `redact-artifacts.sh` + workflow upload step |
+| Failure-only, staged-then-promoted, redacted artifacts | `redact-artifacts.sh` + orchestrator cleanup + workflow upload |
+| Arm-before-up teardown, scoped and idempotent | `deploy/ci/acceptance/rc-teardown.sh` + orchestrator cleanup |
+| **Publish gated on acceptance** | `publish` `needs: […, release-candidate]`, and `release-candidate` has no `if:` |
 | CI job, read-only, no-silent-skip | `.github/workflows/runtime-image.yml` → `release-candidate` |
 | Focused static/contract suite (no Docker/browser) | `test/release-candidate-acceptance.ts` |
 
@@ -115,11 +125,31 @@ ran.
 ## Artifacts and redaction
 
 Screenshots and traces are captured **only on failure**, uploaded **only on failure**, with **7-day**
-retention. Before anything is uploaded, `redact-artifacts.sh` scans every artifact for the exact fixture
-token (across unzipped traces too) and for token-shaped material in the plain-text logs this harness writes;
-if it finds any, it **removes the offending files and fails artifact collection** so nothing suspect leaves
-the runner. The gate runs inside the orchestrator's always-on cleanup, so it protects a failed run's
-artifacts too.
+retention. The design makes the upload *structurally* safe, not merely scrubbed:
+
+* the browser and the log writer put everything in a **staging** directory (`dist/rc-acceptance-staging`),
+  never in the directory CI uploads (`dist/rc-acceptance-artifacts`);
+* the orchestrator's always-on cleanup runs `redact-artifacts.sh` over staging, scanning every artifact for
+  the exact fixture token (across unzipped traces too) and for token-shaped material in the plain-text logs
+  this harness writes;
+* **only if the gate passes** are the artifacts promoted (moved) into the upload directory. If the gate
+  finds anything, it **quarantines the whole staging directory (empties it) and fails**, the orchestrator
+  removes the upload directory, and the run fails. If the job is killed before the gate runs, the upload
+  directory was never populated.
+
+So a redaction-gate failure — or a cancellation before the gate — can never result in a suspect artifact
+being uploaded: the upload directory is either populated with redaction-passed artifacts or empty.
+
+## Teardown, on every exit including a partial `up`
+
+`docker compose up` can partially create a network, a volume or a container and then exit non-zero. Teardown
+is therefore **armed before `up`, not after it returns**: the stack is started through `rc_compose_up`
+(`deploy/ci/acceptance/rc-teardown.sh`), which sets the armed flag and *then* runs `up`, so a partial-up
+failure still reaches the `docker compose down -v` in the EXIT trap. `INT`/`TERM` re-exit so the same cleanup
+runs on a cancelled or Ctrl-C'd run. Teardown is scoped to the extracted project directory only, so it can
+never touch an unrelated Compose project, and it is idempotent. In CI, the job's `if: always()` step is the
+outer belt-and-braces net. The arm-before-up ordering and the scoped teardown are exercised by a
+deterministic test that drives the real library with an injected `up` failure and **no Docker daemon**.
 
 ## Troubleshooting
 
@@ -144,8 +174,8 @@ which is why it is the reference for "does the release itself work".
 re-run with `REQUIRE_ACCEPTANCE=1`, or rely on the CI job. A SKIP is never a pass and is never counted as
 one.
 
-**The redaction gate failed.** Token-shaped material was found in an artifact and the offending file was
-removed. Investigate how a token (or a base64 run) reached a log or a trace; the gate failing is the system
+**The redaction gate failed.** Token-shaped material was found in a staged artifact; the whole staging
+directory was quarantined and nothing was promoted for upload. Investigate how a token (or a base64 run) reached a log or a trace; the gate failing is the system
 working — it stopped an upload that could have carried a secret.
 
 ## Boundaries

@@ -16,8 +16,9 @@
 #     (*.txt, *.log). Playwright's own traces legitimately embed base64 image data and content hashes, so a
 #     shape scan over them would fire on every failed run; the server logs, by contrast, are pre-redacted and
 #     must never contain such a run.
-#   * Offending files are removed surgically. Safe artifacts (screenshots, the JSON report) survive so a
-#     failed run can still be diagnosed, while the gate still exits non-zero to signal detection.
+#   * On ANY detection the ENTIRE directory is quarantined (emptied), not just the offending file: a gate
+#     failure must make the upload structurally empty, never "scrubbed but adjacent artifacts kept". The gate
+#     still exits non-zero so the leak is loud. On a clean pass, nothing is touched.
 set -euo pipefail
 
 ARTIFACT_DIR="${1:?usage: redact-artifacts.sh <artifact-dir>}"
@@ -55,8 +56,11 @@ while IFS= read -r -d '' logfile; do
 done < <(find "${ARTIFACT_DIR}" -type f \( -name '*.txt' -o -name '*.log' \) -not -path '*trace*' -print0 2>/dev/null)
 
 if [ "${leak}" = "1" ]; then
-  echo "REDACTION FAILURE: token or token-shaped material was found and the offending artifacts were removed." >&2
-  echo "                   Artifact collection is failing on purpose so nothing suspect is uploaded." >&2
+  # Quarantine the WHOLE directory, not just the offending file: on a detection nothing here is trusted to be
+  # uploaded, so the caller's upload finds an empty directory.
+  find "${ARTIFACT_DIR}" -mindepth 1 -delete 2>/dev/null || true
+  echo "REDACTION FAILURE: token or token-shaped material was found; the entire artifact directory was" >&2
+  echo "                   quarantined (emptied) so nothing suspect can be uploaded." >&2
   exit 1
 fi
 
