@@ -51,8 +51,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 248, 247, 246, 245, 245 release delivery, 244, 243, 242
         run: |
+          npm run test:phase248-local
           npm run test:phase247-local
           npm run test:phase246-local
           npm run test:phase245-local
@@ -95,6 +96,53 @@ jobs:
       - name: Container logs on failure
         if: failure()
         run: docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml logs --tail 200
+
+  release-candidate:
+    name: Release-candidate acceptance (real browser, real Compose)
+    # Phase 248. This is the check no file-reading or fake-DOM test can make: assemble the EXACT consumer
+    # release artifact, extract it into a fresh directory with no source and no Node dependency, run a
+    # locally-built production image through the EXTRACTED Compose stack, and drive a REAL headless Chromium
+    # against it. It ACCEPTS a release candidate; it never publishes one — no registry login, no push, no
+    # tag, no release asset. Permissions are inherited read-only (no `permissions:` block here), so this job
+    # is structurally incapable of publishing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install the pinned browser acceptance harness
+        # A self-contained, pinned test toolchain kept OUT of the repository's own package.json, so the
+        # production dependency closure stays exactly pg + tsx. Chromium is pinned by the @playwright/test
+        # version in deploy/ci/acceptance/package-lock.json.
+        run: |
+          npm --prefix deploy/ci/acceptance ci
+          npx --prefix deploy/ci/acceptance playwright install --with-deps chromium
+      - name: Assemble, extract, run and drive the release candidate in a real browser
+        # REQUIRE_ACCEPTANCE=1 makes a missing daemon or browser a hard failure: CI must not silently skip.
+        env:
+          REQUIRE_ACCEPTANCE: "1"
+        run: bash deploy/ci/release-candidate-acceptance.sh
+      - name: Always tear down containers and volumes
+        # The orchestrator tears its own stack down on every exit path; this is the belt-and-braces net that
+        # runs even if the job step was cancelled or killed before the trap could.
+        if: always()
+        run: |
+          docker ps -aq --filter "label=com.docker.compose.project=catalogauthority-local" | xargs -r docker rm -f
+          docker volume ls -q --filter "label=com.docker.compose.project=catalogauthority-local" | xargs -r docker volume rm
+          docker image rm -f catalog-authority-ops:rc-acceptance 2>/dev/null || true
+      - name: Upload sanitized acceptance diagnostics (failure only)
+        # Only on failure, short retention, and only AFTER the orchestrator's redaction gate has removed any
+        # token-bearing file and failed the run if it found one. Nothing suspect reaches this step.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-acceptance-diagnostics
+          path: dist/rc-acceptance-artifacts
+          retention-days: 7
+          if-no-files-found: ignore
 
   bundle:
     name: Assemble and validate the release bundle
