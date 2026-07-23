@@ -104,6 +104,12 @@ a cookie session would need a login endpoint that accepts a POST, server-side se
 defence — three new pieces of authenticated, mutating surface on a service whose entire security argument is
 that it has no mutating surface at all. The bearer-header design keeps that argument intact.
 
+> **Phase 247 note.** The page's behaviour and styles are served as fixed same-origin static assets
+> (`/assets/app.js`, `/assets/app.css`), and the Content-Security-Policy is `default-src 'none'; script-src
+> 'self'; style-src 'self'; connect-src 'self'` with no `'unsafe-inline'`. This section's token model is
+> unchanged — token in the password input and in memory, sent only as the `X-Operator-UI-Secret` header — and
+> Phase 247 hardened the surface it runs on. See `docs/PHASE_247_CSP_HARDENING.md`.
+
 What Phase 246 improved, without weakening it:
 
 * the page says where the token is and how to read it, on both platforms, **before** you are logged in — the
@@ -169,7 +175,8 @@ filesystem; the chain summary reducing to five numbers with no blocker detail; v
 image-reference parsing (including a hostile value and a registry with a port), and image/bundle agreement;
 the release tag through Dockerfile, Compose, `.env` and `VERSION`; both platform forms for every command;
 README generated from the checklist; support-report redaction against a workspace containing a real token and
-a real database URL; that the page's own inline script parses and every element it reaches for exists; and
+a real database URL; that the page's external script (`/assets/app.js`, Phase 247) parses and every element
+it reaches for exists; and
 that the existing status, logs and promotion-chain routes are unchanged.
 
 **Not proven locally.** This machine has the Docker CLI but no running daemon, so the image was never built

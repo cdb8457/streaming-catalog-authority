@@ -318,13 +318,16 @@ await test('the UI shows a promotion chain panel and navigation, and injects not
       for (const id of ['chainOutcome', 'chainReaches', 'chainNext', 'chainBlockerCount', 'chainArtifacts', 'chainBlockers', 'chainSteps', 'chainLimits']) {
         assert(page.body.includes(`id="${id}"`), `panel field ${id} present`);
       }
-      assert(page.body.includes('/api/promotion-chain'), 'the panel reads the authenticated route');
-      assert(page.body.includes('cache:\'no-store\''), 'and never caches a verdict');
-      // Everything dynamic is built as TEXT. The only innerHTML in the shell is the pre-existing clear-to-empty.
-      const scriptBody = page.body.slice(page.body.indexOf('<script>'));
+      // Phase 247: the behaviour is served from /assets/app.js so the CSP can be `script-src 'self'`. The
+      // panel logic lives there now, and the shell references it once.
+      assert(page.body.includes('<script src="/assets/app.js" defer></script>'), 'the shell loads the external script');
+      const scriptBody = (await httpGet(port, '/assets/app.js')).body;
+      assert(scriptBody.includes('/api/promotion-chain'), 'the panel reads the authenticated route');
+      assert(/cache:\s*'no-store'/.test(scriptBody), 'and never caches a verdict');
+      // Everything dynamic is built as TEXT. There is no dynamic innerHTML at all in the current script.
       const innerHtmlWrites = [...scriptBody.matchAll(/innerHTML\s*=\s*([^;]+);/g)].map((m) => m[1]!.trim());
       assert(innerHtmlWrites.every((v) => v === "''"), `no dynamic innerHTML write: ${innerHtmlWrites.join(' | ')}`);
-      assert(scriptBody.includes('li.textContent = item'), 'lists are built with textContent');
+      assert(/\.textContent = items\[i\]/.test(scriptBody), 'lists are built with textContent');
       // The existing Phase 147 surface is intact.
       for (const required of ['Catalog Authority', 'Operator token', 'Needs Attention', 'passCount', 'warnCount', 'failCount']) {
         assert(page.body.includes(required), `existing UI keeps ${required}`);

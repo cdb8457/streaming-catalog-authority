@@ -32,6 +32,12 @@ import {
 } from './operator-ui-installation-readiness.js';
 import { probeDatabase } from './operator-ui-database-probe.js';
 import { buildRuntimeVersionView } from './operator-ui-runtime-version.js';
+import {
+  OPERATOR_UI_APP_CSS_ROUTE,
+  OPERATOR_UI_APP_JS_ROUTE,
+  operatorUiAsset,
+  type OperatorUiAsset,
+} from './operator-ui-assets.js';
 
 export const OPERATOR_UI_SERVICE_DEFAULT_HOST = '0.0.0.0';
 export const OPERATOR_UI_SERVICE_DEFAULT_PORT = 8099;
@@ -120,12 +126,21 @@ export interface StartedOperatorUiService {
   readonly close: () => Promise<void>;
 }
 
-const CSP = [
+// Phase 247. No `'unsafe-inline'` anywhere: the script and the stylesheet are same-origin static assets
+// (/assets/app.js, /assets/app.css), so the browser executes and applies ONLY files it fetched from this
+// origin. `default-src 'none'` denies everything by default and each capability is then granted narrowly:
+// scripts and styles from self, XHR/fetch to self, and nothing else at all — no images, no fonts, no
+// plugins, no framing, no base rewrite, no form target. An injected <script>, an inline handler, an
+// external <link>, a data:/blob: URL: every one of them is refused by the policy, on top of the page's
+// existing habit of only ever writing untrusted values through textContent.
+export const OPERATOR_UI_CSP = [
   "default-src 'none'",
-  "style-src 'unsafe-inline'",
-  "script-src 'unsafe-inline'",
+  "script-src 'self'",
+  "style-src 'self'",
   "connect-src 'self'",
   "img-src 'none'",
+  "font-src 'none'",
+  "object-src 'none'",
   "frame-ancestors 'none'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -203,7 +218,8 @@ export function createOperatorUiServiceServer(
     }
 
     const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs'
-      || path === '/api/promotion-chain' || path === '/api/installation' || path === '/api/version';
+      || path === '/api/promotion-chain' || path === '/api/installation' || path === '/api/version'
+      || path === OPERATOR_UI_APP_JS_ROUTE || path === OPERATOR_UI_APP_CSS_ROUTE;
     if (method === 'HEAD') {
       ignoreRequestBody(req);
       sendPlain(res, known ? 405 : 404, known ? 'method not allowed\n' : 'not found\n', known ? 'GET' : undefined, true);
@@ -219,6 +235,20 @@ export function createOperatorUiServiceServer(
       ignoreRequestBody(req);
       sendHtml(res, buildOperatorUiServiceHtml());
       logs.add('info', 'system', 'UI_SERVED', 'Served operator UI shell.');
+      return;
+    }
+
+    // Phase 247. The UI's behaviour and presentation, as fixed same-origin static assets so the CSP can be
+    // `script-src 'self'; style-src 'self'`. The lookup is an exact match against a precomputed table
+    // (operator-ui-assets.ts) — the request contributes a key and nothing else. There is no filename joined
+    // to a directory, no traversal to defend against beyond the target normalisation already done above, and
+    // no filesystem read at request time: the bytes were read once at startup and are served from memory.
+    // No token is required to READ the assets (they hold no operational data), exactly as the shell needs
+    // none; every route that returns operational data still does.
+    const asset = operatorUiAsset(path);
+    if (asset !== undefined) {
+      ignoreRequestBody(req);
+      sendAsset(res, asset);
       return;
     }
 
@@ -504,7 +534,7 @@ function setSafeHeaders(res: ServerResponse): void {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('Content-Security-Policy', OPERATOR_UI_CSP);
 }
 
 function sendHtml(res: ServerResponse, body: string): void {
@@ -512,6 +542,18 @@ function sendHtml(res: ServerResponse, body: string): void {
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.end(body);
+}
+
+function sendAsset(res: ServerResponse, asset: OperatorUiAsset): void {
+  // `setSafeHeaders` applies the CSP, `nosniff`, and `Cache-Control: no-store`. `no-store` on the assets too
+  // is deliberate: a loopback ops UI is reloaded rarely, and a stale script or stylesheet surviving an
+  // upgrade is a worse failure than re-fetching a few kilobytes. The content type is fixed by the asset
+  // table, never guessed from the request, and `nosniff` stops the browser from second-guessing it.
+  setSafeHeaders(res);
+  res.statusCode = 200;
+  res.setHeader('Content-Type', asset.contentType);
+  res.setHeader('Content-Length', String(asset.bytes));
+  res.end(asset.body);
 }
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
@@ -611,31 +653,7 @@ function buildOperatorUiServiceHtml(): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Catalog Authority</title>
-<style>
-:root{color-scheme:light;background:#f7f8fa;color:#1d2430;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-*{box-sizing:border-box}body{margin:0}.shell{min-height:100vh;display:grid;grid-template-rows:auto 1fr;background:linear-gradient(180deg,#ffffff 0,#f4f6f8 100%)}
-header{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #d9dee7;background:#fff}
-h1{margin:0;font-size:20px;font-weight:700;letter-spacing:0}.badge{font-size:12px;border:1px solid #b9c2cf;border-radius:999px;padding:5px 10px;background:#f8fafc;color:#354154}
-main{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:18px;padding:18px;max-width:1180px;width:100%;margin:0 auto}.panel{background:#fff;border:1px solid #d9dee7;border-radius:8px;padding:16px;min-width:0}
-h2{font-size:15px;margin:0 0 12px}.field{display:grid;gap:7px;margin-bottom:12px}label{font-size:12px;color:#536173}input{width:100%;border:1px solid #b9c2cf;border-radius:6px;padding:10px 11px;font:inherit}
-button{border:0;border-radius:6px;background:#1769aa;color:#fff;font-weight:700;padding:10px 12px;cursor:pointer}button:disabled{background:#aab4c0;cursor:not-allowed}.actions{display:flex;gap:8px;flex-wrap:wrap}
-.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric{border:1px solid #e0e5ec;border-radius:8px;padding:12px;background:#fbfcfd}.metric span{display:block;color:#637083;font-size:12px}.metric strong{display:block;margin-top:6px;font-size:18px;overflow-wrap:anywhere}
-.metric.ok strong{color:#177245}.metric.warn strong{color:#9b6400}.metric.fail strong{color:#b42318}
-pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color:#eef4f8;border-radius:8px;padding:12px;max-height:380px;overflow:auto;font-size:12px;line-height:1.45}.status{font-size:13px;color:#536173;margin-top:12px;min-height:20px}
-.wide{grid-column:1/-1}.list{display:grid;gap:8px;margin:0;padding:0;list-style:none}.list li{border:1px solid #e0e5ec;border-radius:8px;padding:10px 12px;background:#fbfcfd;font-size:13px;overflow-wrap:anywhere}.muted{color:#637083}
-h3{font-size:13px;margin:16px 0 8px;color:#354154}nav{display:flex;gap:14px;flex-wrap:wrap;font-size:13px}nav a{color:#1769aa}
-ol.list{list-style:decimal;padding-left:22px}ol.list li{list-style:decimal}
-:focus-visible{outline:3px solid #1769aa;outline-offset:2px}
-.steps li{padding:12px 14px}.steps strong{display:block;margin-bottom:4px;font-size:13px}.steps p{margin:4px 0 8px}
-.cmds{display:grid;gap:6px}.cmd{display:grid;gap:3px}.cmd span{font-size:11px;color:#637083;text-transform:uppercase;letter-spacing:.04em}
-code{display:block;background:#101820;color:#eef4f8;border-radius:6px;padding:8px 10px;font-size:12px;overflow-wrap:anywhere;user-select:all}
-.verdict{display:inline-block;border-radius:999px;padding:6px 14px;font-weight:700;font-size:13px;border:1px solid #b9c2cf;background:#f8fafc}
-.verdict.ready{background:#e7f5ec;border-color:#177245;color:#0f5132}.verdict.setup{background:#fff5e0;border-color:#9b6400;color:#7a4f00}
-.verdict.degraded{background:#fdeceb;border-color:#b42318;color:#8d1a12}
-.hint{font-size:12px;color:#536173;margin:6px 0 0}.err{color:#b42318}.ok-text{color:#177245}
-dl.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:13px}dl.kv dt{color:#637083}dl.kv dd{margin:0;overflow-wrap:anywhere}
-@media(max-width:760px){main{grid-template-columns:1fr;padding:12px}header{padding:14px 12px;flex-wrap:wrap;gap:10px}.grid{grid-template-columns:1fr}}
-</style>
+<link rel="stylesheet" href="${OPERATOR_UI_APP_CSS_ROUTE}">
 </head>
 <body>
 <div class="shell">
@@ -732,207 +750,7 @@ ${renderTroubleshooting(troubleshootingTable())}
 </section>
 </main>
 </div>
-<script>
-const token = document.getElementById('token');
-const statusText = document.getElementById('statusText');
-const service = document.getElementById('service');
-const mode = document.getElementById('mode');
-const doctor = document.getElementById('doctor');
-const port = document.getElementById('port');
-const passCount = document.getElementById('passCount');
-const warnCount = document.getElementById('warnCount');
-const failCount = document.getElementById('failCount');
-const logCount = document.getElementById('logCount');
-const attention = document.getElementById('attention');
-const checks = document.getElementById('checks');
-const logs = document.getElementById('logs');
-const chainOutcome = document.getElementById('chainOutcome');
-const chainReaches = document.getElementById('chainReaches');
-const chainNext = document.getElementById('chainNext');
-const chainBlockerCount = document.getElementById('chainBlockerCount');
-const chainHeadline = document.getElementById('chainHeadline');
-const chainCaveat = document.getElementById('chainCaveat');
-const chainArtifacts = document.getElementById('chainArtifacts');
-const chainBlockers = document.getElementById('chainBlockers');
-const chainSteps = document.getElementById('chainSteps');
-const chainLimits = document.getElementById('chainLimits');
-const verdict = document.getElementById('verdict');
-const verdictHeadline = document.getElementById('verdictHeadline');
-const authorizationNote = document.getElementById('authorizationNote');
-const verVersion = document.getElementById('verVersion');
-const verProvenance = document.getElementById('verProvenance');
-const verAgreement = document.getElementById('verAgreement');
-const verPin = document.getElementById('verPin');
-const components = document.getElementById('components');
-const nextSteps = document.getElementById('nextSteps');
-const artifactSummary = document.getElementById('artifactSummary');
-const advisories = document.getElementById('advisories');
-// Error text an operator can act on. A bare "request failed" sends someone to the logs for a problem whose
-// answer is "you pasted a stale token"; the status code already knows which of those it is.
-function describeFailure(status, body){
-  if(status === 401) return 'The operator token was not accepted. Re-read ./secrets/operator_ui_token and paste it with no extra spaces or line breaks.';
-  if(status === 503) return 'The service answered, but a dependency it needs is not ready. See Setup & Diagnostics.';
-  if(status === 0) return 'The server did not answer. Check that the stack is running, then press Load everything again.';
-  return (body && (body.message || body.code)) || ('The request failed with status ' + status + '.');
-}
-async function getJson(path){
-  const value = token.value;
-  let res;
-  try{
-    res = await fetch(path,{headers:{'${OPERATOR_UI_LOCAL_AUTH_HEADER}':value},cache:'no-store'});
-  }catch(err){
-    throw new Error(describeFailure(0, null));
-  }
-  const body = await res.json().catch(() => null);
-  if(!res.ok) throw new Error(describeFailure(res.status, body));
-  return body;
-}
-function renderStatus(data){
-  service.textContent = data.service || '-';
-  mode.textContent = data.mode || '-';
-  doctor.textContent = data.doctor && data.doctor.ok ? 'OK' : 'Needs attention';
-  port.textContent = String(data.port || '-');
-  passCount.textContent = String((data.doctorSummary && data.doctorSummary.pass) || 0);
-  warnCount.textContent = String((data.doctorSummary && data.doctorSummary.warn) || 0);
-  failCount.textContent = String((data.doctorSummary && data.doctorSummary.fail) || 0);
-  const items = data.needsAttention || [];
-  attention.innerHTML = '';
-  if(items.length === 0){
-    const li = document.createElement('li'); li.className='muted'; li.textContent='No warnings or failures.'; attention.appendChild(li);
-  }else{
-    for(const item of items){ const li = document.createElement('li'); li.textContent = item; attention.appendChild(li); }
-  }
-  checks.textContent = (data.doctor.checks || []).map(c => c.state.toUpperCase() + '  ' + c.name + ': ' + c.detail).join('\\n');
-}
-function renderLogs(data){
-  const entries = data.entries || [];
-  logCount.textContent = String(entries.length);
-  logs.textContent = entries.map(e => e.ts + ' ' + e.level.toUpperCase() + ' ' + e.class + ' ' + e.code + ' ' + e.message).join('\\n') || 'No log entries.';
-}
-// Every list is built with createElement + textContent. Nothing served here is ever parsed as markup, so a
-// value that somehow reached this page could still never execute.
-function setList(target, items){
-  target.replaceChildren();
-  if(items.length === 0){ const li = document.createElement('li'); li.className='muted'; li.textContent='None.'; target.appendChild(li); return; }
-  for(const item of items){ const li = document.createElement('li'); li.textContent = item; target.appendChild(li); }
-}
-// The chain answers 503 for a chain that does not hang together and for a fresh install with no anchor yet.
-// Both are states to SHOW, not request failures to hide, so only a rejected token is treated as an error.
-async function getChain(){
-  const res = await fetch('/api/promotion-chain',{headers:{'${OPERATOR_UI_LOCAL_AUTH_HEADER}':token.value},cache:'no-store'});
-  const body = await res.json();
-  if(res.status === 401) throw new Error(body.message || 'operator token required');
-  return body;
-}
-function renderChain(data){
-  const view = data && data.view;
-  if(!view){
-    chainOutcome.textContent = (data && data.availability) || 'UNAVAILABLE';
-    chainReaches.textContent = '-'; chainNext.textContent = '-'; chainBlockerCount.textContent = '-';
-    chainHeadline.textContent = 'No promotion record chain is readable yet.';
-    chainCaveat.textContent = '';
-    setList(chainArtifacts, (data && data.unavailableGuidance) || []);
-    setList(chainBlockers, []); setList(chainSteps, []); setList(chainLimits, []);
-    return;
-  }
-  chainOutcome.textContent = view.overall;
-  chainHeadline.textContent = view.headline;
-  chainCaveat.textContent = view.caveat;
-  chainReaches.textContent = view.terminalPhase === null ? 'nothing yet' : 'Phase ' + view.terminalPhase;
-  chainNext.textContent = view.nextRequiredPhase === null
-    ? 'nothing further'
-    : 'Phase ' + view.nextRequiredPhase + (view.nextIsUnfinished ? ' (present, not finished)' : '');
-  chainBlockerCount.textContent = String(view.blockers.length);
-  setList(chainArtifacts, view.artifacts.map(a => 'Phase ' + a.phase + ' - ' + a.status + ' - ' + a.detail));
-  setList(chainBlockers, view.blockers.map(b => b.code + ' - ' + b.meaning + ' Do: ' + b.humanAction));
-  setList(chainSteps, view.nextSteps);
-  setList(chainLimits, view.proofLimits.map(l => 'Phase ' + l.phase + ' establishes: ' + l.establishes + ' It does NOT establish: ' + l.doesNotEstablish));
-}
-const VERDICT_CLASS = { READY: 'verdict ready', NEEDS_SETUP: 'verdict setup', DEGRADED: 'verdict degraded' };
-// Built from the checklist the same response carried, so a step id can never render as a bare identifier.
-function renderInstallation(data){
-  const r = data.readiness;
-  const steps = data.checklist || [];
-  verdict.textContent = r.state;
-  verdict.className = VERDICT_CLASS[r.state] || 'verdict';
-  verdictHeadline.textContent = r.headline;
-  authorizationNote.textContent = r.authorizationNote;
-  const v = r.version;
-  verVersion.textContent = v.version || 'not declared';
-  verProvenance.textContent = v.provenance;
-  verAgreement.textContent = v.agreement;
-  verPin.textContent = v.image.pinnedByDigest ? 'digest' : (v.image.tag || v.image.state.toLowerCase());
-  setList(components, r.components.map(c => c.title + ' - ' + c.state + ' - ' + c.detail));
-  const byId = {};
-  for(const step of steps) byId[step.id] = step;
-  nextSteps.replaceChildren();
-  if(r.nextSteps.length === 0){
-    const li = document.createElement('li'); li.className='muted';
-    li.textContent = 'Nothing outstanding.'; nextSteps.appendChild(li);
-  }else{
-    for(const id of r.nextSteps){
-      const step = byId[id]; if(!step) continue;
-      const li = document.createElement('li');
-      const title = document.createElement('strong'); title.textContent = step.title; li.appendChild(title);
-      const why = document.createElement('p'); why.className='muted'; why.textContent = step.why; li.appendChild(why);
-      if(step.commands){
-        const same = step.commands.posix === step.commands.windows;
-        const pairs = same
-          ? [['Any platform', step.commands.posix]]
-          : [['Linux / macOS', step.commands.posix],['Windows (PowerShell)', step.commands.windows]];
-        for(const [label,value] of pairs){
-          const wrap = document.createElement('div'); wrap.className='cmd';
-          const name = document.createElement('span'); name.textContent = label; wrap.appendChild(name);
-          const code = document.createElement('code'); code.textContent = value; wrap.appendChild(code);
-          li.appendChild(wrap);
-        }
-      }
-      nextSteps.appendChild(li);
-    }
-  }
-  artifactSummary.replaceChildren();
-  const a = r.artifacts;
-  const pairs = a === null
-    ? [['Artifacts','No readable chain yet.']]
-    : [['Present', String(a.present) + ' of ' + String(a.expected)],
-       ['Blockers', String(a.blockers)],
-       ['Chain reaches', a.terminalPhase === null ? 'nothing yet' : 'Phase ' + a.terminalPhase],
-       ['Outstanding next', a.nextRequiredPhase === null ? 'nothing further' : 'Phase ' + a.nextRequiredPhase]];
-  for(const [key,value] of pairs){
-    const dt = document.createElement('dt'); dt.textContent = key; artifactSummary.appendChild(dt);
-    const dd = document.createElement('dd'); dd.textContent = value; artifactSummary.appendChild(dd);
-  }
-  setList(advisories, r.advisories);
-}
-async function refresh(){
-  statusText.className = 'status';
-  statusText.textContent = 'Loading...';
-  if(token.value === ''){
-    statusText.className = 'status err';
-    statusText.textContent = 'Paste your operator token first. Read it with: cat ./secrets/operator_ui_token';
-    return;
-  }
-  // Settled independently: a stack with no database still has a promotion record chain worth reading, and one
-  // panel failing must not blank the others.
-  const [i,s,l,c] = await Promise.allSettled([
-    getJson('/api/installation'), getJson('/api/status'), getJson('/api/logs'), getChain()]);
-  const problems = [];
-  if(i.status === 'fulfilled') renderInstallation(i.value); else problems.push(i.reason.message);
-  if(s.status === 'fulfilled') renderStatus(s.value); else problems.push(s.reason.message);
-  if(l.status === 'fulfilled') renderLogs(l.value); else problems.push(l.reason.message);
-  if(c.status === 'fulfilled') renderChain(c.value); else problems.push(c.reason.message);
-  // De-duplicated: four routes rejecting one stale token is one problem, not four lines of the same sentence.
-  const unique = [...new Set(problems)];
-  statusText.className = unique.length === 0 ? 'status ok-text' : 'status err';
-  statusText.textContent = unique.length === 0
-    ? 'Updated. Everything below reflects this moment; press Load everything again after you change anything.'
-    : unique.join(' ');
-}
-document.getElementById('refresh').addEventListener('click', refresh);
-document.getElementById('clear').addEventListener('click', () => {
-  token.value=''; statusText.className='status'; statusText.textContent='Token cleared from this page.';
-});
-</script>
+<script src="${OPERATOR_UI_APP_JS_ROUTE}" defer></script>
 </body>
 </html>`;
 }

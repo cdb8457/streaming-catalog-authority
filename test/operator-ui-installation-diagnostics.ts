@@ -363,17 +363,18 @@ await test('the page shell escapes its guidance and serves the hardened headers 
   } finally { await h.stop(); }
 });
 
-await test('the page\'s own script parses, and every element it reaches for exists', async () => {
-  // Nothing else in this repository executes that script: a syntax error in it, or a renamed panel id, would
-  // leave a page that renders and then does nothing at all, and every server-side test would still pass.
+await test('the page\'s external script parses, and every element it reaches for exists', async () => {
+  // Phase 247 moved the behaviour to /assets/app.js so the CSP can be `script-src 'self'`. It still must
+  // parse, and every id it reaches for must exist in the shell: a syntax error or a renamed panel would
+  // leave a page that renders and then does nothing, and every server-side test would still pass.
   const h = await startHarness();
   try {
     const html = (await httpGet(h.port, '/')).body;
-    const script = /<script>([\s\S]*?)<\/script>/.exec(html);
-    assert(script !== null, 'the page carries its script');
-    const source = script![1]!;
+    assert(/<script src="\/assets\/app\.js" defer><\/script>/.test(html), 'the page references the external app.js');
+    assert(!/<script>[\s\S]*?<\/script>/.test(html), 'and carries no inline script of its own');
+    const source = (await httpGet(h.port, '/assets/app.js')).body;
     // Parse-only: `new Script` compiles without running, which is what we want in a suite with no DOM.
-    new Script(source, { filename: 'operator-ui-inline.js' });
+    new Script(source, { filename: 'operator-ui-app.js' });
 
     const ids = new Set([...html.matchAll(/id="([A-Za-z0-9_-]+)"/g)].map((match) => match[1]!));
     const referenced = [...source.matchAll(/getElementById\('([A-Za-z0-9_-]+)'\)/g)].map((match) => match[1]!);
@@ -386,12 +387,16 @@ await test('the token is never put anywhere a browser would persist it', async (
   const h = await startHarness();
   try {
     const res = await httpGet(h.port, '/');
+    const script = (await httpGet(h.port, '/assets/app.js')).body;
     assert(res.headers['set-cookie'] === undefined, 'no cookie is ever set');
-    for (const banned of ['localStorage', 'sessionStorage', 'document.cookie', 'indexedDB']) {
-      assert(!res.body.includes(banned), `the page never touches ${banned}`);
+    // Neither the shell nor the behaviour touches any browser persistence or the URL.
+    for (const surface of [res.body, script]) {
+      for (const banned of ['localStorage', 'sessionStorage', 'document.cookie', 'indexedDB']) {
+        assert(!surface.includes(banned), `the page never touches ${banned}`);
+      }
+      assert(!/location\.(search|hash)/.test(surface), 'and never reads the token out of a URL');
     }
-    assert(!/location\.(search|hash)/.test(res.body), 'and never reads the token out of a URL');
-    assert(res.body.includes(`'${OPERATOR_UI_LOCAL_AUTH_HEADER}'`), 'the token travels as the established request header');
+    assert(script.includes(`'${OPERATOR_UI_LOCAL_AUTH_HEADER}'`), 'the token travels as the established request header');
     const authed = await httpGet(h.port, '/api/installation', TOKEN);
     assert(authed.headers['set-cookie'] === undefined, 'an authenticated response sets no cookie either');
   } finally { await h.stop(); }
@@ -978,9 +983,10 @@ await test('the UI still offers no mutation, and the new panel adds no form or m
   const h = await startHarness();
   try {
     const html = (await httpGet(h.port, '/')).body;
+    const script = (await httpGet(h.port, '/assets/app.js')).body;
     assert(!/<form\b/i.test(html), 'there is no form on the page');
-    assert(!/method\s*:\s*['"]POST/i.test(html), 'and nothing in the script issues a POST');
-    assert(!/fetch\([^)]*method/i.test(html), 'every fetch is a plain GET');
+    assert(!/method\s*:\s*['"]POST/i.test(script), 'and nothing in the script issues a POST');
+    assert(!/fetch\([^)]*method/i.test(script), 'every fetch is a plain GET');
     assert(html.includes('Setup &amp; Diagnostics'), 'the new panel is present');
     assert(html.includes('First-run checklist'), 'and so is the checklist a locked-out user needs');
     assert(html.includes('Troubleshooting'), 'and the troubleshooting table');

@@ -154,6 +154,45 @@ if printf '%s' "${shell}" | grep -qF "${TOKEN}"; then
 fi
 echo "  the promotion chain, setup and checklist panels are present, with no token in the HTML"
 
+# Phase 247. The hardening a file-reading test cannot prove: that a REAL browser fetching this page would be
+# told, by the header the real server sent, to run only same-origin scripts and styles — and that the two
+# assets those references point at are actually served, with the right type, from inside the built image.
+step "the Content-Security-Policy is hardened and carries no unsafe-inline"
+csp="$(curl -fsS -D - -o /dev/null "${BASE_URL}/" | tr -d '\r' | grep -i '^content-security-policy:')"
+for token in "script-src 'self'" "style-src 'self'" "default-src 'none'" "object-src 'none'" "base-uri 'none'" "frame-ancestors 'none'"; do
+  case "${csp}" in
+    *"${token}"*) ;;
+    *) echo "FAIL: the CSP is missing ${token}" >&2; echo "${csp}" >&2; exit 1 ;;
+  esac
+done
+case "${csp}" in
+  *unsafe-inline*|*unsafe-eval*) echo "FAIL: the CSP still allows unsafe-inline/unsafe-eval" >&2; echo "${csp}" >&2; exit 1 ;;
+esac
+# The shell must carry no inline script body and no inline style block — everything is external.
+if printf '%s' "${shell}" | grep -qiE '<style|<script>[^<]'; then
+  echo "FAIL: the shell still carries an inline script or style" >&2
+  exit 1
+fi
+printf '%s' "${shell}" | grep -q '<script src="/assets/app.js" defer></script>'
+printf '%s' "${shell}" | grep -q '<link rel="stylesheet" href="/assets/app.css">'
+echo "  script-src/style-src are 'self', no unsafe-inline, and the shell references only external assets"
+
+step "the static assets are served with the right type and no token"
+js_type="$(curl -fsS -D - -o /dev/null "${BASE_URL}/assets/app.js" | tr -d '\r' | grep -i '^content-type:')"
+css_type="$(curl -fsS -D - -o /dev/null "${BASE_URL}/assets/app.css" | tr -d '\r' | grep -i '^content-type:')"
+case "${js_type}" in *text/javascript*) ;; *) echo "FAIL: app.js has the wrong content type: ${js_type}" >&2; exit 1 ;; esac
+case "${css_type}" in *text/css*) ;; *) echo "FAIL: app.css has the wrong content type: ${css_type}" >&2; exit 1 ;; esac
+if curl -fsS "${BASE_URL}/assets/app.js" | grep -qF "${TOKEN}"; then echo "FAIL: app.js contains the token" >&2; exit 1; fi
+# A missing asset is a plain 404, not a directory listing or a served file from elsewhere.
+miss="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/assets/nope.js")"
+if [ "${miss}" != "404" ]; then echo "FAIL: an unknown asset returned ${miss}, expected 404" >&2; exit 1; fi
+echo "  app.js is text/javascript, app.css is text/css, no token in either, unknown asset is 404"
+# NOTE: a real headless-browser CSP-violation observer (e.g. Playwright reading the Reporting API) is the
+# next rung of assurance above this. It is deliberately NOT added to the toolchain here — the runtime
+# dependency closure is pinned to pg and tsx — and is called out as an explicit future CI extension rather
+# than faked. The checks above assert, against a real browser-shaped request to the real image, every input
+# a browser's CSP engine acts on.
+
 step "graceful stop"
 # `docker compose stop` sends SIGTERM. A container that needed to be killed took the full timeout; one that
 # handles its signals is gone in well under it.

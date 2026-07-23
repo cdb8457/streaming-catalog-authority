@@ -484,6 +484,8 @@
     "test:phase245-remediation-local": "tsx test/release-delivery.ts",
     "test:operator-ui-installation-diagnostics": "tsx test/operator-ui-installation-diagnostics.ts",
     "test:phase246-local": "tsx test/operator-ui-installation-diagnostics.ts",
+    "test:operator-ui-csp-assets": "tsx test/operator-ui-csp-assets.ts",
+    "test:phase247-local": "tsx test/operator-ui-csp-assets.ts",
     "ops:promotion-context-consistency-audit": "tsx src/ops/promotion-context-consistency-audit-cli.ts",
     "test:promotion-context-consistency-audit": "tsx test/promotion-context-consistency-audit.ts",
     "ops:promotion-closure-summary-v3": "tsx src/ops/promotion-closure-summary-v3-cli.ts",

@@ -51,8 +51,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 247, 246, 245, 245 release delivery, 244, 243, 242
         run: |
+          npm run test:phase247-local
           npm run test:phase246-local
           npm run test:phase245-local
           npm run test:release-delivery
@@ -64,6 +65,7 @@ jobs:
           npm run test:operator-ui-service
           npm run test:operator-ui-local-auth-boundary
           npm run test:operator-ui-auth-access-contract
+          npm run test:operator-ui-render-allowlist
       - name: Release guard and versioned release cut
         run: |
           npm run test:release-guard
