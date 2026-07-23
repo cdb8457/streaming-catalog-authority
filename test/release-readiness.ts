@@ -270,7 +270,7 @@ test('a workflow that does not parse makes the outcome INVALID', () => {
 test('a target tag that differs from the shipped bundle version is version drift', () => {
   // Build the bundle for a DIFFERENT tag than the one being released.
   const report = evaluateReleaseReadiness(
-    healthyEvidence({ targetTag: 'v9.9.9', bundle: bundleFor('v1.0.0'), archive: buildConsumerReleaseArchive(bundleFor('v1.0.0')) }),
+    healthyEvidence({ targetTag: 'v9.9.9', bundle: bundleFor('v1.1.0'), archive: buildConsumerReleaseArchive(bundleFor('v1.1.0')) }),
     { generatedAt: AT });
   assertEq(checkOf(report, 'shipped-version-no-drift').status, 'BLOCK', 'the shipped tag differs from the target');
   assertEq(report.outcome, 'BLOCKED', 'the outcome is BLOCKED');
@@ -278,7 +278,7 @@ test('a target tag that differs from the shipped bundle version is version drift
 
 test('a non-version target tag blocks the immutable-tag check', () => {
   const report = evaluateReleaseReadiness(
-    healthyEvidence({ targetTag: 'latest', bundle: bundleFor('v1.0.0'), archive: buildConsumerReleaseArchive(bundleFor('v1.0.0')) }),
+    healthyEvidence({ targetTag: 'latest', bundle: bundleFor('v1.1.0'), archive: buildConsumerReleaseArchive(bundleFor('v1.1.0')) }),
     { generatedAt: AT });
   assertEq(checkOf(report, 'target-tag-immutable').status, 'BLOCK', 'latest is not an immutable tag');
   assertEq(report.outcome, 'BLOCKED', 'the outcome is BLOCKED');
@@ -286,7 +286,7 @@ test('a non-version target tag blocks the immutable-tag check', () => {
 
 test('a floating :latest in the Compose file blocks the no-floating-pins check', () => {
   const floaty = read('docker-compose.runtime.yml').replace(
-    'image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.0.0}',
+    'image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.0}',
     'image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:latest}');
   assert(floaty !== read('docker-compose.runtime.yml'), 'the fixture actually changed');
   assertBlocks({ composeText: floaty }, 'no-floating-image-pins');
@@ -299,21 +299,21 @@ test('an un-digest-pinned base image blocks the no-floating-pins check', () => {
 });
 
 test('a tampered archive digest blocks the checksum check', () => {
-  const bundle = bundleFor('v1.0.0');
+  const bundle = bundleFor('v1.1.0');
   const archive = buildConsumerReleaseArchive(bundle);
   const tampered: ArchiveResult = { ...archive, sha256: '0'.repeat(64) };
   assertBlocks({ bundle, archive: tampered }, 'archive-and-checksums-verify');
 });
 
 test('a mismatched asset name blocks the checksum check', () => {
-  const bundle = bundleFor('v1.0.0');
+  const bundle = bundleFor('v1.1.0');
   const archive = buildConsumerReleaseArchive(bundle);
   const renamed: ArchiveResult = { ...archive, filename: 'catalog-authority-operator-ui-v0.0.1.tar.gz' };
   assertBlocks({ bundle, archive: renamed }, 'archive-and-checksums-verify');
 });
 
 test('a bundle file whose contents were altered blocks the checksum check', () => {
-  const bundle = bundleFor('v1.0.0');
+  const bundle = bundleFor('v1.1.0');
   // Alter README contents WITHOUT updating its digest or SHA256SUMS — a tampered artifact.
   const tamperedBundle: ConsumerReleaseBundle = {
     ...bundle,
@@ -323,7 +323,7 @@ test('a bundle file whose contents were altered blocks the checksum check', () =
 });
 
 test('a secret smuggled into a bundle file blocks the redaction check', () => {
-  const bundle = bundleFor('v1.0.0');
+  const bundle = bundleFor('v1.1.0');
   const withSecret: ConsumerReleaseBundle = {
     ...bundle,
     files: bundle.files.map((f) => (f.path === 'README.md'
@@ -336,7 +336,7 @@ test('a secret smuggled into a bundle file blocks the redaction check', () => {
 });
 
 test('the Movies library path in a bundle file blocks the redaction check', () => {
-  const bundle = bundleFor('v1.0.0');
+  const bundle = bundleFor('v1.1.0');
   const withPath: ConsumerReleaseBundle = {
     ...bundle,
     files: bundle.files.map((f) => (f.path === 'README.md' ? { ...f, contents: `${f.contents}\n/mnt/user/media/Movies\n` } : f)),
@@ -361,7 +361,7 @@ function rebuildDigests(bundle: ConsumerReleaseBundle): ConsumerReleaseBundle {
 }
 
 test('an image repository outside the owner namespace blocks the owned-repository check', () => {
-  const bundle = bundleFor('v1.0.0');
+  const bundle = bundleFor('v1.1.0');
   const wrongRepo: ConsumerReleaseBundle = { ...bundle, image: { ...bundle.image, repository: 'ghcr.io/someone-else/catalog-authority-ops' } };
   assertBlocks({ bundle: wrongRepo, archive: buildConsumerReleaseArchive(bundle) }, 'image-repository-owned');
 });
@@ -371,7 +371,7 @@ test('an image repository outside the owner namespace blocks the owned-repositor
 // ---------------------------------------------------------------------------------------------------------
 
 test('a README missing the honest rollback note blocks the docs check', () => {
-  const bundle = bundleFor('v1.0.0');
+  const bundle = bundleFor('v1.1.0');
   const noNote: ConsumerReleaseBundle = {
     ...bundle,
     files: bundle.files.map((f) => (f.path === 'README.md'

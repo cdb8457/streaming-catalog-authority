@@ -87,7 +87,7 @@ text.
 The published repository is `ghcr.io/cdb8457/catalog-authority-ops`, and this release pins:
 
 ```
-ghcr.io/cdb8457/catalog-authority-ops:v1.0.0
+ghcr.io/cdb8457/catalog-authority-ops:v1.1.0
 ```
 
 **This was wrong when the phase first shipped, and the correction is the point of the remediation.** The

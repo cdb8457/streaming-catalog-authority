@@ -309,7 +309,7 @@ test('tamper: a doctored SHA256SUMS (a wrong digest line) is INVALID (bundle-che
 
 test('tamper: a manifest whose version disagrees with the release is INVALID (manifest-consistency)', () => {
   const badBundle = mutateBundleFile(genuineBundle, 'bundle-manifest.json', (text) =>
-    text.replace(/"version":\s*"v1\.0\.0"/, '"version": "v9.9.9"'));
+    text.replace(`"version": "${TAG}"`, '"version": "v9.9.9"'));
   const badArchive = buildConsumerReleaseArchive(badBundle);
   const packet = buildVerificationPacket(packetInputs(badBundle, badArchive));
   const report = verifyRelease({ packet, archiveBytes: badArchive.bytes }, { generatedAt: AT });

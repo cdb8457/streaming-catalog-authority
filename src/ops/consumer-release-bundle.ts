@@ -27,7 +27,7 @@ export class ConsumerReleaseBundleError extends Error {}
  * not own — the repository is derived in one place (release-coordinates.ts) and read here.
  */
 export const RELEASE_IMAGE_REPOSITORY = CANONICAL_IMAGE_REPOSITORY;
-export const RELEASE_IMAGE_TAG = 'v1.0.0';
+export const RELEASE_IMAGE_TAG = 'v1.1.0';
 export const RELEASE_IMAGE_REF = `${RELEASE_IMAGE_REPOSITORY}:${RELEASE_IMAGE_TAG}`;
 
 /** The bundle root: the folder a user extracts and runs `docker compose up -d` in. */

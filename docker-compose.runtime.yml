@@ -71,7 +71,7 @@ services:
     #
     # Maintainers building from source use the documented override instead — see
     # docker-compose.runtime.build.yml — which replaces this image with a locally built one.
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.0.0}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.0}
     # PID 1 is a real init that reaps orphans; the app process still receives SIGTERM directly.
     init: true
     restart: unless-stopped

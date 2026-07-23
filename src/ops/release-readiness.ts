@@ -93,7 +93,7 @@ export interface GitEvidence {
 }
 
 export interface ReadinessEvidence {
-  /** The version tag this release would carry, e.g. `v1.0.0`. */
+  /** The version tag this release would carry, e.g. `v1.1.0`. */
   readonly targetTag: string;
   /** `github.repository`, `owner/name`. */
   readonly repository: string;
