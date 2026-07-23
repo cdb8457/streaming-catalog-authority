@@ -51,8 +51,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
         run: |
+          npm run test:phase249-local
           npm run test:phase248-local
           npm run test:phase247-local
           npm run test:phase246-local
@@ -144,6 +145,49 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  lifecycle:
+    name: Release lifecycle acceptance (fresh, restart, upgrade, rollback)
+    # Phase 249. Proves the DOCUMENTED lifecycle an ordinary self-hosted operator lives through: fresh
+    # setup/start, authenticated health+version, persisted secrets and Postgres state, read-only record
+    # visibility, graceful restart, upgrade from a locally-built prior-version fixture to the candidate, and
+    # rollback to that prior fixture — without losing secrets, data or artifacts. It runs in an ISOLATED
+    # Compose project (its own name, volumes, host port and directories) using only local-only image tags.
+    # It ACCEPTS; it never publishes — no registry login, no push, no tag, no asset. No `permissions:` block,
+    # so it inherits the workflow's read-only default and is structurally incapable of publishing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Assemble, extract, and run the documented lifecycle against a real Compose stack
+        # REQUIRE_ACCEPTANCE=1 makes a missing daemon a hard failure: CI must not silently skip.
+        env:
+          REQUIRE_ACCEPTANCE: "1"
+        run: bash deploy/ci/release-lifecycle-acceptance.sh
+      - name: Always tear down the isolated lifecycle project and its images
+        # The orchestrator tears its own isolated stack down on every exit path; this is the belt-and-braces
+        # net, scoped to THIS project and THESE tags, that runs even if the step was cancelled or killed. It
+        # can never touch an unrelated Docker resource.
+        if: always()
+        run: |
+          docker ps -aq --filter "label=com.docker.compose.project=catalogauthority-lifecycle" | xargs -r docker rm -f
+          docker volume ls -q --filter "label=com.docker.compose.project=catalogauthority-lifecycle" | xargs -r docker volume rm
+          docker network ls -q --filter "label=com.docker.compose.project=catalogauthority-lifecycle" | xargs -r docker network rm 2>/dev/null || true
+          docker image rm -f catalog-authority-ops:lifecycle-prior catalog-authority-ops:lifecycle-candidate 2>/dev/null || true
+      - name: Upload sanitized lifecycle diagnostics (failure only)
+        # Only on failure, short retention, and only AFTER the orchestrator's redaction gate has promoted
+        # nothing suspect. Nothing reaches this step that did not pass redaction.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-lifecycle-diagnostics
+          path: dist/rc-lifecycle-artifacts
+          retention-days: 7
+          if-no-files-found: ignore
+
   bundle:
     name: Assemble and validate the release bundle
     runs-on: ubuntu-latest
@@ -168,12 +212,13 @@ jobs:
 
   publish:
     name: Publish the release image and asset
-    # Every gate must be green before a byte is published, INCLUDING the release-candidate acceptance: the
-    # real Chromium-against-real-Compose run that proves the artifact works. `release-candidate` has no `if:`,
-    # so it runs on every event that can reach publish (a release, or a deliberate dispatch) and is never
-    # conditionally skipped; a needed job that failed or was cancelled is not "success", so publish is skipped
-    # — a release cannot go out over a failed or cancelled acceptance.
-    needs: [suites, image, bundle, release-candidate]
+    # Every gate must be green before a byte is published, INCLUDING both real-Compose acceptances: the
+    # release-candidate browser run (Phase 248) AND the lifecycle run (Phase 249) that proves upgrade and
+    # rollback preserve data. Neither `release-candidate` nor `lifecycle` carries an `if:`, so both run on
+    # every event that can reach publish (a release, or a deliberate dispatch) and are never conditionally
+    # skipped; a needed job that failed or was cancelled is not "success", so publish is skipped — a release
+    # cannot go out over a failed or cancelled acceptance.
+    needs: [suites, image, bundle, release-candidate, lifecycle]
     # A cheap pre-filter only. The real gate is the release-ref step below, which is a tested function and
     # refuses anything this expression might let through.
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
