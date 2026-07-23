@@ -76,4 +76,29 @@ second="$(cut -d' ' -f1 < "${SECOND_DIR}/${ARCHIVE_FILE}.sha256")"
 rm -rf "${SECOND_DIR}" "${REPO_ROOT}/${OUT}-repeat"
 echo "  same inputs, same archive digest: ${first}"
 
+step "the verification packet is generated, reproducible, and verifies the archive it describes"
+# Phase 251. A consumer-facing packet that ships ALONGSIDE the archive: it records the archive digest, every
+# bundle file's digest, a minimal SBOM built from the committed lockfile, and copy-paste verification commands.
+# It is emitted with the SAME coordinates as the assembled archive (read back from VERSION so it reproduces),
+# then the assembled archive is verified against it offline — a packet that does not describe what shipped is a
+# hard failure here, before anything is ever attached to a release.
+PACKET_PATH="${ARCHIVE_PATH}.verification.json"
+BUILT="$(grep '^built: ' "${BUNDLE_DIR}/VERSION" | cut -d' ' -f2-)"
+REVISION="$(grep '^source_revision: ' "${BUNDLE_DIR}/VERSION" | cut -d' ' -f2-)"
+emit_packet() {
+  node --import tsx src/ops/release-verification-cli.ts --emit-packet --out "$1" \
+    --created "${BUILT}" --revision "${REVISION}" --generated-at "${BUILT}" \
+    ${RELEASE_IMAGE_DIGEST:+--digest "${RELEASE_IMAGE_DIGEST}"} \
+    ${RELEASE_IMAGE_TAG:+--tag "${RELEASE_IMAGE_TAG}"} \
+    ${RELEASE_IMAGE_REPOSITORY:+--repository "${RELEASE_IMAGE_REPOSITORY}"} >/dev/null
+}
+emit_packet "${PACKET_PATH}"
+REPEAT_PACKET="$(mktemp)"
+emit_packet "${REPEAT_PACKET}"
+diff "${PACKET_PATH}" "${REPEAT_PACKET}" >/dev/null || fail "two emissions of the same inputs produced different packets"
+rm -f "${REPEAT_PACKET}"
+node --import tsx src/ops/release-verification-cli.ts --verify \
+  --archive "${ARCHIVE_PATH}" --packet "${PACKET_PATH}" >/dev/null
+echo "  verification packet: reproducible and VERIFIED against ${ARCHIVE_FILE}"
+
 printf '\nrelease bundle check: PASS (%s)\n' "${ARCHIVE_FILE}"
