@@ -1,0 +1,187 @@
+# Phase 248 — release-candidate acceptance: real browser, real Compose
+
+Phase 247 hardened the operator UI's Content-Security-Policy and moved its JavaScript and CSS to same-origin
+static assets, and it proved the behaviour through a **deterministic fake DOM** running the real `app.js`.
+That is strong evidence, but it is not a real browser: a fake DOM cannot enforce a CSP, cannot refuse a
+`data:` script the way Chromium does, and cannot tell you that a real page produced zero console errors. And
+the machine most of this project is developed on has no Docker daemon, so "the release runs" was, for the
+browser, still an inference.
+
+Phase 248 closes that gap. It adds a CI job that assembles the **exact** consumer release artifact, extracts
+it into a fresh directory with no source and no Node dependency, runs a locally-built production image
+through the **extracted** Compose stack, and drives a **real headless Chromium** against it. "The release
+works in a browser" becomes a fact.
+
+## Acceptance is not publishing
+
+This is the distinction that matters, and the workflow enforces it structurally:
+
+* **Release-candidate acceptance** (this phase) builds an image with a **local-only tag**, runs it, drives a
+  browser, and tears it all down. It logs in to no registry, pushes nothing, tags nothing, creates no
+  release, and uploads no asset. The job has **no `permissions:` block**, so it inherits the workflow's
+  read-only default and is *incapable* of publishing.
+* **Publishing** (Phase 245, unchanged) happens only in the `publish` job, only for a real GitHub release or
+  a deliberate version-tag dispatch, gated by the tested `release-ref` decision, and it is the only job with
+  `contents: write` / `packages: write`.
+
+**The acceptance is a required gate on publishing.** `publish` declares `needs: [suites, image, bundle,
+release-candidate, lifecycle, rehearsal]`, so a release image and asset can be published only after the real
+browser+Compose acceptance has *succeeded* (alongside the Phase 249 lifecycle acceptance and the Phase 252
+rehearsal). Because `release-candidate` carries no `if:`, it runs on every event that can
+reach `publish` — a published release, or a deliberate dispatch — and is never conditionally skipped; and
+because `publish`'s `if:` uses no `always()`/`failure()` status function, a `release-candidate` that failed,
+was cancelled, or was skipped is not "success", so `publish` is skipped. A release cannot go out over a red
+acceptance.
+
+Assembling and running are not publishing. Nothing in Phase 248 publishes, pushes, tags, merges or deploys.
+
+## What the acceptance run proves
+
+**The release artifact is standalone.** The archive is extracted into a fresh directory that is asserted to
+contain no `package.json`, no `src`, no `node_modules`, no `tsconfig.json`, and no `Dockerfile` — a machine
+with only Docker could run it. The image is built locally with a version matching the bundle, so the UI's
+image-vs-bundle version check reports `AGREES`.
+
+**The container contract holds in a running stack.** `docker inspect` confirms the app container is
+read-only-rootfs, runs as the non-root `node` user, has `no-new-privileges`, drops **all** capabilities;
+that no container mounts the Docker socket; that the promotion-records mount is read-only; and that the
+database is not published to the host. The stack survives a graceful `restart` and the generated secrets
+persist.
+
+**The real browser, under the real CSP** (`deploy/ci/acceptance/operator-ui.spec.mjs`):
+
+* the shell and its external `/assets/app.js` + `/assets/app.css` load with **no console errors, no page
+  errors, no failed assets, and zero CSP violations**; no mixed content; every request is same-origin
+  loopback; no service worker is registered or controlling the page;
+* first-run UX end to end: unauthenticated guidance is visible; a **wrong token is refused** with an
+  actionable message and **correcting it recovers without a reload**; a valid token loads installation,
+  status, logs, promotion chain and version, with `AGREES`; **Clear** resets the token and every panel; a
+  **reload clears the token**; keyboard order is DOM order; keyboard focus is visibly outlined; the input is
+  labelled, the buttons named, and the status line is an `aria-live` region; a **320px viewport** has no
+  horizontal overflow;
+* security, proven by the engine: every operational API is **401 without a token**; `/healthz` is minimal;
+  the CSP carries no `unsafe-inline`/`unsafe-eval`; injected **inline, `data:`, `blob:` and `javascript:`**
+  execution is refused (and recorded as CSP violations); a **hostile string planted in a promotion record**
+  is rendered as text and never executes; and the token appears in **no URL, history, cookie, localStorage,
+  sessionStorage, IndexedDB, DOM serialization, console message, request URL/body, or server log**.
+
+The token used is a CI **fixture** token generated by the isolated orchestrator, masked in the CI log
+(`::add-mask::`), and never printed. Token comparisons in the spec use `expect(x.includes(token)).toBe(false)`
+so a failing assertion can never echo it.
+
+## Coverage map
+
+| Deliverable | Where |
+| --- | --- |
+| Assemble/extract/build/up/wait/teardown | `deploy/ci/release-candidate-acceptance.sh` |
+| Real headless Chromium, pinned | `deploy/ci/acceptance/` (`@playwright/test`, exact version + lockfile) |
+| CSP / console / assets / SW / mixed content | `operator-ui.spec.mjs` — first two tests |
+| First-run UX end to end | `operator-ui.spec.mjs` — UX tests |
+| Security in the real browser | `operator-ui.spec.mjs` — security tests |
+| Standalone bundle + container contract | orchestrator steps 2, 6, 9 |
+| Failure-only, staged-then-promoted, redacted artifacts | `redact-artifacts.sh` + orchestrator cleanup + workflow upload |
+| Arm-before-up teardown, scoped and idempotent | `deploy/ci/acceptance/rc-teardown.sh` + orchestrator cleanup |
+| **Publish gated on acceptance** | `publish` `needs: […, release-candidate]`, and `release-candidate` has no `if:` |
+| CI job, read-only, no-silent-skip | `.github/workflows/runtime-image.yml` → `release-candidate` |
+| Focused static/contract suite (no Docker/browser) | `test/release-candidate-acceptance.ts` |
+
+## Running it
+
+**In CI:** the `release-candidate` job runs on every push and pull request, on `ubuntu-latest`, with
+`REQUIRE_ACCEPTANCE=1` so a missing daemon or browser is a **hard failure** — CI never silently skips.
+
+**Locally**, on a Linux/macOS host **with a running Docker daemon**:
+
+```
+npm --prefix deploy/ci/acceptance ci
+npx --prefix deploy/ci/acceptance playwright install --with-deps chromium
+REQUIRE_ACCEPTANCE=1 npm run acceptance:release-candidate
+```
+
+**On a host without Docker or a browser** (for example the Windows workstation this was written on), the
+orchestrator prints a clear **SKIP** and exits `3`:
+
+```
+npm run acceptance:release-candidate     # -> SKIP (exit 3): "NOT executed here ... CI-required"
+```
+
+It never claims to have run. The **focused static/contract suite always runs and always passes** without
+Docker or a browser:
+
+```
+npm run test:phase248-local
+```
+
+It validates the workflow wiring, the orchestrator's skip/fail semantics (executed for real when Docker is
+absent), the pinned harness and lockfile, the spec's coverage, and the redaction gate (executed for real
+with fixtures).
+
+## Status
+
+**The real browser + Compose acceptance is CI-required and runs on Linux.** At the time of writing it has
+**not** been executed on the author's machine, which has no Docker daemon; the focused static/contract suite
+(`test:phase248-local`) passes there, and it reports the real job as CI-required rather than pretending it
+ran.
+
+## Artifacts and redaction
+
+Screenshots and traces are captured **only on failure**, uploaded **only on failure**, with **7-day**
+retention. The design makes the upload *structurally* safe, not merely scrubbed:
+
+* the browser and the log writer put everything in a **staging** directory (`dist/rc-acceptance-staging`),
+  never in the directory CI uploads (`dist/rc-acceptance-artifacts`);
+* the orchestrator's always-on cleanup runs `redact-artifacts.sh` over staging, scanning every artifact for
+  the exact fixture token (across unzipped traces too) and for token-shaped material in the plain-text logs
+  this harness writes;
+* **only if the gate passes** are the artifacts promoted (moved) into the upload directory. If the gate
+  finds anything, it **quarantines the whole staging directory (empties it) and fails**, the orchestrator
+  removes the upload directory, and the run fails. If the job is killed before the gate runs, the upload
+  directory was never populated.
+
+So a redaction-gate failure — or a cancellation before the gate — can never result in a suspect artifact
+being uploaded: the upload directory is either populated with redaction-passed artifacts or empty.
+
+## Teardown, on every exit including a partial `up`
+
+`docker compose up` can partially create a network, a volume or a container and then exit non-zero. Teardown
+is therefore **armed before `up`, not after it returns**: the stack is started through `rc_compose_up`
+(`deploy/ci/acceptance/rc-teardown.sh`), which sets the armed flag and *then* runs `up`, so a partial-up
+failure still reaches the `docker compose down -v` in the EXIT trap. `INT`/`TERM` re-exit so the same cleanup
+runs on a cancelled or Ctrl-C'd run. Teardown is scoped to the extracted project directory only, so it can
+never touch an unrelated Compose project, and it is idempotent. In CI, the job's `if: always()` step is the
+outer belt-and-braces net. The arm-before-up ordering and the scoped teardown are exercised by a
+deterministic test that drives the real library with an injected `up` failure and **no Docker daemon**.
+
+## Troubleshooting
+
+**The `release-candidate` job fails at "wait for /healthz".** The stack did not become healthy in the bounded
+window. The job prints `docker compose ps` and the last lines of the logs. The usual cause is the image
+failing its own asset self-check (a bad `app.js`/`app.css`), or Postgres not initialising; read the app
+container's log in the failure output.
+
+**A browser test fails with a CSP violation on load.** That is a real regression: the page must produce
+**zero** violations on a normal load. Something added an inline script/style, an inline event handler, or an
+off-origin reference. Fix the page, not the policy — see `docs/PHASE_247_CSP_HARDENING.md`. Do **not** add
+`unsafe-inline`/`unsafe-eval` to make it pass.
+
+**Behind a reverse proxy, assets 404 or a CSP error appears that CI does not see.** A proxy is rewriting the
+path or replacing the `Content-Security-Policy` header. A browser enforces the **intersection** of multiple
+CSP headers, so a second, laxer header does not help and a second, stricter one can break the same-origin
+assets. Pass this service's header and its `/assets/*` routes through unchanged; never weaken the header at
+the proxy to silence the error. This acceptance job runs the stack **directly on loopback**, with no proxy,
+which is why it is the reference for "does the release itself work".
+
+**The orchestrator SKIPs locally with exit 3.** That is expected without a Docker daemon. Start Docker and
+re-run with `REQUIRE_ACCEPTANCE=1`, or rely on the CI job. A SKIP is never a pass and is never counted as
+one.
+
+**The redaction gate failed.** Token-shaped material was found in a staged artifact; the whole staging
+directory was quarantined and nothing was promoted for upload. Investigate how a token (or a base64 run) reached a log or a trace; the gate failing is the system
+working — it stopped an upload that could have carried a secret.
+
+## Boundaries
+
+No image is published, no tag created, no branch merged, nothing deployed. No promotion, approval, execution,
+archival or deletion; no Movies library, Jellyfin or provider call; no Phase 231 authorization. The
+acceptance image is a local-only tag, removed on teardown. The workflow job is read-only and structurally
+incapable of publishing.

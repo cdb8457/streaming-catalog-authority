@@ -1,0 +1,88 @@
+# syntax=docker/dockerfile:1
+#
+# Catalog Authority — PRODUCTION image for the authenticated operator UI on port 8099.
+#
+# This is NOT the repository-root Dockerfile. That one exists to run the test suite inside a container
+# (`npm run ci` against the compose Postgres) and is still used by docker-compose.yml, the Unraid stacks and
+# `npm run image:build:local`; changing it to serve consumers would have broken all of them. A deployment
+# image and a test-harness image want opposite things — one wants dev dependencies and a writable tree, the
+# other wants neither — so they are separate files.
+#
+# What this image is:
+#   * multi-stage — dev dependencies (TypeScript, the embedded PostgreSQL used by tests) never reach runtime;
+#   * non-root — runs as the base image's unprivileged `node` user and owns none of its own code;
+#   * signal-correct — node is PID 1 and the CLI already installs SIGTERM/SIGINT handlers that close the
+#     server, so `docker stop` is a graceful shutdown rather than a 10-second kill;
+#   * compatible with the existing stack — same `/healthz` probe, same `*_FILE` secret indirection, same
+#     PostgreSQL-backed startup as docker-compose.runtime.yml has always used.
+#
+# Boundary: this image serves the read-only operator UI. It performs no promotion, approval, execution,
+# archival or deletion, and contacts no provider, media server or library.
+
+# Pinned by DIGEST, not by a floating tag: `node:22-slim` moves, this exact index does not. The tag is kept
+# alongside it so a human can read what it is. See docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md for the policy
+# and for how to move it.
+ARG NODE_IMAGE=node:22-slim@sha256:6c74791e557ce11fc957704f6d4fe134a7bc8d6f5ca4403205b2966bd488f6b3
+
+# ---------------------------------------------------------------------------------------------------------
+# Stage 1: production dependencies only, resolved from the lockfile.
+# ---------------------------------------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+# --omit=dev drops typescript, @types/* and embedded-postgres (which downloads a whole PostgreSQL).
+# --ignore-scripts means no package's install hook runs while building an image we ship.
+RUN npm ci --omit=dev --ignore-scripts && npm cache clean --force
+
+# ---------------------------------------------------------------------------------------------------------
+# Stage 2: the runtime.
+# ---------------------------------------------------------------------------------------------------------
+FROM ${NODE_IMAGE} AS runtime
+
+ARG IMAGE_VERSION=0.0.0-dev
+ARG IMAGE_REVISION=unknown
+ARG IMAGE_CREATED=1970-01-01T00:00:00Z
+LABEL org.opencontainers.image.title="catalog-authority-ops" \
+      org.opencontainers.image.description="Catalog Authority authenticated read-only operator UI" \
+      org.opencontainers.image.source="https://github.com/catalog-authority/catalog-authority" \
+      org.opencontainers.image.licenses="UNLICENSED" \
+      org.opencontainers.image.version="${IMAGE_VERSION}" \
+      org.opencontainers.image.revision="${IMAGE_REVISION}" \
+      org.opencontainers.image.created="${IMAGE_CREATED}"
+
+# The image's own claim about what it is, readable BY THE RUNNING PROCESS. The OCI labels above are build
+# metadata: `docker inspect` can read them, a Node process inside the container cannot, which is why the UI
+# could not answer "what version am I?" before Phase 246. These carry the same three values into the
+# environment, baked into the layer, so nobody who merely runs the container can change them.
+#
+# The defaults are honest placeholders, not a version: a `docker build` with no --build-arg produces an image
+# that reports itself as a development build rather than as some release it is not. See
+# src/ops/operator-ui-runtime-version.ts, which recognises exactly these two values.
+ENV NODE_ENV=production \
+    APP_ENV=production \
+    CATALOG_AUTHORITY_VERSION=${IMAGE_VERSION} \
+    CATALOG_AUTHORITY_REVISION=${IMAGE_REVISION} \
+    CATALOG_AUTHORITY_BUILT_AT=${IMAGE_CREATED} \
+    NPM_CONFIG_UPDATE_NOTIFIER=false \
+    NPM_CONFIG_CACHE=/tmp/npm-cache \
+    TMPDIR=/tmp \
+    XDG_CACHE_HOME=/tmp
+
+WORKDIR /app
+# Everything stays owned by root and is only readable by the runtime user: with `read_only: true` the
+# container cannot write anywhere except its tmpfs, and even without it the app cannot rewrite its own code.
+COPY --from=deps /app/node_modules ./node_modules
+COPY package.json package-lock.json tsconfig.json ./
+COPY src ./src
+
+USER node
+EXPOSE 8099
+
+# The same unauthenticated, redaction-safe route Compose probes, so `docker run` and `docker compose` agree.
+HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=6 \
+  CMD ["node", "-e", "require('http').get('http://127.0.0.1:8099/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+
+# node is PID 1 — no npm, no shell wrapper, nothing to swallow SIGTERM. Arguments are the CMD below, so
+# `docker run <image> --serve --port 9000` stays possible without rewriting the entrypoint.
+ENTRYPOINT ["node", "--import", "tsx", "src/ops/operator-ui-service-cli.ts"]
+CMD ["--serve", "--host", "0.0.0.0", "--port", "8099"]

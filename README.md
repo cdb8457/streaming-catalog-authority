@@ -3,7 +3,62 @@
 Event-sourced catalog authority core. **No** provider adapters, media servers, HTTP,
 Hermes, job queues, or UI — by design. The core stands alone.
 
-## Run
+## Run the operator UI on an ordinary computer
+
+One authenticated read-only web UI on `http://127.0.0.1:8099/`, including the **Promotion Record Chain**
+panel over your Phase 231–240 artifacts. It runs a prebuilt, version-pinned image — you need **Docker** and
+nothing else. No checkout, no Node.js, no build.
+
+**Install Docker:** Docker Desktop on Windows or macOS, Docker Engine on Linux. Start it.
+
+**From the release bundle** — download `catalog-authority-operator-ui-<version>.tar.gz` from the
+[Releases page](https://github.com/cdb8457/streaming-catalog-authority/releases), verify it against the
+`.sha256` published beside it (`sha256sum -c catalog-authority-operator-ui-<version>.tar.gz.sha256`), extract
+it, then:
+
+| | |
+| --- | --- |
+| Linux, macOS | `./setup.sh` then `docker compose up -d` |
+| Windows | `powershell -ExecutionPolicy Bypass -File .\setup.ps1` then `docker compose up -d` |
+
+**From this checkout** — the same stack, the same pinned image:
+
+```bash
+./deploy/local-runtime-setup.sh                       # generate secrets, create ./promotion-records/
+docker compose -f docker-compose.runtime.yml up -d    # postgres + operator UI
+# open http://127.0.0.1:8099/ and paste the printed operator token
+docker compose -f docker-compose.runtime.yml down
+```
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\deploy\local-runtime-setup.ps1
+docker compose -f docker-compose.runtime.yml up -d
+docker compose -f docker-compose.runtime.yml down
+```
+
+Then open <http://127.0.0.1:8099/> and paste the operator token the setup script printed. That token lives in
+`./secrets/operator_ui_token` — a local file, mounted as a Docker secret, never an environment variable and
+never in a URL or a log. Re-running setup keeps every secret it already made, so it cannot lock you out.
+
+**Upgrading** is a deliberate edit of the image pin (`CATALOG_AUTHORITY_IMAGE`) followed by
+`docker compose up -d`; **rolling back** is the same edit in reverse, and it works because the pin is an
+immutable version tag or a digest rather than `latest`. Your secrets, database and artifacts survive both.
+
+Your artifact folder is mounted **read-only**; the UI performs no mutation, approval, execution or deletion,
+and contacts no media server or provider.
+
+- Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
+- Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
+
+**Nothing has been published yet.** Until a release runs there is no `ghcr.io/cdb8457/catalog-authority-ops`
+image and no release asset, so the pinned reference names an image that is not there. Build it from this
+checkout with the maintainer override:
+
+```bash
+docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
+```
+
+## Run the tests
 
 ```bash
 npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
@@ -183,7 +238,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
   `/mnt/user/appdata/catalog` bind mounts, intentional `8099:8099` app port, and
   `${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}`). Build `repo-ops:latest` locally with
   `npm run image:build:local`, or set `CATALOG_AUTHORITY_OPS_IMAGE` to a published
-  `ghcr.io/catalog-authority/catalog-authority-ops:<tag>` image. See `RELEASE.md`.
+  `ghcr.io/cdb8457/catalog-authority-ops:<tag>` image. See `RELEASE.md`.
 - **Unraid ops launcher:** `deploy/unraid-ops-launcher.sh` provides short Arcane/User Scripts
   commands for `start-postgres`, `start-ui`, `restart-ui`, `status`, `ui-logs`, `ui-live-check`,
   `ui-live-check-save`, `ui-evidence-review`, `o4-o5-evidence-capture`, `o4-o5-packet-review`,
@@ -1394,7 +1449,8 @@ and `restart-ui`, all pointing at the canonical Unraid launcher path.
 Phase 154 adds `RELEASE.md` and `docs/PHASE_154_RELEASE_PACKAGING.md`. Public users run the single
 canonical Unraid compose entrypoint, `docker-compose.unraid.runtime.yml`, from
 `/mnt/user/appdata/catalog/repo`, with `repo-ops:latest` as the local image and
-`ghcr.io/catalog-authority/catalog-authority-ops:<tag>` as the published-image convention.
+`ghcr.io/cdb8457/catalog-authority-ops:<tag>` as the published-image convention (corrected in Phase 245:
+the earlier `catalog-authority/…` namespace was a placeholder this project does not own).
 Phase 155 adds `docs/PHASE_155_PUBLIC_DEPLOY_SMOKE.md` and validates a fresh clone using only
 `docker-compose.unraid.runtime.yml`, a temporary `CATALOG_AUTHORITY_APPDATA_DIR`, a temporary
 `OPERATOR_UI_HOST_PORT`, and a separate Compose project name so production paths are not reused.

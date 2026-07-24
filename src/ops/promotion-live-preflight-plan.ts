@@ -50,7 +50,7 @@ export function buildLivePreflightPlan(input: LivePreflightPlanInput): LivePrefl
   if (input.plan === undefined || typeof input.plan !== 'object' || Array.isArray(input.plan)) blockers.push('PLAN_MISSING');
 
   // Live-surface escape: ANY string anywhere in the plan that names a live / network / media surface or raw path.
-  if (deepLiveSurface(input.plan, 0)) blockers.push('LIVE_SURFACE_IN_PLAN');
+  if (deepLiveSurface(input.plan)) blockers.push('LIVE_SURFACE_IN_PLAN');
 
   // Plan-level policy requirements.
   const policyChecks: { policy: string; ok: boolean }[] = [];
@@ -113,11 +113,23 @@ function pathBearing(value: string): boolean {
   return /^\//.test(value) || /[A-Za-z]:[\\/]/.test(value) || /\/mnt\//.test(value) || /\\mnt\\/.test(value)
     || value.includes('catalog-authority-test-library') || /\.(mkv|mp4|avi|mov|m4v|ts|webm)$/i.test(value);
 }
-function deepLiveSurface(value: unknown, depth: number): boolean {
-  if (depth > 8) return false;
-  if (typeof value === 'string') return value.length > 0 && (isLiveSurface(value) || pathBearing(value));
-  if (Array.isArray(value)) return value.some((v) => deepLiveSurface(v, depth + 1));
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepLiveSurface(v, depth + 1));
+// Flag any string anywhere in the plan that names a live/network/media surface or a raw path. Traverses
+// ITERATIVELY (explicit stack) with a visited set, so it terminates on any input -- a pathologically deep
+// plan can't overflow the stack and a cyclic/shared-reference plan can't loop forever. Skipping an
+// already-visited node is safe (its subtree was fully evaluated on first visit); the result is deterministic
+// and a live surface buried at any depth still fails closed.
+function deepLiveSurface(root: unknown): boolean {
+  const stack: unknown[] = [root];
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (typeof value === 'string') { if (value.length > 0 && (isLiveSurface(value) || pathBearing(value))) return true; continue; }
+    if (!value || typeof value !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) { for (const v of value) stack.push(v); continue; }
+    for (const v of Object.values(value as Record<string, unknown>)) stack.push(v);
+  }
   return false;
 }
 function digest(scope: string, value: string): string {

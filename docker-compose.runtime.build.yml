@@ -1,0 +1,29 @@
+# Catalog Authority — MAINTAINER override: build the runtime image from this checkout.
+#
+# docker-compose.runtime.yml deliberately runs a prebuilt, version-pinned image so an ordinary install needs
+# no source, no toolchain and no build. This file is the documented escape hatch for people working ON the
+# project rather than running it:
+#
+#   docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml build
+#   docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d
+#   docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml down -v
+#
+# It replaces the published image with a LOCAL tag (`catalog-authority-ops:dev`), so a development build can
+# never be mistaken for — or accidentally pushed as — a release. Everything else about the stack, including
+# every hardening setting, is inherited unchanged from the file it overrides.
+#
+# `pull_policy: build` means `compose up` with this override REBUILDS the image every time. CI's daemon-backed
+# smoke therefore does NOT layer this override at run time: it builds the image once, explicitly, with the
+# IMAGE_VERSION/IMAGE_REVISION build args, then runs the prebuilt image through docker-compose.runtime.yml
+# alone. Layering this override on top of that would silently rebuild the same tag WITHOUT those build args and
+# make the running image disagree with the one that was built and checked. CI still validates that this
+# override parses (`docker compose config`) so the maintainer build path cannot rot.
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile.runtime
+    image: ${CATALOG_AUTHORITY_DEV_IMAGE:-catalog-authority-ops:dev}
+    # Never reach for a registry copy of a local tag.
+    pull_policy: build

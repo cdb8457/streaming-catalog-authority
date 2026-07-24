@@ -56,6 +56,19 @@ Image/tag guidance:
 - published image convention remains `ghcr.io/catalog-authority/catalog-authority-ops:v1.0.0`
   when a registry image is explicitly published.
 
+**Correction (Phase 245).** The `catalog-authority/…` namespace above was a *placeholder* — earlier phases
+wrote the convention as `ghcr.io/<owner>/catalog-authority-ops:<tag>` and later documents copied the placeholder as if
+it were a name. This project does not own that namespace, and a workflow's `GITHUB_TOKEN` cannot publish into
+it. The operative published repository is:
+
+```
+ghcr.io/cdb8457/catalog-authority-ops
+```
+
+derived from the repository owner in `src/ops/release-coordinates.ts`, which the Compose default, the release
+bundle, the release workflow and the documentation all read. Earlier phase records (Phase 3, 145, 154, 223)
+keep their original text as written; this correction supersedes the namespace in all of them.
+
 ## Launch Package Baseline
 
 Current launch package: `phase-200` / `0d08052`

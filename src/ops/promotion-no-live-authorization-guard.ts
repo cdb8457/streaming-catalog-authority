@@ -130,7 +130,7 @@ export function buildNoLiveAuthorizationGuard(input: NoLiveAuthorizationGuardInp
     const hardClaim = hasHardClaim(o);
     // A TEXTUAL claim -- a forbidden token appearing as prose anywhere in the body -- may be a listed pending
     // step, so the pending human gate may exempt it (but never the hard claim above).
-    const textualClaim = deepHasToken(o, 0);
+    const textualClaim = deepHasToken(o);
     const pendingGateExempt = isPendingGate && !hardClaim;
     const claimsLiveAuthorization = hardClaim || (textualClaim && !pendingGateExempt);
     if (claimsLiveAuthorization) blockers.push('LIVE_AUTHORIZATION_CLAIMED');
@@ -160,54 +160,80 @@ export function buildNoLiveAuthorizationGuard(input: NoLiveAuthorizationGuardInp
 //     array/object -- e.g. { overall: ['LIVE_READY'] }, { status: { v: 'PHASE_231_AUTHORIZED' } };
 //   * a truthy claim flag (approved / execute / liveReady / phase231Authorized / liveAuthorized);
 //   * an object KEY that reduces to a forbidden token with a truthy value -- e.g. { live_ready: true }.
-// Checked RECURSIVELY over the whole artifact tree so a nested claim still fails closed.
+// Checked RECURSIVELY over the WHOLE artifact tree so a nested claim still fails closed. Artifacts are parsed
+// JSON / built report objects (acyclic finite trees), so the scan has NO depth cutoff -- a claim buried at any
+// depth must fail closed, honouring the "nested anywhere" guarantee.
 //
 // The ONLY thing a pending human gate may exempt is a forbidden token that appears as an ARRAY ELEMENT (a
 // list of pending step names, e.g. pendingGates: ['PHASE_231_AUTHORIZED']) or inside multi-word PROSE. A
 // bare token as an array element is NOT a hard claim; a bare token as a scalar field value IS.
 const CLAIM_FIELDS: readonly string[] = ['authorization', 'status', 'overall'];
-function hasHardClaim(value: unknown, depth = 0): boolean {
-  if (depth > 8) return false;
-  // Arrays: recurse into element objects only. A string element is a listable step, never a hard claim here.
-  if (Array.isArray(value)) return value.some((v) => hasHardClaim(v, depth + 1));
-  if (!value || typeof value !== 'object') return false;
-  const o = value as Record<string, unknown>;
-  for (const [k, v] of Object.entries(o)) {
-    // A forbidden token as the scalar value of a NON-claim field is a structural claim, using the prose-safe
-    // matcher (whole-string for sentences). Claim fields (authorization/status/overall) are handled below by
-    // the whitespace-affix structural matcher.
-    if (!CLAIM_FIELDS.includes(k) && typeof v === 'string' && matchesForbidden(v)) return true;
-    // An object KEY that reduces to a forbidden token with a truthy value is a claim (scoped by the same
-    // word-boundary rule, so unrelated review fields such as reviewAuthorization are not flagged).
-    if (isTruthy(v) && matchesForbidden(k)) return true;
+// All three scanners below traverse ITERATIVELY (an explicit stack, never the call stack) with a visited set,
+// so they terminate on ANY input -- a pathologically deep acyclic tree can't overflow the stack and a cyclic
+// or shared-reference (DAG) object can't loop forever. Skipping an already-visited node is safe: its subtree
+// was fully evaluated on first visit, so no string content is missed. The result is deterministic (a boolean
+// any-match, order-independent) and fails closed: a claim buried at any depth is still found.
+function hasHardClaim(root: unknown): boolean {
+  const stack: unknown[] = [root];
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (!value || typeof value !== 'object') continue; // primitives carry no object-level claim
+    if (seen.has(value)) continue;
+    seen.add(value);
+    // Arrays: recurse into elements only. A string element is a listable step, never a hard claim here.
+    if (Array.isArray(value)) { for (const v of value) stack.push(v); continue; }
+    const o = value as Record<string, unknown>;
+    for (const [k, v] of Object.entries(o)) {
+      // A forbidden token as the scalar value of a NON-claim field is a structural claim, using the prose-safe
+      // matcher (whole-string for sentences). Claim fields (authorization/status/overall) are handled below by
+      // the whitespace-affix structural matcher.
+      if (!CLAIM_FIELDS.includes(k) && typeof v === 'string' && matchesForbidden(v)) return true;
+      // An object KEY that reduces to a forbidden token with a truthy value is a claim (scoped by the same
+      // word-boundary rule, so unrelated review fields such as reviewAuthorization are not flagged).
+      if (isTruthy(v) && matchesForbidden(k)) return true;
+    }
+    for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
+    // A claim field's value (scalar, or array/object-wrapped) is matched STRUCTURALLY -- whitespace-affixed
+    // tokens like 'APPROVED FOR LIVE' fail closed because a claim field is structured data, not prose.
+    for (const field of CLAIM_FIELDS) {
+      if (field in o && subtreeHasForbidden(o[field])) return true;
+    }
+    for (const v of Object.values(o)) stack.push(v);
   }
-  for (const flag of CLAIM_FLAGS) if (o[flag] === true) return true;
-  // A claim field's value (scalar, or array/object-wrapped) is matched STRUCTURALLY -- whitespace-affixed
-  // tokens like 'APPROVED FOR LIVE' fail closed because a claim field is structured data, not prose.
-  for (const field of CLAIM_FIELDS) {
-    if (field in o && subtreeHasForbidden(o[field], depth)) return true;
-  }
-  return Object.values(o).some((v) => hasHardClaim(v, depth + 1));
+  return false;
 }
 // Deep scan of a claim-field subtree: a forbidden token as any string value (matched STRUCTURALLY, so
-// whitespace-affixed variants fail closed), or a truthy forbidden-token key.
-function subtreeHasForbidden(value: unknown, depth: number): boolean {
-  if (depth > 8) return false;
-  if (typeof value === 'string') return matchesForbiddenClaimFieldValue(value);
-  if (Array.isArray(value)) return value.some((v) => subtreeHasForbidden(v, depth + 1));
-  if (value && typeof value === 'object') {
+// whitespace-affixed variants fail closed), or a truthy forbidden-token key. Iterative + cycle-safe.
+function subtreeHasForbidden(root: unknown): boolean {
+  const stack: unknown[] = [root];
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (typeof value === 'string') { if (matchesForbiddenClaimFieldValue(value)) return true; continue; }
+    if (!value || typeof value !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) { for (const v of value) stack.push(v); continue; }
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
       if (isTruthy(v) && matchesForbidden(k)) return true;
-      if (subtreeHasForbidden(v, depth + 1)) return true;
+      stack.push(v);
     }
   }
   return false;
 }
-function deepHasToken(value: unknown, depth: number): boolean {
-  if (depth > 8) return false;
-  if (typeof value === 'string') return matchesForbidden(value);
-  if (Array.isArray(value)) return value.some((v) => deepHasToken(v, depth + 1));
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepHasToken(v, depth + 1));
+function deepHasToken(root: unknown): boolean {
+  const stack: unknown[] = [root];
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (typeof value === 'string') { if (matchesForbidden(value)) return true; continue; }
+    if (!value || typeof value !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) { for (const v of value) stack.push(v); continue; }
+    for (const v of Object.values(value as Record<string, unknown>)) stack.push(v);
+  }
   return false;
 }
 function asObject(value: unknown): Record<string, unknown> {

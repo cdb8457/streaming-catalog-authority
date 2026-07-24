@@ -188,6 +188,16 @@ function stripAllowedInlineScript(html: string): string {
   return html.replace(pattern, '');
 }
 
+// The two markup gates, published so a LATER operator surface can be held to the same bar without inheriting
+// this phase's fixed text allowlist, which is specific to the Phase 64 static prototype. The Phase 243
+// dashboard renders generated prose, so only these two apply to it -- and it must pass both.
+export function operatorUiRenderHasForbiddenMarkup(html: string): boolean {
+  return containsForbiddenMarkup(html);
+}
+export function operatorUiRenderHasExternalReference(html: string): boolean {
+  return containsExternalReference(html);
+}
+
 export function inspectOperatorUiRenderedHtml(html: string): OperatorUiRenderInspectionReport {
   const textSegments = extractOperatorUiRenderedTextSegments(html);
   const issueCodes: OperatorUiRenderInspectionIssueCode[] = [];

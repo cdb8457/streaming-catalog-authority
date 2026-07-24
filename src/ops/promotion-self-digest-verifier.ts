@@ -78,6 +78,18 @@ const REGISTRY: Readonly<Record<string, DigestSpec>> = {
   'phase-230-promotion-guard-adversarial-corpus-v2': { field: 'corpusV2Digest', scope: 'phase-230-guard-adversarial-corpus-v2' },
   'phase-230-promotion-final-coordinator-readiness-bundle': { field: 'readinessBundleDigest', scope: 'phase-230-final-coordinator-readiness-bundle' },
   'phase-230-promotion-final-bundle-replay-verifier': { field: 'replayVerifierDigest', scope: 'phase-230-final-bundle-replay-verifier' },
+  'phase-231-promotion-execution-authorization': { field: 'authorizationDigest', scope: 'phase-231-execution-authorization' },
+  'phase-232-promotion-execution-authorization-record': { field: 'recordDigest', scope: 'phase-232-execution-authorization-record' },
+  'phase-233-promotion-post-run-observation-record': { field: 'observationDigest', scope: 'phase-233-post-run-observation-record' },
+  'phase-234-promotion-post-run-disposition-record': { field: 'dispositionDigest', scope: 'phase-234-post-run-disposition-record' },
+  'phase-235-promotion-operation-closure-record': { field: 'closureDigest', scope: 'phase-235-operation-closure-record' },
+  'phase-236-promotion-chain-replay-verification': { field: 'replayDigest', scope: 'phase-236-chain-replay' },
+  'phase-237-promotion-source-record-provenance-commitment': { field: 'provenanceDigest', scope: 'phase-237-source-record-provenance' },
+  'phase-238-promotion-supplied-source-record-verification': { field: 'verificationDigest', scope: 'phase-238-supplied-source-record-verification' },
+  'phase-239-promotion-chain-custody-ledger': { field: 'ledgerDigest', scope: 'phase-239-custody-ledger' },
+  'phase-240-promotion-evidence-retention-inventory': { field: 'inventoryDigest', scope: 'phase-240-evidence-retention-inventory' },
+  'phase-241-promotion-audit-closure-packet': { field: 'auditDigest', scope: 'phase-241-audit-closure-packet' },
+  'phase-242-promotion-operator-console': { field: 'consoleDigest', scope: 'phase-242-operator-console' },
 };
 
 export const KNOWN_REPORT_IDS: readonly string[] = Object.keys(REGISTRY);
