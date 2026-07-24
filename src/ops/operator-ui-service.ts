@@ -11,6 +11,33 @@ import {
   verifyOperatorUiLocalAuthHeader,
 } from './operator-ui-local-auth-runtime.js';
 import { runDoctor, type DoctorReport } from './doctor.js';
+import {
+  buildPromotionChainSnapshot,
+  PromotionRecordsConfigError,
+  resolvePromotionRecordsDir,
+} from './operator-ui-promotion-chain.js';
+import {
+  firstRunChecklist,
+  REPOSITORY_COMPOSE_NOTE,
+  TOKEN_HANDLING_NOTE,
+  troubleshootingTable,
+  type ChecklistStep,
+  type TroubleshootingEntry,
+} from './operator-ui-first-run-checklist.js';
+import {
+  collectStaticFacts,
+  deriveInstallationReadiness,
+  summarizeChainSnapshot,
+  type InstallationReadiness,
+} from './operator-ui-installation-readiness.js';
+import { probeDatabase } from './operator-ui-database-probe.js';
+import { buildRuntimeVersionView } from './operator-ui-runtime-version.js';
+import {
+  OPERATOR_UI_APP_CSS_ROUTE,
+  OPERATOR_UI_APP_JS_ROUTE,
+  operatorUiAsset,
+  type OperatorUiAsset,
+} from './operator-ui-assets.js';
 
 export const OPERATOR_UI_SERVICE_DEFAULT_HOST = '0.0.0.0';
 export const OPERATOR_UI_SERVICE_DEFAULT_PORT = 8099;
@@ -25,12 +52,16 @@ export interface OperatorUiServiceConfigInput {
   readonly host?: string;
   readonly port?: number;
   readonly operatorSecretFile?: string;
+  readonly promotionRecordsDir?: string;
 }
 
 export interface OperatorUiServiceConfig {
   readonly host: string;
   readonly port: number;
   readonly operatorSecretFile: string;
+  // The container path the promotion record artifacts are mounted at, READ-ONLY. Resolved from configuration
+  // at startup and never from a request, so nothing a browser sends can steer a filesystem read.
+  readonly promotionRecordsDir: string;
 }
 
 export interface OperatorUiServiceLogEntry {
@@ -95,12 +126,21 @@ export interface StartedOperatorUiService {
   readonly close: () => Promise<void>;
 }
 
-const CSP = [
+// Phase 247. No `'unsafe-inline'` anywhere: the script and the stylesheet are same-origin static assets
+// (/assets/app.js, /assets/app.css), so the browser executes and applies ONLY files it fetched from this
+// origin. `default-src 'none'` denies everything by default and each capability is then granted narrowly:
+// scripts and styles from self, XHR/fetch to self, and nothing else at all — no images, no fonts, no
+// plugins, no framing, no base rewrite, no form target. An injected <script>, an inline handler, an
+// external <link>, a data:/blob: URL: every one of them is refused by the policy, on top of the page's
+// existing habit of only ever writing untrusted values through textContent.
+export const OPERATOR_UI_CSP = [
   "default-src 'none'",
-  "style-src 'unsafe-inline'",
-  "script-src 'unsafe-inline'",
+  "script-src 'self'",
+  "style-src 'self'",
   "connect-src 'self'",
   "img-src 'none'",
+  "font-src 'none'",
+  "object-src 'none'",
   "frame-ancestors 'none'",
   "base-uri 'none'",
   "form-action 'none'",
@@ -143,7 +183,19 @@ export function validateOperatorUiServiceConfig(input: OperatorUiServiceConfigIn
   }
   if (operatorSecretFile === undefined || operatorSecretFile.trim() === '') throw new OperatorUiServiceConfigError();
 
-  return { host, port, operatorSecretFile };
+  // A misconfigured artifact directory refuses STARTUP rather than surfacing later as an empty panel. The
+  // narrow validation lives with the promotion-chain module; a rejection there is a config rejection here.
+  let promotionRecordsDir: string;
+  try {
+    promotionRecordsDir = input.promotionRecordsDir === undefined
+      ? resolvePromotionRecordsDir()
+      : resolvePromotionRecordsDir({ PROMOTION_RECORDS_DIR: input.promotionRecordsDir });
+  } catch (err) {
+    if (err instanceof PromotionRecordsConfigError) throw new OperatorUiServiceConfigError();
+    throw err;
+  }
+
+  return { host, port, operatorSecretFile, promotionRecordsDir };
 }
 
 export function createOperatorUiServiceServer(
@@ -165,7 +217,9 @@ export function createOperatorUiServiceServer(
       return;
     }
 
-    const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs';
+    const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs'
+      || path === '/api/promotion-chain' || path === '/api/installation' || path === '/api/version'
+      || path === OPERATOR_UI_APP_JS_ROUTE || path === OPERATOR_UI_APP_CSS_ROUTE;
     if (method === 'HEAD') {
       ignoreRequestBody(req);
       sendPlain(res, known ? 405 : 404, known ? 'method not allowed\n' : 'not found\n', known ? 'GET' : undefined, true);
@@ -181,6 +235,20 @@ export function createOperatorUiServiceServer(
       ignoreRequestBody(req);
       sendHtml(res, buildOperatorUiServiceHtml());
       logs.add('info', 'system', 'UI_SERVED', 'Served operator UI shell.');
+      return;
+    }
+
+    // Phase 247. The UI's behaviour and presentation, as fixed same-origin static assets so the CSP can be
+    // `script-src 'self'; style-src 'self'`. The lookup is an exact match against a precomputed table
+    // (operator-ui-assets.ts) — the request contributes a key and nothing else. There is no filename joined
+    // to a directory, no traversal to defend against beyond the target normalisation already done above, and
+    // no filesystem read at request time: the bytes were read once at startup and are served from memory.
+    // No token is required to READ the assets (they hold no operational data), exactly as the shell needs
+    // none; every route that returns operational data still does.
+    const asset = operatorUiAsset(path);
+    if (asset !== undefined) {
+      ignoreRequestBody(req);
+      sendAsset(res, asset);
       return;
     }
 
@@ -205,6 +273,81 @@ export function createOperatorUiServiceServer(
       const status = await buildOperatorUiServiceStatus(config, logs);
       sendJson(res, status.ok ? 200 : 503, status);
       logs.add(status.ok ? 'info' : 'warn', 'operation', 'STATUS_READ', `Served status report with ok=${status.ok}.`);
+      return;
+    }
+
+    // The promotion record chain, behind the SAME token boundary as every other operational route. It is a
+    // read: the artifact directory comes from container configuration, the request contributes nothing to it,
+    // and no method other than GET reaches this point.
+    if (path === '/api/promotion-chain') {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected promotion chain request without a valid operator token.');
+        return;
+      }
+      let snapshot: ReturnType<typeof buildPromotionChainSnapshot>;
+      try {
+        snapshot = buildPromotionChainSnapshot(config.promotionRecordsDir);
+      } catch {
+        // Fail closed and say nothing about the filesystem. A read that surprises us is still not a verdict.
+        sendJson(res, 503, {
+          ok: false,
+          code: 'PROMOTION_CHAIN_UNAVAILABLE',
+          report: 'phase-244-operator-ui-promotion-chain',
+          message: 'The promotion record chain could not be read safely.',
+        });
+        logs.add('warn', 'operation', 'PROMOTION_CHAIN_FAILED', 'Promotion chain read failed safely.');
+        return;
+      }
+      sendJson(res, snapshot.ok ? 200 : 503, snapshot);
+      // The log line carries the verdict and nothing else -- no path, no count that could identify a chain.
+      logs.add(snapshot.ok ? 'info' : 'warn', 'operation', 'PROMOTION_CHAIN_READ',
+        `Served promotion chain snapshot with availability=${snapshot.availability}.`);
+      return;
+    }
+
+    // Phase 246. The question this answers -- "is this install usable, and what do I do next?" -- is asked by
+    // someone who has just extracted a bundle, so it is the one route that must work when everything else is
+    // half-configured. It therefore reports states rather than failing: a missing secret file, a database
+    // that is not up and an empty records folder are all ANSWERS here, not errors.
+    if (path === '/api/installation') {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected installation readiness request without a valid operator token.');
+        return;
+      }
+      const readiness = await buildInstallationReadiness(config);
+      // 200 whatever the verdict: NEEDS_SETUP is a correct answer to a correct question, and answering 503
+      // would make a browser treat a fresh install as a broken server.
+      sendJson(res, 200, {
+        ok: readiness.ok,
+        code: 'OPERATOR_UI_INSTALLATION_READINESS',
+        readiness,
+        checklist: firstRunChecklist(),
+        troubleshooting: troubleshootingTable(),
+        notes: { repositoryCompose: REPOSITORY_COMPOSE_NOTE, tokenHandling: TOKEN_HANDLING_NOTE },
+      });
+      // The verdict and nothing else. A component list here would put an installation's shape in the log.
+      logs.add(readiness.ok ? 'info' : 'warn', 'operation', 'INSTALLATION_READ',
+        `Served installation readiness with state=${readiness.state}.`);
+      return;
+    }
+
+    // Deliberately authenticated, like every other operational route. What version something is running is
+    // exactly what an attacker enumerating hosts wants, and there is no consumer for it that does not
+    // already hold the token.
+    if (path === '/api/version') {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected version request without a valid operator token.');
+        return;
+      }
+      const version = buildRuntimeVersionView();
+      sendJson(res, 200, { ok: version.agreement !== 'MISMATCH', code: 'OPERATOR_UI_VERSION', version });
+      logs.add('info', 'operation', 'VERSION_READ', `Served runtime version with provenance=${version.provenance}.`);
       return;
     }
 
@@ -276,6 +419,39 @@ export async function buildOperatorUiServiceStatus(
     forbidden: FORBIDDEN,
     doctor,
   };
+}
+
+/**
+ * Gather the facts and derive the verdict.
+ *
+ * Every gatherer is wrapped: a readiness endpoint that throws when the thing it is reporting on is broken is
+ * the one endpoint that must never do that. A chain read that fails becomes UNAVAILABLE, a database probe
+ * that fails becomes UNREACHABLE, and the page still renders with the rest intact.
+ */
+export async function buildInstallationReadiness(
+  config: Pick<OperatorUiServiceConfig, 'promotionRecordsDir'>,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<InstallationReadiness> {
+  const statics = collectStaticFacts({ promotionRecordsDir: config.promotionRecordsDir, env });
+
+  let chainSummary: ReturnType<typeof summarizeChainSnapshot> = { chain: 'UNAVAILABLE', artifacts: null };
+  try {
+    chainSummary = summarizeChainSnapshot(buildPromotionChainSnapshot(config.promotionRecordsDir));
+  } catch { /* an unreadable chain is a state the records component already reports */ }
+
+  let database: Awaited<ReturnType<typeof probeDatabase>>;
+  try {
+    database = await probeDatabase({ env });
+  } catch {
+    database = 'UNREACHABLE';
+  }
+
+  return deriveInstallationReadiness({
+    ...statics,
+    database,
+    chain: chainSummary.chain,
+    artifacts: chainSummary.artifacts,
+  });
 }
 
 function summarizeDoctor(doctor: OperatorUiServiceStatus['doctor']): OperatorUiServiceStatus['doctorSummary'] {
@@ -358,7 +534,7 @@ function setSafeHeaders(res: ServerResponse): void {
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Referrer-Policy', 'no-referrer');
   res.setHeader('X-Frame-Options', 'DENY');
-  res.setHeader('Content-Security-Policy', CSP);
+  res.setHeader('Content-Security-Policy', OPERATOR_UI_CSP);
 }
 
 function sendHtml(res: ServerResponse, body: string): void {
@@ -366,6 +542,18 @@ function sendHtml(res: ServerResponse, body: string): void {
   res.statusCode = 200;
   res.setHeader('Content-Type', 'text/html; charset=utf-8');
   res.end(body);
+}
+
+function sendAsset(res: ServerResponse, asset: OperatorUiAsset): void {
+  // `setSafeHeaders` applies the CSP, `nosniff`, and `Cache-Control: no-store`. `no-store` on the assets too
+  // is deliberate: a loopback ops UI is reloaded rarely, and a stale script or stylesheet surviving an
+  // upgrade is a worse failure than re-fetching a few kilobytes. The content type is fixed by the asset
+  // table, never guessed from the request, and `nosniff` stops the browser from second-guessing it.
+  setSafeHeaders(res);
+  res.statusCode = 200;
+  res.setHeader('Content-Type', asset.contentType);
+  res.setHeader('Content-Length', String(asset.bytes));
+  res.end(asset.body);
 }
 
 function sendJson(res: ServerResponse, statusCode: number, body: unknown): void {
@@ -409,6 +597,55 @@ function redactLogMessage(message: string): string {
     .replace(/[A-Za-z0-9+/]{32,}={0,2}/g, '[redacted-token]');
 }
 
+/**
+ * The one place a value becomes markup.
+ *
+ * Everything else on this page is built client-side with `textContent`, which cannot produce an element. The
+ * checklist and the troubleshooting table are the exception: they are static guidance that must be readable
+ * BEFORE a token is entered — a person who cannot log in is exactly the person who needs "here is how to
+ * read your token" — so they are rendered into the shell, and therefore have to be escaped.
+ *
+ * The single quote is escaped too. It is not required for text content, but these strings also land in
+ * attribute positions in this file, and an escaper with an exception is an escaper someone will misuse.
+ */
+export function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+function renderCommands(commands: ChecklistStep['commands']): string {
+  if (commands === null) return '';
+  const block = (label: string, command: string): string =>
+    `<div class="cmd"><span>${escapeHtml(label)}</span><code>${escapeHtml(command)}</code></div>`;
+  // Two identical blocks under two headings makes a reader hunt for a difference that is not there.
+  const inner = commands.posix === commands.windows
+    ? block('Any platform', commands.posix)
+    : block('Linux / macOS', commands.posix) + block('Windows (PowerShell)', commands.windows);
+  return `<div class="cmds">${inner}</div>`;
+}
+
+function renderChecklist(steps: readonly ChecklistStep[]): string {
+  const item = (step: ChecklistStep): string =>
+    `<li id="step-${escapeHtml(step.id)}"><strong>${escapeHtml(step.title)}</strong>`
+    + `<p class="muted">${escapeHtml(step.why)}</p>${renderCommands(step.commands)}</li>`;
+  const firstRun = steps.filter((step) => step.firstRun);
+  const lifecycle = steps.filter((step) => !step.firstRun);
+  return `<h3>First run — five minutes, in order</h3><ol class="list steps">${firstRun.map(item).join('')}</ol>`
+    + `<h3>Running it afterwards</h3><ul class="list steps">${lifecycle.map(item).join('')}</ul>`;
+}
+
+function renderTroubleshooting(entries: readonly TroubleshootingEntry[]): string {
+  const row = (entry: TroubleshootingEntry): string =>
+    `<li id="trouble-${escapeHtml(entry.id)}"><strong>${escapeHtml(entry.symptom)}</strong>`
+    + `<p class="muted"><em>Likely cause.</em> ${escapeHtml(entry.likelyCause)}</p>`
+    + `<p><em>Do this.</em> ${escapeHtml(entry.fix)}</p>${renderCommands(entry.commands)}</li>`;
+  return `<ul class="list steps">${entries.map(row).join('')}</ul>`;
+}
+
 function buildOperatorUiServiceHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -416,32 +653,57 @@ function buildOperatorUiServiceHtml(): string {
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Catalog Authority</title>
-<style>
-:root{color-scheme:light;background:#f7f8fa;color:#1d2430;font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif}
-*{box-sizing:border-box}body{margin:0}.shell{min-height:100vh;display:grid;grid-template-rows:auto 1fr;background:linear-gradient(180deg,#ffffff 0,#f4f6f8 100%)}
-header{display:flex;align-items:center;justify-content:space-between;padding:18px 24px;border-bottom:1px solid #d9dee7;background:#fff}
-h1{margin:0;font-size:20px;font-weight:700;letter-spacing:0}.badge{font-size:12px;border:1px solid #b9c2cf;border-radius:999px;padding:5px 10px;background:#f8fafc;color:#354154}
-main{display:grid;grid-template-columns:minmax(260px,360px) 1fr;gap:18px;padding:18px;max-width:1180px;width:100%;margin:0 auto}.panel{background:#fff;border:1px solid #d9dee7;border-radius:8px;padding:16px;min-width:0}
-h2{font-size:15px;margin:0 0 12px}.field{display:grid;gap:7px;margin-bottom:12px}label{font-size:12px;color:#536173}input{width:100%;border:1px solid #b9c2cf;border-radius:6px;padding:10px 11px;font:inherit}
-button{border:0;border-radius:6px;background:#1769aa;color:#fff;font-weight:700;padding:10px 12px;cursor:pointer}button:disabled{background:#aab4c0;cursor:not-allowed}.actions{display:flex;gap:8px;flex-wrap:wrap}
-.grid{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px}.metric{border:1px solid #e0e5ec;border-radius:8px;padding:12px;background:#fbfcfd}.metric span{display:block;color:#637083;font-size:12px}.metric strong{display:block;margin-top:6px;font-size:18px;overflow-wrap:anywhere}
-.metric.ok strong{color:#177245}.metric.warn strong{color:#9b6400}.metric.fail strong{color:#b42318}
-pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color:#eef4f8;border-radius:8px;padding:12px;max-height:380px;overflow:auto;font-size:12px;line-height:1.45}.status{font-size:13px;color:#536173;margin-top:12px;min-height:20px}
-.wide{grid-column:1/-1}.list{display:grid;gap:8px;margin:0;padding:0;list-style:none}.list li{border:1px solid #e0e5ec;border-radius:8px;padding:10px 12px;background:#fbfcfd;font-size:13px;overflow-wrap:anywhere}.muted{color:#637083}
-@media(max-width:760px){main{grid-template-columns:1fr;padding:12px}header{padding:14px 12px}.grid{grid-template-columns:1fr}}
-</style>
+<link rel="stylesheet" href="${OPERATOR_UI_APP_CSS_ROUTE}">
 </head>
 <body>
 <div class="shell">
-<header><h1>Catalog Authority</h1><div class="badge">read-only operator UI</div></header>
+<header><h1>Catalog Authority</h1>
+<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#status-panel">Status</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
+<div class="badge">read-only operator UI</div></header>
 <main>
 <section class="panel">
 <h2>Access</h2>
-<div class="field"><label for="token">Operator token</label><input id="token" type="password" autocomplete="off"></div>
-<div class="actions"><button id="refresh">Refresh</button><button id="clear" type="button">Clear</button></div>
-<div class="status" id="statusText"></div>
+<p class="hint">There is no username and no password. This stack authenticates with a single token that the
+setup script wrote to a file on this machine — <code>./secrets/operator_ui_token</code>. Read it and paste it
+below.</p>
+<div class="field"><label for="token">Operator token</label>
+<input id="token" type="password" autocomplete="off" spellcheck="false" aria-describedby="tokenHelp"></div>
+<p class="hint" id="tokenHelp">${escapeHtml(TOKEN_HANDLING_NOTE)}</p>
+<div class="actions"><button id="refresh">Load everything</button><button id="clear" type="button">Clear</button></div>
+<div class="status" id="statusText" role="status" aria-live="polite"></div>
 </section>
-<section class="panel">
+<section class="panel wide" id="setup-panel">
+<h2>Setup &amp; Diagnostics</h2>
+<p><span class="verdict" id="verdict">Not loaded</span></p>
+<p class="status" id="verdictHeadline">Paste your operator token above and choose <strong>Load everything</strong>.</p>
+<div class="grid">
+<div class="metric"><span>Version</span><strong id="verVersion">-</strong></div>
+<div class="metric"><span>Build</span><strong id="verProvenance">-</strong></div>
+<div class="metric"><span>Bundle agreement</span><strong id="verAgreement">-</strong></div>
+<div class="metric"><span>Image pin</span><strong id="verPin">-</strong></div>
+</div>
+<h3>What is configured</h3>
+<ul class="list" id="components"><li class="muted">Not loaded.</li></ul>
+<h3>Do this next</h3>
+<ol class="list steps" id="nextSteps"><li class="muted">Not loaded.</li></ol>
+<h3>Artifacts found</h3>
+<dl class="kv" id="artifactSummary"><dt>Artifacts</dt><dd>Not loaded.</dd></dl>
+<h3>Notes</h3>
+<ul class="list" id="advisories"><li class="muted">Not loaded.</li></ul>
+<p class="hint" id="authorizationNote"></p>
+</section>
+<section class="panel wide" id="firstrun-panel">
+<h2>First-run checklist</h2>
+<p class="muted">These are the same commands whatever this installation reports, so they are readable without
+a token — the person who cannot log in is the person who needs the "read your token" line.</p>
+${renderChecklist(firstRunChecklist())}
+<p class="hint">${escapeHtml(REPOSITORY_COMPOSE_NOTE)}</p>
+</section>
+<section class="panel wide" id="trouble-panel">
+<h2>Troubleshooting</h2>
+${renderTroubleshooting(troubleshootingTable())}
+</section>
+<section class="panel" id="status-panel">
 <h2>Status</h2>
 <div class="grid">
 <div class="metric"><span>Service</span><strong id="service">-</strong></div>
@@ -462,65 +724,33 @@ pre{margin:0;white-space:pre-wrap;word-break:break-word;background:#101820;color
 <h2>Checks</h2>
 <pre id="checks">No status loaded.</pre>
 </section>
-<section class="panel">
+<section class="panel" id="logs-panel">
 <h2>Logs</h2>
 <pre id="logs">No logs loaded.</pre>
 </section>
+<section class="panel wide" id="promotion-panel">
+<h2>Promotion Record Chain</h2>
+<p class="muted">Phases 231-241, audited from the read-only artifact folder mounted into this container. Nothing on this page changes a record, and the folder cannot be chosen from the browser.</p>
+<div class="grid">
+<div class="metric"><span>Outcome</span><strong id="chainOutcome">-</strong></div>
+<div class="metric"><span>Chain reaches</span><strong id="chainReaches">-</strong></div>
+<div class="metric"><span>Outstanding next</span><strong id="chainNext">-</strong></div>
+<div class="metric"><span>Blockers</span><strong id="chainBlockerCount">-</strong></div>
+</div>
+<p class="status" id="chainHeadline"></p>
+<p class="muted" id="chainCaveat"></p>
+<h3>Artifacts</h3>
+<ul class="list" id="chainArtifacts"><li class="muted">No chain loaded.</li></ul>
+<h3>Blockers</h3>
+<ul class="list" id="chainBlockers"><li class="muted">No chain loaded.</li></ul>
+<h3>Safe next steps for a human</h3>
+<ol class="list" id="chainSteps"><li class="muted">No chain loaded.</li></ol>
+<h3>Proof limits</h3>
+<ul class="list" id="chainLimits"><li class="muted">No chain loaded.</li></ul>
+</section>
 </main>
 </div>
-<script>
-const token = document.getElementById('token');
-const statusText = document.getElementById('statusText');
-const service = document.getElementById('service');
-const mode = document.getElementById('mode');
-const doctor = document.getElementById('doctor');
-const port = document.getElementById('port');
-const passCount = document.getElementById('passCount');
-const warnCount = document.getElementById('warnCount');
-const failCount = document.getElementById('failCount');
-const logCount = document.getElementById('logCount');
-const attention = document.getElementById('attention');
-const checks = document.getElementById('checks');
-const logs = document.getElementById('logs');
-async function getJson(path){
-  const value = token.value;
-  const res = await fetch(path,{headers:{'${OPERATOR_UI_LOCAL_AUTH_HEADER}':value}});
-  const body = await res.json();
-  if(!res.ok) throw new Error(body.message || body.code || 'request failed');
-  return body;
-}
-function renderStatus(data){
-  service.textContent = data.service || '-';
-  mode.textContent = data.mode || '-';
-  doctor.textContent = data.doctor && data.doctor.ok ? 'OK' : 'Needs attention';
-  port.textContent = String(data.port || '-');
-  passCount.textContent = String((data.doctorSummary && data.doctorSummary.pass) || 0);
-  warnCount.textContent = String((data.doctorSummary && data.doctorSummary.warn) || 0);
-  failCount.textContent = String((data.doctorSummary && data.doctorSummary.fail) || 0);
-  const items = data.needsAttention || [];
-  attention.innerHTML = '';
-  if(items.length === 0){
-    const li = document.createElement('li'); li.className='muted'; li.textContent='No warnings or failures.'; attention.appendChild(li);
-  }else{
-    for(const item of items){ const li = document.createElement('li'); li.textContent = item; attention.appendChild(li); }
-  }
-  checks.textContent = (data.doctor.checks || []).map(c => c.state.toUpperCase() + '  ' + c.name + ': ' + c.detail).join('\\n');
-}
-function renderLogs(data){
-  const entries = data.entries || [];
-  logCount.textContent = String(entries.length);
-  logs.textContent = entries.map(e => e.ts + ' ' + e.level.toUpperCase() + ' ' + e.class + ' ' + e.code + ' ' + e.message).join('\\n') || 'No log entries.';
-}
-async function refresh(){
-  statusText.textContent = 'Loading...';
-  try{
-    const [s,l] = await Promise.all([getJson('/api/status'), getJson('/api/logs')]);
-    renderStatus(s); renderLogs(l); statusText.textContent = 'Updated.';
-  }catch(err){ statusText.textContent = err.message; }
-}
-document.getElementById('refresh').addEventListener('click', refresh);
-document.getElementById('clear').addEventListener('click', () => { token.value=''; statusText.textContent=''; });
-</script>
+<script src="${OPERATOR_UI_APP_JS_ROUTE}" defer></script>
 </body>
 </html>`;
 }

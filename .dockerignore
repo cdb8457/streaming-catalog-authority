@@ -16,3 +16,4 @@ Dockerfile*
 *.redacted.txt
 *.redacted.json
 *.redacted.md
+promotion-records

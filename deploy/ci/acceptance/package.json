@@ -1,0 +1,13 @@
+{
+  "name": "catalog-authority-rc-acceptance",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Phase 248 release-candidate browser acceptance harness. NOT part of the shipped product, the runtime image, or the release bundle: a self-contained, pinned test toolchain that runs a real headless Chromium against the extracted Compose stack. Kept out of the repository's own package.json so the production dependency closure stays exactly pg + tsx.",
+  "type": "module",
+  "scripts": {
+    "test": "playwright test --config playwright.config.mjs"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}

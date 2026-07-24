@@ -129,7 +129,7 @@ export function buildClosureSummaryV3(input: ClosureSummaryV3Input): ClosureSumm
     const a = asObject(value).authorization;
     if (typeof a === 'string' && !ALLOWED_AUTHORIZATION.includes(a)) liveEscape = true;
   }
-  if (deepLiveEscape(input.observedState, 0)) liveEscape = true;
+  if (deepLiveEscape(input.observedState)) liveEscape = true;
   if (liveEscape) blockers.push('LIVE_BOUNDARY_ESCAPE');
 
   const failureEvidence: ClosureCheck[] = [
@@ -207,13 +207,24 @@ function sha40(value: unknown): string | undefined {
 function isLiveSurface(value: string): boolean {
   return /jellyfin|https?:\/\/|x-emby|library\/refresh|\/mnt\//i.test(value);
 }
-// Recursively flag any string anywhere in the observed-state record that names a live/network/media surface
-// or a raw path, so a live indicator smuggled into a field other than `source` still fails closed.
-function deepLiveEscape(value: unknown, depth: number): boolean {
-  if (depth > 6) return false;
-  if (typeof value === 'string') return value.length > 0 && (isLiveSurface(value) || pathFree(value) === null);
-  if (Array.isArray(value)) return value.some((v) => deepLiveEscape(v, depth + 1));
-  if (value && typeof value === 'object') return Object.values(value as Record<string, unknown>).some((v) => deepLiveEscape(v, depth + 1));
+// Flag any string anywhere in the (untrusted, coordinator-supplied) observed-state record that names a
+// live/network/media surface or a raw path, so a live indicator smuggled into a field other than `source`
+// still fails closed. Traverses ITERATIVELY (explicit stack) with a visited set, so it terminates on any
+// input -- a pathologically deep tree can't overflow the stack and a cyclic/shared-reference record can't
+// loop forever. Skipping an already-visited node is safe (its subtree was fully evaluated on first visit);
+// the result is deterministic and a live surface buried at any depth still fails closed.
+function deepLiveEscape(root: unknown): boolean {
+  const stack: unknown[] = [root];
+  const seen = new Set<object>();
+  while (stack.length > 0) {
+    const value = stack.pop();
+    if (typeof value === 'string') { if (value.length > 0 && (isLiveSurface(value) || pathFree(value) === null)) return true; continue; }
+    if (!value || typeof value !== 'object') continue;
+    if (seen.has(value)) continue;
+    seen.add(value);
+    if (Array.isArray(value)) { for (const v of value) stack.push(v); continue; }
+    for (const v of Object.values(value as Record<string, unknown>)) stack.push(v);
+  }
   return false;
 }
 function pathFree(value: unknown): string | null {

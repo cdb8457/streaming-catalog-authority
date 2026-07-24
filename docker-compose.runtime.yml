@@ -1,0 +1,155 @@
+# Catalog Authority — ordinary-computer runtime stack (Linux, macOS or Windows with Docker Desktop).
+#
+# This is the file to use if you just want to RUN the operator UI on a normal machine. The repository root
+# docker-compose.yml is a CI harness (`npm run ci` against a throwaway Postgres) and is not a deployment;
+# docker-compose.unraid.runtime.yml is the Unraid/Arcane launcher stack. Neither is changed by this file.
+#
+#   1. ./deploy/local-runtime-setup.sh          generate secrets + create the artifact folder
+#      (Windows: powershell -ExecutionPolicy Bypass -File .\deploy\local-runtime-setup.ps1)
+#   2. docker compose -f docker-compose.runtime.yml up -d
+#   3. open http://127.0.0.1:8099/  and paste the token from ./secrets/operator_ui_token
+#   4. docker compose -f docker-compose.runtime.yml down
+#
+# WHAT IT RUNS: postgres, plus one long-running read-only operator UI on 8099. There is no second web server:
+# the promotion record chain is a panel inside this UI, behind the same operator token as every other
+# operational route.
+#
+# THE APP IMAGE IS PREBUILT AND VERSION-PINNED (never `latest`) — nothing here is built from source, so this
+# file works unchanged inside the release bundle, on a machine with no checkout and no Node.js. Maintainers
+# who want a local build add the override:
+#   docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
+#
+# THE PROMOTION RECORDS FOLDER is yours and is mounted READ-ONLY (`:ro`). The container cannot write to it,
+# and the path is fixed by configuration — no browser input, no upload, no form chooses it. Point it at a
+# different host folder with PROMOTION_RECORDS_HOST_DIR and restart.
+#
+# It contacts no provider, no media server and no library. It performs no promotion, approval, execution,
+# archival or deletion.
+
+name: catalogauthority-local
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
+    # Never published to the host: only the app service needs it, over the compose network.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    # Postgres initialises its data directory as root before dropping privileges, so it is NOT run read-only
+    # or with every capability dropped — doing so breaks first boot. It is bounded and restart-policed
+    # instead, and it holds no operator secret beyond its own password file.
+    pids_limit: 256
+    mem_limit: 1g
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  app:
+    # A PREBUILT, VERSION-PINNED image. An ordinary install pulls this and never needs a source checkout, a
+    # Node.js toolchain or a build step. The default is a concrete version tag, never `latest`, so `up -d`
+    # cannot silently move you to a different build.
+    #
+    # Pin harder by digest (what the release bundle records for you):
+    #   CATALOG_AUTHORITY_IMAGE=ghcr.io/cdb8457/catalog-authority-ops@sha256:<digest>
+    #
+    # Maintainers building from source use the documented override instead — see
+    # docker-compose.runtime.build.yml — which replaces this image with a locally built one.
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.0}
+    # PID 1 is a real init that reaps orphans; the app process still receives SIGTERM directly.
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+      OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
+      # The fixed container path the promotion record artifacts are mounted at, read-only.
+      PROMOTION_RECORDS_DIR: /var/lib/catalog/promotion-records
+      # WHAT THE BUNDLE BELIEVES IT DEPLOYED, and the reference it asked Docker for. Neither of these is the
+      # image's own claim about itself — that is baked into the image by Dockerfile.runtime and cannot be set
+      # from here. Two independent declarations is the whole point: the UI compares them and reports MISMATCH
+      # when a .env was edited without extracting the matching bundle, instead of letting the two drift
+      # silently. Empty is fine and honest: the UI then says the bundle declared nothing.
+      CATALOG_AUTHORITY_BUNDLE_VERSION: ${CATALOG_AUTHORITY_BUNDLE_VERSION:-}
+      CATALOG_AUTHORITY_IMAGE: ${CATALOG_AUTHORITY_IMAGE:-}
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    volumes:
+      # YOUR folder, mounted READ-ONLY. The container cannot write, rename or delete anything in it.
+      - ${PROMOTION_RECORDS_HOST_DIR:-./promotion-records}:/var/lib/catalog/promotion-records:ro
+      - keystore:/var/lib/catalog/keystore
+    secrets:
+      - admin_database_url
+      - database_url
+      - completion_secret
+      - custodian_kek
+      - operator_ui_token
+    entrypoint: ["npm", "run"]
+    command: ["ops:operator-ui-server", "--", "--serve", "--host", "0.0.0.0", "--port", "8099"]
+    # Loopback-published by default: the UI is reachable from THIS machine only unless you deliberately
+    # change the bind address below.
+    ports:
+      - "${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}:${OPERATOR_UI_HOST_PORT:-8099}:8099"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:8099/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "node"
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+volumes:
+  pgdata:
+  keystore:      # kept separate from pgdata so a database backup never contains key material
+
+# Operator-provided files under ./secrets/ (gitignored), created by either setup script under ./deploy/.
+secrets:
+  postgres_password:
+    file: ./secrets/postgres_password
+  admin_database_url:
+    file: ./secrets/admin_database_url
+  database_url:
+    file: ./secrets/database_url
+  completion_secret:
+    file: ./secrets/completion_secret
+  custodian_kek:
+    file: ./secrets/custodian_kek
+  operator_ui_token:
+    file: ./secrets/operator_ui_token

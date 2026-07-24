@@ -1,0 +1,351 @@
+# Catalog Authority — production operator UI image and consumer release bundle.
+#
+# The daemon-backed work lives here because it cannot live anywhere else: the machines this project is
+# developed on do not all run a Docker daemon, and a smoke test that silently skips is not a smoke test.
+# Linux with Docker is the environment where "the image works" is a fact rather than a hope.
+#
+# PUBLISHING IS NOT PART OF CI. Building, smoke-testing and assembling run on every push and pull request;
+# pushing an image and attaching a release asset run only for a published GitHub release or a deliberate
+# manual dispatch from a version tag. Which of those is true is decided ONCE, by a tested pure function
+# (src/ops/release-ref.ts) rather than by interpolating `github.ref_name` — that context means a branch on
+# one event and a tag on another, and a release that publishes a different tag from the one GitHub announced
+# is worse than a release that fails.
+
+name: Runtime image and release bundle
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish the runtime image and release asset. Only valid from a vX.Y.Z tag.
+        type: boolean
+        default: false
+  release:
+    types: [published]
+
+# Read-only by default. The one job that publishes asks for more, explicitly, and nothing else can.
+permissions:
+  contents: read
+
+concurrency:
+  group: runtime-image-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # The only architecture this project can actually verify: it is what the CI runner is, so it is what the
+  # smoke test runs on. See docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md.
+  PUBLISH_PLATFORMS: linux/amd64
+
+jobs:
+  suites:
+    name: Typecheck and Phase 242-245 suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - name: Phase 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+        run: |
+          npm run test:phase252-local
+          npm run test:phase251-local
+          npm run test:phase250-local
+          npm run test:phase249-local
+          npm run test:phase248-local
+          npm run test:phase247-local
+          npm run test:phase246-local
+          npm run test:phase245-local
+          npm run test:release-delivery
+          npm run test:phase244-local
+          npm run test:phase243-local
+          npm run test:phase242-local
+      - name: Operator UI authentication and boundary suites
+        run: |
+          npm run test:operator-ui-service
+          npm run test:operator-ui-local-auth-boundary
+          npm run test:operator-ui-auth-access-contract
+          npm run test:operator-ui-render-allowlist
+      - name: Release guard and versioned release cut
+        run: |
+          npm run test:release-guard
+          npm run test:versioned-release-cut
+      - name: Compose files still resolve
+        run: |
+          docker compose -f docker-compose.runtime.yml config --quiet
+          docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml config --quiet
+      - name: The release coordinates are this repository's
+        # Constants cannot notice they have gone stale. A run can: this fails if the checked-in owner is not
+        # the owner actually executing the workflow, which is exactly the defect that shipped a publish
+        # target in a namespace this repository does not own.
+        run: npm run ops:release-coordinates -- --repository "${{ github.repository }}"
+
+  image:
+    name: Build and smoke the production image
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Build, contract-check, up, probe, down
+        run: bash deploy/ci/runtime-image-smoke.sh
+      - name: Container logs on failure
+        if: failure()
+        # Match the smoke: the stack runs from the single runtime compose file, pinned to the explicitly built
+        # image, so its logs are read the same way (the build override is a maintainer path, not this run's).
+        run: docker compose -f docker-compose.runtime.yml logs --tail 200
+
+  release-candidate:
+    name: Release-candidate acceptance (real browser, real Compose)
+    # Phase 248. This is the check no file-reading or fake-DOM test can make: assemble the EXACT consumer
+    # release artifact, extract it into a fresh directory with no source and no Node dependency, run a
+    # locally-built production image through the EXTRACTED Compose stack, and drive a REAL headless Chromium
+    # against it. It ACCEPTS a release candidate; it never publishes one — no registry login, no push, no
+    # tag, no release asset. Permissions are inherited read-only (no `permissions:` block here), so this job
+    # is structurally incapable of publishing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install the pinned browser acceptance harness
+        # A self-contained, pinned test toolchain kept OUT of the repository's own package.json, so the
+        # production dependency closure stays exactly pg + tsx. Chromium is pinned by the @playwright/test
+        # version in deploy/ci/acceptance/package-lock.json.
+        run: |
+          npm --prefix deploy/ci/acceptance ci
+          npx --prefix deploy/ci/acceptance playwright install --with-deps chromium
+      - name: Assemble, extract, run and drive the release candidate in a real browser
+        # REQUIRE_ACCEPTANCE=1 makes a missing daemon or browser a hard failure: CI must not silently skip.
+        env:
+          REQUIRE_ACCEPTANCE: "1"
+        run: bash deploy/ci/release-candidate-acceptance.sh
+      - name: Always tear down containers and volumes
+        # The orchestrator tears its own stack down on every exit path; this is the belt-and-braces net that
+        # runs even if the job step was cancelled or killed before the trap could.
+        if: always()
+        run: |
+          docker ps -aq --filter "label=com.docker.compose.project=catalogauthority-local" | xargs -r docker rm -f
+          docker volume ls -q --filter "label=com.docker.compose.project=catalogauthority-local" | xargs -r docker volume rm
+          docker image rm -f catalog-authority-ops:rc-acceptance 2>/dev/null || true
+      - name: Upload sanitized acceptance diagnostics (failure only)
+        # Only on failure, short retention, and only AFTER the orchestrator's redaction gate has removed any
+        # token-bearing file and failed the run if it found one. Nothing suspect reaches this step.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-acceptance-diagnostics
+          path: dist/rc-acceptance-artifacts
+          retention-days: 7
+          if-no-files-found: ignore
+
+  lifecycle:
+    name: Release lifecycle acceptance (fresh, restart, upgrade, rollback)
+    # Phase 249. Proves the DOCUMENTED lifecycle an ordinary self-hosted operator lives through: fresh
+    # setup/start, authenticated health+version, persisted secrets and Postgres state, read-only record
+    # visibility, graceful restart, upgrade from a locally-built prior-version fixture to the candidate, and
+    # rollback to that prior fixture — without losing secrets, data or artifacts. It runs in an ISOLATED
+    # Compose project (its own name, volumes, host port and directories) using only local-only image tags.
+    # It ACCEPTS; it never publishes — no registry login, no push, no tag, no asset. No `permissions:` block,
+    # so it inherits the workflow's read-only default and is structurally incapable of publishing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Assemble, extract, and run the documented lifecycle against a real Compose stack
+        # REQUIRE_ACCEPTANCE=1 makes a missing daemon a hard failure: CI must not silently skip.
+        env:
+          REQUIRE_ACCEPTANCE: "1"
+        run: bash deploy/ci/release-lifecycle-acceptance.sh
+      - name: Always tear down the isolated lifecycle project and its images
+        # The orchestrator tears its own isolated stack down on every exit path; this is the belt-and-braces
+        # net, scoped to THIS project and THESE tags, that runs even if the step was cancelled or killed. It
+        # can never touch an unrelated Docker resource.
+        if: always()
+        run: |
+          docker ps -aq --filter "label=com.docker.compose.project=catalogauthority-lifecycle" | xargs -r docker rm -f
+          docker volume ls -q --filter "label=com.docker.compose.project=catalogauthority-lifecycle" | xargs -r docker volume rm
+          docker network ls -q --filter "label=com.docker.compose.project=catalogauthority-lifecycle" | xargs -r docker network rm 2>/dev/null || true
+          docker image rm -f catalog-authority-ops:lifecycle-prior catalog-authority-ops:lifecycle-candidate 2>/dev/null || true
+      - name: Upload sanitized lifecycle diagnostics (failure only)
+        # Only on failure, short retention, and only AFTER the orchestrator's redaction gate has promoted
+        # nothing suspect. Nothing reaches this step that did not pass redaction.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rc-lifecycle-diagnostics
+          path: dist/rc-lifecycle-artifacts
+          retention-days: 7
+          if-no-files-found: ignore
+
+  bundle:
+    name: Assemble and validate the release bundle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Assemble, archive and check
+        run: bash deploy/ci/release-bundle-check.sh dist/release-bundle dist/release-archive
+      # For inspecting a CI run. This is NOT the consumer download — it expires, it needs a GitHub login and
+      # a trip through the Actions UI, and it wraps the archive in another zip. The download users are told
+      # about is the release asset attached by the publish job.
+      - name: Keep the bundle for CI inspection (not the consumer download)
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-inspection-release-bundle
+          path: dist/release-bundle
+          retention-days: 14
+
+  rehearsal:
+    name: Final first-release rehearsal and handoff (Phase 252)
+    # Phase 252. The last check before a human decides: assemble the exact candidate in a fresh directory, run
+    # the offline readiness (Phase 250) and integrity (Phase 251) verifiers against it, and validate — never
+    # fabricate — references to the browser (Phase 248) and lifecycle (Phase 249) acceptances. The references
+    # come from THIS run's job results, which GitHub gates: this job only runs because those needs succeeded,
+    # so passing `needs.*.result` is honest, not invented. It emits a handoff packet and asserts HANDOFF_READY.
+    # It assembles its own bundle offline, so it needs the acceptances (for evidence) and the suites gate, not
+    # the image build or the bundle job.
+    #
+    # It has NO `permissions:` block, so it inherits the workflow default (contents: read) and is structurally
+    # incapable of publishing: no registry login, no push, no tag, no release upload. HANDOFF_READY is evidence
+    # for a human, never approval, and this job never performs the one release action that remains.
+    needs: [suites, release-candidate, lifecycle]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Rehearse the release and emit the handoff packet
+        # The candidate commit and both acceptance references are this run's own facts. `needs.*.result` is
+        # "success" precisely because the job reached here; the rehearsal validates that they name this commit.
+        #
+        # The rehearsal emits its HONEST handoff packet and exits with its own outcome code (0/30/31/32). This
+        # step does not fail the job on that code — `|| true` keeps it green so the packet is always emitted and
+        # uploaded — because the event-aware gate step below is what decides pass/fail for THIS event. The
+        # outcome is never fabricated: a NOT_RUN stays NOT_RUN in the packet a human reads.
+        env:
+          CANDIDATE_COMMIT: ${{ github.sha }}
+          PHASE248_REF: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PHASE248_COMMIT: ${{ github.sha }}
+          PHASE248_CONCLUSION: ${{ needs.release-candidate.result }}
+          PHASE249_REF: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          PHASE249_COMMIT: ${{ github.sha }}
+          PHASE249_CONCLUSION: ${{ needs.lifecycle.result }}
+        run: npm run ops:release-rehearsal -- --revision "${{ github.sha }}" --out dist/handoff.json || true
+      - name: Keep the handoff packet for inspection
+        # Uploaded on every outcome (HANDOFF_READY, BLOCKED, INVALID, NOT_RUN) so the human always has the packet.
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-handoff-packet
+          path: dist/handoff.json
+          retention-days: 14
+          if-no-files-found: warn
+      - name: Interpret the rehearsal outcome for this event
+        # The event-aware gate. On a release or a deliberate version-tag dispatch that would actually publish,
+        # ONLY HANDOFF_READY passes — BLOCKED, INVALID and NOT_RUN all fail and prevent publish. On a pull
+        # request or other non-publishing validation event, a NOT_RUN caused SOLELY by the intentionally absent
+        # release tag passes (the tag legitimately does not exist yet), while BLOCKED, INVALID, and any other
+        # NOT_RUN still fail. The publish-reaching decision is the SAME tested release-ref function the publish
+        # job uses, so the gate and publish can never disagree. This is a STEP, not a job `if:`, so the
+        # rehearsal job still runs unconditionally on every event and can never be conditionally skipped.
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          RELEASE_DRAFT: ${{ github.event.release.draft }}
+          RELEASE_PUBLISH_INPUT: ${{ inputs.publish }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: npm run ops:release-rehearsal-gate -- --report dist/handoff.json
+
+  publish:
+    name: Publish the release image and asset
+    # Every gate must be green before a byte is published, INCLUDING both real-Compose acceptances AND the
+    # final handoff rehearsal: the release-candidate browser run (Phase 248), the lifecycle run (Phase 249)
+    # that proves upgrade and rollback preserve data, and the Phase 252 `rehearsal` job — publish REQUIRES
+    # rehearsal, so a release cannot go out when the final rehearsal blocked, even though publish keeps its
+    # direct dependencies on release-candidate and lifecycle for defense in depth. None of `release-candidate`,
+    # `lifecycle` or `rehearsal` carries an `if:`, so each runs on every event that can reach publish (a
+    # release, or a deliberate dispatch) and is never conditionally skipped; a needed job that failed or was
+    # cancelled is not "success", so publish is skipped — a release cannot go out over a failed gate. (rehearsal
+    # itself needs release-candidate and lifecycle, so there is no cycle: rehearsal never depends on publish.)
+    needs: [suites, image, bundle, release-candidate, lifecycle, rehearsal]
+    # A cheap pre-filter only. The real gate is the release-ref step below, which is a tested function and
+    # refuses anything this expression might let through.
+    if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      # contents: write ONLY here, and only so the archive can be attached to the release that triggered it.
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Decide whether this run may publish, and as exactly what
+        id: release
+        env:
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          RELEASE_DRAFT: ${{ github.event.release.draft }}
+          RELEASE_PUBLISH_INPUT: ${{ inputs.publish }}
+        run: npm run ops:release-ref
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the pinned tag
+        id: push
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.runtime
+          platforms: ${{ env.PUBLISH_PLATFORMS }}
+          push: true
+          # Exactly one immutable tag, resolved by the gate above. No `latest`, no branch tag, no alias.
+          tags: ${{ steps.release.outputs.image_ref }}
+          build-args: |
+            IMAGE_VERSION=${{ steps.release.outputs.tag }}
+            IMAGE_REVISION=${{ github.sha }}
+          provenance: true
+          sbom: true
+      - name: Assemble and validate the release asset, pinned to the published digest
+        run: bash deploy/ci/release-bundle-check.sh dist/release-bundle dist/release-archive
+        env:
+          RELEASE_IMAGE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          RELEASE_IMAGE_REPOSITORY: ${{ steps.release.outputs.image_repository }}
+      - name: Attach the archive and its checksum to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          ARCHIVE: ${{ steps.release.outputs.archive }}
+        run: bash deploy/ci/release-asset-upload.sh dist/release-archive
