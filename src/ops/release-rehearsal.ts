@@ -50,6 +50,18 @@ export interface RehearsalGate {
   readonly detail: string;
 }
 
+/**
+ * One Phase 250 readiness check, reduced to just its ID and status. IDs are fixed slugs and statuses are a
+ * bounded enum, so this is redaction-safe by construction — no path, detail, or coordinate travels with it. It
+ * is carried into the handoff packet so a downstream gate can prove that a rehearsal NOT_RUN was caused SOLELY
+ * by the absent release tag (every readiness check PASS except exactly the tag check), rather than trusting the
+ * single collapsed `offline-readiness` gate, which cannot tell an absent tag from no Git or a dirty checkout.
+ */
+export interface ReadinessCheckSummary {
+  readonly id: string;
+  readonly status: GateStatus;
+}
+
 /** A reference to a CI acceptance run — supplied by CI or a human, VALIDATED here, never invented. */
 export interface CiEvidenceRef {
   readonly ref: string;
@@ -92,6 +104,10 @@ export interface RehearsalEvidence {
   readonly assembledInFreshDir: boolean;
   /** Phase 250 read-only readiness outcome, gathered by the CLI. */
   readonly readinessOutcome: ReadinessOutcome;
+  /** The per-check Phase 250 readiness summary (IDs + statuses only), gathered by the CLI from the SAME
+   *  readiness report `readinessOutcome` came from. Redaction-safe, and the authoritative evidence a downstream
+   *  gate uses to distinguish an absent-tag NOT_RUN from any other incomplete readiness. */
+  readonly readinessSummary: readonly ReadinessCheckSummary[];
   /** Phase 251 offline integrity outcome for the assembled archive, gathered by the CLI. */
   readonly verificationOutcome: IntegrityOutcome;
   readonly ci: CiEvidenceInput;
@@ -118,6 +134,9 @@ export interface ReleaseRehearsalReport {
   readonly candidate: CandidateCoordinates;
   readonly gates: readonly RehearsalGate[];
   readonly counts: { readonly pass: number; readonly block: number; readonly invalid: number; readonly notRun: number };
+  /** The Phase 250 readiness checks (IDs + statuses only) behind the single `offline-readiness` gate above, so a
+   *  gate can tell WHY readiness was NOT_RUN. Redaction-safe; part of the self-digest. */
+  readonly readinessSummary: readonly ReadinessCheckSummary[];
   readonly handoff: HandoffPacket;
   readonly humanChecklist: readonly string[];
   readonly decisionRecordTemplate: readonly string[];
@@ -323,6 +342,9 @@ function computeSelfDigest(body: Omit<ReleaseRehearsalReport, 'selfDigest' | 'ge
     outcome: body.outcome,
     candidate: body.candidate,
     gates: body.gates.map((g) => ({ id: g.id, status: g.status })),
+    // The readiness summary is verdict-bearing evidence, so it is part of what the digest pins: a change to any
+    // readiness check status changes the handoff's identity.
+    readinessSummary: body.readinessSummary.map((c) => ({ id: c.id, status: c.status })),
   });
   return createHash('sha256').update(Buffer.from(canonical, 'utf8')).digest('hex');
 }
@@ -377,6 +399,7 @@ export function evaluateReleaseRehearsal(evidence: RehearsalEvidence, options: E
     candidate,
     gates,
     counts,
+    readinessSummary: evidence.readinessSummary.map((check) => ({ id: check.id, status: check.status })),
     handoff,
     humanChecklist: HUMAN_CHECKLIST,
     decisionRecordTemplate: DECISION_RECORD_TEMPLATE,
@@ -416,6 +439,9 @@ export function renderRehearsalText(report: ReleaseRehearsalReport): string {
     '',
     `Gates (${report.counts.pass} pass, ${report.counts.block} block, ${report.counts.invalid} invalid, ${report.counts.notRun} not-run)`,
     ...report.gates.map((g) => `  ${STATUS_MARK[g.status]}  ${g.title} — ${g.detail}`),
+    '',
+    'Phase 250 readiness checks (id — status)',
+    ...report.readinessSummary.map((c) => `  ${STATUS_MARK[c.status]}  ${c.id}`),
     '',
     'Known limitations',
     ...report.handoff.knownLimitations.map((l) => `  - ${l}`),

@@ -63,6 +63,39 @@ export const READINESS_EXIT_CODES: Readonly<Record<ReadinessOutcome, number>> = 
   NOT_RUN: 12,
 };
 
+/** The one check that is legitimately NOT_RUN when the release tag does not exist yet (a PR validation run). */
+export const READINESS_TAG_CHECK_ID = 'git-head-at-release-tag';
+
+/**
+ * The complete, ordered set of readiness check IDs this proof emits. It is the canonical set another tool
+ * (the Phase 252 rehearsal gate) checks a readiness summary against, so it can prove a NOT_RUN was caused
+ * SOLELY by the absent tag — every check present and PASS except exactly the tag check. A drift guard in the
+ * test suite asserts this equals the IDs an evaluated report actually contains, so the two cannot diverge.
+ */
+export const READINESS_CHECK_IDS: readonly string[] = [
+  'target-tag-immutable',
+  'shipped-version-no-drift',
+  'publish-decision-approves',
+  'release-coordinates-consistent',
+  'bundle-declares-target',
+  'archive-and-checksums-verify',
+  'image-repository-owned',
+  'no-floating-image-pins',
+  'bundle-carries-no-secret-or-live-data',
+  'publish-needs-all-gates',
+  'acceptance-gates-run-on-every-event',
+  'publish-fails-closed',
+  'permissions-least-privilege',
+  'no-publish-capability-outside-publish',
+  'publish-tag-from-tested-gate',
+  'architecture-claim-single-source',
+  'suites-run-the-acceptances',
+  'docs-install-upgrade-rollback',
+  'release-docs-present',
+  'git-clean-checkout',
+  READINESS_TAG_CHECK_ID,
+];
+
 export class ReleaseReadinessError extends Error {
   readonly code = 'RELEASE_READINESS_REDACTION_REJECTED';
   constructor(message: string) {
@@ -624,7 +657,7 @@ const checkGitClean: Check = (evidence) => {
 };
 
 const checkGitHeadAtTag: Check = (evidence) => {
-  const id = 'git-head-at-release-tag';
+  const id = READINESS_TAG_CHECK_ID;
   const title = 'HEAD is the commit the release tag names';
   if (!evidence.git.available) return notRun(id, title, 'no Git here — the tag position cannot be verified offline');
   if (!evidence.git.localTagPresent) {

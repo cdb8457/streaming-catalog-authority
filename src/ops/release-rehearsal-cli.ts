@@ -235,6 +235,9 @@ function gatherEvidence(args: readonly string[]): { evidence: RehearsalEvidence;
     candidate,
     assembledInFreshDir: assembled.freshDir,
     readinessOutcome: readiness.outcome,
+    // The per-check summary from the SAME readiness report the outcome came from — IDs and statuses only, so a
+    // downstream gate can prove an absent-tag NOT_RUN without trusting the collapsed offline-readiness gate.
+    readinessSummary: readiness.checks.map((check) => ({ id: check.id, status: check.status })),
     verificationOutcome: verification.outcome,
     ci: gatherCiEvidence(args),
     docs: docEvidence(assembled.readmeText, assembled.packet),

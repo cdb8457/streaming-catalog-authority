@@ -70,7 +70,29 @@ function readReport(path: string): RehearsalReportView {
   if (candidateCommit !== null && typeof candidateCommit !== 'string') {
     throw new Error('the handoff packet has no candidate.candidateCommit');
   }
-  return { outcome: outcome as RehearsalOutcome, gates, candidate: { candidateCommit: candidateCommit ?? null } };
+
+  // The Phase 250 readiness summary. A LEGACY packet omits it entirely, which is fine: the gate treats an
+  // absent summary as "not proven" and fails a NOT_RUN closed. But a PRESENT-yet-malformed summary is a
+  // corrupt packet and must fail closed here, never be read as an empty (and therefore ignorable) one.
+  let readinessSummary: RehearsalReportView['readinessSummary'];
+  if (record.readinessSummary !== undefined) {
+    if (!Array.isArray(record.readinessSummary)) throw new Error('the handoff packet readinessSummary is not an array');
+    readinessSummary = record.readinessSummary.map((entry) => {
+      if (entry === null || typeof entry !== 'object') throw new Error('a readiness summary entry is not an object');
+      const id = (entry as Record<string, unknown>).id;
+      const status = (entry as Record<string, unknown>).status;
+      if (typeof id !== 'string') throw new Error('a readiness summary entry has no id');
+      if (typeof status !== 'string' || !VALID_STATUSES.includes(status as GateStatus)) throw new Error('a readiness summary entry has no recognised status');
+      return { id, status: status as GateStatus };
+    });
+  }
+
+  return {
+    outcome: outcome as RehearsalOutcome,
+    gates,
+    candidate: { candidateCommit: candidateCommit ?? null },
+    ...(readinessSummary === undefined ? {} : { readinessSummary }),
+  };
 }
 
 function main(): number {

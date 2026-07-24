@@ -14,7 +14,9 @@ import {
 import { RELEASE_REPOSITORY, RELEASE_REPOSITORY_OWNER } from '../src/ops/release-coordinates.js';
 import { releaseArchiveName } from '../src/ops/release-ref.js';
 import {
+  READINESS_CHECK_IDS,
   READINESS_EXIT_CODES,
+  READINESS_TAG_CHECK_ID,
   ReleaseReadinessError,
   assertReadinessReportIsRedactionSafe,
   evaluateReleaseReadiness,
@@ -121,6 +123,18 @@ function assertBlocks(overrides: Partial<ReadinessEvidence>, checkId: string): v
 // ---------------------------------------------------------------------------------------------------------
 // The baseline is READY, and it is the strongest anchor: everything passes.
 // ---------------------------------------------------------------------------------------------------------
+
+test('the exported canonical check IDs match the checks an evaluated report actually emits (drift guard)', () => {
+  // READINESS_CHECK_IDS is the set the Phase 252 rehearsal gate proves a readiness summary against. If a check
+  // were added, removed, or renamed without updating the constant, the gate could no longer prove completeness
+  // — so this pins the two together. The tag check ID is part of that set.
+  const report = evalWith();
+  assertEq(report.checks.map((c) => c.id).join(','), READINESS_CHECK_IDS.join(','),
+    'the evaluated check IDs, in order, equal the exported canonical list');
+  assertEq(new Set(READINESS_CHECK_IDS).size, READINESS_CHECK_IDS.length, 'the canonical list has no duplicates');
+  assert(READINESS_CHECK_IDS.includes(READINESS_TAG_CHECK_ID), 'the exported tag-check ID is one of the checks');
+  assert(report.checks.some((c) => c.id === READINESS_TAG_CHECK_ID), 'and the evaluated report contains it');
+});
 
 test('a healthy release is READY_FOR_HUMAN_RELEASE_DECISION, and every check passes', () => {
   const report = evalWith();

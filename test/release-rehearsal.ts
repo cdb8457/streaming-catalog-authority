@@ -7,9 +7,11 @@ import {
   REHEARSAL_GATE_UNREADABLE_EXIT,
   TAG_DEPENDENT_READINESS_GATE,
   interpretRehearsalGate,
+  readinessProvesSolelyAbsentTag,
   type RehearsalReportView,
 } from '../src/ops/release-rehearsal-gate.js';
 import { RELEASE_REPOSITORY, RELEASE_REPOSITORY_OWNER } from '../src/ops/release-coordinates.js';
+import { READINESS_CHECK_IDS, READINESS_TAG_CHECK_ID } from '../src/ops/release-readiness.js';
 import {
   REHEARSAL_EXIT_CODES,
   ReleaseRehearsalError,
@@ -21,6 +23,7 @@ import {
   type CandidateCoordinates,
   type CiEvidenceInput,
   type DocEvidence,
+  type ReadinessCheckSummary,
   type RehearsalEvidence,
   type RehearsalGate,
   type RehearsalOutcome,
@@ -85,6 +88,17 @@ const ALL_DOCS: DocEvidence = {
   linuxCommand: true, macosCommand: true, windowsCommand: true,
 };
 
+const GIT_CLEAN_CHECK_ID = 'git-clean-checkout';
+// The Phase 250 readiness summary in three shapes the gate must tell apart.
+const readinessAllPass = (): ReadinessCheckSummary[] => READINESS_CHECK_IDS.map((id) => ({ id, status: 'PASS' }));
+// A clean PR checkout with no release tag: every check PASS except exactly the tag check, which is NOT_RUN.
+const readinessAbsentTag = (): ReadinessCheckSummary[] =>
+  READINESS_CHECK_IDS.map((id) => ({ id, status: id === READINESS_TAG_CHECK_ID ? 'NOT_RUN' : 'PASS' }));
+// No Git at all: BOTH git checks are NOT_RUN. candidateCommit can still be a supplied github.sha, which is why
+// candidateCommit must NOT be read as proof Git was available — the summary is.
+const readinessNoGit = (): ReadinessCheckSummary[] =>
+  READINESS_CHECK_IDS.map((id) => ({ id, status: (id === READINESS_TAG_CHECK_ID || id === GIT_CLEAN_CHECK_ID) ? 'NOT_RUN' : 'PASS' }));
+
 function goodCi(commit = COMMIT): CiEvidenceInput {
   return {
     phase248: { ref: 'https://github.com/o/r/actions/runs/1', commit, conclusion: 'success' },
@@ -97,6 +111,7 @@ function healthyEvidence(overrides: Partial<RehearsalEvidence> = {}): RehearsalE
     candidate: HEALTHY_CANDIDATE,
     assembledInFreshDir: true,
     readinessOutcome: 'READY_FOR_HUMAN_RELEASE_DECISION',
+    readinessSummary: readinessAllPass(),
     verificationOutcome: 'VERIFIED',
     ci: goodCi(),
     docs: ALL_DOCS,
@@ -150,6 +165,23 @@ test('a fixed human checklist and decision record template are present', () => {
   assert(report.humanChecklist.some((c) => /evidence, not approval/i.test(c)), 'including that HANDOFF_READY is not approval');
   assert(report.decisionRecordTemplate.some((l) => /APPROVE release/i.test(l)), 'the decision record has an approve/hold choice');
   assert(report.decisionRecordTemplate.some((l) => /self-digest/i.test(l)), 'and records the rehearsal self-digest');
+});
+
+test('the report carries the redaction-safe Phase 250 readiness summary, and it is in the self-digest', () => {
+  const report = evalWith();
+  assertEq(report.readinessSummary.map((c) => c.id).join(','), READINESS_CHECK_IDS.join(','),
+    'the summary is the full canonical set of readiness check ids');
+  assert(report.readinessSummary.every((c) => c.status === 'PASS'), 'each carries a bounded status for a healthy candidate');
+  // Only id and status travel — no detail, title, path or coordinate.
+  for (const key of Object.keys(report.readinessSummary[0]!)) assert(key === 'id' || key === 'status', `only id/status, not ${key}`);
+  // The summary is verdict-bearing, so a change to any readiness status changes the deterministic self-digest.
+  const changed = evaluateReleaseRehearsal(healthyEvidence({ readinessSummary: readinessAbsentTag() }), { generatedAt: AT });
+  assert(changed.selfDigest !== report.selfDigest, 'changing a readiness status changes the self-digest');
+  const same = evaluateReleaseRehearsal(healthyEvidence(), { generatedAt: '2099-01-01T00:00:00.000Z' });
+  assertEq(same.selfDigest, report.selfDigest, 'the same evidence yields the same digest regardless of the clock');
+  // It renders redaction-safe as JSON and text.
+  renderRehearsalJson(report);
+  renderRehearsalText(report);
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -399,35 +431,73 @@ test('publish REQUIRES the rehearsal gate — this fails against the pre-fix gra
 function reportView(
   outcome: RehearsalReportView['outcome'],
   gates: ReadonlyArray<{ id: string; status: RehearsalGate['status'] }>,
+  readinessSummary: readonly ReadinessCheckSummary[] | undefined = readinessAbsentTag(),
   candidateCommit: string | null = COMMIT,
 ): RehearsalReportView {
-  return { outcome, gates, candidate: { candidateCommit } };
+  return { outcome, gates, candidate: { candidateCommit }, ...(readinessSummary === undefined ? {} : { readinessSummary }) };
 }
 const g = (id: string, status: RehearsalGate['status']): { id: string; status: RehearsalGate['status'] } => ({ id, status });
 
-// The exact composition ops:release-rehearsal produces on a clean CI PR checkout: every gate passes except the
-// Phase 250 readiness gate, which is NOT_RUN solely because the release tag is not present locally.
-const NOTRUN_ABSENT_TAG = reportView('NOT_RUN', [
+// The outer rehearsal gate composition ops:release-rehearsal produces on a clean CI PR checkout: every gate
+// passes except the single collapsed Phase 250 readiness gate, which is NOT_RUN.
+const PR_OUTER_GATES = [
   g('candidate-assembled', 'PASS'), g(TAG_DEPENDENT_READINESS_GATE, 'NOT_RUN'), g('offline-integrity', 'PASS'),
   g('browser-acceptance-evidence', 'PASS'), g('lifecycle-acceptance-evidence', 'PASS'),
   g('install-documentation', 'PASS'), g('command-paths', 'PASS'),
-]);
-const READY_REPORT = reportView('HANDOFF_READY', [g(TAG_DEPENDENT_READINESS_GATE, 'PASS'), g('browser-acceptance-evidence', 'PASS')]);
-const NOTRUN_NO_GIT = reportView('NOT_RUN', [g(TAG_DEPENDENT_READINESS_GATE, 'NOT_RUN')], null);
-const NOTRUN_MISSING_CI = reportView('NOT_RUN', [g(TAG_DEPENDENT_READINESS_GATE, 'PASS'), g('browser-acceptance-evidence', 'NOT_RUN')]);
-const NOTRUN_TAG_AND_CI = reportView('NOT_RUN', [g(TAG_DEPENDENT_READINESS_GATE, 'NOT_RUN'), g('browser-acceptance-evidence', 'NOT_RUN')]);
-const BLOCKED_REPORT = reportView('BLOCKED', [g(TAG_DEPENDENT_READINESS_GATE, 'BLOCK')]);
-const INVALID_REPORT = reportView('INVALID', [g('offline-integrity', 'INVALID')]);
+] as const;
 
-test('on a non-publishing validation event, NOT_RUN passes ONLY when it is solely the absent release tag', () => {
+// The only report that should EVER pass a validation event's NOT_RUN: outer gates point at readiness alone, and
+// the COMPLETE readiness summary proves every check PASS except exactly the tag check.
+const NOTRUN_ABSENT_TAG = reportView('NOT_RUN', PR_OUTER_GATES, readinessAbsentTag());
+const READY_REPORT = reportView('HANDOFF_READY', [g(TAG_DEPENDENT_READINESS_GATE, 'PASS'), g('browser-acceptance-evidence', 'PASS')], readinessAllPass());
+// Same outer shape as the absent-tag case (candidateCommit is a supplied github.sha), but the readiness summary
+// shows there was NO GIT — both git checks NOT_RUN. This is the exact defect: candidateCommit non-null must not
+// green it. It must FAIL.
+const NOTRUN_NO_GIT_SUMMARY = reportView('NOT_RUN', PR_OUTER_GATES, readinessNoGit());
+// Outer gate is a missing CI-acceptance reference, not readiness — must fail regardless of the summary.
+const NOTRUN_MISSING_CI = reportView('NOT_RUN', [g(TAG_DEPENDENT_READINESS_GATE, 'PASS'), g('browser-acceptance-evidence', 'NOT_RUN')], readinessAllPass());
+const NOTRUN_TAG_AND_CI = reportView('NOT_RUN', [g(TAG_DEPENDENT_READINESS_GATE, 'NOT_RUN'), g('browser-acceptance-evidence', 'NOT_RUN')], readinessAbsentTag());
+// A legacy packet with NO readiness summary at all — built as a direct literal (passing `undefined` to
+// reportView would trigger its default summary). The gate cannot prove the tag alone, so it fails closed.
+const NOTRUN_LEGACY_NO_SUMMARY: RehearsalReportView = { outcome: 'NOT_RUN', gates: PR_OUTER_GATES, candidate: { candidateCommit: COMMIT } };
+// A readiness summary missing one required check — completeness is unproven, so it fails.
+const NOTRUN_OMITTED_CHECK = reportView('NOT_RUN', PR_OUTER_GATES, readinessAbsentTag().filter((c) => c.id !== 'git-clean-checkout'));
+// A readiness summary with an unknown ID standing in for the real tag check — not the canonical set, fails.
+const NOTRUN_UNKNOWN_ID = reportView('NOT_RUN', PR_OUTER_GATES,
+  readinessAbsentTag().map((c) => (c.id === 'git-clean-checkout' ? { id: 'made-up-check', status: 'PASS' as const } : c)));
+// A readiness summary with a duplicated check (padding out an omission) — duplicates fail.
+const NOTRUN_DUPLICATE_ID = reportView('NOT_RUN', PR_OUTER_GATES,
+  [...readinessAbsentTag().filter((c) => c.id !== 'git-clean-checkout'), { id: READINESS_TAG_CHECK_ID, status: 'NOT_RUN' as const }]);
+const BLOCKED_REPORT = reportView('BLOCKED', [g(TAG_DEPENDENT_READINESS_GATE, 'BLOCK')], readinessAllPass());
+const INVALID_REPORT = reportView('INVALID', [g('offline-integrity', 'INVALID')], readinessAllPass());
+
+test('readinessProvesSolelyAbsentTag accepts exactly the tag-only NOT_RUN and rejects every other shape', () => {
+  assert(readinessProvesSolelyAbsentTag(readinessAbsentTag()), 'every check PASS except the tag check NOT_RUN is proven');
+  assert(!readinessProvesSolelyAbsentTag(readinessAllPass()), 'all-PASS does not prove a tag NOT_RUN');
+  assert(!readinessProvesSolelyAbsentTag(readinessNoGit()), 'no-Git (two NOT_RUN) is rejected');
+  assert(!readinessProvesSolelyAbsentTag(undefined), 'an absent summary is never a proof');
+  assert(!readinessProvesSolelyAbsentTag([]), 'an empty summary is never a proof');
+  assert(!readinessProvesSolelyAbsentTag(readinessAbsentTag().filter((c) => c.id !== 'git-clean-checkout')), 'an omitted check is rejected');
+  assert(!readinessProvesSolelyAbsentTag([...readinessAbsentTag(), { id: 'extra-unknown', status: 'PASS' }]), 'an unknown extra ID is rejected');
+  assert(!readinessProvesSolelyAbsentTag([...readinessAbsentTag(), readinessAbsentTag()[0]!]), 'a duplicate ID is rejected');
+  // A BLOCK/INVALID anywhere in the readiness summary is not "solely the absent tag".
+  assert(!readinessProvesSolelyAbsentTag(readinessAbsentTag().map((c) => (c.id === 'git-clean-checkout' ? { ...c, status: 'BLOCK' } : c))), 'a BLOCK check is rejected');
+});
+
+test('on a non-publishing validation event, NOT_RUN passes ONLY when the complete summary proves the absent tag', () => {
   const v = { publishReaching: false };
   assert(interpretRehearsalGate(READY_REPORT, v).pass, 'HANDOFF_READY passes');
-  assert(interpretRehearsalGate(NOTRUN_ABSENT_TAG, v).pass, 'NOT_RUN from the absent tag alone passes on a PR');
+  assert(interpretRehearsalGate(NOTRUN_ABSENT_TAG, v).pass, 'a proven absent-tag NOT_RUN passes on a PR');
   assertEq(interpretRehearsalGate(NOTRUN_ABSENT_TAG, v).code, 0, 'and its code is 0');
+  // The defect this fixes: a supplied candidate SHA with a no-Git readiness summary must NOT pass.
+  assert(!interpretRehearsalGate(NOTRUN_NO_GIT_SUMMARY, v).pass, 'a supplied SHA + no-Git readiness summary fails (the fixed defect)');
   // Every other NOT_RUN shape, and every real problem, still fails — a skip is never silently a pass.
-  assert(!interpretRehearsalGate(NOTRUN_NO_GIT, v).pass, 'NOT_RUN with no Git (no candidate commit) fails');
   assert(!interpretRehearsalGate(NOTRUN_MISSING_CI, v).pass, 'NOT_RUN from missing CI acceptance evidence fails');
   assert(!interpretRehearsalGate(NOTRUN_TAG_AND_CI, v).pass, 'NOT_RUN from the tag AND missing evidence fails');
+  assert(!interpretRehearsalGate(NOTRUN_LEGACY_NO_SUMMARY, v).pass, 'a legacy packet without a readiness summary fails closed');
+  assert(!interpretRehearsalGate(NOTRUN_OMITTED_CHECK, v).pass, 'an omitted readiness check fails');
+  assert(!interpretRehearsalGate(NOTRUN_UNKNOWN_ID, v).pass, 'an unknown readiness ID fails');
+  assert(!interpretRehearsalGate(NOTRUN_DUPLICATE_ID, v).pass, 'a duplicate readiness ID fails');
   assert(!interpretRehearsalGate(BLOCKED_REPORT, v).pass, 'BLOCKED always fails');
   assert(!interpretRehearsalGate(INVALID_REPORT, v).pass, 'INVALID always fails');
 });
@@ -439,6 +509,7 @@ test('on a publish-reaching event, ONLY HANDOFF_READY passes — the same PR-pas
   const notRun = interpretRehearsalGate(NOTRUN_ABSENT_TAG, p);
   assert(!notRun.pass, 'the absent-tag NOT_RUN does NOT pass a publish-reaching event');
   assertEq(notRun.code, 32, 'and it exits with the NOT_RUN code, so publish is prevented');
+  assert(!interpretRehearsalGate(NOTRUN_NO_GIT_SUMMARY, p).pass, 'a no-Git NOT_RUN also fails a publish-reaching event');
   assert(!interpretRehearsalGate(NOTRUN_MISSING_CI, p).pass, 'a missing-evidence NOT_RUN fails');
   assert(!interpretRehearsalGate(BLOCKED_REPORT, p).pass, 'BLOCKED fails and prevents publish');
   assertEq(interpretRehearsalGate(BLOCKED_REPORT, p).code, 30, 'with the BLOCKED code');
@@ -469,19 +540,28 @@ test('the gate CLI reads the packet and the event context, and agrees with the p
     return { status: run.status ?? -1, out: `${run.stdout ?? ''}${run.stderr ?? ''}` };
   };
   try {
-    // A PR: the absent-tag NOT_RUN passes; a real problem does not.
-    assertEq(runGate(NOTRUN_ABSENT_TAG, pr, 'notrun.json').status, 0, 'PR + absent-tag NOT_RUN exits 0');
+    // A PR: only a proven absent-tag NOT_RUN passes; a real problem or an unproven NOT_RUN does not.
+    assertEq(runGate(NOTRUN_ABSENT_TAG, pr, 'notrun.json').status, 0, 'PR + proven absent-tag NOT_RUN exits 0');
     assertEq(runGate(BLOCKED_REPORT, pr, 'blocked.json').status, 30, 'PR + BLOCKED fails');
     assertEq(runGate(NOTRUN_MISSING_CI, pr, 'missingci.json').status, 32, 'PR + missing-evidence NOT_RUN fails');
+    // The fixed defect, end-to-end: a supplied github.sha with a no-Git readiness summary must NOT green a PR.
+    assertEq(runGate(NOTRUN_NO_GIT_SUMMARY, pr, 'nogit.json').status, 32, 'PR + supplied-SHA no-Git readiness summary fails');
+    // A legacy packet with no readiness summary fails closed on the NOT_RUN path.
+    assertEq(runGate(NOTRUN_LEGACY_NO_SUMMARY, pr, 'legacy.json').status, 32, 'PR + legacy packet (no readiness summary) fails');
 
     // A release or a deliberate version-tag dispatch: the SAME NOT_RUN report now fails; only READY passes.
     assertEq(runGate(NOTRUN_ABSENT_TAG, release, 'notrun.json').status, 32, 'release + absent-tag NOT_RUN fails (prevents publish)');
     assertEq(runGate(NOTRUN_ABSENT_TAG, dispatch, 'notrun.json').status, 32, 'version-tag dispatch + NOT_RUN fails');
     assertEq(runGate(READY_REPORT, release, 'ready.json').status, 0, 'release + HANDOFF_READY passes');
 
-    // Fail closed: a missing or unreadable packet is never a pass, on any event.
+    // Fail closed: a missing packet, and a PRESENT-but-malformed readiness summary, are never a pass.
     assertEq(runGate(null, pr, 'absent').status, REHEARSAL_GATE_UNREADABLE_EXIT, 'a missing packet fails closed on a PR');
     assertEq(runGate(null, release, 'absent').status, REHEARSAL_GATE_UNREADABLE_EXIT, 'a missing packet fails closed on a release');
+    const malformed = join(ws, 'malformed.json');
+    writeFileSync(malformed, JSON.stringify({ outcome: 'NOT_RUN', gates: PR_OUTER_GATES, candidate: { candidateCommit: COMMIT }, readinessSummary: [{ id: 'x' }] }));
+    const malformedRun = spawnSync(process.execPath, ['--import', 'tsx', join(root, 'src/ops/release-rehearsal-gate-cli.ts'), '--report', malformed],
+      { cwd: root, encoding: 'utf8', timeout: 300000, env: { ...process.env, ...pr } });
+    assertEq(malformedRun.status ?? -1, REHEARSAL_GATE_UNREADABLE_EXIT, 'a present-but-malformed readiness summary fails closed');
   } finally { rmSync(ws, { recursive: true, force: true }); }
 });
 

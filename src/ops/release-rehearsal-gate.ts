@@ -1,4 +1,5 @@
-import { REHEARSAL_EXIT_CODES, type GateStatus, type RehearsalOutcome } from './release-rehearsal.js';
+import { REHEARSAL_EXIT_CODES, type GateStatus, type ReadinessCheckSummary, type RehearsalOutcome } from './release-rehearsal.js';
+import { READINESS_CHECK_IDS, READINESS_TAG_CHECK_ID } from './release-readiness.js';
 
 // Phase 252 — event-aware interpretation of the release rehearsal outcome.
 //
@@ -30,7 +31,40 @@ export const REHEARSAL_GATE_UNREADABLE_EXIT = 33;
 export interface RehearsalReportView {
   readonly outcome: RehearsalOutcome;
   readonly gates: ReadonlyArray<{ readonly id: string; readonly status: GateStatus }>;
+  /** candidateCommit is a binding fact for evidence-tying; it is NOT used as proof that Git was available. */
   readonly candidate: { readonly candidateCommit: string | null };
+  /** The Phase 250 readiness summary (IDs + statuses). Absent on a legacy packet, which then fails closed. */
+  readonly readinessSummary?: readonly ReadinessCheckSummary[];
+}
+
+/**
+ * Does the readiness summary prove the readiness NOT_RUN was caused SOLELY by the absent release tag?
+ *
+ * True only when the summary is COMPLETE — exactly the canonical set of readiness check IDs, no duplicates, no
+ * unknowns, none omitted — and every check is PASS except exactly the tag check, which is NOT_RUN. This is what
+ * distinguishes an absent tag from no Git (git-clean-checkout would also be NOT_RUN), a dirty checkout (a BLOCK),
+ * or any other incomplete readiness. A missing or malformed summary is never a proof, so it returns false and
+ * the caller fails closed.
+ */
+export function readinessProvesSolelyAbsentTag(summary: readonly ReadinessCheckSummary[] | undefined): boolean {
+  if (summary === undefined || summary.length === 0) return false;
+  const ids = summary.map((check) => check.id);
+  // No duplicates, and exactly the canonical set (no omission, no unknown ID).
+  if (new Set(ids).size !== ids.length) return false;
+  const canonical = new Set(READINESS_CHECK_IDS);
+  if (ids.length !== canonical.size) return false;
+  for (const id of ids) {
+    if (!canonical.has(id)) return false;
+  }
+  // Every check PASS, except exactly the tag check, which must be NOT_RUN.
+  for (const { id, status } of summary) {
+    if (id === READINESS_TAG_CHECK_ID) {
+      if (status !== 'NOT_RUN') return false;
+    } else if (status !== 'PASS') {
+      return false;
+    }
+  }
+  return true;
 }
 
 export interface RehearsalGateContext {
@@ -80,16 +114,21 @@ export function interpretRehearsalGate(report: RehearsalReportView, context: Reh
   }
 
   // outcome === 'NOT_RUN'. Acceptable here ONLY when the sole cause is the intentionally absent release tag.
+  //
+  // Two independent facts must agree, and neither is `candidateCommit` — which is always supplied as github.sha
+  // and therefore proves nothing about whether Git was available:
+  //   1. Among the OUTER rehearsal gates, the only NOT_RUN is `offline-readiness` (so it is not, say, a missing
+  //      CI-acceptance reference that is NOT_RUN), and nothing is BLOCK/INVALID.
+  //   2. The COMPLETE Phase 250 readiness summary proves every readiness check is PASS except exactly the
+  //      tag check, which is NOT_RUN — distinguishing an absent tag from no Git, a dirty checkout, or any other
+  //      incomplete readiness. A missing/malformed/incomplete summary fails this, so a legacy packet fails closed.
   const notRunGateIds = report.gates.filter((gate) => gate.status === 'NOT_RUN').map((gate) => gate.id);
   const hasBlockingGate = report.gates.some((gate) => gate.status === 'BLOCK' || gate.status === 'INVALID');
-  const solelyAbsentTag =
-    !hasBlockingGate
-    && notRunGateIds.length === 1
-    && notRunGateIds[0] === TAG_DEPENDENT_READINESS_GATE
-    // Git WAS available (the candidate commit is known), so the readiness NOT_RUN is the absent tag, not "no Git".
-    && report.candidate.candidateCommit !== null;
+  const outerGatesPointAtReadinessOnly =
+    !hasBlockingGate && notRunGateIds.length === 1 && notRunGateIds[0] === TAG_DEPENDENT_READINESS_GATE;
+  const readinessProven = readinessProvesSolelyAbsentTag(report.readinessSummary);
 
-  if (solelyAbsentTag) {
+  if (outerGatesPointAtReadinessOnly && readinessProven) {
     return {
       pass: true,
       code: 0,
@@ -100,6 +139,6 @@ export function interpretRehearsalGate(report: RehearsalReportView, context: Reh
     pass: false,
     code: REHEARSAL_EXIT_CODES.NOT_RUN,
     reason: `NOT_RUN is not solely the absent release tag (not-run gates: ${notRunGateIds.join(', ') || 'none'}; `
-      + `candidate commit ${report.candidate.candidateCommit === null ? 'absent' : 'present'})`,
+      + `readiness summary ${readinessProven ? 'proves the tag alone' : 'does not prove every other readiness check passed'})`,
   };
 }
