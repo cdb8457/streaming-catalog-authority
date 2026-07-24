@@ -62,6 +62,16 @@ Each is one statement that can be false; on a healthy release all pass, and the 
 * **manifest-consistency** — the MANIFEST, the `VERSION` file, and the shipped Compose/`.env` image pin all
   name the same version and the same immutable image ref, and never a floating `:latest`.
 
+Where that last one looks for the ref matters, because a published release is pinned by **digest** and the
+shipped `docker-compose.yml` is `docker-compose.runtime.yml` verbatim — it cannot contain a digest that does
+not exist until the image is pushed. So the exact ref is asserted in `.env`, on a real
+`CATALOG_AUTHORITY_IMAGE=…` line (a ref appearing only in a comment is documentation, not a pin), and Compose
+is held to the two things it is responsible for: it must take its image from `${CATALOG_AUTHORITY_IMAGE:-…}`,
+or the `.env` pin would do nothing, and its inline fallback — what a user gets if they delete `.env` — must be
+this release's `<repository>:<version>`, never another image and never a moving tag. Demanding the packet ref
+appear in the Compose text instead is satisfiable only by a tag-pinned build, which no publish produces; that
+is exactly how the v1.1.0 publish job rejected the genuine asset it had just assembled.
+
 ## The software inventory (minimal SBOM)
 
 The inventory is built purely from the committed `package-lock.json` (the `npm ci --omit=dev` production

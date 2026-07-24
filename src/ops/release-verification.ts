@@ -461,6 +461,25 @@ function withoutRoot(path: string): string {
   return slash < 0 ? path : path.slice(slash + 1);
 }
 
+/** The one documented variable the shipped Compose stack reads its image from. */
+const BUNDLE_IMAGE_ENV_VAR = 'CATALOG_AUTHORITY_IMAGE';
+
+/** `image: ${CATALOG_AUTHORITY_IMAGE:-<fallback>}` — the fallback is captured, and may be absent. */
+const COMPOSE_IMAGE_PIN = new RegExp(`^\\s*image:\\s*\\$\\{${BUNDLE_IMAGE_ENV_VAR}(?::-([^}]*))?\\}\\s*$`, 'gm');
+
+/** `CATALOG_AUTHORITY_IMAGE=<ref>` at the start of a line in `.env` — a commented-out line is not a pin. */
+const ENV_IMAGE_PIN = new RegExp(`^${BUNDLE_IMAGE_ENV_VAR}=(.*)$`, 'gm');
+
+/**
+ * Every value the file assigns, in order. Both files are read the way the tool that consumes them reads
+ * them — a LATER `.env` line overrides an earlier one, so "the first line is correct" is not an answer. The
+ * caller requires exactly one assignment, which is what an honest bundle ships and what makes a smuggled
+ * override at the end of the file a FAIL rather than a silent redirect to another image.
+ */
+function pinnedValues(text: string, pattern: RegExp): string[] {
+  return [...text.matchAll(pattern)].map((match) => (match[1] ?? '').trim());
+}
+
 interface VersionFields {
   readonly version: string | null;
   readonly image: string | null;
@@ -659,9 +678,29 @@ function appendManifestConsistency(
   if (manifestRef !== packet.release.imageRef) problems.push('the manifest image ref differs from the packet image ref');
   if (versionFields.version !== packet.release.version) problems.push('the VERSION file version differs from the packet version');
   if (versionFields.image !== packet.release.imageRef) problems.push('the VERSION file image ref differs from the packet image ref');
-  // The shipped Compose stack and .env must pin the EXACT image ref — never a floating tag.
-  if (!composeText.includes(packet.release.imageRef)) problems.push('docker-compose.yml does not pin the packet image ref');
-  if (!envText.includes(packet.release.imageRef)) problems.push('.env does not pin the packet image ref');
+  // Where the EXACT ref lives is `.env`, and only `.env`. The shipped `docker-compose.yml` is the runtime
+  // Compose file verbatim: it takes its image from `${CATALOG_AUTHORITY_IMAGE:-<repository>:<tag>}`, so it
+  // never carries a digest — a digest-pinned release (the only kind CI publishes) puts `repository@sha256:…`
+  // in `.env` and leaves the Compose default as the tag-pinned fallback for someone who deleted `.env`.
+  // Asserting the ref against the Compose text therefore held only for the tag-pinned shape, and failed every
+  // digest-pinned release. Compose is instead held to the two things it is actually responsible for: it must
+  // read the variable (or the `.env` pin would do nothing), and its fallback must name THIS release rather
+  // than another image or a floating tag.
+  // Anchored to the start of a line: a ref that appears only inside a `#` comment is documentation, not a pin,
+  // and Compose would never read it. Exactly one assignment, because a second one at the end of the file is
+  // what actually takes effect.
+  const envPins = pinnedValues(envText, ENV_IMAGE_PIN);
+  if (envPins.length !== 1) {
+    problems.push(`.env does not assign ${BUNDLE_IMAGE_ENV_VAR} exactly once`);
+  } else if (envPins[0] !== packet.release.imageRef) {
+    problems.push('.env does not pin the packet image ref');
+  }
+  const composePins = pinnedValues(composeText, COMPOSE_IMAGE_PIN);
+  if (composePins.length !== 1) {
+    problems.push(`docker-compose.yml does not take its image from ${BUNDLE_IMAGE_ENV_VAR} exactly once, so the .env pin would not apply as written`);
+  } else if (composePins[0] !== `${packet.release.imageRepository}:${packet.release.version}`) {
+    problems.push('the docker-compose.yml fallback image is not this release');
+  }
   if (/:latest(\s|$|["'])/.test(composeText) || /:latest(\s|$|["'])/.test(envText)) problems.push('the bundle points at a floating :latest tag');
   // If the release is digest-pinned, VERSION must carry that same digest.
   if (packet.release.imageDigest !== null && versionFields.imageDigest !== packet.release.imageDigest) {

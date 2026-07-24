@@ -71,13 +71,17 @@ function sources(): BundleSources {
   };
 }
 
-function bundleFor(tag: string = TAG): ConsumerReleaseBundle {
+function bundleFor(tag: string = TAG, digest?: string): ConsumerReleaseBundle {
   return buildConsumerReleaseBundle(sources(), {
-    image: { repository: RELEASE_IMAGE_REPOSITORY, tag },
+    image: { repository: RELEASE_IMAGE_REPOSITORY, tag, ...(digest === undefined ? {} : { digest }) },
     revision: 'a'.repeat(40),
     createdAt: AT,
   });
 }
+
+// The digest of the v1.1.0 image the publish job actually pushed before this gate rejected its own asset.
+// A publish is ALWAYS digest-pinned — it is the only shape that reaches a user — so it is a fixture here.
+const PUBLISHED_DIGEST = 'sha256:e7dc58b9c2c5d7c89347d55eb5a82c129dbc9647284fcc48874752c96fd93d28';
 
 const APP = { name: 'catalog-authority', version: TAG };
 
@@ -328,6 +332,110 @@ test('tamper: a bundle repinned to a floating :latest tag is INVALID (manifest-c
   assertEq(report.outcome, 'INVALID', 'the release is INVALID');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// The DIGEST-PINNED release — the only shape a publish ever produces, and the shape that was never tested.
+//
+// Every case above builds a tag-pinned bundle, where the image ref happens to be the literal string the
+// runtime Compose file carries as its `${CATALOG_AUTHORITY_IMAGE:-…}` fallback. A published release pins the
+// digest instead: the exact ref lives in `.env`, and Compose still carries the tag-pinned fallback, because
+// the Compose file ships verbatim and cannot know a digest that does not exist until the image is pushed.
+// The verifier used to demand the packet's ref appear in the Compose text, which no digest-pinned release can
+// satisfy — so the gate rejected the genuine v1.1.0 asset it had just built, after the image was pushed.
+// These hold the digest-pinned path to the same standard as the tag-pinned one: it must VERIFY when honest,
+// and every tamper must still turn it INVALID through the RIGHT check.
+// ---------------------------------------------------------------------------------------------------------
+
+const digestBundle = bundleFor(TAG, PUBLISHED_DIGEST);
+const digestArchive = buildConsumerReleaseArchive(digestBundle);
+const digestPacket = buildVerificationPacket(packetInputs(digestBundle, digestArchive));
+
+test('a digest-pinned release — what a publish actually assembles — is VERIFIED with every check passing', () => {
+  assertEq(digestPacket.release.imageDigest, PUBLISHED_DIGEST, 'the packet records the published digest');
+  assertEq(digestPacket.release.imageRef, `${RELEASE_IMAGE_REPOSITORY}@${PUBLISHED_DIGEST}`, 'the ref is digest-pinned');
+  const compose = digestBundle.files.find((f) => f.path === 'docker-compose.yml')!.contents;
+  assert(!compose.includes(digestPacket.release.imageRef),
+    'the shipped Compose file does NOT carry the digest ref — this is the fact the old check got wrong');
+  const report = verifyRelease({ packet: digestPacket, archiveBytes: digestArchive.bytes }, { generatedAt: AT });
+  for (const id of ['packet-self-digest', 'archive-digest', 'archive-size', 'bundle-contents', 'bundle-checksums', 'manifest-consistency']) {
+    assertEq(checkOf(report.checks, id).status, 'PASS', `${id} passes on an honest digest-pinned release`);
+  }
+  assertEq(report.counts.fail, 0, 'no check fails');
+  assertEq(report.outcome, 'VERIFIED', 'a genuine digest-pinned release verifies');
+});
+
+test('digest-pinned tamper: .env repointed at a different digest is INVALID (manifest-consistency)', () => {
+  const other = `sha256:${'b'.repeat(64)}`;
+  const badBundle = mutateBundleFile(digestBundle, '.env', (text) => text.replace(PUBLISHED_DIGEST, other));
+  const badArchive = buildConsumerReleaseArchive(badBundle);
+  const packet = buildVerificationPacket(packetInputs(digestBundle, badArchive));
+  const report = verifyRelease({ packet, archiveBytes: badArchive.bytes }, { generatedAt: AT });
+  const check = checkOf(report.checks, 'manifest-consistency');
+  assertEq(check.status, 'FAIL', 'an .env pointing at another image is caught');
+  assert(check.detail.includes('.env does not pin the packet image ref'), `the reason names .env, got: ${check.detail}`);
+  assertEq(report.outcome, 'INVALID', 'the release is INVALID');
+});
+
+test('digest-pinned tamper: .env mentioning the ref only in a comment does not count as a pin', () => {
+  const badBundle = mutateBundleFile(digestBundle, '.env', (text) =>
+    text.replace(`CATALOG_AUTHORITY_IMAGE=${digestBundle.imageRef}`, `# CATALOG_AUTHORITY_IMAGE=${digestBundle.imageRef}`));
+  const badArchive = buildConsumerReleaseArchive(badBundle);
+  const packet = buildVerificationPacket(packetInputs(digestBundle, badArchive));
+  const report = verifyRelease({ packet, archiveBytes: badArchive.bytes }, { generatedAt: AT });
+  assertEq(checkOf(report.checks, 'manifest-consistency').status, 'FAIL', 'a commented-out pin is not a pin');
+  assertEq(report.outcome, 'INVALID', 'the release is INVALID');
+});
+
+test('digest-pinned tamper: a second CATALOG_AUTHORITY_IMAGE appended to .env is INVALID', () => {
+  // The genuine pin is left untouched at the top of the file and a redirect is appended below it. Compose
+  // takes the LAST assignment, so checking only that the right ref appears somewhere would pass this while
+  // the user runs an entirely different image.
+  const badBundle = mutateBundleFile(digestBundle, '.env', (text) =>
+    `${text}\nCATALOG_AUTHORITY_IMAGE=ghcr.io/someone-else/catalog-authority-ops:v1.1.0\n`);
+  const badArchive = buildConsumerReleaseArchive(badBundle);
+  const packet = buildVerificationPacket(packetInputs(digestBundle, badArchive));
+  const report = verifyRelease({ packet, archiveBytes: badArchive.bytes }, { generatedAt: AT });
+  const check = checkOf(report.checks, 'manifest-consistency');
+  assertEq(check.status, 'FAIL', 'a smuggled second assignment is caught even though the genuine one is present');
+  assert(check.detail.includes('exactly once'), `the reason names the duplicate, got: ${check.detail}`);
+  assertEq(report.outcome, 'INVALID', 'the release is INVALID');
+});
+
+test('digest-pinned tamper: a Compose file that stops reading CATALOG_AUTHORITY_IMAGE is INVALID', () => {
+  // The .env pin is untouched and correct — but Compose now hard-codes an image, so the pin would do nothing
+  // and the user would silently run something other than what the packet describes.
+  const badBundle = mutateBundleFile(digestBundle, 'docker-compose.yml', (text) =>
+    text.replace(/^(\s*)image:\s*\$\{CATALOG_AUTHORITY_IMAGE:-[^}]*\}\s*$/m, `$1image: ${RELEASE_IMAGE_REPOSITORY}:v0.0.1`));
+  const badArchive = buildConsumerReleaseArchive(badBundle);
+  const packet = buildVerificationPacket(packetInputs(digestBundle, badArchive));
+  const report = verifyRelease({ packet, archiveBytes: badArchive.bytes }, { generatedAt: AT });
+  const check = checkOf(report.checks, 'manifest-consistency');
+  assertEq(check.status, 'FAIL', 'a Compose file that ignores the pin variable is caught');
+  assert(check.detail.includes('CATALOG_AUTHORITY_IMAGE'), `the reason names the variable, got: ${check.detail}`);
+  assertEq(report.outcome, 'INVALID', 'the release is INVALID');
+});
+
+test('digest-pinned tamper: a Compose fallback naming another repository or :latest is INVALID', () => {
+  for (const fallback of [`ghcr.io/someone-else/catalog-authority-ops:${TAG}`, `${RELEASE_IMAGE_REPOSITORY}:latest`, `${RELEASE_IMAGE_REPOSITORY}:v9.9.9`]) {
+    const badBundle = mutateBundleFile(digestBundle, 'docker-compose.yml', (text) =>
+      text.replace(/^(\s*image:\s*\$\{CATALOG_AUTHORITY_IMAGE:-)[^}]*(\}\s*)$/m, `$1${fallback}$2`));
+    const badArchive = buildConsumerReleaseArchive(badBundle);
+    const packet = buildVerificationPacket(packetInputs(digestBundle, badArchive));
+    const report = verifyRelease({ packet, archiveBytes: badArchive.bytes }, { generatedAt: AT });
+    assertEq(checkOf(report.checks, 'manifest-consistency').status, 'FAIL', `a fallback of ${fallback} is caught`);
+    assertEq(report.outcome, 'INVALID', `a fallback of ${fallback} makes the release INVALID`);
+  }
+});
+
+test('digest-pinned tamper: VERSION carrying a different image_digest is INVALID (manifest-consistency)', () => {
+  const badBundle = mutateBundleFile(digestBundle, 'VERSION', (text) =>
+    text.replace(`image_digest: ${PUBLISHED_DIGEST}`, `image_digest: sha256:${'c'.repeat(64)}`));
+  const badArchive = buildConsumerReleaseArchive(badBundle);
+  const packet = buildVerificationPacket(packetInputs(digestBundle, badArchive));
+  const report = verifyRelease({ packet, archiveBytes: badArchive.bytes }, { generatedAt: AT });
+  assertEq(checkOf(report.checks, 'manifest-consistency').status, 'FAIL', 'a VERSION digest that is not the release digest is caught');
+  assertEq(report.outcome, 'INVALID', 'the release is INVALID');
+});
+
 test('tamper: swapping the archive for a different release is INVALID against the original packet', () => {
   const otherBundle = bundleFor('v2.0.0');
   const otherArchive = buildConsumerReleaseArchive(otherBundle);
@@ -452,6 +560,53 @@ test('the CLI emits a packet, verifies the real archive VERIFIED, catches a tamp
   } finally { rmSync(work, { recursive: true, force: true }); }
 });
 
+test('the CLI reproduces the PUBLISH path end to end: digest-pinned assemble, emit, verify — exit 0', () => {
+  // This is deploy/ci/release-bundle-check.sh's own sequence with RELEASE_IMAGE_DIGEST set, which is what the
+  // publish job runs and the only path that reaches a consumer. It exercised nothing before this test, and it
+  // exited 21 in CI after the image had already been pushed.
+  const work = mkdtempSync(join(tmpdir(), 'phase251-publish-'));
+  try {
+    const cli = join(root, 'src/ops/release-verification-cli.ts');
+    const bundleCli = join(root, 'src/ops/consumer-release-bundle-cli.ts');
+    const pin = ['--digest', PUBLISHED_DIGEST, '--tag', TAG, '--repository', RELEASE_IMAGE_REPOSITORY];
+    const run = (args: string[]): { status: number | null; stdout: string; stderr: string } => {
+      const r = spawnSync(process.execPath, ['--import', 'tsx', ...args], { cwd: root, encoding: 'utf8', timeout: 300000 });
+      return { status: r.status, stdout: String(r.stdout ?? ''), stderr: String(r.stderr ?? '') };
+    };
+
+    const bundleDir = join(work, 'bundle');
+    const archiveDir = join(work, 'archive');
+    const asm = run([bundleCli, '--out', bundleDir, '--archive-dir', archiveDir, ...pin]);
+    assertEq(asm.status, 0, `digest-pinned assembly succeeds — ${asm.stderr}`);
+
+    // The script reads the coordinates back out of VERSION, exactly as it does in CI, so the packet is emitted
+    // from the same facts the assembled archive was built from.
+    const version = readFileSync(join(bundleDir, 'VERSION'), 'utf8');
+    const fieldOf = (key: string): string => {
+      const match = new RegExp(`^${key}:\\s*(.*)$`, 'm').exec(version);
+      assert(match !== null, `VERSION carries ${key}`);
+      return match![1]!.trim();
+    };
+    const built = fieldOf('built');
+    assertEq(fieldOf('image_digest'), PUBLISHED_DIGEST, 'VERSION records the digest the release is pinned to');
+
+    const emit = run([cli, '--emit-packet', '--archive-dir', archiveDir,
+      '--created', built, '--revision', fieldOf('source_revision'), '--generated-at', built, ...pin]);
+    assertEq(emit.status, 0, `packet emission succeeds — ${emit.stderr}`);
+
+    const archivePath = join(archiveDir, releaseArchiveName(TAG));
+    const packetPath = `${archivePath}.verification.json`;
+    assert(existsSync(packetPath), 'the packet was written next to the digest-pinned archive');
+
+    const ok = run([cli, '--verify', '--archive', archivePath, '--packet', packetPath, '--generated-at', AT]);
+    assertEq(ok.status, VERIFICATION_EXIT_CODES.VERIFIED,
+      `the digest-pinned archive verifies VERIFIED (exit 0), got ${ok.status} — ${ok.stdout}${ok.stderr}`);
+    const report = JSON.parse(ok.stdout) as { outcome: string; counts: { fail: number } };
+    assertEq(report.outcome, 'VERIFIED', 'and says so');
+    assertEq(report.counts.fail, 0, 'with no failing check');
+  } finally { rmSync(work, { recursive: true, force: true }); }
+});
+
 // ---------------------------------------------------------------------------------------------------------
 // Docs, package wiring, and release-assembly / publishing-gate integration.
 // ---------------------------------------------------------------------------------------------------------
@@ -474,6 +629,11 @@ test('release assembly emits and self-verifies the packet, and the publish gate 
   assert(check.includes('--emit-packet'), 'the bundle check emits a packet');
   assert(check.includes('--verify'), 'and verifies the assembled archive against it');
   assert(check.includes('verification.json'), 'the packet asset is named');
+  // The verify step's report is the only thing that names the failing check. The publish job's failure was a
+  // bare `exit 21` into an empty log because the report was sent to /dev/null, so a run that fails here must
+  // print it. A gate nobody can read is a gate nobody can fix.
+  assert(!/--verify[\s\S]{0,400}?>\s*\/dev\/null/.test(check), 'the verify step does not discard its own report');
+  assert(/cat "\$\{VERIFY_REPORT\}" >&2/.test(check), 'and prints the report to stderr when verification fails');
 
   const upload = read('deploy/ci/release-asset-upload.sh');
   assert(upload.includes('verification.json'), 'the publish gate attaches the packet');

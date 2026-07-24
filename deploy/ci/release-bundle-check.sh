@@ -97,8 +97,20 @@ REPEAT_PACKET="$(mktemp)"
 emit_packet "${REPEAT_PACKET}"
 diff "${PACKET_PATH}" "${REPEAT_PACKET}" >/dev/null || fail "two emissions of the same inputs produced different packets"
 rm -f "${REPEAT_PACKET}"
+# The report is the only thing that says WHICH check failed, so it is captured and PRINTED on failure rather
+# than discarded. A gate that exits 21 into an empty log tells an operator nothing about what to fix.
+VERIFY_REPORT="$(mktemp)"
+set +e
 node --import tsx src/ops/release-verification-cli.ts --verify \
-  --archive "${ARCHIVE_PATH}" --packet "${PACKET_PATH}" >/dev/null
+  --archive "${ARCHIVE_PATH}" --packet "${PACKET_PATH}" --text >"${VERIFY_REPORT}"
+verify_status=$?
+set -e
+if [ "${verify_status}" -ne 0 ]; then
+  cat "${VERIFY_REPORT}" >&2
+  rm -f "${VERIFY_REPORT}"
+  fail "the verification packet does not verify the archive it describes (exit ${verify_status}); the failing checks are above"
+fi
+rm -f "${VERIFY_REPORT}"
 echo "  verification packet: reproducible and VERIFIED against ${ARCHIVE_FILE}"
 
 printf '\nrelease bundle check: PASS (%s)\n' "${ARCHIVE_FILE}"
