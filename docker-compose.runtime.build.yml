@@ -12,8 +12,12 @@
 # never be mistaken for — or accidentally pushed as — a release. Everything else about the stack, including
 # every hardening setting, is inherited unchanged from the file it overrides.
 #
-# CI uses exactly this pair for its daemon-backed smoke, which is the point: the thing tested is the thing
-# the release publishes, assembled the same way.
+# `pull_policy: build` means `compose up` with this override REBUILDS the image every time. CI's daemon-backed
+# smoke therefore does NOT layer this override at run time: it builds the image once, explicitly, with the
+# IMAGE_VERSION/IMAGE_REVISION build args, then runs the prebuilt image through docker-compose.runtime.yml
+# alone. Layering this override on top of that would silently rebuild the same tag WITHOUT those build args and
+# make the running image disagree with the one that was built and checked. CI still validates that this
+# override parses (`docker compose config`) so the maintainer build path cannot rot.
 
 services:
   app:

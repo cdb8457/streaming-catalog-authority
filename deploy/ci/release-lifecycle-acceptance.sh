@@ -256,8 +256,14 @@ app_cid="$( cd "${EXTRACTED}" && docker compose ps -q app )"
 [ -n "${app_cid}" ] || fail "could not find the app container"
 docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/lib/catalog/promotion-records"}}{{.RW}}{{end}}{{end}}' "${app_cid}" \
   | grep -q '^false$' || fail "the promotion-records mount is not read-only"
-# The database is not published to the host.
-if ( cd "${EXTRACTED}" && docker compose ps --format '{{.Publishers}}' postgres 2>/dev/null | grep -q ':5432->'); then
+# The database is not published to the host — asserted over the container's ACTUAL host bindings rather than
+# `docker compose ps --format '{{.Publishers}}'`, whose rendering cannot reliably distinguish an exposed-only
+# port from a published one. The container's NetworkSettings.Ports is authoritative; the tested predicate
+# reads exactly it.
+pg_cid="$( cd "${EXTRACTED}" && docker compose ps -q postgres )"
+[ -n "${pg_cid}" ] || fail "could not find the postgres container"
+if ! docker inspect --format '{{json .NetworkSettings.Ports}}' "${pg_cid}" \
+     | ( cd "${REPO_ROOT}" && node --import tsx src/ops/container-port-publication-cli.ts --port 5432/tcp ) >/dev/null; then
   fail "the database port is published to the host"
 fi
 info "prior version healthy, version agrees, records visible read-only, db unpublished"

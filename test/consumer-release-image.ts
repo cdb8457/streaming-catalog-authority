@@ -606,6 +606,40 @@ test('CI runs the daemon-backed checks this suite deliberately does not fake', (
   assert(check.includes('docker compose config'), 'and proves the bundle stands alone as a Compose project');
 });
 
+test('the daemon smoke runs the explicitly built image with no implicit rebuild, and keeps the maintainer override', () => {
+  // The defect this fixes: the smoke built IMAGE explicitly with IMAGE_VERSION, then ran the stack with the
+  // maintainer build override layered on. That override carries `pull_policy: build`, so `compose up` REBUILT
+  // the same tag WITHOUT the version/revision build args — the running image reported itself as 0.0.0-dev and
+  // /api/version disagreed with the build. The stack must run the explicitly built image, unrebuilt.
+  const smoke = read('deploy/ci/runtime-image-smoke.sh');
+  assert(/docker build/.test(smoke) && /--file Dockerfile\.runtime/.test(smoke), 'the smoke builds the runtime image once');
+  assert(/--build-arg "IMAGE_VERSION=/.test(smoke), 'passing the version build arg');
+  assert(/--build-arg "IMAGE_REVISION=/.test(smoke), 'and the revision build arg');
+
+  // Extract the COMPOSE=(...) command the stack is run with; the maintainer build override must NOT be among
+  // its -f files (that is exactly what caused the silent rebuild). This assertion FAILS on the pre-fix script.
+  const composeLine = /\nCOMPOSE=\(([^)]*)\)/.exec(smoke);
+  assert(composeLine !== null, 'the smoke defines a COMPOSE command array');
+  assert(!composeLine![1]!.includes('docker-compose.runtime.build.yml'),
+    'the stack is NOT run with the build override, which would rebuild the tag without the version args');
+  assert(composeLine![1]!.includes('docker-compose.runtime.yml'), 'it runs the single runtime compose file');
+  assert(/export CATALOG_AUTHORITY_IMAGE="\$\{IMAGE\}"/.test(smoke),
+    'and pins the stack to the explicitly built image through CATALOG_AUTHORITY_IMAGE, so compose neither pulls nor rebuilds');
+
+  // The version route is checked against the version the image was built with — the assertion the fix restores.
+  assert(/api\/version/.test(smoke) && /IMAGE_VERSION:-0\.0\.0-ci/.test(smoke),
+    'and it checks /api/version against the built version, not the 0.0.0-dev default');
+
+  // The documented maintainer build override is preserved: it still exists, still builds from source, and CI
+  // still validates that it parses — the fix stops the smoke from RUNNING it, it does not remove it.
+  const override = compose('docker-compose.runtime.build.yml');
+  const app = service(override, 'app');
+  assertEq(asMap(app.build ?? null, 'override build').dockerfile, 'Dockerfile.runtime', 'the override still builds Dockerfile.runtime');
+  assertEq(app.pull_policy, 'build', 'and still forces a from-source build for maintainers');
+  assert(jobText('suites').includes('docker-compose.runtime.build.yml'),
+    'and the suites job still validates the override parses via docker compose config');
+});
+
 test('the setup script is packaged executable, and every direct script run names its interpreter', () => {
   // The runtime-image smoke used to run `./deploy/local-runtime-setup.sh` directly; a checkout that lost the
   // mode bit (a zip export, a core.fileMode=false clone, a Windows working tree) failed there with a bare

@@ -240,8 +240,14 @@ fi
 if ! inspect '{{range .Mounts}}{{if eq .Destination "/var/lib/catalog/promotion-records"}}{{.RW}}{{end}}{{end}}' | grep -q '^false$'; then
   fail "the promotion-records mount is not read-only"
 fi
-# The database is not published to the host.
-if ( cd "${EXTRACTED}" && docker compose ps --format '{{.Publishers}}' postgres 2>/dev/null | grep -q '5432'); then
+# The database is not published to the host — asserted over the container's ACTUAL host bindings. Note that
+# `docker compose ps --format '{{.Publishers}}'` reports the container TARGET port (5432) even when nothing is
+# bound to a host interface, so grepping it cannot distinguish an exposed-only port from a published one; the
+# container's own NetworkSettings.Ports is the authoritative source, and the tested predicate reads exactly it.
+pg_cid="$( cd "${EXTRACTED}" && docker compose ps -q postgres )"
+[ -n "${pg_cid}" ] || fail "could not find the postgres container"
+if ! docker inspect --format '{{json .NetworkSettings.Ports}}' "${pg_cid}" \
+     | ( cd "${REPO_ROOT}" && node --import tsx src/ops/container-port-publication-cli.ts --port 5432/tcp ) >/dev/null; then
   fail "the database port is published to the host"
 fi
 info "read-only rootfs, non-root, no-new-privileges, cap-drop ALL, no docker socket, ro record mount, unpublished db"

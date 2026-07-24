@@ -5,6 +5,11 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { asMap, parseYaml, stringList, yamlStrings, type YamlMap, type YamlValue } from './helpers/compose-yaml.js';
 import { removeQuietly, runScript, usableBash, type Shell } from '../src/ops/usable-shell.js';
+import {
+  hostBindingsForPort,
+  isPortPublishedToHost,
+  parseDockerPortMap,
+} from '../src/ops/container-port-publication.js';
 
 // Phase 248 — the release-candidate acceptance CONTRACT, checked the way a machine with no Docker daemon and
 // no browser can check it: statically, and by executing the parts that need neither (the redaction gate, and
@@ -181,6 +186,74 @@ test('the orchestrator proves the standalone container contract', () => {
   assert(/does not run as the non-root node user|Config.User/.test(orchestrator), 'it checks the non-root user');
   assert(/the database port is published to the host/.test(orchestrator), 'it checks the DB is not host-published');
   assert(/restart/.test(orchestrator) && /persist/.test(orchestrator), 'it checks graceful restart and persistence');
+
+  // The DB-publication check must read the container's ACTUAL host bindings, not `docker compose ps --format
+  // '{{.Publishers}}'`, which reports the container target port even when nothing is bound to the host and so
+  // false-fails an internal-only Postgres. This assertion fails against the pre-fix orchestrator.
+  assert(/NetworkSettings\.Ports/.test(orchestrator), 'the DB-publication check inspects NetworkSettings.Ports');
+  assert(/container-port-publication-cli\.ts/.test(orchestrator), 'through the tested predicate CLI');
+  assert(!/--format '\{\{\.Publishers\}\}' postgres/.test(orchestrator),
+    'and no longer greps the Publishers rendering, which cannot tell an exposed port from a published one');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The DB-publication predicate — adversarial, and without ever exposing Postgres (fixtures only)
+// ---------------------------------------------------------------------------------------------------------
+
+test('the DB-publication predicate accepts internal-only 5432 and rejects a real host binding', () => {
+  // Docker records an EXPOSED-only port as null and a PUBLISHED one as a list of host bindings. These are the
+  // exact shapes `docker inspect --format '{{json .NetworkSettings.Ports}}'` emits.
+  const internalOnly: Array<[string, string]> = [
+    ['exposed only', '{"5432/tcp":null}'],
+    ['present but no binding', '{"5432/tcp":[]}'],
+    ['a DIFFERENT port is published, 5432 is not', '{"5432/tcp":null,"8099/tcp":[{"HostIp":"127.0.0.1","HostPort":"8099"}]}'],
+    ['no ports at all', 'null'],
+    ['empty map', '{}'],
+  ];
+  for (const [why, json] of internalOnly) {
+    const ports = parseDockerPortMap(json);
+    assertEq(isPortPublishedToHost(ports, '5432/tcp'), false, `internal-only is accepted: ${why}`);
+    assertEq(hostBindingsForPort(ports, '5432/tcp').length, 0, `no host bindings: ${why}`);
+  }
+
+  // Any binding that names a host port or interface — on any address, including loopback and IPv6 — is a real
+  // host publication and must be rejected.
+  const published: Array<[string, string]> = [
+    ['all interfaces', '{"5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"5432"}]}'],
+    ['loopback only', '{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5432"}]}'],
+    ['IPv6', '{"5432/tcp":[{"HostIp":"::","HostPort":"5432"}]}'],
+    ['a non-default host port', '{"5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"15432"}]}'],
+    ['dual-stack, two bindings', '{"5432/tcp":[{"HostIp":"0.0.0.0","HostPort":"5432"},{"HostIp":"::","HostPort":"5432"}]}'],
+  ];
+  for (const [why, json] of published) {
+    const ports = parseDockerPortMap(json);
+    assertEq(isPortPublishedToHost(ports, '5432/tcp'), true, `a real host binding is rejected: ${why}`);
+    assert(hostBindingsForPort(ports, '5432/tcp').length >= 1, `at least one host binding: ${why}`);
+  }
+});
+
+test('the DB-publication CLI exits 0 for internal-only, 1 for published, 2 for garbage, and leaks no address', () => {
+  const runCli = (input: string): { status: number | null; stdout: string; stderr: string } => {
+    const run = spawnSync(process.execPath,
+      ['--import', 'tsx', join(root, 'src/ops/container-port-publication-cli.ts'), '--port', '5432/tcp'],
+      { cwd: root, encoding: 'utf8', timeout: 120000, input });
+    return { status: run.status, stdout: run.stdout ?? '', stderr: run.stderr ?? '' };
+  };
+
+  const ok = runCli('{"5432/tcp":null}');
+  assertEq(ok.status, 0, `internal-only exits 0: ${ok.stdout}${ok.stderr}`);
+  assert(/INTERNAL_ONLY/.test(ok.stdout), 'and says so');
+
+  const bound = runCli('{"5432/tcp":[{"HostIp":"127.0.0.1","HostPort":"5432"}]}');
+  assertEq(bound.status, 1, `a real host binding exits 1: ${bound.stdout}${bound.stderr}`);
+  assert(/PUBLISHED/.test(bound.stderr), 'and says so on stderr');
+  // The verdict must not disclose WHICH interface Postgres was bound to — only that it was, and how many.
+  for (const address of ['127.0.0.1', '0.0.0.0', '::', 'HostIp', 'HostPort']) {
+    assert(!`${bound.stdout}${bound.stderr}`.includes(address), `the verdict never prints ${address}`);
+  }
+
+  const garbage = runCli('not-json');
+  assertEq(garbage.status, 2, 'unreadable input fails closed (exit 2), never read as "nothing is published"');
 });
 
 test('the orchestrator reads the token without printing it and masks it in CI', () => {

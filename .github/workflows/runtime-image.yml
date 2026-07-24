@@ -99,7 +99,9 @@ jobs:
         run: bash deploy/ci/runtime-image-smoke.sh
       - name: Container logs on failure
         if: failure()
-        run: docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml logs --tail 200
+        # Match the smoke: the stack runs from the single runtime compose file, pinned to the explicitly built
+        # image, so its logs are read the same way (the build override is a maintainer path, not this run's).
+        run: docker compose -f docker-compose.runtime.yml logs --tail 200
 
   release-candidate:
     name: Release-candidate acceptance (real browser, real Compose)

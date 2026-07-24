@@ -178,6 +178,17 @@ test('the orchestrator exercises the whole documented lifecycle', () => {
   assert((orchestrator.match(/assert_version /g) ?? []).length >= 3, 'version is asserted at prior, candidate, and rollback');
 });
 
+test('the DB-not-published check reads real host bindings, not the fragile Publishers rendering', () => {
+  // `docker compose ps --format '{{.Publishers}}'` reports the container target port even with no host
+  // binding, so it cannot tell an exposed-only Postgres from a published one. The orchestrator must inspect
+  // the container's actual NetworkSettings.Ports through the tested predicate. Fails against the pre-fix script.
+  assert(/the database port is published to the host/.test(orchestrator), 'it still asserts the DB is not host-published');
+  assert(/NetworkSettings\.Ports/.test(orchestrator), 'it inspects NetworkSettings.Ports');
+  assert(/container-port-publication-cli\.ts/.test(orchestrator), 'through the tested predicate CLI');
+  assert(!/--format '\{\{\.Publishers\}\}' postgres/.test(orchestrator),
+    'and no longer greps the Publishers rendering');
+});
+
 test('persistence is proven across restart, upgrade and rollback — token and Postgres marker both checked', () => {
   // The token is compared to the value captured before any lifecycle op, at restart, upgrade and rollback.
   assert((orchestrator.match(/= "\$\{token_before\}"/g) ?? []).length >= 3,

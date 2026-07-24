@@ -16,8 +16,14 @@ cd "$(dirname "$0")/../.."
 
 IMAGE="${CATALOG_AUTHORITY_DEV_IMAGE:-catalog-authority-ops:ci}"
 BASE_URL="http://127.0.0.1:8099"
-COMPOSE=(docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml)
-export CATALOG_AUTHORITY_DEV_IMAGE="${IMAGE}"
+# Run the stack from the image THIS script just built, with NO build override layered on. The maintainer build
+# override (docker-compose.runtime.build.yml) sets `pull_policy: build`, so layering it here would make
+# `compose up` REBUILD the app image WITHOUT the IMAGE_VERSION/IMAGE_REVISION build args passed below — the
+# rebuilt image would then report itself as 0.0.0-dev and /api/version would disagree with the build. So the
+# stack runs the single runtime compose file and is pinned to the explicitly built image through
+# CATALOG_AUTHORITY_IMAGE; compose finds that local tag already present and neither pulls nor rebuilds it.
+COMPOSE=(docker compose -f docker-compose.runtime.yml)
+export CATALOG_AUTHORITY_IMAGE="${IMAGE}"
 
 step() { printf '\n==> %s\n' "$1"; }
 
