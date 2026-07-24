@@ -10,6 +10,9 @@ import {
   isPortPublishedToHost,
   parseDockerPortMap,
 } from '../src/ops/container-port-publication.js';
+import {
+  acceptanceRun, classifyAcceptanceRun, describeAcceptanceRun, unreachableDocker, type AcceptanceRun,
+} from './helpers/docker-acceptance.js';
 
 // Phase 248 — the release-candidate acceptance CONTRACT, checked the way a machine with no Docker daemon and
 // no browser can check it: statically, and by executing the parts that need neither (the redaction gate, and
@@ -527,39 +530,53 @@ test('teardown is NOT attempted when up was never reached', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------
-// The orchestrator's skip/fail semantics — executed for real WHEN Docker is unavailable here
+// The orchestrator's skip/fail semantics — executed for real, with the Docker daemon MADE unreachable
+//
+// This carried the same defect as the Phase 249 suite, in the same shape: probe `docker info` from here, and
+// on a failed probe assert that the orchestrator started a moment later MUST exit 3. A transient probe
+// failure then failed the build for a run that had correctly done its job (PR 21, run 30093160235 attempt 1,
+// against the lifecycle orchestrator). The condition is now created rather than predicted, so the contract
+// holds on a host with no daemon and on a CI runner with a healthy one alike, and the verdict comes from
+// what the run itself reported. The reasoning lives in test/helpers/docker-acceptance.ts.
 // ---------------------------------------------------------------------------------------------------------
 
-function dockerDaemonReachable(): boolean {
-  const run = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'],
-    { encoding: 'utf8', timeout: 15000, shell: process.platform === 'win32' });
-  return run.status === 0;
+function runWithUnreachableDocker(shell: Shell, extra: NodeJS.ProcessEnv = {}): AcceptanceRun {
+  const docker = unreachableDocker();
+  const ws = mkdtempSync(join(tmpdir(), 'p248-nodocker-'));
+  try {
+    return acceptanceRun(runScript(shell, join(root, ORCHESTRATOR), {
+      cwd: root,
+      timeout: 120000,
+      env: {
+        ...docker.env,
+        RC_STAGING_DIR: join(ws, 'staging'),
+        RC_ARTIFACT_DIR: join(ws, 'artifacts'),
+        ...extra,
+      },
+    }));
+  } finally { docker.dispose(); removeQuietly(ws); }
 }
 
-test('without a Docker daemon the orchestrator SKIPs (exit 3) and never claims to have run', () => {
+test('with the Docker daemon unreachable the orchestrator SKIPs (exit 3) and never claims to have run', () => {
   if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
-  if (dockerDaemonReachable()) {
-    console.log('        (note: Docker IS reachable here, so live skip-execution is exercised by CI\'s release-candidate job, not here)');
-    return;
-  }
-  const run = runScript(bash, join(root, ORCHESTRATOR), { cwd: root, timeout: 120000 });
-  assertEq(run.status, 3, `the orchestrator exits 3 (SKIP) when Docker is unavailable: ${run.stderr ?? ''}`);
-  const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
-  assert(/SKIP:/.test(out), 'it prints a SKIP notice');
-  assert(/CI-required/.test(out) && /NOT executed/.test(out), 'it says the acceptance is CI-required and was not executed');
+  const run = runWithUnreachableDocker(bash);
+  assertEq(classifyAcceptanceRun(run), 'HONEST_SKIP',
+    `an unreachable daemon must produce exit 3 WITH a SKIP notice: ${describeAcceptanceRun(run)}`);
+  assertEq(run.status, 3, `the orchestrator exits 3 (SKIP): ${describeAcceptanceRun(run)}`);
+  assert(/the Docker daemon is not reachable/.test(run.output),
+    `and names the daemon as the prerequisite it lacked: ${describeAcceptanceRun(run)}`);
+  assert(/CI-required/.test(run.output) && /NOT executed/.test(run.output),
+    'it says the acceptance is CI-required and was not executed');
 });
 
-test('with REQUIRE_ACCEPTANCE=1 and no daemon the orchestrator FAILs (exit 1), never a silent skip', () => {
+test('with REQUIRE_ACCEPTANCE=1 and an unreachable daemon the orchestrator FAILs (exit 1), never a silent skip', () => {
   if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
-  if (dockerDaemonReachable()) {
-    console.log('        (note: Docker IS reachable here; the hard-fail path is exercised by CI, not here)');
-    return;
-  }
-  const run = runScript(bash, join(root, ORCHESTRATOR), {
-    cwd: root, timeout: 120000, env: { ...process.env, REQUIRE_ACCEPTANCE: '1' },
-  });
-  assertEq(run.status, 1, `it exits 1 (FAIL) under REQUIRE_ACCEPTANCE=1: ${run.stdout ?? ''}`);
-  assert(/REQUIRE_ACCEPTANCE=1/.test(`${run.stdout ?? ''}${run.stderr ?? ''}`), 'and says why it refused to skip');
+  const run = runWithUnreachableDocker(bash, { REQUIRE_ACCEPTANCE: '1' });
+  assertEq(classifyAcceptanceRun(run), 'REFUSED_TO_SKIP',
+    `under REQUIRE_ACCEPTANCE=1 a missing prerequisite is a failure, not a skip: ${describeAcceptanceRun(run)}`);
+  assertEq(run.status, 1, `it exits 1 (FAIL): ${describeAcceptanceRun(run)}`);
+  assert(/REQUIRE_ACCEPTANCE=1/.test(run.output), 'and says why it refused to skip');
+  assert(!/^SKIP:/m.test(run.output), 'it prints no SKIP notice at all');
 });
 
 // ---------------------------------------------------------------------------------------------------------
