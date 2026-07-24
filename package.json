@@ -499,6 +499,7 @@
     "test:release-verification": "tsx test/release-verification.ts",
     "test:phase251-local": "tsx test/release-verification.ts",
     "ops:release-rehearsal": "tsx src/ops/release-rehearsal-cli.ts",
+    "ops:release-rehearsal-gate": "tsx src/ops/release-rehearsal-gate-cli.ts",
     "test:release-rehearsal": "tsx test/release-rehearsal.ts",
     "test:phase252-local": "tsx test/release-rehearsal.ts",
     "ops:promotion-context-consistency-audit": "tsx src/ops/promotion-context-consistency-audit-cli.ts",

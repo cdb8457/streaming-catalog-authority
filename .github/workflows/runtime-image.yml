@@ -240,6 +240,11 @@ jobs:
       - name: Rehearse the release and emit the handoff packet
         # The candidate commit and both acceptance references are this run's own facts. `needs.*.result` is
         # "success" precisely because the job reached here; the rehearsal validates that they name this commit.
+        #
+        # The rehearsal emits its HONEST handoff packet and exits with its own outcome code (0/30/31/32). This
+        # step does not fail the job on that code — `|| true` keeps it green so the packet is always emitted and
+        # uploaded — because the event-aware gate step below is what decides pass/fail for THIS event. The
+        # outcome is never fabricated: a NOT_RUN stays NOT_RUN in the packet a human reads.
         env:
           CANDIDATE_COMMIT: ${{ github.sha }}
           PHASE248_REF: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
@@ -248,13 +253,33 @@ jobs:
           PHASE249_REF: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           PHASE249_COMMIT: ${{ github.sha }}
           PHASE249_CONCLUSION: ${{ needs.lifecycle.result }}
-        run: npm run ops:release-rehearsal -- --revision "${{ github.sha }}" --out dist/handoff.json
+        run: npm run ops:release-rehearsal -- --revision "${{ github.sha }}" --out dist/handoff.json || true
       - name: Keep the handoff packet for inspection
+        # Uploaded on every outcome (HANDOFF_READY, BLOCKED, INVALID, NOT_RUN) so the human always has the packet.
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: release-handoff-packet
           path: dist/handoff.json
           retention-days: 14
+          if-no-files-found: warn
+      - name: Interpret the rehearsal outcome for this event
+        # The event-aware gate. On a release or a deliberate version-tag dispatch that would actually publish,
+        # ONLY HANDOFF_READY passes — BLOCKED, INVALID and NOT_RUN all fail and prevent publish. On a pull
+        # request or other non-publishing validation event, a NOT_RUN caused SOLELY by the intentionally absent
+        # release tag passes (the tag legitimately does not exist yet), while BLOCKED, INVALID, and any other
+        # NOT_RUN still fail. The publish-reaching decision is the SAME tested release-ref function the publish
+        # job uses, so the gate and publish can never disagree. This is a STEP, not a job `if:`, so the
+        # rehearsal job still runs unconditionally on every event and can never be conditionally skipped.
+        env:
+          GITHUB_EVENT_NAME: ${{ github.event_name }}
+          GITHUB_REF: ${{ github.ref }}
+          RELEASE_TAG_NAME: ${{ github.event.release.tag_name }}
+          RELEASE_DRAFT: ${{ github.event.release.draft }}
+          RELEASE_PUBLISH_INPUT: ${{ inputs.publish }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          GITHUB_REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: npm run ops:release-rehearsal-gate -- --report dist/handoff.json
 
   publish:
     name: Publish the release image and asset

@@ -1,7 +1,15 @@
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawnSync } from 'node:child_process';
+import {
+  REHEARSAL_GATE_UNREADABLE_EXIT,
+  TAG_DEPENDENT_READINESS_GATE,
+  interpretRehearsalGate,
+  type RehearsalReportView,
+} from '../src/ops/release-rehearsal-gate.js';
+import { RELEASE_REPOSITORY, RELEASE_REPOSITORY_OWNER } from '../src/ops/release-coordinates.js';
 import {
   REHEARSAL_EXIT_CODES,
   ReleaseRehearsalError,
@@ -380,6 +388,133 @@ test('publish REQUIRES the rehearsal gate — this fails against the pre-fix gra
   const rehearsalBlock = jobBlockOf(wf, 'rehearsal');
   const rehearsalNeeds = rehearsalBlock!.split('\n').find((l) => l.trim().startsWith('needs:')) ?? '';
   assert(!/\bpublish\b/.test(rehearsalNeeds), 'the rehearsal does not depend on publish — no circular dependency');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The event-aware CI gate. On a PR the release tag intentionally does not exist, so the rehearsal is honestly
+// NOT_RUN — and that must PASS CI without ever being faked into HANDOFF_READY. On an event that would actually
+// publish, only HANDOFF_READY passes. The SAME NOT_RUN that passes on a PR must FAIL on a publish-reaching run.
+// ---------------------------------------------------------------------------------------------------------
+
+function reportView(
+  outcome: RehearsalReportView['outcome'],
+  gates: ReadonlyArray<{ id: string; status: RehearsalGate['status'] }>,
+  candidateCommit: string | null = COMMIT,
+): RehearsalReportView {
+  return { outcome, gates, candidate: { candidateCommit } };
+}
+const g = (id: string, status: RehearsalGate['status']): { id: string; status: RehearsalGate['status'] } => ({ id, status });
+
+// The exact composition ops:release-rehearsal produces on a clean CI PR checkout: every gate passes except the
+// Phase 250 readiness gate, which is NOT_RUN solely because the release tag is not present locally.
+const NOTRUN_ABSENT_TAG = reportView('NOT_RUN', [
+  g('candidate-assembled', 'PASS'), g(TAG_DEPENDENT_READINESS_GATE, 'NOT_RUN'), g('offline-integrity', 'PASS'),
+  g('browser-acceptance-evidence', 'PASS'), g('lifecycle-acceptance-evidence', 'PASS'),
+  g('install-documentation', 'PASS'), g('command-paths', 'PASS'),
+]);
+const READY_REPORT = reportView('HANDOFF_READY', [g(TAG_DEPENDENT_READINESS_GATE, 'PASS'), g('browser-acceptance-evidence', 'PASS')]);
+const NOTRUN_NO_GIT = reportView('NOT_RUN', [g(TAG_DEPENDENT_READINESS_GATE, 'NOT_RUN')], null);
+const NOTRUN_MISSING_CI = reportView('NOT_RUN', [g(TAG_DEPENDENT_READINESS_GATE, 'PASS'), g('browser-acceptance-evidence', 'NOT_RUN')]);
+const NOTRUN_TAG_AND_CI = reportView('NOT_RUN', [g(TAG_DEPENDENT_READINESS_GATE, 'NOT_RUN'), g('browser-acceptance-evidence', 'NOT_RUN')]);
+const BLOCKED_REPORT = reportView('BLOCKED', [g(TAG_DEPENDENT_READINESS_GATE, 'BLOCK')]);
+const INVALID_REPORT = reportView('INVALID', [g('offline-integrity', 'INVALID')]);
+
+test('on a non-publishing validation event, NOT_RUN passes ONLY when it is solely the absent release tag', () => {
+  const v = { publishReaching: false };
+  assert(interpretRehearsalGate(READY_REPORT, v).pass, 'HANDOFF_READY passes');
+  assert(interpretRehearsalGate(NOTRUN_ABSENT_TAG, v).pass, 'NOT_RUN from the absent tag alone passes on a PR');
+  assertEq(interpretRehearsalGate(NOTRUN_ABSENT_TAG, v).code, 0, 'and its code is 0');
+  // Every other NOT_RUN shape, and every real problem, still fails — a skip is never silently a pass.
+  assert(!interpretRehearsalGate(NOTRUN_NO_GIT, v).pass, 'NOT_RUN with no Git (no candidate commit) fails');
+  assert(!interpretRehearsalGate(NOTRUN_MISSING_CI, v).pass, 'NOT_RUN from missing CI acceptance evidence fails');
+  assert(!interpretRehearsalGate(NOTRUN_TAG_AND_CI, v).pass, 'NOT_RUN from the tag AND missing evidence fails');
+  assert(!interpretRehearsalGate(BLOCKED_REPORT, v).pass, 'BLOCKED always fails');
+  assert(!interpretRehearsalGate(INVALID_REPORT, v).pass, 'INVALID always fails');
+});
+
+test('on a publish-reaching event, ONLY HANDOFF_READY passes — the same PR-passing NOT_RUN now fails', () => {
+  const p = { publishReaching: true };
+  assert(interpretRehearsalGate(READY_REPORT, p).pass, 'HANDOFF_READY passes and may reach publish');
+  // The adversarial crux: the exact NOT_RUN report that PASSES on a PR must FAIL when the event would publish.
+  const notRun = interpretRehearsalGate(NOTRUN_ABSENT_TAG, p);
+  assert(!notRun.pass, 'the absent-tag NOT_RUN does NOT pass a publish-reaching event');
+  assertEq(notRun.code, 32, 'and it exits with the NOT_RUN code, so publish is prevented');
+  assert(!interpretRehearsalGate(NOTRUN_MISSING_CI, p).pass, 'a missing-evidence NOT_RUN fails');
+  assert(!interpretRehearsalGate(BLOCKED_REPORT, p).pass, 'BLOCKED fails and prevents publish');
+  assertEq(interpretRehearsalGate(BLOCKED_REPORT, p).code, 30, 'with the BLOCKED code');
+  assert(!interpretRehearsalGate(INVALID_REPORT, p).pass, 'INVALID fails and prevents publish');
+  assertEq(interpretRehearsalGate(INVALID_REPORT, p).code, 31, 'with the INVALID code');
+});
+
+test('the gate CLI reads the packet and the event context, and agrees with the pure decision', () => {
+  const clear = {
+    GITHUB_EVENT_NAME: '', GITHUB_REF: '', RELEASE_TAG_NAME: '', RELEASE_DRAFT: '',
+    RELEASE_PUBLISH_INPUT: '', GITHUB_REPOSITORY: '', GITHUB_REPOSITORY_OWNER: '',
+  };
+  const pr = { ...clear, GITHUB_EVENT_NAME: 'pull_request', GITHUB_REF: 'refs/pull/20/merge' };
+  const release = {
+    ...clear, GITHUB_EVENT_NAME: 'release', RELEASE_TAG_NAME: RELEASE_IMAGE_TAG,
+    GITHUB_REF: `refs/tags/${RELEASE_IMAGE_TAG}`, GITHUB_REPOSITORY: RELEASE_REPOSITORY, GITHUB_REPOSITORY_OWNER: RELEASE_REPOSITORY_OWNER,
+  };
+  const dispatch = {
+    ...clear, GITHUB_EVENT_NAME: 'workflow_dispatch', RELEASE_PUBLISH_INPUT: 'true',
+    GITHUB_REF: `refs/tags/${RELEASE_IMAGE_TAG}`, GITHUB_REPOSITORY: RELEASE_REPOSITORY, GITHUB_REPOSITORY_OWNER: RELEASE_REPOSITORY_OWNER,
+  };
+
+  const ws = mkdtempSync(join(tmpdir(), 'phase252-gate-'));
+  const runGate = (view: RehearsalReportView | null, env: Record<string, string>, name: string): { status: number | null; out: string } => {
+    const reportPath = view === null ? join(ws, 'absent.json') : (writeFileSync(join(ws, name), JSON.stringify(view)), join(ws, name));
+    const run = spawnSync(process.execPath, ['--import', 'tsx', join(root, 'src/ops/release-rehearsal-gate-cli.ts'), '--report', reportPath],
+      { cwd: root, encoding: 'utf8', timeout: 300000, env: { ...process.env, ...env } });
+    return { status: run.status ?? -1, out: `${run.stdout ?? ''}${run.stderr ?? ''}` };
+  };
+  try {
+    // A PR: the absent-tag NOT_RUN passes; a real problem does not.
+    assertEq(runGate(NOTRUN_ABSENT_TAG, pr, 'notrun.json').status, 0, 'PR + absent-tag NOT_RUN exits 0');
+    assertEq(runGate(BLOCKED_REPORT, pr, 'blocked.json').status, 30, 'PR + BLOCKED fails');
+    assertEq(runGate(NOTRUN_MISSING_CI, pr, 'missingci.json').status, 32, 'PR + missing-evidence NOT_RUN fails');
+
+    // A release or a deliberate version-tag dispatch: the SAME NOT_RUN report now fails; only READY passes.
+    assertEq(runGate(NOTRUN_ABSENT_TAG, release, 'notrun.json').status, 32, 'release + absent-tag NOT_RUN fails (prevents publish)');
+    assertEq(runGate(NOTRUN_ABSENT_TAG, dispatch, 'notrun.json').status, 32, 'version-tag dispatch + NOT_RUN fails');
+    assertEq(runGate(READY_REPORT, release, 'ready.json').status, 0, 'release + HANDOFF_READY passes');
+
+    // Fail closed: a missing or unreadable packet is never a pass, on any event.
+    assertEq(runGate(null, pr, 'absent').status, REHEARSAL_GATE_UNREADABLE_EXIT, 'a missing packet fails closed on a PR');
+    assertEq(runGate(null, release, 'absent').status, REHEARSAL_GATE_UNREADABLE_EXIT, 'a missing packet fails closed on a release');
+  } finally { rmSync(ws, { recursive: true, force: true }); }
+});
+
+test('the CI rehearsal job runs unconditionally, always uploads the packet, and gates by event', () => {
+  const wf = read('.github/workflows/runtime-image.yml');
+  const jobBlock = jobBlockOf(wf, 'rehearsal');
+  assert(jobBlock !== null, 'a rehearsal job exists');
+  // The rehearsal itself never fails the job on its own outcome code; the gate step decides.
+  assert(/ops:release-rehearsal .*\|\| true/.test(jobBlock!), 'the rehearsal step does not fail the job on its outcome code');
+  // The handoff packet is uploaded on every outcome.
+  assert(/\n {8}if: always\(\)/.test(jobBlock!), 'the handoff upload runs on if: always(), so every outcome keeps its packet');
+  // The event-aware gate runs as a STEP (not a job if:), so the job still runs unconditionally on every event.
+  assert(jobBlock!.includes('ops:release-rehearsal-gate'), 'the event-aware gate step runs');
+  assert(!/\n {4}if:/.test(jobBlock!), 'the rehearsal job carries no job-level if: — it can never be skipped');
+  // The gate is given the same event context the publish release-ref gate reads, so the two cannot disagree.
+  for (const envVar of ['GITHUB_EVENT_NAME', 'RELEASE_TAG_NAME', 'RELEASE_PUBLISH_INPUT', 'GITHUB_REPOSITORY']) {
+    assert(jobBlock!.includes(envVar), `the gate step is given ${envVar}`);
+  }
+  // Still no write permission and no publish capability in the rehearsal job.
+  assert(!/write/.test(jobBlock!), 'the rehearsal job still grants no write permission');
+  assert(!/docker\/login-action|build-push-action|gh release upload|docker push/.test(jobBlock!), 'and still cannot publish');
+
+  // The gate CLI is wired as an ops script, and publish is unchanged: it still requires the rehearsal gate and
+  // is still gated to a release or a deliberate dispatch, so it can never run on a pull request.
+  const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+  assertEq(pkg.scripts['ops:release-rehearsal-gate'], 'tsx src/ops/release-rehearsal-gate-cli.ts', 'the gate ops script is wired');
+  const publishBlock = jobBlockOf(wf, 'publish');
+  assert(publishBlock !== null, 'a publish job exists');
+  assert(/needs:.*\brehearsal\b/.test(publishBlock!.split('\n').find((l) => l.trim().startsWith('needs:')) ?? ''),
+    'publish still depends on the rehearsal gate');
+  const publishIf = publishBlock!.split('\n').find((l) => l.trim().startsWith('if:')) ?? '';
+  assert(!/pull_request/.test(publishIf), 'publish never runs on a pull request');
+  assert(/event_name == 'release'/.test(publishIf) && /workflow_dispatch/.test(publishIf), 'publish runs only on a release or a deliberate dispatch');
 });
 
 console.log(`\n${passed} passed, ${failed} failed.`);

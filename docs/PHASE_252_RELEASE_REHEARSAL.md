@@ -76,10 +76,27 @@ fields so the exact handoff can be pinned and re-verified.
 ## CI wiring, without write permission
 
 CI runs `npm run test:phase252-local` in the suites gate, and adds a read-only `rehearsal` job that assembles
-the candidate, runs the rehearsal with this run's evidence (`github.sha` and `needs.<job>.result`), asserts
-`HANDOFF_READY`, and uploads the handoff packet for inspection. The job has **no `permissions:` block**, so it
-inherits `contents: read` and is structurally incapable of publishing — no registry login, no push, no tag, no
-release upload.
+the candidate, runs the rehearsal with this run's evidence (`github.sha` and `needs.<job>.result`), **always**
+uploads the handoff packet for inspection, and then interprets the outcome for the event with
+`npm run ops:release-rehearsal-gate`. The job has **no `permissions:` block**, so it inherits `contents: read`
+and is structurally incapable of publishing — no registry login, no push, no tag, no release upload.
+
+The gate is **event-aware**, because the release tag legitimately does not exist yet during pull-request
+validation, so the Phase 250 readiness proof honestly returns `NOT_RUN` for its "HEAD is at the release tag"
+check and the rehearsal is `NOT_RUN`. That is the correct offline answer, and on a validation event it must
+neither fail CI nor be faked into `HANDOFF_READY`:
+
+* On a **pull request** or any other non-publishing validation event, `HANDOFF_READY` passes, and a `NOT_RUN`
+  passes **only** when it is caused *solely* by the intentionally absent release tag (the readiness gate is the
+  only `NOT_RUN` gate and Git was available). A `NOT_RUN` from missing CI evidence or absent Git, and every
+  `BLOCKED` or `INVALID`, still fails.
+* On an **actual release** or a **deliberate `workflow_dispatch` from the matching version tag** — the same
+  events that can reach `publish`, decided by the *same* tested `release-ref` function `publish` uses — **only
+  `HANDOFF_READY` passes**. `BLOCKED`, `INVALID` and `NOT_RUN` all fail and prevent publish.
+
+This is a **step**, not a job-level `if:`, so the `rehearsal` job still runs unconditionally on every event and
+can never be conditionally skipped. The gate fails closed: a missing or unreadable handoff packet is never a
+pass.
 
 Crucially, **`publish` requires `rehearsal`** — the `rehearsal` job is one of `publish`'s `needs`, alongside
 `suites`, `image`, `bundle`, `release-candidate` and `lifecycle`. A release therefore cannot go out when the
