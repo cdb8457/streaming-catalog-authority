@@ -1,10 +1,13 @@
-import { spawnSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, mkdirSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { asMap, parseYaml, stringList, yamlStrings, type YamlMap, type YamlValue } from './helpers/compose-yaml.js';
 import { removeQuietly, runScript, usableBash, type Shell } from '../src/ops/usable-shell.js';
+import {
+  acceptanceRun, classifyAcceptanceRun, describeAcceptanceRun, flakyDocker, reachableDocker, unreachableDocker,
+  type AcceptanceRun,
+} from './helpers/docker-acceptance.js';
 
 // Phase 249 — the release LIFECYCLE acceptance CONTRACT, checked the way a machine with no Docker daemon can
 // check it: statically (the workflow wiring, the orchestrator's structure and boundaries, the honest
@@ -277,41 +280,174 @@ test('the Phase 249 doc states coverage, the local command, CI-required status, 
 });
 
 // ---------------------------------------------------------------------------------------------------------
-// Executed for real, without a Docker daemon
+// Executed for real, with the Docker daemon MADE unreachable
+//
+// These two used to start by probing `docker info` from here and, when that probe failed, assert that the
+// orchestrator launched immediately afterwards MUST exit 3. Two processes, two moments, one prediction — and
+// in PR 21's run 30093160235 (attempt 1) the prediction lost: the probe hit a transient failure, the
+// orchestrator reached a healthy daemon, ran the real lifecycle and exited 0, and the suite failed the build
+// for "expected 3, got 0". A correct run was reported as a defect.
+//
+// The fix is to stop predicting and start CONTROLLING. `unreachableDocker()` puts a `docker` on the child's
+// PATH that can never reach a daemon (and points DOCKER_HOST at nothing, in case a host ever resolved some
+// other docker), so the orchestrator's OWN preflight fails for a reason this test created. That holds on a
+// laptop with no daemon and on a CI runner with a healthy one — where the old suite silently asserted
+// nothing at all. The verdict then comes from what the run itself reported, never from a probe.
 // ---------------------------------------------------------------------------------------------------------
 
 const bash: Shell | null = usableBash();
 
-function dockerDaemonReachable(): boolean {
-  const run = spawnSync('docker', ['info', '--format', '{{.ServerVersion}}'],
-    { encoding: 'utf8', timeout: 15000, shell: process.platform === 'win32' });
-  return run.status === 0;
+/**
+ * Run the real orchestrator with Docker guaranteed unreachable for that child process alone.
+ *
+ * Staging and upload directories are redirected into a throwaway workspace, so running this suite can never
+ * disturb the artifacts of a real lifecycle run happening on the same machine.
+ */
+function runWithUnreachableDocker(shell: Shell, extra: NodeJS.ProcessEnv = {}): AcceptanceRun {
+  const docker = unreachableDocker();
+  const ws = mkdtempSync(join(tmpdir(), 'p249-nodocker-'));
+  try {
+    return acceptanceRun(runScript(shell, join(root, ORCHESTRATOR), {
+      cwd: root,
+      timeout: 120000,
+      env: {
+        ...docker.env,
+        RC_LIFECYCLE_STAGING_DIR: join(ws, 'staging'),
+        RC_LIFECYCLE_ARTIFACT_DIR: join(ws, 'artifacts'),
+        ...extra,
+      },
+    }));
+  } finally { docker.dispose(); removeQuietly(ws); }
 }
 
-test('without a Docker daemon the orchestrator SKIPs (exit 3) and never claims to have run', () => {
+test('with the Docker daemon unreachable the orchestrator SKIPs (exit 3) and never claims to have run', () => {
   if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
-  if (dockerDaemonReachable()) {
-    console.log('        (note: Docker IS reachable here, so live skip-execution is exercised by CI\'s lifecycle job, not here)');
-    return;
-  }
-  const run = runScript(bash, join(root, ORCHESTRATOR), { cwd: root, timeout: 120000 });
-  assertEq(run.status, 3, `the orchestrator exits 3 (SKIP) when Docker is unavailable: ${run.stderr ?? ''}`);
-  const out = `${run.stdout ?? ''}${run.stderr ?? ''}`;
-  assert(/SKIP:/.test(out) && /CI-required/.test(out) && /NOT executed/.test(out),
+  const run = runWithUnreachableDocker(bash);
+  assertEq(classifyAcceptanceRun(run), 'HONEST_SKIP',
+    `an unreachable daemon must produce exit 3 WITH a SKIP notice: ${describeAcceptanceRun(run)}`);
+  assertEq(run.status, 3, `the orchestrator exits 3 (SKIP): ${describeAcceptanceRun(run)}`);
+  assert(/the Docker daemon is not reachable/.test(run.output),
+    `and names the daemon as the prerequisite it lacked: ${describeAcceptanceRun(run)}`);
+  assert(/CI-required/.test(run.output) && /NOT executed/.test(run.output),
     'it says the lifecycle acceptance is CI-required and was not executed');
 });
 
-test('with REQUIRE_ACCEPTANCE=1 and no daemon the orchestrator FAILs (exit 1), never a silent skip', () => {
+test('with REQUIRE_ACCEPTANCE=1 and an unreachable daemon the orchestrator FAILs (exit 1), never a silent skip', () => {
   if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
-  if (dockerDaemonReachable()) {
-    console.log('        (note: Docker IS reachable here; the hard-fail path is exercised by CI, not here)');
-    return;
+  const run = runWithUnreachableDocker(bash, { REQUIRE_ACCEPTANCE: '1' });
+  assertEq(classifyAcceptanceRun(run), 'REFUSED_TO_SKIP',
+    `under REQUIRE_ACCEPTANCE=1 a missing prerequisite is a failure, not a skip: ${describeAcceptanceRun(run)}`);
+  assertEq(run.status, 1, `it exits 1 (FAIL): ${describeAcceptanceRun(run)}`);
+  assert(/REQUIRE_ACCEPTANCE=1/.test(run.output), 'and says why it refused to skip');
+  assert(!/^SKIP:/m.test(run.output), 'it prints no SKIP notice at all — CI never sees a skip it could mistake for a pass');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Adversarial: the detection race itself, reproduced on demand
+// ---------------------------------------------------------------------------------------------------------
+
+/** A stand-in orchestrator with the real one's preflight contract and none of its cost. */
+function fakeOrchestrator(dir: string, afterProbe: readonly string[]): string {
+  const path = join(dir, 'fake-orchestrator.sh');
+  writeFileSync(path, [
+    'set -euo pipefail',
+    'skip() {',
+    '  echo',
+    '  echo "SKIP: ${1}."',
+    '  echo "      The release LIFECYCLE acceptance (real Docker Compose) was NOT executed here."',
+    '  echo "      It is CI-required."',
+    '  exit 3',
+    '}',
+    'docker info >/dev/null 2>&1 || skip "the Docker daemon is not reachable"',
+    ...afterProbe,
+    '',
+  ].join('\n'));
+  return path;
+}
+
+const RAN_THE_LIFECYCLE = ['echo "==> the whole lifecycle ran against a healthy daemon"', 'exit 0'];
+
+test('a probe that failed transiently never makes the suite demand a SKIP from a run that really executed', () => {
+  if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  const ws = mkdtempSync(join(tmpdir(), 'p249-race-'));
+  const docker = flakyDocker(1);   // unreachable for exactly one invocation, healthy afterwards
+  try {
+    // 1. The earlier probe — the one the old suite made from Node — sees the transient failure.
+    const probe = join(ws, 'probe.sh');
+    writeFileSync(probe, 'docker info >/dev/null 2>&1 || exit 1\n');
+    const probed = runScript(bash, probe, { cwd: ws, timeout: 60000, env: docker.env });
+    assertEq(probed.status, 1, 'the earlier probe saw the daemon as unreachable, exactly as CI attempt 1 did');
+
+    // 2. The orchestrator, launched moments later, finds a healthy daemon and runs the real thing.
+    const run = acceptanceRun(runScript(bash, fakeOrchestrator(ws, RAN_THE_LIFECYCLE),
+      { cwd: ws, timeout: 60000, env: docker.env }));
+    assertEq(run.status, 0, `the later run reached the daemon and executed: ${describeAcceptanceRun(run)}`);
+
+    // 3. THE REGRESSION. The old contract asserted `status === 3` here, on the strength of step 1 alone, and
+    //    turned this correct run into a red build. The contract must instead read what the run reported: a
+    //    real execution is a real execution, and it is not a skip-contract violation.
+    assertEq(classifyAcceptanceRun(run), 'RAN_FOR_REAL',
+      `a run that really executed is classified as such, never as a broken skip: ${describeAcceptanceRun(run)}`);
+    assert(classifyAcceptanceRun(run) !== 'HONEST_SKIP', 'and is never mistaken for a skip');
+    assert(classifyAcceptanceRun(run) !== 'SKIP_CLAIMED_AS_PASS', 'nor for a skip dressed up as a pass');
+  } finally { docker.dispose(); removeQuietly(ws); }
+});
+
+test('forcing the daemon unreachable makes the skip path deterministic, run after run', () => {
+  if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  const ws = mkdtempSync(join(tmpdir(), 'p249-forced-'));
+  const docker = unreachableDocker();
+  try {
+    // The same fake orchestrator that exited 0 above — under a daemon that cannot come back, it skips every
+    // time. No probe, no prediction, no window in which the two can disagree.
+    const script = fakeOrchestrator(ws, RAN_THE_LIFECYCLE);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      const run = acceptanceRun(runScript(bash, script, { cwd: ws, timeout: 60000, env: docker.env }));
+      assertEq(classifyAcceptanceRun(run), 'HONEST_SKIP',
+        `attempt ${attempt} skips honestly: ${describeAcceptanceRun(run)}`);
+    }
+  } finally { docker.dispose(); removeQuietly(ws); }
+});
+
+test('a genuine orchestration failure stays a failure (exit 1) and is never read as a skip', () => {
+  if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  const ws = mkdtempSync(join(tmpdir(), 'p249-genuine-fail-'));
+  const docker = reachableDocker();   // the preflight passes; what fails is the lifecycle itself
+  try {
+    const script = fakeOrchestrator(ws, ['echo "FAIL: the stack never became healthy" >&2', 'exit 1']);
+    const run = acceptanceRun(runScript(bash, script, { cwd: ws, timeout: 60000, env: docker.env }));
+    assertEq(run.status, 1, `a broken lifecycle exits 1: ${describeAcceptanceRun(run)}`);
+    assertEq(classifyAcceptanceRun(run), 'FAILED',
+      `and is reported as a failure, not as the no-silent-skip refusal: ${describeAcceptanceRun(run)}`);
+  } finally { docker.dispose(); removeQuietly(ws); }
+});
+
+test('a skip is never a pass: exit 0 with a SKIP notice is always a defect', () => {
+  if (bash === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  const ws = mkdtempSync(join(tmpdir(), 'p249-skip-as-pass-'));
+  const docker = unreachableDocker();
+  try {
+    // A hypothetical orchestrator that announced a skip and then exited 0 — the failure mode the whole
+    // SKIP=3 convention exists to prevent. Whatever else changes, this must never classify as success.
+    const script = join(ws, 'skip-then-pass.sh');
+    writeFileSync(script, 'echo "SKIP: the Docker daemon is not reachable."\nexit 0\n');
+    const run = acceptanceRun(runScript(bash, script, { cwd: ws, timeout: 60000, env: docker.env }));
+    assertEq(classifyAcceptanceRun(run), 'SKIP_CLAIMED_AS_PASS',
+      `exit 0 after announcing a skip is a defect: ${describeAcceptanceRun(run)}`);
+  } finally { docker.dispose(); removeQuietly(ws); }
+});
+
+test('neither acceptance suite predicts a later skip from an earlier Docker probe', () => {
+  // The pattern, not just this instance: a Node-side `docker` probe in a suite exists only to predict what a
+  // separate process will find, and that prediction is the flake. Spelled in pieces so this assertion does
+  // not match the very line that states it.
+  const probeThenPredict = new RegExp(['spawnSync\\(\\s*', "'docker'"].join(''));
+  for (const suite of ['test/release-lifecycle-acceptance.ts', 'test/release-candidate-acceptance.ts']) {
+    const source = read(suite);
+    assert(!probeThenPredict.test(source), `${suite} no longer probes Docker to predict another process's outcome`);
+    assert(/unreachableDocker/.test(source), `${suite} forces the no-daemon condition instead of waiting for one`);
+    assert(/classifyAcceptanceRun/.test(source), `${suite} judges a run by what that run itself reported`);
   }
-  const run = runScript(bash, join(root, ORCHESTRATOR), {
-    cwd: root, timeout: 120000, env: { ...process.env, REQUIRE_ACCEPTANCE: '1' },
-  });
-  assertEq(run.status, 1, `it exits 1 (FAIL) under REQUIRE_ACCEPTANCE=1: ${run.stdout ?? ''}`);
-  assert(/REQUIRE_ACCEPTANCE=1/.test(`${run.stdout ?? ''}${run.stderr ?? ''}`), 'and says why it refused to skip');
 });
 
 // ---------------------------------------------------------------------------------------------------------

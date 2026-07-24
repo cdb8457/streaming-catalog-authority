@@ -101,6 +101,19 @@ It validates the workflow wiring, the publish dependency, the orchestrator's iso
 exercises, the persistence checks, the honest fixture limitation, and — executed for real — the orchestrator's
 skip/fail semantics and the arm-before-up teardown under an injected compose failure.
 
+**How the skip/fail semantics are exercised, on every host.** The suite does not wait for a machine that
+happens to have no daemon, and it never probes `docker info` here in order to predict what the orchestrator
+will find a moment later: two processes asking at two different moments can disagree, and when they did —
+PR 21, run `30093160235` attempt 1 — a transient probe failure failed the build for an orchestrator that had
+correctly run the whole lifecycle and exited `0`. Instead the suite **creates** the condition: it puts a
+`docker` on the child's `PATH` that can never reach a daemon (and points `DOCKER_HOST` at nothing), so the
+orchestrator's own preflight fails for a reason the test made. The verdict then comes from what that run
+itself reported — exit `3` **with** a SKIP notice is an honest skip, exit `1` naming `REQUIRE_ACCEPTANCE=1`
+is the refusal to skip, exit `1` saying neither is a genuine orchestration failure, and exit `0` after
+announcing a skip is always a defect. That contract, and a regression that reproduces the probe-disagreement
+on demand, live in `test/helpers/docker-acceptance.ts`. The real lifecycle run is unaffected: it is still the
+CI `lifecycle` job, against a real daemon, with `REQUIRE_ACCEPTANCE=1`.
+
 ## Status
 
 **The real lifecycle run is CI-required and runs on Linux.** At the time of writing it has **not** been
