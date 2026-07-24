@@ -230,7 +230,7 @@ info "built ${PRIOR_IMAGE} (${PRIOR_VERSION}) and ${CANDIDATE_IMAGE} (${CANDIDAT
 # 4. Fresh setup: generate secrets once. Read the operator token WITHOUT printing it.
 # ---------------------------------------------------------------------------------------------------------
 step "fresh setup — generate secrets in the extracted directory (token never printed)"
-( cd "${EXTRACTED}" && ./setup.sh >/dev/null 2>&1 ) || fail "the bundle's setup.sh failed"
+( cd "${EXTRACTED}" && bash ./setup.sh >/dev/null 2>&1 ) || fail "the bundle's setup.sh failed"
 TOKEN_FILE="${EXTRACTED}/secrets/operator_ui_token"
 [ -s "${TOKEN_FILE}" ] || fail "setup.sh did not create an operator token"
 TOKEN="$(cat "${TOKEN_FILE}")"

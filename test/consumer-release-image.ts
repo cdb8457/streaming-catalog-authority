@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -38,6 +38,7 @@ import {
   type BundleOptions,
   type BundleSources,
 } from '../src/ops/consumer-release-bundle.js';
+import { SECRET_FILE_IDS } from '../src/ops/operator-ui-installation-readiness.js';
 
 // Phase 245 — the consumer-ready image and release bundle.
 //
@@ -513,6 +514,66 @@ for (const [label, script, resolve] of [
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Secret delivery to a NON-ROOT app (Phase 232 remediation)
+// ---------------------------------------------------------------------------------------------------------
+
+test('each service is granted exactly the secrets it reads, and no more', () => {
+  const stack = compose('docker-compose.runtime.yml');
+  // The app inspects exactly these files (operator-ui-installation-readiness.ts's SECRET_FILE_IDS) and its
+  // startup reads the operator token among them. It is granted those and nothing else, so a non-root process
+  // reads only the secrets it needs.
+  const appSecrets = stringList(service(stack, 'app').secrets ?? null, 'app secrets').slice().sort();
+  assertEq(appSecrets.join(','), [...SECRET_FILE_IDS].slice().sort().join(','),
+    'the app is granted exactly the secret files it inspects');
+  const pgSecrets = stringList(service(stack, 'postgres').secrets ?? null, 'postgres secrets').slice().sort();
+  assertEq(pgSecrets.join(','), 'postgres_password', 'postgres is granted only its own password');
+  assert(!appSecrets.includes('postgres_password'), 'and the app is never handed the database superuser password');
+});
+
+test('the setup script delivers app secrets a non-root container can read, keeping the host boundary at 0700', () => {
+  // Compose (non-Swarm) bind-mounts a file secret with the SOURCE file's ownership and mode unchanged — the
+  // secret's uid/gid/mode keys are ignored — so a 0600 host secret is unreadable by the container's non-root
+  // `node` user, and the app refuses startup in a restart loop. The fix is at the source file: the secrets the
+  // non-root app reads carry the world-read bit, guarded on the host by the 0700 directory. These are Unix
+  // permission bits, so the assertion is a POSIX one; on win32 the same setup.ps1 runs under Docker Desktop's
+  // own mount semantics and file modes do not carry across.
+  if (process.platform === 'win32') { console.log('        (skipped: POSIX file modes do not apply on win32)'); return; }
+  const shell = bashOrFail();
+  const out = assembleBundle();
+  try {
+    const run = runScript(shell, join(out, 'setup.sh'), { cwd: out });
+    assertEq(run.status, 0, `setup.sh runs — ${describeRun(run)}`);
+    const mode = (rel: string): number => statSync(join(out, rel)).mode & 0o777;
+
+    // The directory is the host boundary: no other host user can traverse into it, whatever the files inside
+    // are — so a world-read bit on a file within it does not widen who, on the host, can reach the secret.
+    assertEq(mode('secrets'), 0o700, 'the secrets directory is private to the owner');
+
+    // Every secret the NON-ROOT app reads through the mount must be readable by a user that is neither its
+    // owner nor in its group — i.e. the world-read bit is set. That file bit is the only lever left once
+    // Compose has ignored uid/gid/mode and the app is (correctly) not root.
+    for (const id of SECRET_FILE_IDS) {
+      assert((mode(join('secrets', id)) & 0o004) !== 0,
+        `${id} is readable by the non-root app through the mount, got 0${mode(join('secrets', id)).toString(8)}`);
+    }
+    // postgres_password is read once by root inside the postgres container, so it stays owner-only: the fix
+    // broadens no permission that did not need broadening.
+    assertEq(mode(join('secrets', 'postgres_password')) & 0o077, 0,
+      'postgres_password grants no group or world access');
+
+    // A re-run must repair the mode on a secret an older setup left at 0600 — WITHOUT regenerating its value,
+    // so it can never lock a running stack out and never leave the app unable to read a secret it needs.
+    const tokenPath = join(out, 'secrets', 'operator_ui_token');
+    const kept = readFileSync(tokenPath, 'utf8');
+    chmodSync(tokenPath, 0o600);
+    const again = runScript(shell, join(out, 'setup.sh'), { cwd: out });
+    assertEq(again.status, 0, `setup.sh re-runs — ${describeRun(again)}`);
+    assertEq(readFileSync(tokenPath, 'utf8'), kept, 'the re-run keeps the token value');
+    assert((statSync(tokenPath).mode & 0o004) !== 0, 'and repairs the mode so the app can read it again');
+  } finally { removeQuietly(join(out, '..')); }
+});
+
+// ---------------------------------------------------------------------------------------------------------
 // CI: the daemon-backed checks this suite cannot make, and the gate on publishing
 // ---------------------------------------------------------------------------------------------------------
 
@@ -543,6 +604,35 @@ test('CI runs the daemon-backed checks this suite deliberately does not fake', (
   const check = read('deploy/ci/release-bundle-check.sh');
   assert(check.includes('sha256sum -c SHA256SUMS'), 'with the checksum tool a user would use');
   assert(check.includes('docker compose config'), 'and proves the bundle stands alone as a Compose project');
+});
+
+test('the setup script is packaged executable, and every direct script run names its interpreter', () => {
+  // The runtime-image smoke used to run `./deploy/local-runtime-setup.sh` directly; a checkout that lost the
+  // mode bit (a zip export, a core.fileMode=false clone, a Windows working tree) failed there with a bare
+  // "Permission denied". The fix is belt-and-braces: the script is tracked executable, AND the CI runs name
+  // `bash`, so a run never depends on the checkout's mode bit.
+  const tracked = spawnSync('git', ['ls-files', '-s', 'deploy/local-runtime-setup.sh'],
+    { cwd: root, encoding: 'utf8', timeout: 60000 });
+  if (tracked.status !== 0) {
+    console.log('        (note: not a git checkout — the tracked mode is not asserted here)');
+  } else {
+    assert(/^100755 /.test(tracked.stdout ?? ''),
+      `deploy/local-runtime-setup.sh is tracked executable (100755): ${(tracked.stdout ?? '').trim()}`);
+  }
+
+  // The one script the smoke runs from the CHECKOUT is named through bash.
+  assert(/\bbash \.\/deploy\/local-runtime-setup\.sh\b/.test(read('deploy/ci/runtime-image-smoke.sh')),
+    'the smoke runs the checkout setup script through bash');
+  assert(!/(?<!bash )\.\/deploy\/local-runtime-setup\.sh >/.test(read('deploy/ci/runtime-image-smoke.sh')),
+    'and leaves no bare ./deploy/local-runtime-setup.sh run behind');
+
+  // The acceptance orchestrators run the EXTRACTED bundle's setup.sh; the bundle ships .sh executable, but
+  // naming bash removes even that dependency.
+  for (const script of ['deploy/ci/release-candidate-acceptance.sh', 'deploy/ci/release-lifecycle-acceptance.sh']) {
+    const text = read(script);
+    assert(text.includes('bash ./setup.sh'), `${script} runs the extracted setup.sh through bash`);
+    assert(!/&& \.\/setup\.sh\b/.test(text), `${script} leaves no bare ./setup.sh run behind`);
+  }
 });
 
 test('CI runs the regression suites this phase must not break', () => {

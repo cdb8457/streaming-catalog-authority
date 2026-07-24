@@ -576,15 +576,23 @@ test('the upload script reads the paths a Windows caller actually has', () => {
     const env = { ...process.env, RELEASE_TAG: 'v1.2.3', ARCHIVE: archive };
     const script = join(root, 'deploy/ci/release-asset-upload.sh');
 
-    // A Windows caller has the directory in either spelling, and the workspace name has a space in it. Both
-    // must reach the same directory — proven by getting PAST the directory and filename checks to the verify
-    // step, which is the next thing that can fail. (Neither spelling needs repairing: argv carries the value
-    // with no escape processing, and Git Bash resolves both. This holds that true.)
+    // The workspace name has a space in it, and the path must survive `cd` intact — proven by getting PAST the
+    // directory and filename checks to the verify step, which is the next thing that can fail. argv carries
+    // the value with no escape processing, so no spelling needs repairing.
+    //
+    // PLATFORM CONTRACT. The forward-slash spelling is a real path on POSIX and on Windows Git Bash alike, so
+    // it is exercised everywhere — that is the coverage for a space in the path and for forward slashes. The
+    // BACKSLASH spelling is a path only under Windows Git Bash, which resolves it; on a POSIX shell a
+    // backslash is an ordinary filename character, not a separator, so `\tmp\...` is simply not a directory
+    // that exists. Asserting it resolves on Linux would be asserting a falsehood, so that spelling is a
+    // Windows-only leg. (usable-shell.ts always runs Git Bash on win32, so this is exactly Git Bash there.)
     //
     // The checksum file is empty, so `sha256sum -c` refuses it and the run stops there. That is the point:
     // the release is reached through the archive checks, and the step that would need a GitHub token is
     // never reached, which is what lets this run on a laptop with no `gh` installed.
-    for (const spelling of [workspace.replace(/\\/g, '/'), workspace.replace(/\//g, '\\')]) {
+    const spellings = [workspace.replace(/\\/g, '/')];
+    if (process.platform === 'win32') spellings.push(workspace.replace(/\//g, '\\'));
+    for (const spelling of spellings) {
       const run = runScript(bashOrFail(), script, { cwd: root, args: [spelling], env });
       const output = `${run.stdout ?? ''}${run.stderr ?? ''}`;
       assert(!output.includes('no archive directory at'), `${spelling} resolves to a directory — ${describeRun(run)}`);

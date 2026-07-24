@@ -62,7 +62,11 @@ done
 echo "  no development dependencies"
 
 step "generate secrets and the artifact folder"
-./deploy/local-runtime-setup.sh >/dev/null
+# Invoked through `bash` on purpose: this script is tracked executable (100755), but a checkout that lost the
+# mode bit — a zip export, a `core.fileMode=false` clone, a Windows working tree — would otherwise fail here
+# with a bare "Permission denied" instead of running. The interpreter is named, so the run does not depend on
+# the checkout's mode bit at all.
+bash ./deploy/local-runtime-setup.sh >/dev/null
 TOKEN="$(cat ./secrets/operator_ui_token)"
 # Keep the operator token out of the CI log even if a later command echoes it.
 if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::add-mask::${TOKEN}"; fi
@@ -86,6 +90,22 @@ if [ -z "${healthy}" ]; then
   exit 1
 fi
 echo "  /healthz is 200"
+
+step "the non-root app user can read the mounted secrets (Phase 232 secret-delivery fix)"
+# The defect this proves absent: Compose bind-mounts file secrets with the HOST file's ownership and mode, so
+# a 0600 host secret is unreadable by the container's non-root `node` user — the app then refused startup in a
+# restart loop. /healthz being 200 already implies the operator token was read at startup; this makes it
+# explicit and unmissable by reading the token as the app's OWN user, from inside the running container, and
+# confirming that user is not root. It reads one byte and prints nothing, so the secret never reaches the log.
+appuid="$("${COMPOSE[@]}" exec -T app id -u | tr -d '\r')"
+if [ "${appuid}" = "0" ]; then echo "FAIL: the app container runs as root" >&2; exit 1; fi
+for secret in operator_ui_token database_url admin_database_url completion_secret custodian_kek; do
+  if ! "${COMPOSE[@]}" exec -T app sh -c "head -c1 /run/secrets/${secret} >/dev/null 2>&1"; then
+    echo "FAIL: the non-root app user (uid ${appuid}) cannot read /run/secrets/${secret}" >&2
+    exit 1
+  fi
+done
+echo "  the app runs as uid ${appuid} (non-root) and can read every mounted secret it needs"
 
 step "the authenticated route is authenticated"
 code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/api/promotion-chain")"

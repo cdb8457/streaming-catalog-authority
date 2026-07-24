@@ -43,14 +43,36 @@ random_secret() {
   fi
 }
 
+# SECRET FILE MODES — why some of these are not 0600.
+#
+# Compose delivers ./secrets/* to the containers as file-backed secrets. In non-Swarm `docker compose` (what
+# this stack is), a file secret is a BIND MOUNT of the source file: its ownership and permission bits reach
+# the container unchanged, and the `uid`/`gid`/`mode` keys of the long secret syntax are ignored (they only
+# take effect under Swarm). The operator UI container runs as the unprivileged `node` user, which is neither
+# the owner nor in the group of a file this script writes, so a 0600 secret is UNREADABLE inside the container
+# and the app refuses to start. Making the app run as root, or dropping its read-only rootfs, would trade a
+# real security property for this convenience; neither is acceptable.
+#
+# The host boundary is the SECRETS_DIR itself, kept at 0700 below: no other host user can traverse into it,
+# whatever the individual files are. So the secrets a NON-ROOT app must read are given the world-read bit —
+# the container reads them through the mount, while on the host they stay reachable only by you (through the
+# 0700 directory). postgres_password is different: the postgres image reads it once, as root, before dropping
+# to the postgres user, so it needs no world-read bit and keeps the tighter 0600.
+SECRET_MODE_APP=644     # owner rw, world r — read by the non-root `node` user inside the app container
+SECRET_MODE_ROOT=600    # owner rw only — read by root inside the postgres container, never by a non-root app
+
 write_secret_if_absent() {
-  local name="$1" value="$2"
+  local name="$1" value="$2" mode="${3:-${SECRET_MODE_APP}}"
   if [ -f "${SECRETS_DIR}/${name}" ]; then
+    # Enforce the mode on a re-run too, so a secret written 0600 by an older setup becomes container-readable
+    # without regenerating its value — a re-run must never lock you out, and must also never leave the app
+    # unable to read a secret it needs.
+    chmod "${mode}" "${SECRETS_DIR}/${name}" 2>/dev/null || true
     echo "  kept      ${SECRETS_DIR}/${name} (already exists)"
     return
   fi
   printf '%s\n' "${value}" > "${SECRETS_DIR}/${name}"
-  chmod 600 "${SECRETS_DIR}/${name}" 2>/dev/null || true
+  chmod "${mode}" "${SECRETS_DIR}/${name}" 2>/dev/null || true
   echo "  created   ${SECRETS_DIR}/${name}"
 }
 
@@ -61,15 +83,18 @@ mkdir -p "${SECRETS_DIR}"
 chmod 700 "${SECRETS_DIR}" 2>/dev/null || true
 
 PG_PASSWORD="$(random_secret | tr -d '\n/+=' | cut -c1-32)"
-write_secret_if_absent postgres_password "${PG_PASSWORD}"
+# Read only by root inside the postgres container, so it keeps the tighter owner-only mode.
+write_secret_if_absent postgres_password "${PG_PASSWORD}" "${SECRET_MODE_ROOT}"
 # Read back whatever is on disk, so the URLs match a password kept from an earlier run.
 PG_PASSWORD="$(cat "${SECRETS_DIR}/postgres_password")"
 
-write_secret_if_absent admin_database_url "postgresql://postgres:${PG_PASSWORD}@postgres:5432/catalog"
-write_secret_if_absent database_url "postgresql://postgres:${PG_PASSWORD}@postgres:5432/catalog"
-write_secret_if_absent completion_secret "$(random_secret)"
-write_secret_if_absent custodian_kek "$(random_secret)"
-write_secret_if_absent operator_ui_token "$(random_secret)"
+# Read by the NON-ROOT operator UI app (startup token, and the readiness panel that inspects every secret),
+# so these carry the world-read bit — guarded on the host by the 0700 SECRETS_DIR.
+write_secret_if_absent admin_database_url "postgresql://postgres:${PG_PASSWORD}@postgres:5432/catalog" "${SECRET_MODE_APP}"
+write_secret_if_absent database_url "postgresql://postgres:${PG_PASSWORD}@postgres:5432/catalog" "${SECRET_MODE_APP}"
+write_secret_if_absent completion_secret "$(random_secret)" "${SECRET_MODE_APP}"
+write_secret_if_absent custodian_kek "$(random_secret)" "${SECRET_MODE_APP}"
+write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"
 
 mkdir -p "${RECORDS_DIR}"
 echo "  ready     ${RECORDS_DIR} (mounted read-only into the container)"

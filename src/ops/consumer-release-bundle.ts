@@ -263,9 +263,12 @@ version instead of JSON.
 
 ## Where your token is
 
-In \`./secrets/operator_ui_token\`, a plain file created by the setup script and readable only by you. It is
-mounted into the container as a Docker secret at \`/run/secrets/operator_ui_token\`; it is never an
-environment variable, never in the Compose file, and never in a URL, a cookie or a log.
+In \`./secrets/operator_ui_token\`, a plain file created by the setup script inside \`./secrets/\`, a directory
+the setup script locks to you alone (mode 0700) — no other user on your machine can reach anything inside it.
+It is mounted into the container as a Docker secret at \`/run/secrets/operator_ui_token\`; it is never an
+environment variable, never in the Compose file, and never in a URL, a cookie or a log. (The secret files the
+non-root app must read carry a read bit so the container can read them through the mount; the 0700 directory,
+not the file bit, is what keeps them private on your machine.)
 
 Lost it? \`cat ./secrets/operator_ui_token\` (PowerShell: \`Get-Content .\\secrets\\operator_ui_token\`).
 
