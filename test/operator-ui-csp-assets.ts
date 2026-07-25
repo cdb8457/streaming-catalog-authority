@@ -435,6 +435,51 @@ await test('entering a token and loading exercises installation, status, logs, c
   } finally { await h.stop(); }
 });
 
+// Phase 253. The reported defect, at the level it was reported: a person opened the page on a working
+// installation and the first thing across the top was "a dependency it needs is not ready", naming nothing.
+// It came from treating /api/status's 503 as a thrown request failure — throwing away the body that said
+// exactly which check had failed, in favour of a sentence that said nothing.
+await test('a failing self-check populates the Status panel and names what failed, instead of a banner about "a dependency"', async () => {
+  const h = await startHarness();
+  try {
+    const app = await loadApp(h.port);
+    app.setToken(TOKEN);
+    await app.clickRefresh();
+    const el = (id: string): FakeElement => app.run.elements.get(id)!;
+
+    // This harness has no database, so /api/status genuinely answers 503. That is the case under test.
+    const status = JSON.parse((await httpGet(h.port, '/api/status', TOKEN)).body) as { ok: boolean };
+    assertEq(status.ok, false, 'the self-check really is failing here — otherwise this test proves nothing');
+
+    // The panel is RENDERED from the 503 body rather than discarded.
+    assertEq(el('doctor').textContent, 'Needs attention', 'the Status panel rendered the failing verdict');
+    assert(Number(el('failCount').textContent) > 0, 'and the failure count');
+    assert(el('checks').textContent.length > 0, 'and the individual checks, by name');
+    assert(/doctor/i.test(el('checks').textContent), 'which is what an operator needs in order to act');
+    const attention = el('attention');
+    assert(attention.children.length > 0, 'Needs Attention lists the failing items');
+
+    // And the banner points at that panel rather than making a vague claim about the whole service.
+    const banner = el('statusText').textContent;
+    assert(!/a dependency it needs is not ready/i.test(banner),
+      'the banner no longer says "a dependency it needs is not ready", which named nothing and helped nobody');
+    assert(/Needs Attention/i.test(banner), 'it names the panel that lists what actually failed');
+  } finally { await h.stop(); }
+});
+
+await test('the page understands the READY-with-no-records verdict, and never styles it as an unqualified pass', () => {
+  const js = read('src/ops/operator-ui-app.js');
+  // The state exists in the renderer as a first-class case, not as a fallback that would show a bare enum.
+  assert(/READY_NO_RECORDS:\s*'verdict setup'/.test(js),
+    'READY_NO_RECORDS is not styled as a plain green pass — an empty evidence folder must not LOOK like a passing audit');
+  assert(/READY_NO_RECORDS:\s*'READY - NO RECORDS LOADED'/.test(js),
+    'and it renders as words a person can read, not an identifier');
+  assert(/evidenceNote\.textContent\s*=\s*r\.evidenceNote/.test(js),
+    'the evidence note is rendered from the payload, so the page cannot say something the server did not');
+  // The shell has somewhere to put it, or the assignment above would throw at runtime.
+  assert(read('src/ops/operator-ui-service.ts').includes('id="evidenceNote"'), 'the shell carries the element it writes to');
+});
+
 await test('a wrong token shows an actionable error, and correcting it recovers without a reload', async () => {
   const h = await startHarness();
   try {

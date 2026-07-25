@@ -84,11 +84,20 @@ text.
 
 ## Image, tag and digest policy
 
-The published repository is `ghcr.io/cdb8457/catalog-authority-ops`, and this release pins:
+The published repository is `ghcr.io/cdb8457/catalog-authority-ops`, and the ACTIVE release pins:
 
 ```
-ghcr.io/cdb8457/catalog-authority-ops:v1.1.0
+ghcr.io/cdb8457/catalog-authority-ops:v1.1.1
 ```
+
+Earlier releases stay exactly where they are. `v1.0.0` and `v1.1.0` are published and immutable; nothing in
+this repository re-tags, rewrites or overwrites them, which is what makes the documented rollback — set
+`CATALOG_AUTHORITY_IMAGE` back to the previous tag or digest — a real operation rather than a hope. `v1.1.1`
+(Phase 253) is the first-run remediation: the database migrates itself before the UI is allowed to start, an
+operational install with an empty evidence folder stops reporting itself as unfinished, and there is an
+Arcane/Unraid install path whose bind sources resolve on the host the Docker daemon actually runs on. See
+`docs/PHASE_253_FIRST_RUN_AND_ARCANE.md` and
+`docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md`.
 
 **This was wrong when the phase first shipped, and the correction is the point of the remediation.** The
 first version published to `ghcr.io/catalog-authority/…`. Earlier phases wrote the convention with a

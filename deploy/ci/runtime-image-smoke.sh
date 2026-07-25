@@ -83,6 +83,41 @@ trap cleanup EXIT
 step "up"
 "${COMPOSE[@]}" up -d
 
+# Phase 253. The migration is a one-shot the app is gated on, and this is the only place that ordering can be
+# proven against a real daemon rather than read off a YAML file. `up -d` returning at all means Compose was
+# satisfied that `migrate` completed successfully — but "completed" is worth reading back explicitly, because
+# an exit code of 0 from a container that did nothing would satisfy Compose just as well as one that migrated.
+step "the one-shot migration ran to completion before the app was allowed to start"
+migrate_cid="$("${COMPOSE[@]}" ps -aq migrate)"
+if [ -z "${migrate_cid}" ]; then
+  echo "FAIL: no migrate container exists — the app is not gated on a migration at all" >&2
+  "${COMPOSE[@]}" ps -a
+  exit 1
+fi
+migrate_exit="$(docker inspect -f '{{.State.ExitCode}}' "${migrate_cid}")"
+migrate_state="$(docker inspect -f '{{.State.Status}}' "${migrate_cid}")"
+if [ "${migrate_state}" != "exited" ] || [ "${migrate_exit}" != "0" ]; then
+  echo "FAIL: the migration container is ${migrate_state} with exit code ${migrate_exit}, expected exited/0" >&2
+  "${COMPOSE[@]}" logs --tail 100 migrate
+  exit 1
+fi
+migrate_log="$("${COMPOSE[@]}" logs --no-color migrate 2>&1 || true)"
+# THE LEAK CHECK RUNS FIRST, before any branch that might echo this log as a diagnostic. Checking it second
+# would mean the one path that dumps the log — a failed assertion — is also the one path that has not yet
+# established the log is safe to print, and CI logs are public. Order matters here, not just presence.
+case "${migrate_log}" in
+  *'postgresql://'*|*"${TOKEN}"*)
+    echo "FAIL: the migration log leaked a connection string or the operator token" >&2
+    echo "       (the log is deliberately NOT echoed here)" >&2
+    exit 1 ;;
+esac
+# The step codes it prints are a stable contract an operator is told to read; a silent success is not one.
+case "${migrate_log}" in
+  *'runtime-verify'*) echo "  migrate exited 0 having verified the runtime connection can read the schema" ;;
+  *) echo "FAIL: the migration did not report verifying the runtime connection" >&2
+     echo "${migrate_log}" >&2; exit 1 ;;
+esac
+
 step "wait for the container to report healthy"
 healthy=""
 for _ in $(seq 1 60); do
@@ -132,8 +167,28 @@ code="$(curl -s -o /dev/null -w '%{http_code}' "${BASE_URL}/api/installation")"
 if [ "${code}" != "401" ]; then echo "FAIL: unauthenticated readiness read returned ${code}, expected 401" >&2; exit 1; fi
 readiness="$(curl -s -H "X-Operator-UI-Secret: ${TOKEN}" "${BASE_URL}/api/installation")"
 case "${readiness}" in
-  *'"state":"READY"'*|*'"state":"NEEDS_SETUP"'*|*'"state":"DEGRADED"'*) ;;
-  *) echo "FAIL: the readiness route returned no bounded state" >&2; exit 1 ;;
+  *'"state":"READY"'*|*'"state":"READY_NO_RECORDS"'*|*'"state":"NEEDS_SETUP"'*|*'"state":"DEGRADED"'*) ;;
+  *) echo "FAIL: the readiness route returned no bounded state" >&2
+     echo "  observed: $(printf '%s' "${readiness}" | grep -o '"state":"[A-Z_]*"' | head -1)" >&2
+     exit 1 ;;
+esac
+# Phase 253. This stack has real secrets, a real MIGRATED database and an empty records folder, so there is
+# exactly one honest answer and the smoke asserts it rather than accepting any bounded value. "One of four"
+# would have passed just as happily on the v1.1.0 behaviour this release exists to fix.
+case "${readiness}" in
+  *'"state":"READY_NO_RECORDS"'*) echo "  a working install with an empty records folder reports READY_NO_RECORDS" ;;
+  *) echo "FAIL: a fully set-up stack with an empty records folder should report READY_NO_RECORDS" >&2
+     echo "  observed: $(printf '%s' "${readiness}" | grep -o '"state":"[A-Z_]*"' | head -1)" >&2
+     exit 1 ;;
+esac
+# And it says so as a separate fact, in words that cannot be read as a passing audit.
+case "${readiness}" in
+  *'"evidence":"NONE_LOADED"'*) ;;
+  *) echo "FAIL: the readiness route did not report that no evidence is loaded" >&2; exit 1 ;;
+esac
+case "${readiness}" in
+  *'not a passing audit'*'not an authorization'*) echo "  and states what an empty folder does NOT mean" ;;
+  *) echo "FAIL: the readiness payload does not rule out reading an empty install as a passing audit" >&2; exit 1 ;;
 esac
 # The container has real secrets and a real database here, so the two components a laptop cannot exercise
 # must come back satisfied rather than merely present.
@@ -141,10 +196,15 @@ case "${readiness}" in
   *'"id":"secrets","title":"Secret files","state":"OK"'*) echo "  secrets resolve to OK from the mounted Docker secrets" ;;
   *) echo "FAIL: the readiness route did not report the mounted secrets as OK" >&2; echo "${readiness}" >&2; exit 1 ;;
 esac
+# Phase 253 tightened this from "OK or MISSING" to "OK". MISSING means reachable-but-unmigrated, which was an
+# acceptable outcome only while the stack had no migration step — it is EXACTLY the v1.1.0 first-run defect,
+# and accepting it here would let that regression come back green.
 case "${readiness}" in
-  *'"id":"database","title":"Database","state":"OK"'*|*'"id":"database","title":"Database","state":"MISSING"'*)
-    echo "  the database was reached" ;;
-  *) echo "FAIL: the readiness route could not reach the database in the compose stack" >&2; exit 1 ;;
+  *'"id":"database","title":"Database","state":"OK"'*)
+    echo "  the database was reached AND is migrated to the version this build requires" ;;
+  *) echo "FAIL: the database is not migrated — the compose ordering did not do its job" >&2
+     echo "  observed: $(printf '%s' "${readiness}" | grep -o '"id":"database"[^}]*' | head -1)" >&2
+     exit 1 ;;
 esac
 # And no route may leak what it inspected, however real the values now are.
 case "${readiness}" in

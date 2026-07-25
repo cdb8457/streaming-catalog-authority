@@ -467,6 +467,17 @@ const BUNDLE_IMAGE_ENV_VAR = 'CATALOG_AUTHORITY_IMAGE';
 /** `image: ${CATALOG_AUTHORITY_IMAGE:-<fallback>}` — the fallback is captured, and may be absent. */
 const COMPOSE_IMAGE_PIN = new RegExp(`^\\s*image:\\s*\\$\\{${BUNDLE_IMAGE_ENV_VAR}(?::-([^}]*))?\\}\\s*$`, 'gm');
 
+/**
+ * Any `image:` line whose value is NOT a variable reference — a literally hard-coded image.
+ *
+ * The stack legitimately hard-codes `postgres:16`, which is not this project's image and is not pinned by
+ * `CATALOG_AUTHORITY_IMAGE`. What must never appear is a service running THIS project's image from a literal,
+ * because the `.env` pin would then do nothing for that service and the user would silently run something
+ * other than what the packet describes. Counting variable references cannot catch that once the stack has
+ * more than one such service: tampering with one of them leaves the others reading the variable.
+ */
+const COMPOSE_LITERAL_IMAGE = /^\s*image:\s*(?!\$\{)(\S+)\s*$/gm;
+
 /** `CATALOG_AUTHORITY_IMAGE=<ref>` at the start of a line in `.env` — a commented-out line is not a pin. */
 const ENV_IMAGE_PIN = new RegExp(`^${BUNDLE_IMAGE_ENV_VAR}=(.*)$`, 'gm');
 
@@ -695,11 +706,25 @@ function appendManifestConsistency(
   } else if (envPins[0] !== packet.release.imageRef) {
     problems.push('.env does not pin the packet image ref');
   }
+  // EVERY service that runs this project's image must take it from the variable, and every one of them must
+  // fall back to THIS release. It was `exactly once` while the stack had a single such service; from v1.1.1 it
+  // also has the one-shot `migrate` container, and a stack whose migration ran a different build from its app
+  // is precisely the drift worth catching — so the rule is "at least one, and all of them agree" rather than
+  // a count that would have to be edited every time a service is added.
   const composePins = pinnedValues(composeText, COMPOSE_IMAGE_PIN);
-  if (composePins.length !== 1) {
-    problems.push(`docker-compose.yml does not take its image from ${BUNDLE_IMAGE_ENV_VAR} exactly once, so the .env pin would not apply as written`);
-  } else if (composePins[0] !== `${packet.release.imageRepository}:${packet.release.version}`) {
-    problems.push('the docker-compose.yml fallback image is not this release');
+  const expectedFallback = `${packet.release.imageRepository}:${packet.release.version}`;
+  if (composePins.length === 0) {
+    problems.push(`docker-compose.yml does not take its image from ${BUNDLE_IMAGE_ENV_VAR}, so the .env pin would not apply as written`);
+  } else if (composePins.some((value) => value !== expectedFallback)) {
+    problems.push('a docker-compose.yml fallback image is not this release');
+  }
+  // And no service may run this project's image from a literal, which would make the `.env` pin do nothing
+  // for that service however many other services read the variable correctly.
+  const hardCoded = [...composeText.matchAll(COMPOSE_LITERAL_IMAGE)]
+    .map((match) => (match[1] ?? '').trim())
+    .filter((value) => value.split('@')[0]!.split(':')[0] === packet.release.imageRepository);
+  if (hardCoded.length > 0) {
+    problems.push(`docker-compose.yml hard-codes this project's image instead of reading ${BUNDLE_IMAGE_ENV_VAR}, so the .env pin would not apply to every service`);
   }
   if (/:latest(\s|$|["'])/.test(composeText) || /:latest(\s|$|["'])/.test(envText)) problems.push('the bundle points at a floating :latest tag');
   // If the release is digest-pinned, VERSION must carry that same digest.

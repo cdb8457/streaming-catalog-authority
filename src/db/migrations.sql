@@ -142,6 +142,46 @@ END;
 $$;
 REVOKE ALL ON FUNCTION public.set_schema_version(INTEGER) FROM PUBLIC;
 
+-- v4 (Phase 253). The applied schema version, READABLE by the least-privileged runtime role.
+--
+-- WHY A FUNCTION AND NOT A GRANT ON THE TABLE. `schema_meta` stays owner-only: it is a writable row and a
+-- SELECT grant on it is a grant on a thing the runtime has no business holding a handle to. What the runtime
+-- legitimately needs is one integer, so that is exactly what is exposed — a SECURITY DEFINER reader with no
+-- arguments, no side effects and nothing else in its result. The first-run readiness panel calls this over
+-- DATABASE_URL to answer "has this database been migrated, and to what version"; before v4 it read the table
+-- directly, which SUCCEEDED only because the ordinary-computer stack was handing the runtime a superuser URL.
+-- On a correctly least-privileged deployment that read was denied and every install reported SCHEMA_MISSING
+-- forever. A readiness probe that is wrong on exactly the deployments that are configured correctly is worse
+-- than no probe at all.
+CREATE OR REPLACE FUNCTION public.cat_schema_version()
+RETURNS INTEGER LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+  SELECT version FROM public.schema_meta WHERE id = 1;
+$$;
+REVOKE ALL ON FUNCTION public.cat_schema_version() FROM PUBLIC;
+
+-- v4 (Phase 253). Owner-only setter for the RUNTIME role's password.
+--
+-- The role `app` is created below with a placeholder password so a bare `ops:migrate` produces a working
+-- single-machine deployment. That placeholder is not a credential anyone should run with, and the ordinary
+-- runtime stack used to sidestep the problem by pointing DATABASE_URL at the superuser instead — which made
+-- `ops:doctor` report `runtime-least-privileged: FAIL` truthfully, on every ordinary install, forever.
+--
+-- The bootstrap (`ops:bootstrap`) now generates the runtime credential like every other secret and calls this
+-- to make the database agree with it. The role NAME is a fixed literal here, never an argument: the only
+-- thing a caller may influence is the password, and it is interpolated with %L so it is a quoted literal and
+-- nothing else. There is no code path by which a caller can name a different role, and no path by which a
+-- password value reaches a log — the function returns void and PostgreSQL does not log DDL parameters.
+CREATE OR REPLACE FUNCTION public.set_app_role_password(p_password TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF p_password IS NULL OR length(p_password) < 16 THEN
+    RAISE EXCEPTION 'the runtime role password must be at least 16 characters';
+  END IF;
+  EXECUTE format('ALTER ROLE app WITH LOGIN PASSWORD %L', p_password);
+END;
+$$;
+REVOKE ALL ON FUNCTION public.set_app_role_password(TEXT) FROM PUBLIC;
+
 -- Durable abort fence: an operation_id recorded here can never commit a lineage. The
 -- reconciler fences an orphaned provisional key under the per-item lock (only if it has not
 -- committed), then destroys it — closing the reconciler-vs-live-writer TOCTOU.
@@ -800,10 +840,17 @@ REVOKE ALL ON FUNCTION
   cat_publish_settle(BIGINT, TEXT),
   cat_publish_mark_failed(BIGINT),
   set_completion_secret(TEXT),
-  set_schema_version(INTEGER)
+  set_schema_version(INTEGER),
+  set_app_role_password(TEXT),
+  cat_schema_version()
 FROM PUBLIC;
 REVOKE ALL ON FUNCTION set_completion_secret(TEXT) FROM app;  -- app can never set the secret
 REVOKE ALL ON FUNCTION set_schema_version(INTEGER) FROM app;  -- migration version is owner-only
+REVOKE ALL ON FUNCTION set_app_role_password(TEXT) FROM app;  -- the runtime can never re-credential itself
+
+-- The one owner-defined reader the runtime DOES get: the applied schema version, as an integer. It is
+-- granted here rather than left to the blanket grant below so the reason travels with the grant.
+GRANT EXECUTE ON FUNCTION cat_schema_version() TO app;
 
 -- App gets the ciphertext command surface + maintenance. NOT cat_apply (raw lifecycle would
 -- bypass key-control/crypto-shred) and NOT the internal helpers.

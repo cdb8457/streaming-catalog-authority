@@ -198,6 +198,83 @@ export function validateOperatorUiServiceConfig(input: OperatorUiServiceConfigIn
   return { host, port, operatorSecretFile, promotionRecordsDir };
 }
 
+// -----------------------------------------------------------------------------------------------------------
+// Phase 253 — the health gate that stops a container reporting healthy against an unmigrated database.
+// -----------------------------------------------------------------------------------------------------------
+//
+// THE PRIMARY GUARANTEE IS COMPOSE ORDERING, not this. The runtime stack runs a one-shot `migrate` service
+// and the app declares `depends_on: { migrate: { condition: service_completed_successfully } }`, so a failed
+// migration means the app container never starts at all. That is fail-closed at the orchestration layer,
+// where it belongs, and it is what makes an operator unable to reach a half-installed UI.
+//
+// THIS IS THE SECOND LINE. A container started outside that ordering — `docker run`, a launcher that ignores
+// `depends_on`, a hand-written stack — would otherwise answer 200 on /healthz with no schema behind it, which
+// is exactly the v1.1.0 first run. When OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA is set, /healthz answers 503
+// until the database reports the version this build requires.
+//
+// IT IS OFF BY DEFAULT, and the shipped Compose files turn it on. Default-on would make the route depend on a
+// database for every caller including the ones that legitimately have none (the in-process test harnesses,
+// and anyone probing liveness of a UI whose whole point is to render while the database is down).
+//
+// IT LEAKS NOTHING NEW. The body keeps exactly the four keys it always had; only `ok` and `code` change, and
+// "this service is not ready" is the single fact a health endpoint exists to publish. No version number, no
+// component list, no installation verdict.
+//
+// SUCCESS IS MEMOISED. Once the expected schema has been observed, /healthz stops probing entirely: it is a
+// liveness probe after that, and re-querying every fifteen seconds forever would make container health flap
+// on a transient connection blip. Schema DRIFT after startup is a different question, and /api/status and
+// /api/installation are where it is answered honestly rather than as a binary.
+//
+// AND IT CANNOT BE USED TO HAMMER THE DATABASE. This is the one route that needs no token, so "each request
+// opens a connection" would let an unauthenticated caller amplify requests into database connections during
+// the window before the schema is observed. Two bounds prevent that, and neither weakens the gate: concurrent
+// requests share ONE in-flight probe, and a negative result is reused for a short interval rather than
+// re-probed per request. A caller can still learn only "not ready", and it fails closed throughout.
+
+export const OPERATOR_UI_HEALTHZ_SCHEMA_GATE_ENV = 'OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA';
+/** How long a NEGATIVE probe result is reused. Short enough that a real migration is noticed promptly. */
+export const OPERATOR_UI_HEALTHZ_PROBE_MIN_INTERVAL_MS = 2000;
+
+let healthzSchemaObserved = false;
+let healthzProbeInFlight: Promise<boolean> | null = null;
+let healthzLastProbeAt = 0;
+
+/** Reset the memoised gate. Test-only seam; nothing in the running service calls it. */
+export function resetHealthzSchemaGate(): void {
+  healthzSchemaObserved = false;
+  healthzProbeInFlight = null;
+  healthzLastProbeAt = 0;
+}
+
+async function healthzSchemaGate(env: NodeJS.ProcessEnv = process.env): Promise<boolean> {
+  const flag = env[OPERATOR_UI_HEALTHZ_SCHEMA_GATE_ENV];
+  if (flag === undefined || flag === '' || flag === '0' || flag.toLowerCase() === 'false') return true;
+  if (healthzSchemaObserved) return true;
+  if (healthzProbeInFlight !== null) return healthzProbeInFlight;
+  // A recent probe already answered "not ready". Repeating it per request would open a connection per
+  // request; reusing the answer for a moment costs an operator nothing and bounds the amplification.
+  if (healthzLastProbeAt !== 0 && Date.now() - healthzLastProbeAt < OPERATOR_UI_HEALTHZ_PROBE_MIN_INTERVAL_MS) {
+    return false;
+  }
+  // Held in a local as well as the module slot: the slot is cleared inside the promise's own `finally`, so
+  // awaiting the local is what guarantees this caller waits for the probe it started rather than for whatever
+  // happens to be in the slot by then.
+  const probe = (async (): Promise<boolean> => {
+    try {
+      return await probeDatabase({ env }) === 'OK';
+    } catch {
+      return false; // fail closed: an unexplained probe failure is not evidence of a migrated schema
+    } finally {
+      healthzLastProbeAt = Date.now();
+      healthzProbeInFlight = null;
+    }
+  })();
+  healthzProbeInFlight = probe;
+  const ready = await probe;
+  if (ready) healthzSchemaObserved = true;
+  return ready;
+}
+
 export function createOperatorUiServiceServer(
   config: OperatorUiServiceConfig,
   auth: OperatorUiLocalAuthRuntime,
@@ -254,9 +331,10 @@ export function createOperatorUiServiceServer(
 
     if (path === '/healthz') {
       ignoreRequestBody(req);
-      sendJson(res, 200, {
-        ok: true,
-        code: 'OPERATOR_UI_SERVICE_HEALTHY',
+      const schemaReady = await healthzSchemaGate();
+      sendJson(res, schemaReady ? 200 : 503, {
+        ok: schemaReady,
+        code: schemaReady ? 'OPERATOR_UI_SERVICE_HEALTHY' : 'OPERATOR_UI_SERVICE_SCHEMA_NOT_READY',
         service: 'catalog-authority-operator-ui',
         mode: 'read-only-first',
       });
@@ -688,6 +766,7 @@ below.</p>
 <ol class="list steps" id="nextSteps"><li class="muted">Not loaded.</li></ol>
 <h3>Artifacts found</h3>
 <dl class="kv" id="artifactSummary"><dt>Artifacts</dt><dd>Not loaded.</dd></dl>
+<p class="hint" id="evidenceNote"></p>
 <h3>Notes</h3>
 <ul class="list" id="advisories"><li class="muted">Not loaded.</li></ul>
 <p class="hint" id="authorizationNote"></p>

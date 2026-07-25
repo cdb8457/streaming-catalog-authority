@@ -54,12 +54,12 @@
   var nextSteps = document.getElementById('nextSteps');
   var artifactSummary = document.getElementById('artifactSummary');
   var advisories = document.getElementById('advisories');
+  var evidenceNote = document.getElementById('evidenceNote');
 
   // Error text an operator can act on. A bare "request failed" sends someone to the logs for a problem whose
   // answer is "you pasted a stale token"; the status code already knows which of those it is.
   function describeFailure(status, body) {
     if (status === 401) return 'The operator token was not accepted. Re-read ./secrets/operator_ui_token and paste it with no extra spaces or line breaks.';
-    if (status === 503) return 'The service answered, but a dependency it needs is not ready. See Setup & Diagnostics.';
     if (status === 0) return 'The server did not answer. Check that the stack is running, then press Load everything again.';
     return (body && (body.message || body.code)) || ('The request failed with status ' + status + '.');
   }
@@ -104,14 +104,28 @@
     if (items.length === 0) { var li = document.createElement('li'); li.className = 'muted'; li.textContent = 'None.'; target.appendChild(li); return; }
     for (var i = 0; i < items.length; i++) { var el = document.createElement('li'); el.textContent = items[i]; target.appendChild(el); }
   }
-  // The chain answers 503 for a chain that does not hang together and for a fresh install with no anchor yet.
-  // Both are states to SHOW, not request failures to hide, so only a rejected token is treated as an error.
-  async function getChain() {
-    var res = await fetch('/api/promotion-chain', { headers: { 'x-operator-ui-secret': token.value }, cache: 'no-store' });
-    var body = await res.json();
-    if (res.status === 401) throw new Error(body.message || 'operator token required');
+  // Some routes answer 503 with a COMPLETE, renderable body: the chain does it for a chain that does not hang
+  // together and for a fresh install with no anchor yet, and /api/status does it whenever the doctor reports
+  // any failing check. Every one of those is a state to SHOW, not a request failure to hide behind a banner.
+  //
+  // Phase 253 fix. Treating /api/status's 503 as a thrown error is what put "a dependency it needs is not
+  // ready" across the top of a working installation: the body listing exactly which check failed was already
+  // in hand and was thrown away in favour of a sentence that named nothing. Now the panel renders, the failing
+  // checks are listed by name under Needs Attention, and the banner is reserved for a request that genuinely
+  // produced no answer. Only a rejected token is an error here, because a rejected token has no body worth
+  // rendering.
+  async function getState(path) {
+    var res;
+    try {
+      res = await fetch(path, { headers: { 'x-operator-ui-secret': token.value }, cache: 'no-store' });
+    } catch (err) {
+      throw new Error(describeFailure(0, null));
+    }
+    var body = await res.json().catch(function () { return null; });
+    if (res.status === 401 || body === null) throw new Error(describeFailure(res.status, body));
     return body;
   }
+  async function getChain() { return getState('/api/promotion-chain'); }
   function renderChain(data) {
     var view = data && data.view;
     if (!view) {
@@ -136,15 +150,35 @@
     setList(chainSteps, view.nextSteps);
     setList(chainLimits, view.proofLimits.map(function (l) { return 'Phase ' + l.phase + ' establishes: ' + l.establishes + ' It does NOT establish: ' + l.doesNotEstablish; }));
   }
-  var VERDICT_CLASS = { READY: 'verdict ready', NEEDS_SETUP: 'verdict setup', DEGRADED: 'verdict degraded' };
+  // READY_NO_RECORDS deliberately does NOT get the plain `ready` styling. The installation is operational and
+  // the verdict says so, but a green badge over an empty evidence folder is the visual claim this surface must
+  // never make — the words next to it are what carry "nothing has been audited", and the styling must not
+  // argue with them.
+  var VERDICT_CLASS = {
+    READY: 'verdict ready',
+    READY_NO_RECORDS: 'verdict setup',
+    NEEDS_SETUP: 'verdict setup',
+    DEGRADED: 'verdict degraded',
+  };
+  // What the badge says, in words rather than an identifier. The state id is still what a test and a support
+  // report read; this is what a person reads.
+  var VERDICT_LABEL = {
+    READY: 'READY',
+    READY_NO_RECORDS: 'READY - NO RECORDS LOADED',
+    NEEDS_SETUP: 'NEEDS_SETUP',
+    DEGRADED: 'DEGRADED',
+  };
   // Built from the checklist the same response carried, so a step id can never render as a bare identifier.
   function renderInstallation(data) {
     var r = data.readiness;
     var steps = data.checklist || [];
-    verdict.textContent = r.state;
+    verdict.textContent = VERDICT_LABEL[r.state] || r.state;
     verdict.className = VERDICT_CLASS[r.state] || 'verdict';
     verdictHeadline.textContent = r.headline;
     authorizationNote.textContent = r.authorizationNote;
+    // Always rendered, in both directions. An empty-folder install has to be told what its green-ish verdict
+    // does not mean, and an install WITH records has to be told that reading them is not authorizing them.
+    evidenceNote.textContent = r.evidenceNote || '';
     var v = r.version;
     verVersion.textContent = v.version || 'not declared';
     verProvenance.textContent = v.provenance;
@@ -203,6 +237,7 @@
     verdict.textContent = 'Not loaded'; verdict.className = 'verdict';
     verdictHeadline.textContent = 'Paste your operator token above and choose Load everything.';
     authorizationNote.textContent = '';
+    evidenceNote.textContent = '';
     chainHeadline.textContent = ''; chainCaveat.textContent = '';
     checks.textContent = 'No status loaded.';
     logs.textContent = 'No logs loaded.';
@@ -223,13 +258,18 @@
     // Settled independently: a stack with no database still has a promotion record chain worth reading, and one
     // panel failing must not blank the others.
     var settled = await Promise.allSettled([
-      getJson('/api/installation'), getJson('/api/status'), getJson('/api/logs'), getChain()]);
+      getJson('/api/installation'), getState('/api/status'), getJson('/api/logs'), getChain()]);
     var i = settled[0], s = settled[1], l = settled[2], c = settled[3];
     var problems = [];
     if (i.status === 'fulfilled') renderInstallation(i.value); else problems.push(i.reason.message);
     if (s.status === 'fulfilled') renderStatus(s.value); else problems.push(s.reason.message);
     if (l.status === 'fulfilled') renderLogs(l.value); else problems.push(l.reason.message);
     if (c.status === 'fulfilled') renderChain(c.value); else problems.push(c.reason.message);
+    // A doctor failure is a real thing to say, and it is said by NAMING where to look rather than by calling
+    // the whole page broken. The failing checks are already listed under Needs Attention by the time this runs.
+    if (s.status === 'fulfilled' && s.value && s.value.ok === false) {
+      problems.push('The self-check reports failing items. They are listed by name under Needs Attention below.');
+    }
     // De-duplicated: four routes rejecting one stale token is one problem, not four lines of the same sentence.
     var unique = [];
     for (var q = 0; q < problems.length; q++) if (unique.indexOf(problems[q]) === -1) unique.push(problems[q]);

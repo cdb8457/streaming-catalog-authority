@@ -40,9 +40,30 @@ Then open <http://127.0.0.1:8099/> and paste the operator token the setup script
 `./secrets/operator_ui_token` — a local file, mounted as a Docker secret, never an environment variable and
 never in a URL or a log. Re-running setup keeps every secret it already made, so it cannot lock you out.
 
+**The database migrates itself.** `up -d` starts PostgreSQL, runs a one-shot `migrate` container to
+completion, and only then starts the UI. It is idempotent (safe on every `up`), serialised by an advisory
+lock, and fail-closed: if it fails, the app container is never started, so there is no half-installed UI to
+open. There is no separate migrate command to remember.
+
+**READY with no records is a real, correct state.** A fresh install reports `READY - NO RECORDS LOADED`: the
+service is operational and the evidence folder is empty. That is not a passing audit, not an authorization,
+and not a Phase 231 result — it means only that the software works and nothing has been read.
+
 **Upgrading** is a deliberate edit of the image pin (`CATALOG_AUTHORITY_IMAGE`) followed by
 `docker compose up -d`; **rolling back** is the same edit in reverse, and it works because the pin is an
-immutable version tag or a digest rather than `latest`. Your secrets, database and artifacts survive both.
+immutable version tag or a digest rather than `latest`. Your secrets and artifacts survive both. Your
+database may be migrated by an upgrade, and there are no down-migrations — so back it up first, and read
+[docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md](docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md),
+which states the limit rather than implying a rollback that does not exist.
+
+**On Unraid, through Arcane** (or any launcher whose filesystem is not the Docker daemon's), use
+`docker-compose.arcane.yml` instead. A launcher that stores the project inside its own container makes every
+relative bind source resolve somewhere the daemon cannot see, so that stack takes one required variable —
+the project folder's absolute path on the Unraid host — and builds every mount from it. Prepare the host
+folder with `bash deploy/arcane-setup.sh /your/host/path`, check it with `npm run ops:arcane-preflight`, and
+see [docs/PHASE_253_FIRST_RUN_AND_ARCANE.md](docs/PHASE_253_FIRST_RUN_AND_ARCANE.md). That stack also
+requires you to choose a bind address deliberately: it will not publish an operator interface on every
+interface by default, and loopback on a headless server means that server only.
 
 Your artifact folder is mounted **read-only**; the UI performs no mutation, approval, execution or deletion,
 and contacts no media server or provider.
@@ -50,9 +71,10 @@ and contacts no media server or provider.
 - Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
 - Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
 
-**Nothing has been published yet.** Until a release runs there is no `ghcr.io/cdb8457/catalog-authority-ops`
-image and no release asset, so the pinned reference names an image that is not there. Build it from this
-checkout with the maintainer override:
+**Published releases.** `v1.0.0` and `v1.1.0` are published to `ghcr.io/cdb8457/catalog-authority-ops` and are
+immutable — nothing here re-tags or overwrites them, which is what makes the rollback above real. `v1.1.1` is
+the active release these files pin to; until its release workflow runs, that pinned reference names an image
+that is not there yet. Build it from this checkout with the maintainer override:
 
 ```bash
 docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
@@ -197,8 +219,10 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 
 | Command | What it does |
 |---|---|
-| `ops:init` | first run: migrate + provision the completion secret + self-check |
-| `ops:migrate` | apply schema + grants (owner), idempotent; records the schema version |
+| `ops:bootstrap [-- --json]` | **what the stacks run on every `up`**: migrate under an advisory lock, provision the runtime credential and completion secret, then verify the least-privileged runtime connection can read the applied version. Idempotent and fail-closed; the app container is gated on it exiting zero |
+| `ops:arcane-preflight [-- --json] [-- --no-filesystem]` | Arcane/Unraid install preflight: does the project path resolve on the host the Docker daemon runs on, do the mounted files exist, and is the UI published where you meant. Starts nothing |
+| `ops:init` | first run, by hand: migrate + provision the completion secret + full self-check (exits non-zero on any doctor FAIL, which is why container startup gates on `ops:bootstrap` instead) |
+| `ops:migrate` | apply schema + grants (owner), idempotent, serialised, verified; records the schema version |
 | `ops:version` | db schema version vs this build (exit 1 on mismatch) |
 | `ops:doctor [--json]` | **read-only** production self-check (config, schema version, runtime least-privilege, secret match, custodian, keystore, O4/O5 production gate WARN visibility); `--json` is the stable unattended-healthcheck contract; non-zero exit on any failure |
 | `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |

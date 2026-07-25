@@ -45,11 +45,40 @@ export type ComponentState =
   | 'DEVELOPMENT'
   | 'UNKNOWN';
 
-/** What a state means for the installation as a whole. */
-export type ComponentSeverity = 'SATISFIED' | 'SETUP_REQUIRED' | 'IMPAIRED' | 'ADVISORY';
+/**
+ * What a state means for the installation as a whole.
+ *
+ * AWAITING_EVIDENCE (Phase 253) is the one that was missing. A promotion records folder that is mounted,
+ * readable and EMPTY is not an unfinished installation — the software is installed, running and correct, and
+ * the operator has simply not put any evidence in it yet, which on a fresh install is the expected state and
+ * on a deliberately-empty install is the permanent one. Calling it SETUP_REQUIRED made every healthy install
+ * report NEEDS_SETUP forever, which teaches an operator that the verdict means nothing.
+ */
+export type ComponentSeverity = 'SATISFIED' | 'AWAITING_EVIDENCE' | 'SETUP_REQUIRED' | 'IMPAIRED' | 'ADVISORY';
 
-/** The whole verdict. Deliberately three values plus nothing: an operator acts differently on each. */
-export type InstallationState = 'READY' | 'NEEDS_SETUP' | 'DEGRADED';
+/**
+ * The whole verdict. An operator acts differently on each.
+ *
+ * READY_NO_RECORDS is deliberately NOT folded into READY. "The service is operational and no evidence is
+ * loaded" and "the service is operational and evidence is loaded" are different facts, and a surface that
+ * reported them with the same word would be inviting exactly the sentence this project must never let
+ * anyone write: that the dashboard said READY, therefore the chain was fine. There is no chain.
+ */
+/**
+ * DATA, not just a type, so the set is introspectable at runtime.
+ *
+ * Adding READY_NO_RECORDS broke a CI job because three surfaces each carried their own hard-coded copy of
+ * this list — the shell smoke script, the browser acceptance spec and the page's own label table — and a type
+ * cannot reach any of them. Two of the three even kept "passing" on the new state by accident, matching it on
+ * a substring. The list lives here once, and a test walks it against every surface that enumerates states, so
+ * the next addition fails loudly in the suite rather than quietly in a container.
+ */
+export const INSTALLATION_STATES = ['READY', 'READY_NO_RECORDS', 'NEEDS_SETUP', 'DEGRADED'] as const;
+
+export type InstallationState = (typeof INSTALLATION_STATES)[number];
+
+/** Whether any promotion record evidence is loaded at all. Never a judgement ABOUT that evidence. */
+export type EvidenceState = 'LOADED' | 'NONE_LOADED';
 
 export interface ComponentView {
   readonly id: ComponentId;
@@ -122,6 +151,10 @@ export interface InstallationReadiness {
   /** Checklist steps worth doing next, most urgent first. Ids, resolved against the checklist by the caller. */
   readonly nextSteps: readonly ChecklistStepId[];
   readonly advisories: readonly string[];
+  /** Whether any evidence is loaded. Independent of the verdict, and never a claim about that evidence. */
+  readonly evidence: EvidenceState;
+  /** Fixed sentence chosen by evidence state. What an empty folder does and does not mean. */
+  readonly evidenceNote: string;
   /** Said out loud so a READY verdict is never quoted as permission to promote anything. */
   readonly promotionAuthorization: 'NOT_IMPLIED';
   readonly authorizationNote: string;
@@ -130,6 +163,24 @@ export interface InstallationReadiness {
 const AUTHORIZATION_NOTE =
   'READY means this installation can read what it needs. It is not an approval, an authorization or a '
   + 'verdict about any promotion. Nothing on this surface can authorize, execute, archive or delete anything.';
+
+/**
+ * What "no records" means, said explicitly, because the alternative is that someone infers it.
+ *
+ * The dangerous reading of an operational service with an empty evidence folder is "nothing was wrong" — that
+ * the audit ran and found no blockers, that a phase completed, that a promotion is clear to proceed. None of
+ * those happened. Nothing was read, so nothing was concluded, and the sentence below has to say the absence
+ * out loud rather than leave a green panel to imply the opposite.
+ */
+const EVIDENCE_NOTE: Record<EvidenceState, string> = {
+  NONE_LOADED:
+    'No promotion record artifacts are loaded, so nothing has been audited and nothing has been concluded. '
+    + 'This is not a passing audit, not an authorization, not evidence that any phase completed, and not a '
+    + 'Phase 231 result. It means only that the service is operational and the evidence folder is empty.',
+  LOADED:
+    'Promotion record artifacts are loaded and were read. What they establish is stated in the promotion '
+    + 'panel, including its proof limits; nothing here adds to or authorizes any of it.',
+};
 
 // -----------------------------------------------------------------------------------------------------------
 // Fixed sentences, chosen by state. The only text a component can produce.
@@ -160,7 +211,7 @@ const SECRETS_DETAIL: Partial<Record<ComponentState, string>> = {
 
 const RECORDS_DETAIL: Partial<Record<ComponentState, string>> = {
   OK: 'The promotion records folder is mounted and readable.',
-  EMPTY: 'The promotion records folder is mounted and readable, and contains no artifacts yet. On a fresh install this is expected.',
+  EMPTY: 'The promotion records folder is mounted and readable, and holds no artifacts. Nothing is wrong: this installation is working and has no evidence loaded.',
   MISSING: 'The promotion records folder is not present inside this container. Check the host folder named by the records mount.',
   UNREADABLE: 'The promotion records folder is present but this container cannot read it.',
 };
@@ -168,7 +219,7 @@ const RECORDS_DETAIL: Partial<Record<ComponentState, string>> = {
 const CHAIN_DETAIL: Partial<Record<ComponentState, string>> = {
   OK: 'The promotion record chain was read and hangs together. An honestly unfinished chain is healthy.',
   MALFORMED: 'The promotion record chain was read but does not hang together. See the promotion panel for the specific blockers.',
-  EMPTY: 'No promotion record chain is readable yet.',
+  EMPTY: 'There is no promotion record chain to read, so none was audited and no conclusion was reached about one.',
 };
 
 const KEYSTORE_DETAIL: Partial<Record<ComponentState, string>> = {
@@ -256,11 +307,17 @@ function secretsComponent(facts: readonly SecretFileFact[]): ComponentView {
 
 function recordsComponent(fact: RecordsFact): ComponentView {
   const state: ComponentState = fact;
+  // MISSING and EMPTY are different facts and Phase 253 stops conflating them. MISSING means the mount is
+  // wrong — the container cannot see the folder at all, which IS an unfinished installation and the operator
+  // has to go fix a path. EMPTY means the mount is right and there is nothing in it, which is a correct,
+  // complete installation with no evidence in it.
   const severity: ComponentSeverity = fact === 'OK'
     ? 'SATISFIED'
-    : fact === 'EMPTY' || fact === 'MISSING'
-      ? 'SETUP_REQUIRED'
-      : 'IMPAIRED';
+    : fact === 'EMPTY'
+      ? 'AWAITING_EVIDENCE'
+      : fact === 'MISSING'
+        ? 'SETUP_REQUIRED'
+        : 'IMPAIRED';
   return {
     id: 'promotion-records',
     title: 'Promotion records folder',
@@ -273,8 +330,10 @@ function recordsComponent(fact: RecordsFact): ComponentView {
 
 function chainComponent(fact: ChainFact): ComponentView {
   const state: ComponentState = fact === 'HEALTHY' ? 'OK' : fact === 'UNHEALTHY' ? 'MALFORMED' : 'EMPTY';
-  // An empty chain is a setup step, not a fault: a fresh install legitimately has nothing to audit yet.
-  const severity: ComponentSeverity = fact === 'HEALTHY' ? 'SATISFIED' : fact === 'UNHEALTHY' ? 'IMPAIRED' : 'SETUP_REQUIRED';
+  // No chain is not a fault and not an unfinished install: there is simply nothing to audit. It is reported
+  // as AWAITING_EVIDENCE so the verdict can say "operational, no evidence" without either claiming the chain
+  // is healthy or claiming the installation is broken.
+  const severity: ComponentSeverity = fact === 'HEALTHY' ? 'SATISFIED' : fact === 'UNHEALTHY' ? 'IMPAIRED' : 'AWAITING_EVIDENCE';
   return {
     id: 'promotion-chain',
     title: 'Promotion record chain',
@@ -304,6 +363,7 @@ function keystoreComponent(fact: KeystoreFact): ComponentView {
 
 const HEADLINE: Record<InstallationState, string> = {
   READY: 'This installation is set up and can read everything it needs.',
+  READY_NO_RECORDS: 'This installation is operational. No promotion record evidence is loaded, so nothing has been audited.',
   NEEDS_SETUP: 'This installation is not finished yet. The steps below are what is left.',
   DEGRADED: 'Something that should be working is not. This is a fault, not an unfinished setup step.',
 };
@@ -311,9 +371,11 @@ const HEADLINE: Record<InstallationState, string> = {
 /**
  * Turn facts into a verdict.
  *
- * Precedence is deliberate: a real fault outranks an unfinished setup step, because telling someone to run
- * the setup script when the database is refusing connections sends them to the wrong place. An ADVISORY
- * never changes the verdict — a development build is a thing to know, not a thing to fix.
+ * Precedence is deliberate: a real fault outranks an unfinished setup step, which outranks an empty evidence
+ * folder. Telling someone to run the setup script when the database is refusing connections sends them to the
+ * wrong place, and telling them the installation is unfinished when the only thing "missing" is evidence they
+ * have not produced yet sends them looking for a bug that is not there. An ADVISORY never changes the
+ * verdict — a development build is a thing to know, not a thing to fix.
  */
 export function deriveInstallationReadiness(facts: ReadinessFacts): InstallationReadiness {
   const components: readonly ComponentView[] = [
@@ -329,7 +391,13 @@ export function deriveInstallationReadiness(facts: ReadinessFacts): Installation
     ? 'DEGRADED'
     : components.some((component) => component.severity === 'SETUP_REQUIRED')
       ? 'NEEDS_SETUP'
-      : 'READY';
+      : components.some((component) => component.severity === 'AWAITING_EVIDENCE')
+        ? 'READY_NO_RECORDS'
+        : 'READY';
+
+  // Read off the facts, not off the verdict. A DEGRADED installation with artifacts present still has
+  // evidence loaded, and saying otherwise would be a second claim derived from a first one.
+  const evidence: EvidenceState = facts.records === 'OK' && facts.chain !== 'UNAVAILABLE' ? 'LOADED' : 'NONE_LOADED';
 
   // Order matters more than completeness: the first thing on the list should be the first thing they do.
   const ORDER: readonly ChecklistStepId[] = [
@@ -344,7 +412,10 @@ export function deriveInstallationReadiness(facts: ReadinessFacts): Installation
     .concat(facts.version.notes);
 
   return {
-    ok: state === 'READY',
+    // `ok` is "the service is operational", which is what every caller of this flag actually asks. An empty
+    // evidence folder does not make a working installation not-ok, and treating it as not-ok is what made a
+    // correct install render as a red banner. What it is NOT ok to infer from is stated in `evidenceNote`.
+    ok: state === 'READY' || state === 'READY_NO_RECORDS',
     report: 'phase-246-installation-readiness',
     state,
     headline: HEADLINE[state],
@@ -353,6 +424,8 @@ export function deriveInstallationReadiness(facts: ReadinessFacts): Installation
     version: facts.version,
     nextSteps,
     advisories: [...new Set(advisories)],
+    evidence,
+    evidenceNote: EVIDENCE_NOTE[evidence],
     promotionAuthorization: 'NOT_IMPLIED',
     authorizationNote: AUTHORIZATION_NOTE,
   };

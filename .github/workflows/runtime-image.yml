@@ -41,7 +41,7 @@ env:
 
 jobs:
   suites:
-    name: Typecheck and Phase 242-245 suites
+    name: Typecheck and Phase 242-253 suites
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +51,9 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
         run: |
+          npm run test:phase253-local
           npm run test:phase252-local
           npm run test:phase251-local
           npm run test:phase250-local
@@ -79,6 +80,26 @@ jobs:
         run: |
           docker compose -f docker-compose.runtime.yml config --quiet
           docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml config --quiet
+      - name: The Arcane stack refuses to resolve without its required variables, and resolves with them
+        # Both directions, because "it refuses" and "it works" are different claims and a stack that only
+        # ever refuses is not an install path. The temporary directory stands in for an Unraid host project
+        # folder; no real host path, address or machine appears here or anywhere in the repository.
+        run: |
+          if docker compose -f docker-compose.arcane.yml config --quiet 2>/dev/null; then
+            echo "the Arcane stack resolved with no CATALOG_AUTHORITY_PROJECT_DIR set — a default has crept back in" >&2
+            exit 1
+          fi
+          ARCANE_ROOT="$(mktemp -d)"
+          export CATALOG_AUTHORITY_PROJECT_DIR="${ARCANE_ROOT}/catalog-authority"
+          export OPERATOR_UI_BIND_ADDRESS=127.0.0.1
+          bash deploy/arcane-setup.sh "${CATALOG_AUTHORITY_PROJECT_DIR}" >/dev/null
+          docker compose -f docker-compose.arcane.yml config --quiet
+          npm run ops:arcane-preflight
+          if OPERATOR_UI_BIND_ADDRESS=0.0.0.0 npm run ops:arcane-preflight >/dev/null 2>&1; then
+            echo "the preflight accepted a wildcard bind address" >&2
+            exit 1
+          fi
+          rm -rf "${ARCANE_ROOT}"
       - name: The release coordinates are this repository's
         # Constants cannot notice they have gone stale. A run can: this fails if the checked-in owner is not
         # the owner actually executing the workflow, which is exactly the defect that shipped a publish

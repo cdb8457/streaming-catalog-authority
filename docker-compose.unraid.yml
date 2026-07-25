@@ -28,7 +28,44 @@ services:
       timeout: 5s
       retries: 10
 
+  # AUTOMATIC first-run/startup migration. Runs to completion on every `up`, then exits.
+  #
+  # Phase 253. This stack had a one-shot `ops` container defaulting to `ops:migrate`, but nothing ever ran it
+  # as part of starting the stack — an operator had to know to invoke it by hand, which is exactly the
+  # v1.1.0 first-run defect: `up -d` produced a UI reporting itself healthy in front of an empty database.
+  #
+  # `migrate` is a SEPARATE service from `ops` on purpose. `ops` is the manual, on-demand CLI surface
+  # (`docker compose run --rm ops <script>`) and keeps its own mounts, its backups volume and its default
+  # command; collapsing the two would mean every hand-run ops command was also a startup gate, and that a
+  # change to one silently changed the other.
+  migrate:
+    build: .
+    restart: "no"   # a restarting one-shot races itself and can never satisfy service_completed_successfully
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+    volumes:
+      - /mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore
+    secrets:
+      - admin_database_url
+      - database_url
+      - completion_secret
+      - custodian_kek
+    entrypoint: ["npm", "run"]
+    command: ["ops:bootstrap"]
+
   # One-shot ops/CLI container. No ports, no daemon; invoked via `docker compose run`.
+  #
+  # UNCHANGED and still manual. This is the surface for `docker compose run --rm ops ops:doctor -- --json`,
+  # backups and KEK rotation. It is not part of starting the stack; `migrate` above is.
   ops:
     build: .
     restart: "no"
@@ -62,6 +99,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # THE FAIL-CLOSED GATE. This container is not started until `migrate` has exited ZERO, so a failed
+      # migration produces no UI at all rather than one that reports itself healthy against a schema it
+      # cannot use.
+      migrate:
+        condition: service_completed_successfully
     environment:
       APP_ENV: production
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
@@ -71,6 +113,10 @@ services:
       CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
       CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
       OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
+      # /healthz answers 503 until the database reports the schema this build requires. The gate above
+      # already makes that true before this container starts; this is the second line, for a container
+      # started outside this file's ordering.
+      OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA: "1"
     volumes:
       - /mnt/user/appdata/catalog/keystore:/var/lib/catalog/keystore
     secrets:
@@ -81,8 +127,20 @@ services:
       - operator_ui_token
     entrypoint: ["npm", "run"]
     command: ["ops:operator-ui-server", "--", "--serve", "--host", "0.0.0.0", "--port", "8099"]
+    # `--host 0.0.0.0` above is inside the container's own network namespace and reaches nothing by itself.
+    # The HOST side of the mapping below decides who can reach this UI.
+    #
+    # Phase 253 gave it a deliberate default. `"8099:8099"` published an operator interface on EVERY
+    # interface this server has, by omission rather than by anyone's decision — and this is the other Unraid
+    # stack, so leaving it that way while fixing docker-compose.unraid.runtime.yml would have fixed the
+    # defect in one of the two places it lives.
+    #
+    # Set OPERATOR_UI_BIND_ADDRESS to this server's LAN address to reach it from your network. The default is
+    # loopback, which means the Unraid server ITSELF and no other machine — not your laptop, not another
+    # machine on the LAN, whatever address you type in a browser. Use an SSH tunnel, or change this
+    # deliberately.
     ports:
-      - "8099:8099"
+      - "${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}:${OPERATOR_UI_HOST_PORT:-8099}:8099"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:8099/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
       interval: 10s
