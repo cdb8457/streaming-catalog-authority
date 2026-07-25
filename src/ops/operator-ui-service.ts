@@ -38,6 +38,10 @@ import {
   operatorUiAsset,
   type OperatorUiAsset,
 } from './operator-ui-assets.js';
+import {
+  buildSupportReportEndpointResult,
+  SUPPORT_REPORT_ROUTE,
+} from './operator-ui-support-report-endpoint.js';
 
 export const OPERATOR_UI_SERVICE_DEFAULT_HOST = '0.0.0.0';
 export const OPERATOR_UI_SERVICE_DEFAULT_PORT = 8099;
@@ -145,6 +149,20 @@ export const OPERATOR_UI_CSP = [
   "base-uri 'none'",
   "form-action 'none'",
 ].join('; ');
+
+/**
+ * What the Support report panel says about itself, above the report.
+ *
+ * It states the two things that decide whether somebody uses it: that it is safe to paste in public, and what
+ * it deliberately does not contain. A person who is not sure whether a diagnostics dump is safe to publish
+ * will either not send it — and get no help — or send it anyway and hope. Neither is a good outcome for a
+ * report whose entire design is that the answer is yes.
+ */
+export const SUPPORT_REPORT_PANEL_NOTE =
+  'Loaded with everything else. This is the report to attach when you open an issue: it contains no tokens, '
+  + 'no secret values, no file paths, no URLs, no record contents and no host-identifying data, and the '
+  + 'database is not contacted to produce it — so it still works when the rest of this page does not. If it '
+  + 'ever cannot be produced safely, nothing partial is shown.';
 
 const FORBIDDEN: OperatorUiServiceStatus['forbidden'] = [
   'provider-contact',
@@ -296,6 +314,7 @@ export function createOperatorUiServiceServer(
 
     const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs'
       || path === '/api/promotion-chain' || path === '/api/installation' || path === '/api/version'
+      || path === SUPPORT_REPORT_ROUTE
       || path === OPERATOR_UI_APP_JS_ROUTE || path === OPERATOR_UI_APP_CSS_ROUTE;
     if (method === 'HEAD') {
       ignoreRequestBody(req);
@@ -426,6 +445,29 @@ export function createOperatorUiServiceServer(
       const version = buildRuntimeVersionView();
       sendJson(res, 200, { ok: version.agreement !== 'MISMATCH', code: 'OPERATOR_UI_VERSION', version });
       logs.add('info', 'operation', 'VERSION_READ', `Served runtime version with provenance=${version.provenance}.`);
+      return;
+    }
+
+    // Phase 255. The report a person attaches to an issue, obtainable by a person who has only a browser.
+    // Authenticated like every other operational route: it is a description of somebody's installation, and
+    // the fact that it is redaction-safe enough to paste in public is not a reason to hand it to anybody who
+    // can reach the port. It makes no live calls, so it still answers when /api/status cannot.
+    if (path === SUPPORT_REPORT_ROUTE) {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected support report request without a valid operator token.');
+        return;
+      }
+      ignoreRequestBody(req);
+      const result = buildSupportReportEndpointResult({
+        promotionRecordsDir: config.promotionRecordsDir,
+        generatedAt: new Date().toISOString(),
+      });
+      sendRawJson(res, result.status, result.json);
+      // The verdict only. A reason here would be a fact about content that was deliberately withheld.
+      logs.add(result.ok ? 'info' : 'warn', 'operation', 'SUPPORT_REPORT_READ',
+        result.ok ? 'Served operator support report.' : 'Refused to serve a support report that did not pass the redaction scan.');
       return;
     }
 
@@ -641,6 +683,20 @@ function sendJson(res: ServerResponse, statusCode: number, body: unknown): void 
   res.end(`${JSON.stringify(body)}\n`);
 }
 
+/**
+ * Send an ALREADY-SERIALISED JSON body.
+ *
+ * The support report is scanned for hazardous shapes as the exact string it will become, and re-serialising a
+ * parsed object here would mean the bytes that were scanned and the bytes that are sent are two different
+ * strings produced at two different times. They are the same string.
+ */
+function sendRawJson(res: ServerResponse, statusCode: number, json: string): void {
+  setSafeHeaders(res);
+  res.statusCode = statusCode;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.end(json);
+}
+
 function sendPlain(res: ServerResponse, statusCode: number, body: string, allow?: string, emptyBody = false): void {
   setSafeHeaders(res);
   res.statusCode = statusCode;
@@ -736,7 +792,7 @@ function buildOperatorUiServiceHtml(): string {
 <body>
 <div class="shell">
 <header><h1>Catalog Authority</h1>
-<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#status-panel">Status</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
+<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#status-panel">Status</a><a href="#support-panel">Support report</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
 <div class="badge">read-only operator UI</div></header>
 <main>
 <section class="panel">
@@ -802,6 +858,13 @@ ${renderTroubleshooting(troubleshootingTable())}
 <section class="panel">
 <h2>Checks</h2>
 <pre id="checks">No status loaded.</pre>
+</section>
+<section class="panel wide" id="support-panel">
+<h2>Support report</h2>
+<p class="muted">${escapeHtml(SUPPORT_REPORT_PANEL_NOTE)}</p>
+<div class="actions"><button id="copySupport" type="button">Copy report</button></div>
+<div class="status" id="supportStatus" role="status" aria-live="polite"></div>
+<pre id="supportReport">No support report loaded.</pre>
 </section>
 <section class="panel" id="logs-panel">
 <h2>Logs</h2>

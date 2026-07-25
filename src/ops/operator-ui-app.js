@@ -55,6 +55,8 @@
   var artifactSummary = document.getElementById('artifactSummary');
   var advisories = document.getElementById('advisories');
   var evidenceNote = document.getElementById('evidenceNote');
+  var supportReport = document.getElementById('supportReport');
+  var supportStatus = document.getElementById('supportStatus');
 
   // Error text an operator can act on. A bare "request failed" sends someone to the logs for a problem whose
   // answer is "you pasted a stale token"; the status code already knows which of those it is.
@@ -230,6 +232,61 @@
     }
     setList(advisories, r.advisories);
   }
+  // Phase 255. The report is rendered as TEXT, into a <pre>, exactly as the server rendered it — no
+  // reformatting, no field picking, no re-serialising. What is on screen is what the CLI would print and what
+  // gets pasted into an issue, so a difference between the three can never be introduced here.
+  function renderSupport(data) {
+    supportReport.textContent = (data && data.text) || 'No support report loaded.';
+    supportStatus.className = 'status';
+    supportStatus.textContent = '';
+  }
+  // A refusal renders as a refusal. The server withholds the whole report rather than a redacted one, so the
+  // panel must not leave the previous report on screen looking current.
+  function renderSupportRefusal(message) {
+    supportReport.textContent = 'No support report is available.';
+    supportStatus.className = 'status err';
+    supportStatus.textContent = message;
+  }
+  // Copy, with a fallback that is not a lie.
+  //
+  // navigator.clipboard exists only in a SECURE CONTEXT. Plain HTTP to 127.0.0.1 counts as one; plain HTTP to
+  // a LAN address does not — and reaching this UI over a LAN address is a documented, supported Unraid
+  // configuration. So on exactly the installs whose operator is least likely to have a terminal handy, the
+  // API is undefined and there is no way to make it exist from a page. A
+  // button that silently does nothing there is worse than no button, so the fallback selects the report and
+  // says which keys to press. Both paths report what happened; neither claims success it did not have.
+  function selectReport() {
+    if (typeof window === 'undefined' || !window.getSelection || !document.createRange) return false;
+    var selection = window.getSelection();
+    if (!selection) return false;
+    var range = document.createRange();
+    range.selectNodeContents(supportReport);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    return true;
+  }
+  function copySupport() {
+    if (supportReport.textContent === '' || supportReport.textContent === 'No support report loaded.') {
+      supportStatus.className = 'status err';
+      supportStatus.textContent = 'There is no report to copy yet. Paste your operator token and choose Load everything.';
+      return;
+    }
+    var manual = 'This browser will not let a page write to the clipboard here, which is normal when the UI is '
+      + 'reached over a plain-HTTP network address rather than 127.0.0.1. The report is selected: press '
+      + 'Ctrl+C (Cmd+C on a Mac) to copy it.';
+    if (typeof navigator === 'undefined' || !navigator.clipboard || !navigator.clipboard.writeText) {
+      supportStatus.className = 'status';
+      supportStatus.textContent = selectReport() ? manual : 'Select the report below and copy it.';
+      return;
+    }
+    navigator.clipboard.writeText(supportReport.textContent).then(function () {
+      supportStatus.className = 'status ok-text';
+      supportStatus.textContent = 'Copied. Paste it into your issue as it is — it is already safe to publish.';
+    }, function () {
+      supportStatus.className = 'status';
+      supportStatus.textContent = selectReport() ? manual : 'Select the report below and copy it.';
+    });
+  }
   // Return every rendered panel to its unloaded placeholder. Clear must leave nothing on screen that a
   // previous token loaded — an operator who clears the token should not still be looking at this install's
   // component list, logs or chain.
@@ -247,6 +304,8 @@
     logs.textContent = 'No logs loaded.';
     setList(attention, []); setList(components, []); setList(nextSteps, []); setList(advisories, []);
     setList(chainArtifacts, []); setList(chainBlockers, []); setList(chainSteps, []); setList(chainLimits, []);
+    supportReport.textContent = 'No support report loaded.';
+    supportStatus.className = 'status'; supportStatus.textContent = '';
     artifactSummary.replaceChildren();
     var dt = document.createElement('dt'); dt.textContent = 'Artifacts'; artifactSummary.appendChild(dt);
     var dd = document.createElement('dd'); dd.textContent = 'Not loaded.'; artifactSummary.appendChild(dd);
@@ -262,13 +321,20 @@
     // Settled independently: a stack with no database still has a promotion record chain worth reading, and one
     // panel failing must not blank the others.
     var settled = await Promise.allSettled([
-      getJson('/api/installation'), getState('/api/status'), getJson('/api/logs'), getChain()]);
-    var i = settled[0], s = settled[1], l = settled[2], c = settled[3];
+      getJson('/api/installation'), getState('/api/status'), getJson('/api/logs'), getChain(),
+      getState('/api/support-report')]);
+    var i = settled[0], s = settled[1], l = settled[2], c = settled[3], r = settled[4];
     var problems = [];
     if (i.status === 'fulfilled') renderInstallation(i.value); else problems.push(i.reason.message);
     if (s.status === 'fulfilled') renderStatus(s.value); else problems.push(s.reason.message);
     if (l.status === 'fulfilled') renderLogs(l.value); else problems.push(l.reason.message);
     if (c.status === 'fulfilled') renderChain(c.value); else problems.push(c.reason.message);
+    // A withheld report is a state of the report panel, not a failure of the page. It is said there, next to
+    // the empty <pre>, rather than in the banner — the other four panels are fine and the banner saying
+    // otherwise is the exact mistake Phase 253 corrected.
+    if (r.status === 'fulfilled' && r.value && r.value.ok) renderSupport(r.value);
+    else if (r.status === 'fulfilled' && r.value) renderSupportRefusal(r.value.message || 'No support report is available.');
+    else if (r.status === 'rejected') { renderSupportRefusal(r.reason.message); problems.push(r.reason.message); }
     // A doctor failure is a real thing to say, and it is said by NAMING where to look rather than by calling
     // the whole page broken. The failing checks are already listed under Needs Attention by the time this runs.
     if (s.status === 'fulfilled' && s.value && s.value.ok === false) {
@@ -283,6 +349,7 @@
       : unique.join(' ');
   }
   document.getElementById('refresh').addEventListener('click', refresh);
+  document.getElementById('copySupport').addEventListener('click', copySupport);
   document.getElementById('clear').addEventListener('click', function () {
     token.value = '';
     resetOperationalState();
