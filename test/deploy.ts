@@ -164,7 +164,7 @@ test('unraid runtime compose ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬�
     unraidRuntimeCompose.includes('OPERATOR_UI_TOKEN_FILE: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token'),
     'runtime ops token helper uses writable host token path with canonical default',
   );
-  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'runtime compose publishes only the intentional operator UI port with smoke override');
+  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}:${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'runtime compose publishes only the intentional operator UI port with smoke override');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'runtime compose exposes no ports');
 });
 
@@ -8185,7 +8185,7 @@ test('Phase 142 Unraid launcher runtime compose is image-mode', () => {
   ]) assert(combined.includes(required), `Phase 142 surface preserves ${required}`);
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 142 runtime compose has no build context');
   assert(/^\s{2}app:/m.test(unraidRuntimeCompose), 'Phase 147 runtime compose has app service');
-  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'Phase 147 runtime compose publishes intentional operator UI port');
+  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}:${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'Phase 147 runtime compose publishes intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 142 runtime compose exposes no ports');
 });
 
@@ -8210,7 +8210,7 @@ test('Phase 144 runtime image override preserves local default and future publis
   ]) assert(combined.toLowerCase().includes(required.toLowerCase()), `Phase 144 surface preserves ${required}`);
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'Phase 144 runtime compose still has no build context');
   assert(unraidRuntimeCompose.includes('image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}'), 'Phase 144 runtime app still uses configurable image');
-  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'Phase 147 runtime app publishes intentional operator UI port');
+  assert(unraidRuntimeCompose.includes('"${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}:${OPERATOR_UI_HOST_PORT:-8099}:8099"'), 'Phase 147 runtime app publishes intentional operator UI port');
   assert(!/(expose|EXPOSE)/.test(unraidRuntimeCompose), 'Phase 144 runtime compose exposes no ports');
 });
 
@@ -8348,7 +8348,7 @@ test('Phase 147 operator UI service is long-running, read-only, and intentionall
   assert(!/^\s+build:/m.test(unraidRuntimeCompose), 'runtime compose still has no build context');
   assert(unraidCompose.includes('build: .'), 'canonical app can build from repo context');
   assert(
-    unraidCompose.includes('"8099:8099"') && unraidRuntimeCompose.includes('"${OPERATOR_UI_HOST_PORT:-8099}:8099"'),
+    unraidCompose.includes('"8099:8099"') && unraidRuntimeCompose.includes('"${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}:${OPERATOR_UI_HOST_PORT:-8099}:8099"'),
     'both Unraid compose files publish the intentional port with runtime smoke override',
   );
   assert(!/(8098|8100):/.test(`${unraidCompose}\n${unraidRuntimeCompose}`), 'no adjacent accidental operator ports');

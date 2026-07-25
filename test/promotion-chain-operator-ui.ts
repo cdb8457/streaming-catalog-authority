@@ -472,8 +472,17 @@ test('the CI and Unraid compose files are left as they were', () => {
   const unraidRuntime = compose('docker-compose.unraid.runtime.yml');
   assert(stringList(service(unraidRuntime, 'app').command ?? null, 'Unraid app command').includes('ops:operator-ui-server'),
     'the Unraid runtime still runs the same service');
-  assert(stringList(service(unraidRuntime, 'app').ports ?? null, 'Unraid app ports').map(parseMount).some((port) => port.target === '8099'),
+  // The CONTAINER port is the last field, whether the mapping is `host:container` or
+  // `host_ip:host:container`. Phase 253 gave the Unraid runtime stack an explicit bind-address default
+  // instead of the implicit every-interface publication it had, which makes it the three-field form — so the
+  // assertion reads the last field rather than assuming there are only two.
+  assert(stringList(service(unraidRuntime, 'app').ports ?? null, 'Unraid app ports')
+    .map(parseMount)
+    .some((port) => [port.target, ...port.options].at(-1) === '8099'),
     'on the same port');
+  assert(stringList(service(unraidRuntime, 'app').ports ?? null, 'Unraid app ports')
+    .every((entry) => !entry.startsWith('0.0.0.0:')),
+    'and never published to every interface by default');
   assertMentionsNothingOf(unraidRuntime, ['promotion-records'], 'the Unraid runtime stack');
   for (const other of ['docker-compose.unraid.yml', 'docker-compose.deploy.yml']) {
     assert(Object.keys(asMap(compose(other).services ?? null, `${other} services`)).length > 0, `${other} still exists and still declares services`);
@@ -571,9 +580,17 @@ function assertBootstrapped(label: string, ws: string, stdout: string): Record<s
   }
   const password = values.postgres_password!;
   assert(/^[A-Za-z0-9]{32}$/.test(password), `${label}: the Postgres password is 32 URL-safe characters, got ${password.length}`);
-  for (const url of ['admin_database_url', 'database_url'] as const) {
-    assertEq(values[url], `postgresql://postgres:${password}@postgres:5432/catalog`, `${label}: ${url} uses the generated password`);
-  }
+  // Phase 253. The two URLs are no longer the same superuser. The OWNER migrates; the RUNTIME connects as the
+  // least-privileged `app` role that migrations.sql has always created, with its own generated credential
+  // that `ops:bootstrap` teaches the database. Before this, both were the superuser and `ops:doctor` reported
+  // `runtime-least-privileged: FAIL` — truthfully — on every ordinary install.
+  const appPassword = readFileSync(join(ws, 'secrets', 'app_password')).toString('utf8').trim();
+  assert(/^[A-Za-z0-9]{32}$/.test(appPassword), `${label}: the runtime role password is 32 URL-safe characters`);
+  assert(appPassword !== password, `${label}: the runtime role does not share the owner's credential`);
+  assertEq(values.admin_database_url, `postgresql://postgres:${password}@postgres:5432/catalog`,
+    `${label}: admin_database_url is the owner`);
+  assertEq(values.database_url, `postgresql://app:${appPassword}@postgres:5432/catalog`,
+    `${label}: database_url is the least-privileged runtime role, not the owner`);
   for (const name of ['completion_secret', 'custodian_kek', 'operator_ui_token'] as const) {
     assert(/^[A-Za-z0-9+/]{43}=$/.test(values[name]!), `${label}: ${name} is 32 random bytes, base64`);
   }
@@ -585,6 +602,7 @@ function assertBootstrapped(label: string, ws: string, stdout: string): Record<s
   for (const name of ['completion_secret', 'custodian_kek', 'postgres_password', 'admin_database_url', 'database_url'] as const) {
     assert(!stdout.includes(values[name]!), `${label}: ${name} is never printed`);
   }
+  assert(!stdout.includes(appPassword), `${label}: the runtime role password is never printed either`);
   // Staged under deploy/, the script is in a repository layout, where the runtime stack is one compose file
   // among several and has to be named. (Phase 245 covers the same script at a bundle root, where it is not.)
   assert(stdout.includes('docker compose -f docker-compose.runtime.yml up -d'),

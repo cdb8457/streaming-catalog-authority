@@ -3,6 +3,7 @@ import {
   collectStaticFacts,
   deriveInstallationReadiness,
   type ComponentView,
+  type EvidenceState,
   type InstallationState,
   type SecretFileFact,
 } from './operator-ui-installation-readiness.js';
@@ -75,6 +76,15 @@ export interface SupportReport {
     readonly imageTag: string | null;
     readonly imagePinnedByDigest: boolean;
   };
+  /**
+   * Whether any promotion record evidence is loaded, and the fixed sentence saying what that does not mean.
+   *
+   * Carried here and not only on the web page, because this report is what gets pasted into an issue. A
+   * report whose `state` reads READY_NO_RECORDS with no accompanying sentence invites the same wrong
+   * inference the panel was changed to prevent — that an audit ran and found nothing wrong.
+   */
+  readonly evidence: EvidenceState;
+  readonly evidenceNote: string;
   readonly components: readonly { readonly id: string; readonly state: string; readonly severity: string }[];
   readonly secrets: readonly { readonly id: string; readonly state: string }[];
   readonly runtime: SupportRuntimeFacts;
@@ -151,6 +161,8 @@ export function buildSupportReport(input: SupportReportInput): SupportReport {
       imageTag: version.image.tag,
       imagePinnedByDigest: version.image.pinnedByDigest,
     },
+    evidence: readiness.evidence,
+    evidenceNote: readiness.evidenceNote,
     components: readiness.components.map((component: ComponentView) => ({
       id: component.id,
       state: component.state,
@@ -177,7 +189,10 @@ export function renderSupportReportText(report: SupportReport): string {
     `report:        ${report.report}`,
     `generated:     ${report.generatedAt}`,
     `state:         ${report.state}`,
+    `evidence:      ${report.evidence}`,
     `live calls:    ${report.liveCallsMade}`,
+    '',
+    report.evidenceNote,
     '',
     'Version',
     `  version:     ${report.version.version ?? '(not declared)'}`,

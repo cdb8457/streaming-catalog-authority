@@ -27,7 +27,15 @@ export class ConsumerReleaseBundleError extends Error {}
  * not own — the repository is derived in one place (release-coordinates.ts) and read here.
  */
 export const RELEASE_IMAGE_REPOSITORY = CANONICAL_IMAGE_REPOSITORY;
-export const RELEASE_IMAGE_TAG = 'v1.1.0';
+/**
+ * The ACTIVE release tag. v1.1.1 (Phase 253) — first-run migration, honest empty-install readiness, and an
+ * Arcane/Unraid install path.
+ *
+ * v1.0.0 and v1.1.0 are published, immutable and untouched: this constant selects what a NEW bundle pins,
+ * and nothing in this repository rewrites, re-tags or overwrites an existing release. Rolling back to v1.1.0
+ * remains exactly the documented `.env` edit, because that tag still resolves to the image it always did.
+ */
+export const RELEASE_IMAGE_TAG = 'v1.1.1';
 export const RELEASE_IMAGE_REF = `${RELEASE_IMAGE_REPOSITORY}:${RELEASE_IMAGE_TAG}`;
 
 /** The bundle root: the folder a user extracts and runs `docker compose up -d` in. */

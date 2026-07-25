@@ -299,9 +299,11 @@ test('a non-version target tag blocks the immutable-tag check', () => {
 });
 
 test('a floating :latest in the Compose file blocks the no-floating-pins check', () => {
+  // Derived from whatever the file actually pins, rather than a hard-coded version. A fixture that names a
+  // specific tag stops mutating anything the moment the release moves on, and then asserts nothing while
+  // still reporting PASS — which is how a guard quietly stops guarding.
   const floaty = read('docker-compose.runtime.yml').replace(
-    'image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.0}',
-    'image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:latest}');
+    /(image: \$\{CATALOG_AUTHORITY_IMAGE:-[^:}]+):v\d+\.\d+\.\d+\}/g, '$1:latest}');
   assert(floaty !== read('docker-compose.runtime.yml'), 'the fixture actually changed');
   assertBlocks({ composeText: floaty }, 'no-floating-image-pins');
 });

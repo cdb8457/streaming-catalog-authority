@@ -10,9 +10,17 @@
 #   3. open http://127.0.0.1:8099/  and paste the token from ./secrets/operator_ui_token
 #   4. docker compose -f docker-compose.runtime.yml down
 #
-# WHAT IT RUNS: postgres, plus one long-running read-only operator UI on 8099. There is no second web server:
-# the promotion record chain is a panel inside this UI, behind the same operator token as every other
-# operational route.
+# WHAT IT RUNS: postgres, a one-shot `migrate` container that finishes before anything else starts, plus one
+# long-running read-only operator UI on 8099. There is no second web server: the promotion record chain is a
+# panel inside this UI, behind the same operator token as every other operational route.
+#
+# THE DATABASE MIGRATES ITSELF, ONCE, BEFORE THE APP EXISTS. v1.1.0 shipped without this, and a first run
+# produced a healthy-looking UI in front of an empty database that only a command appearing in no instruction
+# could fix. `migrate` runs `ops:bootstrap`, which is idempotent (safe on every `up`, not just the first),
+# serialised by a PostgreSQL advisory lock (two racing containers produce one migration and one no-op), and
+# fail-closed: the app declares `service_completed_successfully`, so a migration that fails means the app
+# container is never started at all. There is no window in which the UI is reachable against a schema it
+# cannot use.
 #
 # THE APP IMAGE IS PREBUILT AND VERSION-PINNED (never `latest`) — nothing here is built from source, so this
 # file works unchanged inside the release bundle, on a machine with no checkout and no Node.js. Maintainers
@@ -61,6 +69,54 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # ONE-SHOT. Runs to completion on every `up`, then exits. It is not a server, has no ports, publishes
+  # nothing, and never restarts — `restart: "no"` is load-bearing, because a restarting one-shot would race
+  # itself and could never satisfy `service_completed_successfully`.
+  #
+  # It holds the OWNER credential (ADMIN_DATABASE_URL) that the long-running app deliberately also holds for
+  # its self-check, plus the completion secret it provisions. It does NOT mount the promotion records folder:
+  # a migration has no business reading anyone's evidence.
+  migrate:
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.1}
+    init: true
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    volumes:
+      - keystore:/var/lib/catalog/keystore
+    secrets:
+      - admin_database_url
+      - database_url
+      - completion_secret
+      - custodian_kek
+    entrypoint: ["npm", "run"]
+    command: ["ops:bootstrap"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "node"
+    pids_limit: 256
+    mem_limit: 512m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   app:
     # A PREBUILT, VERSION-PINNED image. An ordinary install pulls this and never needs a source checkout, a
     # Node.js toolchain or a build step. The default is a concrete version tag, never `latest`, so `up -d`
@@ -71,13 +127,18 @@ services:
     #
     # Maintainers building from source use the documented override instead — see
     # docker-compose.runtime.build.yml — which replaces this image with a locally built one.
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.0}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.1}
     # PID 1 is a real init that reaps orphans; the app process still receives SIGTERM directly.
     init: true
     restart: unless-stopped
     depends_on:
       postgres:
         condition: service_healthy
+      # THE FAIL-CLOSED GATE. `up -d` does not start this container until `migrate` has exited ZERO. A failed
+      # migration therefore produces no UI at all, rather than a UI that reports itself healthy in front of a
+      # database it cannot use — which is exactly what v1.1.0 did.
+      migrate:
+        condition: service_completed_successfully
     environment:
       APP_ENV: production
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
@@ -96,6 +157,10 @@ services:
       # silently. Empty is fine and honest: the UI then says the bundle declared nothing.
       CATALOG_AUTHORITY_BUNDLE_VERSION: ${CATALOG_AUTHORITY_BUNDLE_VERSION:-}
       CATALOG_AUTHORITY_IMAGE: ${CATALOG_AUTHORITY_IMAGE:-}
+      # /healthz answers 503 until the database reports the schema version this build requires. The `migrate`
+      # gate above already makes that true before this container starts; this is the second line, for a
+      # container started outside this file's ordering. Turning it off makes /healthz a bare liveness probe.
+      OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA: "1"
       NPM_CONFIG_CACHE: /tmp/npm-cache
       NPM_CONFIG_UPDATE_NOTIFIER: "false"
     volumes:

@@ -1,0 +1,221 @@
+# Catalog Authority — Arcane / Unraid stack.
+#
+# USE THIS FILE when you are installing through Arcane (or any other launcher whose own filesystem is not the
+# Docker daemon's filesystem) on Unraid. On an ordinary computer use docker-compose.runtime.yml instead; it is
+# unchanged by this file and is still the file the release bundle ships.
+#
+# ------------------------------------------------------------------------------------------------------
+# THE PROBLEM THIS FILE EXISTS FOR
+# ------------------------------------------------------------------------------------------------------
+# Arcane runs in a container. A Compose project it manages lives at a path INSIDE that container — under
+# `/app/data/projects/<name>` by default. Docker resolves a RELATIVE bind source against the project
+# directory, and the Docker daemon is on the Unraid HOST. So `./secrets/postgres_password` in an Arcane
+# project becomes `/app/data/projects/<name>/secrets/postgres_password`, the daemon is asked to bind a source
+# that does not exist from where it is standing, and the stack fails to start with an error naming a path the
+# operator never typed.
+#
+# TWO HONEST FIXES. Either works; the first is better because it fixes every project you will ever run.
+#
+#   1. MAKE THE PATHS AGREE (what Arcane itself recommends). Bind-mount the host projects directory into the
+#      Arcane container at the SAME path, and point Arcane's PROJECTS_DIRECTORY at it. For example, if your
+#      projects live at /mnt/user/projects on Unraid, give the Arcane container `-v
+#      /mnt/user/projects:/mnt/user/projects` and set PROJECTS_DIRECTORY=/mnt/user/projects. After that a
+#      project directory means the same thing to Arcane and to the daemon, and relative sources resolve
+#      identically for both.
+#
+#   2. NAME THE HOST PATH ABSOLUTELY (what this file does). Set ONE variable — CATALOG_AUTHORITY_PROJECT_DIR
+#      — to the absolute path this project's folder has ON THE UNRAID HOST. Every bind source below is built
+#      from it, so nothing is relative and nothing depends on whose filesystem is doing the resolving.
+#
+# The two compose together: doing (1) as well as (2) is fine, and (2) keeps working if you later move the
+# project. Neither is a substitute for reading what you typed — run the preflight below.
+#
+# ------------------------------------------------------------------------------------------------------
+# BEFORE YOU START IT
+# ------------------------------------------------------------------------------------------------------
+#   1. On the Unraid host, create the project folder and its secrets:
+#        bash deploy/arcane-setup.sh /mnt/user/projects/catalog-authority
+#      (substitute YOUR path — nothing in this repository knows or assumes where your projects live)
+#
+#   2. Write the two required variables into the project's .env, next to this file:
+#        CATALOG_AUTHORITY_PROJECT_DIR=/mnt/user/projects/catalog-authority
+#        OPERATOR_UI_BIND_ADDRESS=<your Unraid server's LAN address>
+#
+#   3. Check them before Docker has to:
+#        npm run ops:arcane-preflight
+#
+#   4. docker compose -f docker-compose.arcane.yml up -d
+#
+# ------------------------------------------------------------------------------------------------------
+# WHY THERE ARE NO DEFAULTS FOR THOSE TWO
+# ------------------------------------------------------------------------------------------------------
+# `${VAR:?message}` makes Compose REFUSE to run with a message, rather than substitute something plausible.
+#
+# A default project directory would reintroduce the original bug in a quieter form: the stack would start
+# against a directory nobody chose, generate a second set of secrets, initialise a second database, and look
+# entirely fine while being the wrong installation.
+#
+# A default bind address would be 0.0.0.0, which publishes an operator interface on every interface this
+# server has. That is a decision an operator makes, not a default they inherit. Set it to the server's LAN
+# address to reach the UI from your network. 127.0.0.1 is also a fine answer and means what it says: reachable
+# from the Unraid server itself and from NO other machine — not your laptop, not another machine on the LAN,
+# whatever address you type in a browser. Use an SSH tunnel if you want that shape.
+#
+# ------------------------------------------------------------------------------------------------------
+# WHAT IT RUNS
+# ------------------------------------------------------------------------------------------------------
+# postgres, a one-shot `migrate` that must exit zero before anything else starts, and the long-running
+# read-only operator UI. It contacts no provider, no media server and no library. It performs no promotion,
+# approval, execution, archival or deletion. The promotion records folder is mounted READ-ONLY.
+
+name: catalogauthority-arcane
+
+services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
+    volumes:
+      - ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/pgdata:/var/lib/postgresql/data
+    secrets:
+      - postgres_password
+    # Never published to the host. The app reaches it over the compose network and nothing else needs it.
+    expose:
+      - "5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 256
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  # One-shot. Applies the schema idempotently under an advisory lock, provisions the runtime credential and
+  # the completion secret, and proves the least-privileged runtime connection works. The app will not start
+  # unless this exits zero.
+  migrate:
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.1}
+    init: true
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      APP_ENV: production
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    volumes:
+      - ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/keystore:/var/lib/catalog/keystore
+    secrets:
+      - admin_database_url
+      - database_url
+      - completion_secret
+      - custodian_kek
+    entrypoint: ["npm", "run"]
+    command: ["ops:bootstrap"]
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "node"
+    pids_limit: 256
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  app:
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.1}
+    init: true
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    environment:
+      APP_ENV: production
+      ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
+      DATABASE_URL_FILE: /run/secrets/database_url
+      CUSTODIAN_MODE: file
+      COMPLETION_SECRET_FILE: /run/secrets/completion_secret
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
+      OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
+      PROMOTION_RECORDS_DIR: /var/lib/catalog/promotion-records
+      CATALOG_AUTHORITY_BUNDLE_VERSION: ${CATALOG_AUTHORITY_BUNDLE_VERSION:-}
+      CATALOG_AUTHORITY_IMAGE: ${CATALOG_AUTHORITY_IMAGE:-}
+      OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA: "1"
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    volumes:
+      # YOUR folder on the Unraid host, mounted READ-ONLY. The container cannot write, rename or delete
+      # anything in it, and the path is fixed by configuration — no browser input chooses it.
+      - ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/promotion-records:/var/lib/catalog/promotion-records:ro
+      - ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/keystore:/var/lib/catalog/keystore
+    secrets:
+      - admin_database_url
+      - database_url
+      - completion_secret
+      - custodian_kek
+      - operator_ui_token
+    entrypoint: ["npm", "run"]
+    command: ["ops:operator-ui-server", "--", "--serve", "--host", "0.0.0.0", "--port", "8099"]
+    # `--host 0.0.0.0` above is the address INSIDE the container's own network namespace, which is the only
+    # thing it can bind to and reaches nothing on your LAN by itself. What decides who can reach this UI is
+    # the HOST side of the mapping below — and it has no default on purpose.
+    ports:
+      - "${OPERATOR_UI_BIND_ADDRESS:?set OPERATOR_UI_BIND_ADDRESS to ONE specific address — normally this Unraid server's LAN address. There is deliberately no default: 0.0.0.0 would publish an operator interface on every interface this server has. 127.0.0.1 is a valid choice and means the Unraid server ONLY — it is not reachable from your laptop or anywhere else on the LAN.}:${OPERATOR_UI_HOST_PORT:-8099}:8099"
+    healthcheck:
+      test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:8099/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
+      interval: 15s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "node"
+    pids_limit: 256
+    mem_limit: 512m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+# Absolute HOST paths, every one of them. Nothing here is relative, so nothing here depends on which
+# container's filesystem is doing the resolving.
+secrets:
+  postgres_password:
+    file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/postgres_password
+  admin_database_url:
+    file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/admin_database_url
+  database_url:
+    file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/database_url
+  completion_secret:
+    file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/completion_secret
+  custodian_kek:
+    file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/custodian_kek
+  operator_ui_token:
+    file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/operator_ui_token

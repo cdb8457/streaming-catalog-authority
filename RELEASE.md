@@ -1,5 +1,67 @@
 # Catalog Authority Release Notes
 
+Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
+overwritten, which is what makes rolling an image pin backwards a real operation.
+
+## v1.1.1 - First-run remediation (Phase 253)
+
+Not yet published. A usability release, driven by a real clean `v1.1.0` installation on Unraid through
+Arcane. Nothing about what this product does changes; what changes is what installing it does to you.
+
+Fixed:
+
+- **The database migrates itself, before the UI exists.** `v1.1.0` shipped no migration step at all, so a
+  first `docker compose up -d` produced a UI reporting itself healthy in front of an empty database, and the
+  only way forward was a command that appeared in no instruction. A one-shot `migrate` container now runs
+  `ops:bootstrap` to completion first; it is idempotent, serialised by a PostgreSQL advisory lock, verified
+  by reading the schema back over the least-privileged runtime connection, and fail-closed — the app
+  container is gated on it exiting zero, so a failed migration produces no UI rather than a broken one.
+- **An operational install with an empty evidence folder no longer reports itself as unfinished.** New
+  verdict `READY_NO_RECORDS`, rendered `READY - NO RECORDS LOADED`, with an explicit sentence stating that
+  nothing was audited and nothing concluded — not a passing audit, not an authorization, not a Phase 231
+  result. `MISSING` (a wrong mount) is still `NEEDS_SETUP`, because that genuinely is unfinished setup.
+- **A failing self-check names what failed.** The page was discarding the `/api/status` body — which listed
+  the failing check — in favour of "a dependency it needs is not ready", which named nothing.
+- **An Arcane/Unraid install path whose paths resolve on the host the Docker daemon runs on.**
+  `docker-compose.arcane.yml` takes one required, validated variable for the project's absolute host path and
+  builds every bind source from it; `deploy/arcane-setup.sh` prepares the host folder; `ops:arcane-preflight`
+  checks it before Docker has to, and recognises a launcher-internal path as exactly that.
+- **Deliberate LAN bind guidance.** The Arcane stack refuses to start without an explicit bind address and
+  refuses a wildcard; the Unraid runtime stack now defaults to loopback instead of publishing on every
+  interface by omission. Loopback is documented as what it is — that server only, not remotely reachable.
+- **A latent readiness bug found on the way.** The readiness probe read a table the schema revokes from the
+  runtime role, so on any correctly least-privileged deployment it reported `SCHEMA_MISSING` against a
+  migrated database, forever. Schema v4 adds an owner-defined reader granted to the runtime role, and the
+  setup scripts now generate a credential for that role instead of handing it the superuser.
+
+Behaviour changes to be aware of before upgrading:
+
+- **Schema version 3 → 4.** There are no down-migrations, so rolling back to `v1.1.0` or `v1.0.0` requires
+  restoring a backup taken before the upgrade. See `docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md`.
+- **`docker-compose.unraid.runtime.yml` now publishes the operator UI to `127.0.0.1` by default**, where it
+  previously published on every interface by omission. If you reach that UI from another machine on your
+  LAN, set `OPERATOR_UI_BIND_ADDRESS` to the server's LAN address before upgrading, or it will stop being
+  reachable from the network. The change is deliberately fail-safe — it restricts rather than exposes — but
+  it is a change, and it is the one thing here that can surprise a working installation.
+- **`/healthz` answers 503 until the schema is present** in the shipped stacks
+  (`OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA=1`). Any external monitor pointed at that route will now correctly
+  report a container with an unmigrated database as unhealthy.
+- **New installs give the runtime its own least-privileged credential.** Existing installs are NOT changed:
+  a setup re-run keeps every secret it already made, so an install whose `database_url` is the superuser
+  stays that way, and `ops:doctor` keeps reporting that honestly. Moving across is a documented, optional
+  step.
+
+Unchanged: no provider live mode, no downloading, scraping or playback, no media-server mutation, no
+promotion, approval, execution, archival or deletion, and no Phase 231 authorization or execution. The
+ordinary-computer release stack and the bundle it ships are otherwise as they were.
+
+Detail: `docs/PHASE_253_FIRST_RUN_AND_ARCANE.md`.
+
+## v1.1.0 - Operator UI and consumer release
+
+Published, immutable. Operator UI, consumer release bundle and release-delivery hardening. See
+`docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md` and the Phase 246-252 documents.
+
 ## v1.0.0 - Current Scope Release
 
 Release date: `2026-07-14`

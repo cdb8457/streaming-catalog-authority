@@ -96,8 +96,16 @@ Write-SecretIfAbsent -Name 'postgres_password' -Value (New-RandomAlphanumericSec
 # Read back whatever is on disk, so the URLs match a password kept from an earlier run.
 $PgPassword = ([System.IO.File]::ReadAllText((Join-Path $SecretsDir 'postgres_password'))).Trim()
 
+# The RUNTIME role's own credential. Phase 253: both URLs used to be the postgres superuser, which made
+# `ops:doctor` report runtime-least-privileged FAIL — correctly — on every ordinary install. `ops:bootstrap`
+# reads this file and makes the database agree with it, so the app connects as the least-privileged `app`
+# role that migrations.sql has always created. A re-run KEEPS an existing database_url; moving an existing
+# install onto the least-privileged role is a deliberate, documented step.
+Write-SecretIfAbsent -Name 'app_password' -Value (New-RandomAlphanumericSecret -Length 32)
+$AppPassword = ([System.IO.File]::ReadAllText((Join-Path $SecretsDir 'app_password'))).Trim()
+
 Write-SecretIfAbsent -Name 'admin_database_url' -Value "postgresql://postgres:$PgPassword@postgres:5432/catalog"
-Write-SecretIfAbsent -Name 'database_url' -Value "postgresql://postgres:$PgPassword@postgres:5432/catalog"
+Write-SecretIfAbsent -Name 'database_url' -Value "postgresql://app:$AppPassword@postgres:5432/catalog"
 Write-SecretIfAbsent -Name 'completion_secret' -Value (New-RandomSecret)
 Write-SecretIfAbsent -Name 'custodian_kek' -Value (New-RandomSecret)
 Write-SecretIfAbsent -Name 'operator_ui_token' -Value (New-RandomSecret)

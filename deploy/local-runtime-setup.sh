@@ -88,10 +88,26 @@ write_secret_if_absent postgres_password "${PG_PASSWORD}" "${SECRET_MODE_ROOT}"
 # Read back whatever is on disk, so the URLs match a password kept from an earlier run.
 PG_PASSWORD="$(cat "${SECRETS_DIR}/postgres_password")"
 
+# The RUNTIME role's own credential.
+#
+# Phase 253. Both URLs used to be the postgres superuser, which meant `ops:doctor` reported
+# `runtime-least-privileged: FAIL` — correctly — on every ordinary install, forever, because the connection
+# the app actually used could write every table and read the completion secret. migrations.sql has always
+# created a least-privileged `app` role; what was missing was a credential for it. `ops:bootstrap` reads this
+# file and makes the database agree with it, so the runtime connects as `app` and the doctor check passes
+# because it is TRUE, not because it was silenced.
+#
+# On an existing install this file is created but `database_url` below is KEPT as it was — a re-run never
+# regenerates a secret. Moving an existing install onto the least-privileged role is a deliberate, documented
+# step; see docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md.
+APP_PASSWORD="$(random_secret | tr -d '\n/+=' | cut -c1-32)"
+write_secret_if_absent app_password "${APP_PASSWORD}" "${SECRET_MODE_APP}"
+APP_PASSWORD="$(cat "${SECRETS_DIR}/app_password")"
+
 # Read by the NON-ROOT operator UI app (startup token, and the readiness panel that inspects every secret),
 # so these carry the world-read bit — guarded on the host by the 0700 SECRETS_DIR.
 write_secret_if_absent admin_database_url "postgresql://postgres:${PG_PASSWORD}@postgres:5432/catalog" "${SECRET_MODE_APP}"
-write_secret_if_absent database_url "postgresql://postgres:${PG_PASSWORD}@postgres:5432/catalog" "${SECRET_MODE_APP}"
+write_secret_if_absent database_url "postgresql://app:${APP_PASSWORD}@postgres:5432/catalog" "${SECRET_MODE_APP}"
 write_secret_if_absent completion_secret "$(random_secret)" "${SECRET_MODE_APP}"
 write_secret_if_absent custodian_kek "$(random_secret)" "${SECRET_MODE_APP}"
 write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"

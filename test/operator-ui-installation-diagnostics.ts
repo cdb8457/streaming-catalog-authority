@@ -11,6 +11,8 @@ import {
   createOperatorUiServiceServer,
   buildInstallationReadiness,
   escapeHtml,
+  OPERATOR_UI_HEALTHZ_SCHEMA_GATE_ENV,
+  resetHealthzSchemaGate,
   validateOperatorUiServiceConfig,
 } from '../src/ops/operator-ui-service.js';
 import {
@@ -242,6 +244,48 @@ await test('only GET reaches the diagnostics routes', async () => {
 // /healthz stays minimal and unauthenticated
 // ---------------------------------------------------------------------------------------------------------
 
+// Phase 253. `/healthz` gains a schema gate so a container started OUTSIDE the Compose ordering — `docker
+// run`, a launcher that ignores depends_on — cannot report itself healthy against an unmigrated database,
+// which is exactly what v1.1.0 did. It is off unless the deployment arms it, and the shipped stacks arm it.
+await test('the health route fails closed when the schema gate is armed and the schema is not there', async () => {
+  const h = await startHarness();
+  const previous = process.env[OPERATOR_UI_HEALTHZ_SCHEMA_GATE_ENV];
+  const previousUrl = process.env.DATABASE_URL;
+  try {
+    // Unarmed: liveness only, exactly as before, so a UI whose whole point is to render while the database
+    // is down still answers a liveness probe.
+    delete process.env[OPERATOR_UI_HEALTHZ_SCHEMA_GATE_ENV];
+    resetHealthzSchemaGate();
+    assertEq((await httpGet(h.port, '/healthz')).statusCode, 200, 'unarmed, it is a bare liveness probe');
+
+    // Armed, with no database reachable: 503, and no more information than that.
+    process.env[OPERATOR_UI_HEALTHZ_SCHEMA_GATE_ENV] = '1';
+    process.env.DATABASE_URL = 'postgresql://app:app@127.0.0.1:1/catalog';
+    resetHealthzSchemaGate();
+    const gated = await httpGet(h.port, '/healthz');
+    assertEq(gated.statusCode, 503, 'armed and unmigrated, the container is not healthy');
+    const body = JSON.parse(gated.body) as Record<string, unknown>;
+    assertEq(body.ok, false, 'and says so');
+    assertEq(body.code, 'OPERATOR_UI_SERVICE_SCHEMA_NOT_READY', 'with a code naming the reason');
+    assertEq(Object.keys(body).sort().join(','), 'code,mode,ok,service',
+      'and still exactly the four keys — a health route does not gain a diagnostic surface by failing');
+    // The code itself legitimately ends in the word READY; what must not appear is an installation VERDICT,
+    // or anything about the database this container is talking to. Scanned with the code removed, so the
+    // check is about leakage rather than about a substring of the reason.
+    const withoutCode = gated.body.replace('OPERATOR_UI_SERVICE_SCHEMA_NOT_READY', '')
+      .replace('catalog-authority-operator-ui', '');
+    for (const forbidden of ['READY', 'NEEDS_SETUP', 'DEGRADED', 'postgres', 'schema_meta', '127.0.0.1', 'catalog']) {
+      assert(!withoutCode.includes(forbidden), `an unauthenticated caller still learns nothing about ${forbidden}`);
+    }
+  } finally {
+    if (previous === undefined) delete process.env[OPERATOR_UI_HEALTHZ_SCHEMA_GATE_ENV];
+    else process.env[OPERATOR_UI_HEALTHZ_SCHEMA_GATE_ENV] = previous;
+    if (previousUrl === undefined) delete process.env.DATABASE_URL; else process.env.DATABASE_URL = previousUrl;
+    resetHealthzSchemaGate();
+    await h.stop();
+  }
+});
+
 await test('/healthz is still unauthenticated, still minimal, and still says nothing about this install', async () => {
   const h = await startHarness();
   try {
@@ -459,9 +503,13 @@ await test('each database fact maps to the state and severity an installer shoul
     'not probing does not manufacture a fault');
 });
 
-await test('an empty records folder is a setup step on a fresh install, and an unreadable one is a fault', () => {
+// Phase 253 changed two of these deliberately. EMPTY used to be SETUP_REQUIRED, which made a correctly
+// installed, working stack with a deliberately empty evidence folder report NEEDS_SETUP forever — a verdict
+// that is wrong on exactly the installations that are right. MISSING is still SETUP_REQUIRED: the container
+// cannot see the folder at all, which really is an unfinished install with a path to go and fix.
+await test('an empty records folder is operational-with-no-evidence, a missing one is unfinished setup, an unreadable one is a fault', () => {
   const cases: ReadonlyArray<readonly [RecordsFact, string]> = [
-    ['OK', 'READY'], ['EMPTY', 'NEEDS_SETUP'], ['MISSING', 'NEEDS_SETUP'], ['UNREADABLE', 'DEGRADED'],
+    ['OK', 'READY'], ['EMPTY', 'READY_NO_RECORDS'], ['MISSING', 'NEEDS_SETUP'], ['UNREADABLE', 'DEGRADED'],
   ];
   for (const [fact, expected] of cases) {
     // The chain follows the folder: an empty folder cannot have a healthy chain in it.
@@ -469,13 +517,22 @@ await test('an empty records folder is a setup step on a fresh install, and an u
     assertEq(deriveInstallationReadiness(healthyFacts({ records: fact, chain })).state, expected,
       `a ${fact} records folder makes the installation ${expected}`);
   }
+  // The whole point of the new state: operational, and honest about having concluded nothing.
+  const empty = deriveInstallationReadiness(healthyFacts({ records: 'EMPTY', chain: 'UNAVAILABLE', artifacts: null }));
+  assert(empty.ok, 'an operational install with no evidence is ok — the service works');
+  assertEq(empty.evidence, 'NONE_LOADED', 'and says so as a separate fact rather than leaving it to be inferred');
+  assertEq(empty.promotionAuthorization, 'NOT_IMPLIED', 'and still authorizes nothing');
+  for (const phrase of ['not a passing audit', 'not an authorization', 'not a Phase 231 result']) {
+    assert(empty.evidenceNote.includes(phrase), `the evidence note rules out reading it as "${phrase}"`);
+  }
+  assert(/nothing has been audited/i.test(empty.headline), 'and the headline says nothing was audited');
 });
 
 await test('a chain that does not hang together is a fault, and an absent one is not', () => {
   assertEq(deriveInstallationReadiness(healthyFacts({ chain: 'UNHEALTHY' })).state, 'DEGRADED',
     'a chain that contradicts itself is degraded');
-  assertEq(deriveInstallationReadiness(healthyFacts({ chain: 'UNAVAILABLE', artifacts: null })).state, 'NEEDS_SETUP',
-    'and no chain at all is simply not set up yet');
+  assertEq(deriveInstallationReadiness(healthyFacts({ chain: 'UNAVAILABLE', artifacts: null })).state, 'READY_NO_RECORDS',
+    'and no chain at all is not a fault and not an unfinished install: there is simply nothing to audit');
   const unhealthy = deriveInstallationReadiness(healthyFacts({ chain: 'UNHEALTHY' }));
   assert(unhealthy.components.some((c) => c.id === 'promotion-chain' && /see the promotion panel/i.test(c.detail)),
     'a broken chain points at the panel that lists the specific blockers rather than repeating them here');
