@@ -183,7 +183,11 @@
     verVersion.textContent = v.version || 'not declared';
     verProvenance.textContent = v.provenance;
     verAgreement.textContent = v.agreement;
-    verPin.textContent = v.image.pinnedByDigest ? 'digest' : (v.image.tag || v.image.state.toLowerCase());
+    // A digest pin is the strongest thing the reference can say, so it is said first — including for a local
+    // build that happens to be digest-pinned. Otherwise the tag, and only then the bare state.
+    verPin.textContent = v.image.pinnedByDigest
+      ? (v.image.state === 'LOCAL' ? 'digest (local build)' : 'digest')
+      : (v.image.state === 'LOCAL' ? (v.image.tag ? v.image.tag + ' (local build)' : 'local build') : (v.image.tag || v.image.state.toLowerCase()));
     setList(components, r.components.map(function (c) { return c.title + ' - ' + c.state + ' - ' + c.detail; }));
     var byId = {};
     for (var s = 0; s < steps.length; s++) byId[steps[s].id] = steps[s];

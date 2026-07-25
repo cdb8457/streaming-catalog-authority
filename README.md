@@ -57,7 +57,8 @@ database may be migrated by an upgrade, and there are no down-migrations — so 
 which states the limit rather than implying a rollback that does not exist.
 
 **On Unraid, through Arcane** (or any launcher whose filesystem is not the Docker daemon's), use
-`docker-compose.arcane.yml` instead. A launcher that stores the project inside its own container makes every
+`docker-compose.arcane.yml` instead — it ships in the release bundle alongside `arcane-setup.sh`, so a
+launcher user does not need this checkout. A launcher that stores the project inside its own container makes every
 relative bind source resolve somewhere the daemon cannot see, so that stack takes one required variable —
 the project folder's absolute path on the Unraid host — and builds every mount from it. Prepare the host
 folder with `bash deploy/arcane-setup.sh /your/host/path`, check it with `npm run ops:arcane-preflight`, and

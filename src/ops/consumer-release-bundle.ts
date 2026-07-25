@@ -28,14 +28,15 @@ export class ConsumerReleaseBundleError extends Error {}
  */
 export const RELEASE_IMAGE_REPOSITORY = CANONICAL_IMAGE_REPOSITORY;
 /**
- * The ACTIVE release tag. v1.1.1 (Phase 253) — first-run migration, honest empty-install readiness, and an
- * Arcane/Unraid install path.
+ * The ACTIVE, NOT-YET-RELEASED tag. v1.1.2 (Phase 254) — consumer readiness: the Arcane install path is
+ * actually IN the archive, a registry-unqualified local build is classified as local rather than malformed,
+ * and a release must prove that a stranger with no credential can pull the image it pins.
  *
  * v1.0.0 and v1.1.0 are published, immutable and untouched: this constant selects what a NEW bundle pins,
  * and nothing in this repository rewrites, re-tags or overwrites an existing release. Rolling back to v1.1.0
  * remains exactly the documented `.env` edit, because that tag still resolves to the image it always did.
  */
-export const RELEASE_IMAGE_TAG = 'v1.1.1';
+export const RELEASE_IMAGE_TAG = 'v1.1.2';
 export const RELEASE_IMAGE_REF = `${RELEASE_IMAGE_REPOSITORY}:${RELEASE_IMAGE_TAG}`;
 
 /** The bundle root: the folder a user extracts and runs `docker compose up -d` in. */
@@ -51,6 +52,18 @@ export interface BundleSources {
   readonly setupBash: string;
   /** deploy/local-runtime-setup.ps1, verbatim. */
   readonly setupPowerShell: string;
+  /**
+   * docker-compose.arcane.yml, verbatim.
+   *
+   * v1.1.2. v1.1.1 built an Arcane/Unraid install path and then shipped a bundle that did not contain it:
+   * the archive held only the ordinary-computer stack, whose bind sources are RELATIVE — which is precisely
+   * what breaks when a launcher relocates the project under its own `/app/data/projects`. So the one class of
+   * user that release was written for downloaded an archive with no way to follow it, and the README told
+   * them about a file that was not there. Shipping it is the fix.
+   */
+  readonly arcaneCompose: string;
+  /** deploy/arcane-setup.sh, verbatim. */
+  readonly arcaneSetupBash: string;
 }
 
 export interface BundleImagePin {
@@ -86,6 +99,22 @@ export interface ConsumerReleaseBundle {
 
 const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const TAG_PATTERN = /^v\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/;
+
+/**
+ * Traces of the machine a release was BUILT on, which must never reach the machine it is installed on.
+ *
+ * v1.1.2. This is separate from `SECRET_SHAPES` because it is a different kind of leak: not a credential, but
+ * somebody's network and filesystem layout. The Arcane work came out of one specific Unraid server, and the
+ * one thing a bundle must never carry is that server's identity — a LAN address a stranger's stack would try
+ * to bind, a media library path that exists on nobody else's machine, or a project directory only one person
+ * has. Checked against the ASSEMBLED bytes, so it holds however the sources were edited.
+ */
+const HOST_IDENTITY_SHAPES: ReadonlyArray<readonly [RegExp, string]> = [
+  // RFC1918 literals. A documentation example must use a documentation range (192.0.2.0/24), not a real LAN.
+  [/\b(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2\d|3[01])\.\d{1,3}\.\d{1,3})\b/, 'a private LAN address'],
+  [/\/mnt\/user\/media\//, 'a media library path'],
+  [/catalog-authority-v\d+\d*-test/, 'a particular test project directory'],
+];
 
 /**
  * Values that must never leave a maintainer's machine inside a bundle. This is checked against the ASSEMBLED
@@ -269,6 +298,51 @@ It makes no live calls — it works while the database is down — and it contai
 file paths, URLs, record contents or anything identifying your machine. Add \`-- --text\` for a readable
 version instead of JSON.
 
+## Installing on Unraid, through Arcane or another launcher
+
+Use \`docker-compose.arcane.yml\` instead of \`docker-compose.yml\`. It is in this bundle.
+
+A launcher like Arcane runs in a container and stores your project inside it, under a path such as
+\`/app/data/projects/<name>\`. Docker resolves a **relative** bind source against that project directory, and
+the Docker daemon is on the Unraid host — so \`./secrets\` becomes a path the daemon cannot see, and the stack
+fails to start naming a path you never typed. The ordinary \`docker-compose.yml\` above is relative by design,
+because on an ordinary computer that is correct; on a relocating launcher it is the whole problem.
+
+\`docker-compose.arcane.yml\` builds every mount from ONE required variable — the absolute path your project
+folder has **on the Unraid host** — so nothing depends on whose filesystem is doing the resolving.
+
+1. On the Unraid host, create the folder and its secrets:
+
+   \`\`\`
+   bash ./arcane-setup.sh /mnt/user/projects/catalog-authority
+   \`\`\`
+
+   Substitute your own path. Nothing here knows or assumes where your projects live, and the script refuses a
+   relative path, a Windows path, or a path inside the launcher's own container.
+
+2. Put both required variables in this project's \`.env\`:
+
+   \`\`\`
+   CATALOG_AUTHORITY_PROJECT_DIR=/mnt/user/projects/catalog-authority
+   OPERATOR_UI_BIND_ADDRESS=<your Unraid server's LAN address>
+   \`\`\`
+
+   Neither has a default. A default project directory would start a second installation against a folder
+   nobody chose and look entirely fine; a default bind address would be \`0.0.0.0\`, which publishes an
+   operator interface on every interface the server has. \`127.0.0.1\` is a valid choice and means that server
+   **only** — not your laptop, whatever address you type in a browser.
+
+3. Check it before Docker has to, then start:
+
+   \`\`\`
+   docker compose -f docker-compose.arcane.yml config --quiet
+   docker compose -f docker-compose.arcane.yml up -d
+   \`\`\`
+
+The better fix, if you would rather change the launcher than the stack, is to make the paths agree: bind-mount
+your host projects directory into the launcher at the **same** path and point its \`PROJECTS_DIRECTORY\` at it.
+That fixes every project you will ever run, not only this one. Both approaches work, and they compose.
+
 ## Where your token is
 
 In \`./secrets/operator_ui_token\`, a plain file created by the setup script inside \`./secrets/\`, a directory
@@ -346,6 +420,11 @@ function assertNoSecrets(files: readonly BundleFile[]): void {
         throw new ConsumerReleaseBundleError(`refusing to ship ${file.path}: it contains what looks like ${what}`);
       }
     }
+    for (const [pattern, what] of HOST_IDENTITY_SHAPES) {
+      if (pattern.test(file.contents)) {
+        throw new ConsumerReleaseBundleError(`refusing to ship ${file.path}: it contains ${what} from the machine this was built on`);
+      }
+    }
   }
 }
 
@@ -364,6 +443,10 @@ export function buildConsumerReleaseBundle(sources: BundleSources, options: Bund
     toFile('docker-compose.yml', sources.runtimeCompose),
     toFile('setup.sh', sources.setupBash),
     toFile('setup.ps1', sources.setupPowerShell),
+    // The Arcane/Unraid path, shipped under the SAME names a checkout uses. A launcher user who reads the
+    // project's documentation finds the file the documentation names, in the archive they downloaded.
+    toFile('docker-compose.arcane.yml', sources.arcaneCompose),
+    toFile('arcane-setup.sh', sources.arcaneSetupBash),
     toFile('.env', envFile(options, imageRef)),
     toFile('.env.example', envExample(imageRef, options.image.tag)),
     toFile('VERSION', versionFile(options, imageRef)),
@@ -374,6 +457,28 @@ export function buildConsumerReleaseBundle(sources: BundleSources, options: Bund
   }
   if (content.some((file) => file.path === 'docker-compose.yml' && /^\s*build:/m.test(file.contents))) {
     throw new ConsumerReleaseBundleError('the shipped Compose file builds from source, which a bundle cannot do');
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // The Arcane stack, held to the properties that make it usable by a launcher user rather than by us.
+  // ---------------------------------------------------------------------------------------------------------
+  const arcane = content.find((file) => file.path === 'docker-compose.arcane.yml')?.contents ?? '';
+  if (/^\s*build:/m.test(arcane)) {
+    throw new ConsumerReleaseBundleError('the shipped Arcane Compose builds from source, which a bundle cannot do');
+  }
+  if (!arcane.includes('CATALOG_AUTHORITY_IMAGE')) {
+    throw new ConsumerReleaseBundleError('the shipped Arcane Compose does not read CATALOG_AUTHORITY_IMAGE, so the pin would do nothing');
+  }
+  // RELATIVE BIND SOURCES ARE THE WHOLE BUG. A launcher resolves them against a project directory inside its
+  // own container, so `./secrets` becomes a path the Docker daemon cannot see. Every source in this file must
+  // be built from the declared absolute host path instead.
+  if (/^\s*-\s*\.{1,2}\//m.test(arcane)) {
+    throw new ConsumerReleaseBundleError('the shipped Arcane Compose has a relative bind source, which is exactly what a launcher relocation breaks');
+  }
+  // And the required host-project variable must stay REQUIRED. A default would start the wrong installation
+  // against a directory nobody chose, generate a second set of secrets, and look entirely fine.
+  if (/\$\{CATALOG_AUTHORITY_PROJECT_DIR:-/.test(arcane) || !/\$\{CATALOG_AUTHORITY_PROJECT_DIR:\?/.test(arcane)) {
+    throw new ConsumerReleaseBundleError('the shipped Arcane Compose must REQUIRE CATALOG_AUTHORITY_PROJECT_DIR, never default it');
   }
 
   const manifest = toFile(BUNDLE_MANIFEST_FILENAME, `${JSON.stringify({

@@ -261,6 +261,8 @@ const sources: BundleSources = {
   runtimeCompose: read('docker-compose.runtime.yml'),
   setupBash: read('deploy/local-runtime-setup.sh'),
   setupPowerShell: read('deploy/local-runtime-setup.ps1'),
+  arcaneCompose: read('docker-compose.arcane.yml'),
+  arcaneSetupBash: read('deploy/arcane-setup.sh'),
 };
 const options: BundleOptions = {
   image: { repository: RELEASE_IMAGE_REPOSITORY, tag: RELEASE_IMAGE_TAG },
@@ -271,8 +273,12 @@ const sha256 = (text: string): string => createHash('sha256').update(Buffer.from
 
 test('the bundle contains what an ordinary user needs, and nothing that implies a checkout', () => {
   const bundle = buildConsumerReleaseBundle(sources, options);
+  // v1.1.2 adds the Arcane pair. v1.1.1 built an Arcane/Unraid install path and then shipped an archive that
+  // did not contain it, so the one class of user that release was for downloaded a bundle with no way to
+  // follow it — and whose only Compose file uses the relative bind sources a launcher relocation breaks.
   assertEq(bundle.files.map((file) => file.path).join(','),
-    ['README.md', 'docker-compose.yml', 'setup.sh', 'setup.ps1', '.env', '.env.example', 'VERSION',
+    ['README.md', 'docker-compose.yml', 'setup.sh', 'setup.ps1', 'docker-compose.arcane.yml',
+      'arcane-setup.sh', '.env', '.env.example', 'VERSION',
       BUNDLE_MANIFEST_FILENAME, BUNDLE_CHECKSUM_FILENAME].join(','),
     'the bundle is exactly these files');
 
@@ -296,6 +302,8 @@ test('every bundle file is LF-terminated even when assembled from a CRLF checkou
     runtimeCompose: crlf(sources.runtimeCompose),
     setupBash: crlf(sources.setupBash),
     setupPowerShell: crlf(sources.setupPowerShell),
+    arcaneCompose: crlf(sources.arcaneCompose),
+    arcaneSetupBash: crlf(sources.arcaneSetupBash),
   }, options);
   for (const file of bundle.files) {
     assert(!file.contents.includes('\r'), `${file.path} carries no carriage return — a CRLF .sh is not a script`);

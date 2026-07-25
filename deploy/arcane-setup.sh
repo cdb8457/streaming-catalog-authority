@@ -10,8 +10,12 @@
 # WHY IT TAKES THE PATH AS AN ARGUMENT AND HAS NO DEFAULT. Where your projects live is your decision and this
 # repository does not know it. A built-in default is how an installation silently lands somewhere nobody
 # chose — which, under Arcane, is precisely the failure this whole file exists downstream of. The path you
-# pass here is the same string you put in CATALOG_AUTHORITY_PROJECT_DIR, and the preflight
-# (`npm run ops:arcane-preflight`) checks that they agree with reality before Docker has to.
+# pass here is the same string you put in CATALOG_AUTHORITY_PROJECT_DIR, and a preflight checks that they
+# agree with reality before Docker has to. WHICH preflight depends on where this script is running from, and
+# it works that out for itself: from a source checkout it is `npm run ops:arcane-preflight`, and from an
+# extracted release bundle — where there is no Node.js and must not need to be — it is
+# `docker compose -f docker-compose.arcane.yml config --quiet`, which makes Compose itself refuse the
+# required variables when they are unset or wrong.
 #
 # IT IS SAFE TO RE-RUN. Every secret that already exists is KEPT, never regenerated: a re-run cannot lock you
 # out of a running stack, cannot orphan a database that was initialised with the old password, and cannot
@@ -21,9 +25,22 @@
 # deletion. It contacts no provider, no media server and no library.
 set -euo pipefail
 
+# WHERE AM I RUNNING FROM? This script ships twice: here under deploy/ in a checkout, and at the root of the
+# release bundle, where there is no deploy/ directory, no package.json and no Node.js. The difference decides
+# which check to print — telling a bundle user to run `npm` would be telling them to install a toolchain the
+# whole bundle exists to avoid. Same detection the ordinary setup script already uses.
+SCRIPT_DIR="$(cd -- "$(dirname -- "$0")" && pwd)"
+if [ "$(basename "${SCRIPT_DIR}")" = "deploy" ]; then
+  USAGE_PREFIX="bash deploy/arcane-setup.sh"
+  PREFLIGHT_COMMAND="npm run ops:arcane-preflight"
+else
+  USAGE_PREFIX="bash ./arcane-setup.sh"
+  PREFLIGHT_COMMAND="docker compose -f docker-compose.arcane.yml config --quiet"
+fi
+
 PROJECT_DIR="${1:-}"
 if [ -z "${PROJECT_DIR}" ]; then
-  echo "usage: bash deploy/arcane-setup.sh /absolute/host/path/to/your/project" >&2
+  echo "usage: ${USAGE_PREFIX} /absolute/host/path/to/your/project" >&2
   echo >&2
   echo "The path is the one the UNRAID HOST uses — the path Unraid shows you under Shares, not the path" >&2
   echo "Arcane shows you. Arcane stores projects inside its own container by default, and the Docker daemon" >&2
@@ -111,7 +128,7 @@ echo "server's LAN address to reach the UI from your network. 127.0.0.1 is also 
 echo "server ONLY — not your laptop, not another machine on the LAN, whatever address you type in a browser."
 echo
 echo "Then check it, and start:"
-echo "  npm run ops:arcane-preflight"
+echo "  ${PREFLIGHT_COMMAND}"
 echo "  docker compose -f docker-compose.arcane.yml up -d"
 echo
 echo "Your operator token (paste it into the UI's Operator token box):"

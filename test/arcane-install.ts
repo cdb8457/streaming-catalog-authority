@@ -359,9 +359,17 @@ await test('the ordinary-computer release stack is left alone: still relative, s
   assertEq(ports.length, 1, 'one published port');
   assert(ports[0]!.startsWith('${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}'),
     'still loopback by default on an ordinary computer, where that IS the machine you are sitting at');
-  // The Arcane file is additive. Nothing about it reaches the bundle a normal user downloads.
-  assert(!read('src/ops/consumer-release-bundle.ts').includes('docker-compose.arcane.yml'),
-    'and the consumer bundle still ships exactly one Compose file');
+  // v1.1.2 CORRECTS this assertion. It used to require that the Arcane file never reach the consumer bundle
+  // — "nothing about it reaches the bundle a normal user downloads" — which sounded like scope discipline and
+  // was actually the defect: it pinned in place the fact that an Arcane user's archive contained no Arcane
+  // path. What genuinely matters is that the ordinary-computer stack is UNCHANGED, which the assertions above
+  // establish, and that `docker-compose.yml` in the bundle is still the ordinary runtime stack rather than
+  // being replaced by the Arcane one. Shipping the Arcane pair ALONGSIDE it takes nothing away from anybody.
+  const bundleSource = read('src/ops/consumer-release-bundle.ts');
+  assert(bundleSource.includes("toFile('docker-compose.yml', sources.runtimeCompose)"),
+    'the bundle\'s docker-compose.yml is still the ordinary-computer runtime stack');
+  assert(bundleSource.includes("toFile('docker-compose.arcane.yml', sources.arcaneCompose)"),
+    'and the Arcane stack ships alongside it, so a launcher user gets the path the documentation names');
 });
 
 await test('the setup script and the preflight agree about what a project directory must contain', () => {

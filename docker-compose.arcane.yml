@@ -103,7 +103,7 @@ services:
   # the completion secret, and proves the least-privileged runtime connection works. The app will not start
   # unless this exits zero.
   migrate:
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.1}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.2}
     init: true
     restart: "no"
     depends_on:
@@ -143,7 +143,7 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
   app:
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.1}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.2}
     init: true
     restart: unless-stopped
     depends_on:

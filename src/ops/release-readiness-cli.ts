@@ -75,6 +75,8 @@ function gatherBundleSources(): BundleSources {
     runtimeCompose: repoFile('docker-compose.runtime.yml'),
     setupBash: repoFile('deploy/local-runtime-setup.sh'),
     setupPowerShell: repoFile('deploy/local-runtime-setup.ps1'),
+    arcaneCompose: repoFile('docker-compose.arcane.yml'),
+    arcaneSetupBash: repoFile('deploy/arcane-setup.sh'),
   };
 }
 
