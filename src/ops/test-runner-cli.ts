@@ -20,6 +20,7 @@ import {
   runPlan,
   tsxCliPath,
 } from './test-runner.js';
+import { isDirectRun } from './direct-run.js';
 
 // Phase 258 — the entry point `npm test` runs.
 //
@@ -178,7 +179,11 @@ async function main(): Promise<number> {
   return report.exitCode;
 }
 
-main().then((code) => { process.exitCode = code; }).catch((err: unknown) => {
-  console.error((err as Error).message);
-  process.exitCode = TEST_RUNNER_EXIT_USAGE;
-});
+// Same guard as catalog-import-cli.ts, for the same reason and before anything imports this one. A test
+// runner whose module runs the whole suite on import would be a particularly bad thing to discover late.
+if (isDirectRun(import.meta.url)) {
+  main().then((code) => { process.exitCode = code; }).catch((err: unknown) => {
+    console.error((err as Error).message);
+    process.exitCode = TEST_RUNNER_EXIT_USAGE;
+  });
+}

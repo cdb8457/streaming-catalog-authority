@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { readFileSync } from 'node:fs';
 import { Client } from 'pg';
@@ -35,6 +36,8 @@ import {
   type ExistingStateLookup,
 } from '../src/ops/catalog-import.js';
 import { parseCatalogImportArgs } from '../src/ops/catalog-import-cli.js';
+import { isDirectRun } from '../src/ops/direct-run.js';
+import { tsxCliPath } from '../src/ops/test-runner.js';
 
 // Phase 259 — offline catalog import.
 //
@@ -79,6 +82,8 @@ function assertRejects(doc: unknown, msg: string): CatalogImportError {
 }
 
 const WORK = mkdtempSync(join(tmpdir(), 'ca-catalog-import-'));
+/** The tsx entry point, so a child process can run a .ts/.mts file the same way this suite was run. */
+const tsxCli = tsxCliPath();
 
 function snapshot(items: unknown[], source = 'my-library'): string {
   return JSON.stringify({ format: CATALOG_SNAPSHOT_FORMAT, version: CATALOG_SNAPSHOT_VERSION, source, items });
@@ -442,6 +447,99 @@ async function main(): Promise<void> {
       let threw = false;
       try { parseCatalogImportArgs(argv); } catch { threw = true; }
       assert(threw, `accepted ${argv.join(' ')}`);
+    }
+  });
+
+  // --- importing the CLI must be inert ------------------------------------------------------------------
+
+  console.log('\nimporting the CLI module runs nothing');
+
+  // THE DEFECT THIS PINS. `*-cli.ts` files in this repository call `main()` at the top level, which is right
+  // for a program and wrong for a module — and they are the same file. This suite imports
+  // `parseCatalogImportArgs` from the CLI, so before the guard that import RAN the command against the
+  // SUITE's argv: invoked as `tsx test/catalog-import.ts 5453`, the imported CLI printed `unknown option:
+  // 5453` and its usage, and set `process.exitCode = 2` on a run that had passed. An exit code that a
+  // passing suite did not choose is an exit code that no longer means anything.
+  //
+  // Proved in a CHILD PROCESS, because the claim is about a whole process: what it wrote to its streams and
+  // what code it ended with. Asserting it in-process could only observe this process, which has already
+  // imported the module once.
+  const probeDir = join(WORK, 'probe');
+  mkdirSync(probeDir, { recursive: true });
+  const cliUrl = new URL('../src/ops/catalog-import-cli.ts', import.meta.url).href;
+  const probe = join(probeDir, 'import-probe.mts');
+  writeFileSync(probe,
+    // Absolute file URL, so the CLI's own relative imports still resolve from its real location. The sentinel
+    // is the ONLY thing this process should ever print.
+    `await import(${JSON.stringify(cliUrl)});\n`
+    + 'process.stdout.write("PROBE_IMPORTED exitCode=" + String(process.exitCode) + "\\n");\n');
+
+  const runProbe = (argv: readonly string[]): { status: number | null; stdout: string; stderr: string } => {
+    const res = spawnSync(process.execPath, [tsxCli, probe, ...argv], {
+      encoding: 'utf8', shell: false,
+      // A database URL that cannot resolve: if the import ever opened a pool, this is what would surface.
+      env: { ...process.env, DATABASE_URL: 'postgresql://app:app@catalog-import-probe.invalid:5432/catalog' },
+    });
+    return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+  };
+
+  for (const [label, argv] of [
+    // The exact shape that caused the defect: a bare positional the CLI's parser rejects.
+    ['a bare positional argument (the suite port)', ['5453']],
+    ['an unknown flag', ['--yolo']],
+    ['a flag with no value', ['--file']],
+    // The dangerous one: argv the CLI would ACCEPT. Before the guard this would have resolved a path, read a
+    // file and opened a database connection, all from an import.
+    ['argv the CLI would accept', ['--file', 'anything.json', '--apply']],
+  ] as Array<[string, string[]]>) {
+    await test(`importing the CLI with ${label} writes nothing and changes no exit code`, () => {
+      const res = runProbe(argv);
+      assertEq(res.stdout, 'PROBE_IMPORTED exitCode=undefined\n', `the import wrote to stdout or set an exit code: ${JSON.stringify(res.stdout)}`);
+      assertEq(res.stderr, '', `the import wrote to stderr: ${res.stderr}`);
+      assertEq(res.status, 0, 'the importing process did not exit zero');
+      for (const forbidden of ['unknown option', 'usage:', '--file is required', 'catalog-import-probe.invalid', 'ECONNREFUSED', 'ENOTFOUND']) {
+        assert(!(res.stdout + res.stderr).includes(forbidden), `the import produced ${forbidden}`);
+      }
+    });
+  }
+
+  await test('the CLI still runs, and still exits with the code its verdict implies, when it IS the program', () => {
+    const cli = fileURLToPath(new URL('../src/ops/catalog-import-cli.ts', import.meta.url));
+    const run = (argv: readonly string[]): { status: number | null; stdout: string; stderr: string } => {
+      const res = spawnSync(process.execPath, [tsxCli, cli, ...argv], { encoding: 'utf8', shell: false });
+      return { status: res.status, stdout: res.stdout ?? '', stderr: res.stderr ?? '' };
+    };
+    const missing = run([]);
+    assertEq(missing.status, 2, `a missing --file did not exit 2: ${missing.stderr}`);
+    assert(missing.stderr.includes('--file is required'), 'the usage error was not explained');
+    const help = run(['--help']);
+    assertEq(help.status, 0, '--help did not exit 0');
+    assert(help.stdout.includes('ops:catalog-import'), '--help printed no usage');
+    const unknown = run(['--yolo']);
+    assertEq(unknown.status, 2, 'an unknown option did not exit 2');
+    assert(unknown.stderr.includes('unknown option: --yolo'), 'the unknown option was not named');
+  });
+
+  await test('the guard answers by comparing the entry script, and fails closed when it cannot', () => {
+    const self = new URL('../src/ops/direct-run.ts', import.meta.url).href;
+    const selfPath = fileURLToPath(self);
+    assert(isDirectRun(self, ['node', selfPath]), 'the module was not recognised as the entry script');
+    // A relative path and a path through a differently-cased drive letter are the same file.
+    assert(isDirectRun(self, ['node', relative(process.cwd(), selfPath)]), 'a relative entry path was not recognised');
+    assert(!isDirectRun(self, ['node', fileURLToPath(new URL('../src/ops/catalog-import-cli.ts', import.meta.url))]),
+      'a different entry script was treated as this module');
+    for (const argv of [['node'], ['node', ''], ['node', join(WORK, 'no-such-file.ts')]]) {
+      assert(!isDirectRun(self, argv), `an unresolvable entry was not failed closed: ${JSON.stringify(argv)}`);
+    }
+  });
+
+  await test('every CLI this phase group added guards its own top-level run', () => {
+    for (const file of ['../src/ops/catalog-import-cli.ts', '../src/ops/test-runner-cli.ts']) {
+      const source = readFileSync(fileURLToPath(new URL(file, import.meta.url)), 'utf8');
+      assert(source.includes('isDirectRun(import.meta.url)'), `${file} calls main() unguarded`);
+      // The guard has to WRAP the call, not merely be mentioned somewhere above it.
+      assert(/if \(isDirectRun\(import\.meta\.url\)\) \{\s*\n\s*main\(\)/.test(source),
+        `${file} does not wrap its main() in the guard`);
     }
   });
 

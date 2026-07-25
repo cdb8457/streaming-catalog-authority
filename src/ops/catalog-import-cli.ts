@@ -2,6 +2,7 @@ import { CatalogAuthority } from '../core/catalog/authority.js';
 import { CatalogImportError } from '../core/catalog/import-snapshot.js';
 import { createCustodian, loadCustodianConfig } from '../core/crypto/custodian-factory.js';
 import { closePool, getPool } from '../db/pool.js';
+import { isDirectRun } from './direct-run.js';
 import {
   CATALOG_IMPORT_DIR_ENV,
   CatalogImportPathError,
@@ -147,10 +148,17 @@ async function main(): Promise<number> {
   }
 }
 
-main().then((code) => { process.exitCode = code; }).catch(async (err: unknown) => {
-  await closePool().catch(() => undefined);
-  // The message comes from the authority or the driver and carries no identity; the stack does not go to
-  // stdout, where a report is read from.
-  console.error((err as Error).message);
-  process.exitCode = CATALOG_IMPORT_EXIT_INCOMPLETE;
-});
+// ONLY WHEN THIS FILE IS THE PROGRAM. `test/catalog-import.ts` imports `parseCatalogImportArgs` from here,
+// and without this guard that import RAN the command: invoked as `tsx test/catalog-import.ts 5453`, the
+// suite's own port argument reached this parser, which printed `unknown option: 5453` and its usage and set
+// `process.exitCode = 2` on a passing run. Importing a module must not open a database, read a file, write to
+// a stream or touch the exit code of somebody else's process. See direct-run.ts.
+if (isDirectRun(import.meta.url)) {
+  main().then((code) => { process.exitCode = code; }).catch(async (err: unknown) => {
+    await closePool().catch(() => undefined);
+    // The message comes from the authority or the driver and carries no identity; the stack does not go to
+    // stdout, where a report is read from.
+    console.error((err as Error).message);
+    process.exitCode = CATALOG_IMPORT_EXIT_INCOMPLETE;
+  });
+}
