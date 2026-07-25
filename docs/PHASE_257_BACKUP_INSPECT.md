@@ -74,6 +74,19 @@ would report a problem on most installs. The absence is stated in the limits ins
 
 ## 3. What it will not touch
 
+* **Recognising a secrets copy and accepting one are different questions.** The component used to be claimed
+  on the strength of any **two** recognised file names, so a folder holding two of the six files a restore
+  needs made the whole backup report `CURRENT` — a verdict of "complete" over a set of secrets that cannot
+  start the stack. The count was even printed in the detail, and the verdict ignored it. That is exactly the
+  Phase 256 failure mode, reproduced inside the checker built to catch it.
+
+  Now: any required name present makes it a **secrets copy**, and only **all six, non-empty**, satisfies the
+  **component**. An empty file counts as absent, because an empty secret restores as no secret at all. An
+  incomplete copy is reported as incomplete, names which files are missing or empty, and does not count — so
+  the backup reads `INCOMPLETE` rather than `CURRENT`. The required six are pinned by a test to exactly what
+  every shipped Compose stack declares as a secret, so a stack that starts requiring a seventh cannot leave
+  this checker quietly approving backups without it. `app_password` is optional: the setup scripts generate
+  it, no stack mounts it, and a test asserts that is why it is not required.
 * **No secret file is ever opened.** A secrets copy is recognised by file **names**, and reported as
   present / absent / empty. A tool that reads your KEK to tell you it is there has told you something you
   already knew, at a cost you did not agree to. A test writes distinctive values into the fixture secrets and
@@ -187,13 +200,14 @@ run; no provider, media server or library is contacted; no part of Phase 231 is 
 
 ## Tests
 
-`test/backup-inspect.ts` — 53 checks and one reported skip, run in CI as `test:phase257-local`: every
+`test/backup-inspect.ts` — 56 checks and one reported skip, run in CI as `test:phase257-local`: every
 verdict including `AHEAD` and each way of
 reaching `INDETERMINATE`, the Phase 256 omission caught as `INCOMPLETE`, records not counting as required,
 `COPY` column lists read rather than assumed, CRLF dumps, both `INSERT` forms, a similarly-named table not
 mistaken for `schema_meta`, a COPY block split across a streaming chunk boundary at every offset in a window around it, the carry
 bound refusing a line that outlasts a window and a file with no newline at all, a long-but-bounded line still
-being read, a multi-byte character split across a window, a keystore whose `keys` is a link not counting, the scan bound reported as a
+being read, a multi-byte character split across a window, a keystore whose `keys` is a link not counting, a partial secrets copy refusing to satisfy the component
+and naming what is missing, a lone recognised name never accepted, an optional credential changing nothing, the scan bound reported as a
 question rather than an absence, no secret value reaching the output, an empty secret named, symlinks refused
 and not followed, no path echoed, every argument-resolution refusal, the CLI's four exit codes driven as a
 real process, the panel command carrying `--no-deps` and `:ro`, and the live `schema_meta` proof.

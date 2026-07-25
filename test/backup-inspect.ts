@@ -21,7 +21,7 @@ import {
   scanForSchemaVersion,
   SchemaVersionScanner,
 } from '../src/ops/backup-inspect.js';
-import { BACKUP_INSPECT_COMMANDS } from '../src/ops/backup-components.js';
+import { BACKUP_INSPECT_COMMANDS, OPTIONAL_SECRET_FILES, REQUIRED_SECRET_FILES } from '../src/ops/backup-components.js';
 import { removeQuietly } from '../src/ops/usable-shell.js';
 
 // Phase 257 — is the backup you have still a rollback point?
@@ -99,6 +99,8 @@ interface BackupShape {
   readonly keystore?: boolean;
   readonly emptyKeystore?: boolean;
   readonly secrets?: boolean;
+  /** Two of the six required files: what an incomplete copy looks like. */
+  readonly partialSecrets?: boolean;
   readonly emptySecret?: boolean;
   readonly records?: number;
 }
@@ -111,13 +113,18 @@ function makeBackup(shape: BackupShape): string {
     for (const sub of ['keys', 'tombstones', 'ops', 'journal']) mkdirSync(join(root, sub), { recursive: true });
     if (shape.keystore === true) writeFileSync(join(root, 'keys', 'key_abc.json'), '{"keyId":"key_abc"}');
   }
-  if (shape.secrets === true) {
+  if (shape.secrets === true || shape.partialSecrets === true) {
     const root = join(dir, 'secrets-backup');
     mkdirSync(root, { recursive: true });
-    // A distinctive value, so a test can prove the inspector never reads one.
-    writeFileSync(join(root, 'custodian_kek'), 'NEVER-READ-THIS-KEK-VALUE\n');
-    writeFileSync(join(root, 'operator_ui_token'), shape.emptySecret === true ? '' : 'NEVER-READ-THIS-TOKEN\n');
-    writeFileSync(join(root, 'completion_secret'), 'NEVER-READ-THIS-COMPLETION\n');
+    // Two of the six, which is what an incomplete copy looks like — and what used to be accepted as complete.
+    const names = shape.partialSecrets === true
+      ? ['custodian_kek', 'operator_ui_token']
+      : [...REQUIRED_SECRET_FILES];
+    for (const secret of names) {
+      // A distinctive value per file, so a test can prove the inspector never reads one.
+      const empty = shape.emptySecret === true && secret === 'operator_ui_token';
+      writeFileSync(join(root, secret), empty ? '' : `NEVER-READ-THIS-${secret.toUpperCase()}\n`);
+    }
   }
   if (shape.records !== undefined && shape.records > 0) {
     const root = join(dir, 'promotion-records-backup');
@@ -223,18 +230,54 @@ await test('a gzip-compressed dump counts as the database and is INDETERMINATE, 
   assert(/Decompress/i.test(gz.detail), 'and what to do about it');
 });
 
-await test('a directory holding one secret-shaped file does not satisfy the secrets component', () => {
-  const dir = makeBackup({ keystore: true, dump: plainDump(MIGRATION_VERSION) });
-  mkdirSync(join(dir, 'half-a-copy'), { recursive: true });
-  writeFileSync(join(dir, 'half-a-copy', 'custodian_kek'), 'NEVER-READ-THIS-KEK-VALUE\n');
+// THE DEFECT THIS CLOSES. The component was claimed on the strength of any TWO recognised file names, so a
+// folder holding two of the six files a restore needs made the whole backup report CURRENT -- "complete" over
+// a set of secrets that cannot start the stack. The count was even printed in the detail and the verdict
+// ignored it. That is precisely the Phase 256 failure mode, reproduced inside the checker built to catch it.
+await test('a partial secrets copy does NOT satisfy the component, and the backup is INCOMPLETE', () => {
+  const dir = makeBackup({ keystore: true, partialSecrets: true, records: 1, dump: plainDump(MIGRATION_VERSION) });
   const result = inspectBackupDirectory(dir);
-  assertEq(result.verdict, 'INCOMPLETE', 'one file is not a secrets backup');
-  assertEq(result.missing.join(','), 'secrets', 'and the secrets component is still missing');
+  assertEq(result.verdict, 'INCOMPLETE', 'two of six is not a secrets backup');
+  assertEq(result.ok, false, 'so it blocks');
+  assertEq(result.missing.join(','), 'secrets', 'and the secrets component is named as missing');
+  const partial = result.artifacts.find((entry) => entry.name === 'secrets-backup')!;
+  assertEq(partial.kind, 'SECRETS_COPY', 'it is still recognised as a secrets copy');
+  assertEq(partial.component, null, 'but it satisfies nothing');
+  assert(/INCOMPLETE/.test(partial.detail), 'the detail says so in as many words');
+  for (const absent of ['completion_secret', 'database_url', 'admin_database_url', 'postgres_password']) {
+    assert(partial.detail.includes(absent), `and names ${absent} as missing`);
+  }
+  assert(/None of them was opened/.test(partial.detail), 'and it was still not opened');
+  for (const value of REQUIRED_SECRET_FILES.map((s) => `NEVER-READ-THIS-${s.toUpperCase()}`)) {
+    assert(!JSON.stringify(result).includes(value), 'and no content escaped');
+  }
+});
+
+await test('one required file present is recognised but never accepted', () => {
+  const dir = makeBackup({ ...COMPLETE, dump: plainDump(MIGRATION_VERSION) });
+  mkdirSync(join(dir, 'half-a-copy'), { recursive: true });
+  writeFileSync(join(dir, 'half-a-copy', 'custodian_kek'), 'NEVER-READ-THIS-CUSTODIAN_KEK');
+  const result = inspectBackupDirectory(dir);
   const partial = result.artifacts.find((entry) => entry.name === 'half-a-copy')!;
-  assertEq(partial.component, null, 'it satisfies nothing');
-  assert(/custodian_kek/.test(partial.detail), 'but what was seen is named, so nobody looks in the wrong place');
-  assert(/Nothing in it was opened/.test(partial.detail), 'and it was still not opened');
-  assert(!JSON.stringify(result).includes('NEVER-READ-THIS-KEK-VALUE'), 'and its contents did not escape');
+  assertEq(partial.kind, 'SECRETS_COPY', 'a lone recognised name still identifies the folder');
+  assertEq(partial.component, null, 'and satisfies nothing');
+  // The complete copy elsewhere in the directory is what carries the component.
+  assertEq(result.verdict, 'CURRENT', 'the real secrets copy beside it still counts');
+});
+
+await test('a complete secrets copy says so, and counts', () => {
+  const result = inspectBackupDirectory(makeBackup({ ...COMPLETE, dump: plainDump(MIGRATION_VERSION) }));
+  const secrets = result.artifacts.find((entry) => entry.component === 'secrets')!;
+  assertEq(secrets.kind, 'SECRETS_COPY', 'it is a secrets copy');
+  assert(secrets.detail.includes(String(REQUIRED_SECRET_FILES.length)), 'and says how many a restore needs');
+  assert(/complete secrets copy/i.test(secrets.detail), 'in as many words');
+});
+
+await test('the optional runtime credential is not required, and its presence changes nothing', () => {
+  const dir = makeBackup({ ...COMPLETE, dump: plainDump(MIGRATION_VERSION) });
+  assertEq(inspectBackupDirectory(dir).verdict, 'CURRENT', 'a copy without app_password is complete');
+  for (const optional of OPTIONAL_SECRET_FILES) writeFileSync(join(dir, 'secrets-backup', optional), 'x');
+  assertEq(inspectBackupDirectory(dir).verdict, 'CURRENT', 'and adding it does not change the verdict');
 });
 
 await test('a dump with no schema_meta is INDETERMINATE', () => {
@@ -451,7 +494,7 @@ await test('no secret file is ever opened, and no secret value reaches the outpu
   const dir = makeBackup({ ...COMPLETE, dump: plainDump(MIGRATION_VERSION) });
   const result = inspectBackupDirectory(dir);
   const rendered = `${renderBackupInspection(result)}${JSON.stringify(result)}`;
-  for (const value of ['NEVER-READ-THIS-KEK-VALUE', 'NEVER-READ-THIS-TOKEN', 'NEVER-READ-THIS-COMPLETION']) {
+  for (const value of REQUIRED_SECRET_FILES.map((secret) => `NEVER-READ-THIS-${secret.toUpperCase()}`)) {
     assert(!rendered.includes(value), `the value in the secret file (${value.slice(0, 12)}…) is not in the output`);
   }
   const secrets = result.artifacts.find((entry) => entry.kind === 'SECRETS_COPY');

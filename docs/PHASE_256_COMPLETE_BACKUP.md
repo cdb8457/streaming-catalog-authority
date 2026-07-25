@@ -83,6 +83,8 @@ about it fails a test.**
   target is a refusal, not a skip.
 * Declared Compose secrets are covered even though they appear in no mount list.
 * Every uncovered path is reported in one run, not just the first.
+* The **secret file names** a restore needs are pinned to exactly what every shipped stack declares, which is
+  what Phase 257 decides a secrets copy's completeness against.
 
 Exclusions are arguments, not silence. There are two, both used by a shipped stack, both stating why:
 
@@ -155,7 +157,7 @@ somewhere outside the container, and the operator UI is read-only.
 
 ## Tests
 
-`test/backup-components.ts` — 39 checks, run in CI as `test:phase256-local`: the keystore present with its
+`test/backup-components.ts` — 41 checks, run in CI as `test:phase256-local`: the keystore present with its
 consequence stated as a consequence,
 the checklist no longer claiming a closed list of two, coverage over all four shipped stacks, the sidecar
 state routed to the keystore component, a synthetic stack with new persistent state failing and naming the

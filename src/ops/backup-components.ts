@@ -202,6 +202,29 @@ export const BACKUP_SUMMARY =
   + 'be decrypted.';
 
 /**
+ * The secret files a restore actually needs, and the ones it does not.
+ *
+ * REQUIRED is exactly the set every shipped stack declares as a Compose secret, and a test asserts that
+ * equality against the four stacks rather than trusting this list — the same anti-drift rule the mount
+ * coverage follows, for the same reason: a stack that starts requiring a seventh secret must not leave a
+ * checker quietly approving backups that do not contain it.
+ *
+ * `app_password` is optional. The setup scripts generate it so a deployment can hold a real credential for
+ * the least-privileged runtime role, but no stack mounts it and `ops:bootstrap` teaches the database from
+ * `database_url`; a backup without it is not broken.
+ */
+export const REQUIRED_SECRET_FILES: readonly string[] = [
+  'admin_database_url',
+  'completion_secret',
+  'custodian_kek',
+  'database_url',
+  'operator_ui_token',
+  'postgres_password',
+];
+
+export const OPTIONAL_SECRET_FILES: readonly string[] = ['app_password'];
+
+/**
  * Phase 257 — checking a backup before the day you need it.
  *
  * Rendered into the same panel as the components, because "how do I take one" and "is the one I took any

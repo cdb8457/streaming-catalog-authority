@@ -2,7 +2,7 @@ import { closeSync, constants as fsConstants, lstatSync, openSync, readSync, rea
 import { basename, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
-import { BACKUP_COMPONENT_IDS, type BackupComponentId } from './backup-components.js';
+import { BACKUP_COMPONENT_IDS, REQUIRED_SECRET_FILES, type BackupComponentId } from './backup-components.js';
 
 // Phase 257 — is the backup you have still a rollback point?
 //
@@ -74,11 +74,9 @@ const CUSTOM_DUMP_MAGIC = 'PGDMP';
 /** Subdirectories a `FileCustodian` root always has. Content, not a name somebody chose. */
 const KEYSTORE_SUBDIRS = ['keys', 'tombstones'] as const;
 
-/** Secret file names the setup scripts create. Used to RECOGNISE a directory; never opened. */
-const SECRET_FILE_NAMES = [
-  'postgres_password', 'admin_database_url', 'database_url',
-  'completion_secret', 'custodian_kek', 'operator_ui_token', 'app_password',
-] as const;
+// The secret file names come from `backup-components.ts`, where a test pins them to what the shipped Compose
+// stacks actually declare. They are used to RECOGNISE a directory and to decide whether it is COMPLETE;
+// nothing in one is ever opened.
 
 export type ArtifactKind =
   | 'PG_PLAIN_DUMP'
@@ -286,14 +284,31 @@ function inspectDirectoryEntry(path: string, name: string): InspectedArtifact {
   }
 
   // A secrets copy, recognised by file names only. Nothing in it is opened.
-  const secretsFound = SECRET_FILE_NAMES.filter((secret) => set.has(secret));
-  if (secretsFound.length >= 2) {
-    const empty = secretsFound.filter((secret) => sizeOf(join(path, secret)) === 0);
-    return artifact(name, 'SECRETS_COPY', 'secrets', null,
-      empty.length === 0
-        ? `A secrets copy holding ${secretsFound.length} of the expected files. None of them was opened.`
-        : `A secrets copy in which ${empty.length} file(s) are EMPTY: ${empty.join(', ')}. An empty secret `
-          + 'file restores as no secret at all. None of them was opened.');
+  //
+  // RECOGNISING ONE AND ACCEPTING ONE ARE DIFFERENT QUESTIONS, and conflating them was a defect exactly like
+  // the one Phase 256 exists to fix. This used to claim the `secrets` component on the strength of any TWO
+  // recognised names, so a folder holding two of the six files a restore needs made the whole backup report
+  // CURRENT — a verdict of "complete" over a set of secrets that cannot start the stack. The count was even
+  // printed in the detail, and the verdict ignored it.
+  //
+  // So: any required name present makes it a secrets copy, and only ALL of them, non-empty, satisfies the
+  // component. An empty file counts as absent, because an empty secret restores as no secret at all.
+  if (REQUIRED_SECRET_FILES.some((secret) => set.has(secret))) {
+    const missing = REQUIRED_SECRET_FILES.filter((secret) => !set.has(secret));
+    const empty = REQUIRED_SECRET_FILES.filter((secret) => set.has(secret) && sizeOf(join(path, secret)) === 0);
+    if (missing.length === 0 && empty.length === 0) {
+      return artifact(name, 'SECRETS_COPY', 'secrets', null,
+        `A complete secrets copy: all ${REQUIRED_SECRET_FILES.length} files a restore needs are present and `
+        + 'non-empty. None of them was opened.');
+    }
+    const faults = [
+      ...(missing.length === 0 ? [] : [`missing ${missing.join(', ')}`]),
+      ...(empty.length === 0 ? [] : [`EMPTY ${empty.join(', ')}`]),
+    ].join('; ');
+    return artifact(name, 'SECRETS_COPY', null, null,
+      `An INCOMPLETE secrets copy — ${faults}. A restore needs every one of the `
+      + `${REQUIRED_SECRET_FILES.length} required files, and an empty file restores as no secret at all, so `
+      + 'this does NOT count as the secrets component. None of them was opened.');
   }
 
   const jsonCount = children.filter((child) => child.toLowerCase().endsWith('.json')).length;
@@ -301,17 +316,6 @@ function inspectDirectoryEntry(path: string, name: string): InspectedArtifact {
     return artifact(name, 'RECORDS_COPY', 'promotion-records', null,
       `A folder of ${jsonCount} JSON file(s), which is the shape of a promotion records copy. Their contents `
       + 'were not read and nothing about the chain is claimed here.');
-  }
-
-  // Exactly one secret-shaped file is NOT enough to claim the component — a secrets copy is the whole folder,
-  // and satisfying `secrets` on the strength of one file would turn an obviously incomplete copy into a pass.
-  // It is still worth saying what was seen, because "matches no known component" would send somebody looking
-  // in the wrong place.
-  if (secretsFound.length === 1) {
-    return artifact(name, 'UNRECOGNISED', null, null,
-      `A directory holding one file named like a secret (${secretsFound[0]!}) and nothing else recognisable. `
-      + 'A secrets backup is the whole folder the setup script created, so this does not count as one. '
-      + 'Nothing in it was opened.');
   }
 
   return artifact(name, 'UNRECOGNISED', null, null,

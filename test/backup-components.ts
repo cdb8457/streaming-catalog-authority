@@ -10,11 +10,14 @@ import {
   backupComponent,
   backupComponents,
   coverageForTarget,
+  OPTIONAL_SECRET_FILES,
   reportBackupCoverage,
+  REQUIRED_SECRET_FILES,
   stripHostVariablePrefix,
   type BackupComponentId,
 } from '../src/ops/backup-components.js';
 import { firstRunChecklist, troubleshootingTable } from '../src/ops/operator-ui-first-run-checklist.js';
+import { asMap, parseYaml } from '../src/ops/minimal-yaml.js';
 
 // Phase 256 — what a complete backup of this installation actually is.
 //
@@ -139,6 +142,31 @@ test('the launcher stack routes its sidecar state to the keystore component, not
     assertEq(entry.coverage.kind, 'component', 'it is a component, not an exclusion');
     assertEq(entry.coverage.kind === 'component' ? entry.coverage.component : null, 'keystore',
       'and the component is the keystore, because it is the same material');
+  }
+});
+
+// The list Phase 257 decides completeness against. Pinned to the stacks rather than trusted, for the same
+// reason the mount coverage is: a stack that starts requiring a seventh secret must not leave a checker
+// quietly approving backups that do not contain it.
+test('the required secret files are exactly what every shipped stack declares', () => {
+  for (const stack of SHIPPED_STACKS) {
+    const declared = Object.keys(asMap(parseYaml(read(stack)).secrets ?? null, `${stack} secrets`)).sort();
+    assertEq(declared.join(','), [...REQUIRED_SECRET_FILES].sort().join(','),
+      `${stack} declares exactly the secrets a restore is checked for`);
+  }
+  assertEq(new Set(REQUIRED_SECRET_FILES).size, REQUIRED_SECRET_FILES.length, 'no name appears twice');
+  for (const optional of OPTIONAL_SECRET_FILES) {
+    assert(!REQUIRED_SECRET_FILES.includes(optional), `${optional} is optional and is not also required`);
+  }
+});
+
+test('the optional secret is optional because no stack mounts it', () => {
+  for (const stack of SHIPPED_STACKS) {
+    const text = read(stack);
+    for (const optional of OPTIONAL_SECRET_FILES) {
+      assert(!new RegExp(`^\\s+${optional}:`, 'm').test(text),
+        `${stack} does not declare ${optional} as a Compose secret, which is why it is not required`);
+    }
   }
 });
 
