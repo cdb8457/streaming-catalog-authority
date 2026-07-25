@@ -423,7 +423,8 @@ await test('entering a token and loading exercises installation, status, logs, c
     assert(el('chainOutcome').textContent.length > 0, 'the chain panel rendered an outcome');
     // All four page routes were requested. /api/status answers 503 without a database — an exercised state,
     // not a failure to load — so the page surfaces it as a problem rather than blanking the other panels.
-    for (const route of ['/api/installation', '/api/status', '/api/logs', '/api/promotion-chain']) {
+    for (const route of ['/api/installation', '/api/status', '/api/logs', '/api/promotion-chain',
+      '/api/support-report']) {
       assert(app.run.fetchUrls.includes(route), `the app requested ${route}`);
     }
     // The standalone /api/version route is authenticated and answers with the bounded version view.
@@ -654,7 +655,8 @@ await test('the shell declares a mobile viewport and the stylesheet has a narrow
 await test('every operational route is still authenticated and /healthz stays minimal', async () => {
   const h = await startHarness();
   try {
-    for (const route of ['/api/status', '/api/logs', '/api/promotion-chain', '/api/installation', '/api/version']) {
+    for (const route of ['/api/status', '/api/logs', '/api/promotion-chain', '/api/installation', '/api/version',
+      '/api/support-report']) {
       assertEq((await httpGet(h.port, route)).statusCode, 401, `${route} still requires the token`);
     }
     // Assets need no token (they are not operational data) but the shell and health never did either.

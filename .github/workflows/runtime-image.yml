@@ -41,7 +41,7 @@ env:
 
 jobs:
   suites:
-    name: Typecheck and Phase 242-254 suites
+    name: Typecheck and Phase 242-257 suites
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +51,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
         run: |
+          npm run test:phase257-local
+          npm run test:phase256-local
+          npm run test:phase255-local
           npm run test:phase254-local
           npm run test:phase253-local
           npm run test:phase252-local
