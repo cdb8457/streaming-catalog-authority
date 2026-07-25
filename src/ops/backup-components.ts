@@ -103,13 +103,21 @@ const COMPONENTS: readonly BackupComponent[] = [
       posix: 'docker compose cp app:/var/lib/catalog/keystore ./keystore-backup',
       windows: 'docker compose cp app:/var/lib/catalog/keystore .\\keystore-backup',
     },
+    // `stop`, NOT `down`. `docker compose down` REMOVES the containers, and `docker compose cp` needs one to
+    // copy into — so "down, then cp" fails with "no container found" at the worst possible moment. `stop`
+    // leaves the container in place and stopped, which is what a copy into its volume needs.
     restore: {
-      posix: 'docker compose cp ./keystore-backup/. app:/var/lib/catalog/keystore',
-      windows: 'docker compose cp .\\keystore-backup\\. app:/var/lib/catalog/keystore',
+      posix: 'docker compose stop app && docker compose cp ./keystore-backup/. app:/var/lib/catalog/keystore '
+        + '&& docker compose start app',
+      windows: 'docker compose stop app; docker compose cp .\\keystore-backup\\. app:/var/lib/catalog/keystore; '
+        + 'docker compose start app',
     },
     caveat: 'It is key material: treat the copy the way you would treat a key. It is deliberately NOT in the '
-      + 'database dump, so a dump is never also a key backup. On the Unraid launcher stack the keystore is a '
-      + 'directory under your appdata folder and you copy it directly, with the stack stopped.',
+      + 'database dump, so a dump is never also a key backup. Both commands need the app container to EXIST: '
+      + 'run `docker compose create app` first on a machine where the stack has never been started, and use '
+      + '`docker compose stop app` rather than `docker compose down`, which removes the container the copy '
+      + 'needs. On the Unraid launcher stack the keystore is a directory under your appdata folder and you '
+      + 'copy it directly, with the stack stopped.',
   },
   {
     id: 'secrets',
@@ -347,7 +355,13 @@ function mountTargets(svc: YamlMap, what: string): readonly string[] {
   if (svc.volumes === undefined) return [];
   const targets: string[] = [];
   for (const entry of asList(svc.volumes, `${what} volumes`)) {
-    if (typeof entry === 'string') { targets.push(parseMount(entry).target); continue; }
+    if (typeof entry === 'string') {
+      // `- /var/lib/x` with no colon is an ANONYMOUS volume: the whole string is the container path, and
+      // there is no host side. It is still persistent state, so it has to reach the coverage decision — and
+      // letting the mount parser throw here would replace a guided refusal with a parse error.
+      targets.push(entry.includes(':') ? parseMount(entry).target : entry);
+      continue;
+    }
     // Long syntax: { type, source, target, read_only }.
     const map = asMap(entry, `${what} volume entry`);
     const target = map.target;

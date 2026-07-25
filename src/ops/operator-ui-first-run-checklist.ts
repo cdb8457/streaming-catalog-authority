@@ -304,9 +304,11 @@ const TROUBLESHOOTING: readonly TroubleshootingEntry[] = [
     fix: 'Restore the keystore from the SAME backup as the dump, with the stack stopped, then start it '
       + 'again. If that copy does not exist, the keys are gone and this product cannot regenerate them — '
       + 'nothing here will pretend otherwise. The Backup & restore panel has the exact command.',
+    // Read out of the model rather than retyped: the first version of this entry said `docker compose down`,
+    // which REMOVES the container that `docker compose cp` then needs, so the fix it offered could not work.
     commands: {
-      posix: 'docker compose down && docker compose cp ./keystore-backup/. app:/var/lib/catalog/keystore',
-      windows: 'docker compose down; docker compose cp .\\keystore-backup\\. app:/var/lib/catalog/keystore',
+      posix: backupComponent('keystore').restore.posix,
+      windows: backupComponent('keystore').restore.windows,
     },
   },
 ];

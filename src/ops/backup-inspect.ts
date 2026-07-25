@@ -281,6 +281,17 @@ function inspectDirectoryEntry(path: string, name: string): InspectedArtifact {
       + 'were not read and nothing about the chain is claimed here.');
   }
 
+  // Exactly one secret-shaped file is NOT enough to claim the component — a secrets copy is the whole folder,
+  // and satisfying `secrets` on the strength of one file would turn an obviously incomplete copy into a pass.
+  // It is still worth saying what was seen, because "matches no known component" would send somebody looking
+  // in the wrong place.
+  if (secretsFound.length === 1) {
+    return artifact(name, 'UNRECOGNISED', null, null,
+      `A directory holding one file named like a secret (${secretsFound[0]!}) and nothing else recognisable. `
+      + 'A secrets backup is the whole folder the setup script created, so this does not count as one. '
+      + 'Nothing in it was opened.');
+  }
+
   return artifact(name, 'UNRECOGNISED', null, null,
     'A directory that matches no known backup component. It is counted as nothing rather than guessed at.');
 }
@@ -296,6 +307,16 @@ function inspectFileEntry(path: string, name: string, size: number): InspectedAr
       'A pg_dump archive (custom or directory format). Which schema it holds cannot be read from here. Take '
       + 'the backup in plain format as well — the Backup & restore panel shows the command — or restore it '
       + 'into a throwaway database and read the version there.');
+  }
+  // `pg_dump … | gzip` is common enough that treating it as an unrecognised file would report a backup as
+  // INCOMPLETE while its dump was sitting there. It is a dump, and its version is unknowable from here —
+  // which is INDETERMINATE, a different verdict and a different instruction.
+  if (head.length >= 2 && head[0] === 0x1f && head[1] === 0x8b) {
+    return artifact(name, 'PG_ARCHIVE_DUMP', 'database',
+      { state: 'UNREADABLE', reason: 'the file is gzip-compressed, and this reads plain text only' },
+      'A gzip-compressed file, which is what piping a plain dump through gzip produces. It counts as the '
+      + 'database component and its schema version cannot be read from here. Decompress it and inspect '
+      + 'again, or keep an uncompressed copy alongside it.');
   }
   if (size === 0) {
     return artifact(name, 'UNRECOGNISED', null, null, 'An empty file. It is counted as nothing.');
@@ -375,45 +396,79 @@ function readHead(path: string, bytes: number): Buffer | null {
  * it is assumed to match the table's declared order, and the live test in this phase's suite asserts that
  * order against a real migrated database.
  */
-export function extractSchemaVersions(text: string): readonly number[] {
-  const found: number[] = [];
-  const lines = text.split(/\r?\n/);
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i]!;
+/**
+ * A line-at-a-time scanner, so that a `COPY` block split across a read boundary is still read.
+ *
+ * The first version of this parsed each streamed chunk independently, which lost a block whose header ended
+ * one chunk and whose data row began the next: the chunk with the header saw no rows, the chunk with the row
+ * saw no header, and a perfectly good dump reported ABSENT. It failed closed, which is the right direction —
+ * and it was still a tool that would occasionally tell an operator it could not read a file it could.
+ *
+ * Carrying the open-block state across chunks removes the whole class rather than widening a carry-over
+ * window and hoping. The same scanner backs {@link extractSchemaVersions}, so the streamed and whole-string
+ * paths cannot behave differently.
+ */
+export class SchemaVersionScanner {
+  private readonly found: number[] = [];
+  /** Index of the `version` column inside the currently open COPY block, or `null` when none is open. */
+  private copyVersionIndex: number | null = null;
+  private inCopy = false;
+
+  pushLine(line: string): void {
+    if (this.inCopy) {
+      if (line === '\\.') { this.inCopy = false; this.copyVersionIndex = null; return; }
+      if (line === '') return;
+      const cells = line.split('\t');
+      const cell = this.copyVersionIndex === null ? undefined : cells[this.copyVersionIndex];
+      if (cell !== undefined && /^\d+$/.test(cell)) this.found.push(Number(cell));
+      return;
+    }
 
     const copy = /^COPY\s+(?:public\.)?schema_meta\s*\(([^)]*)\)\s+FROM\s+stdin;/i.exec(line);
     if (copy !== null) {
-      const columns = copy[1]!.split(',').map((column) => column.trim().replace(/^"|"$/g, '').toLowerCase());
-      const index = columns.indexOf('version');
-      for (let j = i + 1; j < lines.length; j++) {
-        const row = lines[j]!;
-        if (row === '\\.') break;
-        if (row === '') continue;
-        const cells = row.split('\t');
-        const cell = index === -1 ? undefined : cells[index];
-        if (cell !== undefined && /^\d+$/.test(cell)) found.push(Number(cell));
-      }
-      continue;
+      const index = columnIndex(copy[1]!);
+      this.inCopy = true;
+      this.copyVersionIndex = index;
+      return;
     }
 
     const withColumns = /^INSERT\s+INTO\s+(?:public\.)?schema_meta\s*\(([^)]*)\)\s*VALUES\s*\(([^)]*)\)/i.exec(line);
     if (withColumns !== null) {
-      const columns = withColumns[1]!.split(',').map((column) => column.trim().replace(/^"|"$/g, '').toLowerCase());
+      const index = columnIndex(withColumns[1]!);
       const values = withColumns[2]!.split(',').map((value) => value.trim());
-      const index = columns.indexOf('version');
-      const cell = index === -1 ? undefined : values[index];
-      if (cell !== undefined && /^\d+$/.test(cell)) found.push(Number(cell));
-      continue;
+      const cell = index === null ? undefined : values[index];
+      if (cell !== undefined && /^\d+$/.test(cell)) this.found.push(Number(cell));
+      return;
     }
 
     const positional = /^INSERT\s+INTO\s+(?:public\.)?schema_meta\s+VALUES\s*\(([^)]*)\)/i.exec(line);
     if (positional !== null) {
       const values = positional[1]!.split(',').map((value) => value.trim());
       const cell = values[1];
-      if (cell !== undefined && /^\d+$/.test(cell)) found.push(Number(cell));
+      if (cell !== undefined && /^\d+$/.test(cell)) this.found.push(Number(cell));
     }
   }
-  return found;
+
+  push(text: string): void {
+    for (const line of text.split(/\r?\n/)) this.pushLine(line);
+  }
+
+  versions(): readonly number[] {
+    return this.found;
+  }
+}
+
+/** `null` rather than `-1`, so "no version column" cannot be used as an index by accident. */
+function columnIndex(list: string): number | null {
+  const columns = list.split(',').map((column) => column.trim().replace(/^"|"$/g, '').toLowerCase());
+  const index = columns.indexOf('version');
+  return index === -1 ? null : index;
+}
+
+export function extractSchemaVersions(text: string): readonly number[] {
+  const scanner = new SchemaVersionScanner();
+  scanner.push(text);
+  return scanner.versions();
 }
 
 /**
@@ -426,7 +481,8 @@ export function extractSchemaVersions(text: string): readonly number[] {
  */
 export function scanForSchemaVersion(path: string, maxBytes = BACKUP_INSPECT_SCAN_MAX_BYTES): SchemaVersionFinding {
   let fd: number | null = null;
-  const found: number[] = [];
+  const scanner = new SchemaVersionScanner();
+  let found: readonly number[] = [];
   try {
     fd = openSync(path, 'r');
     const buffer = Buffer.alloc(BACKUP_INSPECT_CHUNK_BYTES);
@@ -448,9 +504,11 @@ export function scanForSchemaVersion(path: string, maxBytes = BACKUP_INSPECT_SCA
       const lastBreak = text.lastIndexOf('\n');
       const complete = lastBreak === -1 ? '' : text.slice(0, lastBreak);
       carry = lastBreak === -1 ? text : text.slice(lastBreak + 1);
-      found.push(...extractSchemaVersions(complete));
+      // The scanner keeps any open COPY block across the boundary, so only the partial LINE has to be carried.
+      if (complete !== '') scanner.push(complete);
     }
-    if (carry !== '') found.push(...extractSchemaVersions(carry));
+    if (carry !== '') scanner.pushLine(carry);
+    found = scanner.versions();
     if (found.length === 0) {
       return truncated
         ? { state: 'UNREADABLE', reason: 'the dump is larger than this check will read and no schema version appeared in the part it did read' }

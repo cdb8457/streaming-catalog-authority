@@ -235,8 +235,15 @@
   // Phase 255. The report is rendered as TEXT, into a <pre>, exactly as the server rendered it — no
   // reformatting, no field picking, no re-serialising. What is on screen is what the CLI would print and what
   // gets pasted into an issue, so a difference between the three can never be introduced here.
+  //
+  // Whether a report is on screen is tracked as a FLAG rather than inferred from the text. Comparing against
+  // a placeholder string is the kind of check that keeps working until somebody adds a second placeholder —
+  // and the second one here says "No support report is available.", which a text comparison would happily
+  // copy to the clipboard and call a report.
+  var supportLoaded = false;
   function renderSupport(data) {
     supportReport.textContent = (data && data.text) || 'No support report loaded.';
+    supportLoaded = Boolean(data && data.text);
     supportStatus.className = 'status';
     supportStatus.textContent = '';
   }
@@ -244,6 +251,7 @@
   // panel must not leave the previous report on screen looking current.
   function renderSupportRefusal(message) {
     supportReport.textContent = 'No support report is available.';
+    supportLoaded = false;
     supportStatus.className = 'status err';
     supportStatus.textContent = message;
   }
@@ -266,7 +274,7 @@
     return true;
   }
   function copySupport() {
-    if (supportReport.textContent === '' || supportReport.textContent === 'No support report loaded.') {
+    if (!supportLoaded) {
       supportStatus.className = 'status err';
       supportStatus.textContent = 'There is no report to copy yet. Paste your operator token and choose Load everything.';
       return;
@@ -305,6 +313,7 @@
     setList(attention, []); setList(components, []); setList(nextSteps, []); setList(advisories, []);
     setList(chainArtifacts, []); setList(chainBlockers, []); setList(chainSteps, []); setList(chainLimits, []);
     supportReport.textContent = 'No support report loaded.';
+    supportLoaded = false;
     supportStatus.className = 'status'; supportStatus.textContent = '';
     artifactSummary.replaceChildren();
     var dt = document.createElement('dt'); dt.textContent = 'Artifacts'; artifactSummary.appendChild(dt);

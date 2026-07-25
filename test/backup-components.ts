@@ -203,6 +203,18 @@ test('long-syntax mounts are inspected too, so switching notation cannot silence
     'a long-syntax mount is still checked');
 });
 
+// An anonymous volume (`- /var/lib/x`, no colon, no host side) is still persistent state. It must reach the
+// coverage decision as the container path it is, rather than making the mount parser throw — a parse error
+// would replace a refusal that says what to do with one that does not.
+test('an anonymous volume is checked as the container path it is', () => {
+  const unknown = ['services:', '  app:', '    volumes:', '      - /var/lib/catalog/anonymous-state'].join('\n');
+  assertThrows(() => assertBackupCoverage('synthetic', unknown), /anonymous-state/, 'it is named in the refusal');
+  assertThrows(() => assertBackupCoverage('synthetic', unknown), /CONTAINER_PATH_COVERAGE/, 'with the guidance');
+  const known = ['services:', '  app:', '    volumes:', '      - /var/lib/catalog/keystore'].join('\n');
+  assertEq(reportBackupCoverage('synthetic', known).components.join(','), 'keystore',
+    'and a known one is covered the same as any other');
+});
+
 test('a mount with no target at all is a refusal, not an assumption', () => {
   const stack = ['services:', '  app:', '    volumes:', '      - type: bind', '        source: ./state'].join('\n');
   assertThrows(() => assertBackupCoverage('synthetic', stack), /no string target/, 'it refuses rather than skipping');
@@ -308,6 +320,39 @@ test('the Windows and POSIX forms differ only where they have to', () => {
   }
 });
 
+// A defect found by reviewing the commands as commands rather than as prose: `docker compose down` REMOVES
+// the containers, and `docker compose cp` needs one to copy into. "Down, then cp" fails with "no container
+// found", at the one moment an operator has no appetite for debugging a documented command.
+test('no command removes the container that a later part of the same command needs', () => {
+  const all = [
+    ...backupComponents().flatMap((component) => [
+      component.backup.posix, component.backup.windows, component.restore.posix, component.restore.windows]),
+    ...troubleshootingTable().flatMap((entry) => (entry.commands === null ? [] : [entry.commands.posix, entry.commands.windows])),
+    ...firstRunChecklist().flatMap((step) => (step.commands === null ? [] : [step.commands.posix, step.commands.windows])),
+  ];
+  for (const command of all) {
+    if (!/compose\s+cp\b/.test(command)) continue;
+    assert(!/compose\s+down\b/.test(command),
+      `a compose cp is preceded by a compose down, which removes the container it needs: ${command}`);
+    assert(/compose\s+stop\b/.test(command) || !/compose\s+(?:stop|down)\b/.test(command),
+      `a compose cp that stops anything must use stop, not down: ${command}`);
+  }
+});
+
+test('the keystore restore stops and restarts the container it copies into', () => {
+  const restore = backupComponent('keystore').restore;
+  for (const command of [restore.posix, restore.windows]) {
+    assert(/compose\s+stop\s+app/.test(command), `it stops the app first: ${command}`);
+    assert(/compose\s+cp\b/.test(command), 'then copies');
+    assert(/compose\s+start\s+app/.test(command), 'then starts it again');
+    assert(command.indexOf('stop') < command.indexOf('cp'), 'in that order');
+    assert(command.indexOf('cp') < command.indexOf('start'), 'and the start comes last');
+  }
+  // The container has to exist at all, which is not obvious on a machine where the stack never started.
+  assert(/compose create app/.test(backupComponent('keystore').caveat),
+    'and the caveat says what to do when there is no container yet');
+});
+
 test('every component states a caveat, and none of them is a reassurance', () => {
   for (const component of backupComponents()) {
     assert(component.caveat.length > 40, `${component.id} has a real caveat`);
@@ -397,6 +442,17 @@ test('nothing in this phase adds a route, a write or a mutation', () => {
   }
   // It reads Compose text it is HANDED. It never chooses a file itself.
   assert(!/readFileSync/.test(model), 'and it never reads a file of its own choosing');
+});
+
+// A suite nothing runs is a suite that stops being true. CI runs a named per-phase script rather than the
+// aggregate `test` script, so a new suite that is not wired in is ungated however green it is locally.
+test('this suite is a required CI gate, not only a local script', () => {
+  const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+  assertEq(pkg.scripts['test:phase256-local'], 'tsx test/backup-components.ts', 'the phase has its own CI script');
+  const workflow = read('.github/workflows/runtime-image.yml');
+  // In the `suites` job — the one that gates on typecheck and the phase suites — not somewhere optional.
+  const suites = workflow.split('name: Build and smoke')[0] ?? '';
+  assert(suites.includes('npm run test:phase256-local'), 'and the suites job runs it');
 });
 
 test('the coverage error is a typed refusal a caller can distinguish', () => {

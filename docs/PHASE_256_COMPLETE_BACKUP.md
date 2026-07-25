@@ -104,7 +104,9 @@ A new **restore** lifecycle step and a new troubleshooting entry —
 plainly that if the copy does not exist, the keys are gone and nothing here can regenerate them.
 
 The `docker compose cp` form is used for the keystore because it is identical on every platform and needs no
-knowledge of the generated volume name.
+knowledge of the generated volume name. Its restore is `stop` → `cp` → `start`, **not** `down` → `cp`:
+`docker compose down` removes the container that `cp` needs, so the first version of that command could not
+work. A test now refuses any command that pairs a `compose down` with a `compose cp`.
 
 ---
 
@@ -130,7 +132,8 @@ somewhere outside the container, and the operator UI is read-only.
 
 ## Tests
 
-`test/backup-components.ts` — 32 checks: the keystore present with its consequence stated as a consequence,
+`test/backup-components.ts` — 37 checks, run in CI as `test:phase256-local`: the keystore present with its
+consequence stated as a consequence,
 the checklist no longer claiming a closed list of two, coverage over all four shipped stacks, the sidecar
 state routed to the keystore component, a synthetic stack with new persistent state failing and naming the
 path, every uncovered path reported at once, long-syntax and variable-prefixed targets, secrets covered

@@ -106,18 +106,20 @@ route gained a write, and the UI is still read-only: `runtime-mutations` remains
 ## Limitations
 
 * The report's content is unchanged from Phase 246. This phase changes who can obtain it, not what it says.
-  Phases 256 and 257 add to it.
+  Phases 256 and 257 deliberately do not add to it either: the backup guidance they produce is static
+  instruction, and a diagnostics report is for facts about this installation, not for advice.
 * The Clipboard fallback is proved against a deterministic DOM that executes the real shipped `app.js`, not
   against a real browser engine — this project has no browser dependency, by policy. The
   daemon-backed container smoke remains the rung above it and is unchanged.
 
 ## Tests
 
-`test/operator-ui-support-report-endpoint.ts` — 23 checks: the token boundary including near-miss tokens,
-method handling and that a 405 is not a route oracle, the safety headers, the served bytes passing the
+`test/operator-ui-support-report-endpoint.ts` — 25 checks, run in CI as `test:phase255-local`: the token
+boundary including near-miss tokens, method handling and that a 405 is not a route oracle, the safety headers, the served bytes passing the
 redaction scan with a real absolute temp path configured, page/CLI rendering parity, answering with no
 database at all, the refusal withholding everything, a redaction rejection being byte-identical to an
-unexpected failure, and the copy path in all four of its states driven through the real shipped script.
+unexpected failure, the copy path in all four of its states driven through the real shipped script, and a
+withheld report rendering as withheld without the copy button offering to copy the placeholder.
 
 `test/operator-ui-csp-assets.ts` gains the new route in its two existing invariants: every operational route
 requires a token, and the page requests every route it renders.

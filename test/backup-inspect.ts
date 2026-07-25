@@ -9,6 +9,7 @@ import { migrateWith } from '../src/db/pool.js';
 import { MIGRATION_VERSION } from '../src/db/schema-version.js';
 import {
   BACKUP_DIR_ENV,
+  BACKUP_INSPECT_CHUNK_BYTES,
   BackupInspectError,
   extractSchemaVersions,
   inspectBackupDirectory,
@@ -16,6 +17,7 @@ import {
   renderBackupInspection,
   resolveBackupInspectRequest,
   scanForSchemaVersion,
+  SchemaVersionScanner,
 } from '../src/ops/backup-inspect.js';
 import { BACKUP_INSPECT_COMMANDS } from '../src/ops/backup-components.js';
 import { removeQuietly } from '../src/ops/usable-shell.js';
@@ -205,6 +207,34 @@ await test('a custom-format archive is INDETERMINATE, not assumed fine', () => {
   assert(/not evidence the backup is fine/i.test(result.headline), 'the headline refuses to be read either way');
 });
 
+// `pg_dump … | gzip` is common. Counting it as an unrecognised file would report a backup as INCOMPLETE with
+// its dump sitting right there — a different verdict, and a different and wrong instruction.
+await test('a gzip-compressed dump counts as the database and is INDETERMINATE, not missing', () => {
+  const dir = makeBackup({ keystore: true, secrets: true });
+  writeFileSync(join(dir, 'catalog-backup.sql.gz'), Buffer.from([0x1f, 0x8b, 0x08, 0x00, 0, 0, 0, 0, 0, 3]));
+  const result = inspectBackupDirectory(dir);
+  assertEq(result.verdict, 'INDETERMINATE', 'not INCOMPLETE — the dump is there');
+  assertEq(result.missing.length, 0, 'so nothing is reported as missing');
+  const gz = result.artifacts.find((entry) => entry.name.endsWith('.gz'))!;
+  assertEq(gz.component, 'database', 'it satisfies the database component');
+  assert(/gzip/i.test(gz.detail), 'and the operator is told what it is');
+  assert(/Decompress/i.test(gz.detail), 'and what to do about it');
+});
+
+await test('a directory holding one secret-shaped file does not satisfy the secrets component', () => {
+  const dir = makeBackup({ keystore: true, dump: plainDump(MIGRATION_VERSION) });
+  mkdirSync(join(dir, 'half-a-copy'), { recursive: true });
+  writeFileSync(join(dir, 'half-a-copy', 'custodian_kek'), 'NEVER-READ-THIS-KEK-VALUE\n');
+  const result = inspectBackupDirectory(dir);
+  assertEq(result.verdict, 'INCOMPLETE', 'one file is not a secrets backup');
+  assertEq(result.missing.join(','), 'secrets', 'and the secrets component is still missing');
+  const partial = result.artifacts.find((entry) => entry.name === 'half-a-copy')!;
+  assertEq(partial.component, null, 'it satisfies nothing');
+  assert(/custodian_kek/.test(partial.detail), 'but what was seen is named, so nobody looks in the wrong place');
+  assert(/Nothing in it was opened/.test(partial.detail), 'and it was still not opened');
+  assert(!JSON.stringify(result).includes('NEVER-READ-THIS-KEK-VALUE'), 'and its contents did not escape');
+});
+
 await test('a dump with no schema_meta is INDETERMINATE', () => {
   const dir = makeBackup({ ...COMPLETE });
   writeFileSync(join(dir, 'catalog-backup.sql'), `${DUMP_HEADER}COPY public.items (id) FROM stdin;\n\\.\n`);
@@ -230,6 +260,19 @@ await test('two dumps in one folder that disagree also block', () => {
   const dir = makeBackup({ ...COMPLETE, dump: plainDump(3) });
   writeFileSync(join(dir, 'catalog-backup-2.sql'), plainDump(4));
   assertEq(inspectBackupDirectory(dir).verdict, 'INDETERMINATE', 'two dumps, two answers, no verdict');
+});
+
+// A deliberate decision rather than a side effect: a folder holding one readable dump and one whose version
+// cannot be read contains a dump nobody can place, and restoring the wrong one is the failure this command
+// exists to prevent. The readable one's version is still reported on its own entry.
+await test('a readable dump beside an unreadable one still blocks, and says what it did read', () => {
+  const dir = makeBackup({ ...COMPLETE, dump: plainDump(MIGRATION_VERSION) });
+  writeFileSync(join(dir, 'catalog-backup.dump'), Buffer.concat([Buffer.from('PGDMP'), Buffer.alloc(32)]));
+  const result = inspectBackupDirectory(dir);
+  assertEq(result.verdict, 'INDETERMINATE', 'an unplaceable dump in the folder blocks');
+  const plain = result.artifacts.find((entry) => entry.kind === 'PG_PLAIN_DUMP')!;
+  assertEq(plain.schemaVersion?.state, 'FOUND', 'the readable one was still read');
+  assert(plain.detail.includes(String(MIGRATION_VERSION)), 'and its version is reported on its own entry');
 });
 
 await test('two dumps that agree are an answer', () => {
@@ -286,7 +329,7 @@ await test('a COPY block with no version column contributes nothing rather than 
 
 // A chunk boundary can fall inside the COPY block. The carry-over is what makes the streaming read equal a
 // whole-file read, and a bug there would silently lose the one row this whole command depends on.
-await test('a version found across a streaming chunk boundary is still found', () => {
+await test('a version found past a streaming chunk boundary is still found', () => {
   const dir = workspace();
   const path = join(dir, 'straddle.sql');
   // Comfortably past the 1 MiB window, with the block starting at a deliberately awkward offset.
@@ -294,6 +337,47 @@ await test('a version found across a streaming chunk boundary is still found', (
   const finding = scanForSchemaVersion(path);
   assertEq(finding.state, 'FOUND', 'the block past the window boundary was read');
   assertEq(finding.state === 'FOUND' ? finding.version : -1, 3, 'and the right version came out of it');
+});
+
+// The defect this covers: a first implementation parsed each chunk independently, so a COPY block whose
+// HEADER ended one chunk and whose DATA ROW began the next was seen by neither — a readable dump reported as
+// having no schema version at all. Every offset in a window around the boundary is exercised, because the bug
+// only appeared at the handful of offsets where the split lands between the two lines.
+await test('a COPY block split ACROSS a chunk boundary is read, at every offset', () => {
+  const dir = workspace();
+  const header = 'COPY public.schema_meta (id, version) FROM stdin;';
+  for (let pad = 0; pad < 8; pad++) {
+    const path = join(dir, `split-${pad}.sql`);
+    // Fill so that the block's first line ends within a few bytes of the 1 MiB read boundary.
+    const filler = 'x'.repeat(BACKUP_INSPECT_CHUNK_BYTES - header.length - 2 + pad);
+    writeFileSync(path, `${DUMP_HEADER}-- ${filler}\n${header}\n1\t3\n\\.\n`);
+    const finding = scanForSchemaVersion(path);
+    assertEq(finding.state, 'FOUND', `offset ${pad}: the split block was read`);
+    assertEq(finding.state === 'FOUND' ? finding.version : -1, 3, `offset ${pad}: with the right version`);
+  }
+});
+
+await test('the streaming scanner and the whole-string parser cannot disagree', () => {
+  const dir = workspace();
+  const text = plainDump(3);
+  const path = join(dir, 'agree.sql');
+  writeFileSync(path, text);
+  const streamed = scanForSchemaVersion(path);
+  assertEq(streamed.state === 'FOUND' ? String(streamed.version) : streamed.state,
+    extractSchemaVersions(text).join(','), 'both paths read the same version');
+  // They are the same scanner, so a divergence would have to be introduced deliberately.
+  const scanner = new SchemaVersionScanner();
+  for (const line of text.split('\n')) scanner.pushLine(line);
+  assertEq(scanner.versions().join(','), '3', 'and the line-at-a-time interface agrees too');
+});
+
+await test('a COPY block that never terminates does not swallow a later INSERT silently', () => {
+  // An open block consumes rows until `\.`; a truncated dump leaves it open. What must NOT happen is a later
+  // line being misread as a data row and contributing a wrong number.
+  const truncated = 'COPY public.schema_meta (id, version) FROM stdin;\n1\t3\n';
+  assertEq(extractSchemaVersions(truncated).join(','), '3', 'the row before the truncation is still read');
+  const withNoise = `${truncated}some trailing text with no tabs\n`;
+  assertEq(extractSchemaVersions(withNoise).join(','), '3', 'and trailing non-numeric text adds nothing');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -536,6 +620,17 @@ await test('package.json exposes the command and this suite', () => {
   assertEq(pkg.scripts['ops:backup-inspect'], 'tsx src/ops/backup-inspect-cli.ts', 'the command is wired up');
   assertEq(pkg.scripts['test:backup-inspect'], 'tsx test/backup-inspect.ts', 'and so is this suite');
   assert(pkg.scripts.test?.includes('tsx test/backup-inspect.ts'), 'which runs in the aggregate suite');
+});
+
+// A suite nothing runs is a suite that stops being true. CI runs named per-phase scripts rather than the
+// aggregate `test` script, so a new suite that is not wired in is ungated however green it is locally.
+await test('this suite is a required CI gate, not only a local script', () => {
+  const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
+  assertEq(pkg.scripts['test:phase257-local'], 'tsx test/backup-inspect.ts 5452', 'the phase has its own CI script');
+  // In the `suites` job — the one that gates on typecheck and the phase suites — not somewhere optional.
+  const workflow = readFileSync(join(root, '.github/workflows/runtime-image.yml'), 'utf8');
+  const suites = workflow.split('name: Build and smoke')[0] ?? '';
+  assert(suites.includes('npm run test:phase257-local'), 'and the suites job runs it');
 });
 
 await test('the module contacts nothing and spawns nothing', () => {

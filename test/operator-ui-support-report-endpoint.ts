@@ -424,8 +424,14 @@ interface AppRun {
   readonly clickCopy: () => void;
 }
 
-/** `clipboard` is what `navigator.clipboard` will be; `undefined` models a non-secure context. */
-async function loadApp(port: number, clipboard: ClipboardStub | undefined): Promise<AppRun> {
+/**
+ * `clipboard` is what `navigator.clipboard` will be; `undefined` models a non-secure context.
+ *
+ * `refuseSupport` serves the report route the REAL refusal bytes — produced by the real endpoint function
+ * with a throwing dependency — instead of proxying to the server. The server-side tests already prove the
+ * server emits exactly those bytes; this drives the page's half of the same case.
+ */
+async function loadApp(port: number, clipboard: ClipboardStub | undefined, refuseSupport = false): Promise<AppRun> {
   const shell = (await httpGet(port, '/')).body;
   const appJs = (await httpGet(port, '/assets/app.js')).body;
   const elements = new Map<string, FakeElement>();
@@ -452,11 +458,24 @@ async function loadApp(port: number, clipboard: ClipboardStub | undefined): Prom
 
   const sandbox: Record<string, unknown> = {
     document,
-    fetch: (url: string, options?: { headers?: Record<string, string> }) => httpGet(port, url, options?.headers?.[OPERATOR_UI_LOCAL_AUTH_HEADER]).then((res) => ({
-      ok: res.statusCode >= 200 && res.statusCode < 300,
-      status: res.statusCode,
-      json: () => Promise.resolve(JSON.parse(res.body)),
-    })),
+    fetch: (url: string, options?: { headers?: Record<string, string> }) => {
+      if (refuseSupport && url === SUPPORT_REPORT_ROUTE) {
+        const refusal = buildSupportReportEndpointResult(
+          { promotionRecordsDir: '/var/lib/catalog/promotion-records', generatedAt: '2026-07-25T00:00:00.000Z' },
+          { build: () => { throw new SupportReportRedactionError('a URL'); }, renderText: renderSupportReportText },
+        );
+        return Promise.resolve({
+          ok: false,
+          status: refusal.status,
+          json: () => Promise.resolve(JSON.parse(refusal.json)),
+        });
+      }
+      return httpGet(port, url, options?.headers?.[OPERATOR_UI_LOCAL_AUTH_HEADER]).then((res) => ({
+        ok: res.statusCode >= 200 && res.statusCode < 300,
+        status: res.statusCode,
+        json: () => Promise.resolve(JSON.parse(res.body)),
+      }));
+    },
     console: { log: () => undefined, error: (...a: unknown[]) => consoleErrors.push(a.map(String).join(' ')), warn: () => undefined },
     setTimeout,
     window: { getSelection: () => selection },
@@ -567,6 +586,29 @@ await test('copying before anything is loaded says so instead of copying a place
   } finally { await h.stop(); }
 });
 
+// A refusal leaves a DIFFERENT placeholder on the page from the never-loaded one. An earlier version of the
+// script decided whether there was anything to copy by comparing the <pre> against the never-loaded string,
+// so after a refusal it would happily copy "No support report is available." and report it as a copied
+// report. Whether a report is loaded is a flag now, and this is the case that flag exists for.
+await test('a withheld report is shown as withheld, and the copy button will not copy the placeholder', async () => {
+  const h = await startHarness();
+  try {
+    const app = await loadApp(h.port, { writeText: () => Promise.resolve() }, true);
+    app.setToken(TOKEN);
+    await app.clickRefresh();
+    assertEq(app.el('supportReport').textContent, 'No support report is available.', 'the panel shows no report');
+    assert(app.el('supportStatus').textContent.includes('could not be produced safely'), 'and says why');
+    assert(!app.el('supportStatus').textContent.includes('a URL'), 'without repeating what tripped the scan');
+    // The other panels are unaffected: a withheld report is not a broken page.
+    assert(app.el('verdict').textContent !== 'Not loaded', 'the installation panel still rendered');
+    app.clickCopy();
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    assertEq(app.clipboardWrites.length, 0, 'nothing was copied');
+    assert(app.el('supportStatus').textContent.includes('no report to copy'), 'and the operator is told so');
+    assert(!app.el('supportStatus').textContent.includes('Copied'), 'and never told a placeholder was copied');
+  } finally { await h.stop(); }
+});
+
 await test('clearing the token removes the loaded report from the page', async () => {
   const h = await startHarness();
   try {
@@ -616,6 +658,19 @@ await test('package.json still exposes the CLI, which this phase adds to rather 
   assertEq(pkg.scripts['test:operator-ui-support-report-endpoint'], 'tsx test/operator-ui-support-report-endpoint.ts',
     'and this suite has its own script');
   assert(pkg.scripts.test?.includes('test/operator-ui-support-report-endpoint.ts'), 'and runs in the aggregate suite');
+});
+
+// A suite nothing runs is a suite that stops being true. CI runs named per-phase scripts rather than the
+// aggregate `test` script, so a new suite that is not wired in is ungated however green it is locally.
+await test('this suite is a required CI gate, not only a local script', () => {
+  const root = fileURLToPath(new URL('..', import.meta.url));
+  const read = (rel: string): string => readFileSync(join(root, rel), 'utf8');
+  const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+  assertEq(pkg.scripts['test:phase255-local'], 'tsx test/operator-ui-support-report-endpoint.ts',
+    'the phase has its own CI script');
+  // In the `suites` job — the one that gates on typecheck and the phase suites — not somewhere optional.
+  const suites = read('.github/workflows/runtime-image.yml').split('name: Build and smoke')[0] ?? '';
+  assert(suites.includes('npm run test:phase255-local'), 'and the suites job runs it');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

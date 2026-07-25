@@ -55,7 +55,13 @@ is not reliably a moment when the thing it backs up is running.
   way it is not evidence of anything;
 * **two `schema_meta` rows that disagree** — what concatenating two dumps produces — is `AMBIGUOUS`, and
   nothing here picks one of them;
+* **a gzip-compressed dump** — what `pg_dump … | gzip` produces — counts as the database component with its
+  version unknowable, rather than being counted as nothing and reporting `INCOMPLETE` with the dump sitting
+  right there;
 * **two dumps in one folder that disagree** likewise;
+* **a readable dump beside an unreadable one** also blocks. The folder contains a dump nobody can place, and
+  restoring the wrong one is the failure this exists to prevent. The readable one's version is still reported
+  on its own entry;
 * **a file larger than the scan bound**, with no version found in the part that was read, says exactly that.
 
 The verdict text refuses to be read either way: *"That is not evidence the backup is fine and not evidence it
@@ -141,13 +147,20 @@ run; no provider, media server or library is contacted; no part of Phase 231 is 
   produced by a real `pg_dump` inside the built image is the next rung, and belongs with the container smoke.
 * The directory-format dump (`pg_dump -Fd`) is detected only when its `PGDMP` magic is the first thing read;
   a directory-format *directory* falls through to `UNRECOGNISED` rather than being claimed.
+* A promotion-records copy is identified **by shape** — a folder whose entries are all `.json` files — so
+  another folder of JSON would be described that way too. It never changes a verdict, because records are not
+  a required component, and the wording says the shape is what was matched.
+* A **single** file named like a secret does not satisfy the secrets component. A secrets backup is the whole
+  folder the setup script created; satisfying it on one file would turn an obviously partial copy into a
+  pass. What was seen is still named, so nobody goes looking in the wrong place.
 
 ## Tests
 
-`test/backup-inspect.ts` — 40 checks and one reported skip: every verdict including `AHEAD` and each way of
+`test/backup-inspect.ts` — 47 checks and one reported skip, run in CI as `test:phase257-local`: every
+verdict including `AHEAD` and each way of
 reaching `INDETERMINATE`, the Phase 256 omission caught as `INCOMPLETE`, records not counting as required,
 `COPY` column lists read rather than assumed, CRLF dumps, both `INSERT` forms, a similarly-named table not
-mistaken for `schema_meta`, a version straddling a streaming chunk boundary, the scan bound reported as a
+mistaken for `schema_meta`, a COPY block split across a streaming chunk boundary at every offset in a window around it, the scan bound reported as a
 question rather than an absence, no secret value reaching the output, an empty secret named, symlinks refused
 and not followed, no path echoed, every argument-resolution refusal, the CLI's four exit codes driven as a
 real process, the panel command carrying `--no-deps` and `:ro`, and the live `schema_meta` proof.
