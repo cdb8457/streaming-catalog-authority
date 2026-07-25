@@ -101,17 +101,21 @@ if [ "${migrate_state}" != "exited" ] || [ "${migrate_exit}" != "0" ]; then
   "${COMPOSE[@]}" logs --tail 100 migrate
   exit 1
 fi
-# The step codes it prints are a stable contract an operator is told to read; a silent success is not one.
 migrate_log="$("${COMPOSE[@]}" logs --no-color migrate 2>&1 || true)"
+# THE LEAK CHECK RUNS FIRST, before any branch that might echo this log as a diagnostic. Checking it second
+# would mean the one path that dumps the log — a failed assertion — is also the one path that has not yet
+# established the log is safe to print, and CI logs are public. Order matters here, not just presence.
+case "${migrate_log}" in
+  *'postgresql://'*|*"${TOKEN}"*)
+    echo "FAIL: the migration log leaked a connection string or the operator token" >&2
+    echo "       (the log is deliberately NOT echoed here)" >&2
+    exit 1 ;;
+esac
+# The step codes it prints are a stable contract an operator is told to read; a silent success is not one.
 case "${migrate_log}" in
   *'runtime-verify'*) echo "  migrate exited 0 having verified the runtime connection can read the schema" ;;
   *) echo "FAIL: the migration did not report verifying the runtime connection" >&2
      echo "${migrate_log}" >&2; exit 1 ;;
-esac
-# It must never print a secret, a connection string or a password on its way through.
-case "${migrate_log}" in
-  *'postgresql://'*|*"${TOKEN}"*)
-    echo "FAIL: the migration log leaked a connection string or the operator token" >&2; exit 1 ;;
 esac
 
 step "wait for the container to report healthy"
