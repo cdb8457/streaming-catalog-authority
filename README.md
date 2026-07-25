@@ -84,11 +84,30 @@ docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml
 ## Run the tests
 
 ```bash
-npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
-npm run ci       # typecheck, then all suites (33 embedded-PostgreSQL suites); a green run = 0 failures
+npm install          # downloads an embedded PostgreSQL 16 binary (no Docker needed)
+npm test             # every suite, one process each; a green run = every suite ran and exited zero
+npm run test:inventory   # just the drift check: is every file under test/ accounted for?
+npm run test:plan        # what a run would do, without doing it
 ```
 
 Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.
+
+`npm test` runs a repository-owned runner (`src/ops/test-runner-cli.ts`) over the explicit inventory in
+`test/suite-inventory.json`. It spawns each suite as its own process with an argument array and no shell, so
+it behaves identically on Windows, macOS and Linux, and it exits non-zero if any selected suite fails, is
+signalled, hangs, or is never reached. A file under `test/` that is in neither the suite list nor the helper
+list fails the run before anything is spawned — that is what stops a new suite from existing outside the
+aggregate and CI. See `docs/PHASE_258_TEST_RUNNER.md`.
+
+Useful selections:
+
+```bash
+npm test -- --group offline           # everything that needs no database
+npm test -- --group db                # the embedded-PostgreSQL suites
+npm test -- --filter backup           # suites whose file name contains "backup"
+npm test -- --concurrency 4           # bounded parallelism (1-8)
+npm run test:docker-suites            # the acceptance suites that need a Docker daemon
+```
 
 ### Against your own PostgreSQL 16 (or Docker Compose)
 

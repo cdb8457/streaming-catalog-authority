@@ -51,8 +51,18 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: The aggregate test command describes every suite, and still runs
+        # Phase 258. `test:inventory` fails if any file under test/ is in neither the suite list nor the
+        # helper list of test/suite-inventory.json — which is the check that stops a new suite from quietly
+        # existing outside the aggregate and this workflow. `test:runner` proves the runner's own exit-code
+        # discipline (a failing, signalled, hung or unreached suite can never produce a zero exit).
         run: |
+          npm run test:inventory
+          npm run test:runner
+      - name: Phase 260, 259, 258, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+        run: |
+          npm run test:phase260-local
+          npm run test:phase259-local
           npm run test:phase257-local
           npm run test:phase256-local
           npm run test:phase255-local

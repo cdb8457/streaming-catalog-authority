@@ -1,0 +1,1245 @@
+{
+  "version": 1,
+  "helpers": [
+    "embedded-pg.ts",
+    "crypto-setup.ts",
+    "jellyfin-contract-kit.ts",
+    "_launch-proofing-evidence.ts"
+  ],
+  "suites": [
+    {
+      "file": "config.ts",
+      "group": "offline"
+    },
+    {
+      "file": "custodian-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "custodian-harness-redaction.ts",
+      "group": "offline"
+    },
+    {
+      "file": "custodian-acceptance.ts",
+      "group": "offline"
+    },
+    {
+      "file": "local-sidecar-custodian.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-runtime-design-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-evidence-harness-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-runtime-prototype.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-durable-state-evidence.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-daemon.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-factory-evidence.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-factory-evidence-review.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-factory-evidence-acceptance-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "o4-sidecar-closure-readiness.ts",
+      "group": "offline"
+    },
+    {
+      "file": "o4-closure-disposition.ts",
+      "group": "offline"
+    },
+    {
+      "file": "runtime-cutover-plan.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-service-install.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-service-plan.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-operator-script-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-evidence-capture.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-review-gate.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-review-summary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-acceptance-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-review-handoff.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-production-gate-blockers.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-custodian-boundary-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-custodian-review-verdict.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-o4-closure-gate.ts",
+      "group": "offline"
+    },
+    {
+      "file": "sidecar-unraid-o4-final-authorization.ts",
+      "group": "offline"
+    },
+    {
+      "file": "o5-kek-review-verdict.ts",
+      "group": "offline"
+    },
+    {
+      "file": "o5-kek-closure-gate.ts",
+      "group": "offline"
+    },
+    {
+      "file": "o5-kek-final-authorization.ts",
+      "group": "offline"
+    },
+    {
+      "file": "o5-disposition.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-readiness-pass.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-package.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-candidate-dry-run.ts",
+      "group": "offline"
+    },
+    {
+      "file": "media-player-boundary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-readonly-smoke.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-readonly-mapping.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-disposable-write.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-evidence-review-decision.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-live-evidence-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-live-readonly-smoke-runner.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-live-evidence-capture-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-live-evidence-capture.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-secret-readiness.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-container-command-shape.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-secret-install-operator-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-live-capture-launcher.ts",
+      "group": "offline"
+    },
+    {
+      "file": "arcane-jellyfin-live-capture-button.ts",
+      "group": "offline"
+    },
+    {
+      "file": "scheduled-doctor-alert-fix.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-live-readonly-evidence-acceptance.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-operator-readiness-bundle.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-service-install-runbook.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-service-runbook-approval-gate.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-service-install-authorization.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-install-evidence-manifest.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-production-gates.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-final-human-approval-template.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-final-human-approval-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-production-switch-runbook.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-switch-evidence-capture.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-switch-evidence-review.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-production-disposition.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-launch-readiness-decision.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-final-launch-approval-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-production-switch-execution-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-post-switch-evidence-review.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-post-switch-maintenance-review.ts",
+      "group": "offline"
+    },
+    {
+      "file": "unraid-restart-persistence-review.ts",
+      "group": "offline"
+    },
+    {
+      "file": "control-surface-compose-boundary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "long-running-service-boundary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-service.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-token.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-live-check.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-evidence-review.ts",
+      "group": "offline"
+    },
+    {
+      "file": "production-custodian-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "custodian-evidence-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "kek-evidence-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "o4-o5-evidence-decision.ts",
+      "group": "offline"
+    },
+    {
+      "file": "o4-o5-evidence-packet-review.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-boundary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-fake-adapter.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-real-client-gate.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-readonly-client.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-provider-adapter.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-catalog-bridge.ts",
+      "group": "db",
+      "args": [
+        "5451"
+      ]
+    },
+    {
+      "file": "provider-availability-policy.ts",
+      "group": "offline"
+    },
+    {
+      "file": "provider-availability-bridge.ts",
+      "group": "offline"
+    },
+    {
+      "file": "provider-availability-summary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "provider-availability-summary-cli.ts",
+      "group": "offline"
+    },
+    {
+      "file": "provider-availability-operator-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-packet-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-fixtures.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-static-prototype.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-render-allowlist.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-static-artifact.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-static-layout.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-launch-readiness.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-preview-launch-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-runtime-boundary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-packet-source-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-static-runtime.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-static-runtime-hardening.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-static-runtime-manifest.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-static-runtime-access-boundary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-auth-access-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-packet-endpoint-readiness.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-packet-endpoint-limits.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-packet-endpoint-evidence-gate.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-packet-endpoint-route-dry-run.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-local-auth-boundary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-local-auth-secret-file-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-auth-packet-runtime.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-auth-packet-acceptance.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-gate-audit.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-acceptance-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-decision-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-candidate-scope-freeze.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-candidate-metadata-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-candidate-review-checklist.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-candidate-review-handoff.ts",
+      "group": "offline"
+    },
+    {
+      "file": "final-launch-disposition.ts",
+      "group": "offline"
+    },
+    {
+      "file": "production-time-decision.ts",
+      "group": "offline"
+    },
+    {
+      "file": "launch-candidate-seal.ts",
+      "group": "offline"
+    },
+    {
+      "file": "semi-launch-validation-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-validation-run-sheet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-smoke-evidence.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-smoke-cli.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-smoke-fixture.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-transport-acceptance.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-smoke-readiness-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-endpoint-mapping.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-transport.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-cli.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-evidence-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-summary-pack.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-labels.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-review-gate.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-operator-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-packet-manifest.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-acceptance-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "torbox-live-smoke-plan.ts",
+      "group": "offline"
+    },
+    {
+      "file": "custodian-guard.ts",
+      "group": "offline"
+    },
+    {
+      "file": "kek-rewrap.ts",
+      "group": "offline"
+    },
+    {
+      "file": "backup-verify.ts",
+      "group": "offline"
+    },
+    {
+      "file": "adapter-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "publisher-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "publish-consent.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-client-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-http.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-smoke.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-live-readonly-mapping.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-write-proof.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-integration-decision.ts",
+      "group": "offline"
+    },
+    {
+      "file": "versioned-release-cut.ts",
+      "group": "offline"
+    },
+    {
+      "file": "working-foundation-plan.ts",
+      "group": "offline"
+    },
+    {
+      "file": "import-state-machine.ts",
+      "group": "offline"
+    },
+    {
+      "file": "jellyfin-test-library-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "real-library-promotion-boundary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "real-library-promotion.ts",
+      "group": "offline"
+    },
+    {
+      "file": "deploy.ts",
+      "group": "offline"
+    },
+    {
+      "file": "readiness-plan.ts",
+      "group": "offline"
+    },
+    {
+      "file": "evidence-rehearsal.ts",
+      "group": "offline"
+    },
+    {
+      "file": "release-guard.ts",
+      "group": "offline"
+    },
+    {
+      "file": "crypto.ts",
+      "group": "offline"
+    },
+    {
+      "file": "run.ts",
+      "group": "db",
+      "args": [
+        "5433"
+      ]
+    },
+    {
+      "file": "phase2.ts",
+      "group": "db",
+      "args": [
+        "5434"
+      ]
+    },
+    {
+      "file": "shred.ts",
+      "group": "db",
+      "args": [
+        "5435"
+      ]
+    },
+    {
+      "file": "reconcile.ts",
+      "group": "db",
+      "args": [
+        "5436"
+      ]
+    },
+    {
+      "file": "integration.ts",
+      "group": "db",
+      "args": [
+        "5437"
+      ]
+    },
+    {
+      "file": "backup.ts",
+      "group": "db",
+      "args": [
+        "5438"
+      ]
+    },
+    {
+      "file": "backup-ops.ts",
+      "group": "db",
+      "args": [
+        "5439"
+      ]
+    },
+    {
+      "file": "ops-doctor.ts",
+      "group": "db",
+      "args": [
+        "5440"
+      ]
+    },
+    {
+      "file": "ops-init.ts",
+      "group": "db",
+      "args": [
+        "5441"
+      ]
+    },
+    {
+      "file": "ops-golden-path.ts",
+      "group": "db",
+      "args": [
+        "5442"
+      ]
+    },
+    {
+      "file": "schema-version.ts",
+      "group": "db",
+      "args": [
+        "5443"
+      ]
+    },
+    {
+      "file": "ops-rehearse.ts",
+      "group": "db",
+      "args": [
+        "5444"
+      ]
+    },
+    {
+      "file": "adapter-privacy.ts",
+      "group": "db",
+      "args": [
+        "5445"
+      ]
+    },
+    {
+      "file": "publisher-privacy.ts",
+      "group": "db",
+      "args": [
+        "5446"
+      ]
+    },
+    {
+      "file": "publish-erasure.ts",
+      "group": "db",
+      "args": [
+        "5447"
+      ]
+    },
+    {
+      "file": "jellyfin-privacy.ts",
+      "group": "db",
+      "args": [
+        "5448"
+      ]
+    },
+    {
+      "file": "publish-outbox.ts",
+      "group": "db",
+      "args": [
+        "5449"
+      ]
+    },
+    {
+      "file": "jellyfin-outbox.ts",
+      "group": "db",
+      "args": [
+        "5450"
+      ]
+    },
+    {
+      "file": "promotion-approval.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-evidence-review.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-readiness.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-acceptance-seal.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-rehearsal.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-rehearsal-matrix.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-artifact-integrity.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-handoff.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-artifact-schema.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-dashboard.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-fixture-bundle.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-bundle-replay.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-evidence-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-bundle-diff.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-tamper-corpus.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-review-transcript.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-provenance-ledger.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-gate-dag.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-changelog.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-archive-manifest.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-acceptance-meta.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-injection-corpus.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-review-bundle.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-consistency-matrix.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-self-digest-verifier.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-cli-contract.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-determinism.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-blocker-taxonomy.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-final-summary.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-closure-hygiene.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-negative-evidence-corpus.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-release-checklist.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-merge-readiness.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-provenance-diff.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-gate-coverage.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-chain-bundle.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-redaction-corpus.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-boundary-policy.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-review-automation.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-reviewer-pack.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-acceptance-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-failure-matrix.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-cli-ergonomics.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-report-schema.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-boundary-audit.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-coordinator-readiness.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-transcript-verifier.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-evidence-minimizer.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-commit-range-closure.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-regression-oracle.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-terminal-closure.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-pack-component-integrity.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-aggregator-digest-audit.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-artifact-export-manifest.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-watchdog-hygiene.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-terminal-readiness-v2.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-review-matrix.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-review-authorization.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-context-consistency-audit.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-closure-summary-v3.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-closure-input-bundle-audit.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-approval-request-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-live-preflight-plan.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-no-live-authorization-guard.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-review-checklist-v2.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-operator-acceptance-trace.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-guard-adversarial-corpus-v2.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-final-coordinator-readiness-bundle.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-final-bundle-replay-verifier.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-live-boundary-guard.ts",
+      "group": "offline"
+    },
+    {
+      "file": "phase230-local-suite-manifest.ts",
+      "group": "offline"
+    },
+    {
+      "file": "phase230-closure.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-execution-authorization.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-execution-authorization-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-post-run-observation-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-post-run-disposition-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-operation-closure-record.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-chain-replay.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-source-record-provenance.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-supplied-source-record-verification.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-chain-custody-ledger.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-evidence-retention-inventory.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-audit-closure-packet.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-operator-console.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-operator-dashboard.ts",
+      "group": "offline"
+    },
+    {
+      "file": "promotion-chain-operator-ui.ts",
+      "group": "offline"
+    },
+    {
+      "file": "consumer-release-image.ts",
+      "group": "offline"
+    },
+    {
+      "file": "release-delivery.ts",
+      "group": "offline"
+    },
+    {
+      "file": "first-run-migration.ts",
+      "group": "offline"
+    },
+    {
+      "file": "arcane-install.ts",
+      "group": "offline"
+    },
+    {
+      "file": "image-pull-preflight.ts",
+      "group": "offline"
+    },
+    {
+      "file": "image-pull-preflight-request.ts",
+      "group": "offline"
+    },
+    {
+      "file": "consumer-bundle-arcane.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-support-report-endpoint.ts",
+      "group": "offline"
+    },
+    {
+      "file": "backup-components.ts",
+      "group": "offline"
+    },
+    {
+      "file": "backup-inspect.ts",
+      "group": "db",
+      "args": [
+        "5452"
+      ]
+    },
+    {
+      "file": "cutover-parser.ts",
+      "group": "offline"
+    },
+    {
+      "file": "production-custody-switch.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-csp-assets.ts",
+      "group": "offline"
+    },
+    {
+      "file": "operator-ui-installation-diagnostics.ts",
+      "group": "offline"
+    },
+    {
+      "file": "release-readiness.ts",
+      "group": "offline"
+    },
+    {
+      "file": "release-verification.ts",
+      "group": "offline"
+    },
+    {
+      "file": "release-rehearsal.ts",
+      "group": "offline"
+    },
+    {
+      "file": "release-candidate-acceptance.ts",
+      "group": "docker",
+      "requires": [
+        "docker"
+      ]
+    },
+    {
+      "file": "release-lifecycle-acceptance.ts",
+      "group": "docker",
+      "requires": [
+        "docker"
+      ]
+    },
+    {
+      "file": "test-runner.ts",
+      "group": "offline"
+    }
+  ]
+}
