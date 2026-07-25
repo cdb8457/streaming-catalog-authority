@@ -1,5 +1,6 @@
-import { closeSync, lstatSync, openSync, readSync, readdirSync } from 'node:fs';
+import { closeSync, constants as fsConstants, lstatSync, openSync, readSync, readdirSync } from 'node:fs';
 import { basename, join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
 import { BACKUP_COMPONENT_IDS, type BackupComponentId } from './backup-components.js';
 
@@ -47,6 +48,23 @@ export const BACKUP_INSPECT_CHUNK_BYTES = 1 << 20;
  * the bound can never be mistaken for a finding.
  */
 export const BACKUP_INSPECT_SCAN_MAX_BYTES = 2 * 1024 * 1024 * 1024;
+
+/**
+ * The largest partial line the scan will hold between read windows.
+ *
+ * It bounds the CARRY, which is the only thing that grows: a line that fits inside one read window costs
+ * nothing extra and is simply parsed, however long it is. A line that outlasts a window is what accumulates,
+ * and that is what this stops.
+ *
+ * Without this the memory bound is not a bound at all: a file with no newline in it, or one enormous line,
+ * grows the carry to the size of the file. This tool exists to inspect an artifact it does not trust, so the
+ * artifact must not get to choose how much memory the tool uses.
+ *
+ * Generous on purpose. A `schema_meta` row is a handful of bytes and the longest line in an ordinary plain
+ * dump is one `COPY` row; 8 MiB is far past anything this schema produces, so reaching it means the file is
+ * not the shape a plain dump has — which is worth reporting rather than absorbing.
+ */
+export const BACKUP_INSPECT_MAX_LINE_BYTES = 8 * 1024 * 1024;
 
 /** The signature of a plain-format `pg_dump`, which the dump writes in its own header comment. */
 const PLAIN_DUMP_MARKER = 'PostgreSQL database dump';
@@ -253,7 +271,11 @@ function inspectDirectoryEntry(path: string, name: string): InspectedArtifact {
   const set = new Set(children);
 
   // A FileCustodian root, recognised by the subdirectories it always creates rather than by its name.
-  if (KEYSTORE_SUBDIRS.every((sub) => set.has(sub))) {
+  //
+  // Each one must be a REAL directory, not merely a name in the listing. `lstat().isDirectory()` is false for
+  // a symbolic link, so a `keys` that points somewhere else fails the test and the entry is not claimed as a
+  // keystore — rather than being claimed on the strength of a link whose target was never inspected.
+  if (KEYSTORE_SUBDIRS.every((sub) => set.has(sub) && isRealDirectory(join(path, sub)))) {
     const keys = countEntries(join(path, 'keys'));
     return artifact(name, 'KEYSTORE_COPY', 'keystore', null,
       keys === 0
@@ -359,14 +381,41 @@ function sizeOf(path: string): number {
   try { return lstatSync(path).size; } catch { return -1; }
 }
 
+/** A directory in its own right. False for a symbolic link to one, which is the point. */
+function isRealDirectory(path: string): boolean {
+  try { return lstatSync(path).isDirectory(); } catch { return false; }
+}
+
 function countEntries(path: string): number {
+  // Only ever called for a path `isRealDirectory` has just confirmed, so this listing cannot be redirected.
   try { return readdirSync(path).length; } catch { return -1; }
+}
+
+function overLongLine(maxLineBytes: number): SchemaVersionFinding {
+  return {
+    state: 'UNREADABLE',
+    reason: `the file contains a single line longer than the ${maxLineBytes} bytes this check will hold, so `
+      + 'it was not read to the end. Nothing was parsed from a fragment of it',
+  };
+}
+
+/**
+ * Open for reading and refuse a symbolic link at the moment of opening, where the platform allows it.
+ *
+ * Every entry is already `lstat`ed before it gets here, so this is not the primary defence — it closes the
+ * gap between that check and this open, and it makes the refusal the kernel's rather than ours. `O_NOFOLLOW`
+ * does not exist on Windows; there the `lstat` remains the whole of it, and the limitation is written down in
+ * `docs/PHASE_257_BACKUP_INSPECT.md` rather than glossed.
+ */
+function openReadOnlyNoFollow(path: string): number {
+  const noFollow = (fsConstants as { O_NOFOLLOW?: number }).O_NOFOLLOW;
+  return openSync(path, noFollow === undefined ? fsConstants.O_RDONLY : fsConstants.O_RDONLY | noFollow);
 }
 
 function readHead(path: string, bytes: number): Buffer | null {
   let fd: number | null = null;
   try {
-    fd = openSync(path, 'r');
+    fd = openReadOnlyNoFollow(path);
     const buffer = Buffer.alloc(bytes);
     const read = readSync(fd, buffer, 0, bytes, 0);
     return buffer.subarray(0, read);
@@ -475,17 +524,37 @@ export function extractSchemaVersions(text: string): readonly number[] {
  * Stream the file and read every `schema_meta` version out of it.
  *
  * Streamed with a fixed window rather than read whole: a dump is arbitrarily large and this is a command a
- * person waits on. Memory is bounded by {@link BACKUP_INSPECT_CHUNK_BYTES}; the number of bytes visited is
- * bounded by {@link BACKUP_INSPECT_SCAN_MAX_BYTES}, and reaching that bound is reported as an unanswered
- * question rather than as an absence.
+ * person waits on.
+ *
+ * THREE BOUNDS, and every one of them refuses rather than guesses when it is reached.
+ *
+ *   * the read window is {@link BACKUP_INSPECT_CHUNK_BYTES};
+ *   * the number of bytes visited is bounded by {@link BACKUP_INSPECT_SCAN_MAX_BYTES};
+ *   * the CARRY — the partial trailing line held between windows — is bounded by
+ *     {@link BACKUP_INSPECT_MAX_LINE_BYTES}.
+ *
+ * The third one was missing, and its absence made the memory bound a claim rather than a fact: a file with no
+ * newline in it at all, or one enormous logical line, grew the carry to the size of the file. A tool whose
+ * whole job is to inspect an untrusted artifact must not have a memory profile chosen by that artifact.
+ *
+ * Exceeding the carry bound is UNREADABLE, not a truncated parse. Cutting an over-long line in half and
+ * carrying on would risk reading a fragment as a row; discarding it and continuing would mean claiming a
+ * complete scan of a file part of which was never looked at. Neither is a thing this module says.
  */
-export function scanForSchemaVersion(path: string, maxBytes = BACKUP_INSPECT_SCAN_MAX_BYTES): SchemaVersionFinding {
+export function scanForSchemaVersion(
+  path: string,
+  maxBytes = BACKUP_INSPECT_SCAN_MAX_BYTES,
+  maxLineBytes = BACKUP_INSPECT_MAX_LINE_BYTES,
+): SchemaVersionFinding {
   let fd: number | null = null;
   const scanner = new SchemaVersionScanner();
   let found: readonly number[] = [];
   try {
-    fd = openSync(path, 'r');
+    fd = openReadOnlyNoFollow(path);
     const buffer = Buffer.alloc(BACKUP_INSPECT_CHUNK_BYTES);
+    // A multi-byte character can straddle a read boundary. Decoding each window in isolation would turn one
+    // into a replacement character; the decoder holds the incomplete sequence instead.
+    const decoder = new StringDecoder('utf8');
     let carry = '';
     let visited = 0;
     let truncated = false;
@@ -498,16 +567,18 @@ export function scanForSchemaVersion(path: string, maxBytes = BACKUP_INSPECT_SCA
       const read = readSync(fd, buffer, 0, want, null);
       if (read === 0) break;
       visited += read;
-      // A chunk boundary can fall inside a line, so the tail is carried into the next window. The carry is
-      // one line at most, which is what keeps the memory bound real.
-      const text = carry + buffer.subarray(0, read).toString('utf8');
+      // A chunk boundary can fall inside a line, so the tail is carried into the next window.
+      const text = carry + decoder.write(buffer.subarray(0, read));
       const lastBreak = text.lastIndexOf('\n');
       const complete = lastBreak === -1 ? '' : text.slice(0, lastBreak);
       carry = lastBreak === -1 ? text : text.slice(lastBreak + 1);
       // The scanner keeps any open COPY block across the boundary, so only the partial LINE has to be carried.
       if (complete !== '') scanner.push(complete);
+      if (Buffer.byteLength(carry, 'utf8') > maxLineBytes) return overLongLine(maxLineBytes);
     }
-    if (carry !== '') scanner.pushLine(carry);
+    const tail = carry + decoder.end();
+    if (Buffer.byteLength(tail, 'utf8') > maxLineBytes) return overLongLine(maxLineBytes);
+    if (tail !== '') scanner.pushLine(tail);
     found = scanner.versions();
     if (found.length === 0) {
       return truncated

@@ -78,10 +78,20 @@ would report a problem on most installs. The absence is stated in the limits ins
   present / absent / empty. A tool that reads your KEK to tell you it is there has told you something you
   already knew, at a cost you did not agree to. A test writes distinctive values into the fixture secrets and
   asserts none of them appears anywhere in the output.
-* **No symbolic link is followed.** Every entry is `lstat`ed; a link is reported and skipped, and what it
-  points at is not counted as present. The test points a link at something shaped exactly like a keystore and
-  asserts the backup is still `INCOMPLETE` — following it would have produced a pass. The module is asserted
-  never to use `statSync`, which follows links.
+* **No symbolic link is followed, and the claim is qualified rather than absolute.** Every top-level entry is
+  `lstat`ed; a link is reported and skipped, and what it points at is not counted as present. The test points
+  a link at something shaped exactly like a keystore and asserts the backup is still `INCOMPLETE` — following
+  it would have produced a pass. The module is asserted never to use `statSync`, which follows links.
+
+  It holds **one level down** too: a keystore is claimed only when each required subdirectory is a real
+  directory (`lstat(…).isDirectory()`, which is false for a link), so a `keys` that points elsewhere no longer
+  makes a directory read as a keystore and no longer has its entries counted through the link.
+
+  Files are opened with `O_NOFOLLOW` where the platform provides it, which closes the window between the
+  `lstat` and the open and makes the refusal the kernel's rather than ours. **Windows has no `O_NOFOLLOW`**;
+  there the `lstat` is the whole of it, and a link substituted in that window would be followed. An attacker
+  with write access to your backup directory while you are inspecting it is outside what this tool defends
+  against, and saying so is more useful than implying otherwise.
 * **Nothing is guessed.** An unrecognised file or directory is counted as nothing and reported by name.
 * **No path is echoed.** The output carries entry basenames — which the operator chose and already knows —
   and never the directory it was pointed at, no absolute path, and no file contents.
@@ -98,10 +108,27 @@ assumption is pinned by a **live test against a real migrated PostgreSQL**: `inf
 reports the declared order, and the offline parser is then run over a `COPY` block built from the real column
 list and the real recorded version.
 
-The file is **streamed** with a fixed window, so memory is bounded on a dump of any size, and the carry-over
-across chunk boundaries is tested with a block deliberately placed past the window. The byte bound is
-respected exactly — a read never runs past it — so a bound can never be reported when the answer had actually
-been found.
+The file is **streamed** with a fixed window, and there are three bounds, each of which refuses rather than
+guesses when it is reached:
+
+| Bound | What it limits | Reaching it |
+| --- | --- | --- |
+| `BACKUP_INSPECT_CHUNK_BYTES` (1 MiB) | the read window | — |
+| `BACKUP_INSPECT_SCAN_MAX_BYTES` (2 GiB) | total bytes visited | `UNREADABLE`, saying the file is larger than the check will read |
+| `BACKUP_INSPECT_MAX_LINE_BYTES` (8 MiB) | the **carry** — the partial line held between windows | `UNREADABLE`, saying the file was not read to the end |
+
+The third was missing at first, and its absence made the memory bound a claim rather than a fact: a file with
+no newline in it at all, or one enormous logical line, grew the carry to the size of the file. **A tool whose
+job is to inspect an artifact it does not trust must not let that artifact choose how much memory it uses.**
+
+It bounds the carry specifically, because the carry is the only thing that grows — a long line that fits
+inside one read window costs nothing extra and is simply parsed. Exceeding it is `UNREADABLE`, never a
+truncated parse: cutting an over-long line in half risks reading a fragment as a row, and discarding it and
+continuing would mean claiming a complete scan of a file part of which was never looked at.
+
+The whole-file byte bound is respected exactly — a read never runs past it — so a bound can never be reported
+when the answer had actually been found. A multi-byte character straddling a read window is held by a
+`StringDecoder` rather than becoming a replacement character.
 
 ## 5. No default directory
 
@@ -151,17 +178,22 @@ run; no provider, media server or library is contacted; no part of Phase 231 is 
 * A promotion-records copy is identified **by shape** — a folder whose entries are all `.json` files — so
   another folder of JSON would be described that way too. It never changes a verdict, because records are not
   a required component, and the wording says the shape is what was matched.
+* The carry bound means a plain dump containing one logical line longer than 8 MiB is reported
+  `INDETERMINATE` rather than parsed. No line this schema produces comes close, but a dump of a database with
+  a very large value in a single row could, and that is a refusal rather than a wrong answer.
 * A **single** file named like a secret does not satisfy the secrets component. A secrets backup is the whole
   folder the setup script created; satisfying it on one file would turn an obviously partial copy into a
   pass. What was seen is still named, so nobody goes looking in the wrong place.
 
 ## Tests
 
-`test/backup-inspect.ts` — 47 checks and one reported skip, run in CI as `test:phase257-local`: every
+`test/backup-inspect.ts` — 53 checks and one reported skip, run in CI as `test:phase257-local`: every
 verdict including `AHEAD` and each way of
 reaching `INDETERMINATE`, the Phase 256 omission caught as `INCOMPLETE`, records not counting as required,
 `COPY` column lists read rather than assumed, CRLF dumps, both `INSERT` forms, a similarly-named table not
-mistaken for `schema_meta`, a COPY block split across a streaming chunk boundary at every offset in a window around it, the scan bound reported as a
+mistaken for `schema_meta`, a COPY block split across a streaming chunk boundary at every offset in a window around it, the carry
+bound refusing a line that outlasts a window and a file with no newline at all, a long-but-bounded line still
+being read, a multi-byte character split across a window, a keystore whose `keys` is a link not counting, the scan bound reported as a
 question rather than an absence, no secret value reaching the output, an empty secret named, symlinks refused
 and not followed, no path echoed, every argument-resolution refusal, the CLI's four exit codes driven as a
 real process, the panel command carrying `--no-deps` and `:ro`, and the live `schema_meta` proof.

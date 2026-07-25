@@ -10,6 +10,8 @@ import { MIGRATION_VERSION } from '../src/db/schema-version.js';
 import {
   BACKUP_DIR_ENV,
   BACKUP_INSPECT_CHUNK_BYTES,
+  BACKUP_INSPECT_MAX_LINE_BYTES,
+  BACKUP_INSPECT_SCAN_MAX_BYTES,
   BackupInspectError,
   extractSchemaVersions,
   inspectBackupDirectory,
@@ -357,6 +359,67 @@ await test('a COPY block split ACROSS a chunk boundary is read, at every offset'
   }
 });
 
+// The carry bound. Without it the memory bound was a claim rather than a fact: the partial trailing line held
+// between read windows grew to the size of the file whenever the file had no newline in it, which is a memory
+// profile chosen by the untrusted artifact rather than by this tool.
+await test('a single line longer than the carry bound is UNREADABLE, not a truncated parse', () => {
+  const dir = workspace();
+  const path = join(dir, 'one-huge-line.sql');
+  // The carry is what grows, so the line has to outlast a read window before any bound can apply — a long
+  // line that fits inside one window costs nothing and is simply parsed. This one is half a window longer,
+  // and the answer sits beyond it.
+  const line = 'x'.repeat(BACKUP_INSPECT_CHUNK_BYTES + (BACKUP_INSPECT_CHUNK_BYTES >> 1));
+  writeFileSync(path, `${DUMP_HEADER}-- ${line}\n${copyBlock(3)}`);
+  const finding = scanForSchemaVersion(path, BACKUP_INSPECT_SCAN_MAX_BYTES, BACKUP_INSPECT_CHUNK_BYTES >> 1);
+  assertEq(finding.state, 'UNREADABLE', 'it refuses');
+  assert(/single line longer than/i.test(finding.state === 'UNREADABLE' ? finding.reason : ''),
+    'and the reason names the line bound');
+  assert(/not read to the end/i.test(finding.state === 'UNREADABLE' ? finding.reason : ''),
+    'and says the file was not finished');
+  // The version really was in there, past the over-long line. Reporting FOUND would mean the bound had been
+  // silently ignored; reporting ABSENT would be a claim about a file that was never read.
+  assertEq(scanForSchemaVersion(path).state, 'FOUND', 'the same file under the real bound reads fine');
+});
+
+await test('a file with no newline at all is bounded rather than read whole into memory', () => {
+  const dir = workspace();
+  const path = join(dir, 'no-newline.sql');
+  writeFileSync(path, `-- PostgreSQL database dump ${'y'.repeat(300_000)}`);
+  const finding = scanForSchemaVersion(path, BACKUP_INSPECT_SCAN_MAX_BYTES, 8192);
+  assertEq(finding.state, 'UNREADABLE', 'a file that is one endless line is refused');
+  assert(/single line longer than/i.test(finding.state === 'UNREADABLE' ? finding.reason : ''), 'for that reason');
+});
+
+await test('a line that crosses a read window but stays inside the bound is still read', () => {
+  const dir = workspace();
+  const path = join(dir, 'straddling-line.sql');
+  // One comment line that starts before and ends after the 1 MiB read boundary, then the block.
+  writeFileSync(path, `${DUMP_HEADER}-- ${'z'.repeat(BACKUP_INSPECT_CHUNK_BYTES + 4096)}\n${copyBlock(3)}`);
+  const finding = scanForSchemaVersion(path);
+  assertEq(finding.state, 'FOUND', 'a long-but-bounded line does not stop the scan');
+  assertEq(finding.state === 'FOUND' ? finding.version : -1, 3, 'and the version past it is read');
+});
+
+await test('the carry bound is a named, generous constant rather than an accident', () => {
+  assert(BACKUP_INSPECT_MAX_LINE_BYTES >= 1024 * 1024,
+    'the bound is far past any line this schema produces, so it cannot misfire on an ordinary dump');
+  assert(BACKUP_INSPECT_MAX_LINE_BYTES < BACKUP_INSPECT_SCAN_MAX_BYTES,
+    'and it is a tighter bound than the whole-file one, or it would never be the thing that fires');
+});
+
+// A multi-byte character can straddle a read window. Decoding each window in isolation turns one into a
+// replacement character; the decoder holds the incomplete sequence instead.
+await test('a multi-byte character split across a read window does not corrupt the scan', () => {
+  const dir = workspace();
+  const path = join(dir, 'multibyte.sql');
+  // Pad so that a 3-byte character lands across the window boundary, then put the answer after it.
+  const pad = 'a'.repeat(BACKUP_INSPECT_CHUNK_BYTES - 2);
+  writeFileSync(path, `${DUMP_HEADER}-- ${pad}é中ü\n${copyBlock(4)}`, 'utf8');
+  const finding = scanForSchemaVersion(path);
+  assertEq(finding.state, 'FOUND', 'the scan completed');
+  assertEq(finding.state === 'FOUND' ? finding.version : -1, 4, 'and read the version after the split character');
+});
+
 await test('the streaming scanner and the whole-string parser cannot disagree', () => {
   const dir = workspace();
   const text = plainDump(3);
@@ -452,6 +515,27 @@ if (symlinksWork) await test(SYMLINK_NAME, () => {
   assertEq(result.verdict, 'INCOMPLETE', 'so the backup is still missing its keystore');
   assert(result.limits.some((limit) => /symbolic links and were not followed/.test(limit)),
     'and the report says what was skipped');
+});
+
+// The symlink refusal has to hold one level down as well. A directory whose `keys` is a link to somewhere
+// else was previously accepted as a keystore on the strength of the NAME, and its entries were then counted
+// by following the link — so the "no symlink is followed" claim was true of top-level entries only.
+if (symlinksWork) await test('a keystore whose keys subdirectory is a link is not claimed as a keystore', () => {
+  const dir = makeBackup({ secrets: true, dump: plainDump(MIGRATION_VERSION) });
+  const fake = join(dir, 'keystore-backup');
+  for (const sub of ['tombstones', 'ops', 'journal']) mkdirSync(join(fake, sub), { recursive: true });
+  const elsewhere = workspace();
+  writeFileSync(join(elsewhere, 'key_abc.json'), '{}');
+  try {
+    symlinkSync(elsewhere, join(fake, 'keys'), 'dir');
+  } catch {
+    try { symlinkSync(elsewhere, join(fake, 'keys'), 'junction'); } catch { return; }
+  }
+  const result = inspectBackupDirectory(dir);
+  const entry = result.artifacts.find((a) => a.name === 'keystore-backup')!;
+  assert(entry.kind !== 'KEYSTORE_COPY', 'a linked keys directory does not make this a keystore');
+  assertEq(entry.component, null, 'so it satisfies no component');
+  assertEq(result.verdict, 'INCOMPLETE', 'and the backup is still missing its keystore');
 });
 
 await test('an unrecognised entry is counted as nothing and reported', () => {
