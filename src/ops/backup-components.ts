@@ -74,17 +74,26 @@ const COMPONENTS: readonly BackupComponent[] = [
     // `exec -T` runs inside the running postgres container and writes to a file next to the Compose project.
     // It connects over the container's local socket, so no password travels on a command line and none is
     // needed here.
+    //
+    // THE WINDOWS FORM GOES THROUGH `cmd /c`, AND THAT IS NOT DECORATION. In Windows PowerShell, `>` is
+    // `Out-File`, which re-encodes a native command's output as UTF-16LE — so `pg_dump > file.sql` silently
+    // produces a dump that `psql` cannot read, and nothing says so until a restore fails. Worse, PowerShell
+    // has no input redirection at all: `<` is a RESERVED operator and `psql … < file.sql` is a parse error,
+    // not a command that runs. `cmd /c` gets byte-faithful redirection in one line on a machine that has it
+    // already, which is every machine that can run Docker Desktop.
     backup: {
       posix: 'docker compose exec -T postgres pg_dump -U postgres catalog > ./catalog-backup.sql',
-      windows: 'docker compose exec -T postgres pg_dump -U postgres catalog > .\\catalog-backup.sql',
+      windows: 'cmd /c "docker compose exec -T postgres pg_dump -U postgres catalog > catalog-backup.sql"',
     },
     restore: {
       posix: 'docker compose exec -T postgres psql -U postgres -d catalog < ./catalog-backup.sql',
-      windows: 'docker compose exec -T postgres psql -U postgres -d catalog < .\\catalog-backup.sql',
+      windows: 'cmd /c "docker compose exec -T postgres psql -U postgres -d catalog < catalog-backup.sql"',
     },
     caveat: 'Restore into an EMPTY database. Replaying a dump over a database that already has this schema '
       + 'produces conflicts, not a rollback. The supported sequence is to stop the stack, remove the database '
-      + 'volume, start only PostgreSQL, and replay into the fresh one.',
+      + 'volume, start only PostgreSQL, and replay into the fresh one. On Windows the commands run through '
+      + '`cmd /c` on purpose: PowerShell rewrites `>` output as UTF-16 and would corrupt the dump without '
+      + 'saying so, and it has no `<` at all.',
   },
   {
     id: 'keystore',

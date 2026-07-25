@@ -305,17 +305,49 @@ test('every command is one an operator with only Docker can run', () => {
   }
 });
 
+// Found by rendering the panel and reading the commands as a Windows operator would run them.
+//
+// In Windows PowerShell `>` is `Out-File`, which re-encodes a native command's output as UTF-16LE — so
+// `pg_dump > file.sql` produces a dump `psql` cannot read, silently. And `<` is a RESERVED operator with no
+// implementation: `psql … < file.sql` is a parse error, not a command. A documented command that cannot run,
+// or that quietly corrupts the one artifact a rollback depends on, is worse than no command.
+test('no Windows command uses a PowerShell redirection that corrupts or does not exist', () => {
+  const windowsCommands = [
+    ...backupComponents().flatMap((component) => [component.backup.windows, component.restore.windows]),
+    ...firstRunChecklist().flatMap((step) => (step.commands === null ? [] : [step.commands.windows])),
+    ...troubleshootingTable().flatMap((entry) => (entry.commands === null ? [] : [entry.commands.windows])),
+  ];
+  for (const command of windowsCommands) {
+    // Redirection is allowed only inside a `cmd /c "…"` string, where it is byte-faithful.
+    const outsideCmd = command.startsWith('cmd /c ') ? '' : command;
+    assert(!/[^-]>/.test(outsideCmd), `a bare > in a PowerShell command re-encodes as UTF-16: ${command}`);
+    assert(!/</.test(outsideCmd), `PowerShell has no input redirection at all: ${command}`);
+  }
+});
+
+test('the database commands really are the cmd-wrapped ones on Windows and plain on POSIX', () => {
+  const database = backupComponent('database');
+  for (const command of [database.backup.windows, database.restore.windows]) {
+    assert(command.startsWith('cmd /c "') && command.endsWith('"'), `it is one cmd /c invocation: ${command}`);
+  }
+  for (const command of [database.backup.posix, database.restore.posix]) {
+    assert(!command.includes('cmd /c'), `POSIX needs no such wrapper: ${command}`);
+  }
+  assert(/UTF-16/.test(database.caveat), 'and the caveat says why, rather than leaving it as a curiosity');
+});
+
 test('the Windows and POSIX forms differ only where they have to', () => {
   for (const component of backupComponents()) {
     // Where they differ, the difference must be real — a Windows form identical but for a stray character is
     // how a copy-paste error ships.
+    // Either genuinely PowerShell, or a deliberate `cmd /c` wrapper where PowerShell's redirection cannot be
+    // used at all. A form that differs from POSIX in neither of those ways is a typo.
+    const deliberate = (command: string): boolean => /\\|Copy-Item|Get-Content/.test(command) || command.startsWith('cmd /c "');
     if (component.backup.posix !== component.backup.windows) {
-      assert(/\\|Copy-Item|Get-Content/.test(component.backup.windows),
-        `${component.id}'s Windows backup form is genuinely PowerShell`);
+      assert(deliberate(component.backup.windows), `${component.id}'s Windows backup form differs on purpose`);
     }
     if (component.restore.posix !== component.restore.windows) {
-      assert(/\\|Copy-Item|Get-Content/.test(component.restore.windows),
-        `${component.id}'s Windows restore form is genuinely PowerShell`);
+      assert(deliberate(component.restore.windows), `${component.id}'s Windows restore form differs on purpose`);
     }
   }
 });

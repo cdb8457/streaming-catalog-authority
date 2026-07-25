@@ -108,7 +108,20 @@ A new **restore** lifecycle step and a new troubleshooting entry —
 plainly that if the copy does not exist, the keys are gone and nothing here can regenerate them.
 
 The `docker compose cp` form is used for the keystore because it is identical on every platform and needs no
-knowledge of the generated volume name. Its restore is `stop` → `cp` → `start`, **not** `down` → `cp`:
+knowledge of the generated volume name.
+
+### The Windows database commands go through `cmd /c`
+
+Found by rendering the panel and reading the commands as a Windows operator would run them. In Windows
+PowerShell, `>` is `Out-File`, which re-encodes a native command's output as **UTF-16LE** — so
+`pg_dump > catalog-backup.sql` produces a dump `psql` cannot read, silently, and nothing says so until a
+restore fails. And `<` is a **reserved operator with no implementation**: `psql … < catalog-backup.sql` is a
+parse error, not a command that runs.
+
+Both Windows forms are therefore one `cmd /c "…"` invocation, which redirects byte-faithfully, on a shell
+every machine that can run Docker Desktop already has. A test refuses any Windows command carrying a bare `>`
+or any `<` outside a `cmd /c` string. The POSIX forms are unchanged, because there was nothing wrong with
+them. Its restore is `stop` → `cp` → `start`, **not** `down` → `cp`:
 `docker compose down` removes the container that `cp` needs, so the first version of that command could not
 work. A test now refuses any command that pairs a `compose down` with a `compose cp`.
 
@@ -136,7 +149,7 @@ somewhere outside the container, and the operator UI is read-only.
 
 ## Tests
 
-`test/backup-components.ts` — 37 checks, run in CI as `test:phase256-local`: the keystore present with its
+`test/backup-components.ts` — 39 checks, run in CI as `test:phase256-local`: the keystore present with its
 consequence stated as a consequence,
 the checklist no longer claiming a closed list of two, coverage over all four shipped stacks, the sidecar
 state routed to the keystore component, a synthetic stack with new persistent state failing and naming the
