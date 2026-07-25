@@ -59,7 +59,7 @@ jobs:
         run: |
           npm run test:inventory
           npm run test:runner
-      - name: Phase 260, 259, 258, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
         run: |
           npm run test:phase260-local
           npm run test:phase259-local

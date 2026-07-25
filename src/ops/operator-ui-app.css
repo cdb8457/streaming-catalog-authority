@@ -28,4 +28,9 @@ code{display:block;background:#101820;color:#eef4f8;border-radius:6px;padding:8p
 .verdict.degraded{background:#fdeceb;border-color:#b42318;color:#8d1a12}
 .hint{font-size:12px;color:#536173;margin:6px 0 0}.err{color:#b42318}.ok-text{color:#177245}
 dl.kv{display:grid;grid-template-columns:auto 1fr;gap:4px 12px;margin:0;font-size:13px}dl.kv dt{color:#637083}dl.kv dd{margin:0;overflow-wrap:anywhere}
+select{width:100%;border:1px solid #b9c2cf;border-radius:6px;padding:10px 11px;font:inherit;background:#fff;color:inherit}
+/* Phase 260: a catalog row is a button, because it does something. It is styled as text so a list of records
+   reads as a list rather than as a wall of controls, and it keeps the focus ring every other control has. */
+.linkish{background:none;border:0;padding:0;color:#1769aa;font:inherit;font-weight:600;text-align:left;cursor:pointer;overflow-wrap:anywhere}
+.linkish:hover{text-decoration:underline}
 @media(max-width:760px){main{grid-template-columns:1fr;padding:12px}header{padding:14px 12px;flex-wrap:wrap;gap:10px}.grid{grid-template-columns:1fr}}

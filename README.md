@@ -132,6 +132,13 @@ npm test -- --concurrency 4           # bounded parallelism (1-8)
 npm run test:docker-suites            # the acceptance suites that need a Docker daemon
 ```
 
+**One suite is currently failing, and it is meant to be visible.** `test/jellyfin-outbox.ts` fails its
+"reconcile adopts by token after a lost create response" case. It failed before the runner existed too — the
+old `&&` chain could not run on Windows and stopped at the first failure, so nobody saw it. It is a real
+Phase 12 outbox defect, it is named in every run summary, and `npm test` exits non-zero because of it. See
+the "What running the aggregate for the first time exposed" section of
+[docs/PHASE_258_TEST_RUNNER.md](docs/PHASE_258_TEST_RUNNER.md).
+
 ### Against your own PostgreSQL 16 (or Docker Compose)
 
 ```bash

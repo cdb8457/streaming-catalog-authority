@@ -1,6 +1,7 @@
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { Client } from 'pg';
 import { loadDbConfig, resolveAppEnv } from '../config/env.js';
+import { CatalogAuthority } from '../core/catalog/authority.js';
 import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
 import { getPool, closePool } from '../db/pool.js';
 import {
@@ -42,6 +43,23 @@ import {
   buildSupportReportEndpointResult,
   SUPPORT_REPORT_ROUTE,
 } from './operator-ui-support-report-endpoint.js';
+import {
+  CATALOG_BROWSE_ROUTE,
+  CATALOG_FILTER_REF_TYPES,
+  CATALOG_ITEM_ROUTE,
+  browseCatalog,
+  createCatalogReader,
+  parseCatalogBrowseQuery,
+  readCatalogItem,
+} from './operator-ui-catalog-browse.js';
+import {
+  CATALOG_IMPORT_BOUNDS,
+  CATALOG_IMPORT_COMMANDS,
+  CATALOG_IMPORT_NOTE,
+  CATALOG_IMPORT_STEPS,
+  CATALOG_SNAPSHOT_EXAMPLE,
+  catalogImportFieldTable,
+} from './operator-ui-catalog-import-guide.js';
 import {
   BACKUP_INSPECT_COMMANDS,
   BACKUP_INSPECT_NOTE,
@@ -323,6 +341,7 @@ export function createOperatorUiServiceServer(
     const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs'
       || path === '/api/promotion-chain' || path === '/api/installation' || path === '/api/version'
       || path === SUPPORT_REPORT_ROUTE
+      || path === CATALOG_BROWSE_ROUTE || path === CATALOG_ITEM_ROUTE
       || path === OPERATOR_UI_APP_JS_ROUTE || path === OPERATOR_UI_APP_CSS_ROUTE;
     if (method === 'HEAD') {
       ignoreRequestBody(req);
@@ -476,6 +495,77 @@ export function createOperatorUiServiceServer(
       // The verdict only. A reason here would be a fact about content that was deliberately withheld.
       logs.add(result.ok ? 'info' : 'warn', 'operation', 'SUPPORT_REPORT_READ',
         result.ok ? 'Served operator support report.' : 'Refused to serve a support report that did not pass the redaction scan.');
+      return;
+    }
+
+    // Phase 260. The catalog an operator imported, read back. Behind the SAME token as every other
+    // operational route — it is somebody's library, and the fact that it is their own data is a reason to
+    // require the token, not a reason to skip it.
+    //
+    // BOTH ROUTES ARE READS AND NOTHING ELSE. Only GET reaches this point, the query string contributes
+    // bounded integers and closed-set enumerations and never a fragment of SQL, and every database statement
+    // behind them is a SELECT. An EMPTY catalog answers 200: a fresh install is not a broken one.
+    if (path === CATALOG_BROWSE_ROUTE || path === CATALOG_ITEM_ROUTE) {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected catalog request without a valid operator token.');
+        return;
+      }
+      ignoreRequestBody(req);
+      let reader: ReturnType<typeof createCatalogReader>;
+      try {
+        // One pool reference for the whole request. `/api/status` closes the shared pool when its doctor run
+        // finishes, so taking it twice could hand this request two different pools; taking it once means a
+        // close landing mid-request fails this request closed (503) rather than half-answering it.
+        const pool = getPool();
+        reader = createCatalogReader(pool, new CatalogAuthority(pool, createCustodian(loadCustodianConfig())));
+      } catch {
+        // A database or custodian that is not configured is a state, not a crash. It says so and says nothing
+        // about what is missing — that belongs in Setup & Diagnostics, which is built to answer it safely.
+        sendJson(res, 503, {
+          ok: false,
+          code: 'OPERATOR_UI_CATALOG_UNAVAILABLE',
+          report: 'phase-260-catalog-browser',
+          message: 'The catalog could not be read. Check Setup & Diagnostics for this installation\'s state.',
+        });
+        logs.add('warn', 'operation', 'CATALOG_UNAVAILABLE', 'Catalog read failed safely before contacting the database.');
+        return;
+      }
+      try {
+        if (path === CATALOG_ITEM_ROUTE) {
+          const lookup = await readCatalogItem(reader, new URLSearchParams(rawRequestQuery(rawTarget)).get('id'));
+          if (!lookup.found) {
+            // 404 for both a malformed id and an absent record, deliberately: a forgotten item, a destroyed
+            // key and an id that never existed are the same answer, so the response cannot be used to probe
+            // which of those is true.
+            sendJson(res, 404, {
+              ok: false,
+              code: 'OPERATOR_UI_CATALOG_ITEM_NOT_FOUND',
+              report: 'phase-260-catalog-browser',
+              message: 'No readable record has that identifier.',
+            });
+            logs.add('info', 'operation', 'CATALOG_ITEM_READ', 'Served a catalog record lookup with found=false.');
+            return;
+          }
+          sendJson(res, 200, { ok: true, code: 'OPERATOR_UI_CATALOG_ITEM', report: 'phase-260-catalog-browser', item: lookup.item });
+          // The verdict only. A title or an id here would put an operator's catalog in the log buffer, which
+          // /api/logs then serves.
+          logs.add('info', 'operation', 'CATALOG_ITEM_READ', 'Served a catalog record.');
+          return;
+        }
+        const result = await browseCatalog(reader, parseCatalogBrowseQuery(rawRequestQuery(rawTarget)));
+        sendJson(res, 200, result);
+        logs.add('info', 'operation', 'CATALOG_READ', `Served a catalog page with state=${result.state}.`);
+      } catch {
+        sendJson(res, 503, {
+          ok: false,
+          code: 'OPERATOR_UI_CATALOG_UNAVAILABLE',
+          report: 'phase-260-catalog-browser',
+          message: 'The catalog could not be read. Check Setup & Diagnostics for this installation\'s state.',
+        });
+        logs.add('warn', 'operation', 'CATALOG_UNAVAILABLE', 'Catalog read failed safely.');
+      }
       return;
     }
 
@@ -641,6 +731,23 @@ function isAllowedHost(host: string): boolean {
 function rawRequestPath(rawTarget: string): string {
   const queryIndex = rawTarget.indexOf('?');
   return queryIndex === -1 ? rawTarget : rawTarget.slice(0, queryIndex);
+}
+
+/**
+ * The query string, or an empty one.
+ *
+ * Bounded before it is parsed. `URLSearchParams` on an unbounded string is an unbounded allocation from an
+ * unauthenticated-shaped request path; the routes that use it have already required a token, and the bound
+ * is here so that stays true of any future caller as well. An over-long query is DROPPED rather than
+ * rejected: the catalog routes answer with defaults and report what they ignored.
+ */
+const OPERATOR_UI_MAX_QUERY_LENGTH = 2048;
+
+function rawRequestQuery(rawTarget: string): string {
+  const queryIndex = rawTarget.indexOf('?');
+  if (queryIndex === -1) return '';
+  const query = rawTarget.slice(queryIndex + 1);
+  return query.length > OPERATOR_UI_MAX_QUERY_LENGTH ? '' : query;
 }
 
 function isUnsafeRawRequestPath(rawPath: string): boolean {
@@ -831,7 +938,7 @@ function buildOperatorUiServiceHtml(): string {
 <body>
 <div class="shell">
 <header><h1>Catalog Authority</h1>
-<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#status-panel">Status</a><a href="#backup-panel">Backup &amp; restore</a><a href="#support-panel">Support report</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
+<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#catalog-panel">Catalog</a><a href="#import-panel">Import a catalog</a><a href="#status-panel">Status</a><a href="#backup-panel">Backup &amp; restore</a><a href="#support-panel">Support report</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
 <div class="badge">read-only operator UI</div></header>
 <main>
 <section class="panel">
@@ -865,6 +972,60 @@ below.</p>
 <h3>Notes</h3>
 <ul class="list" id="advisories"><li class="muted">Not loaded.</li></ul>
 <p class="hint" id="authorizationNote"></p>
+<p class="hint">Nothing loaded yet? Your catalog is below. If it is empty, <a href="#import-panel">Import a catalog</a>
+has the file format and the exact commands.</p>
+</section>
+<section class="panel wide" id="catalog-panel">
+<h2>Catalog</h2>
+<p class="muted">The records in this installation, read back and decrypted for this page only. Nothing here
+writes, and provider reference values are never shown — only their type and a short fingerprint.</p>
+<div class="grid">
+<div class="metric"><span>Records</span><strong id="catTotal">-</strong></div>
+<div class="metric"><span>Matching</span><strong id="catMatched">-</strong></div>
+<div class="metric"><span>Page</span><strong id="catPage">-</strong></div>
+<div class="metric"><span>State</span><strong id="catState">-</strong></div>
+</div>
+<div class="field"><label for="catSearch">Search title or your own record id</label>
+<input id="catSearch" type="search" autocomplete="off" spellcheck="false"></div>
+<div class="field"><label for="catSort">Sort</label>
+<select id="catSort">
+<option value="id|asc">Identifier (stable)</option>
+<option value="title|asc">Title, A to Z</option>
+<option value="title|desc">Title, Z to A</option>
+<option value="year|asc">Year, oldest first</option>
+<option value="year|desc">Year, newest first</option>
+</select></div>
+<div class="field"><label for="catRefType">Provider reference type</label>
+<select id="catRefType"><option value="">Any</option>${CATALOG_FILTER_REF_TYPES.map((type) =>
+  `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('')}</select></div>
+<div class="field"><label for="catYearFrom">Year from</label><input id="catYearFrom" type="number" min="0" max="9999" inputmode="numeric"></div>
+<div class="field"><label for="catYearTo">Year to</label><input id="catYearTo" type="number" min="0" max="9999" inputmode="numeric"></div>
+<div class="actions"><button id="catApply" type="button">Search</button><button id="catReset" type="button">Clear</button>
+<button id="catPrev" type="button">Previous</button><button id="catNext" type="button">Next</button></div>
+<p class="status" id="catGuidance" role="status" aria-live="polite"></p>
+<p class="hint" id="catTruncated"></p>
+<ul class="list" id="catResults"><li class="muted">Not loaded.</li></ul>
+<h3>Record detail</h3>
+<dl class="kv" id="catDetail"><dt>Record</dt><dd>Choose a record above.</dd></dl>
+</section>
+<section class="panel wide" id="import-panel">
+<h2>Import a catalog</h2>
+<p>${escapeHtml(CATALOG_IMPORT_NOTE)}</p>
+<p class="muted">Readable without a token, deliberately: an empty catalog is the first thing a new
+installation shows, and the instructions for filling it should not need a working login.</p>
+<ol class="list steps">${CATALOG_IMPORT_STEPS.map((step) =>
+  `<li id="import-${escapeHtml(step.id)}"><strong>${escapeHtml(step.title)}</strong>`
+  + `<p class="muted">${escapeHtml(step.detail)}</p></li>`).join('')}</ol>
+<h3>The commands</h3>
+<div class="cmds">${CATALOG_IMPORT_COMMANDS.map((pair) =>
+  `<div class="cmd"><span>${escapeHtml(pair.label)}</span><code>${escapeHtml(pair.command)}</code></div>`).join('')}</div>
+<h3>The file</h3>
+<pre>${escapeHtml(CATALOG_SNAPSHOT_EXAMPLE)}</pre>
+<h3>Every field</h3>
+<ul class="list steps">${catalogImportFieldTable().map((row) =>
+  `<li><strong>${escapeHtml(row.field)}</strong> <span class="muted">${row.required ? 'required' : 'optional'}</span>`
+  + `<p>${escapeHtml(row.rule)}</p></li>`).join('')}</ul>
+<p class="hint">${escapeHtml(CATALOG_IMPORT_BOUNDS)}</p>
 </section>
 <section class="panel wide" id="firstrun-panel">
 <h2>First-run checklist</h2>

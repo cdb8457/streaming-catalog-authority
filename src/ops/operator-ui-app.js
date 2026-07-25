@@ -57,6 +57,22 @@
   var evidenceNote = document.getElementById('evidenceNote');
   var supportReport = document.getElementById('supportReport');
   var supportStatus = document.getElementById('supportStatus');
+  var catTotal = document.getElementById('catTotal');
+  var catMatched = document.getElementById('catMatched');
+  var catPageEl = document.getElementById('catPage');
+  var catState = document.getElementById('catState');
+  var catSearch = document.getElementById('catSearch');
+  var catSort = document.getElementById('catSort');
+  var catRefType = document.getElementById('catRefType');
+  var catYearFrom = document.getElementById('catYearFrom');
+  var catYearTo = document.getElementById('catYearTo');
+  var catGuidance = document.getElementById('catGuidance');
+  var catTruncated = document.getElementById('catTruncated');
+  var catResults = document.getElementById('catResults');
+  var catDetail = document.getElementById('catDetail');
+  // The only piece of catalog state this page keeps. The token is never stored anywhere, including here.
+  var catalogPage = 1;
+  var catalogPageCount = 1;
 
   // Error text an operator can act on. A bare "request failed" sends someone to the logs for a problem whose
   // answer is "you pasted a stale token"; the status code already knows which of those it is.
@@ -318,7 +334,120 @@
     artifactSummary.replaceChildren();
     var dt = document.createElement('dt'); dt.textContent = 'Artifacts'; artifactSummary.appendChild(dt);
     var dd = document.createElement('dd'); dd.textContent = 'Not loaded.'; artifactSummary.appendChild(dd);
+    resetCatalog();
   }
+  // ---------------------------------------------------------------------------------------------------------
+  // Phase 260 — the catalog.
+  //
+  // Every value below is written with textContent, and the query is assembled with URLSearchParams so a
+  // search term containing `&`, `#` or a quote is encoded rather than becoming another parameter. The record
+  // id travels in a data attribute and is validated by the server before it reaches a database at all.
+  // ---------------------------------------------------------------------------------------------------------
+  function catalogQuery() {
+    var params = new URLSearchParams();
+    if (catSearch.value.trim() !== '') params.set('q', catSearch.value.trim());
+    var sortPair = String(catSort.value || 'id|asc').split('|');
+    params.set('sort', sortPair[0]);
+    params.set('order', sortPair[1] || 'asc');
+    if (catRefType.value !== '') params.set('refType', catRefType.value);
+    if (catYearFrom.value !== '') params.set('yearFrom', catYearFrom.value);
+    if (catYearTo.value !== '') params.set('yearTo', catYearTo.value);
+    params.set('page', String(catalogPage));
+    return '/api/catalog?' + params.toString();
+  }
+  function describeRecord(item) {
+    var parts = [item.title || '(no title)'];
+    if (item.year !== null && item.year !== undefined) parts.push('(' + item.year + ')');
+    if (item.refTypes && item.refTypes.length > 0) parts.push('- refs: ' + item.refTypes.join(', '));
+    if (item.sources && item.sources.length > 0) parts.push('- source: ' + item.sources.join(', '));
+    return parts.join(' ');
+  }
+  function renderCatalog(data) {
+    catTotal.textContent = String(data.total);
+    catMatched.textContent = String(data.matched);
+    catalogPageCount = data.pageCount || 1;
+    catPageEl.textContent = data.page + ' of ' + catalogPageCount;
+    catState.textContent = data.state;
+    catGuidance.textContent = data.guidance || '';
+    var notes = [];
+    if (data.truncated) notes.push('Showing matches from the first ' + data.scanLimit + ' records by identifier only.');
+    if (data.ignored && data.ignored.length > 0) notes.push('Ignored, and the default used instead: ' + data.ignored.join(', ') + '.');
+    catTruncated.textContent = notes.join(' ');
+    catResults.replaceChildren();
+    var items = data.items || [];
+    if (items.length === 0) {
+      var empty = document.createElement('li');
+      empty.className = 'muted';
+      empty.textContent = data.state === 'EMPTY' ? 'No records yet.' : 'Nothing on this page.';
+      catResults.appendChild(empty);
+      return;
+    }
+    for (var i = 0; i < items.length; i++) {
+      var li = document.createElement('li');
+      var button = document.createElement('button');
+      button.type = 'button';
+      button.className = 'linkish';
+      button.textContent = describeRecord(items[i]);
+      button.setAttribute('data-item-id', items[i].itemId);
+      li.appendChild(button);
+      catResults.appendChild(li);
+    }
+  }
+  function setDetailRows(rows) {
+    catDetail.replaceChildren();
+    for (var i = 0; i < rows.length; i++) {
+      var dt = document.createElement('dt'); dt.textContent = rows[i][0]; catDetail.appendChild(dt);
+      var dd = document.createElement('dd'); dd.textContent = rows[i][1]; catDetail.appendChild(dd);
+    }
+  }
+  function renderRecordDetail(item) {
+    var rows = [
+      ['Title', item.title || '(no title)'],
+      ['Year', item.year === null || item.year === undefined ? 'not recorded' : String(item.year)],
+      ['Identifier', item.itemId],
+    ];
+    var sources = Object.keys(item.externalIds || {}).sort();
+    for (var s = 0; s < sources.length; s++) rows.push(['Your id in ' + sources[s], item.externalIds[sources[s]]]);
+    var refs = item.providerRefs || [];
+    for (var r = 0; r < refs.length; r++) rows.push([refs[r].type + ' reference', 'present, fingerprint ' + refs[r].fingerprint + ' (the value is never shown)']);
+    var metaKeys = Object.keys(item.metadata || {}).sort();
+    for (var m = 0; m < metaKeys.length; m++) rows.push([metaKeys[m], item.metadata[metaKeys[m]]]);
+    if (refs.length === 0) rows.push(['Provider references', 'none']);
+    if (metaKeys.length === 0) rows.push(['Metadata', 'none']);
+    setDetailRows(rows);
+  }
+  async function loadCatalog() {
+    if (token.value === '') return;
+    var data;
+    try {
+      data = await getJson(catalogQuery());
+    } catch (err) {
+      catState.textContent = 'UNAVAILABLE';
+      catGuidance.textContent = err.message;
+      return;
+    }
+    renderCatalog(data);
+  }
+  async function loadRecord(itemId) {
+    var data;
+    try {
+      data = await getJson('/api/catalog/item?id=' + encodeURIComponent(itemId));
+    } catch (err) {
+      setDetailRows([['Record', err.message]]);
+      return;
+    }
+    renderRecordDetail(data.item);
+  }
+  function resetCatalog() {
+    catalogPage = 1;
+    catalogPageCount = 1;
+    catTotal.textContent = '-'; catMatched.textContent = '-'; catPageEl.textContent = '-'; catState.textContent = '-';
+    catGuidance.textContent = ''; catTruncated.textContent = '';
+    catResults.replaceChildren();
+    var li = document.createElement('li'); li.className = 'muted'; li.textContent = 'Not loaded.'; catResults.appendChild(li);
+    setDetailRows([['Record', 'Choose a record above.']]);
+  }
+
   async function refresh() {
     statusText.className = 'status';
     statusText.textContent = 'Loading...';
@@ -332,6 +461,11 @@
     var settled = await Promise.allSettled([
       getJson('/api/installation'), getState('/api/status'), getJson('/api/logs'), getChain(),
       getState('/api/support-report')]);
+    // The catalog is loaded AFTER the others rather than alongside them: /api/status closes the shared
+    // connection pool when its self-check finishes, and a catalog read racing that close would fail closed
+    // for no reason an operator could act on. Sequencing costs one round trip and removes the race.
+    catalogPage = 1;
+    await loadCatalog();
     var i = settled[0], s = settled[1], l = settled[2], c = settled[3], r = settled[4];
     var problems = [];
     if (i.status === 'fulfilled') renderInstallation(i.value); else problems.push(i.reason.message);
@@ -359,6 +493,30 @@
   }
   document.getElementById('refresh').addEventListener('click', refresh);
   document.getElementById('copySupport').addEventListener('click', copySupport);
+  document.getElementById('catApply').addEventListener('click', function () { catalogPage = 1; loadCatalog(); });
+  document.getElementById('catReset').addEventListener('click', function () {
+    catSearch.value = ''; catSort.value = 'id|asc'; catRefType.value = '';
+    catYearFrom.value = ''; catYearTo.value = '';
+    catalogPage = 1;
+    loadCatalog();
+  });
+  document.getElementById('catPrev').addEventListener('click', function () {
+    if (catalogPage > 1) { catalogPage -= 1; loadCatalog(); }
+  });
+  document.getElementById('catNext').addEventListener('click', function () {
+    if (catalogPage < catalogPageCount) { catalogPage += 1; loadCatalog(); }
+  });
+  // One delegated listener rather than one per row: the rows are replaced on every page, and the record id
+  // is read from the element the page itself created.
+  catResults.addEventListener('click', function (event) {
+    var target = event.target;
+    if (!target || typeof target.getAttribute !== 'function') return;
+    var itemId = target.getAttribute('data-item-id');
+    if (itemId) loadRecord(itemId);
+  });
+  catSearch.addEventListener('keydown', function (event) {
+    if (event.key === 'Enter') { catalogPage = 1; loadCatalog(); }
+  });
   document.getElementById('clear').addEventListener('click', function () {
     token.value = '';
     resetOperationalState();

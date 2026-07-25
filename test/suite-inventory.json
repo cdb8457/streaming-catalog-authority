@@ -4,7 +4,8 @@
     "embedded-pg.ts",
     "crypto-setup.ts",
     "jellyfin-contract-kit.ts",
-    "_launch-proofing-evidence.ts"
+    "_launch-proofing-evidence.ts",
+    "aggregate-suite.ts"
   ],
   "suites": [
     {
@@ -1246,6 +1247,13 @@
       "group": "db",
       "args": [
         "5453"
+      ]
+    },
+    {
+      "file": "operator-ui-catalog-browse.ts",
+      "group": "db",
+      "args": [
+        "5454"
       ]
     }
   ]

@@ -14,7 +14,7 @@
     "test:docker-suites": "tsx src/ops/test-runner-cli.ts --group docker --require-capabilities",
     "test:runner": "tsx test/test-runner.ts",
     "test:phase259-local": "tsx test/catalog-import.ts 5453",
-    "test:phase260-local": "tsx test/operator-ui-catalog-browse.ts",
+    "test:phase260-local": "tsx test/operator-ui-catalog-browse.ts 5454",
     "ops:catalog-import": "tsx src/ops/catalog-import-cli.ts",
     "test:config": "tsx test/config.ts",
     "test:custodian-contract": "tsx test/custodian-contract.ts",
