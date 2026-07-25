@@ -90,7 +90,8 @@ repeated parameters, and 100 junk parameters — each producing a working defaul
 
 Ordering and paging: identical titles totally ordered by id; undated records last in both directions; a
 deterministic repeated sort; paging forward covering 5 records across 3 pages exactly once each; descending
-paging as the exact reverse of ascending; a page past the end empty rather than wrapping; a no-match search
+paging as the exact reverse of ascending; a page past the end empty rather than wrapping, and SAYING so
+rather than reporting "5 of 5 records matched" beside an empty list; a no-match search
 reported as `NO_MATCH` with the total intact; a 1025-record catalog reporting `truncated` with the bound
 named; the cheap path decrypting only the page.
 
@@ -116,6 +117,12 @@ token header, a row is rendered as a `<button>` carrying the record id, its `tex
 `<img src=x onerror=alert(1)>` verbatim, clicking it fetches the encoded detail URL, and the detail view
 renders a metadata value of `</dd><script>x</script>` as text and the ref fingerprint rather than a value.
 Reaching the end of that test is the proof that nothing went through `innerHTML`.
+
+Beyond the suite, the whole stack was stood up and driven by hand: a throwaway PostgreSQL, ten records
+imported through the Phase 259 CLI path, and the real `startOperatorUiService` listening on loopback. The
+shell rendered, `/api/catalog?pageSize=3` returned three of ten with a page count of four, and
+`/api/catalog?q=hostile` returned exactly the record whose title is
+`A Hostile <script>alert(1)</script> Title` — as JSON text, with no provider ref value anywhere in the body.
 
 CI: `npm run test:phase260-local` in the existing `suites` job, plus the Phase 258 inventory gate.
 

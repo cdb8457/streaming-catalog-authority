@@ -8,19 +8,27 @@ A developer on any of the three platforms this project documents can now run the
 command, see which suites failed rather than only that something did, and be told — before anything is
 spawned — if a test file exists that nothing runs.
 
+The sample below is a REAL run, so it ends in FAIL: running the aggregate for the first time found a suite
+that has been broken for a long time. That is the point of the phase, and the section below says which and
+why.
+
 ```
 $ npm test
-Catalog Authority — running 290 of 292 suites (concurrency 1).
+Catalog Authority — running 292 of 294 suites (concurrency 1).
 --> config.ts
   ...
 PASS config.ts (exit 0, 812ms)
   ...
+FAIL jellyfin-outbox.ts (exit 1, 14661ms)
+  ...
 ================ Catalog Authority test run ================
+FAILED (1):
+  jellyfin-outbox.ts — exit 1
 SKIPPED (2 of 2 unselected):
   release-candidate-acceptance.ts — requires docker; run it with --group docker
   release-lifecycle-acceptance.ts — requires docker; run it with --group docker
-suites selected 290 | passed 290 | failed 0 | not selected 2 | required-but-skipped 0 | 1103s
-RESULT: PASS — every selected suite ran and exited zero.
+suites selected 292 | passed 291 | failed 1 | not selected 2 | required-but-skipped 0 | 1780s
+RESULT: FAIL
 ============================================================
 ```
 
@@ -100,7 +108,7 @@ The ~500 focused `test:*` and `ops:*` scripts are **unchanged**, and CI keeps dr
 
 ## Proof
 
-`npm run test:runner` — 55 assertions, all passing. The ones that matter:
+`npm run test:runner` — 59 assertions, all passing. The ones that matter:
 
 - `npm test` is under 200 characters and contains no `&&` (the Windows defect cannot come back).
 - The shipped inventory accounts for every file under `test/`, with no duplicates and no port collisions.
@@ -168,24 +176,32 @@ fails the moment two of them run at once. They now declare 5455 and 5456 and sit
 `collidingArgs` check cannot see an *implicit* port, so a new assertion in `test/test-runner.ts` reads the
 suite sources: anything importing `./embedded-pg.js` must declare its own port and be in the `db` group.
 
-Current state: 270/270 offline suites pass; 23/24 database suites pass, with `jellyfin-outbox.ts` failing as
-described above.
+Current state, at the default `--concurrency 1`: 268/268 offline suites pass; 23/24 database suites pass,
+with `jellyfin-outbox.ts` failing as described above.
 
 ## Limitations
 
 - **The runner does not parse suite output.** It knows a suite's exit code, not how many assertions inside it
   passed or skipped. Suites report their own skips in their own output, as they always have; the runner's
   `skipped` count means "this suite was not selected", which is a different thing and is labelled as such.
-- **The default `--concurrency 1` is deliberate.** Higher values work, are tested, and are what found the
-  shared-port defect above — but the safety of running database suites together rests entirely on each having
-  its own port. Two checks cover that (`collidingArgs` for declared ports, and a source scan for suites that
-  boot a database without declaring one), and a suite that hard-coded a port *inside itself*, ignoring
-  `argv`, would still evade both.
+- **The default `--concurrency 1` is deliberate, and higher values are not yet reliable for the whole
+  offline group.** Raising it is what found the shared-port defect above, and it is genuinely useful for a
+  filtered subset — but several suites start a real HTTP server on an *ephemeral* port chosen by binding,
+  closing, and then re-binding it in a spawned child (`test/operator-ui-static-runtime.ts` is one). That gap
+  between choosing and binding is a race, and under `--concurrency 4` a different suite loses it on
+  different runs. Those suites are correct and deterministic at concurrency 1, which is what `npm test` uses.
+  Making the whole group concurrency-safe means teaching each of them to bind first and read the port back,
+  and that is a phase of its own.
+- **Declared ports are checked; a port a suite invents privately is not.** `collidingArgs` catches two suites
+  given the same argument, and a source scan catches a suite that boots a database without declaring a port
+  at all. A suite that hard-codes a port inside itself, ignoring `argv`, evades both.
 - **Capability probing only knows about `docker`.** Anything else declared in `requires` is treated as
   unavailable. That is fail-closed, but it means adding a new capability needs a code change, not just an
   inventory edit.
-- **Group membership is hand-assigned.** `db` currently means "takes a port argument". Nothing enforces that
-  a new database-backed suite is put in the right group; it only enforces that it is in *some* group.
+- **Group membership is hand-assigned, and only partly enforced.** A suite that imports `embedded-pg.js` is
+  now required to be in `db` with its own port. Nothing decides the group for anything else: a new suite can
+  be put in `offline` when it belongs elsewhere, and the only guarantee is that it is in *some* group and
+  therefore runs.
 
 ## Next work
 

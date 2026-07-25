@@ -318,11 +318,15 @@ async function main(): Promise<void> {
     assertEq(result.items.length, 0, 'a page past the end returned records');
     assertEq(result.state, 'NO_MATCH', 'wrong state past the end');
     assertEq(result.total, 5, 'the total was lost');
+    // "5 of 5 records matched" next to an empty list is true and useless. A page number that outlived the
+    // records behind it is a specific, recoverable situation and the guidance names it.
+    assert(result.guidance.includes('past the end'), `the guidance does not explain an empty page: ${result.guidance}`);
   });
 
   await test('a search that matches nothing is NO_MATCH with guidance, not EMPTY', async () => {
     const result = await browseCatalog(fakeReader(CATALOG), q('q=nothing-matches-this'));
     assertEq(result.state, 'NO_MATCH', 'wrong state');
+    assert(!result.guidance.includes('past the end'), 'a first-page no-match was blamed on the page number');
     assertEq(result.total, 5, 'the total should still describe the catalog');
     assertEq(result.matched, 0, 'wrong matched count');
     assert(result.guidance.toLowerCase().includes('clear'), 'the guidance does not say how to recover');

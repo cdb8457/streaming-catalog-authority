@@ -363,7 +363,7 @@ export async function browseCatalog(reader: CatalogReader, result: CatalogBrowse
       state: records.length === 0 ? 'NO_MATCH' : 'RESULTS',
       total, matched: total, truncated: false, scanned: ordered.length, query, ignored,
       items: records.map((entry) => toSummary(entry.itemId, entry.identity)),
-      guidance: guidanceFor(total, total, false),
+      guidance: guidanceFor(total, total, false, query.page > Math.ceil(total / query.pageSize)),
     });
   }
 
@@ -384,7 +384,7 @@ export async function browseCatalog(reader: CatalogReader, result: CatalogBrowse
     state: matches.length === 0 ? 'NO_MATCH' : 'RESULTS',
     total, matched: matches.length, truncated, scanned: ids.length, query, ignored,
     items: matches.slice(offset, offset + query.pageSize),
-    guidance: guidanceFor(total, matches.length, truncated),
+    guidance: guidanceFor(total, matches.length, truncated, matches.length > 0 && offset >= matches.length),
   });
 }
 
@@ -404,7 +404,14 @@ async function descendingPage(reader: CatalogReader, total: number, query: Catal
   return [...ids].reverse();
 }
 
-function guidanceFor(total: number, matched: number, truncated: boolean): string {
+function guidanceFor(total: number, matched: number, truncated: boolean, pastEnd = false): string {
+  if (pastEnd) {
+    // "N of N matched" next to an empty list is technically true and completely unhelpful. A bookmarked page
+    // number that outlived the records behind it is a specific, recoverable situation, and saying so beats
+    // leaving somebody to wonder whether their catalog emptied itself.
+    return `That page is past the end: ${matched} record${matched === 1 ? '' : 's'} match, which is fewer `
+      + 'pages than the one requested. Go back to the first page.';
+  }
   if (truncated) {
     return `This catalog holds more records than one search reads at a time, so these results come from the `
       + `first ${CATALOG_BROWSE_MAX_SCAN} records by id. Narrow the search or use the filters to be sure you `

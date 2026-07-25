@@ -106,7 +106,7 @@ something outside it.
 
 ## Proof
 
-`npm run test:phase259-local` — 58 assertions passing, 1 honest skip.
+`npm run test:phase259-local` — 59 assertions passing, 1 honest skip.
 
 - 12 malformed documents rejected (not JSON, wrong format/version, unknown keys, bad `source`, no items).
 - Duplicate `externalId` rejected, naming both positions and a digest, with neither value echoed.
@@ -130,6 +130,13 @@ something outside it.
 - Source scans (comments stripped) assert no module references `node:http/https/net/dns/tls`, `undici`,
   `fetch(`, `node:child_process`, `jellyfin`, `tmdb`, `torbox`, `readdirSync`, `promotion` or `unraid`; and
   the parser references no filesystem, database or environment facility at all.
+
+The CLI itself was also driven end to end against a throwaway database: preview (exit 0, nothing written),
+apply (exit 0, two records created), apply again (exit 0, zero created, "nothing changed"), a file with an
+invalid record (exit 3, rejected whole, the database untouched), and `--file ../../etc/passwd` (exit 3,
+refused, naming the constraint and not the path). That run is what found the last defect fixed here: a
+preview was listing every record it was about to create under "records needing attention", which made an
+ordinary first import read like a page of problems.
 
 Wired into CI as `npm run test:phase259-local` in the existing `suites` job, and into the aggregate inventory.
 
