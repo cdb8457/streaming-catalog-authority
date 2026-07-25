@@ -112,16 +112,22 @@ knowledge of the generated volume name.
 
 ### The Windows database commands go through `cmd /c`
 
-Found by rendering the panel and reading the commands as a Windows operator would run them. In Windows
-PowerShell, `>` is `Out-File`, which re-encodes a native command's output as **UTF-16LE** — so
-`pg_dump > catalog-backup.sql` produces a dump `psql` cannot read, silently, and nothing says so until a
-restore fails. And `<` is a **reserved operator with no implementation**: `psql … < catalog-backup.sql` is a
-parse error, not a command that runs.
+Found by rendering the panel and reading the commands as a Windows operator would run them, then **measuring
+both halves** on Windows PowerShell 5.1.26100 rather than trusting recollection:
+
+* `>` is `Out-File`, which **re-encodes** a native command's output instead of passing bytes through. It wrote
+  a UTF-8 byte-order mark (`EF BB BF`) ahead of the first character; other Windows PowerShell configurations
+  write UTF-16LE instead. Either way the file is not what `pg_dump` emitted, and a dump beginning with a BOM
+  is one `psql` refuses — produced silently, and not discovered until the day somebody needs the restore. The
+  same command through `cmd /c` produced the bytes unchanged.
+* `<` **does not exist**. It is a reserved operator: `psql … < catalog-backup.sql` fails to parse with
+  *"The '<' operator is reserved for future use."* The restore command was not a command that might fail; it
+  was one that could never run.
 
 Both Windows forms are therefore one `cmd /c "…"` invocation, which redirects byte-faithfully, on a shell
 every machine that can run Docker Desktop already has. A test refuses any Windows command carrying a bare `>`
-or any `<` outside a `cmd /c` string. The POSIX forms are unchanged, because there was nothing wrong with
-them. Its restore is `stop` → `cp` → `start`, **not** `down` → `cp`:
+or any `<` outside a `cmd /c` string, across the components, the checklist and the troubleshooting table. The
+POSIX forms are unchanged, because there was nothing wrong with them. Its restore is `stop` → `cp` → `start`, **not** `down` → `cp`:
 `docker compose down` removes the container that `cp` needs, so the first version of that command could not
 work. A test now refuses any command that pairs a `compose down` with a `compose cp`.
 

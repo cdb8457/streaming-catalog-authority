@@ -110,9 +110,10 @@ cp -a ./promotion-records ./promotion-records-backup
 cmd /c "docker compose exec -T postgres pg_dump -U postgres catalog > catalog-backup.sql"
 ```
 
-PowerShell's `>` is `Out-File`, which re-encodes a native command's output as UTF-16LE and produces a dump
-`psql` cannot read — silently, until the day you try to restore it. PowerShell also has no `<` at all, so the
-restore has to go the same way. The **Backup & restore** panel shows the right form for each platform.
+PowerShell's `>` is `Out-File`, which re-encodes a native command's output rather than passing bytes through
+— measured, it prepends a byte-order mark — and produces a dump `psql` refuses, silently, until the day you
+try to restore it. PowerShell also has no `<` operator at all, so the restore has to go the same way. The
+**Backup & restore** panel shows the right form for each platform.
 
 Take all four **before every upgrade**. The dump is the only thing that can return you to the previous schema,
 for the reason in the rollback section — and the keystore from the *same* backup is the only thing that makes

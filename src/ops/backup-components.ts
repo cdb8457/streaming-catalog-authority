@@ -75,12 +75,20 @@ const COMPONENTS: readonly BackupComponent[] = [
     // It connects over the container's local socket, so no password travels on a command line and none is
     // needed here.
     //
-    // THE WINDOWS FORM GOES THROUGH `cmd /c`, AND THAT IS NOT DECORATION. In Windows PowerShell, `>` is
-    // `Out-File`, which re-encodes a native command's output as UTF-16LE — so `pg_dump > file.sql` silently
-    // produces a dump that `psql` cannot read, and nothing says so until a restore fails. Worse, PowerShell
-    // has no input redirection at all: `<` is a RESERVED operator and `psql … < file.sql` is a parse error,
-    // not a command that runs. `cmd /c` gets byte-faithful redirection in one line on a machine that has it
-    // already, which is every machine that can run Docker Desktop.
+    // THE WINDOWS FORM GOES THROUGH `cmd /c`, AND THAT IS NOT DECORATION. Both halves were measured on
+    // Windows PowerShell 5.1.26100 rather than recalled:
+    //
+    //   * `>` is `Out-File`, which RE-ENCODES a native command's output instead of passing bytes through. It
+    //     wrote a UTF-8 byte-order mark (EF BB BF) ahead of the first character; other Windows PowerShell
+    //     configurations write UTF-16LE instead. Either way the file is not what `pg_dump` emitted, and a
+    //     dump that begins with a BOM is one `psql` refuses — silently produced, and not discovered until the
+    //     day somebody needs the restore.
+    //   * `<` does not exist. It is a RESERVED operator: `psql … < file.sql` fails to parse with "The '<'
+    //     operator is reserved for future use." The restore command was not a command that might fail; it was
+    //     one that could never run.
+    //
+    // `cmd /c` redirects byte-faithfully (verified: no BOM, no re-encoding) in one line, on a shell every
+    // machine that can run Docker Desktop already has.
     backup: {
       posix: 'docker compose exec -T postgres pg_dump -U postgres catalog > ./catalog-backup.sql',
       windows: 'cmd /c "docker compose exec -T postgres pg_dump -U postgres catalog > catalog-backup.sql"',
@@ -92,8 +100,8 @@ const COMPONENTS: readonly BackupComponent[] = [
     caveat: 'Restore into an EMPTY database. Replaying a dump over a database that already has this schema '
       + 'produces conflicts, not a rollback. The supported sequence is to stop the stack, remove the database '
       + 'volume, start only PostgreSQL, and replay into the fresh one. On Windows the commands run through '
-      + '`cmd /c` on purpose: PowerShell rewrites `>` output as UTF-16 and would corrupt the dump without '
-      + 'saying so, and it has no `<` at all.',
+      + '`cmd /c` on purpose: PowerShell re-encodes `>` output rather than passing bytes through, so it would '
+      + 'corrupt the dump without saying so, and it has no `<` operator at all.',
   },
   {
     id: 'keystore',

@@ -307,10 +307,12 @@ test('every command is one an operator with only Docker can run', () => {
 
 // Found by rendering the panel and reading the commands as a Windows operator would run them.
 //
-// In Windows PowerShell `>` is `Out-File`, which re-encodes a native command's output as UTF-16LE — so
-// `pg_dump > file.sql` produces a dump `psql` cannot read, silently. And `<` is a RESERVED operator with no
-// implementation: `psql … < file.sql` is a parse error, not a command. A documented command that cannot run,
-// or that quietly corrupts the one artifact a rollback depends on, is worse than no command.
+// Both halves measured on Windows PowerShell 5.1.26100, not recalled: `>` is `Out-File`, which re-encodes a
+// native command's output rather than passing bytes through — it wrote a UTF-8 BOM (EF BB BF) ahead of the
+// first character, and other configurations write UTF-16LE — so `pg_dump > file.sql` produces a dump `psql`
+// refuses, silently. And `<` fails to parse: "The '<' operator is reserved for future use." A documented
+// command that cannot run, or that quietly corrupts the one artifact a rollback depends on, is worse than no
+// command.
 test('no Windows command uses a PowerShell redirection that corrupts or does not exist', () => {
   const windowsCommands = [
     ...backupComponents().flatMap((component) => [component.backup.windows, component.restore.windows]),
@@ -333,7 +335,8 @@ test('the database commands really are the cmd-wrapped ones on Windows and plain
   for (const command of [database.backup.posix, database.restore.posix]) {
     assert(!command.includes('cmd /c'), `POSIX needs no such wrapper: ${command}`);
   }
-  assert(/UTF-16/.test(database.caveat), 'and the caveat says why, rather than leaving it as a curiosity');
+  assert(/re-encodes/.test(database.caveat) && /no `<` operator/.test(database.caveat),
+    'and the caveat says why, rather than leaving it as a curiosity');
 });
 
 test('the Windows and POSIX forms differ only where they have to', () => {
