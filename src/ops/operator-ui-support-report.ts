@@ -72,7 +72,7 @@ export interface SupportReport {
     readonly bundleVersion: string | null;
     readonly agreement: RuntimeVersionView['agreement'];
     /** Whether the configured image is the published one, said without naming any registry. */
-    readonly imageRepository: 'EXPECTED' | 'CUSTOM' | 'ABSENT' | 'MALFORMED';
+    readonly imageRepository: 'EXPECTED' | 'CUSTOM' | 'LOCAL' | 'ABSENT' | 'MALFORMED';
     readonly imageTag: string | null;
     readonly imagePinnedByDigest: boolean;
   };
@@ -123,6 +123,10 @@ export function assertSupportReportIsRedactionSafe(rendered: string): void {
 function describeRepository(view: RuntimeVersionView): SupportReport['version']['imageRepository'] {
   if (view.image.state === 'ABSENT') return 'ABSENT';
   if (view.image.state === 'MALFORMED') return 'MALFORMED';
+  // A registry-unqualified name is a LOCAL build, not a custom registry and not damage. Reported as its own
+  // word so a pasted support report says "this person is running something they built" rather than implying
+  // either a private mirror or a broken value.
+  if (view.image.state === 'LOCAL') return 'LOCAL';
   return view.image.repository === RELEASE_IMAGE_REPOSITORY ? 'EXPECTED' : 'CUSTOM';
 }
 

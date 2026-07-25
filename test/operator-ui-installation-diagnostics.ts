@@ -798,6 +798,8 @@ function bundleSources(): BundleSources {
     runtimeCompose: read('docker-compose.runtime.yml'),
     setupBash: read('deploy/local-runtime-setup.sh'),
     setupPowerShell: read('deploy/local-runtime-setup.ps1'),
+    arcaneCompose: read('docker-compose.arcane.yml'),
+    arcaneSetupBash: read('deploy/arcane-setup.sh'),
   };
 }
 
@@ -1116,8 +1118,10 @@ await test('the bundle still ships no source, no toolchain and no secret, with t
     createdAt: '2026-01-01T00:00:00.000Z',
   });
   const paths = bundle.files.map((file) => file.path).sort();
-  assertEq(paths.join(','), '.env,.env.example,README.md,SHA256SUMS,VERSION,bundle-manifest.json,docker-compose.yml,setup.ps1,setup.sh',
-    'the bundle file set is unchanged by this phase');
+  // v1.1.2 adds the Arcane pair; the Phase 246 point of this assertion is that the set is CLOSED and carries
+  // no source, no toolchain and no secret, not that it can never grow for a real consumer need.
+  assertEq(paths.join(','), '.env,.env.example,README.md,SHA256SUMS,VERSION,arcane-setup.sh,bundle-manifest.json,docker-compose.arcane.yml,docker-compose.yml,setup.ps1,setup.sh',
+    'the bundle file set is exactly what an ordinary user and a launcher user need');
   for (const file of bundle.files) {
     assert(!file.contents.includes('\r'), `${file.path} is still LF-only`);
     assert(!/postgres(?:ql)?:\/\/[^\s:@/]+:[^\s:@/$]{8,}@/.test(file.contents), `${file.path} carries no real credential`);

@@ -77,7 +77,7 @@ services:
   # its self-check, plus the completion secret it provisions. It does NOT mount the promotion records folder:
   # a migration has no business reading anyone's evidence.
   migrate:
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.1}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.2}
     init: true
     restart: "no"
     depends_on:
@@ -127,7 +127,7 @@ services:
     #
     # Maintainers building from source use the documented override instead — see
     # docker-compose.runtime.build.yml — which replaces this image with a locally built one.
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.1}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.2}
     # PID 1 is a real init that reaps orphans; the app process still receives SIGTERM directly.
     init: true
     restart: unless-stopped

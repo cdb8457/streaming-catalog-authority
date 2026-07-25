@@ -68,6 +68,8 @@ function sources(): BundleSources {
     runtimeCompose: read('docker-compose.runtime.yml'),
     setupBash: read('deploy/local-runtime-setup.sh'),
     setupPowerShell: read('deploy/local-runtime-setup.ps1'),
+    arcaneCompose: read('docker-compose.arcane.yml'),
+    arcaneSetupBash: read('deploy/arcane-setup.sh'),
   };
 }
 

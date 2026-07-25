@@ -46,6 +46,16 @@ const DIGEST_PATTERN = /^sha256:[0-9a-f]{64}$/;
 const TIMESTAMP_PATTERN = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z$/;
 /** `host[:port]/path/segments`, each segment lowercase — the shape a registry actually accepts. */
 const REPOSITORY_PATTERN = /^[a-z0-9.-]+(?::\d+)?(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)+$/;
+/**
+ * A bare, registry-UNqualified name: `catalog-authority-ops`, `repo-ops`. No host, no slash.
+ *
+ * v1.1.2. These used to fall through to MALFORMED, which was a lie. A locally built image is not malformed —
+ * it is a perfectly valid reference that simply names no registry, which is exactly what `docker build -t`
+ * produces and what this project's own CI smoke and release-candidate runs use. Reporting them as MALFORMED
+ * put the word "malformed" on the Setup & Diagnostics panel during the very runs that exist to demonstrate
+ * the product working, and it threw away the digest when one was present.
+ */
+const UNQUALIFIED_NAME_PATTERN = /^[a-z0-9]+(?:[._-][a-z0-9]+)*(?:\/[a-z0-9]+(?:[._-][a-z0-9]+)*)*$/;
 
 /** How much a declaration can be trusted. Bounded: a consumer switches on these and nothing else. */
 export type VersionProvenance = 'RELEASE' | 'DEVELOPMENT' | 'UNKNOWN';
@@ -54,7 +64,13 @@ export type VersionProvenance = 'RELEASE' | 'DEVELOPMENT' | 'UNKNOWN';
 export type VersionAgreement = 'AGREES' | 'MISMATCH' | 'UNKNOWN';
 
 export interface ImageRefView {
-  readonly state: 'PARSED' | 'ABSENT' | 'MALFORMED';
+  /**
+   * `PARSED` is a registry-qualified reference — the only kind a consumer can pull.
+   * `LOCAL` is a valid but registry-unqualified name, i.e. an image that exists only on the machine that
+   * built it. It is NOT a fault and NOT a release; it is reported separately so a maintainer's local build
+   * reads as what it is instead of as damage, and so a consumer surface can never mistake one for the other.
+   */
+  readonly state: 'PARSED' | 'LOCAL' | 'ABSENT' | 'MALFORMED';
   /** `ghcr.io/owner/name`, only when it parsed. Never the raw environment value. */
   readonly repository: string | null;
   readonly tag: string | null;
@@ -109,21 +125,40 @@ export function describeImageRef(raw: string | undefined): ImageRefView {
   if (atIndex !== -1) {
     const repository = value.slice(0, atIndex).split(':')[0] ?? '';
     const digest = value.slice(atIndex + 1);
-    if (!REPOSITORY_PATTERN.test(repository) || !DIGEST_PATTERN.test(digest)) return malformed;
-    return { state: 'PARSED', repository, tag: null, pinnedByDigest: true, movingTag: false };
+    if (!DIGEST_PATTERN.test(digest)) return malformed;
+    if (REPOSITORY_PATTERN.test(repository)) {
+      return { state: 'PARSED', repository, tag: null, pinnedByDigest: true, movingTag: false };
+    }
+    // An unqualified name with a real digest is still digest-pinned. Losing that fact was the second half of
+    // the same bug: the pin is the strongest thing about the reference and it was being discarded.
+    if (UNQUALIFIED_NAME_PATTERN.test(repository)) {
+      return { state: 'LOCAL', repository, tag: null, pinnedByDigest: true, movingTag: false };
+    }
+    return malformed;
   }
 
   // A colon is only a tag separator when it comes after the last slash; `registry:5000/name` has none.
   const lastSlash = value.lastIndexOf('/');
   const colon = value.indexOf(':', lastSlash === -1 ? 0 : lastSlash);
   if (colon === -1) {
-    if (!REPOSITORY_PATTERN.test(value)) return malformed;
-    return { state: 'PARSED', repository: value, tag: null, pinnedByDigest: false, movingTag: true };
+    if (REPOSITORY_PATTERN.test(value)) {
+      return { state: 'PARSED', repository: value, tag: null, pinnedByDigest: false, movingTag: true };
+    }
+    if (UNQUALIFIED_NAME_PATTERN.test(value)) {
+      return { state: 'LOCAL', repository: value, tag: null, pinnedByDigest: false, movingTag: true };
+    }
+    return malformed;
   }
   const repository = value.slice(0, colon);
   const tag = value.slice(colon + 1);
-  if (!REPOSITORY_PATTERN.test(repository) || !/^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/.test(tag)) return malformed;
-  return { state: 'PARSED', repository, tag, pinnedByDigest: false, movingTag: tag === 'latest' };
+  if (!/^[A-Za-z0-9_][A-Za-z0-9._-]{0,127}$/.test(tag)) return malformed;
+  if (REPOSITORY_PATTERN.test(repository)) {
+    return { state: 'PARSED', repository, tag, pinnedByDigest: false, movingTag: tag === 'latest' };
+  }
+  if (UNQUALIFIED_NAME_PATTERN.test(repository)) {
+    return { state: 'LOCAL', repository, tag, pinnedByDigest: false, movingTag: tag === 'latest' };
+  }
+  return malformed;
 }
 
 function provenanceOf(version: string | null, revision: string | null): VersionProvenance {
@@ -166,7 +201,14 @@ export function buildRuntimeVersionView(env: NodeJS.ProcessEnv = process.env): R
     notes.push('The bundle did not declare a version, so the image cannot be checked against it.');
   }
   if (image.state === 'MALFORMED') {
-    notes.push('The configured image reference is not a registry-qualified reference. Its value is deliberately not repeated here.');
+    notes.push('The configured image reference could not be parsed at all. Its value is deliberately not repeated here.');
+  }
+  // v1.1.2. This note used to be reachable only through MALFORMED, so introducing LOCAL would have silently
+  // taken it away from exactly the references it describes. "Not registry-qualified" is the useful half of
+  // the old message and it survives on its own terms: a consumer cannot pull an image that names no registry,
+  // whatever else is true of it.
+  if (image.state === 'LOCAL') {
+    notes.push('The configured image reference names no registry, so it can only be an image built on this machine. Nobody else could pull it. That is expected for a local build and wrong for a release.');
   }
   if (image.movingTag) {
     notes.push('The image is pinned to a moving tag. A release should be pinned to a version tag or a digest so it cannot change under you.');
