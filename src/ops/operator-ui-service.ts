@@ -43,6 +43,8 @@ import {
   SUPPORT_REPORT_ROUTE,
 } from './operator-ui-support-report-endpoint.js';
 import {
+  BACKUP_INSPECT_COMMANDS,
+  BACKUP_INSPECT_NOTE,
   BACKUP_SUMMARY,
   backupComponents,
   type BackupCommands,
@@ -877,6 +879,9 @@ ${renderChecklist(firstRunChecklist())}
 <p class="muted">Readable without a token, deliberately: the moment you need this is not always a moment when
 you can log in. Run the commands from the folder your <code>docker-compose.yml</code> is in.</p>
 ${renderBackupComponents(backupComponents())}
+<h3>Check a backup you already have</h3>
+<p class="muted">${escapeHtml(BACKUP_INSPECT_NOTE)}</p>
+${renderCommands({ posix: BACKUP_INSPECT_COMMANDS.posix, windows: BACKUP_INSPECT_COMMANDS.windows })}
 </section>
 <section class="panel wide" id="trouble-panel">
 <h2>Troubleshooting</h2>

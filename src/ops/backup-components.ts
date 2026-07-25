@@ -167,10 +167,37 @@ export function backupComponent(id: BackupComponentId): BackupComponent {
  * Four things, named. The previous wording — "your secrets and your database" — was not merely incomplete,
  * it was a closed list, which is what stopped anybody looking for a third thing.
  */
+// The wording avoids "download" on purpose. The Phase 147 boundary check asserts that word never appears in
+// the served page, because this product downloads nothing — and a sentence about obtaining a Compose file
+// again is not worth eroding a boundary check for.
 export const BACKUP_SUMMARY =
   'A complete backup of this installation is four things: the database, the custodian keystore, the secret '
-  + 'files and your promotion record artifacts. None of them can be downloaded again. Leaving out the '
-  + 'keystore is the one that fails quietly — the database restores and nothing in it can be decrypted.';
+  + 'files and your promotion record artifacts. None of them can be obtained again from anywhere else. '
+  + 'Leaving out the keystore is the one that fails quietly — the database restores and nothing in it can '
+  + 'be decrypted.';
+
+/**
+ * Phase 257 — checking a backup before the day you need it.
+ *
+ * Rendered into the same panel as the components, because "how do I take one" and "is the one I took any
+ * good" are the same question asked at two different times.
+ *
+ * `--no-deps` is load-bearing and is asserted by a test. Without it Compose starts PostgreSQL and the
+ * migration first, which would make a check whose entire claim is "this needs no database" quietly need one.
+ * `:ro` is deliberate too: a tool that inspects a backup has no business being able to change it.
+ */
+export const BACKUP_INSPECT_NOTE =
+  'Check a backup before you need it. This reads the folder offline — no database, nothing fetched, no '
+  + 'secret file opened — and reports which of the four components are there and which schema version the '
+  + 'dump holds. A dump from before an upgrade is the only thing that can roll you back to the version '
+  + 'before it, and this is how you find out which one you are holding.';
+
+export const BACKUP_INSPECT_COMMANDS: BackupCommands = {
+  posix: 'docker compose run --rm --no-deps -v "$PWD/backup:/backup:ro" '
+    + '-e CATALOG_AUTHORITY_BACKUP_DIR=/backup app ops:backup-inspect',
+  windows: 'docker compose run --rm --no-deps -v "${PWD}\\backup:/backup:ro" '
+    + '-e CATALOG_AUTHORITY_BACKUP_DIR=/backup app ops:backup-inspect',
+};
 
 // -----------------------------------------------------------------------------------------------------------
 // Coverage against the shipped stacks

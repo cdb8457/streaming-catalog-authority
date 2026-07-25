@@ -318,6 +318,23 @@ test('every component states a caveat, and none of them is a reassurance', () =>
     'the database caveat says a restore needs an empty database');
 });
 
+// Every string here is rendered into the served page, which the Phase 147 boundary check scans for a fixed
+// vocabulary this product must never appear to do. Asserted in THIS suite as well, so an edit to the model is
+// caught by the model's own tests rather than by a failure three suites away.
+test('nothing the model renders uses the vocabulary the served page is forbidden', () => {
+  const rendered = [
+    BACKUP_SUMMARY,
+    ...backupComponents().flatMap((component) => [
+      component.title, component.what, component.lostWithout, component.caveat,
+      component.backup.posix, component.backup.windows, component.restore.posix, component.restore.windows,
+    ]),
+  ].join(' ');
+  for (const forbidden of ['postgresql://', 'CUSTODIAN_KEK', 'COMPLETION_SECRET', 'providerRef', 'rawPayload',
+    'playback', 'download']) {
+    assert(!rendered.includes(forbidden), `the model does not use "${forbidden}"`);
+  }
+});
+
 test('the component ids are a closed, ordered list with no duplicates', () => {
   const ids = backupComponents().map((component) => component.id);
   assertEq(ids.join(','), BACKUP_COMPONENT_IDS.join(','), 'the exported order matches the components');
