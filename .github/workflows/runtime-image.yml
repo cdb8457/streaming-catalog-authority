@@ -380,15 +380,32 @@ jobs:
         # The digest comes from the PUSH step, which is the only step that knows it. `steps.release` resolves
         # the tag and the reference and sets no digest at all, so reading it from there would quietly compare
         # against an empty string and pass without checking anything.
+        #
+        # INPUTS TRAVEL AS NAMED ENVIRONMENT VARIABLES, AND NO FLAGS ARE FORWARDED THROUGH npm.
+        # `npm run x -- --flag value` is not portable: depending on the npm version and platform the flags
+        # arrive intact, arrive as one `--flag=value` token, or have their NAMES consumed so only bare values
+        # are forwarded. A lenient parser then falls back to its default and checks a DIFFERENT reference from
+        # the one being published, silently — which is a green tick for a question nobody asked. Environment
+        # variables cannot be reordered, renamed or eaten between this step and the process.
+        #
+        # REQUIRE_EXPLICIT removes every default, so if these variables somehow did not arrive the run fails
+        # loudly instead of checking the active release tag by accident. That is the one mitigation that holds
+        # even against an npm that forwards nothing at all.
         env:
-          EXPECTED_DIGEST: ${{ steps.push.outputs.digest }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          CATALOG_AUTHORITY_PULL_REFERENCE: ${{ steps.release.outputs.tag }}
+          CATALOG_AUTHORITY_PULL_EXPECT_DIGEST: ${{ steps.push.outputs.digest }}
+          CATALOG_AUTHORITY_PULL_REPOSITORY: ${{ steps.release.outputs.image_repository }}
+          CATALOG_AUTHORITY_PULL_REQUIRE_EXPLICIT: '1'
         run: |
-          if [ -z "${EXPECTED_DIGEST}" ]; then
+          if [ -z "${CATALOG_AUTHORITY_PULL_EXPECT_DIGEST}" ]; then
             echo "the push step reported no digest, so there is nothing to verify the pull against" >&2
             exit 1
           fi
-          npm run ops:image-pull-preflight -- --reference "${RELEASE_TAG}" --expect-digest "${EXPECTED_DIGEST}"
+          if [ -z "${CATALOG_AUTHORITY_PULL_REFERENCE}" ]; then
+            echo "no release tag was resolved, so there is no reference to check" >&2
+            exit 1
+          fi
+          npm run ops:image-pull-preflight
       - name: Assemble and validate the release asset, pinned to the published digest
         run: bash deploy/ci/release-bundle-check.sh dist/release-bundle dist/release-archive
         env:

@@ -98,6 +98,46 @@ A probe that is wrong in the direction of "your release is broken" is worse than
   it matched". When no expected digest is supplied nothing was asked, so nothing blocks — but the report says
   outright that what a consumer would receive was not checked against anything.
 
+### How to invoke it, and why that needed hardening
+
+`npm run x -- --flag value` is not a portable way to pass arguments. What reaches the script depends on the
+npm version and the platform, and three behaviours were observed:
+
+* the flags arrive intact (npm 11.4.2, space-separated form);
+* `--flag=value` arrives as a **single token**, which an exact-match parser never recognises;
+* npm consumes the option **names** and forwards only their values, or forwards nothing at all
+  (independently observed on another Windows npm).
+
+All three converge on one failure: the flag is not seen, the default is used, and the check reports on a
+different reference from the one the caller asked about — silently. That was reproduced here: asking for
+`v1.1.1` with `=` syntax checked `v1.1.2` and reported `ABSENT`, never mentioning the substitution. A release
+gate that quietly checks the wrong image is worse than no gate, because it produces a green tick for a
+question nobody asked.
+
+So the CLI resolves its inputs strictly and fails closed:
+
+| Channel | Use |
+| --- | --- |
+| `CATALOG_AUTHORITY_PULL_REFERENCE`, `CATALOG_AUTHORITY_PULL_EXPECT_DIGEST`, `CATALOG_AUTHORITY_PULL_REPOSITORY` | **What CI uses.** Cannot be reordered, renamed or eaten between caller and process. |
+| `npx tsx src/ops/image-pull-preflight-cli.ts --reference <ref> --expect-digest <sha256:…>` | Direct invocation for a person at a terminal; bypasses npm's argument handling entirely. |
+| `npm run ops:image-pull-preflight -- --reference …` | Supported, but if your npm eats the flag names the CLI **refuses the leftover values** rather than checking a default. |
+
+Windows PowerShell, reliably:
+
+```powershell
+$env:CATALOG_AUTHORITY_PULL_REFERENCE="v1.1.1"
+$env:CATALOG_AUTHORITY_PULL_EXPECT_DIGEST="sha256:<digest>"
+npm run ops:image-pull-preflight
+```
+
+An argument that is not a recognised flag is a **hard error** — a bare `v1.1.1` is refused, not discarded in
+favour of a default. Two channels that disagree are a refusal, not a precedence puzzle. And the release
+workflow sets `CATALOG_AUTHORITY_PULL_REQUIRE_EXPLICIT=1`, which removes the defaults entirely: if the
+environment somehow did not arrive, the run fails loudly instead of checking the active release tag by
+accident. That is the one mitigation that holds even against an npm forwarding nothing at all. The workflow
+passes the reference and digest from the release and push outputs and forwards **no flags through npm**; a
+semantic test pins that wiring.
+
 ### If it ever reports NOT_PUBLIC
 
 Package visibility is a GitHub setting. A workflow token cannot change its own package's visibility, and
