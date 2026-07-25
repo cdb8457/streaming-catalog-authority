@@ -528,28 +528,61 @@ await test('the output carries no absolute path and never echoes the directory i
   assert(rendered.includes('catalog-backup.sql'), 'the entry names are printed');
 });
 
-// Decided BEFORE the test runs, so a platform that refuses symlinks records a skip and not a pass.
-const SYMLINK_NAME = 'a symbolic link is reported and not followed';
-const symlinkDir = makeBackup({ secrets: true, dump: plainDump(MIGRATION_VERSION) });
-const symlinkTarget = workspace();
-for (const sub of ['keys', 'tombstones']) mkdirSync(join(symlinkTarget, sub), { recursive: true });
+// ---------------------------------------------------------------------------------------------------------
+// Links, and reporting honestly when the platform will not make one
+// ---------------------------------------------------------------------------------------------------------
+//
 // A Windows junction is the fallback: it needs no elevation, it is a reparse point, and `lstat` reports it as
 // a symbolic link — which is the property under test. An unprivileged Windows run therefore still exercises
 // the boundary rather than skipping it.
-let symlinksWork = true;
-try {
-  symlinkSync(symlinkTarget, join(symlinkDir, 'keystore-link'), 'dir');
-} catch {
-  try {
-    symlinkSync(symlinkTarget, join(symlinkDir, 'keystore-link'), 'junction');
-  } catch {
-    symlinksWork = false;
-    skip(SYMLINK_NAME, 'this platform refused to create a symlink or a junction');
+//
+// WHEN NEITHER IS POSSIBLE, EVERY AFFECTED TEST IS REPORTED AS SKIPPED, BY NAME. An earlier version guarded
+// both tests on one flag and recorded a skip for only the first, so the second simply vanished — not run, not
+// skipped, not counted. And its inner fallback `return`ed, which this harness records as a PASS for a test
+// that asserted nothing. A test that disappears and a test that passes vacuously are the two ways a suite
+// lies about its own coverage, and the whole point of this suite is not doing that.
+
+/**
+ * Which kind of link this platform will actually create, decided once by trying.
+ *
+ * `PHASE257_FORCE_NO_LINKS=1` forces the no-link path so the SKIP branch can be exercised on a machine where
+ * links do work. A branch that only ever runs on hardware nobody has is a branch nobody has seen run.
+ */
+const LINK_KIND: 'dir' | 'junction' | null = process.env.PHASE257_FORCE_NO_LINKS === '1' ? null : (() => {
+  const probe = workspace();
+  const target = join(probe, 'target');
+  mkdirSync(target, { recursive: true });
+  for (const kind of ['dir', 'junction'] as const) {
+    try {
+      symlinkSync(target, join(probe, `link-${kind}`), kind);
+      return kind;
+    } catch { /* try the next kind */ }
   }
+  return null;
+})();
+
+const NO_LINK_REASON = 'this platform refused to create both a symbolic link and a junction, so the '
+  + 'no-follow boundary could not be exercised here';
+
+/** Run a test that needs a link, or record a skip naming THAT test. Never silently omit one. */
+async function linkTest(name: string, fn: () => void): Promise<void> {
+  if (LINK_KIND === null) { skip(name, NO_LINK_REASON); return; }
+  await test(name, fn);
 }
 
-if (symlinksWork) await test(SYMLINK_NAME, () => {
-  const dir = symlinkDir;
+/** Create the link, or fail the test. A creation failure here is a real failure, not a reason to pass. */
+function makeLink(target: string, linkPath: string): void {
+  if (LINK_KIND === null) throw new Error('makeLink called with no usable link kind');
+  symlinkSync(target, linkPath, LINK_KIND);
+}
+
+const SYMLINK_NAME = 'a symbolic link is reported and not followed';
+
+await linkTest(SYMLINK_NAME, () => {
+  const dir = makeBackup({ secrets: true, dump: plainDump(MIGRATION_VERSION) });
+  const symlinkTarget = workspace();
+  for (const sub of ['keys', 'tombstones']) mkdirSync(join(symlinkTarget, sub), { recursive: true });
+  makeLink(symlinkTarget, join(dir, 'keystore-link'));
   const result = inspectBackupDirectory(dir);
   const link = result.artifacts.find((entry) => entry.name === 'keystore-link');
   assertEq(link?.kind, 'SYMLINK_SKIPPED', 'the link is reported as a link');
@@ -563,17 +596,13 @@ if (symlinksWork) await test(SYMLINK_NAME, () => {
 // The symlink refusal has to hold one level down as well. A directory whose `keys` is a link to somewhere
 // else was previously accepted as a keystore on the strength of the NAME, and its entries were then counted
 // by following the link — so the "no symlink is followed" claim was true of top-level entries only.
-if (symlinksWork) await test('a keystore whose keys subdirectory is a link is not claimed as a keystore', () => {
+await linkTest('a keystore whose keys subdirectory is a link is not claimed as a keystore', () => {
   const dir = makeBackup({ secrets: true, dump: plainDump(MIGRATION_VERSION) });
   const fake = join(dir, 'keystore-backup');
   for (const sub of ['tombstones', 'ops', 'journal']) mkdirSync(join(fake, sub), { recursive: true });
   const elsewhere = workspace();
   writeFileSync(join(elsewhere, 'key_abc.json'), '{}');
-  try {
-    symlinkSync(elsewhere, join(fake, 'keys'), 'dir');
-  } catch {
-    try { symlinkSync(elsewhere, join(fake, 'keys'), 'junction'); } catch { return; }
-  }
+  makeLink(elsewhere, join(fake, 'keys'));
   const result = inspectBackupDirectory(dir);
   const entry = result.artifacts.find((a) => a.name === 'keystore-backup')!;
   assert(entry.kind !== 'KEYSTORE_COPY', 'a linked keys directory does not make this a keystore');

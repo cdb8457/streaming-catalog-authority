@@ -181,6 +181,14 @@ run; no provider, media server or library is contacted; no part of Phase 231 is 
 * **It cannot tell whether the dump and the keystore came from the same backup.** Two components from two
   different moments restore into an installation that cannot read itself, and no metadata in either artifact
   says when it was taken. Also in the tool's own output.
+* **The link tests need a link the platform will make.** They try a symbolic link and then a Windows
+  junction, which needs no elevation and which `lstat` reports as a link, so an unprivileged Windows run
+  still exercises the boundary. If neither can be created, **each affected test is reported as SKIPPED by
+  name** — an earlier version guarded both on one flag and recorded a skip for only the first, so the second
+  simply vanished, and its inner fallback returned early, which the harness records as a PASS for a test that
+  asserted nothing. A test that disappears and a test that passes vacuously are the two ways a suite lies
+  about its own coverage. `PHASE257_FORCE_NO_LINKS=1` forces that branch so it can be seen to work: with it
+  set, both link tests report SKIP and the totals still account for every test.
 * **A real `pg_dump` is not exercised by the automated tests.** The `embedded-postgres` package ships
   `initdb`, `pg_ctl` and `postgres` and no `pg_dump` binary, and this environment has no Docker daemon. The
   suite **reports that as a skip** rather than omitting it. The one thing a fixture could be confidently wrong
@@ -206,7 +214,7 @@ reaching `INDETERMINATE`, the Phase 256 omission caught as `INCOMPLETE`, records
 `COPY` column lists read rather than assumed, CRLF dumps, both `INSERT` forms, a similarly-named table not
 mistaken for `schema_meta`, a COPY block split across a streaming chunk boundary at every offset in a window around it, the carry
 bound refusing a line that outlasts a window and a file with no newline at all, a long-but-bounded line still
-being read, a multi-byte character split across a window, a keystore whose `keys` is a link not counting, a partial secrets copy refusing to satisfy the component
+being read, a multi-byte character split across a window, a keystore whose `keys` is a link not counting (skipped by name, both of them, where no link can be made), a partial secrets copy refusing to satisfy the component
 and naming what is missing, a lone recognised name never accepted, an optional credential changing nothing, the scan bound reported as a
 question rather than an absence, no secret value reaching the output, an empty secret named, symlinks refused
 and not followed, no path echoed, every argument-resolution refusal, the CLI's four exit codes driven as a
