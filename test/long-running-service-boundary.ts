@@ -5,6 +5,7 @@ import {
   buildLongRunningServiceBoundaryReport,
   type LongRunningServiceBoundaryReport,
 } from '../src/ops/long-running-service-boundary.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -91,7 +92,7 @@ test('source and docs preserve boundary before Phase 147 implementation', () => 
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:long-running-service-boundary'] === 'tsx test/long-running-service-boundary.ts', 'test script');
   assert(scripts['ops:long-running-service-boundary'] === 'tsx src/ops/long-running-service-boundary-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/control-surface-compose-boundary.ts && tsx test/long-running-service-boundary.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/control-surface-compose-boundary.ts && tsx test/long-running-service-boundary.ts'), 'aggregate order');
   for (const required of [
     'phase-146-long-running-service-boundary',
     'API plus minimal operator UI',

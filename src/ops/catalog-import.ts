@@ -397,7 +397,12 @@ export function renderCatalogImportResult(result: CatalogImportResult): string {
     lines.push(`  failed            ${result.failed}`);
     lines.push(`  not attempted     ${result.notAttempted}`);
   }
-  const problems = result.items.filter((i) => i.outcome === 'failed' || i.action === 'blocked' || i.outcome === 'not-attempted');
+  // In a PREVIEW, `not-attempted` is the normal outcome for every record that would be created — listing
+  // those under "needing attention" makes an ordinary first import read like a page of problems. In an APPLY
+  // it means "the run stopped before this one", which is exactly something needing attention.
+  const problems = result.items.filter((item) => item.outcome === 'failed'
+    || item.action === 'blocked'
+    || (item.outcome === 'not-attempted' && result.mode === 'apply'));
   if (problems.length > 0) {
     lines.push('  records needing attention:');
     for (const item of problems.slice(0, 25)) {

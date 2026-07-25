@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -12,7 +13,11 @@ function test(name: string, fn: () => void): void {
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8');
+// Phase 258. Line endings are a CHECKOUT artifact, never content: git delivers these files with CRLF on a
+// Windows working copy, and the assertions below are written against the LF the repository stores. Normalising
+// here is what makes this suite mean the same thing on every platform, which is the whole point of an aggregate
+// command that now actually runs on all of them.
+const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8').replace(/\r\n/g, '\n');
 
 console.log('Running Phase 229 real-library promotion boundary suite:\n');
 
@@ -84,7 +89,7 @@ test('Phase 229 is wired into README and package scripts', () => {
   assert(readme.includes('Phase 229 adds `docs/PHASE_229_REAL_LIBRARY_PROMOTION_BOUNDARY.md`'), 'README ledger entry');
   assert(pkg.scripts['test:real-library-promotion-boundary'] === 'tsx test/real-library-promotion-boundary.ts', 'phase test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'aggregate test runs promotion boundary before deploy guard',
   );
 });

@@ -57,7 +57,7 @@ Forbidden launch claims:
 
 - no streaming product claim;
 - no provider live mode;
-- no Real-Debrid, TorBox, Usenet, Plex, Emby, or Stremio integration claim;
+- no Real-Debrid, TorBox, Usenet, Plex, Jellyfin, Emby, or Stremio integration claim;
 - no Jellyfin write-capable integration claim beyond the Phase 222 read-only Jellyfin addendum;
 - no scraping, downloading, playback, create-download, request-link, or media-server mutation;
 - no claim that managed KEK custody/scheduling is closed.

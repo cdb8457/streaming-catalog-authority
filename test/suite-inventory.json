@@ -162,7 +162,10 @@
     },
     {
       "file": "jellyfin-readonly-mapping.ts",
-      "group": "offline"
+      "group": "db",
+      "args": [
+        "5456"
+      ]
     },
     {
       "file": "jellyfin-disposable-write.ts",
@@ -1163,7 +1166,10 @@
     },
     {
       "file": "first-run-migration.ts",
-      "group": "offline"
+      "group": "db",
+      "args": [
+        "5455"
+      ]
     },
     {
       "file": "arcane-install.ts",

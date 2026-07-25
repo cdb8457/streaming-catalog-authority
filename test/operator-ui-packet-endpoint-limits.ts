@@ -12,6 +12,7 @@ import {
   formatOperatorUiPacketEndpointLimitsText,
   type OperatorUiPacketEndpointLimitsReport,
 } from '../src/ops/operator-ui-packet-endpoint-limits.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -476,7 +477,7 @@ async function main(): Promise<void> {
     assert(pkg.scripts['test:operator-ui-packet-endpoint-limits'] === 'tsx test/operator-ui-packet-endpoint-limits.ts', 'test script');
     assert(pkg.scripts['ops:operator-ui-packet-endpoint-limits'] === 'tsx src/ops/operator-ui-packet-endpoint-limits-cli.ts', 'ops script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-readiness.ts && tsx test/operator-ui-packet-endpoint-limits.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-endpoint-readiness.ts && tsx test/operator-ui-packet-endpoint-limits.ts'),
       'Phase 76 suite follows Phase 75 packet endpoint readiness',
     );
     assertNoEndpointImplementationScope(`${source}\n${cliSource}`);

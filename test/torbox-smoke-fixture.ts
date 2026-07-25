@@ -8,6 +8,7 @@ import {
   parseTorBoxSmokeShellArgs,
   type TorBoxSmokeShellOptions,
 } from '../src/ops/torbox-smoke-shell.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -50,8 +51,8 @@ console.log('Running Phase 38 TorBox smoke fixture harness suite:\n');
 test('Phase 38 docs and package wiring exist without adding live smoke to CI', () => {
   assert(exists('docs/PHASE_38_TORBOX_SMOKE_FIXTURE_HARNESS.md'), 'Phase 38 doc exists');
   assertEq(pkg.scripts['test:torbox-smoke-fixture'], 'tsx test/torbox-smoke-fixture.ts', 'focused script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-fixture.ts'), 'fixture suite is in npm test');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-smoke-fixture.ts'), 'fixture suite is in npm test');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm ci');
 });
 

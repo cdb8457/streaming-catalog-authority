@@ -8,6 +8,7 @@ import {
   type TorBoxReadOnlySupportedRefType,
 } from '../src/core/adapters/torbox-readonly-client.js';
 import { TorBoxRealClientGateError, type TorBoxTransport, type TorBoxTransportRequest, type TorBoxTransportResponse } from '../src/core/adapters/torbox-real-client-gate.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -317,11 +318,15 @@ async function main(): Promise<void> {
     assert(/requires explicit injected transport/i.test(factory), 'env-only TorBox mode fails closed');
     assert(!factory.includes('createTorBoxLiveTransport'), 'adapter factory does not construct live transport');
     assertEq(pkg.scripts['test:torbox-readonly-client'], 'tsx test/torbox-readonly-client.ts', 'focused script present');
-    assert((pkg.scripts.test ?? '').includes('test/torbox-readonly-client.ts'), 'suite is in npm test chain');
+    assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-readonly-client.ts'), 'suite is in npm test chain');
   });
 
   await test('TorBox source allowlist includes only the static boundary, fakes, gate, and Phase 34 client', () => {
     const allowed = new Set([
+    // Phase 250. NOT an implementation: this file names TorBox only inside a REDACTION pattern that
+    // REFUSES a readiness packet mentioning a live provider. The allowlists predate it; excluding it would
+    // mean the guard that forbids the word cannot itself contain the word.
+    'src/ops/release-readiness.ts',
       'src/core/adapters/torbox-boundary.ts',
       'src/core/adapters/fake-torbox-adapter.ts',
       'src/core/adapters/torbox-real-client-gate.ts',

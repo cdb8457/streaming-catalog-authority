@@ -25,14 +25,21 @@ interface InventorySuite {
 }
 
 /**
- * `tsx test/a.ts && tsx test/b.ts 5433 && …` — the suites a default `npm test` runs, in inventory order,
+ * `tsx test/a.ts && tsx test/b.ts && …` — the suites a default `npm test` runs, in inventory order,
  * rendered in the form the pre-Phase-258 `package.json` used.
+ *
+ * MEMBERSHIP AND ORDER, NOT ARGUMENTS. The old chain carried each database suite's port inline, and roughly
+ * ten assertions pin an ADJACENCY across such a suite (`…mapping.ts && tsx …write.ts`). Including the port
+ * would break every one of them the first time a suite gained or changed one — which is a change to how a
+ * suite gets its throwaway database, not to what runs or in what order. The ports are checked where they
+ * matter instead: `auditInventory` refuses two suites sharing one, and `test/test-runner.ts` refuses a suite
+ * that boots a database without declaring one.
  */
 export const AGGREGATE_SUITE_COMMAND: string = (() => {
   const path = fileURLToPath(new URL('./suite-inventory.json', import.meta.url));
   const inventory = JSON.parse(readFileSync(path, 'utf8')) as { suites: readonly InventorySuite[] };
   return inventory.suites
     .filter((suite) => (suite.requires ?? []).length === 0)
-    .map((suite) => `tsx test/${suite.file}${(suite.args ?? []).length > 0 ? ` ${(suite.args ?? []).join(' ')}` : ''}`)
+    .map((suite) => `tsx test/${suite.file}`)
     .join(' && ');
 })();

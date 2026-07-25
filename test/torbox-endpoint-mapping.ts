@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -106,8 +107,8 @@ test('request-download and metadata lookup surfaces remain future-gated', () => 
 test('Phase 41 is docs/static only with no SDK, live calls, env reads, or provider mode', () => {
   assert(exists('docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md'), 'Phase 41 doc exists');
   assert(typeof pkg.scripts['test:torbox-endpoint-mapping'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-endpoint-mapping.ts'), 'suite is in npm test');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-endpoint-mapping.ts'), 'suite is in npm test');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm ci');
 
   for (const kw of [

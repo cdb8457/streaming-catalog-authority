@@ -12,6 +12,7 @@ import {
   formatOperatorUiAuthAccessContractText,
   type OperatorUiAuthAccessContractReport,
 } from '../src/ops/operator-ui-auth-access-contract.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -363,7 +364,7 @@ async function main(): Promise<void> {
     assert(pkg.scripts['test:operator-ui-auth-access-contract'] === 'tsx test/operator-ui-auth-access-contract.ts', 'test script');
     assert(pkg.scripts['ops:operator-ui-auth-access-contract'] === 'tsx src/ops/operator-ui-auth-access-contract-cli.ts', 'ops script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-access-boundary.ts && tsx test/operator-ui-auth-access-contract.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-runtime-access-boundary.ts && tsx test/operator-ui-auth-access-contract.ts'),
       'Phase 74 suite follows Phase 73 access-boundary suite',
     );
 

@@ -12,6 +12,7 @@ import {
   OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST,
   startOperatorUiStaticRuntime,
 } from '../src/ops/operator-ui-static-runtime.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -560,7 +561,7 @@ async function main(): Promise<void> {
     assert(pkg.scripts['test:operator-ui-local-auth-boundary'] === 'tsx test/operator-ui-local-auth-boundary.ts', 'test script');
     assert(pkg.scripts['ops:operator-ui-local-auth-boundary'] === 'tsx src/ops/operator-ui-local-auth-boundary-cli.ts', 'ops script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-route-dry-run.ts && tsx test/operator-ui-local-auth-boundary.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-endpoint-route-dry-run.ts && tsx test/operator-ui-local-auth-boundary.ts'),
       'Phase 79 suite follows Phase 78 packet endpoint route dry-run',
     );
     assertNoAuthImplementationScope(`${source}\n${cliSource}`);

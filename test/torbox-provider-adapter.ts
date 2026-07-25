@@ -147,6 +147,10 @@ await test('TorBox source allowlist includes provider adapter but no UI/playback
     return entry.isDirectory() ? walk(path) : entry.name.endsWith('.ts') ? [path] : [];
   });
   const allowed = new Set([
+    // Phase 250. NOT an implementation: this file names TorBox only inside a REDACTION pattern that
+    // REFUSES a readiness packet mentioning a live provider. The allowlists predate it; excluding it would
+    // mean the guard that forbids the word cannot itself contain the word.
+    'src/ops/release-readiness.ts',
     'src/core/adapters/torbox-boundary.ts',
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',

@@ -11,6 +11,7 @@ import {
   parseLaunchDecisionRecordJson,
   type LaunchDecisionRecordReport,
 } from '../src/ops/launch-decision-record.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -217,7 +218,7 @@ test('docs and source preserve launch decision boundaries', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assert(pkg.scripts['ops:launch-decision-record'] === 'tsx src/ops/launch-decision-record-cli.ts', 'ops script present');
   assert(pkg.scripts['test:launch-decision-record'] === 'tsx test/launch-decision-record.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/operator-acceptance-packet.ts && tsx test/launch-decision-record.ts'), 'suite follows Phase 84 in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-acceptance-packet.ts && tsx test/launch-decision-record.ts'), 'suite follows Phase 84 in npm test');
 
   const pureSource = read('src/ops/launch-decision-record.ts');
   const cliSource = read('src/ops/launch-decision-record-cli.ts');

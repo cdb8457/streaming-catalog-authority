@@ -6,6 +6,7 @@ import {
   formatOperatorUiPacketSourceContractText,
   type OperatorUiPacketSourceContractReport,
 } from '../src/ops/operator-ui-packet-source-contract.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -180,7 +181,7 @@ test('helper and CLI source has no runtime UI/API/network/DB/env/file/provider e
   assert(pkg.scripts['test:operator-ui-packet-source-contract'] === 'tsx test/operator-ui-packet-source-contract.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-packet-source-contract'] === 'tsx src/ops/operator-ui-packet-source-contract-cli.ts', 'ops script');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-runtime-boundary.ts && tsx test/operator-ui-packet-source-contract.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-runtime-boundary.ts && tsx test/operator-ui-packet-source-contract.ts'),
     'suite follows Phase 68',
   );
 

@@ -8,6 +8,7 @@ import {
   parseUnraidRestartPersistenceReviewJson,
   type UnraidRestartPersistenceReview,
 } from '../src/ops/unraid-restart-persistence-review.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -117,7 +118,7 @@ test('source and docs preserve restart review boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-restart-persistence-review'] === 'tsx test/unraid-restart-persistence-review.ts', 'test script');
   assert(scripts['ops:unraid-restart-persistence-review'] === 'tsx src/ops/unraid-restart-persistence-review-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-post-switch-maintenance-review.ts && tsx test/unraid-restart-persistence-review.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-post-switch-maintenance-review.ts && tsx test/unraid-restart-persistence-review.ts'), 'aggregate order');
   for (const required of [
     'phase-139-unraid-restart-persistence-review',
     'phase-138-unraid-post-switch-maintenance-review',

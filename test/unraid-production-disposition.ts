@@ -8,6 +8,7 @@ import {
   parseUnraidProductionDispositionJson,
   type UnraidProductionDisposition,
 } from '../src/ops/unraid-production-disposition.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -96,7 +97,7 @@ test('source and docs preserve disposition-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-production-disposition'] === 'tsx test/unraid-production-disposition.ts', 'test script');
   assert(scripts['ops:unraid-production-disposition'] === 'tsx src/ops/unraid-production-disposition-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-switch-evidence-review.ts && tsx test/unraid-production-disposition.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-switch-evidence-review.ts && tsx test/unraid-production-disposition.ts'), 'aggregate order');
   for (const required of [
     'phase-133-unraid-production-disposition',
     'phase-133-unraid-production-disposition-record',

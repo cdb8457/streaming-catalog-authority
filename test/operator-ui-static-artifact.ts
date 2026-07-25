@@ -9,6 +9,7 @@ import {
 } from '../src/ops/operator-ui-static-artifact.js';
 import { inspectOperatorUiRenderedHtml } from '../src/ops/operator-ui-render-allowlist.js';
 import { renderOperatorUiStaticPrototypeHtml } from '../src/ops/operator-ui-static-prototype.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -136,7 +137,7 @@ test('helper and CLI source has no frontend/API/runtime/DB/provider/network/env/
   }
   assert(pkg.scripts['test:operator-ui-static-artifact'] === 'tsx test/operator-ui-static-artifact.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-static-artifact'] === 'tsx src/ops/operator-ui-static-artifact-cli.ts', 'ops script');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-render-allowlist.ts && tsx test/operator-ui-static-artifact.ts'), 'suite follows Phase 64');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-render-allowlist.ts && tsx test/operator-ui-static-artifact.ts'), 'suite follows Phase 64');
 
   const combined = `${source}\n${cliSource}`;
   for (const forbidden of [

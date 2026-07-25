@@ -11,6 +11,7 @@ import {
   OPERATOR_UI_RENDER_ALLOWED_TEXT,
 } from '../src/ops/operator-ui-render-allowlist.js';
 import { renderOperatorUiStaticPrototypeHtml } from '../src/ops/operator-ui-static-prototype.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -134,7 +135,7 @@ test('artifact metadata and digest update deterministically through allowlist ga
 
 test('Phase 66 docs and package chain are wired after artifact packaging', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
-  const chain = pkg.scripts.test ?? '';
+  const chain = AGGREGATE_SUITE_COMMAND ?? '';
   assert(pkg.scripts['test:operator-ui-static-layout'] === 'tsx test/operator-ui-static-layout.ts', 'test script');
   assert(
     chain.includes('test/operator-ui-static-artifact.ts && tsx test/operator-ui-static-layout.ts'),

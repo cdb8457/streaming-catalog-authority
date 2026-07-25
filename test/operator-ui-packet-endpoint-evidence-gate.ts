@@ -12,6 +12,7 @@ import {
   formatOperatorUiPacketEndpointEvidenceGateText,
   type OperatorUiPacketEndpointEvidenceGateReport,
 } from '../src/ops/operator-ui-packet-endpoint-evidence-gate.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -531,7 +532,7 @@ async function main(): Promise<void> {
     assert(pkg.scripts['test:operator-ui-packet-endpoint-evidence-gate'] === 'tsx test/operator-ui-packet-endpoint-evidence-gate.ts', 'test script');
     assert(pkg.scripts['ops:operator-ui-packet-endpoint-evidence-gate'] === 'tsx src/ops/operator-ui-packet-endpoint-evidence-gate-cli.ts', 'ops script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-limits.ts && tsx test/operator-ui-packet-endpoint-evidence-gate.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-endpoint-limits.ts && tsx test/operator-ui-packet-endpoint-evidence-gate.ts'),
       'Phase 77 suite follows Phase 76 packet endpoint limits',
     );
     assertNoEndpointImplementationScope(`${source}\n${cliSource}`);

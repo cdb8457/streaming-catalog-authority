@@ -6,6 +6,7 @@ import {
   formatOperatorUiLaunchReadinessText,
   type OperatorUiLaunchReadinessReport,
 } from '../src/ops/operator-ui-launch-readiness.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -145,7 +146,7 @@ test('helper and CLI source has no runtime UI/API/network/DB/env/file/provider e
   assert(pkg.scripts['test:operator-ui-launch-readiness'] === 'tsx test/operator-ui-launch-readiness.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-launch-readiness'] === 'tsx src/ops/operator-ui-launch-readiness-cli.ts', 'ops script');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-static-layout.ts && tsx test/operator-ui-launch-readiness.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-layout.ts && tsx test/operator-ui-launch-readiness.ts'),
     'suite follows Phase 66',
   );
 

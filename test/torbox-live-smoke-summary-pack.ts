@@ -12,6 +12,7 @@ import {
   type TorBoxLiveSmokeSummaryPack,
 } from '../src/ops/torbox-live-smoke-summary-pack.js';
 import type { TorBoxLiveSmokeReport } from '../src/ops/torbox-live-smoke-runner.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -239,7 +240,7 @@ test('docs and source preserve no-live/no-secret/no-provider-write boundaries', 
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
   assert(pkg.scripts['ops:torbox-live-smoke-summary-pack'] === 'tsx src/ops/torbox-live-smoke-summary-pack-cli.ts', 'ops script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-summary-pack.ts'), 'suite in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-summary-pack.ts'), 'suite in npm test');
 
   const source = `${read('src/ops/torbox-live-smoke-summary-pack.ts')}\n${read('src/ops/torbox-live-smoke-summary-pack-cli.ts')}`;
   const docs = `${read('docs/PHASE_49_TORBOX_LIVE_SMOKE_SUMMARY_PACK.md')}\n${read('README.md')}`;

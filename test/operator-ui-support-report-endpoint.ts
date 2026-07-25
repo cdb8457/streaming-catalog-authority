@@ -27,6 +27,7 @@ import {
 } from '../src/ops/operator-ui-support-report.js';
 import { OPERATOR_UI_LOCAL_AUTH_HEADER } from '../src/ops/operator-ui-local-auth-runtime.js';
 import { removeQuietly } from '../src/ops/usable-shell.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 // Phase 255 — the support report, reachable by the person who needs it.
 //
@@ -657,7 +658,7 @@ await test('package.json still exposes the CLI, which this phase adds to rather 
     'the CLI is still the answer when there is no page to open');
   assertEq(pkg.scripts['test:operator-ui-support-report-endpoint'], 'tsx test/operator-ui-support-report-endpoint.ts',
     'and this suite has its own script');
-  assert(pkg.scripts.test?.includes('test/operator-ui-support-report-endpoint.ts'), 'and runs in the aggregate suite');
+  assert(AGGREGATE_SUITE_COMMAND?.includes('test/operator-ui-support-report-endpoint.ts'), 'and runs in the aggregate suite');
 });
 
 // A suite nothing runs is a suite that stops being true. CI runs named per-phase scripts rather than the

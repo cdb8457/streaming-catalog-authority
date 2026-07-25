@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { summarizeProviderAvailability } from '../src/core/adapters/provider-availability-summary.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -90,7 +91,7 @@ test('source stays pure with no provider, DB, env, network, filesystem, or UI be
 test('package, docs, README, and deploy guard are wired', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assertEq(pkg.scripts['test:provider-availability-summary'], 'tsx test/provider-availability-summary.ts', 'test script');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-summary.ts'), 'suite in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-summary.ts'), 'suite in npm test');
   assert(read('docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md').includes('Phase 57'), 'phase doc exists');
   assert(read('README.md').includes('Provider availability summary (Phase 57)'), 'README mentions phase');
   assert(read('test/deploy.ts').includes('provider availability summary - Phase 57'), 'deploy guard mentions phase');

@@ -8,6 +8,7 @@ import {
   runTorBoxLiveSmoke,
 } from '../src/ops/torbox-live-smoke-runner.js';
 import { buildTorBoxSmokeShellReport, parseTorBoxSmokeShellArgs, type TorBoxSmokeShellOptions } from '../src/ops/torbox-smoke-shell.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -62,8 +63,8 @@ await test('Phase 43 runner, docs, and package wiring exist without adding opera
   assert(exists('src/ops/torbox-live-smoke-runner.ts'), 'live smoke runner source exists');
   assert(exists('docs/PHASE_43_TORBOX_LIVE_SMOKE_CLI.md'), 'Phase 43 doc exists');
   assertEq(pkg.scripts['test:torbox-live-smoke-cli'], 'tsx test/torbox-live-smoke-cli.ts', 'focused script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-cli.ts'), 'deterministic suite is in npm test');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-cli.ts'), 'deterministic suite is in npm test');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm ci');
 });
 
@@ -218,6 +219,10 @@ await test('source keeps live capability confined to operator CLI and injected r
   }
 
   const allowed = new Set([
+    // Phase 250. NOT an implementation: this file names TorBox only inside a REDACTION pattern that
+    // REFUSES a readiness packet mentioning a live provider. The allowlists predate it; excluding it would
+    // mean the guard that forbids the word cannot itself contain the word.
+    'src/ops/release-readiness.ts',
     'src/core/adapters/torbox-boundary.ts',
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',

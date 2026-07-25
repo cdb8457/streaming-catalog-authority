@@ -7,6 +7,7 @@ import {
   formatOperatorUiAuthPacketAcceptanceText,
   type OperatorUiAuthPacketAcceptanceReport,
 } from '../src/ops/operator-ui-auth-packet-acceptance.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -293,7 +294,7 @@ async function main(): Promise<void> {
     assert(pkg.scripts['ops:operator-ui-auth-packet-acceptance'] === 'tsx src/ops/operator-ui-auth-packet-acceptance-cli.ts', 'ops script');
     assert(pkg.scripts['test:operator-ui-auth-packet-acceptance'] === 'tsx test/operator-ui-auth-packet-acceptance.ts', 'test script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-auth-packet-runtime.ts && tsx test/operator-ui-auth-packet-acceptance.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-auth-packet-runtime.ts && tsx test/operator-ui-auth-packet-acceptance.ts'),
       'Phase 82 aggregate test follows Phase 81',
     );
     const combined = `${read('docs/PHASE_82_OPERATOR_UI_AUTH_PACKET_ACCEPTANCE.md')}\n${read('README.md')}\n${read('test/deploy.ts')}\n${read('package.json')}`;

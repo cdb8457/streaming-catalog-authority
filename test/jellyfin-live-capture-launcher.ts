@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -63,7 +64,7 @@ await test('package, deploy guard, and README wire Phase 215 verification', () =
   const deploy = read('test/deploy.ts');
   const readme = read('README.md');
   assert(pkg.scripts['test:jellyfin-live-capture-launcher'] === 'tsx test/jellyfin-live-capture-launcher.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 215 Jellyfin live capture launcher'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_LIVE_CAPTURE_LAUNCHER_READY'), 'deploy guard status');
   assert(readme.includes('Phase 215 adds `deploy/unraid-jellyfin-live-capture.sh`'), 'README ledger entry');

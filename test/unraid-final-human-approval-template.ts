@@ -6,6 +6,7 @@ import {
   formatUnraidFinalHumanApprovalTemplateJson,
   type UnraidFinalHumanApprovalTemplate,
 } from '../src/ops/unraid-final-human-approval-template.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -47,7 +48,7 @@ test('source and docs preserve approval-template-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-final-human-approval-template'] === 'tsx test/unraid-final-human-approval-template.ts', 'test script');
   assert(scripts['ops:unraid-final-human-approval-template'] === 'tsx src/ops/unraid-final-human-approval-template-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-production-gates.ts && tsx test/unraid-final-human-approval-template.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-production-gates.ts && tsx test/unraid-final-human-approval-template.ts'), 'aggregate order');
   for (const required of [
     'phase-128-unraid-final-human-approval-template',
     'phase-128-unraid-final-human-production-approval-record',

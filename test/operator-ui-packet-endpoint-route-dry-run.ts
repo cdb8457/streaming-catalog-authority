@@ -12,6 +12,7 @@ import {
   OPERATOR_UI_STATIC_RUNTIME_DEFAULT_HOST,
   startOperatorUiStaticRuntime,
 } from '../src/ops/operator-ui-static-runtime.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -569,7 +570,7 @@ async function main(): Promise<void> {
     assert(pkg.scripts['test:operator-ui-packet-endpoint-route-dry-run'] === 'tsx test/operator-ui-packet-endpoint-route-dry-run.ts', 'test script');
     assert(pkg.scripts['ops:operator-ui-packet-endpoint-route-dry-run'] === 'tsx src/ops/operator-ui-packet-endpoint-route-dry-run-cli.ts', 'ops script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-evidence-gate.ts && tsx test/operator-ui-packet-endpoint-route-dry-run.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-endpoint-evidence-gate.ts && tsx test/operator-ui-packet-endpoint-route-dry-run.ts'),
       'Phase 78 suite follows Phase 77 packet endpoint evidence gate',
     );
     assertNoEndpointImplementationScope(`${source}\n${cliSource}`);

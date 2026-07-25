@@ -7,6 +7,7 @@ import {
   formatTorBoxLiveSmokePlanText,
   type TorBoxLiveSmokePlan,
 } from '../src/ops/torbox-live-smoke-plan.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -140,8 +141,8 @@ test('source has no filesystem, env, network, DB, Docker, adapter-mode, or execu
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
   assert(pkg.scripts['ops:torbox-live-smoke-plan'] === 'tsx src/ops/torbox-live-smoke-plan-cli.ts', 'ops script is present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-plan.ts'), 'suite is in npm test');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-plan.ts'), 'suite is in npm test');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm ci');
 
   const plan = read('src/ops/torbox-live-smoke-plan.ts');

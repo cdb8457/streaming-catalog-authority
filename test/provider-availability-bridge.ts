@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import type { AdapterContext, AdapterRefView, AdapterResult, ProviderAdapter } from '../src/core/adapters/adapter.js';
 import { resolveProviderAvailability } from '../src/core/adapters/provider-availability-bridge.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -122,7 +123,7 @@ await test('source stays pure with no provider construction, DB, env, network, o
 await test('package, docs, README, and deploy guard are wired', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assertEq(pkg.scripts['test:provider-availability-bridge'], 'tsx test/provider-availability-bridge.ts', 'test script');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-bridge.ts'), 'suite in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-bridge.ts'), 'suite in npm test');
   assert(read('docs/PHASE_56_PROVIDER_AVAILABILITY_BRIDGE.md').includes('Phase 56'), 'phase doc exists');
   assert(read('README.md').includes('Provider availability bridge (Phase 56)'), 'README mentions phase');
   assert(read('test/deploy.ts').includes('provider availability bridge - Phase 56'), 'deploy guard mentions phase');

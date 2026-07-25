@@ -120,15 +120,67 @@ Beyond that suite: all seven newly-wired suites were executed through the runner
 CI gains one step in the existing `suites` job — `npm run test:inventory` then `npm run test:runner` — so a
 pull request that adds a test file without wiring it in fails. No existing gate was weakened or removed.
 
+## What running the aggregate for the first time exposed
+
+`npm test` had not been runnable on the development machine, and CI runs the focused per-phase scripts rather
+than the aggregate. Running the whole thing found **19 failing suites that were already failing on the base
+commit** (`d1f4b74`) — verified by checking that commit out into a separate worktree and running each suite
+there. None of them was caused by this work; all of them were invisible because the chain died early and
+nothing ran it.
+
+They fell into four causes, three of which are fixed here:
+
+**1. Line endings, 6 suites.** `working-foundation-plan`, `real-library-promotion-boundary`, `deploy`,
+`scheduled-doctor-alert-fix` and `launch-readiness-pass` assert against literal multi-line excerpts of
+documents and shell scripts (`'not product\nreadiness'`). Git delivers those files with CRLF on a Windows
+working copy, so every such assertion failed there and passed on Linux. Their `read()` helpers now normalise
+CRLF to LF — line endings are a checkout artifact, never content — which is precisely what a cross-platform
+aggregate command requires.
+
+**2. A stale TorBox allowlist, 8 suites.** Phase 250 added `src/ops/release-readiness.ts`, which names TorBox
+**inside a redaction pattern that refuses** a readiness packet mentioning a live provider. The TorBox source
+allowlists were written in Phases 31–50 and never learned about it, so the guard that forbids the word was
+itself flagged for containing the word. The file is now allowlisted in each, with the reason stated inline.
+
+**3. Two stale assertions, 1 suite.** `launch-readiness-pass` required the Phase 200 scope document to list
+Jellyfin among the integrations it does not claim — the line had lost that entry. It is restored (a stricter
+boundary, not a looser one). It also pinned `deploy.ts` as the suite immediately after
+`jellyfin-write-proof.ts`, which stopped being true when Phase 222 inserted one; the Jellyfin ordering claim
+is kept and the moved neighbour is asserted separately.
+
+**4. One real behavioural failure, NOT fixed here.** `test/jellyfin-outbox.ts` fails its hard case:
+
+> `real client + outbox — HARD CASE: create tagged, response lost, state discarded -> reconcile ADOPTS by
+> token: adopted by token (found the tagged collection) (expected 1, got 0)`
+
+It fails identically at `d1f4b74`. This is a genuine defect in the Phase 12 outbox reconcile-by-token path —
+after a lost create response, the reconciler does not adopt the collection it actually created, which is the
+duplicate-prevention property that path exists to provide. It is in the Jellyfin publisher subsystem, several
+phases away from anything here, and guessing at a fix would be worse than reporting it. **It is left failing
+and named**: `npm test` exits non-zero because of it, which is the correct behaviour and the reason this
+phase exists. It should be the subject of its own phase.
+
+**5. Three suites sharing one database, found by running them concurrently.** `embedded-pg.ts` falls back to
+port 5433 and a `.pgdata-5433` directory when a suite passes no port. `run.ts` names 5433 explicitly;
+`first-run-migration.ts` and `jellyfin-readonly-mapping.ts` named nothing and took the default. Under the old
+sequential chain that worked by accident — each run wiped and rebuilt the directory before the next — and it
+fails the moment two of them run at once. They now declare 5455 and 5456 and sit in the `db` group. The
+`collidingArgs` check cannot see an *implicit* port, so a new assertion in `test/test-runner.ts` reads the
+suite sources: anything importing `./embedded-pg.js` must declare its own port and be in the `db` group.
+
+Current state: 270/270 offline suites pass; 23/24 database suites pass, with `jellyfin-outbox.ts` failing as
+described above.
+
 ## Limitations
 
 - **The runner does not parse suite output.** It knows a suite's exit code, not how many assertions inside it
   passed or skipped. Suites report their own skips in their own output, as they always have; the runner's
   `skipped` count means "this suite was not selected", which is a different thing and is labelled as such.
-- **The default `--concurrency 1` is deliberate.** Higher values work and are tested, but several suites boot
-  an embedded PostgreSQL, and the safety of running them together rests entirely on the inventory giving each
-  a distinct port. That is checked (`collidingArgs`), but a suite that hard-codes a port instead of taking one
-  from `argv` would evade the check.
+- **The default `--concurrency 1` is deliberate.** Higher values work, are tested, and are what found the
+  shared-port defect above — but the safety of running database suites together rests entirely on each having
+  its own port. Two checks cover that (`collidingArgs` for declared ports, and a source scan for suites that
+  boot a database without declaring one), and a suite that hard-coded a port *inside itself*, ignoring
+  `argv`, would still evade both.
 - **Capability probing only knows about `docker`.** Anything else declared in `requires` is treated as
   unavailable. That is fail-closed, but it means adding a new capability needs a code change, not just an
   inventory edit.

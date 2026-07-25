@@ -6,6 +6,7 @@ import {
   formatUnraidSwitchEvidenceCaptureJson,
   type UnraidSwitchEvidenceCapturePacket,
 } from '../src/ops/unraid-switch-evidence-capture.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -52,7 +53,7 @@ test('source and docs preserve capture-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-switch-evidence-capture'] === 'tsx test/unraid-switch-evidence-capture.ts', 'test script');
   assert(scripts['ops:unraid-switch-evidence-capture'] === 'tsx src/ops/unraid-switch-evidence-capture-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-production-switch-runbook.ts && tsx test/unraid-switch-evidence-capture.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-production-switch-runbook.ts && tsx test/unraid-switch-evidence-capture.ts'), 'aggregate order');
   assert(formatUnraidSwitchEvidenceCaptureJson().includes('"productionReady": false'), 'json formatter false');
   for (const required of [
     'phase-131-unraid-switch-evidence-capture',

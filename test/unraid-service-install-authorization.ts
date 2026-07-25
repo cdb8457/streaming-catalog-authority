@@ -10,6 +10,7 @@ import {
   sampleUnraidServiceRunbookApprovalGateReport,
   type UnraidServiceInstallAuthorizationReport,
 } from '../src/ops/unraid-service-install-authorization.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -140,7 +141,7 @@ test('source and docs preserve authorization-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['ops:unraid-service-install-authorization'] === 'tsx src/ops/unraid-service-install-authorization-cli.ts', 'ops script');
   assert(scripts['test:unraid-service-install-authorization'] === 'tsx test/unraid-service-install-authorization.ts', 'test script');
-  assert((scripts.test ?? '').includes('test/unraid-service-runbook-approval-gate.ts && tsx test/unraid-service-install-authorization.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-service-runbook-approval-gate.ts && tsx test/unraid-service-install-authorization.ts'), 'aggregate order');
   for (const forbidden of [
     'node:http',
     'node:https',

@@ -9,6 +9,7 @@ import {
 } from '../src/ops/operator-ui-packet-contract.js';
 import { OPERATOR_UI_FIXTURE_PACKETS } from '../src/ops/operator-ui-fixtures.js';
 import { renderOperatorUiStaticPrototypeHtml } from '../src/ops/operator-ui-static-prototype.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -185,7 +186,7 @@ test('source has no frontend framework, DB, network, env, file, or provider adap
   }
   assert(pkg.scripts['test:operator-ui-static-prototype'] === 'tsx test/operator-ui-static-prototype.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-static-prototype'] === 'tsx src/ops/operator-ui-static-prototype-cli.ts', 'ops script');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-fixtures.ts && tsx test/operator-ui-static-prototype.ts'), 'suite follows Phase 62');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-fixtures.ts && tsx test/operator-ui-static-prototype.ts'), 'suite follows Phase 62');
 
   for (const forbidden of [
     'react',

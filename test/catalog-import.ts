@@ -381,6 +381,33 @@ async function main(): Promise<void> {
     assert(preview.items.every((i) => i.outcome !== 'applied'), 'a preview reported something as applied');
     assert(preview.notes.some((n) => n.includes('--apply')), 'the preview does not say how to commit it');
     assert(renderCatalogImportResult(preview).includes('nothing was written'), 'the summary does not say nothing was written');
+    // A first import is every record waiting to be created. Listing those under "needing attention" would
+    // make the ordinary case read like a page of problems.
+    assert(!renderCatalogImportResult(preview).includes('needing attention'),
+      'a preview of an ordinary import reported its own records as needing attention');
+  });
+
+  await test('a preview DOES list a blocked record as needing attention', async () => {
+    const plan = await planCatalogImport(twoItems, lookupOf([
+      { itemId: twoItems.items[0]!.itemId, present: false, forgotten: true, shredState: 'shred_complete' },
+    ]));
+    const rendered = renderCatalogImportResult(previewCatalogImportResult(plan));
+    assert(rendered.includes('needing attention'), 'a blocked record was not surfaced in the preview');
+    assert(rendered.includes('forgotten'), 'the preview does not say why it is blocked');
+  });
+
+  await test('an apply that stopped early lists the records it never reached', () => {
+    const rendered = renderCatalogImportResult({
+      ok: false, report: 'phase-259-catalog-import', mode: 'apply', source: 'x', snapshotDigest: 'd',
+      total: 2, created: 0, updated: 0, unchanged: 0, blocked: 0, failed: 1, notAttempted: 1,
+      items: [
+        { digest: 'aaaa', action: 'create', outcome: 'failed', reason: 'the custodian refused' },
+        { digest: 'bbbb', action: 'create', outcome: 'not-attempted', reason: 'the run stopped at an earlier failure' },
+      ],
+      notes: [],
+    });
+    assert(rendered.includes('aaaa') && rendered.includes('bbbb'), 'an apply hid a record it never reached');
+    assert(rendered.includes('INCOMPLETE'), 'an incomplete apply did not say so');
   });
 
   await test('no report line carries a title, an external id or a path', async () => {

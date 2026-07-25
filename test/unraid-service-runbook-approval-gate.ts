@@ -12,6 +12,7 @@ import {
   sampleUnraidServiceRunbookApprovalRecord,
   type UnraidServiceRunbookApprovalGateReport,
 } from '../src/ops/unraid-service-runbook-approval-gate.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -145,7 +146,7 @@ test('source and docs preserve approval-gate-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['ops:unraid-service-runbook-approval-gate'] === 'tsx src/ops/unraid-service-runbook-approval-gate-cli.ts', 'ops script');
   assert(scripts['test:unraid-service-runbook-approval-gate'] === 'tsx test/unraid-service-runbook-approval-gate.ts', 'test script');
-  assert((scripts.test ?? '').includes('test/unraid-service-install-runbook.ts && tsx test/unraid-service-runbook-approval-gate.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-service-install-runbook.ts && tsx test/unraid-service-runbook-approval-gate.ts'), 'aggregate order');
   for (const forbidden of [
     'node:http',
     'node:https',

@@ -17,6 +17,7 @@ import {
   buildOperatorUiStaticRuntimeManifest,
   startOperatorUiStaticRuntime,
 } from '../src/ops/operator-ui-static-runtime.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -444,7 +445,7 @@ async function main(): Promise<void> {
   await test('README, docs, deploy guard, package, and lockfile are wired for Phase 81', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
     assert(pkg.scripts['test:operator-ui-auth-packet-runtime'] === 'tsx test/operator-ui-auth-packet-runtime.ts', 'Phase 81 test script');
-    assert((pkg.scripts.test ?? '').includes('test/operator-ui-local-auth-secret-file-preflight.ts && tsx test/operator-ui-auth-packet-runtime.ts'), 'Phase 81 follows Phase 80');
+    assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-local-auth-secret-file-preflight.ts && tsx test/operator-ui-auth-packet-runtime.ts'), 'Phase 81 follows Phase 80');
     const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
     for (const dep of ['react', 'vite', 'next', 'express', 'fastify', 'koa', '@vitejs/plugin-react']) {
       assert(!allDeps.includes(dep), `no new UI/API dependency ${dep}`);

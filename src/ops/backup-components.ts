@@ -260,12 +260,16 @@ export class BackupCoverageError extends Error {
   }
 }
 
-export type BackupExclusionId = 'runtime-socket' | 'backup-destination';
+export type BackupExclusionId = 'runtime-socket' | 'backup-destination' | 'operator-supplied-input';
 
 /** Why a persistent mount is deliberately NOT part of a backup. Each one is a claim a reviewer can check. */
 export const BACKUP_EXCLUSIONS: Readonly<Record<BackupExclusionId, string>> = {
   'runtime-socket': 'A socket directory, recreated when the service starts. Copying it restores nothing and '
     + 'restoring a stale socket into a running stack is worse than not having one.',
+  'operator-supplied-input': 'Your own catalog snapshot files, mounted READ-ONLY so the container cannot change '
+    + 'them. They are an INPUT you already hold a copy of, and what they produced is in the database, which the '
+    + 'database component backs up. Backing up a folder this stack cannot write would back up your own files to '
+    + 'you.',
   'backup-destination': 'This is where backups are written to. It is an output of a backup, not state that a '
     + 'backup has to capture.',
 };
@@ -289,6 +293,8 @@ const CONTAINER_PATH_COVERAGE: Readonly<Record<string, MountCoverage>> = {
   // remember, and the component text names both places.
   '/var/lib/catalog-sidecar/state': { kind: 'component', component: 'keystore' },
   '/var/lib/catalog/promotion-records': { kind: 'component', component: 'promotion-records' },
+  // Phase 259. Read-only, operator-owned, and not state this stack creates — see the exclusion text.
+  '/var/lib/catalog/import': { kind: 'excluded', exclusion: 'operator-supplied-input' },
   '/run/catalog-sidecar': { kind: 'excluded', exclusion: 'runtime-socket' },
   '/backups': { kind: 'excluded', exclusion: 'backup-destination' },
 };

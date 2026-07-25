@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reviewO4O5EvidencePackets } from '../src/ops/o4-o5-evidence-packet-review.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -130,7 +131,7 @@ test('source, docs, and package preserve Phase 172 static review boundary', () =
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assert(pkg.scripts['test:o4-o5-evidence-packet-review'] === 'tsx test/o4-o5-evidence-packet-review.ts', 'test script');
   assert(pkg.scripts['ops:o4-o5-evidence-packet-review'] === 'tsx src/ops/o4-o5-evidence-packet-review-cli.ts', 'ops script');
-  assert((pkg.scripts.test ?? '').includes('test/o4-o5-evidence-decision.ts && tsx test/o4-o5-evidence-packet-review.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/o4-o5-evidence-decision.ts && tsx test/o4-o5-evidence-packet-review.ts'), 'aggregate order');
   const source = `${read('src/ops/o4-o5-evidence-packet-review.ts')}\n${read('src/ops/o4-o5-evidence-packet-review-cli.ts')}`;
   const combined = [
     source,

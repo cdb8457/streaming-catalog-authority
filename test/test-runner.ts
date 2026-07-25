@@ -26,6 +26,7 @@ import {
   type SuiteInventory,
   type SpawnedSuite,
 } from '../src/ops/test-runner.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 // Phase 258 — the aggregate test command, proved.
 //
@@ -82,12 +83,26 @@ async function main(): Promise<void> {
   console.log('the defects that opened this phase');
 
   await test('npm test no longer depends on a command line a shell can truncate', () => {
+    // Deliberately package.json's OWN string, not the reconstruction: this is the assertion that the shell
+    // command is gone, so reading it from anywhere but the file npm executes would test nothing.
     const command = PKG.scripts.test;
     assert(command !== undefined, 'package.json has no test script');
     // 8191 is cmd.exe's hard limit; the old command was 11935 characters and could not run on Windows at all.
     assert(command!.length < 200, `the aggregate test command is ${command!.length} characters — it is a shell string again`);
     assert(!command!.includes('&&'), 'the aggregate test command is a chained shell string again');
     assert(command!.includes('test-runner-cli'), 'npm test does not invoke the repository-owned runner');
+  });
+
+  await test('the reconstructed aggregate command still describes what a default run executes', () => {
+    // 105 suites assert "I am in the aggregate" (and several assert their position in it) against
+    // AGGREGATE_SUITE_COMMAND. That is only a real guarantee while the reconstruction matches the plan the
+    // runner actually builds, so the two are compared here rather than assumed equal.
+    const plan = planRun(loadInventory(ROOT));
+    const fromPlan = plan.selected.map(({ entry }) => `tsx test/${entry.file}`).join(' && ');
+    assertEq(AGGREGATE_SUITE_COMMAND, fromPlan, 'the reconstructed aggregate no longer matches the default run');
+    assert(AGGREGATE_SUITE_COMMAND.includes('tsx test/config.ts'), 'the reconstruction lost the first suite');
+    assert(!AGGREGATE_SUITE_COMMAND.includes('release-candidate-acceptance'),
+      'a capability-gated suite leaked into the reconstruction, which would make 105 assertions claim it runs by default');
   });
 
   await test('every file under test/ is accounted for by the inventory', () => {
@@ -128,6 +143,26 @@ async function main(): Promise<void> {
   await test('the shipped inventory gives every database suite its own port', () => {
     const audit = auditInventory(loadInventory(ROOT), listTestFiles(ROOT));
     assertEq(audit.collidingArgs.length, 0, `ports collide: ${audit.collidingArgs.join(', ')}`);
+  });
+
+  await test('every suite that boots an embedded PostgreSQL declares its own port and is in the db group', () => {
+    // THE COLLISION THE ARGUMENT CHECK CANNOT SEE. `embedded-pg.ts` falls back to port 5433 and a
+    // `.pgdata-5433` directory when a suite passes no port. Three suites were relying on that default, so
+    // three suites shared one server and one data directory — invisible under the old sequential `&&` chain,
+    // which wiped and rebuilt the directory between them, and a guaranteed failure the moment anything ran
+    // two of them at once. An implicit port cannot collide in `collidingArgs` because there is no argument to
+    // compare, so it is caught here instead, from the suite's own source.
+    const inventory = loadInventory(ROOT);
+    for (const file of listTestFiles(ROOT)) {
+      const source = readFileSync(join(ROOT, 'test', file), 'utf8');
+      if (!/from '\.\/embedded-pg\.js'/.test(source)) continue;
+      if (file === 'embedded-pg.ts') continue;
+      const entry = inventory.suites.find((suite) => suite.file === file);
+      if (entry === undefined) continue; // a helper; the audit already accounts for it
+      assertEq(entry.args.length > 0, true, `${file} boots an embedded PostgreSQL but declares no port`);
+      assert(/^\d{4}$/.test(entry.args[0]!), `${file} declares an unusable port: ${entry.args[0]}`);
+      assertEq(entry.group, 'db', `${file} boots a database but is not in the db group`);
+    }
   });
 
   // --- inventory parsing (adversarial) --------------------------------------------------------------------
@@ -393,6 +428,29 @@ async function main(): Promise<void> {
     const res = runCli(['--filter', 'this-suite-does-not-exist']);
     assertEq(res.status, TEST_RUNNER_EXIT_USAGE, 'an empty selection exited zero');
     assert(res.stderr.includes('no suite was selected'), 'the empty selection was not explained');
+  });
+
+  await test('asking for a group this host cannot run reports a named skip, not a usage error', () => {
+    // On a machine with a Docker daemon these suites run and this assertion is about a real run instead; both
+    // outcomes are correct, and neither is "nothing was selected, exit 2", which is what a mistyped filter is.
+    const res = runCli(['--group', 'docker']);
+    assert(res.status === TEST_RUNNER_EXIT_OK || res.status === TEST_RUNNER_EXIT_SUITE_FAILURES,
+      `--group docker exited ${res.status}: ${res.stderr}`);
+    assert(!res.stderr.includes('no suite was selected'),
+      'a capability this host lacks was reported as a mistyped selection');
+    const output = res.stdout + res.stderr;
+    assert(/release-candidate-acceptance\.ts/.test(output), 'the Docker suites were not named at all');
+  });
+
+  await test('--require-capabilities makes a host without Docker a failure rather than a skip', () => {
+    const lenient = runCli(['--group', 'docker']);
+    const strict = runCli(['--group', 'docker', '--require-capabilities']);
+    // The one case this pins: whenever the lenient run SKIPPED, the strict run must FAIL. (If the host has a
+    // daemon both actually run, and then they agree for the ordinary reason.)
+    if (lenient.stdout.includes('RESULT: SKIPPED')) {
+      assertEq(strict.status, TEST_RUNNER_EXIT_SUITE_FAILURES, 'a required-but-missing capability did not fail');
+      assert(strict.stdout.includes('[REQUIRED]'), 'the strict run does not mark the skip as required');
+    }
   });
 
   await test('the runner refuses to run against a drifted inventory', () => {

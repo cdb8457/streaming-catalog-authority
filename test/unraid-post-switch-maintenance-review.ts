@@ -8,6 +8,7 @@ import {
   parseUnraidPostSwitchMaintenanceReviewJson,
   type UnraidPostSwitchMaintenanceReview,
 } from '../src/ops/unraid-post-switch-maintenance-review.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -112,7 +113,7 @@ test('source and docs preserve maintenance review boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-post-switch-maintenance-review'] === 'tsx test/unraid-post-switch-maintenance-review.ts', 'test script');
   assert(scripts['ops:unraid-post-switch-maintenance-review'] === 'tsx src/ops/unraid-post-switch-maintenance-review-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-post-switch-evidence-review.ts && tsx test/unraid-post-switch-maintenance-review.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-post-switch-evidence-review.ts && tsx test/unraid-post-switch-maintenance-review.ts'), 'aggregate order');
   for (const required of [
     'phase-138-unraid-post-switch-maintenance-review',
     'phase-137-unraid-post-switch-evidence-review',

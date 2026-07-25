@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runOperatorUiLiveCheck } from '../src/ops/operator-ui-live-check.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -122,7 +123,7 @@ await test('source, docs, package, and launcher preserve live-check boundary', (
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assert(pkg.scripts['test:operator-ui-live-check'] === 'tsx test/operator-ui-live-check.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-live-check'] === 'tsx src/ops/operator-ui-live-check-cli.ts', 'ops script');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-token.ts && tsx test/operator-ui-live-check.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-token.ts && tsx test/operator-ui-live-check.ts'), 'aggregate order');
   const source = `${read('src/ops/operator-ui-live-check.ts')}\n${read('src/ops/operator-ui-live-check-cli.ts')}`;
   const combined = [
     source,

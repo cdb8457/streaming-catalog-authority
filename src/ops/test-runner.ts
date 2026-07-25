@@ -498,7 +498,11 @@ export function renderRunReport(report: RunReport): string {
     for (const result of failed) lines.push(`  ${result.file} — ${describeExit(result)}`);
   }
   if (report.skippedSuites.length > 0) {
-    const shown = report.skippedSuites.filter((s) => s.fatal || !s.reason.startsWith('not in the selected group') && s.reason !== 'did not match --filter');
+    // A suite left out by an explicit `--group` or `--filter` is not news — the operator asked for that. A
+    // suite left out for any OTHER reason is, and a required-but-unmet one always is. Parenthesised because
+    // the reader should not have to remember that `&&` binds tighter than `||` to check this.
+    const shown = report.skippedSuites.filter((s) => s.fatal
+      || (!s.reason.startsWith('not in the selected group') && s.reason !== 'did not match --filter'));
     if (shown.length > 0) {
       lines.push(`SKIPPED (${shown.length} of ${report.skippedSuites.length} unselected):`);
       for (const skip of shown) lines.push(`  ${skip.file} — ${skip.reason}${skip.fatal ? ' [REQUIRED]' : ''}`);

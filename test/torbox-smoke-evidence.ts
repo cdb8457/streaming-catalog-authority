@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -40,7 +41,7 @@ test('Phase 35 evidence doc, template, and UI examples exist and are wired', () 
   assert(exists('docs/templates/TORBOX_SMOKE_EVIDENCE.md'), 'TorBox smoke evidence template exists');
   assert(exists('docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md'), 'future UI examples doc exists');
   assertEq(pkg.scripts['test:torbox-smoke-evidence'], 'tsx test/torbox-smoke-evidence.ts', 'focused script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-evidence.ts'), 'suite is in npm test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-smoke-evidence.ts'), 'suite is in npm test chain');
 });
 
 test('Phase 35 docs preserve no-live, no-SDK, no-transport, and no-provider-mode boundaries', () => {

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -122,7 +123,7 @@ test('package, README, and deploy guard include Phase 194 verification', () => {
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:sidecar-service-install'] === 'tsx test/sidecar-service-install.ts', 'test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'aggregate order present',
   );
   assert(readme.includes('Phase 194 adds the long-running `sidecar` service'), 'README phase entry');

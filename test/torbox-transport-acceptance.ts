@@ -1,6 +1,7 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { runTorBoxTransportAcceptanceHarness } from '../src/ops/torbox-transport-acceptance.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -35,8 +36,8 @@ await test('Phase 39 docs, source, and package wiring exist', () => {
   assert(exists('src/ops/torbox-transport-acceptance.ts'), 'Phase 39 acceptance source exists');
   assert(exists('docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md'), 'Phase 39 doc exists');
   assertEq(pkg.scripts['test:torbox-transport-acceptance'], 'tsx test/torbox-transport-acceptance.ts', 'focused script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-transport-acceptance.ts'), 'acceptance suite is in npm test');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-transport-acceptance.ts'), 'acceptance suite is in npm test');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm ci');
 });
 
@@ -145,6 +146,10 @@ await test('Phase 39 source has no SDK, network, env, DB, Docker, or adapter-mod
 
 await test('TorBox source allowlist includes Phase 39 explicitly and nothing accidental', () => {
   const allowed = new Set([
+    // Phase 250. NOT an implementation: this file names TorBox only inside a REDACTION pattern that
+    // REFUSES a readiness packet mentioning a live provider. The allowlists predate it; excluding it would
+    // mean the guard that forbids the word cannot itself contain the word.
+    'src/ops/release-readiness.ts',
     'src/core/adapters/torbox-boundary.ts',
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',

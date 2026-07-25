@@ -8,6 +8,7 @@ import {
   parseUnraidFinalLaunchApprovalRecordJson,
   type UnraidFinalLaunchApprovalRecord,
 } from '../src/ops/unraid-final-launch-approval-record.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -104,7 +105,7 @@ test('source and docs preserve approval-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-final-launch-approval-record'] === 'tsx test/unraid-final-launch-approval-record.ts', 'test script');
   assert(scripts['ops:unraid-final-launch-approval-record'] === 'tsx src/ops/unraid-final-launch-approval-record-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-launch-readiness-decision.ts && tsx test/unraid-final-launch-approval-record.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-launch-readiness-decision.ts && tsx test/unraid-final-launch-approval-record.ts'), 'aggregate order');
   for (const required of [
     'phase-135-unraid-final-launch-approval-record',
     'phase-134-unraid-launch-readiness-decision',

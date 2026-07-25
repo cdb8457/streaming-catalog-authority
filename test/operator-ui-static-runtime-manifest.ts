@@ -9,6 +9,7 @@ import {
   startOperatorUiStaticRuntime,
   type OperatorUiStaticRuntimeManifest,
 } from '../src/ops/operator-ui-static-runtime.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -313,7 +314,7 @@ async function main(): Promise<void> {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
     assert(pkg.scripts['test:operator-ui-static-runtime-manifest'] === 'tsx test/operator-ui-static-runtime-manifest.ts', 'Phase 72 test script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-hardening.ts && tsx test/operator-ui-static-runtime-manifest.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-runtime-hardening.ts && tsx test/operator-ui-static-runtime-manifest.ts'),
       'Phase 72 suite follows Phase 71 hardening in main chain',
     );
 

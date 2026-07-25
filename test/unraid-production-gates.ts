@@ -18,6 +18,7 @@ import {
   sampleUnraidPostInstallValidationReviewReport,
   sampleUnraidProductionReadinessDecisionRecord,
 } from '../src/ops/unraid-production-readiness-decision.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -84,7 +85,7 @@ test('docs, scripts, and source preserve production gate boundaries', () => {
   assert(pkg['ops:unraid-install-evidence-capture-gate'] === 'tsx src/ops/unraid-install-evidence-capture-gate-cli.ts', 'phase125 script');
   assert(pkg['ops:unraid-post-install-validation-review'] === 'tsx src/ops/unraid-post-install-validation-review-cli.ts', 'phase126 script');
   assert(pkg['ops:unraid-production-readiness-decision'] === 'tsx src/ops/unraid-production-readiness-decision-cli.ts', 'phase127 script');
-  assert((pkg.test ?? '').includes('test/unraid-install-evidence-manifest.ts && tsx test/unraid-production-gates.ts'), 'aggregate order');
+  assert(AGGREGATE_SUITE_COMMAND.includes('test/unraid-install-evidence-manifest.ts && tsx test/unraid-production-gates.ts'), 'aggregate order');
   const docs = `${read('docs/PHASE_125_127_UNRAID_PRODUCTION_GATES.md')}\n${read('README.md')}\n${read('package.json')}`;
   for (const required of [
     'phase-125-unraid-install-evidence-capture-gate',

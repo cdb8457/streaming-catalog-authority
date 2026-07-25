@@ -3,6 +3,7 @@ import {
   TEST_INVENTORY_PATH,
   TEST_RUNNER_EXIT_INVENTORY,
   TEST_RUNNER_EXIT_OK,
+  TEST_RUNNER_EXIT_SUITE_FAILURES,
   TEST_RUNNER_EXIT_USAGE,
   TEST_RUNNER_MAX_CONCURRENCY,
   TestInventoryError,
@@ -128,10 +129,27 @@ async function main(): Promise<number> {
   }
 
   if (plan.selected.length === 0) {
-    // A run that selected nothing is not a passing run. It is almost always a mistyped filter, and reporting
-    // it as success is precisely the "exited zero without running the suite" behaviour being removed here.
-    console.error('no suite was selected; nothing ran. Check --group and --filter.');
-    return TEST_RUNNER_EXIT_USAGE;
+    // TWO DIFFERENT THINGS LOOK THE SAME HERE, and answering them the same way would be a lie either way.
+    //
+    // "This host cannot provide what these suites need" is an ANSWER: the operator asked for the docker
+    // group on a machine with no daemon, and the honest report names the suites and the reason. It is a
+    // usage error only under --require-capabilities, where the caller has said a skip is unacceptable.
+    //
+    // "Nothing matched your selection at all" is a MISTAKE — almost always a mistyped filter — and reporting
+    // it as success is exactly the "exited zero without running the suite" behaviour this phase removes.
+    const capabilitySkips = plan.skipped.filter((skip) => skip.reason.startsWith('this host does not provide'));
+    if (capabilitySkips.length === 0) {
+      console.error('no suite was selected; nothing ran. Check --group and --filter.');
+      return TEST_RUNNER_EXIT_USAGE;
+    }
+    for (const skip of capabilitySkips) {
+      console.log(`SKIP ${skip.file} — ${skip.reason}${skip.fatal ? ' [REQUIRED]' : ''}`);
+    }
+    const fatal = capabilitySkips.some((skip) => skip.fatal);
+    console.log(fatal
+      ? `RESULT: FAIL — ${capabilitySkips.length} suite(s) were required to run and could not.`
+      : `RESULT: SKIPPED — ${capabilitySkips.length} suite(s) need something this host does not have. Nothing was run, and nothing is claimed.`);
+    return fatal ? TEST_RUNNER_EXIT_SUITE_FAILURES : TEST_RUNNER_EXIT_OK;
   }
 
   let spawner: ReturnType<typeof createSuiteSpawner>;

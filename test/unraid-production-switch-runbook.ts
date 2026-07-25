@@ -9,6 +9,7 @@ import {
   parseUnraidProductionSwitchRunbookJson,
   type UnraidProductionSwitchRunbook,
 } from '../src/ops/unraid-production-switch-runbook.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -103,7 +104,7 @@ test('source and docs preserve runbook-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-production-switch-runbook'] === 'tsx test/unraid-production-switch-runbook.ts', 'test script');
   assert(scripts['ops:unraid-production-switch-runbook'] === 'tsx src/ops/unraid-production-switch-runbook-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-final-human-approval-record.ts && tsx test/unraid-production-switch-runbook.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-final-human-approval-record.ts && tsx test/unraid-production-switch-runbook.ts'), 'aggregate order');
   assert(formatUnraidProductionSwitchRunbookJson(buildUnraidProductionSwitchRunbook(phase129())).includes('"productionReady": false'), 'json formatter false');
   for (const required of [
     'phase-130-unraid-production-switch-runbook',

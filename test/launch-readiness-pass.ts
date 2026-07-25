@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -12,7 +13,11 @@ function test(name: string, fn: () => void): void {
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8');
+// Phase 258. Line endings are a CHECKOUT artifact, never content: git delivers these files with CRLF on a
+// Windows working copy, and the assertions below are written against the LF the repository stores. Normalising
+// here is what makes this suite mean the same thing on every platform, which is the whole point of an aggregate
+// command that now actually runs on all of them.
+const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8').replace(/\r\n/g, '\n');
 
 console.log('Running Phase 200 launch readiness pass suite:\n');
 
@@ -77,10 +82,14 @@ test('package, README, and deploy guard pin Phase 200 launch readiness', () => {
   const readme = read('README.md');
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:launch-readiness-pass'] === 'tsx test/launch-readiness-pass.ts', 'test script present');
-  const aggregate = pkg.scripts.test ?? '';
+  const aggregate = AGGREGATE_SUITE_COMMAND ?? '';
   assert(aggregate.includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts'), 'launch aggregate order present');
   assert(aggregate.includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts'), 'Jellyfin boundary aggregate order present');
-  assert(aggregate.includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/deploy.ts'), 'Jellyfin live aggregate order present');
+  // Phase 222 inserted `jellyfin-integration-decision.ts` after the write proof, so `deploy.ts` no longer
+  // follows it directly. The claim this assertion makes — that the Jellyfin live suites run, in this order —
+  // is unchanged; only the tail that named a neighbour which moved has been corrected.
+  assert(aggregate.includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts'), 'Jellyfin live aggregate order present');
+  assert(aggregate.includes('tsx test/deploy.ts'), 'the deploy suite still runs in the aggregate');
   assert(readme.includes('Phase 200 adds `docs/PHASE_200_LAUNCH_READINESS_PASS.md`'), 'README phase entry');
   assert(deploy.includes('Phase 200 launch readiness pass'), 'deploy guard entry');
   assert(deploy.includes('LAUNCH_READY_WITH_ACCEPTED_WARNINGS'), 'deploy guard status');

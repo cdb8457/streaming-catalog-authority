@@ -11,6 +11,7 @@ import {
   validateOperatorUiStaticRuntimeConfig,
   type OperatorUiStaticRuntimeManifest,
 } from '../src/ops/operator-ui-static-runtime.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -287,7 +288,7 @@ async function main(): Promise<void> {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     assert(pkg.scripts['test:operator-ui-static-runtime-access-boundary'] === 'tsx test/operator-ui-static-runtime-access-boundary.ts', 'Phase 73 test script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-manifest.ts && tsx test/operator-ui-static-runtime-access-boundary.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-runtime-manifest.ts && tsx test/operator-ui-static-runtime-access-boundary.ts'),
       'Phase 73 suite follows Phase 72 manifest suite',
     );
 

@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 // Regression guard for the `test:phase230-local` harness: it must run every Phase 230 local safety
 // suite and must NOT pull in the full npm-test aggregate or the legacy/live/known-failing suites (e.g.
@@ -128,7 +129,7 @@ test('local gate excludes every legacy/live/known-failing suite', () => {
 });
 
 test('local gate is not the full npm-test aggregate', () => {
-  assert(script !== pkg.scripts.test, 'test:phase230-local must differ from the full aggregate');
+  assert(script !== AGGREGATE_SUITE_COMMAND, 'test:phase230-local must differ from the full aggregate');
   assert(!script.includes('test/config.ts'), 'test:phase230-local must not chain the full aggregate');
 });
 
