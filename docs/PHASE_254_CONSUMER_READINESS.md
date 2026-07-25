@@ -58,8 +58,16 @@ consumer's machine asks — can someone with no credential fetch this image? A r
 published and still not be publicly readable, and that failure lands on a user as `denied` with nothing in
 this project's own troubleshooting table naming the cause.
 
-**Fixed:** `ops:image-pull-preflight` asks anonymously, the way a consumer's Docker does, and the publish job
-runs it as its final gate against the digest the push step reported.
+**Fixed:** `ops:image-pull-preflight` asks anonymously, the way a consumer's Docker does. The publish job runs
+it **after the push** — the digest cannot exist before that — and **before the release archive is assembled or
+attached**, so no asset reaches a release until a stranger has been proven able to pull the image that asset
+pins.
+
+That ordering is the correction to the first attempt at this, which put the check last: the archive and its
+checksum were already attached to a public release by the time it ran, so it reported rather than gated. A
+check that can only tell you afterwards is a log line. A semantic test now reads the parsed publish job and
+asserts the check sits after the push and before *every* step that publishes anything, matched on what a step
+does rather than against a fixed list — so a publishing step added later cannot slip in front of it.
 
 ### The check that already lied once
 
@@ -75,10 +83,20 @@ A probe that is wrong in the direction of "your release is broken" is worse than
 * a test asserts the probe actually **sends** that header, not merely that the constant exists;
 * the check runs **anonymously**, with a test that it accepts no credential — proving *we* can pull would
   prove the wrong thing;
-* `404` **without** an anonymous token is reported as `NOT_PUBLIC`, while `404` **with** one is `ABSENT`,
-  because "your package is private" and "that tag does not exist" send an operator to different places;
-* anything else — no network, no token, an unexpected status — is `INDETERMINATE` and **blocks**, stating in
-  as many words that it is not evidence the image is fine and not evidence it is broken.
+* `NOT_PUBLIC` is claimed **only on direct evidence of refusal** — a `401`/`403`, on the manifest or on the
+  anonymous token request itself. A missing token is not evidence: without one the manifest question was
+  never asked, so a token-endpoint `404` or `500` proves nothing about visibility and is reported as
+  `INDETERMINATE`, which blocks and explicitly warns against changing visibility on that basis. `404` **with**
+  a token is `ABSENT`, because "that tag does not exist" sends an operator somewhere different again. (The
+  probe reports the token status in its own field; folding it into the manifest status is what made the
+  earlier, dishonest inference possible.)
+* anything else — no network, an unexpected status — is `INDETERMINATE` and **blocks**, stating in as many
+  words that it is not evidence the image is fine and not evidence it is broken;
+* a supplied `--expect-digest` that cannot be confirmed **blocks**. A `200` with no `docker-content-digest`
+  header used to be an advisory that left `ok` true, so a gate would pass having verified nothing about the
+  one thing it was asked to verify. "I could not check" must never produce the same verdict as "I checked and
+  it matched". When no expected digest is supplied nothing was asked, so nothing blocks — but the report says
+  outright that what a consumer would receive was not checked against anything.
 
 ### If it ever reports NOT_PUBLIC
 

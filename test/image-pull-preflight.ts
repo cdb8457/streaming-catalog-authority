@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { asList, asMap, parseYaml } from './helpers/compose-yaml.js';
 import {
   checkImageIsPubliclyPullable,
   deriveImagePullPreflight,
@@ -39,7 +40,7 @@ const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8');
 console.log('Running Phase 254 image pull preflight suite:\n');
 
 const probe = (over: Partial<PullProbeResult> = {}): PullProbeResult =>
-  ({ status: 200, digest: null, tokenObtained: true, ...over });
+  ({ status: 200, digest: null, tokenStatus: 200, tokenObtained: true, ...over });
 
 const DIGEST = 'sha256:3dcd1ad9832aa7e7275ace9a9a364f6b83f197e4f4c1b68d0ff5d87d08619012';
 const OTHER = 'sha256:e7dc58b9c2c5d7c89347d55eb5a82c129dbc9647284fcc48874752c96fd93d28';
@@ -101,10 +102,20 @@ await test('the probe actually SENDS that Accept header, and sends no credential
 // ---------------------------------------------------------------------------------------------------------
 
 await test('an anonymous 200 is the only thing that counts as installable', () => {
-  const r = deriveImagePullPreflight({ ...base, probe: probe({ status: 200, digest: DIGEST }) });
+  const r = deriveImagePullPreflight({ ...base, probe: probe({ status: 200, digest: DIGEST }), expectedDigest: DIGEST });
   assertEq(r.outcome, 'PUBLICLY_PULLABLE', 'a 200 to an anonymous caller');
   assert(r.ok, 'and nothing blocks');
-  assertEq(r.findings.length, 0, 'with nothing to report');
+  assertEq(r.findings.length, 0, 'with nothing to report when the digest was asked for and matched');
+});
+
+await test('a pull with no expected digest is honest that it verified nothing, without blocking', () => {
+  const r = deriveImagePullPreflight({ ...base, probe: probe({ status: 200, digest: DIGEST }) });
+  assert(r.ok, 'nothing was asked, so nothing blocks');
+  assertEq(r.findings[0]!.code, 'IMAGE_IDENTITY_NOT_REQUESTED', 'but it says so rather than staying silent');
+  assertEq(r.findings[0]!.severity, 'ADVISORY', 'as an advisory');
+  assert(/not checked against anything/i.test(r.findings[0]!.detail),
+    'because "something pullable is there" is weaker than "what this release pins is there"');
+  assert(/A release gate should always supply it/i.test(r.findings[0]!.fix), 'and a gate is told to supply one');
 });
 
 await test('a refused anonymous caller is NOT_PUBLIC, and the fix is a human GitHub setting stated exactly', () => {
@@ -123,13 +134,33 @@ await test('a refused anonymous caller is NOT_PUBLIC, and the fix is a human Git
   assert(/Re-run this preflight/.test(joined), 'and that the claim is only true once re-checked');
 });
 
-await test('a 404 WITHOUT an anonymous token is not "absent" — it is a private package', () => {
-  // The distinction that matters: a registry that will not even issue an anonymous pull token has told us
-  // about visibility, not about existence. Calling that ABSENT would send someone to look for a lost image.
-  const r = deriveImagePullPreflight({ ...base, probe: probe({ status: 404, tokenObtained: false }) });
-  assertEq(r.outcome, 'NOT_PUBLIC', 'no anonymous token plus 404 is a visibility answer');
+await test('NOT_PUBLIC is claimed only on DIRECT evidence of refusal, never inferred from a missing token', () => {
+  // Independent review caught this: without a token the manifest question was never actually asked, so
+  // claiming the package is private would send an operator to flip a setting that was never wrong. Only a
+  // registry saying 401/403 — on the manifest, or on the anonymous token request itself — is proof.
+  const refusedToken = deriveImagePullPreflight({
+    ...base, probe: probe({ status: null, tokenStatus: 401, tokenObtained: false }) });
+  assertEq(refusedToken.outcome, 'NOT_PUBLIC', 'a registry refusing an anonymous pull scope IS proof');
+  const refusedManifest = deriveImagePullPreflight({ ...base, probe: probe({ status: 403 }) });
+  assertEq(refusedManifest.outcome, 'NOT_PUBLIC', 'and so is a refused manifest');
+
+  // Everything short of that is honest about not knowing, and blocks.
+  for (const [why, p] of [
+    ['a token endpoint 404', probe({ status: null, tokenStatus: 404, tokenObtained: false })],
+    ['a token endpoint 500', probe({ status: null, tokenStatus: 500, tokenObtained: false })],
+    ['no answer at all', probe({ status: null, tokenStatus: null, tokenObtained: false })],
+  ] as const) {
+    const r = deriveImagePullPreflight({ ...base, probe: p });
+    assertEq(r.outcome, 'INDETERMINATE', `${why} proves nothing about visibility`);
+    assert(!r.ok, 'and blocks rather than passing');
+    assert(/never actually asked/i.test(r.findings[0]!.detail),
+      'and says the question was never asked, rather than inventing an answer');
+    assert(/do not change package visibility on the strength of it/i.test(r.findings[0]!.fix),
+      'and explicitly warns against flipping visibility on this evidence');
+  }
+
   const withToken = deriveImagePullPreflight({ ...base, probe: probe({ status: 404, tokenObtained: true }) });
-  assertEq(withToken.outcome, 'ABSENT', 'but a 404 to a caller who DID get a token is a missing reference');
+  assertEq(withToken.outcome, 'ABSENT', 'a 404 to a caller who DID get a token is a missing reference');
   assertEq(withToken.findings[0]!.code, 'IMAGE_REFERENCE_ABSENT', 'reported as its own thing');
   assert(/not a visibility problem/i.test(withToken.findings[0]!.fix), 'and says so, so nobody flips a setting');
 });
@@ -155,10 +186,20 @@ await test('pulling the WRONG bytes is not a success', () => {
   const match = deriveImagePullPreflight({ ...base, probe: probe({ status: 200, digest: DIGEST }), expectedDigest: DIGEST });
   assert(match.ok, 'a matching digest passes');
 
+  // FAILS CLOSED. Independent review caught this failing open: an expected digest was supplied, the check
+  // could not confirm it, and `ok` stayed true — so a gate would pass having verified nothing about the one
+  // thing it was asked to verify. "I could not check" must never look like "I checked and it matched".
   const unknown = deriveImagePullPreflight({ ...base, probe: probe({ status: 200, digest: null }), expectedDigest: DIGEST });
-  assert(unknown.ok, 'a missing content-digest header does not block');
-  assertEq(unknown.findings[0]!.code, 'IMAGE_DIGEST_UNCONFIRMED', 'but is reported as unconfirmed, not verified');
-  assertEq(unknown.findings[0]!.severity, 'ADVISORY', 'as an advisory');
+  assertEq(unknown.findings[0]!.code, 'IMAGE_DIGEST_UNCONFIRMED', 'an unconfirmable digest is reported');
+  assertEq(unknown.findings[0]!.severity, 'BLOCKER', 'as a BLOCKER, because confirmation was requested');
+  assert(!unknown.ok, 'so the release is blocked rather than passing on an unverified pin');
+  assert(/identity of what was pulled is unverified/i.test(unknown.findings[0]!.detail),
+    'and says plainly that the pull succeeded but its identity did not');
+
+  // With NO expected digest nothing was asked, so a missing header is simply not a finding at all.
+  const notAsked = deriveImagePullPreflight({ ...base, probe: probe({ status: 200, digest: null }) });
+  assert(notAsked.ok, 'no expected digest means nothing to confirm, so nothing blocks');
+  assertEq(notAsked.findings[0]!.severity, 'ADVISORY', 'and the only note is advisory');
 });
 
 await test('the report authorizes nothing and describes only what it did', () => {
@@ -179,6 +220,50 @@ await test('the preflight is a real command and a real release gate', () => {
   const workflow = read('.github/workflows/runtime-image.yml');
   assert(workflow.includes('ops:image-pull-preflight'),
     'and CI runs it, so a package that stops being public is caught by us rather than by a user');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// ORDER. A gate that runs after the thing it gates is not a gate.
+// ---------------------------------------------------------------------------------------------------------
+
+await test('the pull check runs AFTER the push and BEFORE any release asset is assembled or attached', () => {
+  // Independent review caught this on f975484: the preflight was the last step in the publish job, so the
+  // archive and its checksum were already attached to a public release by the time it ran. It reported; it
+  // did not gate. Asserted SEMANTICALLY — by step position inside the parsed publish job — so it fails on any
+  // arrangement where an asset can reach a release before pullability has been proven, not merely on the one
+  // arrangement that shipped.
+  const doc = asMap(parseYaml(read('.github/workflows/runtime-image.yml')), 'workflow');
+  const publish = asMap(asMap(doc.jobs ?? null, 'jobs').publish ?? null, 'publish job');
+  const steps = asList(publish.steps ?? null, 'publish steps')
+    .map((step, index) => ({ index, name: String(asMap(step, `step ${index}`).name ?? '') }));
+
+  const find = (needle: string): number => {
+    const hit = steps.find((step) => step.name.toLowerCase().includes(needle.toLowerCase()));
+    if (hit === undefined) throw new Error(`no publish step matching ${JSON.stringify(needle)}`);
+    return hit.index;
+  };
+
+  const push = find('Build and push the pinned tag');
+  const pullCheck = find('A stranger can actually pull');
+  const assemble = find('Assemble and validate the release asset');
+  const attach = find('Attach the archive and its checksum to the release');
+
+  // The push must come first: the digest the check verifies against does not exist until it has.
+  assert(push < pullCheck, 'the image is pushed before the pull check, because the digest cannot precede it');
+  // And nothing that puts bytes in front of a consumer may precede the check.
+  assert(pullCheck < assemble,
+    'the pull check precedes assembling the release asset, so a failed pull never produces one');
+  assert(pullCheck < attach,
+    'the pull check precedes attaching the archive — on f975484 it ran last, so the asset was already public');
+
+  // Every remaining step that publishes anything must also sit behind the gate. Named by what they DO rather
+  // than by a fixed list, so a new publishing step added later cannot quietly slip in front of the check.
+  for (const step of steps) {
+    const publishes = /attach|upload|asset|release-asset/i.test(step.name);
+    if (!publishes) continue;
+    assert(step.index > pullCheck,
+      `"${step.name}" publishes something and must run after the pull check, not before it`);
+  }
 });
 
 await test('the CLI exits non-zero on a blocker, so it cannot be a decorative check', () => {

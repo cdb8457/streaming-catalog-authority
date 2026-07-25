@@ -359,20 +359,14 @@ jobs:
             IMAGE_REVISION=${{ github.sha }}
           provenance: true
           sbom: true
-      - name: Assemble and validate the release asset, pinned to the published digest
-        run: bash deploy/ci/release-bundle-check.sh dist/release-bundle dist/release-archive
-        env:
-          RELEASE_IMAGE_TAG: ${{ steps.release.outputs.tag }}
-          RELEASE_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
-          RELEASE_IMAGE_REPOSITORY: ${{ steps.release.outputs.image_repository }}
-      - name: Attach the archive and its checksum to the release
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          RELEASE_TAG: ${{ steps.release.outputs.tag }}
-          ARCHIVE: ${{ steps.release.outputs.archive }}
-        run: bash deploy/ci/release-asset-upload.sh dist/release-archive
       - name: A stranger can actually pull what this release tells them to pull
-        # The last gate, and the only one that asks the consumer's question. Everything before this verifies
+        # ORDER IS THE POINT. This runs after the push (the digest cannot exist before it) and BEFORE the
+        # archive is assembled or attached, so no release asset is published until a stranger has been proven
+        # able to pull the image that asset pins. It was originally written as the last step in this job,
+        # which meant the archive and its checksum were already attached to a public release by the time the
+        # check ran: it reported, it did not gate. A check that can only tell you afterwards is a log line.
+        #
+        # The only gate that asks the consumer's question. Everything before this verifies
         # what we PRODUCED — the archive matches its digests, the manifest agrees with the packet, the push
         # reported a digest. None of that establishes that someone with no credential can fetch the image, and
         # a package can be published and still not be publicly readable. That failure would otherwise land on
@@ -395,3 +389,15 @@ jobs:
             exit 1
           fi
           npm run ops:image-pull-preflight -- --reference "${RELEASE_TAG}" --expect-digest "${EXPECTED_DIGEST}"
+      - name: Assemble and validate the release asset, pinned to the published digest
+        run: bash deploy/ci/release-bundle-check.sh dist/release-bundle dist/release-archive
+        env:
+          RELEASE_IMAGE_TAG: ${{ steps.release.outputs.tag }}
+          RELEASE_IMAGE_DIGEST: ${{ steps.push.outputs.digest }}
+          RELEASE_IMAGE_REPOSITORY: ${{ steps.release.outputs.image_repository }}
+      - name: Attach the archive and its checksum to the release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.release.outputs.tag }}
+          ARCHIVE: ${{ steps.release.outputs.archive }}
+        run: bash deploy/ci/release-asset-upload.sh dist/release-archive

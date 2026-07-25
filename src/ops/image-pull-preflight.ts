@@ -57,11 +57,20 @@ export type PullOutcome =
   | 'INDETERMINATE';
 
 export interface PullProbeResult {
-  /** HTTP status of the manifest request, or `null` when the request never completed. */
+  /**
+   * HTTP status of the MANIFEST request, or `null` when that request was never made or never completed.
+   *
+   * Strictly the manifest phase. This used to carry the token endpoint's status when no token was obtained,
+   * which meant a 404 from the token endpoint — an endpoint that says nothing about whether a package is
+   * public — was read as proof the package was private. Two different requests cannot share one status field
+   * and still support an honest verdict.
+   */
   readonly status: number | null;
   /** `docker-content-digest`, when the registry supplied one. */
   readonly digest: string | null;
-  /** True when an anonymous pull token was obtained at all. */
+  /** HTTP status of the anonymous TOKEN request, or `null` when it never completed. */
+  readonly tokenStatus: number | null;
+  /** True when an anonymous pull token was actually obtained. */
   readonly tokenObtained: boolean;
 }
 
@@ -113,12 +122,23 @@ export const MAKE_PUBLIC_INSTRUCTIONS: readonly string[] = [
  */
 export function deriveImagePullPreflight(input: ImagePullPreflightInput): ImagePullPreflightReport {
   const findings: ImagePullFinding[] = [];
-  const { status, digest, tokenObtained } = input.probe;
+  const { status, digest, tokenStatus, tokenObtained } = input.probe;
+
+  // NOT_PUBLIC IS A SERIOUS CLAIM AND IS ONLY MADE ON DIRECT EVIDENCE OF REFUSAL.
+  //
+  // A registry refusing an anonymous caller says so with 401 or 403 — either on the manifest, or on the
+  // anonymous pull-token request itself. Anything else is not proof. In particular a 404 is only meaningful
+  // once a token WAS obtained: without one the request never reached the question, and reporting "your
+  // package is private" would send an operator to flip a setting that was never wrong.
+  //
+  // Everything unproven is INDETERMINATE, which blocks. Failing closed on "I could not tell" is right; making
+  // up which way it failed is not.
+  const refusedDirectly = status === 401 || status === 403 || tokenStatus === 401 || tokenStatus === 403;
 
   let outcome: PullOutcome;
   if (status === 200) outcome = 'PUBLICLY_PULLABLE';
-  else if (status === 401 || status === 403) outcome = 'NOT_PUBLIC';
-  else if (status === 404) outcome = tokenObtained ? 'ABSENT' : 'NOT_PUBLIC';
+  else if (refusedDirectly) outcome = 'NOT_PUBLIC';
+  else if (status === 404 && tokenObtained) outcome = 'ABSENT';
   else outcome = 'INDETERMINATE';
 
   if (outcome === 'NOT_PUBLIC') {
@@ -143,24 +163,49 @@ export function deriveImagePullPreflight(input: ImagePullPreflightInput): ImageP
     findings.push({
       code: 'IMAGE_PULLABILITY_INDETERMINATE',
       severity: 'BLOCKER',
-      detail: 'Nothing could be established: the registry did not answer, would not issue an anonymous token, '
-        + 'or replied with an unexpected status. This is NOT evidence that the image is fine, and it is not '
-        + 'evidence that it is broken.',
+      detail: tokenObtained
+        ? 'Nothing could be established: the registry answered the manifest request with an unexpected '
+          + 'status, or did not answer it at all. This is NOT evidence that the image is fine, and it is not '
+          + 'evidence that it is broken.'
+        : 'Nothing could be established: no anonymous pull token was obtained, and the registry did not '
+          + 'directly refuse one either. Without a token the manifest question was never actually asked, so '
+          + 'this says nothing about whether the package is public — it is not evidence that the image is '
+          + 'fine, and it is not evidence that it is private.',
       fix: 'Re-run with network access to the registry. Do not record a release as installable on the basis '
-        + 'of a check that did not complete.',
+        + 'of a check that did not complete, and do not change package visibility on the strength of it '
+        + 'either — nothing here has established that visibility is the problem.',
     });
   }
 
   // A successful anonymous pull of the WRONG bytes is not a success.
   const expected = input.expectedDigest ?? null;
+  if (outcome === 'PUBLICLY_PULLABLE' && expected === null) {
+    // Nothing was asked, so nothing is unconfirmed and nothing blocks — but "something pullable is there" is
+    // a weaker statement than "the thing this release pins is there", and the difference should not have to
+    // be inferred from the absence of a line.
+    findings.push({
+      code: 'IMAGE_IDENTITY_NOT_REQUESTED',
+      severity: 'ADVISORY',
+      detail: 'An anonymous caller can pull this reference. No expected digest was supplied, so what they '
+        + 'would receive was not checked against anything.',
+      fix: 'Pass --expect-digest to verify that the reference resolves to the bytes a release pins. A release '
+        + 'gate should always supply it.',
+    });
+  }
   if (outcome === 'PUBLICLY_PULLABLE' && expected !== null) {
     if (digest === null) {
+      // FAIL CLOSED. An expected digest was supplied, which means the caller asked this check to CONFIRM the
+      // bytes — and it could not. Reporting that as an advisory left `ok` true, so a release gate would pass
+      // having verified nothing about the one thing it was asked to verify. "I could not check" and "I
+      // checked and it matched" must never produce the same verdict.
       findings.push({
         code: 'IMAGE_DIGEST_UNCONFIRMED',
-        severity: 'ADVISORY',
-        detail: 'The pull succeeded but the registry returned no content digest, so the bytes could not be '
-          + 'matched against the digest this release pins.',
-        fix: 'Treat the pin as unconfirmed by this check rather than as verified.',
+        severity: 'BLOCKER',
+        detail: 'An expected digest was supplied, but the registry returned no content digest, so the bytes '
+          + 'served to an anonymous caller could not be matched against the digest this release pins. The '
+          + 'pull succeeded; the identity of what was pulled is unverified.',
+        fix: 'Do not treat the pin as verified. Re-run the check; if the registry continues to omit the '
+          + 'digest header, verify the reference another way before publishing anything that pins it.',
       });
     } else if (digest !== expected) {
       findings.push({
@@ -231,16 +276,20 @@ export async function probeAnonymousPull(
       if (typeof body.token === 'string' && body.token !== '') token = body.token;
     } catch { /* a token endpoint that is not JSON is a token we do not have */ }
   }
-  if (token === null) return { status: tokenResponse?.status ?? null, digest: null, tokenObtained: false };
+  // The token status is reported in its OWN field. Folding it into `status` would let a token-endpoint 404 —
+  // which establishes nothing about visibility — be read downstream as proof of a private package.
+  const tokenStatus = tokenResponse?.status ?? null;
+  if (token === null) return { status: null, digest: null, tokenStatus, tokenObtained: false };
 
   const manifest = await withTimeout(
     `https://${registry}/v2/${repository}/manifests/${encodeURIComponent(reference)}`,
     { authorization: `Bearer ${token}`, accept: MANIFEST_ACCEPT_HEADER });
-  if (manifest === null) return { status: null, digest: null, tokenObtained: true };
+  if (manifest === null) return { status: null, digest: null, tokenStatus, tokenObtained: true };
 
   return {
     status: manifest.status,
     digest: manifest.headers.get('docker-content-digest'),
+    tokenStatus,
     tokenObtained: true,
   };
 }
