@@ -35,6 +35,7 @@ import {
   inspectDirectory,
   inspectSecretFile,
   summarizeChainSnapshot,
+  INSTALLATION_STATES,
   SECRET_FILE_IDS,
   type ChainFact,
   type DatabaseFact,
@@ -238,6 +239,41 @@ await test('only GET reaches the diagnostics routes', async () => {
     assertEq(head.statusCode, 405, 'HEAD is refused too');
     assertEq(head.body, '', 'with no body, as HEAD requires');
   } finally { await h.stop(); }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Every surface that enumerates installation states must know about all of them
+// ---------------------------------------------------------------------------------------------------------
+//
+// This exists because of a real failure. Phase 253 added READY_NO_RECORDS and the daemon-backed image smoke
+// went red on `the readiness route returned no bounded state`: it carried its own hard-coded list of three.
+// Worse, two other surfaces kept PASSING on the new state by accident — a `/READY|NEEDS_SETUP|DEGRADED/`
+// pattern matches `READY - NO RECORDS LOADED` on its prefix — so they were asserting nothing while looking
+// green. A type cannot reach a shell script or a Playwright spec; this test can.
+
+await test('every state the readiness module can emit is known to every surface that enumerates states', () => {
+  const surfaces: ReadonlyArray<readonly [string, string]> = [
+    ['the page\'s verdict styling', read('src/ops/operator-ui-app.js')],
+    ['the daemon-backed image smoke', read('deploy/ci/runtime-image-smoke.sh')],
+    ['the browser acceptance spec', read('deploy/ci/acceptance/operator-ui.spec.mjs')],
+  ];
+  for (const state of INSTALLATION_STATES) {
+    for (const [what, source] of surfaces) {
+      assert(source.includes(state), `${what} handles the ${state} verdict`);
+    }
+  }
+  // The page must map each state to BOTH a style and a label, or an unmapped state renders as a bare
+  // identifier next to whatever styling the previous verdict left behind.
+  const app = read('src/ops/operator-ui-app.js');
+  for (const state of INSTALLATION_STATES) {
+    assert(new RegExp(`${state}:\\s*'verdict`).test(app), `${state} has verdict styling`);
+    assert(new RegExp(`${state}:\\s*'[A-Z]`).test(app), `${state} has a human-readable label`);
+  }
+  // And the browser spec's pattern must be CLOSED — anchored — so a future state cannot pass on a substring
+  // the way READY_NO_RECORDS did.
+  const spec = read('deploy/ci/acceptance/operator-ui.spec.mjs');
+  assert(/const VERDICT_TEXT = \/\^\(\?:/.test(spec),
+    'the acceptance spec anchors its verdict pattern rather than matching any string containing READY');
 });
 
 // ---------------------------------------------------------------------------------------------------------

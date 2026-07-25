@@ -64,7 +64,18 @@ export type ComponentSeverity = 'SATISFIED' | 'AWAITING_EVIDENCE' | 'SETUP_REQUI
  * reported them with the same word would be inviting exactly the sentence this project must never let
  * anyone write: that the dashboard said READY, therefore the chain was fine. There is no chain.
  */
-export type InstallationState = 'READY' | 'READY_NO_RECORDS' | 'NEEDS_SETUP' | 'DEGRADED';
+/**
+ * DATA, not just a type, so the set is introspectable at runtime.
+ *
+ * Adding READY_NO_RECORDS broke a CI job because three surfaces each carried their own hard-coded copy of
+ * this list — the shell smoke script, the browser acceptance spec and the page's own label table — and a type
+ * cannot reach any of them. Two of the three even kept "passing" on the new state by accident, matching it on
+ * a substring. The list lives here once, and a test walks it against every surface that enumerates states, so
+ * the next addition fails loudly in the suite rather than quietly in a container.
+ */
+export const INSTALLATION_STATES = ['READY', 'READY_NO_RECORDS', 'NEEDS_SETUP', 'DEGRADED'] as const;
+
+export type InstallationState = (typeof INSTALLATION_STATES)[number];
 
 /** Whether any promotion record evidence is loaded at all. Never a judgement ABOUT that evidence. */
 export type EvidenceState = 'LOADED' | 'NONE_LOADED';

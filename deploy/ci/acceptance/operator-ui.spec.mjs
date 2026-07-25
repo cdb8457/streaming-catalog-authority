@@ -51,11 +51,20 @@ async function load(page) {
   return collected;
 }
 
+// The verdicts the badge may render, in the words a person actually sees.
+//
+// Phase 253 added READY_NO_RECORDS, whose badge reads `READY - NO RECORDS LOADED`. A pattern of
+// `/READY|NEEDS_SETUP|DEGRADED/` kept passing on it by accident, because READY is a prefix of that label —
+// so the assertion would have gone on "passing" for any future state whose name happens to start with one
+// of these words. Anchored alternatives make the set closed again, and a new state has to be added here
+// deliberately rather than slipping through on a substring.
+const VERDICT_TEXT = /^(?:READY|READY - NO RECORDS LOADED|NEEDS_SETUP|DEGRADED)$/;
+
 async function loadWithToken(page) {
   const collected = await load(page);
   await page.locator('#token').fill(TOKEN);
   await page.locator('#refresh').click();
-  await expect(page.locator('#verdict')).toHaveText(/READY|NEEDS_SETUP|DEGRADED/, { timeout: 20_000 });
+  await expect(page.locator('#verdict')).toHaveText(VERDICT_TEXT, { timeout: 20_000 });
   return collected;
 }
 
@@ -126,14 +135,14 @@ test('a wrong token is refused, and correcting it recovers without a reload', as
 
   await page.locator('#token').fill(TOKEN);
   await page.locator('#refresh').click();
-  await expect(page.locator('#verdict')).toHaveText(/READY|NEEDS_SETUP|DEGRADED/, { timeout: 20_000 });
+  await expect(page.locator('#verdict')).toHaveText(VERDICT_TEXT, { timeout: 20_000 });
 });
 
 test('a valid token loads installation, status, logs, promotion and version, in agreement', async ({ page }) => {
   const collected = await loadWithToken(page);
 
   // Installation verdict (this route always answers 200, so it is the load that must populate).
-  await expect(page.locator('#verdict')).toHaveText(/READY|NEEDS_SETUP|DEGRADED/);
+  await expect(page.locator('#verdict')).toHaveText(VERDICT_TEXT);
   // Logs rendered a positive count.
   const logCount = Number(await page.locator('#logCount').textContent());
   expect(logCount).toBeGreaterThan(0);
@@ -159,7 +168,7 @@ test('a valid token loads installation, status, logs, promotion and version, in 
 test('Clear resets the token and every rendered panel; a reload clears the token too', async ({ page }) => {
   await loadWithToken(page);
   // A panel is populated first (the installation verdict always loads).
-  await expect(page.locator('#verdict')).toHaveText(/READY|NEEDS_SETUP|DEGRADED/);
+  await expect(page.locator('#verdict')).toHaveText(VERDICT_TEXT);
   const loadedLogs = Number(await page.locator('#logCount').textContent());
   expect(loadedLogs).toBeGreaterThan(0);
 

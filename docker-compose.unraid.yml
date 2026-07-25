@@ -81,8 +81,20 @@ services:
       - operator_ui_token
     entrypoint: ["npm", "run"]
     command: ["ops:operator-ui-server", "--", "--serve", "--host", "0.0.0.0", "--port", "8099"]
+    # `--host 0.0.0.0` above is inside the container's own network namespace and reaches nothing by itself.
+    # The HOST side of the mapping below decides who can reach this UI.
+    #
+    # Phase 253 gave it a deliberate default. `"8099:8099"` published an operator interface on EVERY
+    # interface this server has, by omission rather than by anyone's decision — and this is the other Unraid
+    # stack, so leaving it that way while fixing docker-compose.unraid.runtime.yml would have fixed the
+    # defect in one of the two places it lives.
+    #
+    # Set OPERATOR_UI_BIND_ADDRESS to this server's LAN address to reach it from your network. The default is
+    # loopback, which means the Unraid server ITSELF and no other machine — not your laptop, not another
+    # machine on the LAN, whatever address you type in a browser. Use an SSH tunnel, or change this
+    # deliberately.
     ports:
-      - "8099:8099"
+      - "${OPERATOR_UI_BIND_ADDRESS:-127.0.0.1}:${OPERATOR_UI_HOST_PORT:-8099}:8099"
     healthcheck:
       test: ["CMD-SHELL", "node -e \"require('http').get('http://127.0.0.1:8099/healthz',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))\""]
       interval: 10s
