@@ -12,10 +12,11 @@ question *"is the backup I have still a rollback point?"* was answered from memo
 Phase 256 said what a complete backup is. This says whether the one you have is any good.
 
 ```
-npm run ops:backup-inspect
+CATALOG_AUTHORITY_BACKUP_DIR=./backup npm run ops:backup-inspect
 ```
 
-or, from a release bundle with no toolchain on the host:
+There is no default directory, so the bare command refuses rather than inspecting somewhere nobody asked
+about. From a release bundle, with no toolchain on the host:
 
 ```
 docker compose run --rm --no-deps -v "$PWD/backup:/backup:ro" \

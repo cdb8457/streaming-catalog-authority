@@ -48,9 +48,13 @@ Every one is `regenerable: false`. That is the finding stated as a field: **ther
 backup of this product that can be downloaded again.** The flag exists so a component added later has to
 answer the question rather than inherit an assumption.
 
-The first-run checklist step, the new **Backup & restore** panel, the troubleshooting table and the lifecycle
-document all render from this module. The step's own commands are read out of it, so the step and the panel
-cannot show different commands.
+The first-run checklist step, the new **Backup & restore** panel and the troubleshooting table all render
+from this module — the checklist step's backup command and the troubleshooting entry's restore command are
+read out of it, so no two surfaces can show different commands.
+
+`docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md` is prose and does not render from anything, so it is
+held to the model by a test instead: the document must say four things, must no longer carry the old
+two-item claim, and its Upgrade checklist must no longer contradict its own Backup section.
 
 ### And in sidecar mode the keystore is somewhere else
 

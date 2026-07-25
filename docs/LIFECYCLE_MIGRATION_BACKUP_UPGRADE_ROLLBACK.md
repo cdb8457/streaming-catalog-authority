@@ -87,8 +87,8 @@ Compose file, the bundle — is.
 
 This list used to say two ("your secrets and your database"), and the operator-facing checklist said the same.
 That was wrong in the way that matters: it was a *closed* list, so nobody went looking for a third thing. See
-`PHASE_256_COMPLETE_BACKUP.md`. The authoritative list now lives in `src/ops/backup-components.ts`, and the
-checklist step, the **Backup & restore** panel and this document all render from it.
+`PHASE_256_COMPLETE_BACKUP.md`. The authoritative list now lives in `src/ops/backup-components.ts`; the
+checklist step and the **Backup & restore** panel render from it, and a test holds this document to it.
 
 | # | Component | What is lost without it |
 | --- | --- | --- |
@@ -118,9 +118,15 @@ place to forget. Copy it directly, with the stack stopped.
 
 ### Checking a backup before you need it
 
-`npm run ops:backup-inspect` reads a backup directory offline — no database, no network — and reports which
-of the four components are present and which schema version the dump holds. See
-`PHASE_257_BACKUP_INSPECT.md`. A backup nobody has ever looked at is a hope, not a rollback plan.
+```
+CATALOG_AUTHORITY_BACKUP_DIR=./backup npm run ops:backup-inspect
+```
+
+reads a backup directory offline — no database, no network — and reports which of the four components are
+present and which schema version the dump holds. There is no default directory: the bare command refuses
+rather than inspecting somewhere nobody asked about. From a bundle, with no toolchain, the **Backup &
+restore** panel carries the `docker compose run` form. See `PHASE_257_BACKUP_INSPECT.md`. A backup nobody has
+ever looked at is a hope, not a rollback plan.
 
 ---
 
