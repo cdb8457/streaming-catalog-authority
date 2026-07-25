@@ -15,8 +15,17 @@ preceding commits (`82e9c32`, `3e67db5`) were also independently green.
 ### 1. Migration missing from first run
 
 `ops:bootstrap` (`src/ops/bootstrap.ts`, `bootstrap-cli.ts`) is a new one-shot, run by a `migrate` service in
-`docker-compose.runtime.yml` and `docker-compose.arcane.yml`, gated by
-`depends_on: { migrate: { condition: service_completed_successfully } }`.
+**all four stacks that start an operator UI** — `docker-compose.runtime.yml`, `docker-compose.arcane.yml`,
+`docker-compose.unraid.yml`, `docker-compose.unraid.runtime.yml` — each gated by
+`depends_on: { migrate: { condition: service_completed_successfully } }` and each setting
+`OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA=1`.
+
+> The two Unraid stacks were **missed in the first pass** and fixed in a second. Both had a one-shot `ops`
+> container defaulting to `ops:migrate` that nothing ever ran at startup — the launcher runbook's own
+> `up -d postgres app sidecar` never included it — so they still carried the exact defect this phase closes.
+> `test/first-run-migration.ts` now enumerates all four stacks by name rather than globbing, so an omission
+> of this kind is visible in the list rather than hidden by a pattern. The manual `ops` service is preserved
+> in both, and a test asserts nothing gates startup on it.
 
 - **Idempotent**: every statement is `IF NOT EXISTS` / `CREATE OR REPLACE` / a privilege statement.
 - **Concurrency-safe**: session-level advisory lock (`MIGRATION_ADVISORY_LOCK_KEY`), acquired with

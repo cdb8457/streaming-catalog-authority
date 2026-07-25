@@ -32,7 +32,9 @@ Every one of those is a defect in the install, not in the operator.
 
 ## 1. The database migrates itself, before the UI exists
 
-`ops:bootstrap` is a new one-shot command, and a new `migrate` service in every stack that ships:
+`ops:bootstrap` is a new one-shot command, and a new `migrate` service in **every stack that starts an
+operator UI** — `docker-compose.runtime.yml`, `docker-compose.arcane.yml`, `docker-compose.unraid.yml` and
+`docker-compose.unraid.runtime.yml`:
 
 ```yaml
 app:
@@ -58,9 +60,27 @@ succeeding says nothing about whether the connection the app will actually use w
   UI is reachable in front of a schema it cannot use.
 
 `/healthz` additionally refuses to answer 200 until the schema is present, when
-`OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA` is set — which the shipped stacks set. That covers a container started
+`OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA` is set — which all four stacks set. That covers a container started
 outside the ordering entirely. It is off by default so the in-process harnesses, and anyone probing liveness
 of a UI that is meant to render while the database is down, are unaffected.
+
+**The two Unraid stacks were fixed in a second pass.** The first pass gated only the two consumer stacks and
+left `docker-compose.unraid.yml` and `docker-compose.unraid.runtime.yml` with the very defect this phase
+exists to close: both had a one-shot `ops` container that defaulted to `ops:migrate`, but nothing ever ran it
+as part of starting the stack — the documented start command for the launcher stack is
+`up -d postgres app sidecar`, which never included `ops`. So an operator still had to know to migrate by
+hand. Both now have their own `migrate` service and the same `service_completed_successfully` gate, and
+because the app depends on it, the existing `up -d postgres app sidecar` runbook command now pulls the
+migration in automatically without anyone editing a runbook.
+
+`ops` is kept as a SEPARATE service in both. It is the manual, on-demand CLI surface — the doctor, backups,
+KEK rotation — with its own mounts and its own default command. Folding the startup gate into it would make
+every hand-run `docker compose run --rm ops ...` a startup gate too, and a change to one would silently
+change the other. A test asserts nothing in either stack depends on `ops`.
+
+In the launcher stack the migration runs with `CUSTODIAN_MODE: sidecar`, matching it. In that mode
+`ops:bootstrap` does not provision the completion secret — the sidecar owns it and this container is never
+given it — so the step is reported as SKIPPED rather than silently assumed done.
 
 **Rollback honesty is unchanged and now written down.** There are still no down-migrations. `v1.1.1` moves
 the schema from version 3 to 4, so rolling back to `v1.1.0` requires restoring a pre-upgrade backup. See
@@ -149,7 +169,8 @@ relative by default, still loopback by default, still the single Compose file th
 ## 4. Networking: a deliberate bind, and the truth about loopback
 
 `OPERATOR_UI_BIND_ADDRESS` is **required** in the Arcane stack and now has an explicit `127.0.0.1` default in
-the Unraid runtime stack, which previously published on every interface by omission.
+both Unraid stacks — `docker-compose.unraid.runtime.yml` and `docker-compose.unraid.yml` — which previously
+published on every interface by omission.
 
 * `0.0.0.0`, `::` and `*` are **refused**. Publishing an operator interface on every interface a NAS has is a
   decision someone makes, not one they inherit from a default.

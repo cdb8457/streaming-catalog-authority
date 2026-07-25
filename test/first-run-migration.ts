@@ -61,7 +61,23 @@ console.log('Running Phase 253 first-run migration suite:\n');
 // Static: the Compose ordering IS the fail-closed guarantee, so it is asserted structurally.
 // ---------------------------------------------------------------------------------------------------------
 
-for (const file of ['docker-compose.runtime.yml', 'docker-compose.arcane.yml']) {
+/**
+ * EVERY stack that starts a long-running operator UI. Named individually rather than globbed, because the
+ * point is that a reader can see the list is complete — and because the first pass of this phase fixed only
+ * the two consumer stacks and left both Unraid stacks with the very defect the phase exists to close. A glob
+ * would have hidden that; an enumeration makes an omission visible.
+ *
+ * `docker-compose.yml` (the CI harness) and `docker-compose.deploy.yml` (one-shot ops only) are deliberately
+ * absent: neither runs an operator UI, so neither has an app to gate.
+ */
+const STACKS_WITH_AN_APP: readonly string[] = [
+  'docker-compose.runtime.yml',        // ordinary computer, the one the release bundle ships
+  'docker-compose.arcane.yml',         // Arcane / Unraid, absolute host paths
+  'docker-compose.unraid.yml',         // canonical Unraid, builds from the repo
+  'docker-compose.unraid.runtime.yml', // Unraid launcher stack, prebuilt image + sidecar custody
+];
+
+for (const file of STACKS_WITH_AN_APP) {
   await test(`${file} runs the migration to completion before the app is allowed to start`, () => {
     const doc = compose(file);
     const migrate = service(doc, 'migrate');
@@ -91,17 +107,47 @@ for (const file of ['docker-compose.runtime.yml', 'docker-compose.arcane.yml']) 
       ? [] : stringList(migrate.volumes, 'migrate volumes');
     assert(!volumes.some((entry) => entry.includes('promotion-records')),
       'and never mounts the promotion records folder');
+
+    // SCHEMA HEALTH, as well as the ordering. The gate above covers a container Compose starts; this covers
+    // one started any other way — `docker run`, or a launcher that ignores depends_on — which is the shape
+    // the original defect actually arrived in.
+    const env = asMap(app.environment ?? null, 'app environment');
+    assertEq(env.OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA, '1',
+      'and the app refuses to report healthy until the schema is at the version this build requires');
+
+    // The migration must run the SAME build as the app, or a stack could migrate with one version and serve
+    // with another — which is a schema disagreement nobody would think to look for.
+    assertEq(migrate.image ?? null, app.image ?? null, 'the migration and the app run the same image reference');
+    assertEq(migrate.build ?? null, app.build ?? null, 'or are built from the same context');
   });
 }
 
-await test('the app health gate is armed in every shipped stack, so a container outside the ordering still fails closed', () => {
-  for (const file of ['docker-compose.runtime.yml', 'docker-compose.arcane.yml']) {
-    const app = service(compose(file), 'app');
-    const env = asMap(app.environment ?? null, `${file} app environment`);
-    assertEq(env.OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA, '1',
-      `${file} requires the schema before /healthz answers 200`);
-  }
-});
+// The manual one-shot is a SEPARATE surface and must stay one. Folding the startup gate into it would make
+// every hand-run `docker compose run --rm ops ...` a startup gate too, and a change to one would silently
+// change the other.
+for (const file of ['docker-compose.unraid.yml', 'docker-compose.unraid.runtime.yml']) {
+  await test(`${file} keeps its manual ops container separate from the startup migration`, () => {
+    const doc = compose(file);
+    const ops = service(doc, 'ops');
+    const migrate = service(doc, 'migrate');
+    assert(ops !== migrate, 'they are two services');
+    assertEq(ops.restart, 'no', 'the manual container is still one-shot');
+    assert(ops.ports === undefined, 'and still publishes nothing');
+    // Unchanged: it still defaults to the bare migration, which is what a maintainer invoking it by hand
+    // expects, and it keeps the mounts that make the doctor and backups usable.
+    assertEq(stringList(ops.command ?? null, 'ops command').join(' '), 'ops:migrate',
+      'the manual container keeps its own default command');
+    const opsVolumes = stringList(ops.volumes ?? null, 'ops volumes');
+    assert(opsVolumes.some((entry) => entry.includes('/backups')), 'and its backups mount');
+    // Nothing depends on `ops`: it is invoked, never started as part of `up`.
+    for (const [name, svc] of Object.entries(asMap(doc.services ?? null, 'services'))) {
+      const dependsOn = asMap(svc, `service ${name}`).depends_on;
+      if (dependsOn === undefined || dependsOn === null) continue;
+      assert(!Object.keys(asMap(dependsOn, `${name} depends_on`)).includes('ops'),
+        `${name} does not gate startup on the manual ops container`);
+    }
+  });
+}
 
 await test('a bare `ops:migrate` is still available, and is not what the stacks depend on', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };

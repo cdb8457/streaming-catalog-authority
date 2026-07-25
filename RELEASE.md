@@ -38,12 +38,13 @@ Behaviour changes to be aware of before upgrading:
 
 - **Schema version 3 → 4.** There are no down-migrations, so rolling back to `v1.1.0` or `v1.0.0` requires
   restoring a backup taken before the upgrade. See `docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md`.
-- **Both Unraid stacks now publish the operator UI to `127.0.0.1` by default** —
-  `docker-compose.unraid.runtime.yml` and `docker-compose.unraid.yml` — where they previously published on
-  every interface by omission. If you reach that UI from another machine on your LAN, set
-  `OPERATOR_UI_BIND_ADDRESS` to the server's LAN address before upgrading, or it will stop being reachable
-  from the network. The change is deliberately fail-safe — it restricts rather than exposes — but it is a
-  change, and it is the one thing here that can surprise a working installation.
+- **The Unraid stack now publishes the operator UI to `127.0.0.1` by default.**
+  `docker-compose.unraid.runtime.yml` previously published on every interface by omission. If you reach that
+  UI from another machine on your LAN, set `OPERATOR_UI_BIND_ADDRESS` to the server's LAN address before
+  upgrading, or it will stop being reachable from the network. The change is deliberately fail-safe — it
+  restricts rather than exposes — but it is a change, and it is the one thing here that can surprise a
+  working installation. (The repository's other, undocumented Unraid Compose file was given the same default
+  for consistency; see `docs/PHASE_253_FIRST_RUN_AND_ARCANE.md`.)
 - **`/healthz` answers 503 until the schema is present** in the shipped stacks
   (`OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA=1`). Any external monitor pointed at that route will now correctly
   report a container with an unmigrated database as unhealthy.
