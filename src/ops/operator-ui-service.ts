@@ -42,6 +42,12 @@ import {
   buildSupportReportEndpointResult,
   SUPPORT_REPORT_ROUTE,
 } from './operator-ui-support-report-endpoint.js';
+import {
+  BACKUP_SUMMARY,
+  backupComponents,
+  type BackupCommands,
+  type BackupComponent,
+} from './backup-components.js';
 
 export const OPERATOR_UI_SERVICE_DEFAULT_HOST = '0.0.0.0';
 export const OPERATOR_UI_SERVICE_DEFAULT_PORT = 8099;
@@ -780,6 +786,37 @@ function renderTroubleshooting(entries: readonly TroubleshootingEntry[]): string
   return `<ul class="list steps">${entries.map(row).join('')}</ul>`;
 }
 
+/**
+ * Phase 256 — Backup & restore, rendered server-side from the one component model.
+ *
+ * Server-rendered and token-free for the same reason the checklist is: the person who most needs to read
+ * "here is what a complete backup is" is often the person who cannot log in, and a backup instruction that
+ * requires a working installation to read is a backup instruction nobody reads before they need it.
+ *
+ * Every string comes from `backup-components.ts`. This function chooses layout and escapes; it invents no
+ * guidance, so the panel cannot drift from the checklist step, the support report or the lifecycle document.
+ */
+function renderBackupComponents(components: readonly BackupComponent[]): string {
+  // Two identical blocks under two headings makes a reader hunt for a difference that is not there, so a
+  // command that is the same on both platforms is labelled as such — the same rule `renderCommands` follows.
+  const block = (what: string, pair: BackupCommands): string => {
+    const one = (label: string, command: string): string =>
+      `<div class="cmd"><span>${escapeHtml(label)}</span><code>${escapeHtml(command)}</code></div>`;
+    const inner = pair.posix === pair.windows
+      ? one(what, pair.posix)
+      : one(`${what} — Linux / macOS`, pair.posix) + one(`${what} — Windows (PowerShell)`, pair.windows);
+    return `<div class="cmds">${inner}</div>`;
+  };
+  const item = (component: BackupComponent): string =>
+    `<li id="backup-${escapeHtml(component.id)}"><strong>${escapeHtml(component.title)}</strong>`
+    + `<p class="muted">${escapeHtml(component.what)}</p>`
+    + `<p><em>Without it.</em> ${escapeHtml(component.lostWithout)}</p>`
+    + block('Back up', component.backup)
+    + block('Restore', component.restore)
+    + `<p class="hint">${escapeHtml(component.caveat)}</p></li>`;
+  return `<ul class="list steps">${components.map(item).join('')}</ul>`;
+}
+
 function buildOperatorUiServiceHtml(): string {
   return `<!doctype html>
 <html lang="en">
@@ -792,7 +829,7 @@ function buildOperatorUiServiceHtml(): string {
 <body>
 <div class="shell">
 <header><h1>Catalog Authority</h1>
-<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#status-panel">Status</a><a href="#support-panel">Support report</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
+<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#status-panel">Status</a><a href="#backup-panel">Backup &amp; restore</a><a href="#support-panel">Support report</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
 <div class="badge">read-only operator UI</div></header>
 <main>
 <section class="panel">
@@ -833,6 +870,13 @@ below.</p>
 a token — the person who cannot log in is the person who needs the "read your token" line.</p>
 ${renderChecklist(firstRunChecklist())}
 <p class="hint">${escapeHtml(REPOSITORY_COMPOSE_NOTE)}</p>
+</section>
+<section class="panel wide" id="backup-panel">
+<h2>Backup &amp; restore</h2>
+<p>${escapeHtml(BACKUP_SUMMARY)}</p>
+<p class="muted">Readable without a token, deliberately: the moment you need this is not always a moment when
+you can log in. Run the commands from the folder your <code>docker-compose.yml</code> is in.</p>
+${renderBackupComponents(backupComponents())}
 </section>
 <section class="panel wide" id="trouble-panel">
 <h2>Troubleshooting</h2>

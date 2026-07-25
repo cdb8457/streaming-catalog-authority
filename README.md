@@ -206,6 +206,16 @@ backup alone yields a *fail-closed* system. Before it is usable an operator must
 `crypto_config` (matching the external custodian). Until both are supplied, reads fail closed and
 shred completions cannot verify — by design.
 
+**What an operator has to copy, as opposed to what this policy dumps.** The exclusions above are a
+confidentiality decision about the *artifact*; they are not a backup plan. A complete backup of a running
+installation is four things — the database, the custodian keystore, the secret files and the promotion record
+artifacts — and the keystore is the one whose absence fails silently: the database restores, every check
+passes, and nothing can be decrypted. The list is `src/ops/backup-components.ts`, rendered into the operator
+UI's **Backup & restore** panel, the first-run checklist and
+`docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md` from that one source. `npm run ops:backup-inspect`
+checks a backup directory offline. See `docs/PHASE_256_COMPLETE_BACKUP.md` and
+`docs/PHASE_257_BACKUP_INSPECT.md`.
+
 Two invariants are proven by `test/backup.ts`: a restored backup **cannot resurrect shredded
 identity** (the destroyed key's tombstone lives in the separate keystore; reads fail closed and
 the reconciler re-drives `forget`), and **expired behavioral events do not return** after restore

@@ -39,8 +39,8 @@ Phases 245–254 made the product *installable* by a stranger. What they did not
 * **Coverage enforced against the shipped Compose stacks.** A stack that gains a named volume or a secret and
   does not classify it as backup-required or explicitly regenerable fails a test. That is the anti-regression
   for the class of defect this phase fixes: a volume existed that nobody's backup instructions mentioned.
-* The checklist step, a new Backup & restore panel, the support report and the lifecycle doc all render from
-  the one model, so they cannot disagree again.
+* The checklist step, a new Backup & restore panel, the troubleshooting table and the lifecycle doc all
+  render from the one model, so they cannot disagree again.
 
 ## Phase 257 — is the backup you have still a rollback point?
 

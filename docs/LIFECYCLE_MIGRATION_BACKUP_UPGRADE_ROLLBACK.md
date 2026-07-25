@@ -82,28 +82,52 @@ Fix what it names and run `docker compose up -d` again. Repeating it is always s
 
 ## Backup
 
-**Two things cannot be regenerated: your secrets and your database.** Everything else — the image, the Compose
-file, the bundle — is downloadable again.
+**A complete backup is four things.** None of them can be downloaded again. Everything else — the image, the
+Compose file, the bundle — is.
+
+This list used to say two ("your secrets and your database"), and the operator-facing checklist said the same.
+That was wrong in the way that matters: it was a *closed* list, so nobody went looking for a third thing. See
+`PHASE_256_COMPLETE_BACKUP.md`. The authoritative list now lives in `src/ops/backup-components.ts`, and the
+checklist step, the **Backup & restore** panel and this document all render from it.
+
+| # | Component | What is lost without it |
+| --- | --- | --- |
+| 1 | **The database** | Everything this installation has ever recorded. |
+| 2 | **The custodian keystore** | The database restores and *nothing in it can be decrypted*. The service starts, passes its checks, and reads nothing. |
+| 3 | **The secret files** | The KEK unwraps nothing, shred completion can never verify, and PostgreSQL refuses the password its volume was initialised with. |
+| 4 | **The promotion record artifacts** | The evidence you loaded. This product never produced those files and cannot recreate them. |
 
 ```
 docker compose exec -T postgres pg_dump -U postgres catalog > ./catalog-backup.sql
+docker compose cp app:/var/lib/catalog/keystore ./keystore-backup
+cp -a ./secrets ./secrets-backup
+cp -a ./promotion-records ./promotion-records-backup
 ```
 
-and copy the whole `./secrets/` directory somewhere safe.
+Take all four **before every upgrade**. The dump is the only thing that can return you to the previous schema,
+for the reason in the rollback section — and the keystore from the *same* backup is the only thing that makes
+the restored dump readable.
 
-Take both **before every upgrade**. The dump is the only thing that can return you to the previous schema, for
-the reason in the rollback section.
+A database dump deliberately does **not** contain your key material: the custodian keystore is kept apart
+precisely so that a database backup is not also a key backup. That is a good decision and it is exactly why
+the keystore has to be backed up on purpose. Treat the copy the way you would treat a key.
 
-A database dump deliberately does **not** contain your key material: the custodian keystore lives on its own
-volume precisely so that a database backup is not also a key backup. Back the keystore up separately, and
-treat it with the care you would treat a key.
+**On the Unraid launcher stack the keystore is somewhere else.** That stack runs the custodian as a sidecar
+whose `SIDECAR_STATE_DIR` holds the same material, under your appdata directory. Same consequence, second
+place to forget. Copy it directly, with the stack stopped.
+
+### Checking a backup before you need it
+
+`npm run ops:backup-inspect` reads a backup directory offline — no database, no network — and reports which
+of the four components are present and which schema version the dump holds. See
+`PHASE_257_BACKUP_INSPECT.md`. A backup nobody has ever looked at is a hope, not a rollback plan.
 
 ---
 
 ## Upgrade
 
 1. Read the release notes for the version you are moving to.
-2. **Back up.** Database dump and `./secrets/`.
+2. **Back up all four components.** Database dump, keystore, `./secrets/`, `./promotion-records/`.
 3. `docker compose down`
 4. Edit `CATALOG_AUTHORITY_IMAGE` in `.env` to the new version tag or digest. Alternatively, extract the new
    bundle alongside the old one and copy your `secrets/` and `promotion-records/` folders across.
@@ -140,13 +164,18 @@ schema is how data gets quietly corrupted, and this product would rather stop.
 So the honest sequence is:
 
 1. `docker compose down`
-2. Restore the database dump you took **before you upgraded**.
+2. Restore the database dump you took **before you upgraded**, and the **keystore from that same backup**.
+   The two belong together: a dump restored beside a newer keystore, or beside no keystore, gives you an
+   installation that starts and cannot read anything.
 3. Set `CATALOG_AUTHORITY_IMAGE` back to the previous version.
 4. `docker compose up -d`
 
 **Without that backup, the rollback is not available.** No command in this product can synthesise one, and
 nothing here will pretend otherwise. That is the entire reason "back up before you upgrade" is a step rather
 than a suggestion.
+
+`ops:backup-inspect` will tell you which schema version a dump holds before you rely on it, so "the backup I
+took before I upgraded" is something you can check rather than something you remember.
 
 ### Which upgrades change the schema
 
@@ -170,7 +199,7 @@ New installs generate a separate credential for the least-privileged `app` role 
 created. A re-run of the setup script **keeps** an existing `database_url` rather than regenerating it, so
 your existing install is not changed underneath you. To move it across deliberately:
 
-1. Back up (database and `./secrets/`).
+1. Back up all four components (see **Backup** above).
 2. `docker compose down`
 3. Delete `./secrets/database_url` and `./secrets/app_password`.
 4. Re-run the setup script (`./setup.sh`, or `./deploy/local-runtime-setup.sh` in a checkout). It regenerates

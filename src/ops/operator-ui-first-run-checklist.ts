@@ -15,6 +15,8 @@
 // A maintainer running from a checkout needs `-f docker-compose.runtime.yml` on every compose command, which
 // is stated once rather than doubling every entry.
 
+import { backupComponent, BACKUP_SUMMARY } from './backup-components.js';
+
 export type ChecklistStepId =
   | 'install-docker'
   | 'generate-secrets'
@@ -23,6 +25,7 @@ export type ChecklistStepId =
   | 'place-records'
   | 'refresh-ui'
   | 'back-up'
+  | 'restore'
   | 'upgrade'
   | 'roll-back'
   | 'stop-stack';
@@ -109,17 +112,33 @@ const STEPS: readonly ChecklistStep[] = [
   {
     id: 'back-up',
     title: 'Back up before you change anything',
-    why: 'Your secrets and your database are the two things an upgrade cannot regenerate. Copy ./secrets/ somewhere safe and dump the database. Do this BEFORE every upgrade, because an upgrade may migrate the schema and there are no down-migrations: this dump is the only way back to the previous schema.',
+    // Phase 256. This step used to say "your secrets and your database are the two things an upgrade cannot
+    // regenerate", which was not merely incomplete — it was a CLOSED list, and a closed list is what stopped
+    // anybody going to look for a third thing. The keystore is the third thing, and leaving it out is the one
+    // omission that fails silently: the database restores and nothing in it can be decrypted.
+    why: `${BACKUP_SUMMARY} The Backup & restore panel on this page has the command for each, for your `
+      + 'platform. Do all four BEFORE every upgrade, because an upgrade may migrate the schema and there are '
+      + 'no down-migrations: the dump is the only way back to the previous schema.',
     commands: {
-      posix: 'docker compose exec -T postgres pg_dump -U postgres catalog > ./catalog-backup.sql',
-      windows: 'docker compose exec -T postgres pg_dump -U postgres catalog > .\\catalog-backup.sql',
+      posix: backupComponent('database').backup.posix,
+      windows: backupComponent('database').backup.windows,
     },
+    firstRun: false,
+  },
+  {
+    id: 'restore',
+    title: 'Restore from a backup',
+    why: 'Stop the stack first, restore all four components, then start it. Restoring the database without '
+      + 'the keystore that goes with it produces an installation that starts, reports itself healthy, and '
+      + 'cannot read anything — so the two must come from the SAME backup. The Backup & restore panel has '
+      + 'each command and states what each one will not do.',
+    commands: { posix: 'docker compose down', windows: 'docker compose down' },
     firstRun: false,
   },
   {
     id: 'upgrade',
     title: 'Upgrade to a new release',
-    why: 'Back up first, then edit CATALOG_AUTHORITY_IMAGE in .env to the new version tag or digest and bring the stack back up. Your secrets and artifacts are untouched by an image change; your database may be MIGRATED by the new version, automatically, before its UI starts. That is the step a backup exists for.',
+    why: 'Back up all four components first, then edit CATALOG_AUTHORITY_IMAGE in .env to the new version tag or digest and bring the stack back up. Your secrets, keystore and artifacts are untouched by an image change; your database may be MIGRATED by the new version, automatically, before its UI starts. That is the step a backup exists for.',
     commands: {
       posix: 'docker compose down && docker compose up -d',
       windows: 'docker compose down; docker compose up -d',
@@ -129,7 +148,7 @@ const STEPS: readonly ChecklistStep[] = [
   {
     id: 'roll-back',
     title: 'Roll back to the previous release',
-    why: 'Set CATALOG_AUTHORITY_IMAGE in .env back to the previous value and start again. It works because the pin is a version tag or a digest, never `latest`. THE LIMIT: rolling the image back does not roll data back, and there are no down-migrations. If the newer version migrated your database, the older image will refuse to serve against it — correctly, because it does not understand that schema. Restore the backup you took before the upgrade, then start the older image. Without that backup the rollback is not available, and no command in this product can synthesise one.',
+    why: 'Set CATALOG_AUTHORITY_IMAGE in .env back to the previous value and start again. It works because the pin is a version tag or a digest, never `latest`. THE LIMIT: rolling the image back does not roll data back, and there are no down-migrations. If the newer version migrated your database, the older image will refuse to serve against it — correctly, because it does not understand that schema. Restore the dump AND the keystore from the backup you took before the upgrade — the two must come from the same one — then start the older image. Without that backup the rollback is not available, and no command in this product can synthesise one.',
     commands: {
       posix: 'docker compose down && docker compose up -d',
       windows: 'docker compose down; docker compose up -d',
@@ -162,7 +181,8 @@ export type TroubleshootingId =
   | 'migration-failed'
   | 'ready-no-records'
   | 'bind-source-not-found'
-  | 'not-reachable-from-network';
+  | 'not-reachable-from-network'
+  | 'restored-but-nothing-decrypts';
 
 export interface TroubleshootingEntry {
   readonly id: TroubleshootingId;
@@ -271,6 +291,23 @@ const TROUBLESHOOTING: readonly TroubleshootingEntry[] = [
     likelyCause: 'The UI is published to loopback, which means the server itself and no other machine. This is the default, and it is not a fault.',
     fix: 'Set OPERATOR_UI_BIND_ADDRESS to that server\'s LAN address and restart, understanding that this puts an operator interface on your network. If you would rather not, reach it over an SSH tunnel instead. Do not set it to 0.0.0.0 to make the problem go away: that publishes it on every interface the server has, including ones you were not thinking about.',
     commands: null,
+  },
+  {
+    id: 'restored-but-nothing-decrypts',
+    symptom: 'A restore finished, the stack starts, the panels look fine — and no item can be read. Reads '
+      + 'fail closed rather than returning anything wrong.',
+    likelyCause: 'The custodian keystore was not restored, or was restored from a different backup than the '
+      + 'database. The keystore holds the wrapped data-encryption keys and is deliberately NOT inside the '
+      + 'database dump, so a backup taken as "dump plus secrets" does not contain it. Until Phase 256 the '
+      + 'first-run checklist did not mention it either, so a correctly followed instruction produced an '
+      + 'incomplete backup.',
+    fix: 'Restore the keystore from the SAME backup as the dump, with the stack stopped, then start it '
+      + 'again. If that copy does not exist, the keys are gone and this product cannot regenerate them — '
+      + 'nothing here will pretend otherwise. The Backup & restore panel has the exact command.',
+    commands: {
+      posix: 'docker compose down && docker compose cp ./keystore-backup/. app:/var/lib/catalog/keystore',
+      windows: 'docker compose down; docker compose cp .\\keystore-backup\\. app:/var/lib/catalog/keystore',
+    },
   },
 ];
 
