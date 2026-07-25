@@ -1,10 +1,11 @@
 # v1.1.1 handoff — first-run remediation
 
-Commit `63624c0` on `cdb8457/v1-1-1-arcane-first-run`, branched from `22a78b9`. PR
+Commits `63624c0`, `5e229ef`, `82e9c32` on `cdb8457/v1-1-1-arcane-first-run`, branched from `22a78b9`. PR
 [#23](https://github.com/cdb8457/streaming-catalog-authority/pull/23) → `master`. **Not merged, not tagged,
 not published.**
 
-36 files, +3211 / −86.
+**Real CI on `82e9c32` is GREEN** — all six jobs pass, publish correctly skipped
+([run 30138580795](https://github.com/cdb8457/streaming-catalog-authority/actions/runs/30138580795)).
 
 ---
 
@@ -64,8 +65,10 @@ asserted by test. Ordinary-computer release Compose behaviour unchanged.
 
 Arcane stack **requires** `OPERATOR_UI_BIND_ADDRESS`, refuses `0.0.0.0`/`::`/`*` and hostnames; loopback is an
 ADVISORY that says outright it is not remotely reachable and offers a tunnel.
-`docker-compose.unraid.runtime.yml` now defaults to `127.0.0.1` instead of publishing on every interface by
-omission — **fail-safe but a behaviour change**, flagged in `RELEASE.md`.
+**Both** Unraid stacks — `docker-compose.unraid.runtime.yml` and `docker-compose.unraid.yml` — now default to
+`127.0.0.1` instead of publishing on every interface by omission. (The canonical one was missed in the first
+pass; fixing the defect in one of the two places it lives is not fixing it.) **Fail-safe but a behaviour
+change**, flagged in `RELEASE.md`.
 
 ---
 
@@ -74,21 +77,47 @@ omission — **fail-safe but a behaviour change**, flagged in `RELEASE.md`.
 | | |
 | --- | --- |
 | Typecheck | clean |
-| Full suite | **262 / 276 suites pass** (all 276 executed individually) |
+| Full suite | **262 / 276 suites pass** locally (all 276 executed individually); green in CI |
 | New adversarial suites | `test/first-run-migration.ts` 17/17, `test/arcane-install.ts` 24/24 |
 | Phase 242–252 | phase242/243/244/245/246/247/248/249/250/251/252-local all pass |
 | Release | delivery 26, readiness 41, verification 38, rehearsal 34, guard 10, versioned-cut 5 — all 0 failed |
 | Bundle | assembles, archives, **VERIFIED** as `catalog-authority-operator-ui-v1.1.1.tar.gz` |
 | `ops:release-readiness` | 20 pass, 0 block, 1 NOT_RUN (the `v1.1.1` tag — deliberately not created) |
-| Compose | all six files parse; `docker compose config` not runnable (no daemon) |
+| Compose | all seven files parse; `docker compose config` resolves every one, and the Arcane stack refuses without its required variables |
 
-### Skips — no Docker daemon on this machine
+### The local skips are now closed by real CI
 
-`acceptance:release-candidate`, `acceptance:release-lifecycle` → **exit 3, the documented SKIP path**.
-`smoke:runtime-image` cannot reach the daemon. Browser and lifecycle acceptance therefore **were not
-executed here** and are required in CI (`release-candidate`, `lifecycle`, `image` jobs). A new CI step
-exercises the Arcane stack both ways: refuses to resolve without its variables, resolves with them, preflight
-passes, and preflight rejects a wildcard bind.
+They could not run on this machine (no Docker daemon) and exited 3 on the documented SKIP path. All of them
+have since run for real on `82e9c32` and passed:
+
+| CI job | Result |
+| --- | --- |
+| Typecheck and Phase 242-253 suites | success |
+| Build and smoke the production image | success |
+| Release-candidate acceptance (real browser, real Compose) | success |
+| Release lifecycle acceptance (fresh, restart, upgrade, rollback) | success |
+| Assemble and validate the release bundle | success |
+| Final first-release rehearsal and handoff (Phase 252) | success |
+| Publish the release image and asset | **skipped** (correct — nothing is published from a PR) |
+
+The daemon-backed smoke log confirms the new assertions actually executed rather than being skipped:
+`migrate exited 0 having verified the runtime connection can read the schema`, `a working install with an
+empty records folder reports READY_NO_RECORDS`, `and states what an empty folder does NOT mean`, `the
+database was reached AND is migrated to the version this build requires`.
+
+### The one CI failure, and what it taught
+
+The first CI run failed `Build and smoke the production image` on `the readiness route returned no bounded
+state`: the shell smoke carried its own hard-coded list of three verdicts and Phase 253 added a fourth.
+
+More interesting were the two surfaces that did **not** go red. The browser acceptance spec matched
+`/READY|NEEDS_SETUP|DEGRADED/` against a badge reading `READY - NO RECORDS LOADED` and passed **on the
+prefix** — asserting nothing while looking green. Four places independently enumerated a set the type system
+owns, and a type cannot reach a shell script.
+
+Fixed at the root: `INSTALLATION_STATES` is now data with the type derived from it, and a test walks it
+against every surface that enumerates states. The acceptance spec's pattern is anchored so the set is closed.
+Both new guards were mutation-checked — reverting each fix makes them fail.
 
 ### Pre-existing failures (NOT introduced here)
 
