@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -251,6 +251,26 @@ await test('a partial secrets copy does NOT satisfy the component, and the backu
   for (const value of REQUIRED_SECRET_FILES.map((s) => `NEVER-READ-THIS-${s.toUpperCase()}`)) {
     assert(!JSON.stringify(result).includes(value), 'and no content escaped');
   }
+});
+
+// "Present" was a name in a directory listing plus a non-zero size, and neither of those means "a secret".
+// A DIRECTORY named operator_ui_token reports a size of 4096 on ext4, so it satisfied both halves and the
+// backup reported CURRENT while containing no operator token at all.
+await test('a DIRECTORY named like a required secret does not count, and the backup is INCOMPLETE', () => {
+  const dir = makeBackup({ ...COMPLETE, dump: plainDump(MIGRATION_VERSION) });
+  const token = join(dir, 'secrets-backup', 'operator_ui_token');
+  rmSync(token);
+  mkdirSync(token, { recursive: true });
+  // Non-empty, so that nothing about this is rescued by a size check.
+  writeFileSync(join(token, 'not-a-secret.txt'), 'content, but in the wrong shape');
+  const result = inspectBackupDirectory(dir);
+  assertEq(result.verdict, 'INCOMPLETE', 'a directory with the right name is not the secret');
+  assertEq(result.ok, false, 'so it blocks');
+  assertEq(result.missing.join(','), 'secrets', 'and the secrets component is missing');
+  const secrets = result.artifacts.find((entry) => entry.kind === 'SECRETS_COPY')!;
+  assertEq(secrets.component, null, 'the copy satisfies nothing');
+  assert(/NOT A REGULAR FILE/.test(secrets.detail), 'the detail says what is wrong with it');
+  assert(secrets.detail.includes('operator_ui_token'), 'and names it');
 });
 
 await test('one required file present is recognised but never accepted', () => {
@@ -596,6 +616,34 @@ await linkTest(SYMLINK_NAME, () => {
 // The symlink refusal has to hold one level down as well. A directory whose `keys` is a link to somewhere
 // else was previously accepted as a keystore on the strength of the NAME, and its entries were then counted
 // by following the link — so the "no symlink is followed" claim was true of top-level entries only.
+// A symlink's `lstat` size is the length of its target path, so it is non-zero too. This one points at a real
+// non-empty file, which is the version most likely to look fine: following it would make the backup pass on
+// the strength of a file that is not in the backup.
+await linkTest('a LINK named like a required secret does not count, even pointing at a real file', () => {
+  const dir = makeBackup({ ...COMPLETE, dump: plainDump(MIGRATION_VERSION) });
+  const elsewhere = workspace();
+  const realSecret = join(elsewhere, 'the-actual-token');
+  writeFileSync(realSecret, 'NEVER-READ-THIS-LINKED-TOKEN');
+  const token = join(dir, 'secrets-backup', 'operator_ui_token');
+  rmSync(token);
+  // A FILE symlink is the interesting case and needs elevation on Windows; a directory link needs neither and
+  // exercises the same production property, `lstat().isFile()` being false. Whichever this platform allows,
+  // the entry is a link and must not count.
+  try {
+    symlinkSync(realSecret, token, 'file');
+  } catch {
+    makeLink(elsewhere, token);
+  }
+  const result = inspectBackupDirectory(dir);
+  assertEq(result.verdict, 'INCOMPLETE', 'a link with the right name is not the secret');
+  assertEq(result.missing.join(','), 'secrets', 'and the secrets component is missing');
+  const secrets = result.artifacts.find((entry) => entry.kind === 'SECRETS_COPY')!;
+  assertEq(secrets.component, null, 'the copy satisfies nothing');
+  assert(/NOT A REGULAR FILE/.test(secrets.detail), 'the detail says what is wrong with it');
+  assert(secrets.detail.includes('operator_ui_token'), 'and names it');
+  assert(!JSON.stringify(result).includes('NEVER-READ-THIS-LINKED-TOKEN'), 'and the link target was not read');
+});
+
 await linkTest('a keystore whose keys subdirectory is a link is not claimed as a keystore', () => {
   const dir = makeBackup({ secrets: true, dump: plainDump(MIGRATION_VERSION) });
   const fake = join(dir, 'keystore-backup');

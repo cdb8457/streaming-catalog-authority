@@ -291,24 +291,46 @@ function inspectDirectoryEntry(path: string, name: string): InspectedArtifact {
   // CURRENT — a verdict of "complete" over a set of secrets that cannot start the stack. The count was even
   // printed in the detail, and the verdict ignored it.
   //
-  // So: any required name present makes it a secrets copy, and only ALL of them, non-empty, satisfies the
-  // component. An empty file counts as absent, because an empty secret restores as no secret at all.
-  if (REQUIRED_SECRET_FILES.some((secret) => set.has(secret))) {
-    const missing = REQUIRED_SECRET_FILES.filter((secret) => !set.has(secret));
-    const empty = REQUIRED_SECRET_FILES.filter((secret) => set.has(secret) && sizeOf(join(path, secret)) === 0);
-    if (missing.length === 0 && empty.length === 0) {
+  // So: any required NAME present makes it a secrets copy, and only all of them — each an actual regular
+  // file with something in it — satisfies the component.
+  //
+  // "PRESENT" IS NOT A NAME IN A LISTING. Testing membership of the directory listing and then taking a size
+  // accepted things that are not secrets at all, and which of them slipped through depended on the platform —
+  // measured, not assumed:
+  //
+  //   * on Linux a DIRECTORY named `operator_ui_token` lstats at 4096, so it read as present and non-empty;
+  //   * on Windows a directory lstats at 0 and would have been called EMPTY, but a JUNCTION lstats at 48 (the
+  //     length of its target path), so the LINK is the one that slipped through there.
+  //
+  // Either way a backup reported CURRENT while containing no such secret, on every platform, by one route or
+  // the other. Each required name is now `lstat`ed and has to be `isFile()` with a size above zero, which is
+  // a property neither a directory nor a link has anywhere.
+  //
+  // `lstat`, NOT `stat`, deliberately: a symbolic link named like a secret is not the secret, even when it
+  // points at a real one. Following it would let a link outside the backup decide whether the backup counts,
+  // which is the same boundary every other entry here is held to.
+  const secretStates = REQUIRED_SECRET_FILES.map((secret) => [secret, requiredSecretState(join(path, secret))] as const);
+  if (secretStates.some(([, state]) => state !== 'MISSING')) {
+    const named = (want: RequiredSecretState): readonly string[] =>
+      secretStates.filter(([, state]) => state === want).map(([secret]) => secret);
+    const missing = named('MISSING');
+    const notFile = named('NOT_A_FILE');
+    const empty = named('EMPTY');
+    if (missing.length === 0 && notFile.length === 0 && empty.length === 0) {
       return artifact(name, 'SECRETS_COPY', 'secrets', null,
-        `A complete secrets copy: all ${REQUIRED_SECRET_FILES.length} files a restore needs are present and `
-        + 'non-empty. None of them was opened.');
+        `A complete secrets copy: all ${REQUIRED_SECRET_FILES.length} files a restore needs are present, are `
+        + 'regular files, and are not empty. None of them was opened.');
     }
     const faults = [
       ...(missing.length === 0 ? [] : [`missing ${missing.join(', ')}`]),
+      ...(notFile.length === 0 ? [] : [`NOT A REGULAR FILE ${notFile.join(', ')}`]),
       ...(empty.length === 0 ? [] : [`EMPTY ${empty.join(', ')}`]),
     ].join('; ');
     return artifact(name, 'SECRETS_COPY', null, null,
       `An INCOMPLETE secrets copy — ${faults}. A restore needs every one of the `
-      + `${REQUIRED_SECRET_FILES.length} required files, and an empty file restores as no secret at all, so `
-      + 'this does NOT count as the secrets component. None of them was opened.');
+      + `${REQUIRED_SECRET_FILES.length} required files as a real, non-empty file: a directory or a link with `
+      + 'one of those names is not the secret, and an empty file restores as no secret at all. This does NOT '
+      + 'count as the secrets component. None of them was opened.');
   }
 
   const jsonCount = children.filter((child) => child.toLowerCase().endsWith('.json')).length;
@@ -381,8 +403,26 @@ function artifact(
   return { name: basename(name), kind, component, schemaVersion, detail };
 }
 
-function sizeOf(path: string): number {
-  try { return lstatSync(path).size; } catch { return -1; }
+/** What one required secret file actually is on disk. Anything that is not a real, non-empty file is a fault. */
+type RequiredSecretState = 'OK' | 'MISSING' | 'NOT_A_FILE' | 'EMPTY';
+
+/**
+ * Inspect one required secret WITHOUT opening it.
+ *
+ * `lstat` rather than `stat`, so a symbolic link is reported as what it is rather than as whatever it points
+ * at. `isFile()` is the check that matters: a size test alone accepted a directory on Linux (4096) and a link
+ * on Windows (48 — the length of its target path), so on every platform something that is not a secret got
+ * through by one route or the other.
+ */
+function requiredSecretState(path: string): RequiredSecretState {
+  let stat: ReturnType<typeof lstatSync>;
+  try {
+    stat = lstatSync(path);
+  } catch {
+    return 'MISSING';
+  }
+  if (!stat.isFile()) return 'NOT_A_FILE';
+  return stat.size === 0 ? 'EMPTY' : 'OK';
 }
 
 /** A directory in its own right. False for a symbolic link to one, which is the point. */

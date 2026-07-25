@@ -80,8 +80,19 @@ would report a problem on most installs. The absence is stated in the limits ins
   start the stack. The count was even printed in the detail, and the verdict ignored it. That is exactly the
   Phase 256 failure mode, reproduced inside the checker built to catch it.
 
-  Now: any required name present makes it a **secrets copy**, and only **all six, non-empty**, satisfies the
-  **component**. An empty file counts as absent, because an empty secret restores as no secret at all. An
+  Now: any required name present makes it a **secrets copy**, and only **all six, each a real non-empty
+  file**, satisfies the **component**. An empty file counts as absent, because an empty secret restores as no
+  secret at all.
+
+  **"Present" is not a name in a directory listing.** Testing listing membership and then taking a size
+  accepted things that are not secrets, and which one slipped through depended on the platform — measured,
+  not assumed: on Linux a **directory** named `operator_ui_token` lstats at 4096, so it read as present and
+  non-empty; on Windows a directory lstats at 0 and would have been called empty, but a **junction** lstats
+  at 48, the length of its target path, so there the **link** is what got through. Either way a backup
+  reported `CURRENT` while containing no such secret, on every platform, by one route or the other. Each
+  required name is now `lstat`ed and must be `isFile()` with a size above zero — a property neither a
+  directory nor a link has anywhere — and `lstat` rather than `stat` because a link named like a secret is
+  not the secret even when it points at a real one. An
   incomplete copy is reported as incomplete, names which files are missing or empty, and does not count — so
   the backup reads `INCOMPLETE` rather than `CURRENT`. The required six are pinned by a test to exactly what
   every shipped Compose stack declares as a secret, so a stack that starts requiring a seventh cannot leave
@@ -208,14 +219,14 @@ run; no provider, media server or library is contacted; no part of Phase 231 is 
 
 ## Tests
 
-`test/backup-inspect.ts` — 56 checks and one reported skip, run in CI as `test:phase257-local`: every
+`test/backup-inspect.ts` — 58 checks and one reported skip, run in CI as `test:phase257-local`: every
 verdict including `AHEAD` and each way of
 reaching `INDETERMINATE`, the Phase 256 omission caught as `INCOMPLETE`, records not counting as required,
 `COPY` column lists read rather than assumed, CRLF dumps, both `INSERT` forms, a similarly-named table not
 mistaken for `schema_meta`, a COPY block split across a streaming chunk boundary at every offset in a window around it, the carry
 bound refusing a line that outlasts a window and a file with no newline at all, a long-but-bounded line still
 being read, a multi-byte character split across a window, a keystore whose `keys` is a link not counting (skipped by name, both of them, where no link can be made), a partial secrets copy refusing to satisfy the component
-and naming what is missing, a lone recognised name never accepted, an optional credential changing nothing, the scan bound reported as a
+and naming what is missing, a directory and a link named like a required secret each producing INCOMPLETE, a lone recognised name never accepted, an optional credential changing nothing, the scan bound reported as a
 question rather than an absence, no secret value reaching the output, an empty secret named, symlinks refused
 and not followed, no path echoed, every argument-resolution refusal, the CLI's four exit codes driven as a
 real process, the panel command carrying `--no-deps` and `:ro`, and the live `schema_meta` proof.
