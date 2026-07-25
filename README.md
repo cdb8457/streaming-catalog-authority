@@ -69,6 +69,29 @@ interface by default, and loopback on a headless server means that server only.
 Your artifact folder is mounted **read-only**; the UI performs no mutation, approval, execution or deletion,
 and contacts no media server or provider.
 
+## Fill the catalog, then browse it
+
+An empty catalog is a healthy state. To put your own records in, write a snapshot file into `./import/` (the
+release bundle ships `example-catalog-snapshot.json` to copy there; from a checkout, the setup script creates
+the folder). Then look at what it would do — this writes **nothing**:
+
+```bash
+docker compose exec app npm run ops:catalog-import -- --file my-library.json
+```
+
+When the preview is what you expected, add `--apply`. Then open the **Catalog** panel in the UI to search,
+sort, filter and page through what you imported.
+
+Re-running the same file changes nothing: item identities are derived from the file's own `source` and
+`externalId`, so an import is idempotent and cannot duplicate a record. The folder is mounted **read-only**,
+the import reads exactly one file and contacts no provider, media server, library or network endpoint, and a
+record whose item was previously forgotten is reported blocked rather than silently resurrected. Reports carry
+counts and per-record digests only — never a title, a provider ref value or a path.
+
+The format, its bounds and every design decision:
+[docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md](docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md).
+The browser: [docs/PHASE_260_CATALOG_BROWSER.md](docs/PHASE_260_CATALOG_BROWSER.md).
+
 - Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
 - Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
 

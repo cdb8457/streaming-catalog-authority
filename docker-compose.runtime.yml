@@ -150,6 +150,12 @@ services:
       OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
       # The fixed container path the promotion record artifacts are mounted at, read-only.
       PROMOTION_RECORDS_DIR: /var/lib/catalog/promotion-records
+      # Phase 259. The fixed container path YOUR catalog snapshot folder is mounted at, READ-ONLY. Every
+      # `ops:catalog-import` run resolves its `--file` inside this directory, after symlinks, so a snapshot
+      # cannot name a path outside the folder you mounted for it. Change the host side with
+      # CATALOG_IMPORT_HOST_DIR and restart. Nothing about it is chosen from a browser: the import is a
+      # command an operator runs, and the UI only ever reads what it produced.
+      CATALOG_IMPORT_DIR: /var/lib/catalog/import
       # WHAT THE BUNDLE BELIEVES IT DEPLOYED, and the reference it asked Docker for. Neither of these is the
       # image's own claim about itself — that is baked into the image by Dockerfile.runtime and cannot be set
       # from here. Two independent declarations is the whole point: the UI compares them and reports MISMATCH
@@ -166,6 +172,9 @@ services:
     volumes:
       # YOUR folder, mounted READ-ONLY. The container cannot write, rename or delete anything in it.
       - ${PROMOTION_RECORDS_HOST_DIR:-./promotion-records}:/var/lib/catalog/promotion-records:ro
+      # YOUR catalog snapshots, mounted READ-ONLY for the same reason: an import reads a file you wrote and
+      # has no business being able to change it.
+      - ${CATALOG_IMPORT_HOST_DIR:-./import}:/var/lib/catalog/import:ro
       - keystore:/var/lib/catalog/keystore
     secrets:
       - admin_database_url

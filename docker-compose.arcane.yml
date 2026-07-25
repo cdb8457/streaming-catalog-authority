@@ -161,6 +161,8 @@ services:
       CUSTODIAN_KEK_FILE: /run/secrets/custodian_kek
       OPERATOR_UI_TOKEN_FILE: /run/secrets/operator_ui_token
       PROMOTION_RECORDS_DIR: /var/lib/catalog/promotion-records
+      # Phase 259. The fixed container path YOUR catalog snapshot folder is mounted at, READ-ONLY.
+      CATALOG_IMPORT_DIR: /var/lib/catalog/import
       CATALOG_AUTHORITY_BUNDLE_VERSION: ${CATALOG_AUTHORITY_BUNDLE_VERSION:-}
       CATALOG_AUTHORITY_IMAGE: ${CATALOG_AUTHORITY_IMAGE:-}
       OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA: "1"
@@ -170,6 +172,9 @@ services:
       # YOUR folder on the Unraid host, mounted READ-ONLY. The container cannot write, rename or delete
       # anything in it, and the path is fixed by configuration — no browser input chooses it.
       - ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/promotion-records:/var/lib/catalog/promotion-records:ro
+      # YOUR catalog snapshots, mounted READ-ONLY for the same reason: an import reads a file you wrote
+      # and has no business being able to change it.
+      - ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/import:/var/lib/catalog/import:ro
       - ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/keystore:/var/lib/catalog/keystore
     secrets:
       - admin_database_url

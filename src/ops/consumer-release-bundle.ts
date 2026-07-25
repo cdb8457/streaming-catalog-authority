@@ -173,6 +173,10 @@ function envFile(options: BundleOptions, imageRef: string): string {
     '# Where your Phase 231-240 chain artifacts live on THIS machine. Mounted read-only.',
     'PROMOTION_RECORDS_HOST_DIR=./promotion-records',
     '',
+    '# Where your catalog snapshots live on THIS machine. Mounted read-only; an import reads a file you',
+    '# wrote and has no business being able to change it. See import/example-catalog-snapshot.json.',
+    'CATALOG_IMPORT_HOST_DIR=./import',
+    '',
     '# The UI is published to loopback only. Change the bind address deliberately, and understand that any',
     '# other value exposes an operator interface to your network.',
     'OPERATOR_UI_BIND_ADDRESS=127.0.0.1',
@@ -195,6 +199,9 @@ function envExample(imageRef: string, tag: string): string {
     '',
     '# Host folder holding your promotion record artifacts (mounted read-only into the container).',
     'PROMOTION_RECORDS_HOST_DIR=./promotion-records',
+    '',
+    '# Host folder holding your catalog snapshots (mounted read-only into the container).',
+    'CATALOG_IMPORT_HOST_DIR=./import',
     '',
     '# Where the UI is published. 127.0.0.1 means "this machine only".',
     'OPERATOR_UI_BIND_ADDRESS=127.0.0.1',
@@ -362,6 +369,28 @@ one, so it cannot lock you out of a running stack.
 Put your chain artifacts in \`./promotion-records/\` (or point \`PROMOTION_RECORDS_HOST_DIR\` in \`.env\` at
 another folder). It is mounted **read-only** — the container cannot write, rename or delete anything in it.
 
+## Filling the catalog
+
+An empty catalog is a healthy, working installation. To put your own records in it, write a snapshot file
+into \`./import/\`. The archive ships \`example-catalog-snapshot.json\` next to this README as a complete,
+valid one to copy there. Then look at what it would do:
+
+\`\`\`
+docker compose exec app npm run ops:catalog-import -- --file example-catalog-snapshot.json
+\`\`\`
+
+That writes **nothing**. It reads the file, checks it against your database and prints what would happen.
+When the preview is what you expected, commit it by adding \`--apply\`:
+
+\`\`\`
+docker compose exec app npm run ops:catalog-import -- --file example-catalog-snapshot.json --apply
+\`\`\`
+
+Then open the **Catalog** panel in the UI. Re-running the same file changes nothing: item identities are
+derived from the file's own \`source\` and \`externalId\`, so an import is idempotent and cannot
+duplicate a record. The folder is mounted **read-only**, the import contacts no provider, media server or
+network endpoint, and nothing about it is chosen from the browser.
+
 ## Upgrading
 
 The image is pinned in \`.env\`. An upgrade is a deliberate edit, never a surprise:
@@ -408,6 +437,32 @@ function checksumFile(files: readonly BundleFile[]): string {
   return files.map((file) => `${file.sha256}  ${file.path}`).join('\n');
 }
 
+/**
+ * Phase 259 — the worked example that ships in the bundle.
+ *
+ * Deliberately invented, generic and obviously fictional. A sample that carried real titles would put
+ * somebody's library in a public archive; a sample that carried a real provider id would look like an
+ * endorsement of contacting that provider, which this software never does.
+ */
+function exampleCatalogSnapshot(): string {
+  return `${JSON.stringify({
+    format: 'catalog-authority.snapshot',
+    version: 1,
+    source: 'example-library',
+    items: [
+      {
+        externalId: 'example-0001',
+        title: 'An Example Film',
+        year: 1994,
+        providerRefs: [{ type: 'imdb', value: 'tt0000001' }],
+        metadata: { shelf: 'a1', note: 'replace this file with your own export' },
+      },
+      { externalId: 'example-0002', title: 'Another Example', year: 2001 },
+      { externalId: 'example-0003', title: 'An Example With No Year' },
+    ],
+  }, null, 2)}\n`;
+}
+
 function toFile(path: string, contents: string): BundleFile {
   const normalised = normalise(contents);
   return { path, contents: normalised, sha256: sha256(normalised), bytes: Buffer.byteLength(normalised, 'utf8') };
@@ -447,6 +502,9 @@ export function buildConsumerReleaseBundle(sources: BundleSources, options: Bund
     // project's documentation finds the file the documentation names, in the archive they downloaded.
     toFile('docker-compose.arcane.yml', sources.arcaneCompose),
     toFile('arcane-setup.sh', sources.arcaneSetupBash),
+    // Phase 259. A complete, valid snapshot to copy into ./import/, so the first thing an operator needs
+    // when they want to fill the catalog is in the archive rather than in a documentation search.
+    toFile('example-catalog-snapshot.json', exampleCatalogSnapshot()),
     toFile('.env', envFile(options, imageRef)),
     toFile('.env.example', envExample(imageRef, options.image.tag)),
     toFile('VERSION', versionFile(options, imageRef)),

@@ -1240,6 +1240,13 @@
     {
       "file": "test-runner.ts",
       "group": "offline"
+    },
+    {
+      "file": "catalog-import.ts",
+      "group": "db",
+      "args": [
+        "5453"
+      ]
     }
   ]
 }

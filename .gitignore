@@ -16,3 +16,5 @@ backups/
 *.age
 _wire.py
 promotion-records/
+# Phase 259: operator catalog snapshots. Somebody’s library is not this repository’s content.
+import/
