@@ -4,8 +4,9 @@ Commits `63624c0`, `5e229ef`, `82e9c32` on `cdb8457/v1-1-1-arcane-first-run`, br
 [#23](https://github.com/cdb8457/streaming-catalog-authority/pull/23) → `master`. **Not merged, not tagged,
 not published.**
 
-**Real CI on `82e9c32` is GREEN** — all six jobs pass, publish correctly skipped
-([run 30138580795](https://github.com/cdb8457/streaming-catalog-authority/actions/runs/30138580795)).
+**Real CI on the head commit `6632eee` is GREEN** — all six jobs pass, publish correctly skipped
+([run 30138799435](https://github.com/cdb8457/streaming-catalog-authority/actions/runs/30138799435)). The two
+preceding commits (`82e9c32`, `3e67db5`) were also independently green.
 
 ---
 
@@ -118,6 +119,17 @@ owns, and a type cannot reach a shell script.
 Fixed at the root: `INSTALLATION_STATES` is now data with the type derived from it, and a test walks it
 against every surface that enumerates states. The acceptance spec's pattern is anchored so the set is closed.
 Both new guards were mutation-checked — reverting each fix makes them fail.
+
+### One CI attempt stalled — investigated, not reproducible
+
+The first attempt at the head commit hung in `Typecheck and Phase 242-253 suites` for over 20 minutes; the
+same step takes ~70 seconds. It was cancelled and re-run, and completed in 83 seconds. That commit changes
+only a shell script, and the run's other four jobs had already passed on the first attempt.
+
+It was not taken on trust: all thirteen suites in that step were re-run individually on this machine and every
+one completed in bounded time (phase253 80s, phase244 68s, phase245 57s, the rest under 30s each), and the
+retried CI job passed. Read as a runner-side stall. If it recurs, the place to look first is
+`test/first-run-migration.ts`, which is the only suite in that step that boots a database.
 
 ### Pre-existing failures (NOT introduced here)
 
