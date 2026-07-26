@@ -51,7 +51,8 @@ and every custodian-backed panel (`ops:doctor`, `/api/status`, the whole Catalog
 `up -d` now runs a one-shot `keystore-prepare` before anything else. It is the only thing in the stack that
 runs as root; it has **no network, no secrets and one mount**, it changes ownership and nothing else, it
 never reads, writes or deletes key material, and it **refuses** — stopping the stack rather than guessing —
-on any ownership or content state it does not understand. On a correct keystore it writes nothing at all.
+on any ownership or content state it does not understand. On a correct keystore it changes no ownership at
+all, and it needs no backup first.
 Check it yourself with `npm run ops:keystore-check`; the manual fallback, the rollback and every refusal code
 are in [docs/PHASE_263_KEYSTORE_REPAIR.md](docs/PHASE_263_KEYSTORE_REPAIR.md).
 

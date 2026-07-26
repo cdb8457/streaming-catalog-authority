@@ -150,12 +150,17 @@ docker compose run --rm --user root --entrypoint sh app -c 'chown -R node:node /
 The gate grew with the product rather than being duplicated: one orchestrator, one spec, one CI job, more
 legs. In order, against one real extracted Compose stack:
 
-1. **The legacy keystore, repaired.** The stack is stopped and its keystore volume is made root-owned at mode
-   0755 with real key material in it — the exact state of an installation created before v1.1.3, which no
-   image change can reach into. `ops:keystore-check` must recognise it as `REPAIRABLE` and exit **non-zero**;
-   the stack is brought back up; the shipped `keystore-prepare` one-shot must have exited 0; the app must be
-   running as a **non-root** uid; `ops:doctor` must report `keystore-ownership: pass`; and a repeat check must
-   exit 0, proving the repair is idempotent.
+1. **The legacy keystore, repaired.** One authenticated catalog read first, to put real content in the
+   keystore — **this is load-bearing, not setup**. An *empty* Docker volume is re-initialised from the image's
+   directory, ownership and mode included, on every container start, so a manufactured legacy state on an
+   empty keystore is wiped before anything can see it and the whole leg passes vacuously. (It did, until this
+   gate's own evidence showed it.) With content present the state persists, which is exactly the real-world
+   case. The stack is then stopped, the volume made root-owned at 0755, and `ops:keystore-check` must report a
+   **non-zero count** of wrongly-owned entries and exit non-zero. The stack is brought back up; the shipped
+   `keystore-prepare` one-shot must have exited 0; the app must be running as a **non-root** uid; `ops:doctor`
+   must report `keystore-ownership: pass`; and a repeat check must exit 0. A failure here prints the
+   one-shot's own report and the directory as the container sees it, because a gate that fails without a
+   diagnosis only tells you to guess.
 2. **The empty installation** — guidance, and an Import panel that has discovered the snapshot and offers no
    path, URL or upload control.
 3. **Preview, twice** — from the command line and from the browser. Rows, events **and** import history

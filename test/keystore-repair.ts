@@ -211,6 +211,44 @@ test('a PARTIALLY repaired keystore — an interrupted earlier run — finishes 
   assertEq(result.tightened, false, 'the root mode was already private, so it was left alone');
 });
 
+test('a correctly-owned keystore with a too-open ROOT is TIGHTENED, and does not cry wolf', () => {
+  // WHAT THE CI GATE TAUGHT US. Docker re-initialises an EMPTY named volume from the image's directory —
+  // ownership and mode included — on every container start. So a keystore that has not been written to yet
+  // comes back at the image's 0755 after every `up`, forever. Treating that as "a repair is needed" made
+  // `ops:keystore-check` exit non-zero on a perfectly healthy installation, every time, which is the
+  // preflight-that-cries-wolf failure. Ownership is what predicts EACCES; the mode is hardening.
+  const fs = keystore(OWNER.uid, OWNER.uid, 0o755);
+  const check = inspectKeystore(ROOT, OWNER, fs);
+  assertEq(check.verdict, 'ALREADY_CORRECT', 'ownership is what the verdict is about');
+  assertEq(check.action, 'TIGHTEN', 'and the loose mode is still reported as something a repair would do');
+  assertEq(check.rootTooOpen, true, 'the fact is not hidden');
+  assert(/re-opens it on every container start/.test(check.detail), 'and the report explains why it recurs');
+  assertEq(keystoreExitCode(repairKeystore(ROOT, OWNER, { mode: 'check' }, fs)), KEYSTORE_EXIT_OK,
+    'a check on it exits ZERO: nothing here needs a human');
+
+  const repaired = repairKeystore(ROOT, OWNER, { mode: 'repair' }, fs);
+  assertEq(repaired.ok, true, 'the repair succeeded');
+  assertEq(repaired.tightened, true, 'it tightened the mode');
+  assertEq(repaired.chowned, 0, 'and re-owned nothing, because nothing was wrongly owned');
+  assertEq(repaired.action, 'NONE', 'afterwards there is nothing left to do');
+  assertEq(fs.writes.join(';'), `chmod ${ROOT} 700`, 'the ONLY filesystem call was the one chmod');
+});
+
+test('a mode this process cannot tighten is not a failure — the keystore still works', () => {
+  const fs = keystore(OWNER.uid, OWNER.uid, 0o755);
+  const denied: KeystoreFs = {
+    lstat: (p) => fs.lstat(p),
+    readdir: (p) => fs.readdir(p),
+    mkdir: (p, m) => fs.mkdir(p, m),
+    lchown: (p, u, g) => fs.lchown(p, u, g),
+    chmod: () => { throw Object.assign(new Error('EPERM'), { code: 'EPERM' }); },
+  };
+  const result = repairKeystore(ROOT, OWNER, { mode: 'repair' }, denied);
+  assertEq(result.ok, true, 'a keystore that WORKS is not reported as broken over hardening');
+  assertEq(result.tightened, false, 'and it says the mode was not tightened');
+  assertEq(keystoreExitCode(result), KEYSTORE_EXIT_OK, 'so it cannot stop a stack');
+});
+
 test('a keystore whose root is correct but whose CONTENTS are not is still repaired', () => {
   // The state `accessSync(W_OK)` reports as healthy and the app then dies on: a writable root over a tree the
   // process does not own.

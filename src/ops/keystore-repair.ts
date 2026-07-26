@@ -64,7 +64,18 @@ export type KeystoreVerdict =
   | 'UNSAFE_TOO_DEEP'
   | 'UNSAFE_UNREADABLE';
 
-export type KeystoreAction = 'NONE' | 'CREATE' | 'CHOWN' | 'REFUSE';
+/**
+ * What a repair would do.
+ *
+ * TIGHTEN is separate from CHOWN because the two are not the same kind of problem, and Phase 263's own CI
+ * gate is what taught us so. A foreign OWNER is what produces `EACCES` and stops the product working. A root
+ * directory that is merely readable beyond its owner breaks nothing — and Docker RE-OPENS it on every
+ * container start for as long as the volume is empty, because an empty named volume is re-initialised from
+ * the image's directory (ownership and mode included) each time it is mounted. Treating that as "a repair is
+ * needed" made `ops:keystore-check` exit non-zero forever on a perfectly healthy installation, which is
+ * exactly the preflight-that-cries-wolf this project refuses to ship.
+ */
+export type KeystoreAction = 'NONE' | 'TIGHTEN' | 'CREATE' | 'CHOWN' | 'REFUSE';
 
 export interface KeystoreOwner {
   readonly uid: number;
@@ -321,25 +332,30 @@ export function inspectKeystore(root: string, owner: KeystoreOwner, fs: Keystore
       facts);
   }
 
-  if (foreign.length === 0 && !rootTooOpen) {
+  if (foreign.length === 0) {
+    // OWNERSHIP IS WHAT THE VERDICT IS ABOUT. Everything here belongs to the runtime user, so the product
+    // works; a root directory that is still readable beyond its owner is hardening a repair will do when it
+    // runs, and is reported, but it is not a fault a human has to act on.
     return {
       ...facts,
       verdict: 'ALREADY_CORRECT',
-      action: 'NONE',
-      detail: `The keystore is already owned by ${owner.label} throughout (${walked.length} entries) and readable only by its owner. Nothing to do.`,
+      action: rootTooOpen ? 'TIGHTEN' : 'NONE',
+      detail: rootTooOpen
+        ? `The keystore is owned by ${owner.label} throughout (${walked.length} entries), which is what matters. `
+          + `Its directory is still readable beyond its owner (mode ${formatMode(rootStat.mode)}) and will be `
+          + 'made private. Docker re-opens it on every container start while the volume is empty, so this can '
+          + 'recur until the keystore has content; nothing is wrong.'
+        : `The keystore is already owned by ${owner.label} throughout (${walked.length} entries) and readable only by its owner. Nothing to do.`,
     };
   }
 
-  const parts: string[] = [];
-  if (foreign.length > 0) {
-    parts.push(`${foreign.length} of ${walked.length} entries are owned by uid ${facts.foreignUid} instead of ${owner.label}`);
-  }
-  if (rootTooOpen) parts.push(`the keystore directory is readable beyond its owner (mode ${formatMode(rootStat.mode)})`);
   return {
     ...facts,
     verdict: 'REPAIRABLE',
     action: 'CHOWN',
-    detail: `${parts.join(', and ')}. A repair changes ownership and permissions only; no key material is read, written or removed.`,
+    detail: `${foreign.length} of ${walked.length} entries are owned by uid ${facts.foreignUid} instead of `
+      + `${owner.label}${rootTooOpen ? `, and the keystore directory is readable beyond its owner (mode ${formatMode(rootStat.mode)})` : ''}. `
+      + 'A repair changes ownership and permissions only; no key material is read, written or removed.',
   };
 }
 
@@ -381,6 +397,24 @@ export function repairKeystore(
 
   if (options.mode === 'check' || inspection.action === 'NONE' || inspection.action === 'REFUSE') {
     return finish({});
+  }
+
+  if (inspection.action === 'TIGHTEN') {
+    // Ownership is already right; only the directory's mode is loose. One chmod, nothing else.
+    try {
+      fs.chmod(resolved, KEYSTORE_ROOT_MODE);
+    } catch {
+      // A mode this process cannot tighten is not a failure: the keystore WORKS, and saying otherwise would
+      // stop a stack over hardening it could not apply.
+      return finish({ tightened: false });
+    }
+    const after = inspectKeystore(resolved, owner, fs);
+    return {
+      ...finish({}), ...after,
+      report: KEYSTORE_REPAIR_REPORT, mode: options.mode,
+      ok: true, tightened: true, chowned: 0, created: false,
+      guidance: guidanceFor(after),
+    };
   }
 
   try {

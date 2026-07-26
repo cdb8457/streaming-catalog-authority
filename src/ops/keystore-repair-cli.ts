@@ -53,7 +53,7 @@ function usage(): string {
     'Output is redaction-safe: counts, uids and a mode. No file name, no path beyond the directory you named,',
     'and no file content is ever printed.',
     '',
-    'exit codes: 0 correct (or repaired) | 1 refused, or a repair is needed and was not run | 2 bad usage',
+    'exit codes: 0 correct (or repaired) | 1 refused, or ownership must be repaired and was not | 2 bad usage',
   ].join('\n');
 }
 
@@ -114,7 +114,11 @@ export function parseKeystoreArgs(argv: readonly string[], env: NodeJS.ProcessEn
  */
 export function keystoreExitCode(result: KeystoreRepairResult): number {
   if (!result.ok) return KEYSTORE_EXIT_REFUSED;
-  return result.action === 'NONE' ? KEYSTORE_EXIT_OK : KEYSTORE_EXIT_REFUSED;
+  // NONE and TIGHTEN are both "nothing is wrong". A loose directory mode is hardening a repair applies when
+  // it runs, and Docker re-opens it on every container start while the volume is empty — so making it exit
+  // non-zero would make this command cry wolf forever on a healthy installation, and a gate nobody believes
+  // is a gate nobody keeps.
+  return result.action === 'NONE' || result.action === 'TIGHTEN' ? KEYSTORE_EXIT_OK : KEYSTORE_EXIT_REFUSED;
 }
 
 export function runKeystoreCli(argv: readonly string[], env: NodeJS.ProcessEnv = process.env): number {

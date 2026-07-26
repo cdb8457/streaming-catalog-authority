@@ -204,11 +204,12 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
 /**
  * Phase 263 — "is the whole keystore tree owned by the process that has to write it?"
  *
- * FAIL vs WARN is the difference between "this will break" and "this is untidy". A foreign OWNER anywhere in
+ * FAIL vs PASS is the difference between "this will break" and "this is untidy". A foreign OWNER anywhere in
  * the tree is what produces `EACCES: permission denied, mkdir '/var/lib/catalog/keystore/keys'`, so it is a
- * FAIL with the repair named. A root directory that is merely readable beyond its owner breaks nothing and is
- * a WARN — the stacks that run their app as root have exactly that state, legitimately, and turning it into a
- * failure would make ops:doctor report a working deployment as broken.
+ * FAIL with the repair named. A root directory that is merely readable beyond its owner breaks nothing and
+ * passes with the fact stated in the detail — the stacks that run their app as root have exactly that state
+ * legitimately, and Docker re-applies it on every container start while the volume is empty, so failing (or
+ * even warning) on it would make ops:doctor report a working deployment as broken forever.
  *
  * The detail never carries a path or a file name: `inspectKeystore` reports counts, uids and a mode, and this
  * passes its sentence through unchanged.
@@ -225,11 +226,10 @@ function addKeystoreOwnershipCheck(add: (name: string, state: CheckState, detail
     return;
   }
   if (inspection.verdict === 'ALREADY_CORRECT' || inspection.verdict === 'MISSING') {
+    // ALREADY_CORRECT covers a root directory that is still readable beyond its owner: ownership is what
+    // predicts failure, and Docker re-opens the mode on every container start while the volume is empty.
+    // The detail says so, so the fact is reported rather than hidden behind a pass.
     add('keystore-ownership', 'pass', inspection.detail);
-    return;
-  }
-  if (inspection.verdict === 'REPAIRABLE' && inspection.foreignEntries === 0) {
-    add('keystore-ownership', 'warn', inspection.detail);
     return;
   }
   add('keystore-ownership', 'fail',

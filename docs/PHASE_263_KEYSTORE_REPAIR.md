@@ -38,9 +38,10 @@ npm run ops:keystore-repair -- --dir /var/lib/catalog/keystore --owner node
 and accepts a user name (resolved against the system's own `/etc/passwd`, never assumed to be uid 1000) or a
 numeric `uid[:gid]`.
 
-**Exit codes.** `0` the keystore is already correct. `1` a repair is needed and was not run, or the state was
-refused. `2` bad usage. A *check* that finds work to do exits **non-zero on purpose** — a preflight that
-reports "your keystore is unwritable" and exits 0 is a preflight nothing can gate on.
+**Exit codes.** `0` the keystore works. `1` ownership must be repaired and was not, or the state was refused.
+`2` bad usage. A *check* that finds **ownership** wrong exits non-zero on purpose — a preflight that reports
+"your keystore is unwritable" and exits 0 is a preflight nothing can gate on. A merely loose directory mode
+does **not** exit non-zero; see below.
 
 ### What it is allowed to do
 
@@ -48,6 +49,31 @@ Two operations, and this is the complete list:
 
 * create the keystore root if it is missing, owned by the runtime user, mode `0700`;
 * change the **owner** of entries that are already there, and — on the root directory only — tighten the mode.
+
+### Ownership is the verdict; the mode is hardening
+
+This distinction was not in the first version of this phase, and the CI gate is what taught us it was
+needed.
+
+**An empty Docker volume is re-initialised from the image on every container start** — ownership and mode
+included — not only when the volume is created. So a keystore that has not been written to yet comes back
+at the image's `0755` after every `docker compose up`, forever. The first version treated a too-open root as
+`REPAIRABLE`, which made `ops:keystore-check` exit non-zero on a perfectly healthy installation every single
+time: a preflight that cries wolf, which is a preflight nobody keeps.
+
+So the two are now separated:
+
+* a foreign **owner** is what produces `EACCES` and stops the product working → verdict `REPAIRABLE`,
+  action `CHOWN`, exit **1**, and `ops:doctor` fails;
+* a root directory that is merely **readable beyond its owner** breaks nothing → verdict `ALREADY_CORRECT`,
+  action `TIGHTEN`, exit **0**, and `ops:doctor` passes — with the fact stated in the report either way. A
+  repair still tightens it when it runs, and a mode it cannot tighten is not a failure.
+
+**The same fact decides when the Phase 262 defect exists at all.** On an empty keystore the image fix is
+sufficient, because Docker re-applies the image's `node`-owned directory at every start. The defect persists
+exactly when the keystore holds key material — which is every real installation, and which is why the CI
+gate now puts content in the keystore *before* it manufactures a legacy state. Without that, the manufacture
+was silently undone and the whole legacy leg passed vacuously.
 
 ### What it will never do
 
@@ -104,8 +130,9 @@ It is **the only thing in either stack that runs as root**, and it is as narrow 
 with nothing added back, still `no-new-privileges`. Elevated authority lives in a one-shot for a few
 milliseconds and nowhere else.
 
-It is **idempotent and free after the first run**: a correct keystore reports `ALREADY_CORRECT` and performs
-no filesystem write at all.
+It is **idempotent**: a correct keystore reports `ALREADY_CORRECT` and performs no ownership change at all.
+On a keystore that is still empty it will re-tighten the directory mode on each start, because Docker
+re-opens it each time — one `chmod`, and nothing else.
 
 ### The stacks that deliberately do NOT get it
 

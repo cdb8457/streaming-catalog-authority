@@ -229,6 +229,26 @@ info "/healthz is 200 — the migration one-shot completed and the app started b
 # It is manufactured with the same `chown -R` an operator would run by hand, in a throwaway root container
 # that holds nothing else. Nothing here weakens the running stack: the app service is untouched.
 # ---------------------------------------------------------------------------------------------------------
+# THE KEYSTORE MUST HAVE CONTENT FIRST, and this is not a detail of the test — it is a fact about Docker
+# that decides when the Phase 262 defect exists at all. An EMPTY named volume is re-initialised from the
+# image's directory, ownership and mode included, on EVERY container start. So on an empty keystore the
+# image fix alone is sufficient, and a manufactured root-owned state is wiped before anything can see it.
+# The defect persists exactly when the keystore holds key material — which is every real installation.
+# One authenticated catalog read constructs a FileCustodian, which creates the keystore's four directories.
+#
+# Without this, the manufacture below silently did nothing and the whole legacy leg passed vacuously. This
+# gate caught that, on its own evidence.
+step "give the keystore real content, so a legacy state can persist at all"
+curl -fsS -o /dev/null -H "x-operator-ui-secret: ${TOKEN}" "${BASE_URL}/api/catalog" \
+  || fail "the catalog route did not answer, so no custodian was constructed and the keystore is still empty"
+keystore_entries="$( cd "${EXTRACTED}" && docker compose run --rm --user root --entrypoint sh keystore-prepare \
+  -c 'ls -1 /var/lib/catalog/keystore | wc -l' | tr -d '[:space:]' )"
+keystore_entries="$(digits_or_die "${keystore_entries}" "the keystore entry count")"
+[ "${keystore_entries}" -ge 1 ] \
+  || fail "the keystore is still empty, so a legacy state cannot persist and the leg below would pass vacuously"
+info "the keystore now holds ${keystore_entries} entries, so ownership survives a container restart"
+
+
 step "manufacture a LEGACY root-owned keystore, exactly as an installation from v1.1.2 has"
 ( cd "${EXTRACTED}" && docker compose stop >/dev/null )
 ( cd "${EXTRACTED}" && docker compose run --rm --user root --entrypoint sh keystore-prepare \
@@ -246,7 +266,11 @@ printf '%s\n' "${check_out}" | grep -q 'REPAIRABLE' \
   || { printf '%s\n' "${check_out}" >&2; fail "the keystore check did not recognise a legacy root-owned keystore"; }
 [ "${check_status}" -ne 0 ] || fail "the keystore check exited 0 on a keystore that needs repair"
 # The report is redaction-safe: counts, uids and a mode, never a key file name.
-printf '%s\n' "${check_out}" | grep -q 'wrongly owned' || fail "the keystore check did not report what is wrongly owned"
+# A COUNT, not merely the words. The first version of this asserted only that the phrase appeared, which is
+# true of a keystore that is not legacy at all — so a manufacture that did nothing still "passed". This is
+# the assertion that makes the leg above unable to be vacuous.
+printf '%s\n' "${check_out}" | grep -qE '^ +wrongly owned +[1-9][0-9]*' \
+  || { printf '%s\n' "${check_out}" >&2; fail "the keystore check found NOTHING wrongly owned — the legacy state was not manufactured, so this leg would have proved nothing"; }
 info "the legacy state is recognised as REPAIRABLE and the check exits non-zero"
 
 step "bring the stack back up: the shipped keystore-prepare one-shot must repair it"
@@ -265,8 +289,25 @@ app_uid="$( cd "${EXTRACTED}" && docker compose exec -T app id -u | tr -d '[:spa
 info "keystore-prepare exited 0 and the app is running as uid ${app_uid} (non-root)"
 
 # The repair is IDEMPOTENT: a second check on the now-correct keystore exits 0 and reports nothing to do.
-( cd "${EXTRACTED}" && docker compose run --rm keystore-prepare ops:keystore-check ) >/dev/null \
-  || fail "the keystore check still reports work to do after the repair ran"
+# Its output is CAPTURED rather than discarded: a failure here is a statement about the keystore, and
+# the tool's own redaction-safe report is the diagnosis. Throwing it away would leave a failed gate
+# saying only that it failed.
+set +e
+recheck_out="$( cd "${EXTRACTED}" && docker compose run --rm keystore-prepare ops:keystore-check 2>&1 )"
+recheck_status=$?
+set -e
+if [ "${recheck_status}" -ne 0 ]; then
+  echo "the keystore check still reports work to do after the repair ran; it said:" >&2
+  printf "%s" "${recheck_out}" >&2
+  echo >&2
+  # The one-shot prints its OWN report, which says what it decided and what it changed. Without it a
+  # failure here can only be guessed at, and the guess is usually wrong.
+  echo "--- what the keystore-prepare one-shot itself reported ---" >&2
+  ( cd "${EXTRACTED}" && docker compose logs --no-color keystore-prepare ) >&2 2>&1 || true
+  echo "--- the keystore as the container sees it ---" >&2
+  ( cd "${EXTRACTED}" && docker compose run --rm --user root --entrypoint sh keystore-prepare       -c 'stat -c "root: mode=%a owner=%u:%g" /var/lib/catalog/keystore; ls -lan /var/lib/catalog/keystore | head -20' ) >&2 2>&1 || true
+  fail "the repair is not idempotent"
+fi
 info "a repeat check on the repaired keystore exits 0 — the repair is idempotent"
 
 # And the check that PREDICTS the EACCES failure now passes, read from ops:doctor's own machine-readable
