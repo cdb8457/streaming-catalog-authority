@@ -215,7 +215,9 @@ info "/healthz is 200 — the migration one-shot completed and the app started b
 
 # The migration really did run to completion: the app's own dependency is
 # `migrate: service_completed_successfully`, and /healthz refuses 200 until the schema version matches.
-migrate_exit="$( cd "${EXTRACTED}" && docker compose ps -a --format '{{.Service}} {{.ExitCode}}' | awk '$1=="migrate"{print $2}' | head -1 )"
+migrate_cid="$( cd "${EXTRACTED}" && docker compose ps -aq migrate | head -1 )"
+[ -n "${migrate_cid}" ] || fail "the migrate one-shot left no container to inspect — it cannot be said to have run"
+migrate_exit="$( docker inspect --format '{{.State.ExitCode}}' "${migrate_cid}" )"
 [ "${migrate_exit}" = "0" ] || fail "the migrate one-shot did not exit 0 (got '${migrate_exit:-nothing}')"
 info "migrate one-shot exited 0"
 
@@ -269,7 +271,7 @@ require_tests_ran() {
   local report="${1}/report.json"
   [ -f "${report}" ] || fail "the ${2} browser leg wrote no report — it cannot be said to have run"
   local expected
-  expected="$( node -e 'const r=require(process.argv[1]);process.stdout.write(String((r.stats&&r.stats.expected)||0))' "${report}" )"
+  expected="$( node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const r=JSON.parse(s);process.stdout.write(String((r.stats&&r.stats.expected)||0))})' < "${report}" )"
   expected="$(digits_or_die "${expected}" "the ${2} browser leg test count")"
   [ "${expected}" -ge 1 ] || fail "the ${2} browser leg ran 0 tests — a filter matched nothing, which is not a pass"
   info "${2} browser leg ran ${expected} test(s)"

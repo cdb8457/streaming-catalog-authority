@@ -146,6 +146,10 @@ looking green.
   gate but means a passing run leaves no visual record.
 - **It proves the amd64 Linux runner.** Like every Docker gate in this repository, the architecture it can
   actually verify is the one CI runs on.
+- **It builds the production image a second time.** The job runs in parallel with the release-candidate one,
+  so wall-clock is unchanged, but a pull request now pays for two image builds and two Chromium
+  installations. Sharing a built image between the jobs would mean an artifact hand-off between them, and a
+  gate that depends on another gate's output is a gate that can be fed the wrong bytes.
 
 ## Next usable-product step
 
