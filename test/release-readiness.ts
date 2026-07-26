@@ -160,16 +160,16 @@ test('a healthy release is READY_FOR_HUMAN_RELEASE_DECISION, and every check pas
 // both endings identically, so passing LF text to the core is faithful.
 const WORKFLOW = read('.github/workflows/runtime-image.yml').replace(/\r\n/g, '\n');
 
-const PUBLISH_NEEDS = 'needs: [suites, image, bundle, release-candidate, lifecycle, rehearsal]';
+const PUBLISH_NEEDS = 'needs: [suites, image, bundle, release-candidate, catalog-acceptance, lifecycle, rehearsal]';
 
 test('dropping release-candidate from publish.needs blocks the dependency-graph check', () => {
-  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, lifecycle, rehearsal]');
+  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, catalog-acceptance, lifecycle, rehearsal]');
   assert(weakened !== WORKFLOW, 'the fixture actually changed');
   assertBlocks({ workflowText: weakened }, 'publish-needs-all-gates');
 });
 
 test('dropping lifecycle from publish.needs blocks the dependency-graph check', () => {
-  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, release-candidate, rehearsal]');
+  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, release-candidate, catalog-acceptance, rehearsal]');
   assert(weakened !== WORKFLOW, 'the fixture actually changed');
   assertBlocks({ workflowText: weakened }, 'publish-needs-all-gates');
 });
@@ -177,7 +177,15 @@ test('dropping lifecycle from publish.needs blocks the dependency-graph check', 
 test('dropping the Phase 252 rehearsal from publish.needs blocks the dependency-graph check', () => {
   // The exact defect this remediation closes: publish must not be able to run when the final rehearsal failed.
   // On the pre-fix graph (no rehearsal in publish.needs) this assertion FAILS; with the fix it BLOCKS.
-  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, release-candidate, lifecycle]');
+  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, release-candidate, catalog-acceptance, lifecycle]');
+  assert(weakened !== WORKFLOW, 'the fixture actually changed');
+  assertBlocks({ workflowText: weakened }, 'publish-needs-all-gates');
+});
+
+test('dropping the Phase 262 catalog acceptance from publish.needs blocks the dependency-graph check', () => {
+  // The gate added in Phase 262: a release must be proved to import and browse a catalog, not only to load.
+  // On a graph without it this assertion FAILS; with it, the readiness verifier BLOCKS.
+  const weakened = WORKFLOW.replace(PUBLISH_NEEDS, 'needs: [suites, image, bundle, release-candidate, lifecycle, rehearsal]');
   assert(weakened !== WORKFLOW, 'the fixture actually changed');
   assertBlocks({ workflowText: weakened }, 'publish-needs-all-gates');
 });

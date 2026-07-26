@@ -1,0 +1,193 @@
+{
+  "format": "catalog-authority.snapshot",
+  "version": 1,
+  "source": "acceptance-fixture",
+  "items": [
+    {
+      "externalId": "acceptance-01",
+      "title": "Acceptance Fixture 01",
+      "year": 1991,
+      "metadata": {
+        "shelf": "a1",
+        "note": "the first fixture record"
+      }
+    },
+    {
+      "externalId": "acceptance-02",
+      "title": "Acceptance Fixture 02",
+      "year": 1992
+    },
+    {
+      "externalId": "acceptance-03",
+      "title": "Acceptance Fixture 03",
+      "year": 1993
+    },
+    {
+      "externalId": "acceptance-04",
+      "title": "Acceptance Fixture 04",
+      "year": 1994
+    },
+    {
+      "externalId": "acceptance-05",
+      "title": "Acceptance Fixture 05",
+      "year": 1995,
+      "providerRefs": [
+        {
+          "type": "tmdb",
+          "value": "tmdb-acceptance-05"
+        }
+      ]
+    },
+    {
+      "externalId": "acceptance-06",
+      "title": "Acceptance Fixture 06",
+      "year": 1996
+    },
+    {
+      "externalId": "acceptance-07",
+      "title": "Acceptance Fixture 07",
+      "year": 1997
+    },
+    {
+      "externalId": "acceptance-08",
+      "title": "Acceptance Fixture 08",
+      "year": 1998
+    },
+    {
+      "externalId": "acceptance-09",
+      "title": "Acceptance Fixture 09",
+      "year": 1999
+    },
+    {
+      "externalId": "acceptance-10",
+      "title": "Acceptance Fixture 10",
+      "year": 2000,
+      "providerRefs": [
+        {
+          "type": "tmdb",
+          "value": "tmdb-acceptance-10"
+        }
+      ]
+    },
+    {
+      "externalId": "acceptance-11",
+      "title": "Acceptance Fixture 11",
+      "year": 2001
+    },
+    {
+      "externalId": "acceptance-12",
+      "title": "Acceptance Fixture 12",
+      "year": 2002
+    },
+    {
+      "externalId": "acceptance-13",
+      "title": "Acceptance Fixture 13",
+      "year": 2003
+    },
+    {
+      "externalId": "acceptance-14",
+      "title": "Acceptance Fixture 14",
+      "year": 2004
+    },
+    {
+      "externalId": "acceptance-15",
+      "title": "Acceptance Fixture 15",
+      "year": 2005,
+      "providerRefs": [
+        {
+          "type": "tmdb",
+          "value": "tmdb-acceptance-15"
+        }
+      ]
+    },
+    {
+      "externalId": "acceptance-16",
+      "title": "Acceptance Fixture 16",
+      "year": 2006
+    },
+    {
+      "externalId": "acceptance-17",
+      "title": "Acceptance Fixture 17",
+      "year": 2007
+    },
+    {
+      "externalId": "acceptance-18",
+      "title": "Acceptance Fixture 18",
+      "year": 2008
+    },
+    {
+      "externalId": "acceptance-19",
+      "title": "Acceptance Fixture 19",
+      "year": 2009
+    },
+    {
+      "externalId": "acceptance-20",
+      "title": "Acceptance Fixture 20",
+      "year": 2010,
+      "providerRefs": [
+        {
+          "type": "tmdb",
+          "value": "tmdb-acceptance-20"
+        }
+      ]
+    },
+    {
+      "externalId": "acceptance-21",
+      "title": "Acceptance Fixture 21",
+      "year": 2011
+    },
+    {
+      "externalId": "acceptance-22",
+      "title": "Acceptance Fixture 22",
+      "year": 2012
+    },
+    {
+      "externalId": "acceptance-23",
+      "title": "Acceptance Fixture 23",
+      "year": 2013
+    },
+    {
+      "externalId": "acceptance-24",
+      "title": "Acceptance Fixture 24",
+      "year": 2014
+    },
+    {
+      "externalId": "acceptance-25",
+      "title": "Acceptance Fixture 25",
+      "year": 2015,
+      "providerRefs": [
+        {
+          "type": "tmdb",
+          "value": "tmdb-acceptance-25"
+        }
+      ]
+    },
+    {
+      "externalId": "acceptance-26",
+      "title": "Zulu Acceptance Fixture 26",
+      "year": 2016,
+      "providerRefs": [
+        {
+          "type": "imdb",
+          "value": "tt-acceptance-ref-value-must-never-be-shown"
+        }
+      ],
+      "metadata": {
+        "shelf": "z9",
+        "note": "the only imdb record"
+      }
+    },
+    {
+      "externalId": "acceptance-27",
+      "title": "A Hostile <img src=x onerror=window.__catXss=1><script>window.__catXss=1</script> Title",
+      "year": 2017,
+      "metadata": {
+        "note": "</dd><script>window.__catXss=1</script>"
+      }
+    },
+    {
+      "externalId": "acceptance-28",
+      "title": "Undated Acceptance Fixture 28"
+    }
+  ]
+}

@@ -5,7 +5,8 @@
     "crypto-setup.ts",
     "jellyfin-contract-kit.ts",
     "_launch-proofing-evidence.ts",
-    "aggregate-suite.ts"
+    "aggregate-suite.ts",
+    "jellyfin-fake-server.ts"
   ],
   "suites": [
     {
@@ -813,6 +814,13 @@
       ]
     },
     {
+      "file": "publish-outbox-recovery.ts",
+      "group": "db",
+      "args": [
+        "5457"
+      ]
+    },
+    {
       "file": "promotion-approval.ts",
       "group": "offline"
     },
@@ -1261,6 +1269,10 @@
       "args": [
         "5454"
       ]
+    },
+    {
+      "file": "catalog-browser-acceptance.ts",
+      "group": "offline"
     }
   ]
 }

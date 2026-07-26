@@ -9,7 +9,7 @@ import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import { JellyfinHttpClient } from '../src/core/adapters/jellyfin/http-client.js';
 import { JellyfinOutboxTarget } from '../src/core/adapters/jellyfin/outbox-target.js';
 import { createRealJellyfinOutboxTarget, isJellyfinLivePublishAllowed, JellyfinLivePublishDisabledError, JellyfinNetworkDisabledError } from '../src/core/adapters/jellyfin/real-factory.js';
-import type { FetchLike, HttpResponseLike, HttpRequestInit } from '../src/core/adapters/jellyfin/transport.js';
+import { FakeJellyfin } from './jellyfin-fake-server.js';
 import { OutboxService } from '../src/core/publish/outbox.js';
 import { getPool, migrate, adminUrl, closePool } from '../src/db/pool.js';
 import { installCompletionSecret, testKek } from './crypto-setup.js';
@@ -26,42 +26,9 @@ function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(m
 function assertEq(a: unknown, b: unknown, msg: string): void { if (a !== b) throw new Error(`${msg} (expected ${String(b)}, got ${String(a)})`); }
 const tmpDirs: string[] = [];
 const freshKeystore = (): string => { const d = mkdtempSync(path.join(tmpdir(), 'jf-outbox-')); tmpDirs.push(d); return d; };
-const ok = (body: unknown): HttpResponseLike => ({ ok: true, status: 200, json: async () => body, text: async () => JSON.stringify(body) });
-const stat = (s: number): HttpResponseLike => ({ ok: s >= 200 && s < 300, status: s, json: async () => ({}), text: async () => '' });
 
 const TITLE = 'JF-OUTBOX-TITLE';
 const REF = 'jf-outbox-ref-7';
-
-/** Stateful fake Jellyfin over HTTP; collections keyed by name (which carries the [cat:token] marker). */
-class OutboxFixture {
-  private readonly items: Array<{ Id: string; ProviderIds: Record<string, string> }>;
-  private readonly collections = new Map<string, string>(); // id -> name
-  private counter = 0;
-  mode: 'ok' | 'create-then-throw' = 'ok';
-  constructor(library: Record<string, string>) {
-    this.items = Object.entries(library).map(([k, id]) => { const [t, v] = k.split(':'); return { Id: id, ProviderIds: { [t!]: v! } }; });
-  }
-  readonly fetch: FetchLike = async (url: string, init?: HttpRequestInit): Promise<HttpResponseLike> => {
-    const method = init?.method ?? 'GET';
-    const u = new URL(url);
-    if (method === 'GET' && u.pathname === '/Items') {
-      if (u.searchParams.get('IncludeItemTypes') === 'BoxSet') {
-        const term = u.searchParams.get('SearchTerm') ?? '';
-        return ok({ Items: [...this.collections.entries()].filter(([, n]) => n.includes(term)).map(([id, n]) => ({ Id: id, Name: n })) });
-      }
-      return ok({ Items: this.items });
-    }
-    if (method === 'POST' && u.pathname === '/Collections') {
-      const id = `jf-col-${++this.counter}`;
-      this.collections.set(id, u.searchParams.get('Name') ?? '');
-      if (this.mode === 'create-then-throw') throw new Error('created server-side, then the response was lost');
-      return ok({ Id: id });
-    }
-    if (method === 'DELETE' && u.pathname.startsWith('/Items/')) { const id = decodeURIComponent(u.pathname.slice('/Items/'.length)); return stat(this.collections.delete(id) ? 204 : 404); }
-    return stat(404);
-  };
-  count(): number { return this.collections.size; }
-}
 
 async function main(): Promise<void> {
   let server: Awaited<ReturnType<typeof startEmbedded>> | null = null;
@@ -79,7 +46,7 @@ async function main(): Promise<void> {
   console.log('Running Phase 12 Jellyfin outbox integration suite (Stage 12.3, fixture transport):\n');
 
   await test('real client + outbox — happy publish creates a token-tagged collection -> published', async () => {
-    const fx = new OutboxFixture({ [`tmdb:${REF}`]: 'item-1' });
+    const fx = new FakeJellyfin({ library: { [`tmdb:${REF}`]: 'item-1' } });
     const target = new JellyfinOutboxTarget(new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: 'k', fetch: fx.fetch }));
     const id = await seed();
     const res = await new OutboxService(pool, auth, 'allow', target, REQUIRES).publish(id, { dryRun: false });
@@ -87,8 +54,8 @@ async function main(): Promise<void> {
   });
 
   await test('real client + outbox — HARD CASE: create tagged, response lost, state discarded -> reconcile ADOPTS by token', async () => {
-    const fx = new OutboxFixture({ [`tmdb:${REF}`]: 'item-1' });
-    fx.mode = 'create-then-throw';
+    const fx = new FakeJellyfin({ library: { [`tmdb:${REF}`]: 'item-1' } });
+    fx.createMode = 'create-then-throw';
     const target = new JellyfinOutboxTarget(new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: 'k', fetch: fx.fetch }));
     const id = await seed();
     const res = await new OutboxService(pool, auth, 'allow', target, REQUIRES).publish(id, { dryRun: false });
@@ -100,7 +67,7 @@ async function main(): Promise<void> {
   });
 
   await test('gate — real outbox target needs ENABLE_NETWORK + ALLOW_LIVE_PUBLISH + config (fail-closed)', () => {
-    const fx = new OutboxFixture({});
+    const fx = new FakeJellyfin();
     assertEq(isJellyfinLivePublishAllowed({} as Env), false, 'default OFF');
     let e1: unknown; try { createRealJellyfinOutboxTarget(fx.fetch, { JELLYFIN_ENABLE_NETWORK: 'true', JELLYFIN_BASE_URL: 'http://jf.local', JELLYFIN_API_KEY: 'k' } as Env); } catch (e) { e1 = e; }
     assert(e1 instanceof JellyfinLivePublishDisabledError, 'no ALLOW_LIVE_PUBLISH -> JellyfinLivePublishDisabledError');

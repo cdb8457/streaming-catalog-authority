@@ -451,7 +451,9 @@ function viewWorkflow(text: string): WorkflowView | null {
   };
 }
 
-const REQUIRED_PUBLISH_NEEDS = ['suites', 'image', 'bundle', 'release-candidate', 'lifecycle', 'rehearsal'] as const;
+// Phase 262 added 'catalog-acceptance': the release must be proved to import and browse a catalog in a real
+// browser before it can be published, exactly as it must be proved to load in one.
+const REQUIRED_PUBLISH_NEEDS = ['suites', 'image', 'bundle', 'release-candidate', 'catalog-acceptance', 'lifecycle', 'rehearsal'] as const;
 
 const checkPublishDependencyGraph: Check = (_evidence, workflow) => {
   const id = 'publish-needs-all-gates';
@@ -471,7 +473,7 @@ const checkPublishDependencyGraph: Check = (_evidence, workflow) => {
   // should catch it here rather than at release time.
   const dangling = needs.filter((gate) => workflow.jobMap(gate) === null);
   if (dangling.length > 0) return block(id, title, `publish depends on jobs that do not exist: ${dangling.join(', ')}`);
-  return pass(id, title, 'publish requires suites, image, bundle, release-candidate, lifecycle and rehearsal, and all exist');
+  return pass(id, title, 'publish requires suites, image, bundle, release-candidate, catalog-acceptance, lifecycle and rehearsal, and all exist');
 };
 
 const checkAcceptanceGatesNotSkippable: Check = (_evidence, workflow) => {
@@ -481,7 +483,7 @@ const checkAcceptanceGatesNotSkippable: Check = (_evidence, workflow) => {
   const skippable: string[] = [];
   // The two real-Compose acceptances AND the Phase 252 rehearsal: each is a required publish dependency, so an
   // `if:` on any of them could skip it, making it "not failed", and let publish through over a gate that never ran.
-  for (const gate of ['release-candidate', 'lifecycle', 'rehearsal']) {
+  for (const gate of ['release-candidate', 'catalog-acceptance', 'lifecycle', 'rehearsal']) {
     const map = workflow.jobMap(gate);
     if (map === null) return block(id, title, `the ${gate} gate job is missing`);
     if (map.if !== undefined) skippable.push(gate);
@@ -609,14 +611,14 @@ const checkArchitectureClaim: Check = (_evidence, workflow) => {
 
 const checkSuitesRunAcceptances: Check = (_evidence, workflow) => {
   const id = 'suites-run-the-acceptances';
-  const title = 'The suites job runs the Phase 245-249 acceptance suites';
+  const title = 'The suites job runs the Phase 245-249 and Phase 262 acceptance suites';
   if (workflow === null) return invalid(id, title, 'the workflow could not be parsed');
   const text = workflow.jobText('suites');
   if (text === '') return invalid(id, title, 'the workflow has no suites job');
-  const required = ['test:phase245-local', 'test:phase246-local', 'test:phase247-local', 'test:phase248-local', 'test:phase249-local', 'npm run typecheck'];
+  const required = ['test:phase245-local', 'test:phase246-local', 'test:phase247-local', 'test:phase248-local', 'test:phase249-local', 'test:phase262-local', 'npm run typecheck'];
   const missing = required.filter((need) => !text.includes(need));
   if (missing.length > 0) return block(id, title, `the suites job does not run: ${missing.join(', ')}`);
-  return pass(id, title, 'the suites job runs typecheck and the Phase 245-249 acceptance suites');
+  return pass(id, title, 'the suites job runs typecheck and the Phase 245-249 and Phase 262 acceptance suites');
 };
 
 const checkDocsInstallUpgradeRollback: Check = (evidence) => {

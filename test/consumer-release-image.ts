@@ -208,6 +208,22 @@ test('the production image runs as a non-root user that cannot rewrite its own c
   assert(entrypointIndex > userIndex, 'the drop to non-root happens before the entrypoint');
 });
 
+test('the image prepares the keystore directory the non-root user must be able to write', () => {
+  // THE DEFECT THIS PINS (found by the Phase 262 catalog acceptance, on a real Compose stack). The custodian
+  // keystore is a named volume. Docker initialises a fresh named volume from the IMAGE's directory at that
+  // path, ownership included, and makes it root-owned when the image has nothing there. The container runs as
+  // `node`, so with no directory in the image the first FileCustodian construction dies with
+  // `EACCES: permission denied, mkdir '/var/lib/catalog/keystore/keys'` — which is ops:doctor, /api/status
+  // and the whole catalog panel, on every fresh install. Nothing caught it because every gate before Phase
+  // 262 probed only /healthz, which needs no custodian.
+  const instructions = parseDockerfile(read('Dockerfile.runtime'));
+  const userIndex = instructions.findIndex((i) => i.keyword === 'USER');
+  const prepares = instructions.findIndex((i) => i.keyword === 'RUN'
+    && /\/var\/lib\/catalog\/keystore/.test(i.rest) && /chown[^\n]*node/.test(i.rest));
+  assert(prepares >= 0, 'the image creates the keystore directory and gives it to the node user');
+  assert(prepares < userIndex, 'and does so while it can still chown — before the drop to non-root');
+});
+
 test('the production image handles signals, exposes 8099 and keeps the existing health contract', () => {
   const instructions = parseDockerfile(read('Dockerfile.runtime'));
   const entrypoint = instructions.find((i) => i.keyword === 'ENTRYPOINT');
@@ -699,8 +715,9 @@ test('publishing is gated to a release or a deliberate dispatch from a version t
   // exercises against every refusal case (test/release-delivery.ts).
   assert(steps('publish').some((step) => String(step.run ?? '').includes('ops:release-ref')),
     'and the real gate — the tested release-ref decision — runs before anything is pushed');
-  assertEq(stringList(publish.needs ?? null, 'needs').sort().join(','), 'bundle,image,lifecycle,rehearsal,release-candidate,suites',
-    'nothing publishes before the image, the bundle, the browser acceptance, the lifecycle acceptance, and the final Phase 252 rehearsal have all been checked');
+  assertEq(stringList(publish.needs ?? null, 'needs').sort().join(','), 'bundle,catalog-acceptance,image,lifecycle,rehearsal,release-candidate,suites',
+    'nothing publishes before the image, the bundle, the browser acceptance, the Phase 262 catalog import-and-browse '
+    + 'acceptance, the lifecycle acceptance, and the final Phase 252 rehearsal have all been checked');
   assertEq(publish.environment, 'release', 'and it runs in a protected environment');
 
   const permissions = asMap(publish.permissions ?? null, 'publish permissions');
