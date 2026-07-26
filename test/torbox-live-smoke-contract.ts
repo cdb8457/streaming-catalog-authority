@@ -1,5 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -38,7 +39,7 @@ const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string
 test('Phase 36 contract exists and is wired into deterministic tests', () => {
   assert(exists('docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md'), 'Phase 36 contract doc exists');
   assertEq(pkg.scripts['test:torbox-live-smoke-contract'], 'tsx test/torbox-live-smoke-contract.ts', 'focused script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-contract.ts'), 'suite is in npm test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-contract.ts'), 'suite is in npm test chain');
 });
 
 test('Phase 36 preserves non-live scope and forbids runtime implementation', () => {
@@ -107,7 +108,7 @@ test('future CLI contract is opt-in, out of CI, read-only, and detached from ada
     'unable to run from default config',
     'unable to write to the database or event log',
   ], 'future CLI contract');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'future smoke command is not in deterministic test chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'future smoke command is not in deterministic test chain');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'future smoke command is not in ci');
 });
 

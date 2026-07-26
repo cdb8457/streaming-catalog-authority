@@ -33,6 +33,8 @@ fi
 
 SECRETS_DIR="./secrets"
 RECORDS_DIR="${PROMOTION_RECORDS_HOST_DIR:-./promotion-records}"
+# Phase 259. Where you put catalog snapshots to import. Mounted READ-ONLY into the container.
+IMPORT_DIR="${CATALOG_IMPORT_HOST_DIR:-./import}"
 
 random_secret() {
   # 32 random bytes, base64. Falls back through the tools an ordinary machine actually has.
@@ -114,6 +116,8 @@ write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"
 
 mkdir -p "${RECORDS_DIR}"
 echo "  ready     ${RECORDS_DIR} (mounted read-only into the container)"
+mkdir -p "${IMPORT_DIR}"
+echo "  ready     ${IMPORT_DIR} (catalog snapshots, mounted read-only into the container)"
 
 echo
 echo "Next:"
@@ -126,5 +130,9 @@ cat "${SECRETS_DIR}/operator_ui_token"
 echo
 echo "Put your Phase 231-240 chain artifacts in ${RECORDS_DIR} to see them in the"
 echo "Promotion Record Chain panel. The container reads that folder and can never write to it."
+echo
+echo "To fill the catalog, put a snapshot file in ${IMPORT_DIR} and preview it:"
+echo "  docker compose ${COMPOSE_ARGS}run --rm app npm run ops:catalog-import -- --file your-snapshot.json"
+echo "Add --apply to commit it, then open the Catalog panel in the UI."
 echo
 echo "Stop with:  docker compose ${COMPOSE_ARGS}down"

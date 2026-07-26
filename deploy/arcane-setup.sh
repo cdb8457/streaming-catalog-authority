@@ -63,6 +63,8 @@ esac
 
 SECRETS_DIR="${PROJECT_DIR}/secrets"
 RECORDS_DIR="${PROJECT_DIR}/promotion-records"
+# Phase 259. Where you put catalog snapshots to import. Mounted READ-ONLY into the container.
+IMPORT_DIR="${PROJECT_DIR}/import"
 
 random_secret() {
   if command -v openssl >/dev/null 2>&1; then openssl rand -base64 32
@@ -95,7 +97,7 @@ echo "Catalog Authority — Arcane/Unraid project setup"
 echo "  project directory: ${PROJECT_DIR}"
 echo
 
-mkdir -p "${SECRETS_DIR}" "${RECORDS_DIR}" "${PROJECT_DIR}/pgdata" "${PROJECT_DIR}/keystore"
+mkdir -p "${SECRETS_DIR}" "${RECORDS_DIR}" "${IMPORT_DIR}" "${PROJECT_DIR}/pgdata" "${PROJECT_DIR}/keystore"
 chmod 700 "${SECRETS_DIR}" 2>/dev/null || true
 
 PG_PASSWORD="$(random_secret | tr -d '\n/+=' | cut -c1-32)"
@@ -116,6 +118,7 @@ write_secret_if_absent custodian_kek "$(random_secret)" "${SECRET_MODE_APP}"
 write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"
 
 echo "  ready     promotion-records/ (mounted read-only into the container)"
+echo "  ready     import/ (catalog snapshots, mounted read-only into the container)"
 echo "  ready     pgdata/, keystore/"
 echo
 echo "Next, in this project's .env, next to docker-compose.arcane.yml:"

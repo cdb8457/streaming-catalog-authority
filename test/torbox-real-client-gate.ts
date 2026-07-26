@@ -13,6 +13,7 @@ import {
   isTorBoxReadOnlyOperation,
   type TorBoxTransport,
 } from '../src/core/adapters/torbox-real-client-gate.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -60,7 +61,7 @@ test('package and source have no TorBox SDK dependency or import', () => {
   const allDeps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!allDeps.includes('@torbox/torbox-api'), 'no TorBox SDK dependency installed');
   assertEq(pkg.scripts['test:torbox-real-client-gate'], 'tsx test/torbox-real-client-gate.ts', 'focused script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-real-client-gate.ts'), 'suite is in npm test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-real-client-gate.ts'), 'suite is in npm test chain');
 
   for (const [path, source] of walkTs('src')) {
     assert(!/from\s+['"]@torbox\/torbox-api['"]/.test(source), `${path} does not import SDK`);
@@ -254,6 +255,10 @@ test('Phase 33 docs preserve closed gate, O4/O5, and FileCustodian boundary', ()
 
 test('TorBox source allowlist remains explicit', () => {
   const allowed = new Set([
+    // Phase 250. NOT an implementation: this file names TorBox only inside a REDACTION pattern that
+    // REFUSES a readiness packet mentioning a live provider. The allowlists predate it; excluding it would
+    // mean the guard that forbids the word cannot itself contain the word.
+    'src/ops/release-readiness.ts',
     'src/core/adapters/torbox-boundary.ts',
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',

@@ -9,6 +9,7 @@ import {
   torBoxSmokeShellUsage,
   type TorBoxSmokeShellOptions,
 } from '../src/ops/torbox-smoke-shell.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -55,8 +56,8 @@ test('Phase 37 docs, shell, CLI, and scripts exist and are wired', () => {
   assert(exists('src/ops/torbox-smoke-cli.ts'), 'CLI wrapper exists');
   assertEq(pkg.scripts['smoke:torbox-readonly'], 'tsx src/ops/torbox-smoke-cli.ts', 'operator smoke script present');
   assertEq(pkg.scripts['test:torbox-smoke-cli'], 'tsx test/torbox-smoke-cli.ts', 'focused test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-cli.ts'), 'deterministic shell suite is in npm test');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-smoke-cli.ts'), 'deterministic shell suite is in npm test');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm ci');
 });
 

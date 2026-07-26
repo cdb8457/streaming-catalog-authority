@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -12,7 +13,11 @@ function test(name: string, fn: () => void): void {
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8');
+// Phase 258. Line endings are a CHECKOUT artifact, never content: git delivers these files with CRLF on a
+// Windows working copy, and the assertions below are written against the LF the repository stores. Normalising
+// here is what makes this suite mean the same thing on every platform, which is the whole point of an aggregate
+// command that now actually runs on all of them.
+const read = (rel: string): string => readFileSync(`${root}/${rel}`, 'utf8').replace(/\r\n/g, '\n');
 
 console.log('Running Phase 224 working foundation plan suite:\n');
 
@@ -92,7 +97,7 @@ test('phase ladder and non-scope guards keep providers and playback out', () => 
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assert(pkg.scripts['test:working-foundation-plan'] === 'tsx test/working-foundation-plan.ts', 'phase test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'aggregate test includes Phase 224 before deploy guard',
   );
   for (const required of [

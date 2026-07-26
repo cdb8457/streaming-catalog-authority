@@ -33,6 +33,9 @@ $ComposeArgs = if ($InRepository) { '-f docker-compose.runtime.yml ' } else { ''
 $SecretsDir = Join-Path $RepoRoot 'secrets'
 $RecordsSetting = if ($env:PROMOTION_RECORDS_HOST_DIR) { $env:PROMOTION_RECORDS_HOST_DIR } else { './promotion-records' }
 $RecordsDir = if ([System.IO.Path]::IsPathRooted($RecordsSetting)) { $RecordsSetting } else { Join-Path $RepoRoot $RecordsSetting }
+# Phase 259. Where you put catalog snapshots to import. Mounted READ-ONLY into the container.
+$ImportSetting = if ($env:CATALOG_IMPORT_HOST_DIR) { $env:CATALOG_IMPORT_HOST_DIR } else { './import' }
+$ImportDir = if ([System.IO.Path]::IsPathRooted($ImportSetting)) { $ImportSetting } else { Join-Path $RepoRoot $ImportSetting }
 
 # LF endings and no byte-order mark: a secret file is read verbatim, and a stray BOM would become part of a
 # password or token.
@@ -112,6 +115,8 @@ Write-SecretIfAbsent -Name 'operator_ui_token' -Value (New-RandomSecret)
 
 if (-not (Test-Path -Path $RecordsDir -PathType Container)) { [void] (New-Item -ItemType Directory -Path $RecordsDir) }
 Write-Host "  ready     $RecordsSetting (mounted read-only into the container)"
+if (-not (Test-Path -Path $ImportDir -PathType Container)) { [void] (New-Item -ItemType Directory -Path $ImportDir) }
+Write-Host "  ready     $ImportSetting (catalog snapshots, mounted read-only into the container)"
 
 Write-Host ''
 Write-Host 'Next:'
@@ -124,5 +129,9 @@ Write-Host (([System.IO.File]::ReadAllText((Join-Path $SecretsDir 'operator_ui_t
 Write-Host ''
 Write-Host "Put your Phase 231-240 chain artifacts in $RecordsSetting to see them in the"
 Write-Host 'Promotion Record Chain panel. The container reads that folder and can never write to it.'
+Write-Host ''
+Write-Host "To fill the catalog, put a snapshot file in $ImportSetting and preview it:"
+Write-Host "  docker compose ${ComposeArgs}run --rm app npm run ops:catalog-import -- --file your-snapshot.json"
+Write-Host 'Add --apply to commit it, then open the Catalog panel in the UI.'
 Write-Host ''
 Write-Host "Stop with:  docker compose ${ComposeArgs}down"

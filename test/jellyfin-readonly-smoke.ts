@@ -5,6 +5,7 @@ import { createRealJellyfinClient, createRealJellyfinOutboxTarget, isJellyfinNet
 import { runReadOnlySmoke } from '../src/core/adapters/jellyfin/smoke.js';
 import type { Env } from '../src/config/env.js';
 import type { FetchLike, HttpRequestInit, HttpResponseLike } from '../src/core/adapters/jellyfin/transport.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -112,7 +113,7 @@ await test('package, deploy guard, and docs wire the Phase 204 gate', () => {
   const deploy = read('test/deploy.ts');
   const readme = read('README.md');
   assert(pkg.scripts['test:jellyfin-readonly-smoke'] === 'tsx test/jellyfin-readonly-smoke.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 204 Jellyfin read-only smoke'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_READ_ONLY_SMOKE_READY'), 'deploy guard status');
   assert(readme.includes('Phase 204 adds `docs/PHASE_204_JELLYFIN_READ_ONLY_SMOKE.md`'), 'README ledger entry');

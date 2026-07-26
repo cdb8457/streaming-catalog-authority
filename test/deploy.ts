@@ -1,5 +1,6 @@
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 /**
  * Phase 3 Stage 3.4 ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â static structural checks for the deployment artifacts.
@@ -19,7 +20,11 @@ function test(name: string, fn: () => void): void {
   catch (err) { failed++; failures.push([name, err]); console.log(`  FAIL  ${name}: ${(err as Error).message}`); }
 }
 function assert(cond: unknown, msg: string): void { if (!cond) throw new Error(msg); }
-const read = (rel: string): string => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), 'utf8');
+// Phase 258. Line endings are a CHECKOUT artifact, never content: git delivers these files with CRLF on a
+// Windows working copy, and the assertions below are written against the LF the repository stores. Normalising
+// here is what makes this suite mean the same thing on every platform, which is the whole point of an aggregate
+// command that now actually runs on all of them.
+const read = (rel: string): string => readFileSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)), 'utf8').replace(/\r\n/g, '\n');
 const exists = (rel: string): boolean => existsSync(fileURLToPath(new URL(`../${rel}`, import.meta.url)));
 function assertTorBoxFactoryInjectedOnly(factory: string): void {
   assert(factory.includes("'torbox-readonly'"), 'TorBox read-only adapter mode is explicit');
@@ -193,8 +198,8 @@ test('package.json ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã�
   for (const s of ['ops:migrate', 'ops:backup', 'test:backup-ops', 'test:deploy', 'smoke:compose']) {
     assert(typeof pkg.scripts[s] === 'string', `script ${s} present`);
   }
-  assert(/test\/backup-ops\.ts/.test(pkg.scripts.test ?? ''), 'backup-ops in the test chain');
-  assert(/test\/deploy\.ts/.test(pkg.scripts.test ?? ''), 'deploy in the test chain');
+  assert(/test\/backup-ops\.ts/.test(AGGREGATE_SUITE_COMMAND ?? ''), 'backup-ops in the test chain');
+  assert(/test\/deploy\.ts/.test(AGGREGATE_SUITE_COMMAND ?? ''), 'deploy in the test chain');
   assert(/docker-compose\.unraid\.runtime\.yml/.test(pkg.scripts['smoke:compose'] ?? ''), 'smoke uses the public Unraid runtime compose');
   const deps = Object.keys(pkg.dependencies ?? {});
   for (const banned of ['express', 'fastify', 'koa', 'http-server', 'age', 'aws-sdk', '@aws-sdk/client-kms',
@@ -224,14 +229,14 @@ test('adapter boundary ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ�
   assert(exists('docs/PHASE_7_ADAPTER_BOUNDARY.md'), 'adapter boundary doc exists');
   const doc = read('docs/PHASE_7_ADAPTER_BOUNDARY.md');
   for (const kw of ['AdapterRefView', 'withProviderRef', 'advisory', 'ADAPTER_MODE', 'deferred']) assert(doc.includes(kw), `doc covers ${kw}`);
-  assert((pkg.scripts.test ?? '').includes('test/adapter-privacy.ts') && (pkg.scripts.test ?? '').includes('test/adapter-contract.ts'), 'adapter suites in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/adapter-privacy.ts') && (AGGREGATE_SUITE_COMMAND ?? '').includes('test/adapter-contract.ts'), 'adapter suites in the CI chain');
 });
 
 test('torbox boundary - Phase 31 is static research only, no SDK/live provider mode', () => {
   assert(exists('src/core/adapters/torbox-boundary.ts'), 'TorBox static boundary contract exists');
   assert(exists('docs/PHASE_31_TORBOX_BOUNDARY.md'), 'Phase 31 TorBox boundary doc exists');
   assert(typeof pkg.scripts['test:torbox-boundary'] === 'string', 'test:torbox-boundary script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-boundary.ts'), 'TorBox boundary suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-boundary.ts'), 'TorBox boundary suite in the CI chain');
   const source = read('src/core/adapters/torbox-boundary.ts');
   const suite = read('test/torbox-boundary.ts');
   const doc = read('docs/PHASE_31_TORBOX_BOUNDARY.md');
@@ -271,7 +276,7 @@ test('fake TorBox adapter - Phase 32 is local contract only and fail-closed', ()
   assert(exists('src/core/adapters/fake-torbox-adapter.ts'), 'Phase 32 fake TorBox adapter exists');
   assert(exists('docs/PHASE_32_FAKE_TORBOX_ADAPTER.md'), 'Phase 32 fake TorBox doc exists');
   assert(typeof pkg.scripts['test:torbox-fake-adapter'] === 'string', 'test:torbox-fake-adapter script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-fake-adapter.ts'), 'fake TorBox suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-fake-adapter.ts'), 'fake TorBox suite in the CI chain');
 
   const source = read('src/core/adapters/fake-torbox-adapter.ts');
   const factory = read('src/core/adapters/adapter-factory.ts');
@@ -331,7 +336,7 @@ test('TorBox real-client gate - Phase 33 is static design only and fail-closed',
   assert(exists('src/core/adapters/torbox-real-client-gate.ts'), 'Phase 33 TorBox real-client gate exists');
   assert(exists('docs/PHASE_33_TORBOX_REAL_CLIENT_GATE.md'), 'Phase 33 TorBox real-client gate doc exists');
   assert(typeof pkg.scripts['test:torbox-real-client-gate'] === 'string', 'test:torbox-real-client-gate script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-real-client-gate.ts'), 'TorBox real-client gate suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-real-client-gate.ts'), 'TorBox real-client gate suite in the CI chain');
 
   const source = read('src/core/adapters/torbox-real-client-gate.ts');
   const suite = read('test/torbox-real-client-gate.ts');
@@ -403,7 +408,7 @@ test('TorBox read-only fixture client - Phase 34 is injected transport only and 
   assert(exists('src/core/adapters/torbox-readonly-client.ts'), 'Phase 34 TorBox read-only client exists');
   assert(exists('docs/PHASE_34_TORBOX_READONLY_FIXTURE.md'), 'Phase 34 TorBox read-only fixture doc exists');
   assert(typeof pkg.scripts['test:torbox-readonly-client'] === 'string', 'test:torbox-readonly-client script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-readonly-client.ts'), 'TorBox read-only fixture suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-readonly-client.ts'), 'TorBox read-only fixture suite in the CI chain');
 
   const source = read('src/core/adapters/torbox-readonly-client.ts');
   const suite = read('test/torbox-readonly-client.ts');
@@ -480,7 +485,7 @@ test('TorBox smoke evidence - Phase 35 is docs/templates/static UI examples only
   assert(exists('docs/templates/TORBOX_SMOKE_EVIDENCE.md'), 'Phase 35 smoke evidence template exists');
   assert(exists('docs/UI_OPERATOR_DASHBOARD_EXAMPLES.md'), 'Phase 35 future UI examples doc exists');
   assert(typeof pkg.scripts['test:torbox-smoke-evidence'] === 'string', 'test:torbox-smoke-evidence script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-evidence.ts'), 'TorBox smoke evidence suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-smoke-evidence.ts'), 'TorBox smoke evidence suite in the CI chain');
 
   const doc = read('docs/PHASE_35_TORBOX_SMOKE_EVIDENCE.md');
   const tpl = read('docs/templates/TORBOX_SMOKE_EVIDENCE.md');
@@ -558,7 +563,7 @@ test('TorBox smoke evidence - Phase 35 is docs/templates/static UI examples only
 test('TorBox live smoke contract - Phase 36 is acceptance contract only', () => {
   assert(exists('docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md'), 'Phase 36 live smoke contract doc exists');
   assert(typeof pkg.scripts['test:torbox-live-smoke-contract'] === 'string', 'test:torbox-live-smoke-contract script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-contract.ts'), 'TorBox live smoke contract suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-contract.ts'), 'TorBox live smoke contract suite in the CI chain');
 
   const doc = read('docs/PHASE_36_TORBOX_LIVE_SMOKE_CONTRACT.md');
   const readme = read('README.md');
@@ -628,8 +633,8 @@ test('TorBox smoke CLI shell - Phase 37 is refused-by-default and non-network', 
   assert(exists('src/ops/torbox-smoke-cli.ts'), 'Phase 37 CLI wrapper exists');
   assert(typeof pkg.scripts['smoke:torbox-readonly'] === 'string', 'smoke:torbox-readonly script present');
   assert(typeof pkg.scripts['test:torbox-smoke-cli'] === 'string', 'test:torbox-smoke-cli script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-cli.ts'), 'TorBox smoke CLI shell suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator TorBox smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-smoke-cli.ts'), 'TorBox smoke CLI shell suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator TorBox smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator TorBox smoke command is not in ci script');
 
   const doc = read('docs/PHASE_37_TORBOX_SMOKE_CLI_SHELL.md');
@@ -681,8 +686,8 @@ test('TorBox smoke CLI shell - Phase 37 is refused-by-default and non-network', 
 test('TorBox smoke fixture harness - Phase 38 is deterministic local-only output', () => {
   assert(exists('docs/PHASE_38_TORBOX_SMOKE_FIXTURE_HARNESS.md'), 'Phase 38 fixture harness doc exists');
   assert(typeof pkg.scripts['test:torbox-smoke-fixture'] === 'string', 'test:torbox-smoke-fixture script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-fixture.ts'), 'TorBox fixture suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-smoke-fixture.ts'), 'TorBox fixture suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
 
   const doc = read('docs/PHASE_38_TORBOX_SMOKE_FIXTURE_HARNESS.md');
   const shell = read('src/ops/torbox-smoke-shell.ts');
@@ -729,8 +734,8 @@ test('TorBox transport acceptance - Phase 39 is deterministic local-only harness
   assert(exists('docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md'), 'Phase 39 transport acceptance doc exists');
   assert(exists('src/ops/torbox-transport-acceptance.ts'), 'Phase 39 transport acceptance source exists');
   assert(typeof pkg.scripts['test:torbox-transport-acceptance'] === 'string', 'test:torbox-transport-acceptance script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-transport-acceptance.ts'), 'TorBox transport acceptance suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-transport-acceptance.ts'), 'TorBox transport acceptance suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
 
   const doc = read('docs/PHASE_39_TORBOX_TRANSPORT_ACCEPTANCE.md');
   const source = read('src/ops/torbox-transport-acceptance.ts');
@@ -780,8 +785,8 @@ test('TorBox smoke readiness preflight - Phase 40 is descriptor-only and non-liv
   assert(exists('src/ops/torbox-smoke-readiness-preflight-cli.ts'), 'Phase 40 CLI preflight source exists');
   assert(typeof pkg.scripts['ops:torbox-smoke-readiness-preflight'] === 'string', 'ops:torbox-smoke-readiness-preflight script present');
   assert(typeof pkg.scripts['test:torbox-smoke-readiness-preflight'] === 'string', 'test:torbox-smoke-readiness-preflight script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-smoke-readiness-preflight.ts'), 'TorBox smoke readiness preflight suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-smoke-readiness-preflight.ts'), 'TorBox smoke readiness preflight suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
 
   const doc = read('docs/PHASE_40_TORBOX_SMOKE_READINESS_PREFLIGHT.md');
   const preflight = read('src/ops/torbox-smoke-readiness-preflight.ts');
@@ -835,8 +840,8 @@ test('TorBox smoke readiness preflight - Phase 40 is descriptor-only and non-liv
 test('TorBox endpoint mapping - Phase 41 is static review only and non-live', () => {
   assert(exists('docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md'), 'Phase 41 endpoint mapping doc exists');
   assert(typeof pkg.scripts['test:torbox-endpoint-mapping'] === 'string', 'test:torbox-endpoint-mapping script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-endpoint-mapping.ts'), 'TorBox endpoint mapping suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-endpoint-mapping.ts'), 'TorBox endpoint mapping suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
 
   const doc = read('docs/PHASE_41_TORBOX_ENDPOINT_MAPPING.md');
   const suite = read('test/torbox-endpoint-mapping.ts');
@@ -891,8 +896,8 @@ test('TorBox live transport - Phase 42 is injected, GET-only, and still detached
   assert(exists('src/ops/torbox-live-transport.ts'), 'Phase 42 live transport source exists');
   assert(exists('docs/PHASE_42_TORBOX_LIVE_TRANSPORT.md'), 'Phase 42 live transport doc exists');
   assert(typeof pkg.scripts['test:torbox-live-transport'] === 'string', 'test:torbox-live-transport script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-transport.ts'), 'TorBox live transport suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-transport.ts'), 'TorBox live transport suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
 
   const source = read('src/ops/torbox-live-transport.ts');
   const suite = read('test/torbox-live-transport.ts');
@@ -954,8 +959,8 @@ test('TorBox live smoke CLI - Phase 43 is operator-run, redacted, and still deta
   assert(exists('src/ops/torbox-live-smoke-runner.ts'), 'Phase 43 live smoke runner exists');
   assert(exists('docs/PHASE_43_TORBOX_LIVE_SMOKE_CLI.md'), 'Phase 43 live smoke CLI doc exists');
   assert(typeof pkg.scripts['test:torbox-live-smoke-cli'] === 'string', 'test:torbox-live-smoke-cli script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-cli.ts'), 'TorBox live smoke CLI suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-cli.ts'), 'TorBox live smoke CLI suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
 
   const runner = read('src/ops/torbox-live-smoke-runner.ts');
@@ -1011,8 +1016,8 @@ test('TorBox live smoke evidence preflight - Phase 44 verifies saved reports wit
   assert(exists('docs/PHASE_44_TORBOX_LIVE_SMOKE_EVIDENCE_PREFLIGHT.md'), 'Phase 44 doc exists');
   assert(typeof pkg.scripts['ops:torbox-live-smoke-evidence-preflight'] === 'string', 'ops script present');
   assert(typeof pkg.scripts['test:torbox-live-smoke-evidence-preflight'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-evidence-preflight.ts'), 'Phase 44 suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-evidence-preflight.ts'), 'Phase 44 suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
 
   const preflight = read('src/ops/torbox-live-smoke-evidence-preflight.ts');
@@ -1071,8 +1076,8 @@ test('TorBox live smoke operator plan - Phase 45 is static command planning only
   assert(exists('docs/PHASE_45_TORBOX_LIVE_SMOKE_OPERATOR_PLAN.md'), 'Phase 45 doc exists');
   assert(typeof pkg.scripts['ops:torbox-live-smoke-plan'] === 'string', 'ops script present');
   assert(typeof pkg.scripts['test:torbox-live-smoke-plan'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-plan.ts'), 'Phase 45 suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-plan.ts'), 'Phase 45 suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
 
   const plan = read('src/ops/torbox-live-smoke-plan.ts');
@@ -1132,7 +1137,7 @@ test('TorBox catalog bridge - Phase 47 proves encrypted infohash refs through in
   assert(exists('docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md'), 'Phase 47 catalog bridge doc exists');
   assert(exists('test/torbox-catalog-bridge.ts'), 'Phase 47 catalog bridge suite exists');
   assert(typeof pkg.scripts['test:torbox-catalog-bridge'] === 'string', 'test:torbox-catalog-bridge script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-catalog-bridge.ts 5451'), 'Phase 47 suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-catalog-bridge.ts'), 'Phase 47 suite in the CI chain');
 
   const doc = read('docs/PHASE_47_TORBOX_CATALOG_BRIDGE.md');
   const suite = read('test/torbox-catalog-bridge.ts');
@@ -1190,8 +1195,8 @@ test('TorBox live smoke summary pack - Phase 49 summarizes explicit redacted rep
   assert(exists('src/ops/torbox-live-smoke-summary-pack-cli.ts'), 'Phase 49 summary CLI exists');
   assert(typeof pkg.scripts['ops:torbox-live-smoke-summary-pack'] === 'string', 'ops script present');
   assert(typeof pkg.scripts['test:torbox-live-smoke-summary-pack'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-summary-pack.ts'), 'Phase 49 suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-summary-pack.ts'), 'Phase 49 suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
 
   const summary = read('src/ops/torbox-live-smoke-summary-pack.ts');
@@ -1239,7 +1244,7 @@ test('TorBox live smoke labels - Phase 50 keeps producer, preflight, and summary
   assert(exists('src/ops/torbox-live-smoke-labels.ts'), 'Phase 50 shared label source exists');
   assert(exists('test/torbox-live-smoke-labels.ts'), 'Phase 50 label suite exists');
   assert(typeof pkg.scripts['test:torbox-live-smoke-labels'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-labels.ts'), 'Phase 50 suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-labels.ts'), 'Phase 50 suite in the CI chain');
 
   const labels = read('src/ops/torbox-live-smoke-labels.ts');
   const preflight = read('src/ops/torbox-live-smoke-evidence-preflight.ts');
@@ -1284,8 +1289,8 @@ test('TorBox live smoke review gate - Phase 51 verifies required summary probes 
   assert(exists('test/torbox-live-smoke-review-gate.ts'), 'Phase 51 review gate suite exists');
   assert(typeof pkg.scripts['ops:torbox-live-smoke-review-gate'] === 'string', 'ops script present');
   assert(typeof pkg.scripts['test:torbox-live-smoke-review-gate'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-review-gate.ts'), 'Phase 51 suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-review-gate.ts'), 'Phase 51 suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
 
   const gate = read('src/ops/torbox-live-smoke-review-gate.ts');
@@ -1337,8 +1342,8 @@ test('TorBox live smoke operator packet - Phase 52 packages run-save-review with
   assert(exists('test/torbox-live-smoke-operator-packet.ts'), 'Phase 52 packet suite exists');
   assert(typeof pkg.scripts['ops:torbox-live-smoke-operator-packet'] === 'string', 'ops script present');
   assert(typeof pkg.scripts['test:torbox-live-smoke-operator-packet'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-operator-packet.ts'), 'Phase 52 suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-operator-packet.ts'), 'Phase 52 suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
 
   const packet = read('src/ops/torbox-live-smoke-operator-packet.ts');
@@ -1393,8 +1398,8 @@ test('TorBox live smoke packet manifest - Phase 53 preflights retained artifact 
   assert(exists('test/torbox-live-smoke-packet-manifest.ts'), 'Phase 53 manifest suite exists');
   assert(typeof pkg.scripts['ops:torbox-live-smoke-packet-manifest'] === 'string', 'ops script present');
   assert(typeof pkg.scripts['test:torbox-live-smoke-packet-manifest'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-packet-manifest.ts'), 'Phase 53 suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-packet-manifest.ts'), 'Phase 53 suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
   assert(!(pkg.scripts.ci ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in ci script');
 
   const manifest = read('src/ops/torbox-live-smoke-packet-manifest.ts');
@@ -1450,8 +1455,8 @@ test('TorBox live smoke acceptance record - Phase 54 records review disposition 
   assert(exists('test/torbox-live-smoke-acceptance-record.ts'), 'Phase 54 acceptance suite exists');
   assert(typeof pkg.scripts['ops:torbox-live-smoke-acceptance-record'] === 'string', 'ops script present');
   assert(typeof pkg.scripts['test:torbox-live-smoke-acceptance-record'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-acceptance-record.ts'), 'Phase 54 suite in the CI chain');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-acceptance-record.ts'), 'Phase 54 suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
 
   const source = read('src/ops/torbox-live-smoke-acceptance-record.ts');
   const cli = read('src/ops/torbox-live-smoke-acceptance-record-cli.ts');
@@ -1504,7 +1509,7 @@ test('publisher boundary - Phase 8 doc + suites wired; erasure-conflict noted', 
   const doc = read('docs/PHASE_8_PUBLISHER_BOUNDARY.md');
   for (const kw of ['PublishableIdentity', 'withPublishableIdentity', 'PUBLISHER_MODE', 'dry-run', 'advisory', 'deferred']) assert(doc.includes(kw), `doc covers ${kw}`);
   assert(/crypto-shred|erasure/i.test(doc), 'doc states the publish-vs-erasure policy conflict');
-  assert((pkg.scripts.test ?? '').includes('test/publisher-privacy.ts') && (pkg.scripts.test ?? '').includes('test/publisher-contract.ts'), 'publisher suites in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/publisher-privacy.ts') && (AGGREGATE_SUITE_COMMAND ?? '').includes('test/publisher-contract.ts'), 'publisher suites in the CI chain');
 });
 
 test('provider availability policy - Phase 55 keeps advisory provider results non-authoritative', () => {
@@ -1512,7 +1517,7 @@ test('provider availability policy - Phase 55 keeps advisory provider results no
   assert(exists('docs/PHASE_55_PROVIDER_AVAILABILITY_POLICY.md'), 'Phase 55 policy doc exists');
   assert(exists('test/provider-availability-policy.ts'), 'Phase 55 policy suite exists');
   assert(typeof pkg.scripts['test:provider-availability-policy'] === 'string', 'Phase 55 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-policy.ts'), 'Phase 55 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-policy.ts'), 'Phase 55 suite in CI chain');
 
   const source = read('src/core/adapters/provider-availability-policy.ts');
   const doc = read('docs/PHASE_55_PROVIDER_AVAILABILITY_POLICY.md');
@@ -1558,7 +1563,7 @@ test('provider availability bridge - Phase 56 classifies scoped adapter output w
   assert(exists('docs/PHASE_56_PROVIDER_AVAILABILITY_BRIDGE.md'), 'Phase 56 bridge doc exists');
   assert(exists('test/provider-availability-bridge.ts'), 'Phase 56 bridge suite exists');
   assert(typeof pkg.scripts['test:provider-availability-bridge'] === 'string', 'Phase 56 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-bridge.ts'), 'Phase 56 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-bridge.ts'), 'Phase 56 suite in CI chain');
 
   const source = read('src/core/adapters/provider-availability-bridge.ts');
   const suite = read('test/torbox-catalog-bridge.ts');
@@ -1603,7 +1608,7 @@ test('provider availability summary - Phase 57 emits count-only provider decisio
   assert(exists('docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md'), 'Phase 57 summary doc exists');
   assert(exists('test/provider-availability-summary.ts'), 'Phase 57 summary suite exists');
   assert(typeof pkg.scripts['test:provider-availability-summary'] === 'string', 'Phase 57 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-summary.ts'), 'Phase 57 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-summary.ts'), 'Phase 57 suite in CI chain');
 
   const source = read('src/core/adapters/provider-availability-summary.ts');
   const doc = read('docs/PHASE_57_PROVIDER_AVAILABILITY_SUMMARY.md');
@@ -1650,7 +1655,7 @@ test('provider availability summary CLI - Phase 58 reads explicit bridge reports
   assert(exists('test/provider-availability-summary-cli.ts'), 'Phase 58 summary CLI suite exists');
   assert(typeof pkg.scripts['ops:provider-availability-summary'] === 'string', 'Phase 58 ops script present');
   assert(typeof pkg.scripts['test:provider-availability-summary-cli'] === 'string', 'Phase 58 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-summary-cli.ts'), 'Phase 58 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-summary-cli.ts'), 'Phase 58 suite in CI chain');
 
   const cli = read('src/ops/provider-availability-summary-cli.ts');
   const doc = read('docs/PHASE_58_PROVIDER_AVAILABILITY_SUMMARY_CLI.md');
@@ -1690,7 +1695,7 @@ test('provider availability operator packet - Phase 59 packages count-only evide
   assert(exists('test/provider-availability-operator-packet.ts'), 'Phase 59 packet suite exists');
   assert(typeof pkg.scripts['ops:provider-availability-operator-packet'] === 'string', 'Phase 59 ops script present');
   assert(typeof pkg.scripts['test:provider-availability-operator-packet'] === 'string', 'Phase 59 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-operator-packet.ts'), 'Phase 59 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-operator-packet.ts'), 'Phase 59 suite in CI chain');
 
   const packet = read('src/ops/provider-availability-operator-packet.ts');
   const cli = read('src/ops/provider-availability-operator-packet-cli.ts');
@@ -1741,7 +1746,7 @@ test('erasure policy ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢�
   const doc = read('docs/PHASE_9_ERASURE_POLICY.md');
   for (const kw of ['publish_ledger', 'PUBLISH_EXTERNAL_IDENTITY', 'revoke', 'forget', 'identity-free']) assert(doc.includes(kw), `doc covers ${kw}`);
   assert(/crypto-shred|erasure/i.test(doc), 'doc states the erasure conflict');
-  assert((pkg.scripts.test ?? '').includes('test/publish-erasure.ts') && (pkg.scripts.test ?? '').includes('test/publish-consent.ts'), 'publish suites in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/publish-erasure.ts') && (AGGREGATE_SUITE_COMMAND ?? '').includes('test/publish-consent.ts'), 'publish suites in the CI chain');
 });
 
 test('jellyfin adapter ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Phase 10 fake/local only: no network, no OTHER providers; doc + suites wired', () => {
@@ -1761,7 +1766,7 @@ test('jellyfin adapter ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ�
   const doc = read('docs/PHASE_10_JELLYFIN_ADAPTER.md');
   for (const kw of ['collection', 'providerRefs', 'PUBLISH_EXTERNAL_IDENTITY', 'Phase 11', 'no-match']) assert(doc.includes(kw), `doc covers ${kw}`);
   assert(/deferred|defer/i.test(doc) && /limit/i.test(doc), 'doc states the real-client deferral + revoke limits');
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-privacy.ts') && (pkg.scripts.test ?? '').includes('test/jellyfin-contract.ts'), 'jellyfin suites in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-privacy.ts') && (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-contract.ts'), 'jellyfin suites in the CI chain');
 });
 
 test('jellyfin HTTP (Phase 11) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â injected-fetch only in core; gated; smoke opt-in + out of CI', () => {
@@ -1777,8 +1782,8 @@ test('jellyfin HTTP (Phase 11) ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â�
   assert(exists('src/ops/jellyfin-smoke-cli.ts') && read('src/ops/jellyfin-smoke-cli.ts').includes('globalThis.fetch'), 'smoke CLI is the single network entrypoint');
   assert(typeof pkg.scripts['smoke:jellyfin'] === 'string', 'smoke:jellyfin script present');
   // the network-hitting smoke CLI must not run in CI (the fake-transport report suite test/jellyfin-smoke.ts is fine).
-  assert(!(pkg.scripts.test ?? '').includes('jellyfin-smoke-cli') && !(pkg.scripts.test ?? '').includes('smoke:jellyfin'), 'the smoke CLI is NOT in the CI test chain');
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-http.ts'), 'jellyfin-http suite in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('jellyfin-smoke-cli') && !(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:jellyfin'), 'the smoke CLI is NOT in the CI test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-http.ts'), 'jellyfin-http suite in the CI chain');
   assert(exists('docs/PHASE_11_JELLYFIN_HTTP.md'), 'Phase 11 doc exists');
   const doc = read('docs/PHASE_11_JELLYFIN_HTTP.md');
   for (const kw of ['JELLYFIN_ENABLE_NETWORK', 'PROVISIONAL', 'injected', 'X-Emby-Token', 'smoke:jellyfin']) assert(doc.includes(kw), `doc covers ${kw}`);
@@ -1788,20 +1793,20 @@ test('publish outbox ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢�
   assert(exists('docs/PHASE_12_PUBLISH_OUTBOX.md'), 'outbox doc exists');
   const doc = read('docs/PHASE_12_PUBLISH_OUTBOX.md');
   for (const kw of ['correlation_token', 'outbox', 'adopt', 'reconcile', 'JELLYFIN_ALLOW_LIVE_PUBLISH']) assert(doc.includes(kw), `doc covers ${kw}`);
-  assert((pkg.scripts.test ?? '').includes('test/publish-outbox.ts') && (pkg.scripts.test ?? '').includes('test/jellyfin-outbox.ts'), 'outbox suites in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/publish-outbox.ts') && (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-outbox.ts'), 'outbox suites in the CI chain');
   // the bare create stays disabled ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â the ONLY real-create path is the outbox (createTaggedCollection).
   const hc = read('src/core/adapters/jellyfin/http-client.ts');
   assert(hc.includes('JellyfinPublishDisabledError') && /createCollection\([^)]*\)[^{]*\{[^}]*throw/.test(hc), 'bare createCollection stays disabled');
   assert(hc.includes('createTaggedCollection'), 'outbox-only tagged create exists');
   assert(typeof pkg.scripts['ops:publish-reconcile'] === 'string', 'ops:publish-reconcile present');
-  assert(!(pkg.scripts.test ?? '').includes('publish-reconcile'), 'the reconcile CLI is NOT in the CI chain');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('publish-reconcile'), 'the reconcile CLI is NOT in the CI chain');
 });
 
 test('jellyfin smoke ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Phase 13 validation: doc + suite wired; globalThis.fetch limited to operator CLIs', () => {
   assert(exists('docs/PHASE_13_JELLYFIN_VALIDATION.md'), 'validation doc exists');
   const doc = read('docs/PHASE_13_JELLYFIN_VALIDATION.md');
   for (const kw of ['--write', 'self-clean', 'find-by-token', 'SearchTerm', 'redaction-safe']) assert(doc.includes(kw), `doc covers ${kw}`);
-  assert((pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts'), 'smoke-report suite in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-smoke.ts'), 'smoke-report suite in the CI chain');
   const cli = read('src/ops/jellyfin-smoke-cli.ts');
   assert(cli.includes('--write') && cli.includes('runReadOnlySmoke') && cli.includes('runWriteSmoke'), 'smoke CLI has read-only + --write modes');
   assert(cli.includes('isJellyfinLivePublishAllowed'), '--write gated by ALLOW_LIVE_PUBLISH');
@@ -1998,7 +2003,7 @@ test('readiness rehearsal - Phase 25 command, docs, and deterministic suite are 
 
   assert(typeof pkg.scripts['ops:readiness-plan'] === 'string', 'ops:readiness-plan script present');
   assert(typeof pkg.scripts['test:readiness-plan'] === 'string', 'test:readiness-plan script present');
-  assert((pkg.scripts.test ?? '').includes('test/readiness-plan.ts'), 'readiness suite in the deterministic test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/readiness-plan.ts'), 'readiness suite in the deterministic test chain');
 
   const readme = read('README.md');
   const gate = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
@@ -2018,7 +2023,7 @@ test('operator evidence rehearsal - Phase 26 command, docs, and deterministic su
 
   assert(typeof pkg.scripts['ops:evidence-rehearsal'] === 'string', 'ops:evidence-rehearsal script present');
   assert(typeof pkg.scripts['test:evidence-rehearsal'] === 'string', 'test:evidence-rehearsal script present');
-  assert((pkg.scripts.test ?? '').includes('test/evidence-rehearsal.ts'), 'evidence rehearsal suite in the deterministic test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/evidence-rehearsal.ts'), 'evidence rehearsal suite in the deterministic test chain');
 
   const readme = read('README.md');
   const gate = read('docs/PHASE_22_PRODUCTION_READINESS_GATE.md');
@@ -2084,7 +2089,7 @@ test('release guard - Phase 27 is wired as advisory read-only coordinator suppor
   assert(exists('test/release-guard.ts'), 'release guard suite exists');
   assert(typeof pkg.scripts['ops:release-guard'] === 'string', 'ops:release-guard script present');
   assert(typeof pkg.scripts['test:release-guard'] === 'string', 'test:release-guard script present');
-  assert((pkg.scripts.test ?? '').includes('test/release-guard.ts'), 'release guard suite in the deterministic test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/release-guard.ts'), 'release guard suite in the deterministic test chain');
 
   const cli = read('src/ops/release-guard-cli.ts');
   const guard = read('src/ops/release-guard.ts');
@@ -2137,7 +2142,7 @@ test('production custodian contract - Phase 28 is static, redaction-safe, and ke
   assert(exists('src/core/crypto/production-custodian-contract.ts'), 'Phase 28 contract module exists');
   assert(exists('test/production-custodian-contract.ts'), 'Phase 28 contract suite exists');
   assert(typeof pkg.scripts['test:production-custodian-contract'] === 'string', 'test:production-custodian-contract script present');
-  assert((pkg.scripts.test ?? '').includes('test/production-custodian-contract.ts'), 'Phase 28 suite in deterministic test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/production-custodian-contract.ts'), 'Phase 28 suite in deterministic test chain');
 
   const contract = read('src/core/crypto/production-custodian-contract.ts');
   const suite = read('test/production-custodian-contract.ts');
@@ -2207,7 +2212,7 @@ test('custodian evidence preflight - Phase 29 command/docs are redaction-safe an
   assert(exists('test/custodian-evidence-preflight.ts'), 'Phase 29 preflight suite exists');
   assert(typeof pkg.scripts['ops:custodian-evidence-preflight'] === 'string', 'ops:custodian-evidence-preflight script present');
   assert(typeof pkg.scripts['test:custodian-evidence-preflight'] === 'string', 'test:custodian-evidence-preflight script present');
-  assert((pkg.scripts.test ?? '').includes('test/custodian-evidence-preflight.ts'), 'Phase 29 suite in deterministic test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/custodian-evidence-preflight.ts'), 'Phase 29 suite in deterministic test chain');
 
   const preflight = read('src/ops/custodian-evidence-preflight.ts');
   const cli = read('src/ops/custodian-evidence-preflight-cli.ts');
@@ -2285,7 +2290,7 @@ test('KEK evidence preflight - Phase 30 command/docs are redaction-safe and keep
   assert(exists('test/kek-evidence-preflight.ts'), 'Phase 30 preflight suite exists');
   assert(typeof pkg.scripts['ops:kek-evidence-preflight'] === 'string', 'ops:kek-evidence-preflight script present');
   assert(typeof pkg.scripts['test:kek-evidence-preflight'] === 'string', 'test:kek-evidence-preflight script present');
-  assert((pkg.scripts.test ?? '').includes('test/kek-evidence-preflight.ts'), 'Phase 30 suite in deterministic test chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/kek-evidence-preflight.ts'), 'Phase 30 suite in deterministic test chain');
 
   const preflight = read('src/ops/kek-evidence-preflight.ts');
   const cli = read('src/ops/kek-evidence-preflight-cli.ts');
@@ -2469,7 +2474,7 @@ test('ops lifecycle ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã
     assert(typeof pkg.scripts[s] === 'string', `script ${s} present`);
   }
   for (const t of ['test/schema-version.ts', 'test/backup-verify.ts', 'test/ops-rehearse.ts']) {
-    assert((pkg.scripts.test ?? '').includes(t), `${t} in the test chain`);
+    assert((AGGREGATE_SUITE_COMMAND ?? '').includes(t), `${t} in the test chain`);
   }
   assert(exists('docs/PHASE_6_LIFECYCLE.md'), 'lifecycle doc exists');
   assert(exists('docs/RELEASE_CHECKLIST.md'), 'release checklist exists');
@@ -2573,7 +2578,7 @@ test('external custodian acceptance - Phase 21 harness is local, wired, and keep
   assert(exists('test/helpers/custodian-contract-kit.ts'), 'importable custodian contract kit exists');
   assert(exists('test/custodian-acceptance.ts'), 'Phase 21 local acceptance suite exists');
   assert(typeof pkg.scripts['test:custodian-acceptance'] === 'string', 'test:custodian-acceptance script present');
-  assert((pkg.scripts.test ?? '').includes('test/custodian-acceptance.ts'), 'acceptance suite in deterministic CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/custodian-acceptance.ts'), 'acceptance suite in deterministic CI chain');
 
   const kit = read('test/helpers/custodian-contract-kit.ts');
   const executable = read('test/custodian-contract.ts');
@@ -2593,7 +2598,7 @@ test('external custodian acceptance - Phase 21 harness is local, wired, and keep
   assert(!/\(err as Error\)\.(message|stack)/.test(kit), 'kit does not print raw (err as Error).message/.stack by default');
   assert(kit.includes('CUSTODIAN_HARNESS_VERBOSE') && /debug\/non-evidence/.test(kit), 'raw debug output is gated behind CUSTODIAN_HARNESS_VERBOSE and labelled non-evidence');
   assert(kit.includes('SAFE_ERROR_NAMES') && kit.includes("'UnknownError'"), 'error class/category is allowlisted (not a raw err.name that could carry secrets)');
-  assert((pkg.scripts.test ?? '').includes('test/custodian-harness-redaction.ts'), 'harness redaction regression is in the CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/custodian-harness-redaction.ts'), 'harness redaction regression is in the CI chain');
   assert(/redaction-safe|redacted/i.test(phase21), 'Phase 21 doc states harness output is redaction-safe');
   assert(executable.includes("from './helpers/custodian-contract-kit.js'"), 'executable suite imports the helper kit');
   assert(phase16.includes('./test/helpers/custodian-contract-kit.js'), 'Phase 16 points future adapters at helper kit');
@@ -2621,7 +2626,7 @@ test('operator UI packet contract - Phase 61 is static, allowlisted, and redacti
   assert(exists('docs/PHASE_61_OPERATOR_UI_PACKET_CONTRACT.md'), 'Phase 61 contract doc exists');
   assert(exists('test/operator-ui-packet-contract.ts'), 'Phase 61 contract suite exists');
   assert(typeof pkg.scripts['test:operator-ui-packet-contract'] === 'string', 'Phase 61 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-packet-contract.ts'), 'Phase 61 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-contract.ts'), 'Phase 61 suite in CI chain');
 
   const source = read('src/ops/operator-ui-packet-contract.ts');
   const suite = read('test/operator-ui-packet-contract.ts');
@@ -2714,7 +2719,7 @@ test('operator UI fixture packets - Phase 62 is static, deterministic, and contr
   assert(exists('docs/PHASE_62_OPERATOR_UI_FIXTURES.md'), 'Phase 62 fixture doc exists');
   assert(exists('test/operator-ui-fixtures.ts'), 'Phase 62 fixture suite exists');
   assert(typeof pkg.scripts['test:operator-ui-fixtures'] === 'string', 'Phase 62 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-packet-contract.ts && tsx test/operator-ui-fixtures.ts'), 'Phase 62 suite follows Phase 61 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-contract.ts && tsx test/operator-ui-fixtures.ts'), 'Phase 62 suite follows Phase 61 suite in CI chain');
 
   const source = read('src/ops/operator-ui-fixtures.ts');
   const suite = read('test/operator-ui-fixtures.ts');
@@ -2788,7 +2793,7 @@ test('static operator UI prototype - Phase 63 is fixture-only and read-only', ()
   assert(exists('test/operator-ui-static-prototype.ts'), 'Phase 63 static prototype suite exists');
   assert(typeof pkg.scripts['test:operator-ui-static-prototype'] === 'string', 'Phase 63 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-static-prototype'] === 'string', 'Phase 63 ops script present');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-fixtures.ts && tsx test/operator-ui-static-prototype.ts'), 'Phase 63 suite follows Phase 62 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-fixtures.ts && tsx test/operator-ui-static-prototype.ts'), 'Phase 63 suite follows Phase 62 suite in CI chain');
 
   const source = read('src/ops/operator-ui-static-prototype.ts');
   const cli = read('src/ops/operator-ui-static-prototype-cli.ts');
@@ -2863,7 +2868,7 @@ test('operator UI render allowlist - Phase 64 hardens static render boundary', (
   assert(exists('docs/PHASE_64_RENDER_ALLOWLIST_HARDENING.md'), 'Phase 64 render allowlist doc exists');
   assert(exists('test/operator-ui-render-allowlist.ts'), 'Phase 64 render allowlist suite exists');
   assert(typeof pkg.scripts['test:operator-ui-render-allowlist'] === 'string', 'Phase 64 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-static-prototype.ts && tsx test/operator-ui-render-allowlist.ts'), 'Phase 64 suite follows Phase 63 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-prototype.ts && tsx test/operator-ui-render-allowlist.ts'), 'Phase 64 suite follows Phase 63 suite in CI chain');
 
   const source = read('src/ops/operator-ui-render-allowlist.ts');
   const renderer = read('src/ops/operator-ui-static-prototype.ts');
@@ -2943,7 +2948,7 @@ test('static operator UI artifact packaging - Phase 65 is allowlist-gated and fi
   assert(exists('test/operator-ui-static-artifact.ts'), 'Phase 65 static artifact suite exists');
   assert(typeof pkg.scripts['test:operator-ui-static-artifact'] === 'string', 'Phase 65 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-static-artifact'] === 'string', 'Phase 65 ops script present');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-render-allowlist.ts && tsx test/operator-ui-static-artifact.ts'), 'Phase 65 suite follows Phase 64 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-render-allowlist.ts && tsx test/operator-ui-static-artifact.ts'), 'Phase 65 suite follows Phase 64 suite in CI chain');
 
   const source = read('src/ops/operator-ui-static-artifact.ts');
   const cli = read('src/ops/operator-ui-static-artifact-cli.ts');
@@ -3016,7 +3021,7 @@ test('static UI layout refinement - Phase 66 is allowlist-gated and fixture-only
   assert(exists('docs/PHASE_66_STATIC_UI_LAYOUT_REFINEMENT.md'), 'Phase 66 static layout doc exists');
   assert(exists('test/operator-ui-static-layout.ts'), 'Phase 66 static layout suite exists');
   assert(typeof pkg.scripts['test:operator-ui-static-layout'] === 'string', 'Phase 66 test script present');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-static-artifact.ts && tsx test/operator-ui-static-layout.ts'), 'Phase 66 suite follows Phase 65 suite in CI chain');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-artifact.ts && tsx test/operator-ui-static-layout.ts'), 'Phase 66 suite follows Phase 65 suite in CI chain');
 
   const renderer = read('src/ops/operator-ui-static-prototype.ts');
   const allowlist = read('src/ops/operator-ui-render-allowlist.ts');
@@ -3090,7 +3095,7 @@ test('operator UI launch readiness - Phase 67 is fixed, synthetic, and redaction
   assert(typeof pkg.scripts['test:operator-ui-launch-readiness'] === 'string', 'Phase 67 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-launch-readiness'] === 'string', 'Phase 67 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-static-layout.ts && tsx test/operator-ui-launch-readiness.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-layout.ts && tsx test/operator-ui-launch-readiness.ts'),
     'Phase 67 suite follows Phase 66 suite in CI chain',
   );
 
@@ -3175,7 +3180,7 @@ test('operator UI runtime boundary - Phase 68 is fixed, synthetic, and no-input'
   assert(typeof pkg.scripts['test:operator-ui-runtime-boundary'] === 'string', 'Phase 68 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-runtime-boundary'] === 'string', 'Phase 68 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-preview-launch-packet.ts && tsx test/operator-ui-runtime-boundary.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-preview-launch-packet.ts && tsx test/operator-ui-runtime-boundary.ts'),
     'Phase 68 suite follows the Phase 97 preview launch packet in CI chain',
   );
 
@@ -3264,7 +3269,7 @@ test('operator UI packet source contract - Phase 69 is sanitized and no-input', 
   assert(typeof pkg.scripts['test:operator-ui-packet-source-contract'] === 'string', 'Phase 69 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-packet-source-contract'] === 'string', 'Phase 69 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-runtime-boundary.ts && tsx test/operator-ui-packet-source-contract.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-runtime-boundary.ts && tsx test/operator-ui-packet-source-contract.ts'),
     'Phase 69 suite follows Phase 68 suite in CI chain',
   );
 
@@ -3355,7 +3360,7 @@ test('operator UI static runtime shell - Phase 70 is local fixture-only HTTP', (
   assert(typeof pkg.scripts['test:operator-ui-static-runtime'] === 'string', 'Phase 70 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-static-runtime'] === 'string', 'Phase 70 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-source-contract.ts && tsx test/operator-ui-static-runtime.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-source-contract.ts && tsx test/operator-ui-static-runtime.ts'),
     'Phase 70 suite follows Phase 69 suite in CI chain',
   );
 
@@ -3443,7 +3448,7 @@ test('operator UI static runtime hardening - Phase 71 fails closed before new da
   assert(exists('test/operator-ui-static-runtime-hardening.ts'), 'Phase 71 static runtime hardening suite exists');
   assert(typeof pkg.scripts['test:operator-ui-static-runtime-hardening'] === 'string', 'Phase 71 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime.ts && tsx test/operator-ui-static-runtime-hardening.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-runtime.ts && tsx test/operator-ui-static-runtime-hardening.ts'),
     'Phase 71 suite follows Phase 70 suite in CI chain',
   );
 
@@ -3533,7 +3538,7 @@ test('operator UI static runtime manifest - Phase 72 is fixed local metadata onl
   assert(exists('test/operator-ui-static-runtime-manifest.ts'), 'Phase 72 static runtime manifest suite exists');
   assert(typeof pkg.scripts['test:operator-ui-static-runtime-manifest'] === 'string', 'Phase 72 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-hardening.ts && tsx test/operator-ui-static-runtime-manifest.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-runtime-hardening.ts && tsx test/operator-ui-static-runtime-manifest.ts'),
     'Phase 72 suite follows Phase 71 hardening suite in CI chain',
   );
 
@@ -3627,7 +3632,7 @@ test('operator UI static runtime access boundary - Phase 73 is explicit and fail
   assert(exists('test/operator-ui-static-runtime-access-boundary.ts'), 'Phase 73 operator access boundary suite exists');
   assert(typeof pkg.scripts['test:operator-ui-static-runtime-access-boundary'] === 'string', 'Phase 73 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-manifest.ts && tsx test/operator-ui-static-runtime-access-boundary.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-runtime-manifest.ts && tsx test/operator-ui-static-runtime-access-boundary.ts'),
     'Phase 73 suite follows Phase 72 manifest suite in CI chain',
   );
 
@@ -3738,7 +3743,7 @@ test('operator UI auth/access contract - Phase 74 is contract-only and fail-clos
   assert(typeof pkg.scripts['test:operator-ui-auth-access-contract'] === 'string', 'Phase 74 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-auth-access-contract'] === 'string', 'Phase 74 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-static-runtime-access-boundary.ts && tsx test/operator-ui-auth-access-contract.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-runtime-access-boundary.ts && tsx test/operator-ui-auth-access-contract.ts'),
     'Phase 74 suite follows Phase 73 access-boundary suite in CI chain',
   );
 
@@ -3858,7 +3863,7 @@ test('operator UI packet endpoint readiness - Phase 75 is static preflight-only 
   assert(typeof pkg.scripts['test:operator-ui-packet-endpoint-readiness'] === 'string', 'Phase 75 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-packet-endpoint-readiness'] === 'string', 'Phase 75 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-auth-access-contract.ts && tsx test/operator-ui-packet-endpoint-readiness.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-auth-access-contract.ts && tsx test/operator-ui-packet-endpoint-readiness.ts'),
     'Phase 75 suite follows Phase 74 auth/access contract in CI chain',
   );
 
@@ -3987,7 +3992,7 @@ test('operator UI packet endpoint limits - Phase 76 is contract-only and not-imp
   assert(typeof pkg.scripts['test:operator-ui-packet-endpoint-limits'] === 'string', 'Phase 76 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-packet-endpoint-limits'] === 'string', 'Phase 76 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-readiness.ts && tsx test/operator-ui-packet-endpoint-limits.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-endpoint-readiness.ts && tsx test/operator-ui-packet-endpoint-limits.ts'),
     'Phase 76 suite follows Phase 75 packet endpoint readiness in CI chain',
   );
 
@@ -4113,7 +4118,7 @@ test('operator UI packet endpoint evidence gate - Phase 77 is blocked evidence p
   assert(typeof pkg.scripts['test:operator-ui-packet-endpoint-evidence-gate'] === 'string', 'Phase 77 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-packet-endpoint-evidence-gate'] === 'string', 'Phase 77 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-limits.ts && tsx test/operator-ui-packet-endpoint-evidence-gate.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-endpoint-limits.ts && tsx test/operator-ui-packet-endpoint-evidence-gate.ts'),
     'Phase 77 suite follows Phase 76 packet endpoint limits in CI chain',
   );
 
@@ -4265,7 +4270,7 @@ test('operator UI packet endpoint route dry-run - Phase 78 is blocked plan-only'
   assert(typeof pkg.scripts['test:operator-ui-packet-endpoint-route-dry-run'] === 'string', 'Phase 78 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-packet-endpoint-route-dry-run'] === 'string', 'Phase 78 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-evidence-gate.ts && tsx test/operator-ui-packet-endpoint-route-dry-run.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-endpoint-evidence-gate.ts && tsx test/operator-ui-packet-endpoint-route-dry-run.ts'),
     'Phase 78 suite follows Phase 77 packet endpoint evidence gate in CI chain',
   );
 
@@ -4415,7 +4420,7 @@ test('operator UI local auth boundary - Phase 79 is selected contract-only and n
   assert(typeof pkg.scripts['test:operator-ui-local-auth-boundary'] === 'string', 'Phase 79 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-local-auth-boundary'] === 'string', 'Phase 79 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-packet-endpoint-route-dry-run.ts && tsx test/operator-ui-local-auth-boundary.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-endpoint-route-dry-run.ts && tsx test/operator-ui-local-auth-boundary.ts'),
     'Phase 79 suite follows Phase 78 packet endpoint route dry-run in CI chain',
   );
 
@@ -4555,7 +4560,7 @@ test('operator UI local auth secret file preflight - Phase 80 is descriptor-only
   assert(typeof pkg.scripts['test:operator-ui-local-auth-secret-file-preflight'] === 'string', 'Phase 80 test script present');
   assert(typeof pkg.scripts['ops:operator-ui-local-auth-secret-file-preflight'] === 'string', 'Phase 80 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-local-auth-boundary.ts && tsx test/operator-ui-local-auth-secret-file-preflight.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-local-auth-boundary.ts && tsx test/operator-ui-local-auth-secret-file-preflight.ts'),
     'Phase 80 suite follows Phase 79 local auth boundary in CI chain',
   );
 
@@ -4857,7 +4862,7 @@ test('Phase 83 launch gate audit is static and preserves launch blockers', () =>
   assert(pkg.scripts['ops:launch-gate-audit'] === 'tsx src/ops/launch-gate-audit-cli.ts', 'Phase 83 ops script present');
   assert(pkg.scripts['test:launch-gate-audit'] === 'tsx test/launch-gate-audit.ts', 'Phase 83 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-auth-packet-acceptance.ts && tsx test/launch-gate-audit.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-auth-packet-acceptance.ts && tsx test/launch-gate-audit.ts'),
     'Phase 83 aggregate test follows Phase 82',
   );
 
@@ -4935,7 +4940,7 @@ test('Phase 84 operator acceptance packet is static and preserves launch blocker
   assert(pkg.scripts['ops:operator-acceptance-packet'] === 'tsx src/ops/operator-acceptance-packet-cli.ts', 'Phase 84 ops script present');
   assert(pkg.scripts['test:operator-acceptance-packet'] === 'tsx test/operator-acceptance-packet.ts', 'Phase 84 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-gate-audit.ts && tsx test/operator-acceptance-packet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-gate-audit.ts && tsx test/operator-acceptance-packet.ts'),
     'Phase 84 aggregate test follows Phase 83',
   );
 
@@ -5013,7 +5018,7 @@ test('Phase 85 launch decision record preflight is bounded and never approves la
   assert(pkg.scripts['ops:launch-decision-record'] === 'tsx src/ops/launch-decision-record-cli.ts', 'Phase 85 ops script present');
   assert(pkg.scripts['test:launch-decision-record'] === 'tsx test/launch-decision-record.ts', 'Phase 85 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-acceptance-packet.ts && tsx test/launch-decision-record.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-acceptance-packet.ts && tsx test/launch-decision-record.ts'),
     'Phase 85 aggregate test follows Phase 84',
   );
 
@@ -5109,7 +5114,7 @@ test('Phase 86 launch candidate scope freeze is static and forbids runtime expan
   assert(pkg.scripts['ops:launch-candidate-scope-freeze'] === 'tsx src/ops/launch-candidate-scope-freeze-cli.ts', 'Phase 86 ops script present');
   assert(pkg.scripts['test:launch-candidate-scope-freeze'] === 'tsx test/launch-candidate-scope-freeze.ts', 'Phase 86 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-decision-record.ts && tsx test/launch-candidate-scope-freeze.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-decision-record.ts && tsx test/launch-candidate-scope-freeze.ts'),
     'Phase 86 aggregate test follows Phase 85',
   );
 
@@ -5202,7 +5207,7 @@ test('Phase 87 launch candidate metadata packet is static and approval-free', ()
   assert(pkg.scripts['ops:launch-candidate-metadata-packet'] === 'tsx src/ops/launch-candidate-metadata-packet-cli.ts', 'Phase 87 ops script present');
   assert(pkg.scripts['test:launch-candidate-metadata-packet'] === 'tsx test/launch-candidate-metadata-packet.ts', 'Phase 87 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-candidate-scope-freeze.ts && tsx test/launch-candidate-metadata-packet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-candidate-scope-freeze.ts && tsx test/launch-candidate-metadata-packet.ts'),
     'Phase 87 aggregate test follows Phase 86',
   );
 
@@ -5292,7 +5297,7 @@ test('Phase 88 launch candidate review checklist is static and approval-free', (
   assert(pkg.scripts['ops:launch-candidate-review-checklist'] === 'tsx src/ops/launch-candidate-review-checklist-cli.ts', 'Phase 88 ops script present');
   assert(pkg.scripts['test:launch-candidate-review-checklist'] === 'tsx test/launch-candidate-review-checklist.ts', 'Phase 88 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-candidate-metadata-packet.ts && tsx test/launch-candidate-review-checklist.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-candidate-metadata-packet.ts && tsx test/launch-candidate-review-checklist.ts'),
     'Phase 88 aggregate test follows Phase 87',
   );
 
@@ -5390,7 +5395,7 @@ test('Phase 89 launch candidate review handoff is static and approval-free', () 
   assert(pkg.scripts['ops:launch-candidate-review-handoff'] === 'tsx src/ops/launch-candidate-review-handoff-cli.ts', 'Phase 89 ops script present');
   assert(pkg.scripts['test:launch-candidate-review-handoff'] === 'tsx test/launch-candidate-review-handoff.ts', 'Phase 89 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-candidate-review-checklist.ts && tsx test/launch-candidate-review-handoff.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-candidate-review-checklist.ts && tsx test/launch-candidate-review-handoff.ts'),
     'Phase 89 aggregate test follows Phase 88',
   );
 
@@ -5491,7 +5496,7 @@ test('Phase 90 final launch disposition is static and approval-free', () => {
   assert(pkg.scripts['ops:final-launch-disposition'] === 'tsx src/ops/final-launch-disposition-cli.ts', 'Phase 90 ops script present');
   assert(pkg.scripts['test:final-launch-disposition'] === 'tsx test/final-launch-disposition.ts', 'Phase 90 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-candidate-review-handoff.ts && tsx test/final-launch-disposition.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-candidate-review-handoff.ts && tsx test/final-launch-disposition.ts'),
     'Phase 90 aggregate test follows Phase 89',
   );
 
@@ -5586,7 +5591,7 @@ test('Phase 91 production-time decision requests launch-candidate review without
   assert(pkg.scripts['ops:production-time-decision'] === 'tsx src/ops/production-time-decision-cli.ts', 'Phase 91 ops script present');
   assert(pkg.scripts['test:production-time-decision'] === 'tsx test/production-time-decision.ts', 'Phase 91 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/final-launch-disposition.ts && tsx test/production-time-decision.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/final-launch-disposition.ts && tsx test/production-time-decision.ts'),
     'Phase 91 aggregate test follows Phase 90',
   );
 
@@ -5686,7 +5691,7 @@ test('Phase 92 launch candidate seal is static and does not approve production r
   assert(pkg.scripts['ops:launch-candidate-seal'] === 'tsx src/ops/launch-candidate-seal-cli.ts', 'Phase 92 ops script present');
   assert(pkg.scripts['test:launch-candidate-seal'] === 'tsx test/launch-candidate-seal.ts', 'Phase 92 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/production-time-decision.ts && tsx test/launch-candidate-seal.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/production-time-decision.ts && tsx test/launch-candidate-seal.ts'),
     'Phase 92 aggregate test follows Phase 91',
   );
 
@@ -5789,7 +5794,7 @@ test('Phase 93 semi-launch validation packet is static and defaults to HOLD', ()
   assert(pkg.scripts['ops:semi-launch-validation-packet'] === 'tsx src/ops/semi-launch-validation-packet-cli.ts', 'Phase 93 ops script present');
   assert(pkg.scripts['test:semi-launch-validation-packet'] === 'tsx test/semi-launch-validation-packet.ts', 'Phase 93 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-candidate-seal.ts && tsx test/semi-launch-validation-packet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-candidate-seal.ts && tsx test/semi-launch-validation-packet.ts'),
     'Phase 93 aggregate test follows Phase 92',
   );
 
@@ -5893,7 +5898,7 @@ test('Phase 94 operator validation run sheet is static and requires Clint valida
   assert(pkg.scripts['ops:operator-validation-run-sheet'] === 'tsx src/ops/operator-validation-run-sheet-cli.ts', 'Phase 94 ops script present');
   assert(pkg.scripts['test:operator-validation-run-sheet'] === 'tsx test/operator-validation-run-sheet.ts', 'Phase 94 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/semi-launch-validation-packet.ts && tsx test/operator-validation-run-sheet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/semi-launch-validation-packet.ts && tsx test/operator-validation-run-sheet.ts'),
     'Phase 94 aggregate test follows Phase 93',
   );
 
@@ -6120,7 +6125,7 @@ test('Phase 96 O4/O5 evidence decision packet authorizes only offline contract e
   assert(pkg.scripts['ops:o4-o5-evidence-decision'] === 'tsx src/ops/o4-o5-evidence-decision-cli.ts', 'Phase 96 ops script present');
   assert(pkg.scripts['test:o4-o5-evidence-decision'] === 'tsx test/o4-o5-evidence-decision.ts', 'Phase 96 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/kek-evidence-preflight.ts && tsx test/o4-o5-evidence-decision.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/kek-evidence-preflight.ts && tsx test/o4-o5-evidence-decision.ts'),
     'Phase 96 aggregate test follows O4/O5 descriptor preflights',
   );
 
@@ -6196,7 +6201,7 @@ test('Phase 97 operator UI preview launch packet is static and loopback-only', (
   assert(pkg.scripts['ops:operator-ui-preview-launch-packet'] === 'tsx src/ops/operator-ui-preview-launch-packet-cli.ts', 'Phase 97 ops script present');
   assert(pkg.scripts['test:operator-ui-preview-launch-packet'] === 'tsx test/operator-ui-preview-launch-packet.ts', 'Phase 97 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-launch-readiness.ts && tsx test/operator-ui-preview-launch-packet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-launch-readiness.ts && tsx test/operator-ui-preview-launch-packet.ts'),
     'Phase 97 aggregate test follows launch readiness',
   );
 
@@ -6261,7 +6266,7 @@ test('Phase 98 local sidecar custodian prototype is offline and contract-shaped'
   assert(exists('test/local-sidecar-custodian.ts'), 'Phase 98 local sidecar test exists');
   assert(pkg.scripts['test:local-sidecar-custodian'] === 'tsx test/local-sidecar-custodian.ts', 'Phase 98 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/custodian-acceptance.ts && tsx test/local-sidecar-custodian.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/custodian-acceptance.ts && tsx test/local-sidecar-custodian.ts'),
     'Phase 98 aggregate test follows custodian acceptance',
   );
 
@@ -6323,7 +6328,7 @@ test('Phase 99 sidecar runtime design packet is static and Unraid-scoped', () =>
   assert(pkg.scripts['test:sidecar-runtime-design-packet'] === 'tsx test/sidecar-runtime-design-packet.ts', 'Phase 99 test script present');
   assert(pkg.scripts['ops:sidecar-runtime-design-packet'] === 'tsx src/ops/sidecar-runtime-design-packet-cli.ts', 'Phase 99 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/local-sidecar-custodian.ts && tsx test/sidecar-runtime-design-packet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/local-sidecar-custodian.ts && tsx test/sidecar-runtime-design-packet.ts'),
     'Phase 99 aggregate test follows Phase 98 sidecar prototype',
   );
 
@@ -6384,7 +6389,7 @@ test('Phase 100 sidecar evidence harness packet is redaction-safe and does not c
   assert(pkg.scripts['test:sidecar-evidence-harness-packet'] === 'tsx test/sidecar-evidence-harness-packet.ts', 'Phase 100 test script present');
   assert(pkg.scripts['ops:sidecar-evidence-harness-packet'] === 'tsx src/ops/sidecar-evidence-harness-packet-cli.ts', 'Phase 100 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-runtime-design-packet.ts && tsx test/sidecar-evidence-harness-packet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-runtime-design-packet.ts && tsx test/sidecar-evidence-harness-packet.ts'),
     'Phase 100 aggregate test follows Phase 99 runtime design',
   );
 
@@ -6445,7 +6450,7 @@ test('Phase 101/102 sidecar runtime prototype is local IPC only and evidence-saf
   assert(pkg.scripts['test:sidecar-runtime-prototype'] === 'tsx test/sidecar-runtime-prototype.ts', 'Phase 101/102 test script present');
   assert(pkg.scripts['ops:sidecar-runtime-evidence'] === 'tsx src/ops/sidecar-runtime-evidence-cli.ts', 'Phase 101/102 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-evidence-harness-packet.ts && tsx test/sidecar-runtime-prototype.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-evidence-harness-packet.ts && tsx test/sidecar-runtime-prototype.ts'),
     'Phase 101/102 aggregate test follows Phase 100 evidence harness',
   );
 
@@ -6505,7 +6510,7 @@ test('Phase 103/104 durable sidecar state evidence preserves restart and restore
   assert(pkg.scripts['test:sidecar-durable-state-evidence'] === 'tsx test/sidecar-durable-state-evidence.ts', 'Phase 103/104 test script present');
   assert(pkg.scripts['ops:sidecar-durable-state-evidence'] === 'tsx src/ops/sidecar-durable-state-evidence-cli.ts', 'Phase 103/104 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-runtime-prototype.ts && tsx test/sidecar-durable-state-evidence.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-runtime-prototype.ts && tsx test/sidecar-durable-state-evidence.ts'),
     'Phase 103/104 aggregate test follows Phase 101/102 runtime prototype',
   );
 
@@ -6557,7 +6562,7 @@ test('Phase 105 sidecar Unraid service plan is static and does not mutate Unraid
   assert(pkg.scripts['test:sidecar-unraid-service-plan'] === 'tsx test/sidecar-unraid-service-plan.ts', 'Phase 105 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-service-plan'] === 'tsx src/ops/sidecar-unraid-service-plan-cli.ts', 'Phase 105 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 105 aggregate test follows Phase 194 sidecar service install',
   );
 
@@ -6611,7 +6616,7 @@ test('Phase 106 sidecar Unraid operator script packet is copy-paste only and non
   assert(pkg.scripts['test:sidecar-unraid-operator-script-packet'] === 'tsx test/sidecar-unraid-operator-script-packet.ts', 'Phase 106 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-operator-script-packet'] === 'tsx src/ops/sidecar-unraid-operator-script-packet-cli.ts', 'Phase 106 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-service-plan.ts && tsx test/sidecar-unraid-operator-script-packet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-service-plan.ts && tsx test/sidecar-unraid-operator-script-packet.ts'),
     'Phase 106 aggregate test follows Phase 105 service plan',
   );
 
@@ -6657,7 +6662,7 @@ test('Phase 107 sidecar Unraid evidence capture defines redacted bundle only', (
   assert(pkg.scripts['test:sidecar-unraid-evidence-capture'] === 'tsx test/sidecar-unraid-evidence-capture.ts', 'Phase 107 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-evidence-capture'] === 'tsx src/ops/sidecar-unraid-evidence-capture-cli.ts', 'Phase 107 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-operator-script-packet.ts && tsx test/sidecar-unraid-evidence-capture.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-operator-script-packet.ts && tsx test/sidecar-unraid-evidence-capture.ts'),
     'Phase 107 aggregate test follows Phase 106 script packet',
   );
 
@@ -6700,7 +6705,7 @@ test('Phase 108 sidecar Unraid review gate reads explicit evidence and closes no
   assert(pkg.scripts['test:sidecar-unraid-review-gate'] === 'tsx test/sidecar-unraid-review-gate.ts', 'Phase 108 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-review-gate'] === 'tsx src/ops/sidecar-unraid-review-gate-cli.ts', 'Phase 108 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-evidence-capture.ts && tsx test/sidecar-unraid-review-gate.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-evidence-capture.ts && tsx test/sidecar-unraid-review-gate.ts'),
     'Phase 108 aggregate test follows Phase 107 evidence capture',
   );
 
@@ -6742,7 +6747,7 @@ test('Phase 109 sidecar Unraid review summary reads explicit review output and c
   assert(pkg.scripts['test:sidecar-unraid-review-summary'] === 'tsx test/sidecar-unraid-review-summary.ts', 'Phase 109 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-review-summary'] === 'tsx src/ops/sidecar-unraid-review-summary-cli.ts', 'Phase 109 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-review-gate.ts && tsx test/sidecar-unraid-review-summary.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-review-gate.ts && tsx test/sidecar-unraid-review-summary.ts'),
     'Phase 109 aggregate test follows Phase 108 review gate',
   );
 
@@ -6785,7 +6790,7 @@ test('Phase 110 sidecar Unraid acceptance record is redaction-safe and approval-
   assert(pkg.scripts['test:sidecar-unraid-acceptance-record'] === 'tsx test/sidecar-unraid-acceptance-record.ts', 'Phase 110 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-acceptance-record'] === 'tsx src/ops/sidecar-unraid-acceptance-record-cli.ts', 'Phase 110 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-review-summary.ts && tsx test/sidecar-unraid-acceptance-record.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-review-summary.ts && tsx test/sidecar-unraid-acceptance-record.ts'),
     'Phase 110 aggregate test follows Phase 109 summary',
   );
 
@@ -6829,7 +6834,7 @@ test('Phase 111 sidecar Unraid review handoff is static and approval-free', () =
   assert(pkg.scripts['test:sidecar-unraid-review-handoff'] === 'tsx test/sidecar-unraid-review-handoff.ts', 'Phase 111 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-review-handoff'] === 'tsx src/ops/sidecar-unraid-review-handoff-cli.ts', 'Phase 111 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-acceptance-record.ts && tsx test/sidecar-unraid-review-handoff.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-acceptance-record.ts && tsx test/sidecar-unraid-review-handoff.ts'),
     'Phase 111 aggregate test follows Phase 110 acceptance record',
   );
 
@@ -6873,7 +6878,7 @@ test('Phase 112 sidecar Unraid production gate blockers are static and closure-f
   assert(pkg.scripts['test:sidecar-unraid-production-gate-blockers'] === 'tsx test/sidecar-unraid-production-gate-blockers.ts', 'Phase 112 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-production-gate-blockers'] === 'tsx src/ops/sidecar-unraid-production-gate-blockers-cli.ts', 'Phase 112 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-review-handoff.ts && tsx test/sidecar-unraid-production-gate-blockers.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-review-handoff.ts && tsx test/sidecar-unraid-production-gate-blockers.ts'),
     'Phase 112 aggregate test follows Phase 111 review handoff',
   );
 
@@ -6920,7 +6925,7 @@ test('Phase 113 sidecar Unraid custodian boundary preflight is redaction-safe an
   assert(pkg.scripts['test:sidecar-unraid-custodian-boundary-preflight'] === 'tsx test/sidecar-unraid-custodian-boundary-preflight.ts', 'Phase 113 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-custodian-boundary-preflight'] === 'tsx src/ops/sidecar-unraid-custodian-boundary-preflight-cli.ts', 'Phase 113 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-production-gate-blockers.ts && tsx test/sidecar-unraid-custodian-boundary-preflight.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-production-gate-blockers.ts && tsx test/sidecar-unraid-custodian-boundary-preflight.ts'),
     'Phase 113 aggregate test follows Phase 112 blockers',
   );
 
@@ -6965,7 +6970,7 @@ test('Phase 114 sidecar Unraid custodian review verdict is redaction-safe and cl
   assert(pkg.scripts['test:sidecar-unraid-custodian-review-verdict'] === 'tsx test/sidecar-unraid-custodian-review-verdict.ts', 'Phase 114 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-custodian-review-verdict'] === 'tsx src/ops/sidecar-unraid-custodian-review-verdict-cli.ts', 'Phase 114 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-custodian-boundary-preflight.ts && tsx test/sidecar-unraid-custodian-review-verdict.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-custodian-boundary-preflight.ts && tsx test/sidecar-unraid-custodian-review-verdict.ts'),
     'Phase 114 aggregate test follows Phase 113 boundary preflight',
   );
 
@@ -7015,7 +7020,7 @@ test('Phase 115 sidecar Unraid O4 closure gate is redaction-safe and final-autho
   assert(pkg.scripts['test:sidecar-unraid-o4-closure-gate'] === 'tsx test/sidecar-unraid-o4-closure-gate.ts', 'Phase 115 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-o4-closure-gate'] === 'tsx src/ops/sidecar-unraid-o4-closure-gate-cli.ts', 'Phase 115 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-custodian-review-verdict.ts && tsx test/sidecar-unraid-o4-closure-gate.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-custodian-review-verdict.ts && tsx test/sidecar-unraid-o4-closure-gate.ts'),
     'Phase 115 aggregate test follows Phase 114 review verdict',
   );
 
@@ -7062,7 +7067,7 @@ test('Phase 116 sidecar Unraid O4 final authorization closes only O4', () => {
   assert(pkg.scripts['test:sidecar-unraid-o4-final-authorization'] === 'tsx test/sidecar-unraid-o4-final-authorization.ts', 'Phase 116 test script present');
   assert(pkg.scripts['ops:sidecar-unraid-o4-final-authorization'] === 'tsx src/ops/sidecar-unraid-o4-final-authorization-cli.ts', 'Phase 116 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-o4-closure-gate.ts && tsx test/sidecar-unraid-o4-final-authorization.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-o4-closure-gate.ts && tsx test/sidecar-unraid-o4-final-authorization.ts'),
     'Phase 116 aggregate test follows Phase 115 closure gate',
   );
 
@@ -7110,7 +7115,7 @@ test('Phase 117 O5 KEK review verdict is redaction-safe and closure-gated', () =
   assert(pkg.scripts['test:o5-kek-review-verdict'] === 'tsx test/o5-kek-review-verdict.ts', 'Phase 117 test script present');
   assert(pkg.scripts['ops:o5-kek-review-verdict'] === 'tsx src/ops/o5-kek-review-verdict-cli.ts', 'Phase 117 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-unraid-o4-final-authorization.ts && tsx test/o5-kek-review-verdict.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-unraid-o4-final-authorization.ts && tsx test/o5-kek-review-verdict.ts'),
     'Phase 117 aggregate test follows Phase 116 O4 final authorization',
   );
 
@@ -7161,7 +7166,7 @@ test('Phase 118 O5 KEK closure gate is redaction-safe and final-authorization-on
   assert(pkg.scripts['test:o5-kek-closure-gate'] === 'tsx test/o5-kek-closure-gate.ts', 'Phase 118 test script present');
   assert(pkg.scripts['ops:o5-kek-closure-gate'] === 'tsx src/ops/o5-kek-closure-gate-cli.ts', 'Phase 118 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-review-verdict.ts && tsx test/o5-kek-closure-gate.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/o5-kek-review-verdict.ts && tsx test/o5-kek-closure-gate.ts'),
     'Phase 118 aggregate test follows Phase 117 O5 KEK review verdict',
   );
 
@@ -7208,7 +7213,7 @@ test('Phase 119 O5 KEK final authorization closes only O5', () => {
   assert(pkg.scripts['test:o5-kek-final-authorization'] === 'tsx test/o5-kek-final-authorization.ts', 'Phase 119 test script present');
   assert(pkg.scripts['ops:o5-kek-final-authorization'] === 'tsx src/ops/o5-kek-final-authorization-cli.ts', 'Phase 119 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-closure-gate.ts && tsx test/o5-kek-final-authorization.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/o5-kek-closure-gate.ts && tsx test/o5-kek-final-authorization.ts'),
     'Phase 119 aggregate test follows Phase 118 O5 closure gate',
   );
 
@@ -7255,7 +7260,7 @@ test('Phase 120 Unraid operator readiness bundle is offline planning only', () =
   assert(pkg.scripts['test:unraid-operator-readiness-bundle'] === 'tsx test/unraid-operator-readiness-bundle.ts', 'Phase 120 test script present');
   assert(pkg.scripts['ops:unraid-operator-readiness-bundle'] === 'tsx src/ops/unraid-operator-readiness-bundle-cli.ts', 'Phase 120 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 120 aggregate test follows Phase 119 O5 final authorization through Phase 199 disposition',
   );
 
@@ -7307,7 +7312,7 @@ test('Phase 121 Unraid service install runbook is draft-only and mutation-free',
   assert(pkg.scripts['test:unraid-service-install-runbook'] === 'tsx test/unraid-service-install-runbook.ts', 'Phase 121 test script present');
   assert(pkg.scripts['ops:unraid-service-install-runbook'] === 'tsx src/ops/unraid-service-install-runbook-cli.ts', 'Phase 121 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-operator-readiness-bundle.ts && tsx test/unraid-service-install-runbook.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-operator-readiness-bundle.ts && tsx test/unraid-service-install-runbook.ts'),
     'Phase 121 aggregate test follows Phase 120 operator readiness bundle',
   );
 
@@ -7360,7 +7365,7 @@ test('Phase 122 Unraid service runbook approval gate is review-only and install-
   assert(pkg.scripts['test:unraid-service-runbook-approval-gate'] === 'tsx test/unraid-service-runbook-approval-gate.ts', 'Phase 122 test script present');
   assert(pkg.scripts['ops:unraid-service-runbook-approval-gate'] === 'tsx src/ops/unraid-service-runbook-approval-gate-cli.ts', 'Phase 122 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-service-install-runbook.ts && tsx test/unraid-service-runbook-approval-gate.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-service-install-runbook.ts && tsx test/unraid-service-runbook-approval-gate.ts'),
     'Phase 122 aggregate test follows Phase 121 service install runbook',
   );
 
@@ -7413,7 +7418,7 @@ test('Phase 123 Unraid service install authorization approves window only', () =
   assert(pkg.scripts['test:unraid-service-install-authorization'] === 'tsx test/unraid-service-install-authorization.ts', 'Phase 123 test script present');
   assert(pkg.scripts['ops:unraid-service-install-authorization'] === 'tsx src/ops/unraid-service-install-authorization-cli.ts', 'Phase 123 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-service-runbook-approval-gate.ts && tsx test/unraid-service-install-authorization.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-service-runbook-approval-gate.ts && tsx test/unraid-service-install-authorization.ts'),
     'Phase 123 aggregate test follows Phase 122 approval gate',
   );
 
@@ -7465,7 +7470,7 @@ test('Phase 124 Unraid install evidence manifest is capture-only and mutation-fr
   assert(pkg.scripts['test:unraid-install-evidence-manifest'] === 'tsx test/unraid-install-evidence-manifest.ts', 'Phase 124 test script present');
   assert(pkg.scripts['ops:unraid-install-evidence-manifest'] === 'tsx src/ops/unraid-install-evidence-manifest-cli.ts', 'Phase 124 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-service-install-authorization.ts && tsx test/unraid-install-evidence-manifest.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-service-install-authorization.ts && tsx test/unraid-install-evidence-manifest.ts'),
     'Phase 124 aggregate test follows Phase 123 install authorization',
   );
 
@@ -7525,7 +7530,7 @@ test('Phases 125-127 Unraid production gates are evidence/review/decision only',
   assert(pkg.scripts['ops:unraid-post-install-validation-review'] === 'tsx src/ops/unraid-post-install-validation-review-cli.ts', 'Phase 126 ops script present');
   assert(pkg.scripts['ops:unraid-production-readiness-decision'] === 'tsx src/ops/unraid-production-readiness-decision-cli.ts', 'Phase 127 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-install-evidence-manifest.ts && tsx test/unraid-production-gates.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-install-evidence-manifest.ts && tsx test/unraid-production-gates.ts'),
     'Phase 125-127 aggregate test follows Phase 124 evidence manifest',
   );
 
@@ -7577,7 +7582,7 @@ test('Phase 128 Unraid final human approval template is approval-template-only',
   assert(pkg.scripts['test:unraid-final-human-approval-template'] === 'tsx test/unraid-final-human-approval-template.ts', 'Phase 128 test script present');
   assert(pkg.scripts['ops:unraid-final-human-approval-template'] === 'tsx src/ops/unraid-final-human-approval-template-cli.ts', 'Phase 128 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-production-gates.ts && tsx test/unraid-final-human-approval-template.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-production-gates.ts && tsx test/unraid-final-human-approval-template.ts'),
     'Phase 128 aggregate test follows Phase 125-127 production gates',
   );
 
@@ -7625,7 +7630,7 @@ test('Phase 129 Unraid final human approval record is preflight-only', () => {
   assert(pkg.scripts['test:unraid-final-human-approval-record'] === 'tsx test/unraid-final-human-approval-record.ts', 'Phase 129 test script present');
   assert(pkg.scripts['ops:unraid-final-human-approval-record'] === 'tsx src/ops/unraid-final-human-approval-record-cli.ts', 'Phase 129 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-final-human-approval-template.ts && tsx test/unraid-final-human-approval-record.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-final-human-approval-template.ts && tsx test/unraid-final-human-approval-record.ts'),
     'Phase 129 aggregate test follows Phase 128 approval template',
   );
 
@@ -7673,7 +7678,7 @@ test('Phase 130 Unraid production switch runbook is runbook-only', () => {
   assert(pkg.scripts['test:unraid-production-switch-runbook'] === 'tsx test/unraid-production-switch-runbook.ts', 'Phase 130 test script present');
   assert(pkg.scripts['ops:unraid-production-switch-runbook'] === 'tsx src/ops/unraid-production-switch-runbook-cli.ts', 'Phase 130 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-final-human-approval-record.ts && tsx test/unraid-production-switch-runbook.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-final-human-approval-record.ts && tsx test/unraid-production-switch-runbook.ts'),
     'Phase 130 aggregate test follows Phase 129 final human approval record',
   );
 
@@ -7719,7 +7724,7 @@ test('Phase 131 Unraid switch evidence capture is capture-only', () => {
   assert(pkg.scripts['test:unraid-switch-evidence-capture'] === 'tsx test/unraid-switch-evidence-capture.ts', 'Phase 131 test script present');
   assert(pkg.scripts['ops:unraid-switch-evidence-capture'] === 'tsx src/ops/unraid-switch-evidence-capture-cli.ts', 'Phase 131 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-production-switch-runbook.ts && tsx test/unraid-switch-evidence-capture.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-production-switch-runbook.ts && tsx test/unraid-switch-evidence-capture.ts'),
     'Phase 131 aggregate test follows Phase 130 production switch runbook',
   );
 
@@ -7770,7 +7775,7 @@ test('Phase 132 Unraid switch evidence review is review-only', () => {
   assert(pkg.scripts['test:unraid-switch-evidence-review'] === 'tsx test/unraid-switch-evidence-review.ts', 'Phase 132 test script present');
   assert(pkg.scripts['ops:unraid-switch-evidence-review'] === 'tsx src/ops/unraid-switch-evidence-review-cli.ts', 'Phase 132 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-switch-evidence-capture.ts && tsx test/unraid-switch-evidence-review.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-switch-evidence-capture.ts && tsx test/unraid-switch-evidence-review.ts'),
     'Phase 132 aggregate test follows Phase 131 switch evidence capture',
   );
 
@@ -7817,7 +7822,7 @@ test('Phase 133 Unraid production disposition is disposition-only', () => {
   assert(pkg.scripts['test:unraid-production-disposition'] === 'tsx test/unraid-production-disposition.ts', 'Phase 133 test script present');
   assert(pkg.scripts['ops:unraid-production-disposition'] === 'tsx src/ops/unraid-production-disposition-cli.ts', 'Phase 133 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-switch-evidence-review.ts && tsx test/unraid-production-disposition.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-switch-evidence-review.ts && tsx test/unraid-production-disposition.ts'),
     'Phase 133 aggregate test follows Phase 132 switch evidence review',
   );
 
@@ -7864,7 +7869,7 @@ test('Phase 134 Unraid launch readiness decision is launch-readiness-only', () =
   assert(pkg.scripts['test:unraid-launch-readiness-decision'] === 'tsx test/unraid-launch-readiness-decision.ts', 'Phase 134 test script present');
   assert(pkg.scripts['ops:unraid-launch-readiness-decision'] === 'tsx src/ops/unraid-launch-readiness-decision-cli.ts', 'Phase 134 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-production-disposition.ts && tsx test/unraid-launch-readiness-decision.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-production-disposition.ts && tsx test/unraid-launch-readiness-decision.ts'),
     'Phase 134 aggregate test follows Phase 133 production disposition',
   );
 
@@ -7909,7 +7914,7 @@ test('Phase 135 Unraid final launch approval record is approval-only', () => {
   assert(pkg.scripts['test:unraid-final-launch-approval-record'] === 'tsx test/unraid-final-launch-approval-record.ts', 'Phase 135 test script present');
   assert(pkg.scripts['ops:unraid-final-launch-approval-record'] === 'tsx src/ops/unraid-final-launch-approval-record-cli.ts', 'Phase 135 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-launch-readiness-decision.ts && tsx test/unraid-final-launch-approval-record.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-launch-readiness-decision.ts && tsx test/unraid-final-launch-approval-record.ts'),
     'Phase 135 aggregate test follows Phase 134 launch readiness decision',
   );
 
@@ -7954,7 +7959,7 @@ test('Phase 136 Unraid production switch execution packet is packet-only', () =>
   assert(pkg.scripts['test:unraid-production-switch-execution-packet'] === 'tsx test/unraid-production-switch-execution-packet.ts', 'Phase 136 test script present');
   assert(pkg.scripts['ops:unraid-production-switch-execution-packet'] === 'tsx src/ops/unraid-production-switch-execution-packet-cli.ts', 'Phase 136 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-final-launch-approval-record.ts && tsx test/unraid-production-switch-execution-packet.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-final-launch-approval-record.ts && tsx test/unraid-production-switch-execution-packet.ts'),
     'Phase 136 aggregate test follows Phase 135 final launch approval record',
   );
 
@@ -7998,7 +8003,7 @@ test('Phase 137 Unraid post-switch evidence review records operational service w
   assert(pkg.scripts['test:unraid-post-switch-evidence-review'] === 'tsx test/unraid-post-switch-evidence-review.ts', 'Phase 137 test script present');
   assert(pkg.scripts['ops:unraid-post-switch-evidence-review'] === 'tsx src/ops/unraid-post-switch-evidence-review-cli.ts', 'Phase 137 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-production-switch-execution-packet.ts && tsx test/unraid-post-switch-evidence-review.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-production-switch-execution-packet.ts && tsx test/unraid-post-switch-evidence-review.ts'),
     'Phase 137 aggregate test follows Phase 136 execution packet',
   );
 
@@ -8044,7 +8049,7 @@ test('Phase 138 Unraid post-switch maintenance review records maintenance eviden
   assert(pkg.scripts['test:unraid-post-switch-maintenance-review'] === 'tsx test/unraid-post-switch-maintenance-review.ts', 'Phase 138 test script present');
   assert(pkg.scripts['ops:unraid-post-switch-maintenance-review'] === 'tsx src/ops/unraid-post-switch-maintenance-review-cli.ts', 'Phase 138 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-post-switch-evidence-review.ts && tsx test/unraid-post-switch-maintenance-review.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-post-switch-evidence-review.ts && tsx test/unraid-post-switch-maintenance-review.ts'),
     'Phase 138 aggregate test follows Phase 137 post-switch evidence review',
   );
 
@@ -8087,7 +8092,7 @@ test('Phase 139 Unraid restart persistence review records restart evidence', () 
   assert(pkg.scripts['test:unraid-restart-persistence-review'] === 'tsx test/unraid-restart-persistence-review.ts', 'Phase 139 test script present');
   assert(pkg.scripts['ops:unraid-restart-persistence-review'] === 'tsx src/ops/unraid-restart-persistence-review-cli.ts', 'Phase 139 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-post-switch-maintenance-review.ts && tsx test/unraid-restart-persistence-review.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-post-switch-maintenance-review.ts && tsx test/unraid-restart-persistence-review.ts'),
     'Phase 139 aggregate test follows Phase 138 maintenance review',
   );
 
@@ -8131,7 +8136,7 @@ test('Phase 140 control surface Compose boundary stops before Compose changes', 
   assert(pkg.scripts['test:control-surface-compose-boundary'] === 'tsx test/control-surface-compose-boundary.ts', 'Phase 140 test script present');
   assert(pkg.scripts['ops:control-surface-compose-boundary'] === 'tsx src/ops/control-surface-compose-boundary-cli.ts', 'Phase 140 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/unraid-restart-persistence-review.ts && tsx test/control-surface-compose-boundary.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-restart-persistence-review.ts && tsx test/control-surface-compose-boundary.ts'),
     'Phase 140 aggregate test follows Phase 139 restart persistence review',
   );
 
@@ -8260,7 +8265,7 @@ test('Phase 146 long-running service boundary defines always-on shape without st
   assert(pkg.scripts['test:long-running-service-boundary'] === 'tsx test/long-running-service-boundary.ts', 'Phase 146 test script present');
   assert(pkg.scripts['ops:long-running-service-boundary'] === 'tsx src/ops/long-running-service-boundary-cli.ts', 'Phase 146 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/control-surface-compose-boundary.ts && tsx test/long-running-service-boundary.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/control-surface-compose-boundary.ts && tsx test/long-running-service-boundary.ts'),
     'Phase 146 aggregate test follows Phase 140 control surface boundary',
   );
 
@@ -8316,7 +8321,7 @@ test('Phase 147 operator UI service is long-running, read-only, and intentionall
   assert(pkg.scripts['test:operator-ui-service'] === 'tsx test/operator-ui-service.ts', 'Phase 147 test script present');
   assert(pkg.scripts['ops:operator-ui-server'] === 'tsx src/ops/operator-ui-service-cli.ts', 'Phase 147 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/long-running-service-boundary.ts && tsx test/operator-ui-service.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/long-running-service-boundary.ts && tsx test/operator-ui-service.ts'),
     'Phase 147 aggregate test follows Phase 146 boundary',
   );
 
@@ -8384,7 +8389,7 @@ test('Phase 148 operator UI access helper is token-safe and UI-focused', () => {
   assert(pkg.scripts['test:operator-ui-token'] === 'tsx test/operator-ui-token.ts', 'Phase 148 test script present');
   assert(pkg.scripts['ops:operator-ui-token'] === 'tsx src/ops/operator-ui-token-cli.ts', 'Phase 148 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-service.ts && tsx test/operator-ui-token.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-service.ts && tsx test/operator-ui-token.ts'),
     'Phase 148 aggregate test follows Phase 147 service',
   );
 
@@ -8505,7 +8510,7 @@ test('Phase 150 operator UI live check is redaction-safe and launcher-backed', (
   assert(pkg.scripts['test:operator-ui-live-check'] === 'tsx test/operator-ui-live-check.ts', 'Phase 150 test script present');
   assert(pkg.scripts['ops:operator-ui-live-check'] === 'tsx src/ops/operator-ui-live-check-cli.ts', 'Phase 150 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-token.ts && tsx test/operator-ui-live-check.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-token.ts && tsx test/operator-ui-live-check.ts'),
     'Phase 150 aggregate test follows token helper',
   );
 
@@ -8583,7 +8588,7 @@ test('Phase 152 operator UI evidence review validates saved live-check evidence'
   assert(pkg.scripts['test:operator-ui-evidence-review'] === 'tsx test/operator-ui-evidence-review.ts', 'Phase 152 test script present');
   assert(pkg.scripts['ops:operator-ui-evidence-review'] === 'tsx src/ops/operator-ui-evidence-review-cli.ts', 'Phase 152 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-live-check.ts && tsx test/operator-ui-evidence-review.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-live-check.ts && tsx test/operator-ui-evidence-review.ts'),
     'Phase 152 aggregate test follows live check',
   );
 
@@ -8890,7 +8895,7 @@ test('Phase 172 O4/O5 evidence packet review checks packet envelope only', () =>
   assert(pkg.scripts['test:o4-o5-evidence-packet-review'] === 'tsx test/o4-o5-evidence-packet-review.ts', 'Phase 172 test script present');
   assert(pkg.scripts['ops:o4-o5-evidence-packet-review'] === 'tsx src/ops/o4-o5-evidence-packet-review-cli.ts', 'Phase 172 ops script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o4-o5-evidence-decision.ts && tsx test/o4-o5-evidence-packet-review.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/o4-o5-evidence-decision.ts && tsx test/o4-o5-evidence-packet-review.ts'),
     'Phase 172 aggregate test follows Phase 96 decision packet',
   );
   const source = `${read('src/ops/o4-o5-evidence-packet-review.ts')}\n${read('src/ops/o4-o5-evidence-packet-review-cli.ts')}`;
@@ -9167,7 +9172,7 @@ test('Phase 187 adds a local sidecar daemon executable without production cutove
   assert(pkg.scripts['ops:sidecar-daemon'] === 'tsx src/ops/sidecar-daemon-cli.ts', 'Phase 187 ops script present');
   assert(pkg.scripts['test:sidecar-daemon'] === 'tsx test/sidecar-daemon.ts', 'Phase 187 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-durable-state-evidence.ts && tsx test/sidecar-daemon.ts'),
     'Phase 187 aggregate test follows durable sidecar state evidence',
   );
   const source = [
@@ -9291,7 +9296,7 @@ test('Phase 189 adds sidecar factory evidence without production cutover', () =>
   assert(pkg.scripts['ops:sidecar-factory-evidence'] === 'tsx src/ops/sidecar-factory-evidence-cli.ts', 'Phase 189 ops script present');
   assert(pkg.scripts['test:sidecar-factory-evidence'] === 'tsx test/sidecar-factory-evidence.ts', 'Phase 189 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-daemon.ts && tsx test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts'),
     'Phase 189 aggregate test sits after daemon and before sidecar evidence review',
   );
   const source = [
@@ -9358,7 +9363,7 @@ test('Phase 190 adds static sidecar factory evidence review without sidecar star
   assert(pkg.scripts['ops:sidecar-factory-evidence-review'] === 'tsx src/ops/sidecar-factory-evidence-review-cli.ts', 'Phase 190 ops script present');
   assert(pkg.scripts['test:sidecar-factory-evidence-review'] === 'tsx test/sidecar-factory-evidence-review.ts', 'Phase 190 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts'),
     'Phase 190 aggregate test sits after Phase 189 evidence',
   );
   const source = [
@@ -9417,7 +9422,7 @@ test('Phase 191 sidecar evidence acceptance record is publishable and closure-fr
   assert(exists('test/sidecar-factory-evidence-acceptance-record.ts'), 'Phase 191 sidecar evidence acceptance record test exists');
   assert(pkg.scripts['test:sidecar-factory-evidence-acceptance-record'] === 'tsx test/sidecar-factory-evidence-acceptance-record.ts', 'Phase 191 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts'),
     'Phase 191 aggregate test sits after Phase 190 review',
   );
   const doc = read('docs/PHASE_191_SIDECAR_EVIDENCE_ACCEPTANCE_RECORD.md');
@@ -9470,7 +9475,7 @@ test('Phase 192 O4 sidecar closure readiness gate is closure-eligible after Phas
   assert(exists('test/o4-sidecar-closure-readiness.ts'), 'Phase 192 O4 closure readiness test exists');
   assert(pkg.scripts['test:o4-sidecar-closure-readiness'] === 'tsx test/o4-sidecar-closure-readiness.ts', 'Phase 192 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 192 aggregate test sits after Phase 191 acceptance record',
   );
   const doc = read('docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md');
@@ -9530,7 +9535,7 @@ test('Phase 193 runtime cutover plan defines file-to-sidecar execution without m
   assert(exists('test/runtime-cutover-plan.ts'), 'Phase 193 runtime cutover plan test exists');
   assert(pkg.scripts['test:runtime-cutover-plan'] === 'tsx test/runtime-cutover-plan.ts', 'Phase 193 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 193 aggregate test sits after Phase 192 readiness gate',
   );
   const doc = read('docs/PHASE_193_RUNTIME_CUTOVER_PLAN.md');
@@ -9588,7 +9593,7 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
   assert(exists('test/sidecar-service-install.ts'), 'Phase 194 sidecar service install test exists');
   assert(pkg.scripts['test:sidecar-service-install'] === 'tsx test/sidecar-service-install.ts', 'Phase 194 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/runtime-cutover-plan.ts && tsx test/sidecar-service-install.ts && tsx test/sidecar-unraid-service-plan.ts'),
     'Phase 194 aggregate test sits after Phase 193 runtime plan',
   );
   const sidecarMatch = unraidRuntimeCompose.match(/  sidecar:\r?\n[\s\S]*?\r?\n  app:\r?\n/);
@@ -9706,7 +9711,7 @@ test('Phase 198 O4 final closure disposition records O4_CLOSED and leaves O5 ope
   assert(exists('test/o4-closure-disposition.ts'), 'Phase 198 O4 final disposition test exists');
   assert(pkg.scripts['test:o4-closure-disposition'] === 'tsx test/o4-closure-disposition.ts', 'Phase 198 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts'),
     'Phase 198 aggregate test follows Phase 192 readiness',
   );
   const combined = [
@@ -9739,7 +9744,7 @@ test('Phase 199 O5 final disposition records accepted deferral and launch warnin
   assert(exists('test/o5-disposition.ts'), 'Phase 199 O5 disposition test exists');
   assert(pkg.scripts['test:o5-disposition'] === 'tsx test/o5-disposition.ts', 'Phase 199 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/o5-kek-final-authorization.ts && tsx test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 199 aggregate test follows O5 authorization preflight',
   );
   const combined = [
@@ -9789,7 +9794,7 @@ test('Phase 200 launch readiness pass records ready with accepted warning', () =
   assert(exists('test/launch-readiness-pass.ts'), 'Phase 200 launch readiness test exists');
   assert(pkg.scripts['test:launch-readiness-pass'] === 'tsx test/launch-readiness-pass.ts', 'Phase 200 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/o5-disposition.ts && tsx test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 200 aggregate test follows O5 disposition',
   );
   const combined = [
@@ -9824,7 +9829,7 @@ test('Phase 201 launch package exposes operator handoff without scope expansion'
   assert(exists('test/launch-package.ts'), 'Phase 201 launch package test exists');
   assert(pkg.scripts['test:launch-package'] === 'tsx test/launch-package.ts', 'Phase 201 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-readiness-pass.ts && tsx test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 201 aggregate test follows launch readiness pass',
   );
   const combined = [
@@ -9859,7 +9864,7 @@ test('Phase 202 launch candidate consumer dry run preserves the public launch pa
   assert(exists('test/launch-candidate-dry-run.ts'), 'Phase 202 consumer dry-run test exists');
   assert(pkg.scripts['test:launch-candidate-dry-run'] === 'tsx test/launch-candidate-dry-run.ts', 'Phase 202 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-package.ts && tsx test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 202 aggregate test follows launch package',
   );
   const combined = [
@@ -9894,7 +9899,7 @@ test('Phase 203 media-player boundary selection chooses Jellyfin without enablin
   assert(exists('test/media-player-boundary.ts'), 'Phase 203 media-player boundary test exists');
   assert(pkg.scripts['test:media-player-boundary'] === 'tsx test/media-player-boundary.ts', 'Phase 203 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/launch-candidate-dry-run.ts && tsx test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 203 aggregate test follows launch candidate dry run',
   );
   const combined = [
@@ -9929,7 +9934,7 @@ test('Phase 204 Jellyfin read-only smoke is guarded and write-free', () => {
   assert(exists('test/jellyfin-readonly-smoke.ts'), 'Phase 204 Jellyfin read-only smoke test exists');
   assert(pkg.scripts['test:jellyfin-readonly-smoke'] === 'tsx test/jellyfin-readonly-smoke.ts', 'Phase 204 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/media-player-boundary.ts && tsx test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 204 aggregate test follows media-player boundary and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -9968,7 +9973,7 @@ test('Phase 205 Jellyfin read-only mapping emits counts-only evidence', () => {
   assert(exists('test/jellyfin-readonly-mapping.ts'), 'Phase 205 Jellyfin read-only mapping test exists');
   assert(pkg.scripts['test:jellyfin-readonly-mapping'] === 'tsx test/jellyfin-readonly-mapping.ts', 'Phase 205 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-readonly-smoke.ts && tsx test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 205 aggregate test follows read-only smoke and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10006,7 +10011,7 @@ test('Phase 206 Jellyfin disposable write proof is gated and self-cleaning', () 
   assert(exists('test/jellyfin-disposable-write.ts'), 'Phase 206 Jellyfin disposable write test exists');
   assert(pkg.scripts['test:jellyfin-disposable-write'] === 'tsx test/jellyfin-disposable-write.ts', 'Phase 206 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-readonly-mapping.ts && tsx test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 206 aggregate test follows read-only mapping and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10046,7 +10051,7 @@ test('Phase 207 Jellyfin evidence review decision defers launch pending live evi
   assert(exists('test/jellyfin-evidence-review-decision.ts'), 'Phase 207 Jellyfin decision test exists');
   assert(pkg.scripts['test:jellyfin-evidence-review-decision'] === 'tsx test/jellyfin-evidence-review-decision.ts', 'Phase 207 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-disposable-write.ts && tsx test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 207 aggregate test follows disposable write proof and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10084,7 +10089,7 @@ test('Phase 208 existing Jellyfin live evidence preflight forbids installs and p
   assert(exists('test/jellyfin-live-evidence-preflight.ts'), 'Phase 208 Jellyfin preflight test exists');
   assert(pkg.scripts['test:jellyfin-live-evidence-preflight'] === 'tsx test/jellyfin-live-evidence-preflight.ts', 'Phase 208 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-evidence-review-decision.ts && tsx test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 208 aggregate test follows evidence review decision and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10128,7 +10133,7 @@ test('Phase 209 Jellyfin live read-only smoke runner is secret-file-only and wri
   assert(pkg.scripts['ops:jellyfin-live-readonly-smoke'] === 'tsx src/ops/jellyfin-live-readonly-smoke-cli.ts', 'Phase 209 ops script present');
   assert(pkg.scripts['test:jellyfin-live-readonly-smoke-runner'] === 'tsx test/jellyfin-live-readonly-smoke-runner.ts', 'Phase 209 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-live-evidence-preflight.ts && tsx test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 209 aggregate test follows live evidence preflight and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10172,7 +10177,7 @@ test('Phase 210 Jellyfin live evidence capture preflight records missing secret 
   assert(exists('test/jellyfin-live-evidence-capture-preflight.ts'), 'Phase 210 Jellyfin live capture preflight test exists');
   assert(pkg.scripts['test:jellyfin-live-evidence-capture-preflight'] === 'tsx test/jellyfin-live-evidence-capture-preflight.ts', 'Phase 210 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-live-readonly-smoke-runner.ts && tsx test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 210 aggregate test follows live read-only runner and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10216,7 +10221,7 @@ test('Phase 211 Jellyfin live evidence capture command saves redaction-safe smok
   assert(pkg.scripts['ops:jellyfin-live-evidence-capture'] === 'tsx src/ops/jellyfin-live-evidence-capture-cli.ts', 'Phase 211 ops script present');
   assert(pkg.scripts['test:jellyfin-live-evidence-capture'] === 'tsx test/jellyfin-live-evidence-capture.ts', 'Phase 211 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-live-evidence-capture-preflight.ts && tsx test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 211 aggregate test follows capture preflight and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10261,7 +10266,7 @@ test('Phase 212 Jellyfin secret readiness gate validates secret file without liv
   assert(pkg.scripts['ops:jellyfin-secret-readiness'] === 'tsx src/ops/jellyfin-secret-readiness-cli.ts', 'Phase 212 ops script present');
   assert(pkg.scripts['test:jellyfin-secret-readiness'] === 'tsx test/jellyfin-secret-readiness.ts', 'Phase 212 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-live-evidence-capture.ts && tsx test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 212 aggregate test follows capture command and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10304,7 +10309,7 @@ test('Phase 213 Jellyfin container command shape fix documents repo-ops executio
   assert(exists('test/jellyfin-container-command-shape.ts'), 'Phase 213 Jellyfin container command shape test exists');
   assert(pkg.scripts['test:jellyfin-container-command-shape'] === 'tsx test/jellyfin-container-command-shape.ts', 'Phase 213 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-secret-readiness.ts && tsx test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 213 aggregate test follows secret readiness and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10345,7 +10350,7 @@ test('Phase 214 Jellyfin secret install operator packet documents safe secret se
   assert(exists('test/jellyfin-secret-install-operator-packet.ts'), 'Phase 214 Jellyfin secret install packet test exists');
   assert(pkg.scripts['test:jellyfin-secret-install-operator-packet'] === 'tsx test/jellyfin-secret-install-operator-packet.ts', 'Phase 214 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-container-command-shape.ts && tsx test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 214 aggregate test follows container command shape and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10390,7 +10395,7 @@ test('Phase 215 Jellyfin live capture launcher guards post-secret execution', ()
   assert(exists('test/jellyfin-live-capture-launcher.ts'), 'Phase 215 Jellyfin live capture launcher test exists');
   assert(pkg.scripts['test:jellyfin-live-capture-launcher'] === 'tsx test/jellyfin-live-capture-launcher.ts', 'Phase 215 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-secret-install-operator-packet.ts && tsx test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 215 aggregate test follows secret install packet and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10433,7 +10438,7 @@ test('Phase 216 Arcane Jellyfin live capture button exposes only guarded launche
   assert(exists('test/arcane-jellyfin-live-capture-button.ts'), 'Phase 216 Arcane Jellyfin button test exists');
   assert(pkg.scripts['test:arcane-jellyfin-live-capture-button'] === 'tsx test/arcane-jellyfin-live-capture-button.ts', 'Phase 216 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-live-capture-launcher.ts && tsx test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 216 aggregate test follows live capture launcher and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10474,7 +10479,7 @@ test('Phase 217 scheduled doctor alert fix documents canonical launcher wrapper'
   assert(exists('test/scheduled-doctor-alert-fix.ts'), 'Phase 217 scheduled doctor fix test exists');
   assert(pkg.scripts['test:scheduled-doctor-alert-fix'] === 'tsx test/scheduled-doctor-alert-fix.ts', 'Phase 217 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/arcane-jellyfin-live-capture-button.ts && tsx test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 217 aggregate test follows Arcane Jellyfin button and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10514,7 +10519,7 @@ test('Phase 218 Jellyfin live read-only evidence acceptance records retained smo
   assert(exists('test/jellyfin-live-readonly-evidence-acceptance.ts'), 'Phase 218 Jellyfin acceptance test exists');
   assert(pkg.scripts['test:jellyfin-live-readonly-evidence-acceptance'] === 'tsx test/jellyfin-live-readonly-evidence-acceptance.ts', 'Phase 218 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'),
     'Phase 218 aggregate test follows scheduled doctor fix and precedes Unraid readiness bundle',
   );
   const combined = [
@@ -10557,7 +10562,7 @@ test('Phase 219 Jellyfin live read-only mapping captures boundary evidence', () 
   assert(pkg.scripts['ops:jellyfin-live-readonly-mapping'] === 'tsx src/ops/jellyfin-live-readonly-mapping-cli.ts', 'Phase 219 ops script present');
   assert(pkg.scripts['test:jellyfin-live-readonly-mapping'] === 'tsx test/jellyfin-live-readonly-mapping.ts', 'Phase 219 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts'),
     'Phase 219 aggregate test runs before deploy guard',
   );
   const combined = [
@@ -10654,7 +10659,7 @@ test('Phase 221 Jellyfin write-capable disposable collection proof is guarded an
   assert(pkg.scripts['ops:jellyfin-write-proof'] === 'tsx src/ops/jellyfin-write-proof-cli.ts', 'Phase 221 ops script present');
   assert(pkg.scripts['test:jellyfin-write-proof'] === 'tsx test/jellyfin-write-proof.ts', 'Phase 221 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-smoke.ts && tsx test/jellyfin-live-readonly-mapping.ts && tsx test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'Phase 221 aggregate test runs before deploy guard',
   );
   const combined = [
@@ -10708,7 +10713,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
   assert(exists('test/jellyfin-integration-decision.ts'), 'Phase 222 Jellyfin decision test exists');
   assert(pkg.scripts['test:jellyfin-integration-decision'] === 'tsx test/jellyfin-integration-decision.ts', 'Phase 222 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-write-proof.ts && tsx test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'Phase 222 aggregate test runs after write proof and before deploy guard',
   );
   const combined = [
@@ -10756,7 +10761,7 @@ test('Phase 223 versioned release cut records v1.0.0 with accepted warnings', ()
   assert(pkg.version === '1.0.0', 'package version is 1.0.0');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'Phase 223 aggregate test runs after Jellyfin decision and before deploy guard',
   );
   const combined = [
@@ -10797,7 +10802,7 @@ test('Phase 224 working foundation redefinition records E2E product gap', () => 
   assert(exists('test/working-foundation-plan.ts'), 'Phase 224 working foundation test exists');
   assert(pkg.scripts['test:working-foundation-plan'] === 'tsx test/working-foundation-plan.ts', 'Phase 224 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'Phase 224 aggregate test runs after release cut and before deploy guard',
   );
   const combined = [
@@ -10847,7 +10852,7 @@ test('Phase 225 import service state machine is local, observed-state, and guard
   assert(pkg.scripts['ops:local-media-pipeline'] === 'tsx src/ops/local-media-pipeline-cli.ts', 'Phase 225 ops script present');
   assert(pkg.scripts['test:import-state-machine'] === 'tsx test/import-state-machine.ts', 'Phase 225 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'Phase 225 aggregate test runs after working-foundation plan and before deploy guard',
   );
   const combined = [
@@ -10895,7 +10900,7 @@ test('Phase 226 Jellyfin test library preflight blocks Gelato and missing mount'
   assert(pkg.scripts['ops:jellyfin-test-library-preflight'] === 'tsx src/ops/jellyfin-test-library-preflight-cli.ts', 'Phase 226 ops script present');
   assert(pkg.scripts['test:jellyfin-test-library-preflight'] === 'tsx test/jellyfin-test-library-preflight.ts', 'Phase 226 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'Phase 226 preflight test runs after import state machine and before deploy guard',
   );
   const combined = [
@@ -11012,7 +11017,7 @@ test('Phase 229 real-library promotion boundary is approval-gated and plan-only'
   assert(exists('test/real-library-promotion-boundary.ts'), 'Phase 229 promotion boundary test exists');
   assert(pkg.scripts['test:real-library-promotion-boundary'] === 'tsx test/real-library-promotion-boundary.ts', 'Phase 229 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'Phase 229 aggregate test runs before deploy guard',
   );
   const doc = read('docs/PHASE_229_REAL_LIBRARY_PROMOTION_BOUNDARY.md');
@@ -11051,7 +11056,7 @@ test('Phase 230 guarded promotion implementation is approval-gated and reversibl
   assert(pkg.scripts['ops:real-library-promotion'] === 'tsx src/ops/real-library-promotion-cli.ts', 'Phase 230 ops script present');
   assert(pkg.scripts['test:real-library-promotion'] === 'tsx test/real-library-promotion.ts', 'Phase 230 test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
     'Phase 230 aggregate test runs after boundary and before deploy guard',
   );
   const combined = [

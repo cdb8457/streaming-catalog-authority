@@ -69,6 +69,29 @@ interface by default, and loopback on a headless server means that server only.
 Your artifact folder is mounted **read-only**; the UI performs no mutation, approval, execution or deletion,
 and contacts no media server or provider.
 
+## Fill the catalog, then browse it
+
+An empty catalog is a healthy state. To put your own records in, write a snapshot file into `./import/` (the
+release bundle ships `example-catalog-snapshot.json` to copy there; from a checkout, the setup script creates
+the folder). Then look at what it would do — this writes **nothing**:
+
+```bash
+docker compose exec app npm run ops:catalog-import -- --file my-library.json
+```
+
+When the preview is what you expected, add `--apply`. Then open the **Catalog** panel in the UI to search,
+sort, filter and page through what you imported.
+
+Re-running the same file changes nothing: item identities are derived from the file's own `source` and
+`externalId`, so an import is idempotent and cannot duplicate a record. The folder is mounted **read-only**,
+the import reads exactly one file and contacts no provider, media server, library or network endpoint, and a
+record whose item was previously forgotten is reported blocked rather than silently resurrected. Reports carry
+counts and per-record digests only — never a title, a provider ref value or a path.
+
+The format, its bounds and every design decision:
+[docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md](docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md).
+The browser: [docs/PHASE_260_CATALOG_BROWSER.md](docs/PHASE_260_CATALOG_BROWSER.md).
+
 - Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
 - Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
 
@@ -84,11 +107,37 @@ docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml
 ## Run the tests
 
 ```bash
-npm install      # downloads an embedded PostgreSQL 16 binary (no Docker needed)
-npm run ci       # typecheck, then all suites (33 embedded-PostgreSQL suites); a green run = 0 failures
+npm install          # downloads an embedded PostgreSQL 16 binary (no Docker needed)
+npm test             # every suite, one process each; a green run = every suite ran and exited zero
+npm run test:inventory   # just the drift check: is every file under test/ accounted for?
+npm run test:plan        # what a run would do, without doing it
 ```
 
 Tests boot a throwaway PostgreSQL 16 unless `DATABASE_URL` is already set.
+
+`npm test` runs a repository-owned runner (`src/ops/test-runner-cli.ts`) over the explicit inventory in
+`test/suite-inventory.json`. It spawns each suite as its own process with an argument array and no shell, so
+it behaves identically on Windows, macOS and Linux, and it exits non-zero if any selected suite fails, is
+signalled, hangs, or is never reached. A file under `test/` that is in neither the suite list nor the helper
+list fails the run before anything is spawned — that is what stops a new suite from existing outside the
+aggregate and CI. See `docs/PHASE_258_TEST_RUNNER.md`.
+
+Useful selections:
+
+```bash
+npm test -- --group offline           # everything that needs no database
+npm test -- --group db                # the embedded-PostgreSQL suites
+npm test -- --filter backup           # suites whose file name contains "backup"
+npm test -- --concurrency 4           # bounded parallelism (1-8)
+npm run test:docker-suites            # the acceptance suites that need a Docker daemon
+```
+
+**One suite is currently failing, and it is meant to be visible.** `test/jellyfin-outbox.ts` fails its
+"reconcile adopts by token after a lost create response" case. It failed before the runner existed too — the
+old `&&` chain could not run on Windows and stopped at the first failure, so nobody saw it. It is a real
+Phase 12 outbox defect, it is named in every run summary, and `npm test` exits non-zero because of it. See
+the "What running the aggregate for the first time exposed" section of
+[docs/PHASE_258_TEST_RUNNER.md](docs/PHASE_258_TEST_RUNNER.md).
 
 ### Against your own PostgreSQL 16 (or Docker Compose)
 

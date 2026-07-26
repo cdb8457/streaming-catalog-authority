@@ -7,6 +7,7 @@ import {
   formatUnraidInstallEvidenceManifestText,
   type UnraidInstallEvidenceManifest,
 } from '../src/ops/unraid-install-evidence-manifest.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -95,7 +96,7 @@ test('source and docs preserve evidence-manifest-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['ops:unraid-install-evidence-manifest'] === 'tsx src/ops/unraid-install-evidence-manifest-cli.ts', 'ops script');
   assert(scripts['test:unraid-install-evidence-manifest'] === 'tsx test/unraid-install-evidence-manifest.ts', 'test script');
-  assert((scripts.test ?? '').includes('test/unraid-service-install-authorization.ts && tsx test/unraid-install-evidence-manifest.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-service-install-authorization.ts && tsx test/unraid-install-evidence-manifest.ts'), 'aggregate order');
   for (const forbidden of [
     'node:fs',
     'node:http',

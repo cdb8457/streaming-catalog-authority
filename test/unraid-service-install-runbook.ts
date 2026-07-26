@@ -7,6 +7,7 @@ import {
   formatUnraidServiceInstallRunbookText,
   type UnraidServiceInstallRunbook,
 } from '../src/ops/unraid-service-install-runbook.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -98,7 +99,7 @@ test('source and docs preserve runbook-only boundary', () => {
   const scripts = (JSON.parse(read('package.json')) as { scripts: Record<string, string> }).scripts;
   assert(scripts['ops:unraid-service-install-runbook'] === 'tsx src/ops/unraid-service-install-runbook-cli.ts', 'ops script');
   assert(scripts['test:unraid-service-install-runbook'] === 'tsx test/unraid-service-install-runbook.ts', 'test script');
-  assert((scripts.test ?? '').includes('test/unraid-operator-readiness-bundle.ts && tsx test/unraid-service-install-runbook.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-operator-readiness-bundle.ts && tsx test/unraid-service-install-runbook.ts'), 'aggregate order');
   for (const forbidden of [
     'node:fs',
     'node:http',

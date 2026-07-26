@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -118,7 +119,7 @@ test('source and docs preserve no provider/runtime scope creep', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assertEq(pkg.scripts['ops:provider-availability-summary'], 'tsx src/ops/provider-availability-summary-cli.ts', 'ops script');
   assertEq(pkg.scripts['test:provider-availability-summary-cli'], 'tsx test/provider-availability-summary-cli.ts', 'test script');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-summary-cli.ts'), 'suite in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-summary-cli.ts'), 'suite in npm test');
 
   const source = `${read('src/core/adapters/provider-availability-summary.ts')}\n${read('src/ops/provider-availability-summary-cli.ts')}`;
   for (const forbidden of [

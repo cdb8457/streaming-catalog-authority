@@ -13,6 +13,7 @@ import {
   validateOperatorUiFixturePacket,
   validateOperatorUiFixturePackets,
 } from '../src/ops/operator-ui-fixtures.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -185,7 +186,7 @@ test('source has no frontend/API/runtime/DB/provider/network/env/file-read scope
 test('docs, package scripts, and deploy guard mention Phase 62 fixtures', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assert(pkg.scripts['test:operator-ui-fixtures'] === 'tsx test/operator-ui-fixtures.ts', 'test script');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-packet-contract.ts && tsx test/operator-ui-fixtures.ts'), 'suite near Phase 61');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-contract.ts && tsx test/operator-ui-fixtures.ts'), 'suite near Phase 61');
 
   const combined = `${read('docs/PHASE_62_OPERATOR_UI_FIXTURES.md')}\n${read('README.md')}\n${read('test/deploy.ts')}`;
   for (const kw of [

@@ -15,6 +15,7 @@ import {
   OPERATOR_UI_STATIC_PROTOTYPE_SCRIPT,
 } from '../src/ops/operator-ui-render-allowlist.js';
 import { renderOperatorUiStaticPrototypeHtml } from '../src/ops/operator-ui-static-prototype.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -154,7 +155,7 @@ test('helper and static renderer sources have no frontend/API/runtime/DB/provide
     assert(!allDeps.includes(dep), `no render/API dependency ${dep}`);
   }
   assert(pkg.scripts['test:operator-ui-render-allowlist'] === 'tsx test/operator-ui-render-allowlist.ts', 'test script');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-static-prototype.ts && tsx test/operator-ui-render-allowlist.ts'), 'suite follows Phase 63');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-static-prototype.ts && tsx test/operator-ui-render-allowlist.ts'), 'suite follows Phase 63');
 
   const source = [
     read('src/ops/operator-ui-render-allowlist.ts'),

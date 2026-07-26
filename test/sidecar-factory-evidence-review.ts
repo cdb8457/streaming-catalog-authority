@@ -5,6 +5,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { buildSidecarFactoryEvidencePacket } from '../src/ops/sidecar-factory-evidence.js';
 import { reviewSidecarFactoryEvidence } from '../src/ops/sidecar-factory-evidence-review.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -114,7 +115,7 @@ test('source, docs, and package preserve Phase 190 static review boundary', () =
   assert(pkg.scripts['test:sidecar-factory-evidence-review'] === 'tsx test/sidecar-factory-evidence-review.ts', 'test script');
   assert(pkg.scripts['ops:sidecar-factory-evidence-review'] === 'tsx src/ops/sidecar-factory-evidence-review-cli.ts', 'ops script');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-factory-evidence.ts && tsx test/sidecar-factory-evidence-review.ts && tsx test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts'),
     'aggregate order',
   );
   const source = `${read('src/ops/sidecar-factory-evidence-review.ts')}\n${read('src/ops/sidecar-factory-evidence-review-cli.ts')}`;

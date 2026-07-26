@@ -19,6 +19,7 @@ import {
 } from '../src/ops/operator-ui-static-runtime.js';
 import { request } from 'node:http';
 import { connect } from 'node:net';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -523,7 +524,7 @@ await test('README, docs, package, and deploy guard are wired for Phase 80', () 
   assert(pkg.scripts['test:operator-ui-local-auth-secret-file-preflight'] === 'tsx test/operator-ui-local-auth-secret-file-preflight.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-local-auth-secret-file-preflight'] === 'tsx src/ops/operator-ui-local-auth-secret-file-preflight-cli.ts', 'ops script');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-local-auth-boundary.ts && tsx test/operator-ui-local-auth-secret-file-preflight.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-local-auth-boundary.ts && tsx test/operator-ui-local-auth-secret-file-preflight.ts'),
     'Phase 80 suite follows Phase 79 local auth boundary in CI chain',
   );
 

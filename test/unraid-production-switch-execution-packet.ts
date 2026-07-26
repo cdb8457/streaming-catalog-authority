@@ -8,6 +8,7 @@ import {
   parseUnraidProductionSwitchExecutionPacketJson,
   type UnraidProductionSwitchExecutionPacket,
 } from '../src/ops/unraid-production-switch-execution-packet.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -103,7 +104,7 @@ test('source and docs preserve execution-packet-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-production-switch-execution-packet'] === 'tsx test/unraid-production-switch-execution-packet.ts', 'test script');
   assert(scripts['ops:unraid-production-switch-execution-packet'] === 'tsx src/ops/unraid-production-switch-execution-packet-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-final-launch-approval-record.ts && tsx test/unraid-production-switch-execution-packet.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-final-launch-approval-record.ts && tsx test/unraid-production-switch-execution-packet.ts'), 'aggregate order');
   for (const required of [
     'phase-136-unraid-production-switch-execution-packet',
     'phase-135-unraid-final-launch-approval-record',

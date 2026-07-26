@@ -48,6 +48,7 @@ import {
   type Rec,
   type Reports,
 } from './helpers/promotion-chain-kit.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -519,7 +520,7 @@ test('setup, docs and package scripts make the install runnable without reading 
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assertEq(pkg.scripts['test:promotion-chain-operator-ui'], 'tsx test/promotion-chain-operator-ui.ts', 'test script');
   assertEq(pkg.scripts['test:phase244-local'], 'tsx test/promotion-chain-operator-ui.ts', 'phase-local script');
-  assert((pkg.scripts.test ?? '').includes('tsx test/promotion-operator-dashboard.ts && tsx test/promotion-chain-operator-ui.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('tsx test/promotion-operator-dashboard.ts && tsx test/promotion-chain-operator-ui.ts'), 'aggregate order');
 });
 
 test('the README points an ordinary operator at the runtime stack, on either kind of machine', () => {
@@ -609,7 +610,11 @@ function assertBootstrapped(label: string, ws: string, stdout: string): Record<s
     `${label}: the printed start command names the runtime compose file`);
   assert(existsSync(join(ws, 'promotion-records')), `${label}: the artifact folder is created`);
   assertEq(readdirSync(join(ws, 'promotion-records')).length, 0, `${label}: and it is left empty`);
-  assertEq(readdirSync(ws).sort().join(','), 'deploy,promotion-records,secrets', `${label}: nothing else is created`);
+  // Phase 259 adds `import/`, the folder Compose mounts read-only for catalog snapshots. Created for the same
+  // reason `promotion-records/` is: a bind mount whose source does not exist is a confusing first `up -d`.
+  assert(existsSync(join(ws, 'import')), `${label}: the catalog import folder is created`);
+  assertEq(readdirSync(join(ws, 'import')).length, 0, `${label}: and it is left empty too`);
+  assertEq(readdirSync(ws).sort().join(','), 'deploy,import,promotion-records,secrets', `${label}: nothing else is created`);
   return values;
 }
 

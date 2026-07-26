@@ -6,6 +6,7 @@ import {
   formatOperatorUiRuntimeBoundaryText,
   type OperatorUiRuntimeBoundaryReport,
 } from '../src/ops/operator-ui-runtime-boundary.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -143,7 +144,7 @@ test('helper and CLI source has no runtime UI/API/network/DB/env/file/provider e
   assert(pkg.scripts['test:operator-ui-runtime-boundary'] === 'tsx test/operator-ui-runtime-boundary.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-runtime-boundary'] === 'tsx src/ops/operator-ui-runtime-boundary-cli.ts', 'ops script');
   assert(
-    (pkg.scripts.test ?? '').includes('test/operator-ui-preview-launch-packet.ts && tsx test/operator-ui-runtime-boundary.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-preview-launch-packet.ts && tsx test/operator-ui-runtime-boundary.ts'),
     'suite follows Phase 97 preview launch packet',
   );
 

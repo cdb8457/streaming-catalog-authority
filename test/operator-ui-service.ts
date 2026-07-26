@@ -8,9 +8,12 @@ import {
   OPERATOR_UI_SERVICE_DEFAULT_PORT,
   OperatorUiServiceConfigError,
   createOperatorUiServiceServer,
+  escapeHtml,
   validateOperatorUiServiceConfig,
 } from '../src/ops/operator-ui-service.js';
 import { loadOperatorUiLocalAuthRuntime, OPERATOR_UI_LOCAL_AUTH_HEADER } from '../src/ops/operator-ui-local-auth-runtime.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import { CATALOG_IMPORT_NOTE, CATALOG_SNAPSHOT_EXAMPLE } from '../src/ops/operator-ui-catalog-import-guide.js';
 
 let passed = 0;
 let failed = 0;
@@ -142,8 +145,26 @@ async function main(): Promise<void> {
       assert(rootResponse.body.includes('passCount'), 'pass counter wired');
       assert(rootResponse.body.includes('warnCount'), 'warn counter wired');
       assert(rootResponse.body.includes('failCount'), 'fail counter wired');
+      // Phase 260. The scan is about DISCLOSED OPERATIONAL DATA on a page served without a token, and it still
+      // is. What changed is that the page now carries a static, installation-independent panel documenting the
+      // import file format — which has to name the format's own `providerRefs` field and show a worked example,
+      // or the format is undocumented. Those bytes are identical on every installation and come from constants
+      // in operator-ui-catalog-import-guide.ts, which is asserted immediately below, so they cannot become a
+      // channel for anybody's data. Everything OUTSIDE that panel is held to exactly the original list.
+      const guideStart = rootResponse.body.indexOf('id="import-panel"');
+      assert(guideStart > 0, 'the static import guide panel is missing from the shell');
+      const guideEnd = rootResponse.body.indexOf('</section>', guideStart);
+      assert(guideEnd > guideStart, 'the static import guide panel is not closed');
+      const guide = rootResponse.body.slice(guideStart, guideEnd);
+      const outsideGuide = rootResponse.body.slice(0, guideStart) + rootResponse.body.slice(guideEnd);
       for (const forbidden of ['postgresql://', 'CUSTODIAN_KEK', 'COMPLETION_SECRET', 'providerRef', 'rawPayload', 'playback', 'download']) {
-        assert(!rootResponse.body.includes(forbidden), `root omits ${forbidden}`);
+        assert(!outsideGuide.includes(forbidden), `root omits ${forbidden}`);
+      }
+      // The panel is the shipped constants and nothing else, and it still carries no secret of any kind.
+      assert(guide.includes(escapeHtml(CATALOG_IMPORT_NOTE)), 'the import panel is not the shipped guidance');
+      assert(guide.includes(escapeHtml(CATALOG_SNAPSHOT_EXAMPLE)), 'the import panel does not show the shipped example');
+      for (const forbidden of ['postgresql://', 'CUSTODIAN_KEK', 'COMPLETION_SECRET', 'rawPayload', 'playback', 'download']) {
+        assert(!guide.includes(forbidden), `the import panel omits ${forbidden}`);
       }
 
       const health = await httpGet(port, '/healthz');
@@ -211,7 +232,7 @@ async function main(): Promise<void> {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     assert(pkg.scripts['test:operator-ui-service'] === 'tsx test/operator-ui-service.ts', 'test script');
     assert(pkg.scripts['ops:operator-ui-server'] === 'tsx src/ops/operator-ui-service-cli.ts', 'ops script');
-    assert((pkg.scripts.test ?? '').includes('test/long-running-service-boundary.ts && tsx test/operator-ui-service.ts'), 'aggregate order');
+    assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/long-running-service-boundary.ts && tsx test/operator-ui-service.ts'), 'aggregate order');
 
     const source = `${read('src/ops/operator-ui-service.ts')}\n${read('src/ops/operator-ui-service-cli.ts')}`;
     const combined = [

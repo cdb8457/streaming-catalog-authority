@@ -9,6 +9,7 @@ import {
   parseUnraidFinalHumanApprovalRecordJson,
   type UnraidFinalHumanApprovalRecordPreflight,
 } from '../src/ops/unraid-final-human-approval-record.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -104,7 +105,7 @@ test('source and docs preserve preflight-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-final-human-approval-record'] === 'tsx test/unraid-final-human-approval-record.ts', 'test script');
   assert(scripts['ops:unraid-final-human-approval-record'] === 'tsx src/ops/unraid-final-human-approval-record-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-final-human-approval-template.ts && tsx test/unraid-final-human-approval-record.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-final-human-approval-template.ts && tsx test/unraid-final-human-approval-record.ts'), 'aggregate order');
   assert(formatUnraidFinalHumanApprovalRecordPreflightJson(buildUnraidFinalHumanApprovalRecordPreflight(record())).includes('"productionReady": false'), 'json formatter false');
   for (const required of [
     'phase-129-unraid-final-human-approval-record-preflight',

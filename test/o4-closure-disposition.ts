@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -105,7 +106,7 @@ test('package, README, and deploy guard pin Phase 198 final status', () => {
   const readme = read('README.md');
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:o4-closure-disposition'] === 'tsx test/o4-closure-disposition.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts'), 'aggregate order present');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts'), 'aggregate order present');
   assert(readme.includes('Phase 198 adds `docs/PHASE_198_O4_FINAL_CLOSURE_DISPOSITION.md`'), 'README phase entry');
   assert(deploy.includes('Phase 198 O4 final closure disposition'), 'deploy guard entry');
 });

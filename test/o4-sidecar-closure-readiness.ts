@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -107,7 +108,7 @@ test('package, README, and deploy guard include Phase 192 verification', () => {
   const deploy = read('test/deploy.ts');
   assert(pkg.scripts['test:o4-sidecar-closure-readiness'] === 'tsx test/o4-sidecar-closure-readiness.ts', 'test script present');
   assert(
-    (pkg.scripts.test ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts'),
+    (AGGREGATE_SUITE_COMMAND ?? '').includes('test/sidecar-factory-evidence-acceptance-record.ts && tsx test/o4-sidecar-closure-readiness.ts && tsx test/o4-closure-disposition.ts && tsx test/runtime-cutover-plan.ts'),
     'aggregate order present',
   );
   assert(readme.includes('Phase 192 adds `docs/PHASE_192_O4_SIDECAR_CLOSURE_READINESS.md`'), 'README phase entry');

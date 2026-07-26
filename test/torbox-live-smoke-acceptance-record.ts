@@ -11,6 +11,7 @@ import {
   parseTorBoxLiveSmokeAcceptanceJson,
   type TorBoxLiveSmokeAcceptanceReport,
 } from '../src/ops/torbox-live-smoke-acceptance-record.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -176,8 +177,8 @@ test('npm package-script JSON invocation emits parseable redaction-safe JSON', (
 test('docs and source preserve static acceptance boundaries', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string>; dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
   assert(pkg.scripts['ops:torbox-live-smoke-acceptance-record'] === 'tsx src/ops/torbox-live-smoke-acceptance-record-cli.ts', 'ops script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-live-smoke-acceptance-record.ts'), 'suite in npm test');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-live-smoke-acceptance-record.ts'), 'suite in npm test');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke command is not in npm test');
 
   const source = `${read('src/ops/torbox-live-smoke-acceptance-record.ts')}\n${read('src/ops/torbox-live-smoke-acceptance-record-cli.ts')}`;
   for (const forbidden of [

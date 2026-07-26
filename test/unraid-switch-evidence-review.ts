@@ -8,6 +8,7 @@ import {
   parseUnraidSwitchEvidenceReviewJson,
   type UnraidSwitchEvidenceReview,
 } from '../src/ops/unraid-switch-evidence-review.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -107,7 +108,7 @@ test('source and docs preserve review-only boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:unraid-switch-evidence-review'] === 'tsx test/unraid-switch-evidence-review.ts', 'test script');
   assert(scripts['ops:unraid-switch-evidence-review'] === 'tsx src/ops/unraid-switch-evidence-review-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-switch-evidence-capture.ts && tsx test/unraid-switch-evidence-review.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-switch-evidence-capture.ts && tsx test/unraid-switch-evidence-review.ts'), 'aggregate order');
   for (const required of [
     'phase-132-unraid-switch-evidence-review',
     'phase-132-unraid-switch-evidence-record',

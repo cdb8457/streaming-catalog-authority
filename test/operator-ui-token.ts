@@ -10,6 +10,7 @@ import {
   readTokenValue,
   rotateOperatorUiToken,
 } from '../src/ops/operator-ui-token.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -110,7 +111,7 @@ test('source, docs, and package preserve Phase 148 token helper boundary', () =>
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assert(pkg.scripts['test:operator-ui-token'] === 'tsx test/operator-ui-token.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-token'] === 'tsx src/ops/operator-ui-token-cli.ts', 'ops script');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-service.ts && tsx test/operator-ui-token.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-service.ts && tsx test/operator-ui-token.ts'), 'aggregate order');
   const source = `${read('src/ops/operator-ui-token.ts')}\n${read('src/ops/operator-ui-token-cli.ts')}`;
   const combined = [
     source,

@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { TORBOX_BOUNDARY_CONTRACT } from '../src/core/adapters/torbox-boundary.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -76,7 +77,7 @@ test('Phase 31 source has no runtime dependency, network, DB, Docker, env read, 
   const deps = Object.keys({ ...(pkg.dependencies ?? {}), ...(pkg.devDependencies ?? {}) });
   assert(!deps.includes('@torbox/torbox-api'), 'no TorBox SDK dependency');
   assert(typeof pkg.scripts['test:torbox-boundary'] === 'string', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/torbox-boundary.ts'), 'suite wired into npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-boundary.ts'), 'suite wired into npm test');
 
   const source = read('src/core/adapters/torbox-boundary.ts');
   for (const forbidden of [
@@ -116,6 +117,10 @@ test('docs preserve no live TorBox, no downloads/playback/provider mode, and no 
 
 test('no accidental TorBox implementation appears outside the static boundary and local fake contract files', () => {
   const allowed = new Set([
+    // Phase 250. NOT an implementation: this file names TorBox only inside a REDACTION pattern that
+    // REFUSES a readiness packet mentioning a live provider. The allowlists predate it; excluding it would
+    // mean the guard that forbids the word cannot itself contain the word.
+    'src/ops/release-readiness.ts',
     'src/core/adapters/torbox-boundary.ts',
     'src/core/adapters/fake-torbox-adapter.ts',
     'src/core/adapters/torbox-real-client-gate.ts',

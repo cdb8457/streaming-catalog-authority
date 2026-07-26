@@ -23,6 +23,7 @@ import {
 } from '../src/ops/backup-inspect.js';
 import { BACKUP_INSPECT_COMMANDS, OPTIONAL_SECRET_FILES, REQUIRED_SECRET_FILES } from '../src/ops/backup-components.js';
 import { removeQuietly } from '../src/ops/usable-shell.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 // Phase 257 — is the backup you have still a rollback point?
 //
@@ -823,7 +824,7 @@ await test('package.json exposes the command and this suite', () => {
   const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as { scripts: Record<string, string> };
   assertEq(pkg.scripts['ops:backup-inspect'], 'tsx src/ops/backup-inspect-cli.ts', 'the command is wired up');
   assertEq(pkg.scripts['test:backup-inspect'], 'tsx test/backup-inspect.ts', 'and so is this suite');
-  assert(pkg.scripts.test?.includes('tsx test/backup-inspect.ts'), 'which runs in the aggregate suite');
+  assert(AGGREGATE_SUITE_COMMAND?.includes('tsx test/backup-inspect.ts'), 'which runs in the aggregate suite');
 });
 
 // A suite nothing runs is a suite that stops being true. CI runs named per-phase scripts rather than the

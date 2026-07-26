@@ -9,6 +9,7 @@ import {
   OPERATOR_UI_STATUS_LABELS,
   validateOperatorUiPacketDescriptor,
 } from '../src/ops/operator-ui-packet-contract.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -172,7 +173,7 @@ test('source has no frontend/API/runtime/DB/provider/network/env/file-read scope
     assert(!allDeps.includes(dep), `no frontend/API dependency ${dep}`);
   }
   assert(pkg.scripts['test:operator-ui-packet-contract'] === 'tsx test/operator-ui-packet-contract.ts', 'test script');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-packet-contract.ts'), 'suite in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-contract.ts'), 'suite in npm test');
 
   const source = read('src/ops/operator-ui-packet-contract.ts');
   for (const forbidden of [

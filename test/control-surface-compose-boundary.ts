@@ -5,6 +5,7 @@ import {
   buildControlSurfaceComposeBoundaryReport,
   type ControlSurfaceComposeBoundaryReport,
 } from '../src/ops/control-surface-compose-boundary.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -56,7 +57,7 @@ test('source and docs preserve pre-Compose boundary', () => {
   const scripts = JSON.parse(read('package.json')).scripts as Record<string, string>;
   assert(scripts['test:control-surface-compose-boundary'] === 'tsx test/control-surface-compose-boundary.ts', 'test script');
   assert(scripts['ops:control-surface-compose-boundary'] === 'tsx src/ops/control-surface-compose-boundary-cli.ts', 'ops script');
-  assert((scripts.test ?? '').includes('test/unraid-restart-persistence-review.ts && tsx test/control-surface-compose-boundary.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/unraid-restart-persistence-review.ts && tsx test/control-surface-compose-boundary.ts'), 'aggregate order');
   for (const required of [
     'phase-140-control-surface-compose-boundary',
     'phase-139-unraid-restart-persistence-review',

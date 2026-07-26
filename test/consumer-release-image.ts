@@ -277,8 +277,11 @@ test('the bundle contains what an ordinary user needs, and nothing that implies 
   // did not contain it, so the one class of user that release was for downloaded a bundle with no way to
   // follow it — and whose only Compose file uses the relative bind sources a launcher relocation breaks.
   assertEq(bundle.files.map((file) => file.path).join(','),
+    // Phase 259 adds the worked catalog snapshot: the first thing an operator needs in order to DO anything
+    // with the installation is the format of the file they have to write, and a documentation search is not
+    // a substitute for a valid example sitting next to the README.
     ['README.md', 'docker-compose.yml', 'setup.sh', 'setup.ps1', 'docker-compose.arcane.yml',
-      'arcane-setup.sh', '.env', '.env.example', 'VERSION',
+      'arcane-setup.sh', 'example-catalog-snapshot.json', '.env', '.env.example', 'VERSION',
       BUNDLE_MANIFEST_FILENAME, BUNDLE_CHECKSUM_FILENAME].join(','),
     'the bundle is exactly these files');
 

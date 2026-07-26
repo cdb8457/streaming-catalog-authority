@@ -12,6 +12,7 @@ import {
   formatOperatorUiPacketEndpointReadinessText,
   type OperatorUiPacketEndpointReadinessReport,
 } from '../src/ops/operator-ui-packet-endpoint-readiness.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -450,7 +451,7 @@ async function main(): Promise<void> {
     assert(pkg.scripts['test:operator-ui-packet-endpoint-readiness'] === 'tsx test/operator-ui-packet-endpoint-readiness.ts', 'test script');
     assert(pkg.scripts['ops:operator-ui-packet-endpoint-readiness'] === 'tsx src/ops/operator-ui-packet-endpoint-readiness-cli.ts', 'ops script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-auth-access-contract.ts && tsx test/operator-ui-packet-endpoint-readiness.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-auth-access-contract.ts && tsx test/operator-ui-packet-endpoint-readiness.ts'),
       'Phase 75 suite follows Phase 74 auth/access contract',
     );
     assertNoEndpointRuntimeExpansionSource(`${source}\n${cliSource}`);

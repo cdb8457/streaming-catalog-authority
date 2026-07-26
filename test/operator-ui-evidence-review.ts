@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { reviewOperatorUiEvidence } from '../src/ops/operator-ui-evidence-review.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -126,7 +127,7 @@ test('source, docs, package, and launcher preserve Phase 152 review boundary', (
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assert(pkg.scripts['test:operator-ui-evidence-review'] === 'tsx test/operator-ui-evidence-review.ts', 'test script');
   assert(pkg.scripts['ops:operator-ui-evidence-review'] === 'tsx src/ops/operator-ui-evidence-review-cli.ts', 'ops script');
-  assert((pkg.scripts.test ?? '').includes('test/operator-ui-live-check.ts && tsx test/operator-ui-evidence-review.ts'), 'aggregate order');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-live-check.ts && tsx test/operator-ui-evidence-review.ts'), 'aggregate order');
   const source = `${read('src/ops/operator-ui-evidence-review.ts')}\n${read('src/ops/operator-ui-evidence-review-cli.ts')}`;
   const combined = [
     source,

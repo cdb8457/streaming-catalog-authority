@@ -1,5 +1,6 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -79,7 +80,7 @@ await test('package, deploy guard, and README wire Phase 218 verification', () =
   const deploy = read('test/deploy.ts');
   const readme = read('README.md');
   assert(pkg.scripts['test:jellyfin-live-readonly-evidence-acceptance'] === 'tsx test/jellyfin-live-readonly-evidence-acceptance.ts', 'test script present');
-  assert((pkg.scripts.test ?? '').includes('test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/scheduled-doctor-alert-fix.ts && tsx test/jellyfin-live-readonly-evidence-acceptance.ts && tsx test/unraid-operator-readiness-bundle.ts'), 'aggregate order present');
   assert(deploy.includes('Phase 218 Jellyfin live read-only evidence acceptance'), 'deploy guard entry');
   assert(deploy.includes('JELLYFIN_LIVE_READONLY_SMOKE_ACCEPTED'), 'deploy guard status');
   assert(readme.includes('Phase 218 adds `docs/PHASE_218_JELLYFIN_LIVE_READONLY_EVIDENCE_ACCEPTANCE.md`'), 'README ledger entry');

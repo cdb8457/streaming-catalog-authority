@@ -51,8 +51,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - name: Phase 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: The aggregate test command describes every suite
+        # Phase 258. Fails if any file under test/ is in neither the suite list nor the helper list of
+        # test/suite-inventory.json — the check that stops a new suite from quietly existing outside the
+        # aggregate and this workflow.
+        timeout-minutes: 5
+        run: npm run test:inventory
+      - name: The aggregate test runner keeps its exit-code discipline
+        # Phase 258. Proves a failing, signalled, hung or unreached suite can never produce a zero exit.
+        # Bounded on purpose: this suite spawns real child processes, and a step that hangs is a step that
+        # tells you nothing. A timeout here fails loudly with a readable log instead of occupying a runner.
+        timeout-minutes: 15
+        run: npm run test:runner
+      - name: Phase 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
         run: |
+          npm run test:phase260-local
+          npm run test:phase259-local
           npm run test:phase257-local
           npm run test:phase256-local
           npm run test:phase255-local

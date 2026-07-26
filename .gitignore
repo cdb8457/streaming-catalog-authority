@@ -15,4 +15,7 @@ secrets/
 backups/
 *.age
 _wire.py
-promotion-records/
+/promotion-records/
+# Phase 259: operator catalog snapshots. Somebody’s library is not this repository’s content.
+# Root-anchored: a bare `import/` would also ignore any future source directory of that name.
+/import/

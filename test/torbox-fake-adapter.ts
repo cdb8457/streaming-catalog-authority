@@ -7,6 +7,7 @@ import {
   type FakeTorBoxAvailableRef,
 } from '../src/core/adapters/fake-torbox-adapter.js';
 import { TORBOX_BOUNDARY_CONTRACT } from '../src/core/adapters/torbox-boundary.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -189,12 +190,16 @@ async function main(): Promise<void> {
   await test('package scripts wire the fake TorBox adapter suite into npm test', () => {
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     assertEq(pkg.scripts['test:torbox-fake-adapter'], 'tsx test/torbox-fake-adapter.ts', 'focused script present');
-    assert((pkg.scripts.test ?? '').includes('test/torbox-fake-adapter.ts'), 'suite is in npm test chain');
+    assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/torbox-fake-adapter.ts'), 'suite is in npm test chain');
   });
 
   await test('no accidental TorBox source appears beyond the static boundary and local fake contract', () => {
     const root = fileURLToPath(new URL('../src', import.meta.url));
     const allowed = new Set([
+    // Phase 250. NOT an implementation: this file names TorBox only inside a REDACTION pattern that
+    // REFUSES a readiness packet mentioning a live provider. The allowlists predate it; excluding it would
+    // mean the guard that forbids the word cannot itself contain the word.
+    'src/ops/release-readiness.ts',
       'src/core/adapters/torbox-boundary.ts',
       'src/core/adapters/fake-torbox-adapter.ts',
       'src/core/adapters/torbox-real-client-gate.ts',

@@ -12,6 +12,7 @@ import {
   startOperatorUiStaticRuntime,
   validateOperatorUiStaticRuntimeConfig,
 } from '../src/ops/operator-ui-static-runtime.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -278,7 +279,7 @@ async function main(): Promise<void> {
     assert(pkg.scripts['ops:operator-ui-static-runtime'] === 'tsx src/ops/operator-ui-static-runtime-cli.ts', 'ops script');
     assert(pkg.scripts['test:operator-ui-static-runtime'] === 'tsx test/operator-ui-static-runtime.ts', 'test script');
     assert(
-      (pkg.scripts.test ?? '').includes('test/operator-ui-packet-source-contract.ts && tsx test/operator-ui-static-runtime.ts'),
+      (AGGREGATE_SUITE_COMMAND ?? '').includes('test/operator-ui-packet-source-contract.ts && tsx test/operator-ui-static-runtime.ts'),
       'suite follows Phase 69',
     );
     const combined = `${read('docs/PHASE_70_LOCAL_STATIC_UI_RUNTIME_SHELL.md')}\n${read('README.md')}\n${read('test/deploy.ts')}`;

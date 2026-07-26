@@ -7,6 +7,7 @@ import {
   formatProviderAvailabilityOperatorPacketText,
   type ProviderAvailabilityOperatorPacket,
 } from '../src/ops/provider-availability-operator-packet.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -120,8 +121,8 @@ test('source has no filesystem, env, network, DB, Docker, adapter-mode, executio
   assert(!allDeps.includes('@torbox/torbox-api'), 'TorBox SDK is not installed');
   assert(pkg.scripts['ops:provider-availability-operator-packet'] === 'tsx src/ops/provider-availability-operator-packet-cli.ts', 'ops script');
   assert(pkg.scripts['test:provider-availability-operator-packet'] === 'tsx test/provider-availability-operator-packet.ts', 'test script');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-operator-packet.ts'), 'suite in npm test');
-  assert(!(pkg.scripts.test ?? '').includes('smoke:torbox-readonly'), 'operator smoke not in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-operator-packet.ts'), 'suite in npm test');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('smoke:torbox-readonly'), 'operator smoke not in npm test');
 
   const packet = read('src/ops/provider-availability-operator-packet.ts');
   const cli = read('src/ops/provider-availability-operator-packet-cli.ts');

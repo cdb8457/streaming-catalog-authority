@@ -1,6 +1,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { decideProviderAvailability } from '../src/core/adapters/provider-availability-policy.js';
+import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
 let passed = 0;
 let failed = 0;
@@ -106,7 +107,7 @@ test('source is a pure policy layer with no provider, DB, env, network, or UI be
 test('package, README, deploy test, and source allowlist are wired', () => {
   const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
   assertEq(pkg.scripts['test:provider-availability-policy'], 'tsx test/provider-availability-policy.ts', 'test script');
-  assert((pkg.scripts.test ?? '').includes('test/provider-availability-policy.ts'), 'suite in npm test');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/provider-availability-policy.ts'), 'suite in npm test');
   assert(read('README.md').includes('Provider availability policy (Phase 55)'), 'README mentions phase');
   assert(read('test/deploy.ts').includes('provider availability policy - Phase 55'), 'deploy test mentions phase');
 
