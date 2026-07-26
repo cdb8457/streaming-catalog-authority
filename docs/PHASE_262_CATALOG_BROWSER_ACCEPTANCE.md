@@ -136,9 +136,9 @@ looking green.
 - **One snapshot, one shape.** 28 records exercise paging, search, one filter type and one sort. They do not
   exercise the 1000-record scan bound, a truncated result, or a catalog large enough to make decryption cost
   visible.
-- **The empty and imported legs are separate browser runs.** They share a spec file and are selected by tag,
-  so a tag typo would silently run nothing; the orchestrator checks each leg's exit code, but not that it ran
-  a specific number of tests.
+- **The empty and imported legs are separate browser runs.** They share a spec file and are selected by tag.
+  The orchestrator reads each leg's report and refuses a leg that ran zero tests, so a mistyped tag fails
+  rather than passing quietly — but it does not pin *which* tests ran, only that some did.
 - **`forget` is not exercised here.** Phase 260's suite proves a forgotten record leaves the count and 404s
   its detail; this acceptance does not repeat it, because an erasure inside a release-acceptance run is a
   destructive act on a stack that is about to be discarded anyway.

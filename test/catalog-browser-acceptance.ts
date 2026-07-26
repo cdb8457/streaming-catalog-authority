@@ -33,7 +33,9 @@ function assertEq<T>(actual: T, expected: T, msg: string): void {
 }
 
 const root = fileURLToPath(new URL('..', import.meta.url));
-const read = (rel: string): string => readFileSync(join(root, rel), 'utf8');
+/** Line endings are a checkout artifact, never content: a Windows working copy delivers CRLF, and an
+ *  assertion that reads a shipped script must not depend on which platform checked it out (Phase 258). */
+const read = (rel: string): string => readFileSync(join(root, rel), 'utf8').split('\r\n').join('\n');
 const exists = (rel: string): boolean => existsSync(join(root, rel));
 
 console.log('Running Phase 262 catalog import-and-browse acceptance contract suite:\n');
@@ -260,6 +262,8 @@ test('the orchestrator covers the whole consumer workflow, in order, with a proo
     [/did not survive a restart/, 'and requires the records to survive'],
     [/appeared in the server logs/, 'it checks the logs disclose nothing'],
     [/count_rows/, 'counts are read from the database inside the stack, not inferred'],
+    [/digits_or_die/, 'a count that could not be READ is a failure, never a count that did not CHANGE'],
+    [/require_tests_ran/, 'a browser leg that ran zero tests is a failure, not a pass'],
   ];
   for (const [pattern, what] of required) {
     assert(pattern.test(orchestrator), `the orchestrator: ${what}`);
@@ -296,7 +300,8 @@ test('the spec covers every required real-browser assertion', () => {
   const required: Array<[RegExp, string]> = [
     [/@empty/, 'has an empty-installation leg'],
     [/@imported/, 'and an imported-catalog leg'],
-    [/#catState.*EMPTY|EMPTY/, 'checks the empty state'],
+    [/toHaveText\('EMPTY'\)/, 'checks the empty state by its exact name'],
+    [/toHaveText\('RESULTS'\)/, 'and the populated state by its exact name'],
     [/import/i, 'checks the empty state points at importing'],
     [/#catTotal/, 'reads the record count'],
     [/#catMatched/, 'reads the matched count'],

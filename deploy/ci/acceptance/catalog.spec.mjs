@@ -103,7 +103,7 @@ test('@imported the imported records are counted, listed and paged', async ({ pa
 
   await expect(page.locator('#catTotal')).toHaveText(String(RECORD_COUNT));
   await expect(page.locator('#catMatched')).toHaveText(String(RECORD_COUNT));
-  await expect(page.locator('#catState')).toHaveText('OK');
+  await expect(page.locator('#catState')).toHaveText('RESULTS');
   // The default page size is 25, so a 28-record catalog is two pages.
   await expect(page.locator('#catPage')).toHaveText('1 of 2');
   await expect(page.locator('#catResults > li')).toHaveCount(25);

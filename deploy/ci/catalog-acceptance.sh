@@ -239,12 +239,40 @@ info "import mount is read-only in metadata and in fact"
 # ---------------------------------------------------------------------------------------------------------
 # 6. Counting helpers. The database is not published to the host, so counts are read INSIDE the stack.
 # ---------------------------------------------------------------------------------------------------------
+
+# A count that fails to be READ must never look like a count that did not CHANGE. Two unreadable counts
+# compare equal to each other, so a broken psql would turn "browsing wrote nothing" into a vacuous pass —
+# the exact shape of dishonest evidence this whole phase exists to avoid. Both helpers therefore refuse to
+# return anything that is not a bare number, and refusing exits the run.
+digits_or_die() {
+  case "${1}" in
+    ''|*[!0-9]*) echo "FAIL: ${2} did not return a number — the measurement failed, so nothing may be concluded from it" >&2; exit 1 ;;
+  esac
+  printf '%s' "${1}"
+}
 count_rows() {
-  ( cd "${EXTRACTED}" && docker compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM ${1}" ) | tr -d '[:space:]'
+  local raw
+  raw="$( cd "${EXTRACTED}" && docker compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM ${1}" | tr -d '[:space:]' )"
+  digits_or_die "${raw}" "the row count for ${1}"
 }
 catalog_total() {
-  curl -fsS -H "x-operator-ui-secret: ${TOKEN}" "${BASE_URL}/api/catalog" | node -e \
-    'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(String(JSON.parse(s).total))})'
+  local raw
+  raw="$( curl -fsS -H "x-operator-ui-secret: ${TOKEN}" "${BASE_URL}/api/catalog" | node -e \
+    'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(String(JSON.parse(s).total))})' )"
+  digits_or_die "${raw}" "the catalog API total"
+}
+
+# A browser leg that ran NO tests is not a browser leg that passed. Playwright's own exit code covers a
+# mistyped grep in current versions, but the number of tests it actually expected is the direct evidence,
+# and it costs one line to read it rather than to trust it.
+require_tests_ran() {
+  local report="${1}/report.json"
+  [ -f "${report}" ] || fail "the ${2} browser leg wrote no report — it cannot be said to have run"
+  local expected
+  expected="$( node -e 'const r=require(process.argv[1]);process.stdout.write(String((r.stats&&r.stats.expected)||0))' "${report}" )"
+  expected="$(digits_or_die "${expected}" "the ${2} browser leg test count")"
+  [ "${expected}" -ge 1 ] || fail "the ${2} browser leg ran 0 tests — a filter matched nothing, which is not a pass"
+  info "${2} browser leg ran ${expected} test(s)"
 }
 
 items_before="$(count_rows items)"
@@ -268,6 +296,7 @@ PLAYWRIGHT_ARTIFACT_DIR="${STAGING_DIR}/empty" \
 empty_status=$?
 set -e
 [ "${empty_status}" -eq 0 ] || fail "the empty-state browser leg reported failures"
+require_tests_ran "${STAGING_DIR}/empty" "empty-state"
 info "empty-state guidance verified in a real browser"
 
 # ---------------------------------------------------------------------------------------------------------
@@ -316,6 +345,7 @@ PLAYWRIGHT_ARTIFACT_DIR="${STAGING_DIR}/imported" \
     --config "${BROWSER_DIR}/catalog.playwright.config.mjs" --grep "@imported"
 browse_status=$?
 set -e
+require_tests_ran "${STAGING_DIR}/imported" "imported-catalog"
 
 # ---------------------------------------------------------------------------------------------------------
 # 11. Browsing is READ-ONLY: no row and no event was written by any of it.
