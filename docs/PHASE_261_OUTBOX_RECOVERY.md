@@ -5,6 +5,14 @@
 `npm test` passes. It has not since the aggregate command became runnable in Phase 258, which found
 `test/jellyfin-outbox.ts` failing its hard case and — correctly — refused to guess at a fix.
 
+```
+suites selected 294 | passed 294 | failed 0 | not selected 2 | required-but-skipped 0 | 1547s
+RESULT: PASS — every selected suite ran and exited zero.
+```
+
+(The two not selected are the Docker acceptance gates, which declare a capability this machine lacks and are
+reported by name rather than counted as passes — see Phase 262 for what they now include.)
+
 Behind that: publishing to a real Jellyfin can no longer respond to one lost network response by creating a
 second collection. It could before, and nothing in the system could tell.
 
