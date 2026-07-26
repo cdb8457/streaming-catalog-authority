@@ -136,6 +136,12 @@ looking green.
 - **One snapshot, one shape.** 28 records exercise paging, search, one filter type and one sort. They do not
   exercise the 1000-record scan bound, a truncated result, or a catalog large enough to make decryption cost
   visible.
+- **The Phase 252 handoff packet does not carry this gate's result.** `rehearsal` needs `suites`,
+  `release-candidate` and `lifecycle`, and reports those three from this run's job results. `publish` needs
+  `catalog-acceptance` directly, and the readiness verifier now blocks a graph in which it is missing — so a
+  release still cannot go out over a red catalog gate. What the handoff packet says about the acceptances is
+  simply one gate short of what the graph enforces, and extending it is a change to the rehearsal's own
+  evidence contract rather than to this one.
 - **The empty and imported legs are separate browser runs.** They share a spec file and are selected by tag.
   The orchestrator reads each leg's report and refuses a leg that ran zero tests, so a mistyped tag fails
   rather than passing quietly — but it does not pin *which* tests ran, only that some did.
