@@ -153,9 +153,15 @@ test('a valid token loads installation, status, logs, promotion and version, in 
   if (EXPECTED_VERSION !== '') {
     await expect(page.locator('#verVersion')).toHaveText(EXPECTED_VERSION);
   }
-  // All five operational routes were exercised. On a freshly-started stack the database has not been migrated,
-  // so /api/status answers 503 (a dependency-not-ready state the page surfaces rather than crashes on) — the
-  // point here is that the route was driven, which the request log proves.
+  // All five operational routes were exercised; the point here is that they were driven, which the request
+  // log proves, not what each one answered.
+  //
+  // This comment used to say /api/status answers 503 "because the database has not been migrated". That was
+  // wrong: the compose file gates the app behind a migrate one-shot, so the schema IS current by the time
+  // anything here runs. Phase 262's catalog acceptance found the real reason — the keystore volume was
+  // root-owned while the container runs as node, so every custodian construction died with EACCES and the
+  // doctor behind /api/status failed. Fixed in Dockerfile.runtime; the mis-attribution is corrected here so
+  // the next person does not re-learn it.
   for (const route of ['/api/installation', '/api/status', '/api/logs', '/api/promotion-chain']) {
     expect(collected.requests.some((r) => r.url.endsWith(route)), `the page requested ${route}`).toBe(true);
   }

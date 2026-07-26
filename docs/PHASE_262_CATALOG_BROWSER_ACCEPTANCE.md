@@ -112,6 +112,39 @@ The CI job `catalog-acceptance` is required: `publish` now needs all **seven** g
 job carries no `if:`, so it runs on every event that can reach `publish` and can never be skipped into
 looking green.
 
+## What it found on its first run
+
+The gate was built to catch the class of defect that only appears in the shipped container. It caught one
+immediately, in CI, on the first run that reached the browser:
+
+```
+FAIL: GET /api/catalog answered 503, not 200
+      the service said: {"code":"OPERATOR_UI_CATALOG_UNAVAILABLE", ...}
+--- ops:doctor, run inside the app container ---
+doctor failed: EACCES: permission denied, mkdir '/var/lib/catalog/keystore/keys'
+```
+
+The custodian keystore is a named volume. Docker initialises a fresh named volume from whatever the **image**
+has at that path, ownership included — and creates it **root-owned** when the image has nothing there. The
+container runs as `node`. So on every fresh install the first thing that constructs a `FileCustodian` died
+with `EACCES`, which is `ops:doctor`, `/api/status` **and the entire catalog panel**.
+
+Nothing caught it before because every gate up to Phase 261 probed only `/healthz`, which needs no custodian.
+Worse, the Phase 248 spec had written the symptom down as *"on a freshly-started stack the database has not
+been migrated, so /api/status answers 503"* — a mis-attribution that made the real defect look expected. The
+schema was current the whole time; the keystore was unwritable.
+
+**Fixed in `Dockerfile.runtime`**: the image now creates `/var/lib/catalog/keystore` owned by `node` before
+dropping to that user, so Docker gives the fresh volume the same ownership. `test/consumer-release-image.ts`
+pins it, and the Phase 248 comment is corrected.
+
+**If you already have an installation**, its volume was created root-owned and the image change cannot
+retro-fit it. One command fixes it, with the stack stopped:
+
+```
+docker compose run --rm --user root --entrypoint sh app -c 'chown -R node:node /var/lib/catalog/keystore'
+```
+
 ## Boundaries
 
 - Nothing here contacts a provider, Jellyfin, a media library, Unraid or any endpoint beyond `127.0.0.1`.

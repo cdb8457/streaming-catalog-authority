@@ -75,6 +75,18 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY package.json package-lock.json tsconfig.json ./
 COPY src ./src
 
+# THE ONE DIRECTORY THE RUNTIME USER MUST BE ABLE TO WRITE, and the reason it is created here.
+#
+# The custodian's keystore lives on a named volume. Docker initialises a fresh named volume from whatever the
+# IMAGE has at that path — including its OWNERSHIP — and, when the image has nothing there, creates the
+# volume's root owned by `root`. This container runs as `node`, so with no directory in the image the very
+# first thing that constructs a FileCustodian dies with
+#   EACCES: permission denied, mkdir '/var/lib/catalog/keystore/keys'
+# That is not a corner: it is `ops:doctor`, `/api/status` and the entire catalog panel, on every fresh
+# install. Creating the directory here, owned by node, is what makes the volume node-owned and the shipped
+# product usable. It does not weaken `read_only: true` — writes land on the volume, never on this filesystem.
+RUN mkdir -p /var/lib/catalog/keystore && chown -R node:node /var/lib/catalog
+
 USER node
 EXPOSE 8099
 
