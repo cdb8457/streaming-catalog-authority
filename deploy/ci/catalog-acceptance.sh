@@ -293,6 +293,13 @@ require_catalog_api() {
     echo "FAIL: GET /api/catalog answered ${status}, not 200 — the catalog service refused before any browser was involved" >&2
     echo "      the service said: $(cat "${body}")" >&2
     rm -f "${body}"
+    # The refusal tells an operator to check Setup & Diagnostics, so the gate does exactly that: the same
+    # two answers a person would look at, both redaction-safe by construction.
+    echo "--- GET /api/status (what Setup & Diagnostics reports) ---" >&2
+    curl -sS -H "x-operator-ui-secret: ${TOKEN}" "${BASE_URL}/api/status" >&2 || true
+    echo >&2
+    echo "--- ops:doctor, run inside the app container ---" >&2
+    ( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:doctor ) >&2 2>&1 || true
     dump_stack_logs
     exit 1
   fi
