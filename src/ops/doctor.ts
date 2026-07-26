@@ -23,8 +23,8 @@ export type CheckState = 'pass' | 'warn' | 'fail';
 export interface DoctorCheck { name: string; state: CheckState; detail: string; }
 export interface DoctorReport { ok: boolean; checks: DoctorCheck[]; }
 
-const EXPECTED_TABLES = ['events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations', 'publish_ledger'];
-const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret', 'set_schema_version', 'cat_publish_record'];
+const EXPECTED_TABLES = ['events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations', 'publish_ledger', 'import_history'];
+const EXPECTED_FUNCTIONS = ['cat_add_item_ct', 'cat_forget_complete', 'cat_rebuild', 'set_completion_secret', 'set_schema_version', 'cat_publish_record', 'cat_import_record'];
 
 /**
  * Attempt `sql` on the runtime connection inside a SAVEPOINT and roll it back. Returns 'denied'

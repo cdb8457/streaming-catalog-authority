@@ -1277,6 +1277,20 @@
     {
       "file": "keystore-repair.ts",
       "group": "offline"
+    },
+    {
+      "file": "operator-ui-import-endpoint.ts",
+      "group": "db",
+      "args": [
+        "5458"
+      ]
+    },
+    {
+      "file": "operator-ui-catalog-workspace.ts",
+      "group": "db",
+      "args": [
+        "5459"
+      ]
     }
   ]
 }

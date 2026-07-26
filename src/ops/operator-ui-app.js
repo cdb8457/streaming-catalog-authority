@@ -70,9 +70,29 @@
   var catTruncated = document.getElementById('catTruncated');
   var catResults = document.getElementById('catResults');
   var catDetail = document.getElementById('catDetail');
-  // The only piece of catalog state this page keeps. The token is never stored anywhere, including here.
+  var catSource = document.getElementById('catSource');
+  var catPageSize = document.getElementById('catPageSize');
+  var catExportStatus = document.getElementById('catExportStatus');
+  var impFile = document.getElementById('impFile');
+  var impInbox = document.getElementById('impInbox');
+  var impApplyBtn = document.getElementById('impApply');
+  var impStatus = document.getElementById('impStatus');
+  var impTotal = document.getElementById('impTotal');
+  var impCreate = document.getElementById('impCreate');
+  var impSame = document.getElementById('impSame');
+  var impBlocked = document.getElementById('impBlocked');
+  var impNotes = document.getElementById('impNotes');
+  var impHistory = document.getElementById('impHistory');
+  // The only pieces of state this page keeps. The token is never stored anywhere, including here.
   var catalogPage = 1;
   var catalogPageCount = 1;
+  // Phase 264. The confirmation the LAST preview issued, and the file it was issued for. Held together and
+  // discarded together: a confirmation without the file it names cannot be used, and a file selection that
+  // changes must not leave a previous file's confirmation armed. The server refuses a mismatch anyway — this
+  // is so the button an operator sees agrees with what the server would do.
+  var importConfirmation = null;
+  var importConfirmedFile = null;
+  var knownSources = [];
 
   // Error text an operator can act on. A bare "request failed" sends someone to the logs for a problem whose
   // answer is "you pasted a stale token"; the status code already knows which of those it is.
@@ -335,6 +355,7 @@
     var dt = document.createElement('dt'); dt.textContent = 'Artifacts'; artifactSummary.appendChild(dt);
     var dd = document.createElement('dd'); dd.textContent = 'Not loaded.'; artifactSummary.appendChild(dd);
     resetCatalog();
+    resetImportPanel();
   }
   // ---------------------------------------------------------------------------------------------------------
   // Phase 260 — the catalog.
@@ -350,10 +371,34 @@
     params.set('sort', sortPair[0]);
     params.set('order', sortPair[1] || 'asc');
     if (catRefType.value !== '') params.set('refType', catRefType.value);
+    if (catSource.value !== '') params.set('source', catSource.value);
     if (catYearFrom.value !== '') params.set('yearFrom', catYearFrom.value);
     if (catYearTo.value !== '') params.set('yearTo', catYearTo.value);
     params.set('page', String(catalogPage));
+    params.set('pageSize', String(catPageSize.value || '25'));
     return '/api/catalog?' + params.toString();
+  }
+  // The source filter offers what this installation actually has, and never invents a label. Two sources of
+  // truth are merged because neither is complete on its own: the import history knows every source ever
+  // applied (including ones whose records were later forgotten), and the current page knows the sources of
+  // records that may predate the history table. The current selection is always kept, so a reload cannot
+  // silently drop the filter somebody is looking through.
+  function offerSources(found) {
+    for (var i = 0; i < found.length; i++) {
+      if (found[i] && knownSources.indexOf(found[i]) === -1) knownSources.push(found[i]);
+    }
+    knownSources.sort();
+    var chosen = catSource.value;
+    catSource.replaceChildren();
+    var any = document.createElement('option'); any.value = ''; any.textContent = 'Any source';
+    catSource.appendChild(any);
+    for (var s = 0; s < knownSources.length; s++) {
+      var option = document.createElement('option');
+      option.value = knownSources[s];
+      option.textContent = knownSources[s];
+      catSource.appendChild(option);
+    }
+    catSource.value = knownSources.indexOf(chosen) === -1 ? '' : chosen;
   }
   function describeRecord(item) {
     var parts = [item.title || '(no title)'];
@@ -375,6 +420,12 @@
     catTruncated.textContent = notes.join(' ');
     catResults.replaceChildren();
     var items = data.items || [];
+    var seen = [];
+    for (var q = 0; q < items.length; q++) {
+      var rowSources = items[q].sources || [];
+      for (var r = 0; r < rowSources.length; r++) seen.push(rowSources[r]);
+    }
+    offerSources(seen);
     if (items.length === 0) {
       var empty = document.createElement('li');
       empty.className = 'muted';
@@ -443,9 +494,257 @@
     catalogPageCount = 1;
     catTotal.textContent = '-'; catMatched.textContent = '-'; catPageEl.textContent = '-'; catState.textContent = '-';
     catGuidance.textContent = ''; catTruncated.textContent = '';
+    catExportStatus.className = 'status'; catExportStatus.textContent = '';
     catResults.replaceChildren();
     var li = document.createElement('li'); li.className = 'muted'; li.textContent = 'Not loaded.'; catResults.appendChild(li);
     setDetailRows([['Record', 'Choose a record above.']]);
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // Phase 265 — the export.
+  //
+  // It has to be a fetch rather than a link, because every operational route on this service requires the
+  // operator token in a request HEADER and a browser will not put one on a plain navigation. So the bytes are
+  // fetched, wrapped in a Blob, and handed to a download anchor the page creates and revokes. The token never
+  // reaches a URL, and the file never touches storage: the object URL is released as soon as the click is
+  // dispatched.
+  // ---------------------------------------------------------------------------------------------------------
+  function exportFileNameFrom(res) {
+    var disposition = res.headers.get('content-disposition') || '';
+    var match = /filename="([A-Za-z0-9][A-Za-z0-9._-]{0,127})"/.exec(disposition);
+    // The pattern is the same closed grammar the server builds the name from. A header that does not match it
+    // is not trusted into a file name; a constant is used instead.
+    return match ? match[1] : 'catalog-export.json';
+  }
+  async function exportCatalogFile() {
+    if (token.value === '') {
+      catExportStatus.className = 'status err';
+      catExportStatus.textContent = 'Paste your operator token first.';
+      return;
+    }
+    catExportStatus.className = 'status';
+    catExportStatus.textContent = 'Preparing the export...';
+    var params = new URLSearchParams();
+    if (catSource.value !== '') params.set('source', catSource.value);
+    var res;
+    try {
+      res = await fetch('/api/catalog/export?' + params.toString(),
+        { headers: { 'x-operator-ui-secret': token.value }, cache: 'no-store' });
+    } catch (err) {
+      catExportStatus.className = 'status err';
+      catExportStatus.textContent = describeFailure(0, null);
+      return;
+    }
+    if (!res.ok) {
+      var body = await res.json().catch(function () { return null; });
+      catExportStatus.className = 'status err';
+      var extra = body && body.sources && body.sources.length > 0
+        ? ' Sources in this catalog: ' + body.sources.join(', ') + '.'
+        : '';
+      catExportStatus.textContent = describeFailure(res.status, body) + extra;
+      return;
+    }
+    var text = await res.text();
+    var name = exportFileNameFrom(res);
+    var url = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+    var anchor = document.createElement('a');
+    anchor.href = url;
+    anchor.download = name;
+    document.body.appendChild(anchor);
+    anchor.click();
+    document.body.removeChild(anchor);
+    URL.revokeObjectURL(url);
+    var omitted = res.headers.get('x-catalog-export-refs-omitted') || '0';
+    catExportStatus.className = 'status ok-text';
+    catExportStatus.textContent = 'Downloaded ' + name + ' — '
+      + (res.headers.get('x-catalog-export-records') || '?') + ' record(s). '
+      + omitted + ' provider reference(s) were deliberately left out; their values are never exported. '
+      + 'Nothing was written to this installation.';
+  }
+
+  // ---------------------------------------------------------------------------------------------------------
+  // Phase 264 — the import.
+  //
+  // TWO STEPS, AND THE SECOND IS DISABLED UNTIL THE FIRST HAS HAPPENED. Preview reads the file and writes
+  // nothing; the confirmation it returns is what Apply sends back, and the server checks that confirmation
+  // against the bytes on disk at the moment of the apply. Changing the selected file throws the confirmation
+  // away here as well, so the button never looks armed for a file it is not armed for.
+  //
+  // Every value below is written with textContent, exactly like every other panel: a snapshot is an operator's
+  // own file and nothing in it is ever parsed as markup.
+  // ---------------------------------------------------------------------------------------------------------
+  function disarmImport(why) {
+    importConfirmation = null;
+    importConfirmedFile = null;
+    impApplyBtn.disabled = true;
+    if (why) { impStatus.className = 'status'; impStatus.textContent = why; }
+  }
+  function resetImportCounts() {
+    impTotal.textContent = '-'; impCreate.textContent = '-'; impSame.textContent = '-'; impBlocked.textContent = '-';
+    setList(impNotes, []);
+  }
+  async function loadInbox() {
+    if (token.value === '') return;
+    var data;
+    try {
+      data = await getJson('/api/import/inbox');
+    } catch (err) {
+      impInbox.className = 'status err';
+      impInbox.textContent = err.message;
+      return;
+    }
+    var chosen = impFile.value;
+    var candidates = data.candidates || [];
+    impFile.replaceChildren();
+    var none = document.createElement('option');
+    none.value = '';
+    none.textContent = candidates.length === 0 ? 'No snapshot files found' : 'Choose a snapshot file';
+    impFile.appendChild(none);
+    for (var i = 0; i < candidates.length; i++) {
+      var option = document.createElement('option');
+      option.value = candidates[i].name;
+      option.textContent = candidates[i].name + '  (' + candidates[i].bytes + ' bytes)';
+      impFile.appendChild(option);
+    }
+    // A selection that survived the reload is kept; one whose file went away is dropped along with any
+    // confirmation that named it.
+    var stillThere = false;
+    for (var c = 0; c < candidates.length; c++) if (candidates[c].name === chosen) stillThere = true;
+    impFile.value = stillThere ? chosen : '';
+    if (!stillThere && chosen !== '') disarmImport('The file you had selected is no longer in the import folder.');
+    var skippedNote = '';
+    var skipped = data.skipped || {};
+    var skippedTotal = 0;
+    for (var key in skipped) if (Object.prototype.hasOwnProperty.call(skipped, key)) skippedTotal += skipped[key];
+    if (skippedTotal > 0) {
+      skippedNote = ' ' + skippedTotal + ' entr' + (skippedTotal === 1 ? 'y was' : 'ies were')
+        + ' skipped because they are not plain .json files this page can offer.';
+    }
+    impInbox.className = 'status';
+    impInbox.textContent = (data.guidance || '') + skippedNote;
+  }
+  function renderImportResult(counts, notes) {
+    impTotal.textContent = String(counts.total);
+    impCreate.textContent = String(counts.created);
+    impSame.textContent = String(counts.unchanged);
+    impBlocked.textContent = String(counts.blocked);
+    setList(impNotes, notes);
+  }
+  async function postJson(path, body) {
+    var res;
+    try {
+      res = await fetch(path, {
+        method: 'POST',
+        // The token travels in the same custom header every other route uses, and the body is declared JSON.
+        // Both are refused by the server when they are missing, which is also what makes a cross-origin page
+        // unable to reach these routes at all.
+        headers: { 'x-operator-ui-secret': token.value, 'content-type': 'application/json' },
+        cache: 'no-store',
+        body: JSON.stringify(body),
+      });
+    } catch (err) {
+      throw new Error(describeFailure(0, null));
+    }
+    var parsed = await res.json().catch(function () { return null; });
+    if (!res.ok && res.status !== 207) {
+      var message = describeFailure(res.status, parsed);
+      if (parsed && parsed.problems && parsed.problems.length > 0) {
+        message = message + ' Problems: ' + parsed.problems.join('; ');
+      }
+      throw new Error(message);
+    }
+    return parsed;
+  }
+  async function previewImport() {
+    var file = impFile.value;
+    if (token.value === '' || file === '') {
+      impStatus.className = 'status err';
+      impStatus.textContent = 'Paste your operator token and choose a snapshot file first.';
+      return;
+    }
+    disarmImport('');
+    resetImportCounts();
+    impStatus.className = 'status';
+    impStatus.textContent = 'Previewing ' + file + '. Nothing is being written.';
+    var data;
+    try {
+      data = await postJson('/api/import/preview', { file: file });
+    } catch (err) {
+      impStatus.className = 'status err';
+      impStatus.textContent = err.message;
+      return;
+    }
+    renderImportResult(data.preview, (data.preview.notes || []).concat([data.guidance]));
+    importConfirmation = data.confirmation;
+    importConfirmedFile = file;
+    impApplyBtn.disabled = false;
+    impStatus.className = 'status ok-text';
+    impStatus.textContent = 'Previewed ' + file + '. Nothing was written. '
+      + 'Apply is now enabled and is bound to this exact file — if it changes, the apply will be refused.';
+  }
+  async function applyImport() {
+    if (importConfirmation === null || impFile.value !== importConfirmedFile) {
+      disarmImport('Preview the snapshot you want to import, then apply it.');
+      return;
+    }
+    impApplyBtn.disabled = true;
+    impStatus.className = 'status';
+    impStatus.textContent = 'Applying ' + importConfirmedFile + '...';
+    var data;
+    try {
+      data = await postJson('/api/import/apply', { file: importConfirmedFile, confirmation: importConfirmation });
+    } catch (err) {
+      // The confirmation is spent either way: the server consumes it before it decides, so re-arming the
+      // button here would offer an operator a retry that could only be refused.
+      disarmImport('');
+      impStatus.className = 'status err';
+      impStatus.textContent = err.message;
+      await loadHistory();
+      return;
+    }
+    disarmImport('');
+    renderImportResult(data.result, (data.result.notes || []).concat([data.guidance]));
+    impStatus.className = data.ok ? 'status ok-text' : 'status err';
+    impStatus.textContent = data.guidance;
+    catalogPage = 1;
+    await loadCatalog();
+    await loadHistory();
+  }
+  function describeHistoryEntry(entry) {
+    return entry.appliedAt + '  ' + entry.source + ' / ' + entry.fileName
+      + '  (' + entry.actor + ')  created ' + entry.created + ', updated ' + entry.updated
+      + ', already present ' + entry.unchanged + ', blocked ' + entry.blocked + ', failed ' + entry.failed
+      + '  — ' + entry.outcome + ', snapshot ' + String(entry.snapshotDigest).slice(0, 12);
+  }
+  async function loadHistory() {
+    if (token.value === '') return;
+    var data;
+    try {
+      data = await getState('/api/import/history');
+    } catch (err) {
+      setList(impHistory, [err.message]);
+      return;
+    }
+    var entries = data.entries || [];
+    if (!data.ok) { setList(impHistory, [data.message || 'The import history is not available.']); return; }
+    // The history is also the most complete answer to "which sources does this installation hold?", so the
+    // catalog's source filter is offered from it.
+    var sources = [];
+    for (var i = 0; i < entries.length; i++) sources.push(entries[i].source);
+    offerSources(sources);
+    setList(impHistory, entries.length === 0 ? [data.guidance] : entries.map(describeHistoryEntry));
+  }
+  function resetImportPanel() {
+    disarmImport('');
+    resetImportCounts();
+    impStatus.className = 'status'; impStatus.textContent = '';
+    impInbox.className = 'status'; impInbox.textContent = '';
+    impFile.replaceChildren();
+    var option = document.createElement('option'); option.value = ''; option.textContent = 'Not loaded';
+    impFile.appendChild(option);
+    setList(impHistory, []);
+    knownSources = [];
+    offerSources([]);
   }
 
   async function refresh() {
@@ -466,6 +765,12 @@
     // for no reason an operator could act on. Sequencing costs one round trip and removes the race.
     catalogPage = 1;
     await loadCatalog();
+    // The import panel's two reads follow for the same reason, and in this order: the history is what the
+    // catalog's source filter is offered from, and the inbox listing needs no database at all — so it still
+    // answers on an installation whose database is down, which is exactly the installation whose operator is
+    // trying to work out what to do next.
+    await loadHistory();
+    await loadInbox();
     var i = settled[0], s = settled[1], l = settled[2], c = settled[3], r = settled[4];
     var problems = [];
     if (i.status === 'fulfilled') renderInstallation(i.value); else problems.push(i.reason.message);
@@ -495,10 +800,21 @@
   document.getElementById('copySupport').addEventListener('click', copySupport);
   document.getElementById('catApply').addEventListener('click', function () { catalogPage = 1; loadCatalog(); });
   document.getElementById('catReset').addEventListener('click', function () {
-    catSearch.value = ''; catSort.value = 'id|asc'; catRefType.value = '';
-    catYearFrom.value = ''; catYearTo.value = '';
+    catSearch.value = ''; catSort.value = 'id|asc'; catRefType.value = ''; catSource.value = '';
+    catYearFrom.value = ''; catYearTo.value = ''; catPageSize.value = '25';
     catalogPage = 1;
     loadCatalog();
+  });
+  document.getElementById('catExport').addEventListener('click', exportCatalogFile);
+  document.getElementById('impPreview').addEventListener('click', previewImport);
+  impApplyBtn.addEventListener('click', applyImport);
+  // Choosing a different file throws away the previous file's confirmation. The server would refuse the
+  // mismatch anyway; this is so the button an operator is looking at agrees with what the server would do.
+  impFile.addEventListener('change', function () {
+    if (importConfirmedFile !== null && impFile.value !== importConfirmedFile) {
+      disarmImport('You chose a different file. Preview it before applying it.');
+      resetImportCounts();
+    }
   });
   document.getElementById('catPrev').addEventListener('click', function () {
     if (catalogPage > 1) { catalogPage -= 1; loadCatalog(); }

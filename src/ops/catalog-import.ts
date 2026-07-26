@@ -91,8 +91,15 @@ export function resolveImportFile(requested: string, env: NodeJS.ProcessEnv = pr
   return real;
 }
 
-/** Read a snapshot file, refusing anything that is not a bounded regular file, then parse and normalize it. */
-export function readCatalogSnapshot(path: string): NormalizedSnapshot {
+/**
+ * Read a snapshot file's TEXT, refusing anything that is not a bounded regular file.
+ *
+ * Split out of `readCatalogSnapshot` in Phase 264 so a caller that needs both the bytes and the parsed
+ * document reads the file ONCE. Reading it twice — parse from one read, digest from another — would mean the
+ * digest that binds a preview to an apply could describe different bytes from the ones that were validated,
+ * which is precisely the substitution the binding exists to catch.
+ */
+export function readCatalogSnapshotText(path: string): string {
   let stats: ReturnType<typeof statSync>;
   try {
     stats = statSync(path);
@@ -110,7 +117,18 @@ export function readCatalogSnapshot(path: string): NormalizedSnapshot {
   } catch {
     throw new CatalogImportPathError('the snapshot file could not be read');
   }
-  return parseCatalogSnapshot(text);
+  // Re-checked against the bytes actually read. A file that grew between the stat and the read is refused
+  // rather than half-honoured — the stat's answer is a moment old by the time the read finishes.
+  const actual = Buffer.byteLength(text, 'utf8');
+  if (actual > IMPORT_MAX_BYTES) {
+    throw new CatalogImportError([`the snapshot is ${actual} bytes, over the ${IMPORT_MAX_BYTES}-byte limit`]);
+  }
+  return text;
+}
+
+/** Read a snapshot file, refusing anything that is not a bounded regular file, then parse and normalize it. */
+export function readCatalogSnapshot(path: string): NormalizedSnapshot {
+  return parseCatalogSnapshot(readCatalogSnapshotText(path));
 }
 
 export type ImportAction = 'create' | 'update' | 'unchanged' | 'blocked';

@@ -83,14 +83,30 @@ and contacts no media server or provider.
 
 An empty catalog is a healthy state. To put your own records in, write a snapshot file into `./import/` (the
 release bundle ships `example-catalog-snapshot.json` to copy there; from a checkout, the setup script creates
-the folder). Then look at what it would do — this writes **nothing**:
+the folder).
+
+**From the UI.** Open the **Import a catalog** panel, choose your file from the list, and press **Preview** —
+this writes **nothing**, and tells you how many records would be created, how many are already present and how
+many are blocked. **Apply** is enabled only after you have read a preview, and it is bound to the exact bytes
+you previewed: if the file changes in between, the apply is refused rather than performed. Every import, from
+either surface, is recorded in a durable **import history** that survives restarts.
+
+**From a terminal.** The same operation, the same code, the same reports:
 
 ```bash
-docker compose exec app npm run ops:catalog-import -- --file my-library.json
+docker compose exec app npm run ops:catalog-import -- --file my-library.json          # preview; writes nothing
+docker compose exec app npm run ops:catalog-import -- --file my-library.json --apply  # commit it
 ```
 
-When the preview is what you expected, add `--apply`. Then open the **Catalog** panel in the UI to search,
-sort, filter and page through what you imported.
+Then use the **Catalog** panel to search, sort, filter and page through what you imported, open a record, and
+**export** the whole thing back out as a snapshot file. An export is deterministic and re-importable, and it
+never contains a provider reference value — it says how many it left out instead.
+
+The import panel is the **only** part of this UI that writes; it is marked as such, and everything else on the
+page is a read. The snapshot can come only from the read-only folder you mounted: there is no path to type, no
+URL to fetch and no file to upload.
+[docs/PHASE_264_AUTHENTICATED_CATALOG_IMPORT.md](docs/PHASE_264_AUTHENTICATED_CATALOG_IMPORT.md) and
+[docs/PHASE_265_CATALOG_WORKSPACE.md](docs/PHASE_265_CATALOG_WORKSPACE.md) have the boundaries and the limits.
 
 Re-running the same file changes nothing: item identities are derived from the file's own `source` and
 `externalId`, so an import is idempotent and cannot duplicate a record. The folder is mounted **read-only**,

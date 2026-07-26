@@ -19,7 +19,10 @@
 //                different process than the publisher can tell "the token found nothing because nothing
 //                is there" from "the token finds nothing at all" — the difference between recovering and
 //                creating a duplicate external copy.
-export const MIGRATION_VERSION = 5;
+// v6 (Phase 264): adds the durable, identity-free import_history table + cat_import_record, so an operator
+//                who applies an import from the browser can still answer "what did I already load, and
+//                when?" after the container that served the page has been replaced.
+export const MIGRATION_VERSION = 6;
 
 /**
  * The advisory-lock key `ops:bootstrap` serialises on.

@@ -6,14 +6,11 @@ import { isDirectRun } from './direct-run.js';
 import {
   CATALOG_IMPORT_DIR_ENV,
   CatalogImportPathError,
-  applyCatalogImport,
   createExistingStateLookup,
-  planCatalogImport,
-  previewCatalogImportResult,
-  readCatalogSnapshot,
   renderCatalogImportResult,
-  resolveImportFile,
 } from './catalog-import.js';
+import { applyImport, previewImport, readCliSnapshot } from './catalog-import-service.js';
+import { createImportHistoryStore } from './import-history.js';
 
 // Phase 259 — `npm run ops:catalog-import`.
 //
@@ -111,9 +108,9 @@ async function main(): Promise<number> {
 
   // Resolve and validate the whole document BEFORE a database connection is opened. A rejected snapshot
   // should not have caused a connection, a custodian handshake, or any observable effect at all.
-  let snapshot: ReturnType<typeof readCatalogSnapshot>;
+  let snapshot: ReturnType<typeof readCliSnapshot>;
   try {
-    snapshot = readCatalogSnapshot(resolveImportFile(args.file));
+    snapshot = readCliSnapshot(args.file);
   } catch (err) {
     if (err instanceof CatalogImportError) {
       console.error('The snapshot was rejected. Nothing was read into the database.');
@@ -128,21 +125,36 @@ async function main(): Promise<number> {
   }
 
   const pool = getPool();
+  const lookup = createExistingStateLookup(pool);
   try {
-    const plan = await planCatalogImport(snapshot, createExistingStateLookup(pool), { updateExisting: args.updateExisting });
     if (!args.apply) {
-      const preview = previewCatalogImportResult(plan);
-      console.log(args.json ? JSON.stringify(preview, null, 2) : renderCatalogImportResult(preview));
+      // Phase 264. The SAME function the browser's preview calls. There is no second implementation of
+      // "what would this do" for the two surfaces to drift apart on.
+      const previewed = await previewImport({ text: snapshot.text, lookup, updateExisting: args.updateExisting });
+      console.log(args.json ? JSON.stringify(previewed.result, null, 2) : renderCatalogImportResult(previewed.result));
       return CATALOG_IMPORT_EXIT_OK;
     }
     // The custodian is created only for a real apply: a preview provisions no key and holds no key material.
     const authority = new CatalogAuthority(pool, createCustodian(loadCustodianConfig()));
-    const result = await applyCatalogImport(snapshot, plan, authority, {
+    const applied = await applyImport({
+      text: snapshot.text,
+      lookup,
+      authority,
+      // Phase 264. The command line records what it did in the same durable history the browser writes to,
+      // so an operator who uses both surfaces has ONE answer to "what have I loaded", not two partial ones.
+      history: createImportHistoryStore(pool),
+      actor: 'cli',
+      fileName: snapshot.fileName,
       updateExisting: args.updateExisting,
       continueOnError: args.continueOnError,
     });
-    console.log(args.json ? JSON.stringify(result, null, 2) : renderCatalogImportResult(result));
-    return result.ok ? CATALOG_IMPORT_EXIT_OK : CATALOG_IMPORT_EXIT_INCOMPLETE;
+    console.log(args.json ? JSON.stringify(applied.result, null, 2) : renderCatalogImportResult(applied.result));
+    if (!applied.recorded) {
+      // Said on stderr, and it does NOT change the exit code: the catalog write happened, and reporting an
+      // import as failed because its audit row did not land would be a worse lie than an incomplete history.
+      console.error('note: the records were imported, but this import could not be added to the import history.');
+    }
+    return applied.result.ok ? CATALOG_IMPORT_EXIT_OK : CATALOG_IMPORT_EXIT_INCOMPLETE;
   } finally {
     await closePool();
   }

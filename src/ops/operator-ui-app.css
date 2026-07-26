@@ -33,4 +33,10 @@ select{width:100%;border:1px solid #b9c2cf;border-radius:6px;padding:10px 11px;f
    reads as a list rather than as a wall of controls, and it keeps the focus ring every other control has. */
 .linkish{background:none;border:0;padding:0;color:#1769aa;font:inherit;font-weight:600;text-align:left;cursor:pointer;overflow-wrap:anywhere}
 .linkish:hover{text-decoration:underline}
+/* Phase 264: the ONE panel on this page that can write. It is marked visually as well as structurally, so
+   "this is the part that changes something" is legible before anything is clicked rather than after. The
+   colour carries no meaning on its own — the panel also says so in words, and the confirm button is disabled
+   until a preview has been read. */
+.writes{border-color:#9b6400;border-left-width:4px}.writes h2{color:#7a4f00}
+.warnbox{border:1px solid #9b6400;background:#fff5e0;color:#7a4f00;border-radius:8px;padding:10px 12px;font-size:13px;margin:0 0 12px}
 @media(max-width:760px){main{grid-template-columns:1fr;padding:12px}header{padding:14px 12px;flex-wrap:wrap;gap:10px}.grid{grid-template-columns:1fr}}

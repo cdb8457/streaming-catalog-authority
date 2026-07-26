@@ -44,10 +44,12 @@ export interface CatalogImportCommandPair {
 }
 
 export const CATALOG_IMPORT_NOTE =
-  'An empty catalog is a healthy state, not a fault. To fill it, write one JSON file describing your records, '
-  + 'put it in the folder this stack mounts read-only, and run the import. The preview writes nothing, so you '
-  + 'can always look before you commit. The import reads that one file and contacts no provider, media server '
-  + 'or library.';
+  'An empty catalog is a healthy state, not a fault. To fill it, write one JSON file describing your records '
+  + 'and put it in the folder this stack mounts read-only. Then import it from this page — choose the file, '
+  + 'preview it, and only then apply — or run the same import from a terminal with the commands below. Both '
+  + 'do exactly the same thing, because both run the same code. A preview writes nothing, so you can always '
+  + 'look before you commit, and an apply is bound to the exact file you previewed. The import reads that one '
+  + 'file and contacts no provider, media server or library.';
 
 export function catalogImportFieldTable(): readonly CatalogImportField[] {
   return [
@@ -97,19 +99,24 @@ export function catalogImportSteps(): readonly CatalogImportStep[] {
     {
       id: 'preview',
       title: 'Preview it',
-      detail: 'Nothing is written. You are told how many records would be created, how many are already '
+      detail: 'Choose the file above and press Preview, or run the preview command below. Nothing is '
+        + 'written either way. You are told how many records would be created, how many are already '
         + 'present, and how many are blocked because those items were previously forgotten.',
     },
     {
       id: 'apply',
       title: 'Apply it',
-      detail: 'The same command with --apply. Re-running the same file afterwards changes nothing: record '
-        + 'identities are derived from your source and externalId, so an import cannot duplicate a record.',
+      detail: 'Apply becomes available only once you have read a preview, and it is bound to the exact file '
+        + 'you previewed — if the file changes in between, the apply is refused rather than performed. From '
+        + 'a terminal it is the same command with --apply. Re-running the same file afterwards changes '
+        + 'nothing: record identities are derived from your source and externalId, so an import cannot '
+        + 'duplicate a record.',
     },
     {
       id: 'browse',
       title: 'Browse it',
-      detail: 'Reload the Catalog panel above. Search, sort, filter and page through what you imported.',
+      detail: 'The Catalog panel above reloads itself after an apply. Search, sort, filter and page through '
+        + 'what you imported, open a record, and export the whole thing back out as a snapshot file.',
     },
   ];
 }

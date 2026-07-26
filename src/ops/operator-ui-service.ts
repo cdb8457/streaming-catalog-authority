@@ -68,6 +68,28 @@ import {
   type BackupCommands,
   type BackupComponent,
 } from './backup-components.js';
+import {
+  CATALOG_EXPORT_ROUTE,
+  CATALOG_EXPORT_REPORT,
+  type CatalogExportSanitized,
+  exportCatalog,
+} from './operator-ui-catalog-export.js';
+import {
+  IMPORT_APPLY_ROUTE,
+  IMPORT_HISTORY_ROUTE,
+  IMPORT_INBOX_ROUTE,
+  IMPORT_PREVIEW_ROUTE,
+  IMPORT_ROUTES,
+  importApplyResponse,
+  importBodyRejectionResponse,
+  importHistoryResponse,
+  importInboxResponse,
+  importPreviewResponse,
+  readImportRequestBody,
+} from './operator-ui-import-endpoint.js';
+import { ImportConfirmations } from './catalog-import-confirmation.js';
+import { createExistingStateLookup } from './catalog-import.js';
+import { createImportHistoryStore } from './import-history.js';
 
 export const OPERATOR_UI_SERVICE_DEFAULT_HOST = '0.0.0.0';
 export const OPERATOR_UI_SERVICE_DEFAULT_PORT = 8099;
@@ -326,6 +348,11 @@ export function createOperatorUiServiceServer(
 ): Server {
   logs.add('info', 'system', 'SERVICE_CONFIGURED', `Operator UI service configured on port ${config.port}.`);
 
+  // Phase 264. ONE issuer per process, held here so the confirmations a preview hands out are verifiable by
+  // the apply that follows and by nothing else — not by another process, and not after a restart. See
+  // catalog-import-confirmation.ts for why that is the fail-closed direction.
+  const confirmations = new ImportConfirmations();
+
   const server = createServer(async (req, res) => {
     const method = req.method ?? '';
     const rawTarget = req.url ?? '/';
@@ -338,19 +365,50 @@ export function createOperatorUiServiceServer(
       return;
     }
 
+    // Phase 264. The ONLY two routes in this service that accept a method other than GET, named explicitly
+    // rather than derived from a prefix: a prefix match is how a route nobody meant to expose becomes
+    // writable later. Everything else in this file is a read and answers 405 to anything but GET.
+    const writable = path === IMPORT_PREVIEW_ROUTE || path === IMPORT_APPLY_ROUTE;
     const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs'
       || path === '/api/promotion-chain' || path === '/api/installation' || path === '/api/version'
       || path === SUPPORT_REPORT_ROUTE
-      || path === CATALOG_BROWSE_ROUTE || path === CATALOG_ITEM_ROUTE
+      || path === CATALOG_BROWSE_ROUTE || path === CATALOG_ITEM_ROUTE || path === CATALOG_EXPORT_ROUTE
+      || IMPORT_ROUTES.includes(path)
       || path === OPERATOR_UI_APP_JS_ROUTE || path === OPERATOR_UI_APP_CSS_ROUTE;
+    const allowed = writable ? 'POST' : 'GET';
     if (method === 'HEAD') {
       ignoreRequestBody(req);
-      sendPlain(res, known ? 405 : 404, known ? 'method not allowed\n' : 'not found\n', known ? 'GET' : undefined, true);
+      sendPlain(res, known ? 405 : 404, known ? 'method not allowed\n' : 'not found\n', known ? allowed : undefined, true);
       return;
     }
-    if (method !== 'GET') {
+
+    // Phase 264 — the controlled-WRITE surface. Reached only by an exact-path POST, only with a valid
+    // operator token, and only through the bounded body reader, which refuses a cross-origin request, a
+    // body that is not declared application/json, and anything over 4 KiB before it parses a byte.
+    if (writable && method === 'POST') {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected import request without a valid operator token.');
+        return;
+      }
+      const body = await readImportRequestBody(req);
+      if (!body.ok) {
+        const rejection = importBodyRejectionResponse(body);
+        sendJson(res, rejection.status, rejection.body);
+        // The rejection CLASS and nothing else. A body that was refused is not a body to describe.
+        logs.add('warn', 'operation', 'IMPORT_REQUEST_REJECTED', `Refused an import request: ${body.rejection}.`);
+        return;
+      }
+      await handleImportWrite(path, body.value, res, logs, confirmations);
+      return;
+    }
+
+    // A GET on a write route is 405 with `Allow: POST`, not a 404. The route exists; the method is wrong,
+    // and saying "not found" would send somebody looking for a typo in a path that is correct.
+    if (method !== 'GET' || writable) {
       ignoreRequestBody(req);
-      sendPlain(res, known ? 405 : 404, known ? 'method not allowed\n' : 'not found\n', known ? 'GET' : undefined);
+      sendPlain(res, known ? 405 : 404, known ? 'method not allowed\n' : 'not found\n', known ? allowed : undefined);
       return;
     }
 
@@ -569,6 +627,93 @@ export function createOperatorUiServiceServer(
       return;
     }
 
+    // Phase 264 — the read half of the import workflow. The inbox needs no database at all (it is a listing
+    // of one configured, read-only directory), so it answers on an installation whose database is down —
+    // which is exactly the installation whose operator is trying to work out what to do next.
+    if (path === IMPORT_INBOX_ROUTE) {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected import inbox request without a valid operator token.');
+        return;
+      }
+      ignoreRequestBody(req);
+      const result = importInboxResponse();
+      sendJson(res, result.status, result.body);
+      // The STATE only. A count of somebody's files, let alone their names, is not something to put in a
+      // log buffer that /api/logs then serves.
+      logs.add('info', 'operation', 'IMPORT_INBOX_READ', `Served the import inbox with state=${String(result.body.state)}.`);
+      return;
+    }
+
+    if (path === IMPORT_HISTORY_ROUTE) {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected import history request without a valid operator token.');
+        return;
+      }
+      ignoreRequestBody(req);
+      let result: Awaited<ReturnType<typeof importHistoryResponse>>;
+      try {
+        result = await importHistoryResponse(createImportHistoryStore(getPool()));
+      } catch {
+        result = await importHistoryResponse(undefined);
+      }
+      sendJson(res, result.status, result.body);
+      logs.add(result.status === 200 ? 'info' : 'warn', 'operation', 'IMPORT_HISTORY_READ',
+        result.status === 200 ? 'Served the import history.' : 'Import history read failed safely.');
+      return;
+    }
+
+    // Phase 265 — the catalog, back out, as a file. A READ: the only database access behind it is the same
+    // three SELECTs the browser uses, and there is no authority in its scope to write with.
+    if (path === CATALOG_EXPORT_ROUTE) {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected catalog export request without a valid operator token.');
+        return;
+      }
+      ignoreRequestBody(req);
+      let reader: ReturnType<typeof createCatalogReader>;
+      try {
+        const pool = getPool();
+        reader = createCatalogReader(pool, new CatalogAuthority(pool, createCustodian(loadCustodianConfig())));
+      } catch {
+        sendJson(res, 503, {
+          ok: false, code: 'OPERATOR_UI_CATALOG_UNAVAILABLE', report: CATALOG_EXPORT_REPORT,
+          message: 'The catalog could not be read. Check Setup & Diagnostics for this installation\'s state.',
+        });
+        logs.add('warn', 'operation', 'CATALOG_EXPORT_UNAVAILABLE', 'Catalog export failed safely before contacting the database.');
+        return;
+      }
+      try {
+        const params = new URLSearchParams(rawRequestQuery(rawTarget));
+        const result = await exportCatalog(reader, params.get('source'));
+        if (!result.ok) {
+          sendJson(res, result.refusal === 'TOO_LARGE' ? 413 : 409, {
+            ok: false, code: `OPERATOR_UI_CATALOG_EXPORT_${result.refusal}`, report: CATALOG_EXPORT_REPORT,
+            message: result.message, sources: result.sources,
+          });
+          logs.add('info', 'operation', 'CATALOG_EXPORT_REFUSED', `Refused a catalog export: ${result.refusal}.`);
+          return;
+        }
+        sendExport(res, result.json, result.fileName, {
+          count: result.count, source: result.source, sanitized: result.sanitized, sources: result.sources,
+        });
+        // Counts only. A source label is the operator's own, and it stays out of the buffer /api/logs serves.
+        logs.add('info', 'operation', 'CATALOG_EXPORT_READ', `Served a catalog export of ${result.count} record(s).`);
+      } catch {
+        sendJson(res, 503, {
+          ok: false, code: 'OPERATOR_UI_CATALOG_UNAVAILABLE', report: CATALOG_EXPORT_REPORT,
+          message: 'The catalog could not be read. Check Setup & Diagnostics for this installation\'s state.',
+        });
+        logs.add('warn', 'operation', 'CATALOG_EXPORT_UNAVAILABLE', 'Catalog export failed safely.');
+      }
+      return;
+    }
+
     if (path === '/api/logs') {
       if (!isAuthorized(req, auth)) {
         ignoreRequestBody(req);
@@ -586,6 +731,83 @@ export function createOperatorUiServiceServer(
   });
 
   return hardenServer(server);
+}
+
+/**
+ * Phase 264 — the two routes that can write, and the only place in this service that builds a writer.
+ *
+ * THE PREVIEW IS HANDED NO WRITER. It gets a lookup function (a SELECT) and the confirmation issuer, and
+ * that is the whole of its scope: there is no `CatalogAuthority` and no history store in reach of it, so
+ * "a preview writes nothing" is a property of this function rather than a promise made elsewhere.
+ *
+ * THE APPLY BUILDS ONE, and only after the request has already passed the token check, the cross-origin
+ * check, the content-type check and the body bound. A pool or custodian that cannot be constructed is a
+ * 503 with a fixed sentence — never a partial write, and never a description of what is misconfigured,
+ * which is Setup & Diagnostics' job to answer safely.
+ *
+ * THE LOG LINE CARRIES A VERDICT AND COUNTS. No file name, no source label, no record content, no digest —
+ * /api/logs serves this buffer to a browser, and an import is somebody's library.
+ */
+async function handleImportWrite(
+  path: string,
+  body: Record<string, unknown>,
+  res: ServerResponse,
+  logs: OperatorUiServiceLogBuffer,
+  confirmations: ImportConfirmations,
+): Promise<void> {
+  const isApply = path === IMPORT_APPLY_ROUTE;
+  let pool: ReturnType<typeof getPool>;
+  try {
+    pool = getPool();
+  } catch {
+    sendJson(res, 503, {
+      ok: false,
+      code: 'OPERATOR_UI_IMPORT_UNAVAILABLE',
+      report: 'phase-264-catalog-import-workflow',
+      wrote: 'nothing',
+      message: 'This installation\'s database is not available. Check Setup & Diagnostics for its state.',
+    });
+    logs.add('warn', 'operation', 'IMPORT_UNAVAILABLE', 'An import request failed safely before contacting the database.');
+    return;
+  }
+
+  if (!isApply) {
+    const result = await importPreviewResponse(body, { lookup: createExistingStateLookup(pool), confirmations });
+    sendJson(res, result.status, result.body);
+    logs.add(result.status === 200 ? 'info' : 'warn', 'operation', 'IMPORT_PREVIEWED',
+      result.status === 200
+        ? 'Previewed an import. Nothing was written.'
+        : `Refused an import preview: ${String(result.body.code)}.`);
+    return;
+  }
+
+  let authority: CatalogAuthority;
+  try {
+    authority = new CatalogAuthority(pool, createCustodian(loadCustodianConfig()));
+  } catch {
+    sendJson(res, 503, {
+      ok: false,
+      code: 'OPERATOR_UI_IMPORT_UNAVAILABLE',
+      report: 'phase-264-catalog-import-workflow',
+      wrote: 'nothing',
+      message: 'This installation cannot write to its catalog right now. Check Setup & Diagnostics for its state.',
+    });
+    logs.add('warn', 'operation', 'IMPORT_UNAVAILABLE', 'An import apply failed safely before writing anything.');
+    return;
+  }
+
+  const result = await importApplyResponse(body, {
+    lookup: createExistingStateLookup(pool),
+    authority,
+    history: createImportHistoryStore(pool),
+    confirmations,
+  });
+  sendJson(res, result.status, result.body);
+  const applied = result.body.result as { created?: number; updated?: number } | undefined;
+  logs.add(result.status === 200 ? 'info' : 'warn', 'operation', 'IMPORT_APPLIED',
+    applied === undefined
+      ? `Refused an import apply: ${String(result.body.code)}.`
+      : `Applied an import: ${applied.created ?? 0} created, ${applied.updated ?? 0} updated.`);
 }
 
 export async function buildOperatorUiServiceStatus(
@@ -812,6 +1034,41 @@ function sendRawJson(res: ServerResponse, statusCode: number, json: string): voi
   res.end(json);
 }
 
+/**
+ * Phase 265 — send a catalog export as a downloadable file.
+ *
+ * THE FILE NAME IS BUILT FROM A CLOSED GRAMMAR, NOT ESCAPED. `Content-Disposition` is a header where a
+ * quote, a semicolon, a comma or a CR/LF turns a file name into a second parameter — or a second header.
+ * `exportFileName` only ever produces `catalog-export-<source>.json` where `<source>` has already been
+ * matched against the set the database holds AND re-validated against `[a-z0-9][a-z0-9._-]*`, so none of
+ * those characters can appear. It is asserted here anyway: a header this function cannot prove safe is not
+ * sent, and the response falls back to a constant name rather than to an escaping routine that has to be
+ * right forever.
+ *
+ * THE COUNTS TRAVEL IN HEADERS, NOT IN THE BODY. The body is the snapshot document and nothing else, so it
+ * is a file an operator can re-import unchanged. What the export left out (every provider reference, and
+ * any value that would not survive a re-import) is stated in `X-Catalog-Export-*` and in the panel that
+ * requested it — visible, never silent, and never mixed into the document itself.
+ */
+function sendExport(
+  res: ServerResponse,
+  json: string,
+  fileName: string,
+  facts: { count: number; source: string; sanitized: CatalogExportSanitized; sources: readonly string[] },
+): void {
+  setSafeHeaders(res);
+  const safeName = /^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$/.test(fileName) ? fileName : 'catalog-export.json';
+  res.statusCode = 200;
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Content-Length', String(Buffer.byteLength(json, 'utf8')));
+  res.setHeader('Content-Disposition', `attachment; filename="${safeName}"`);
+  res.setHeader('X-Catalog-Export-Records', String(facts.count));
+  res.setHeader('X-Catalog-Export-Refs-Omitted', String(facts.sanitized.providerRefsOmitted ?? 0));
+  res.setHeader('X-Catalog-Export-Metadata-Dropped', String(facts.sanitized.metadataDropped ?? 0));
+  res.setHeader('X-Catalog-Export-Records-Skipped', String(facts.sanitized.recordsSkipped ?? 0));
+  res.end(json);
+}
+
 function sendPlain(res: ServerResponse, statusCode: number, body: string, allow?: string, emptyBody = false): void {
   setSafeHeaders(res);
   res.statusCode = statusCode;
@@ -1000,6 +1257,10 @@ writes, and provider reference values are never shown — only their type and a 
   `<option value="${escapeHtml(type)}">${escapeHtml(type)}</option>`).join('')}</select></div>
 <div class="field"><label for="catYearFrom">Year from</label><input id="catYearFrom" type="number" min="0" max="9999" inputmode="numeric"></div>
 <div class="field"><label for="catYearTo">Year to</label><input id="catYearTo" type="number" min="0" max="9999" inputmode="numeric"></div>
+<div class="field"><label for="catSource">Imported under</label>
+<select id="catSource"><option value="">Any source</option></select></div>
+<div class="field"><label for="catPageSize">Records per page</label>
+<select id="catPageSize"><option value="25">25</option><option value="50">50</option><option value="100">100</option></select></div>
 <div class="actions"><button id="catApply" type="button">Search</button><button id="catReset" type="button">Clear</button>
 <button id="catPrev" type="button">Previous</button><button id="catNext" type="button">Next</button></div>
 <p class="status" id="catGuidance" role="status" aria-live="polite"></p>
@@ -1007,10 +1268,41 @@ writes, and provider reference values are never shown — only their type and a 
 <ul class="list" id="catResults"><li class="muted">Not loaded.</li></ul>
 <h3>Record detail</h3>
 <dl class="kv" id="catDetail"><dt>Record</dt><dd>Choose a record above.</dd></dl>
+<h3>Export</h3>
+<p class="muted">Downloads what you imported, in the same snapshot format the import reads, so it can be read
+back. Provider reference values are <strong>never</strong> included — the file says how many it left out.
+Exporting is a read: it changes nothing and records nothing.</p>
+<div class="actions"><button id="catExport" type="button">Download a snapshot of this catalog</button></div>
+<p class="status" id="catExportStatus" role="status" aria-live="polite"></p>
 </section>
-<section class="panel wide" id="import-panel">
+<section class="panel wide writes" id="import-panel">
 <h2>Import a catalog</h2>
+<p class="warnbox"><strong>This is the only panel on this page that changes anything.</strong> Everything else
+here reads. An import runs in two steps: <em>Preview</em> reads the file and writes nothing at all, and
+<em>Apply</em> is enabled only once you have read a preview and is bound to the exact file you previewed. If
+the file changes in between, the apply is refused rather than performed.</p>
 <p>${escapeHtml(CATALOG_IMPORT_NOTE)}</p>
+<h3>Snapshots in your import folder</h3>
+<p class="muted">This is the read-only folder your stack mounts for imports. Nothing else can be reached from
+here: no path you type, no address, no upload, no provider.</p>
+<div class="field"><label for="impFile">Snapshot file</label>
+<select id="impFile"><option value="">Not loaded</option></select></div>
+<p class="status" id="impInbox" role="status" aria-live="polite"></p>
+<div class="actions"><button id="impPreview" type="button">Preview (writes nothing)</button>
+<button id="impApply" type="button" disabled>Apply the previewed import</button></div>
+<p class="status" id="impStatus" role="status" aria-live="polite"></p>
+<div class="grid">
+<div class="metric"><span>Records in file</span><strong id="impTotal">-</strong></div>
+<div class="metric ok"><span>Would create</span><strong id="impCreate">-</strong></div>
+<div class="metric"><span>Already present</span><strong id="impSame">-</strong></div>
+<div class="metric warn"><span>Blocked</span><strong id="impBlocked">-</strong></div>
+</div>
+<ul class="list" id="impNotes"><li class="muted">No preview yet.</li></ul>
+<h3>Import history</h3>
+<p class="muted">Every import this installation has applied, from this page or the command line. Counts and
+digests only — no record content is kept here, and it survives a restart.</p>
+<ul class="list" id="impHistory"><li class="muted">Not loaded.</li></ul>
+<h3>The file format</h3>
 <p class="muted">Readable without a token, deliberately: an empty catalog is the first thing a new
 installation shows, and the instructions for filling it should not need a working login.</p>
 <ol class="list steps">${CATALOG_IMPORT_STEPS.map((step) =>
