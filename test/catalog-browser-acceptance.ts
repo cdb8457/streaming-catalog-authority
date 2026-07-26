@@ -330,6 +330,7 @@ test('the spec covers every required real-browser assertion', () => {
     [/cookies\(\)/, 'checks cookies'],
     [/outerHTML/, 'checks DOM serialization'],
     [/consoleErrors/, 'collects console errors'],
+    [/every catalog response is a 200/, 'pins every catalog response to a 200, rather than every panel on the page'],
     [/__cspViolations/, 'observes CSP violations in the engine'],
     [/reload/, 'checks a reload leaves nothing behind'],
   ];

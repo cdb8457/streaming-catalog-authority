@@ -181,6 +181,12 @@ docker compose run --rm --user root --entrypoint sh app -c 'chown -R node:node /
 - **`forget` is not exercised here.** Phase 260's suite proves a forgotten record leaves the count and 404s
   its detail; this acceptance does not repeat it, because an erasure inside a release-acceptance run is a
   destructive act on a stack that is about to be discarded anyway.
+- **This stack plants no promotion records, so `/api/promotion-chain` answers 503 and the browser logs a
+  console error for it.** That is the shipped behaviour of a panel this gate is not about. The browser
+  assertions are therefore scoped: strict "no console errors" on the unauthenticated shell, and on the
+  authenticated page, no uncaught error, no CSP violation, and **every catalog response a 200**. Asserting
+  "no console errors" after authenticating would have meant planting a record to keep an unrelated panel
+  quiet — arranging the world to fit the assertion.
 - **No screenshot is kept on success.** Diagnostics exist only for failures, which is the right default for a
   gate but means a passing run leaves no visual record.
 - **It proves the amd64 Linux runner.** Like every Docker gate in this repository, the architecture it can
