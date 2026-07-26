@@ -381,9 +381,56 @@ async function main(): Promise<void> {
   });
 
   await test('a hanging fixture suite is killed and reported as a timeout', async () => {
+    const started = Date.now();
     const result = await realSpawner({ file: 'hang.ts', group: 'offline', args: [], requires: [] }, 3000, true);
     assert(result.timedOut, 'a hanging suite was not timed out');
     assert(result.exitCode !== 0, 'a hanging suite reported a zero exit code');
+    assert(Date.now() - started < 30_000, 'the timeout was reported, but only long after it fired');
+  });
+
+  await test('a suite whose CHILD outlives it is still reported as a timeout, not waited on forever', async () => {
+    // THE DEFECT THIS PINS, and it wedged CI for fifteen minutes before it was understood.
+    //
+    // `node <tsx-cli> <suite>` is never one process: tsx runs the suite in a child of its own, and a suite may
+    // spawn more. `child.kill()` signals ONE process on every platform, so the old runner killed tsx and left
+    // the tree alive — still holding the stdio pipes it inherited. `close` waits for the pipes as well as the
+    // process, so it never fired, and the runner waited forever on the very thing its timeout had just
+    // detected. The suite that exists to prove "a hung suite is a failure" was itself the hung suite.
+    //
+    // WHAT THIS ASSERTS, AND WHY IT IS THE DESCENDANT AND NOT THE CLOCK. The Linux symptom was a hang, but
+    // asserting "it returned quickly" only reproduces on Linux — on Windows the pipe happens to close anyway,
+    // so a timing assertion passes against the OLD code here and would have shipped the defect again. The
+    // CAUSE is portable and directly checkable: the descendant survived the kill. This fixture records its
+    // grandchild's pid, and the assertion is that after the timeout that pid is GONE. Under the old
+    // single-process kill it is still running on every platform, so this fails wherever it is run.
+    const pidFile = join(WORK, 'gc.pid');
+    writeFileSync(join(WORK, 'test', 'hang-tree.ts'),
+      "import { spawn } from 'node:child_process';\n"
+      + "import { writeFileSync } from 'node:fs';\n"
+      + "const gc = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: ['ignore', 'inherit', 'inherit'] });\n"
+      + `writeFileSync(${JSON.stringify(pidFile)}, String(gc.pid));\n`
+      + 'setInterval(() => {}, 1000);\n');
+
+    const started = Date.now();
+    const result = await realSpawner({ file: 'hang-tree.ts', group: 'offline', args: [], requires: [] }, 5000, true);
+    const elapsed = Date.now() - started;
+    assert(result.timedOut, 'a suite with a surviving child was not timed out');
+    assert(result.exitCode !== 0, 'a killed suite reported a zero exit code');
+    // The Linux symptom: the result must actually come back rather than wait on the leaked pipe forever.
+    assert(elapsed < 60_000, `the timeout took ${elapsed}ms to be reported; the tree was not reaped`);
+
+    const grandchild = Number(readFileSync(pidFile, 'utf8').trim());
+    assert(Number.isInteger(grandchild) && grandchild > 0, 'the fixture did not record its grandchild pid');
+    const alive = (pid: number): boolean => {
+      try { process.kill(pid, 0); return true; } catch { return false; }
+    };
+    // A kill is not instantaneous; give the OS a moment before believing a survivor is a survivor.
+    for (let i = 0; i < 40 && alive(grandchild); i += 1) {
+      await new Promise((r) => { setTimeout(r, 50); });
+    }
+    const survived = alive(grandchild);
+    if (survived) { try { process.kill(grandchild, 'SIGKILL'); } catch { /* best effort cleanup */ } }
+    assert(!survived, 'the suite was killed but the process it spawned kept running — the tree was not reaped');
   });
 
   await test('suite arguments arrive as argv, not as shell text', async () => {

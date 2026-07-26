@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -563,13 +563,19 @@ export function listTestFiles(root: string = repositoryRoot()): string[] {
  * the inventory can be interpreted as shell syntax.
  */
 export function createSuiteSpawner(root: string = repositoryRoot(), cli: string = tsxCliPath(root)): SuiteSpawner {
+  installInterruptCleanup();
   return (entry, timeoutMs, capture) => new Promise<SpawnedSuite>((resolve) => {
     const child = spawn(process.execPath, [cli, join(TEST_DIR, entry.file), ...entry.args], {
       cwd: root,
       shell: false,
       stdio: capture ? ['ignore', 'pipe', 'pipe'] : ['ignore', 'inherit', 'inherit'],
       env: { ...process.env, NODE_OPTIONS: process.env.NODE_OPTIONS ?? '' },
+      // POSIX ONLY: give the child its own process group, so a timeout can signal the GROUP. `node <tsx-cli>
+      // <suite>` is not one process — tsx runs the suite in a child of its own, and a suite may spawn more.
+      // Signalling only the direct child leaves that tree alive. See killProcessTree.
+      detached: process.platform !== 'win32',
     });
+    liveChildren.add(child);
     let output = '';
     let timedOut = false;
     let settled = false;
@@ -579,22 +585,96 @@ export function createSuiteSpawner(root: string = repositoryRoot(), cli: string 
     }
     const timer = setTimeout(() => {
       timedOut = true;
-      child.kill('SIGKILL');
+      killProcessTree(child);
     }, timeoutMs);
     timer.unref?.();
     const finish = (value: SpawnedSuite): void => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      liveChildren.delete(child);
       resolve(value);
     };
     child.on('error', (err) => {
       finish({ exitCode: null, signal: null, timedOut, output, spawnError: (err as Error).message });
     });
+    // The ordinary path. `close` means the process is gone AND its stdio has ended, so `output` is complete.
     child.on('close', (code, signal) => {
       finish({ exitCode: code, signal, timedOut, output });
     });
+    // THE BACKSTOP, and the reason a hung suite is now reportable on Linux.
+    //
+    // `close` waits for the pipes as well as the process, and a descendant that inherited those pipes can
+    // hold them open after its parent dies — forever, if it is the hung thing we just tried to kill. The
+    // runner then waits on a leaked grandchild instead of reporting the timeout it already detected, which is
+    // precisely the failure this timeout exists to catch. `exit` fires for the process alone, so once it has
+    // fired the only thing left to wait for is buffered output; a short grace period collects that, then the
+    // pipes are dropped and the result is reported regardless of who else is holding them.
+    child.on('exit', (code, signal) => {
+      const flush = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish({ exitCode: code, signal, timedOut, output });
+      }, SUITE_EXIT_FLUSH_GRACE_MS);
+      flush.unref?.();
+    });
   });
+}
+
+/** How long after a child exits we keep reading its pipes before giving up on a descendant that holds them. */
+export const SUITE_EXIT_FLUSH_GRACE_MS = 250;
+
+/**
+ * Suites currently running, so an interrupted run takes them with it.
+ *
+ * `detached` is what makes the timeout work on POSIX, and it has one cost: a detached child is in its own
+ * process group, so the Ctrl-C that reaches this process does NOT reach it. Without this, interrupting a long
+ * `npm test` would leave the current suite — and its embedded PostgreSQL — running with nobody watching.
+ * Fixing a hang by leaking processes would not be a fix.
+ */
+const liveChildren = new Set<{ pid?: number | undefined; kill: (signal?: NodeJS.Signals) => boolean }>();
+let interruptHandlersInstalled = false;
+
+function installInterruptCleanup(): void {
+  if (interruptHandlersInstalled) return;
+  interruptHandlersInstalled = true;
+  for (const signal of ['SIGINT', 'SIGTERM'] as const) {
+    process.on(signal, () => {
+      for (const child of liveChildren) killProcessTree(child);
+      liveChildren.clear();
+      // Re-raise with the default disposition so the exit code says what actually happened.
+      process.exit(signal === 'SIGINT' ? 130 : 143);
+    });
+  }
+}
+
+/**
+ * Kill a spawned suite and everything it started.
+ *
+ * `child.kill()` signals ONE process on every platform. A suite is a tree — `node` runs the tsx CLI, tsx runs
+ * the suite, and a suite may spawn a database or a server of its own — so killing the root and calling it
+ * done leaves the tree running, still holding the inherited pipes and, on a CI runner, still holding the job.
+ *
+ * POSIX: the child was spawned `detached`, so it leads a process group of its own and a negative pid signals
+ * the whole group in one call. WINDOWS: there are no process groups to signal, so `taskkill /T` walks the
+ * tree instead. Both fall back to the single-process kill, because a partial kill beats none.
+ */
+export function killProcessTree(child: { pid?: number | undefined; kill: (signal?: NodeJS.Signals) => boolean }): void {
+  const pid = child.pid;
+  const killSelf = (): void => { try { child.kill('SIGKILL'); } catch { /* already gone */ } };
+  if (pid === undefined) { killSelf(); return; }
+  if (process.platform === 'win32') {
+    try {
+      spawnSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', shell: false });
+    } catch { /* taskkill missing or refused — fall through to the single-process kill */ }
+    killSelf();
+    return;
+  }
+  try {
+    process.kill(-pid, 'SIGKILL');
+  } catch {
+    killSelf(); // the group is already gone, or this child never got one
+  }
 }
 
 export interface ParsedTestRunnerArgs {
