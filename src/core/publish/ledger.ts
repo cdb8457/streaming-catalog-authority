@@ -72,6 +72,30 @@ export async function markAmbiguous(db: Db, id: string): Promise<void> { await d
 export async function settleIntent(db: Db, id: string, handle: string): Promise<boolean> { return (await db.query('SELECT cat_publish_settle($1, $2) AS ok', [id, handle])).rows[0].ok === true; }
 export async function markFailed(db: Db, id: string): Promise<void> { await db.query('SELECT cat_publish_mark_failed($1)', [id]); }
 
+/** Phase 261 — what a create PROVED about this target's recovery-by-token. Identity-free label. */
+export type RecoveryProofLabel = 'verified' | 'unrecoverable' | 'contradictory';
+
+/** Durably record a create's recovery proof against the intent that produced it. */
+export async function recordRecoveryProof(db: Db, id: string, proof: RecoveryProofLabel): Promise<void> {
+  await db.query('SELECT cat_publish_record_recovery($1, $2)', [id, proof]);
+}
+
+/**
+ * The MOST RECENT recovery proof recorded for a target, or null if none was ever recorded.
+ *
+ * The reconciler consults this before reading "the token found nothing" as "the artifact is not there".
+ * Only the latest matters: a target whose recovery was once broken and has since been proved working
+ * again must not stay quarantined forever, and a target that was working and has just broken must stop
+ * being trusted immediately.
+ */
+export async function latestRecoveryProof(db: Db, target: string): Promise<RecoveryProofLabel | null> {
+  const { rows } = await db.query(
+    `SELECT recovery_proof FROM publish_ledger
+      WHERE target = $1 AND recovery_proof IS NOT NULL
+      ORDER BY recovery_proof_at DESC, id DESC LIMIT 1`, [target]);
+  return (rows[0]?.recovery_proof as RecoveryProofLabel | undefined) ?? null;
+}
+
 /** Actionable outbox intents for a target (planned/in_flight/ambiguous), oldest first. */
 export async function listActionableIntents(db: Db, target: string): Promise<PublishLedgerRow[]> {
   const { rows } = await db.query(`SELECT ${ROW_COLS} FROM publish_ledger WHERE target = $1 AND status IN ('planned','in_flight','ambiguous') ORDER BY id ASC`, [target]);

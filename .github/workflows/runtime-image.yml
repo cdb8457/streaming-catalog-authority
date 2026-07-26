@@ -63,8 +63,10 @@ jobs:
         # tells you nothing. A timeout here fails loudly with a readable log instead of occupying a runner.
         timeout-minutes: 15
         run: npm run test:runner
-      - name: Phase 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 261, 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+        # Phase 261 is the outbox recovery-by-token suite (a real embedded PostgreSQL, fake adapters only).
         run: |
+          npm run test:phase261-local
           npm run test:phase260-local
           npm run test:phase259-local
           npm run test:phase257-local

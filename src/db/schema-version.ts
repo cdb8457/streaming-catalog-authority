@@ -14,7 +14,12 @@
 // v4 (Phase 253): adds cat_schema_version() (app-readable applied version, so the first-run readiness
 //                probe works over the least-privileged role) + set_app_role_password() (owner-only, so a
 //                deployment can hold a generated runtime credential instead of a placeholder).
-export const MIGRATION_VERSION = 4;
+// v5 (Phase 261): publish_ledger records what each create PROVED about recovery-by-token
+//                (recovery_proof/recovery_proof_at + cat_publish_record_recovery), so a reconciler in a
+//                different process than the publisher can tell "the token found nothing because nothing
+//                is there" from "the token finds nothing at all" — the difference between recovering and
+//                creating a duplicate external copy.
+export const MIGRATION_VERSION = 5;
 
 /**
  * The advisory-lock key `ops:bootstrap` serialises on.

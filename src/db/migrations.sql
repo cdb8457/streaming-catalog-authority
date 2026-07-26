@@ -252,6 +252,29 @@ BEGIN
   END IF;
 END $$;
 
+-- v4 -> v5 upgrade (Phase 261): DURABLE evidence about whether recovery-by-token actually works.
+--
+-- The outbox recovers a lost create by finding the artifact's opaque token, and reconcile treats "the
+-- token found nothing" as proof the artifact does not exist — the licence to create it again. That
+-- inference is sound only while a token written at create time can be read back afterwards, and nothing
+-- ever checked it. When the two halves disagreed, every lost response silently became a duplicate
+-- external copy: one tracked, one not. A create now records what it PROVED, and the proof outlives the
+-- process that made it, because the process that publishes is not the process that reconciles.
+--
+-- The label is identity-free — it says something about the target's behaviour, never about an item.
+ALTER TABLE publish_ledger ADD COLUMN IF NOT EXISTS recovery_proof    TEXT;
+ALTER TABLE publish_ledger ADD COLUMN IF NOT EXISTS recovery_proof_at TIMESTAMPTZ;
+DO $$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'publish_ledger_recovery_proof_chk' AND conrelid = 'public.publish_ledger'::regclass) THEN
+    ALTER TABLE public.publish_ledger ADD CONSTRAINT publish_ledger_recovery_proof_chk
+      CHECK (recovery_proof IS NULL OR recovery_proof IN ('verified', 'unrecoverable', 'contradictory'));
+  END IF;
+END $$;
+-- The reconciler reads only the MOST RECENT proof per target, so the index is on that ordering.
+CREATE INDEX IF NOT EXISTS publish_ledger_recovery_proof_idx
+  ON publish_ledger (target, recovery_proof_at DESC) WHERE recovery_proof IS NOT NULL;
+
 -- ------------------------------------------------------- append-only guard ---
 
 CREATE OR REPLACE FUNCTION events_no_update_delete() RETURNS trigger
@@ -772,6 +795,20 @@ BEGIN
 END;
 $$;
 
+-- Record what a create PROVED about recovery-by-token for this target (Phase 261). Identity-free: the
+-- label describes the target's round-trip behaviour, never the item. Rejects an unknown label rather
+-- than storing it, because the reconciler reads this to decide whether it may create.
+CREATE OR REPLACE FUNCTION cat_publish_record_recovery(p_id BIGINT, p_proof TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF p_proof IS NULL OR p_proof NOT IN ('verified', 'unrecoverable', 'contradictory') THEN
+    RAISE EXCEPTION 'unknown recovery proof';
+  END IF;
+  UPDATE public.publish_ledger SET recovery_proof = p_proof, recovery_proof_at = now(), updated_at = now()
+   WHERE id = p_id;
+END;
+$$;
+
 -- Mark an intent FAILED (retryable/terminal — bounded by the reconciler). Bumps attempt_count.
 CREATE OR REPLACE FUNCTION cat_publish_mark_failed(p_id BIGINT)
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
@@ -839,6 +876,7 @@ REVOKE ALL ON FUNCTION
   cat_publish_mark_ambiguous(BIGINT),
   cat_publish_settle(BIGINT, TEXT),
   cat_publish_mark_failed(BIGINT),
+  cat_publish_record_recovery(BIGINT, TEXT),
   set_completion_secret(TEXT),
   set_schema_version(INTEGER),
   set_app_role_password(TEXT),
@@ -874,5 +912,6 @@ GRANT EXECUTE ON FUNCTION
   cat_publish_mark_in_flight(BIGINT),
   cat_publish_mark_ambiguous(BIGINT),
   cat_publish_settle(BIGINT, TEXT),
-  cat_publish_mark_failed(BIGINT)
+  cat_publish_mark_failed(BIGINT),
+  cat_publish_record_recovery(BIGINT, TEXT)
 TO app;

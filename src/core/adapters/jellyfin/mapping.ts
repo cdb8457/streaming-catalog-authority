@@ -77,8 +77,27 @@ export function buildItemCollectionsRequest(itemId: string, startIndex = 0, limi
 // ATOMIC create is findable afterwards even if the response is lost (no separate tag call that could
 // fail after create). The token is opaque (a uuid), not identity. Reachable ONLY via the outbox.
 
+/**
+ * A correlation token is only usable as a NAME MARKER if it cannot forge or hide inside another marker.
+ * `[`, `]`, whitespace and control characters are therefore refused: a token containing `]` could make
+ * `[cat:a]b]` match a lookup for `a`, adopting SOMEONE ELSE'S collection. Bounded length keeps the name
+ * (and the request URL) inside anything a server will accept. UUIDs — what the outbox actually mints —
+ * satisfy this trivially; the check exists so a caller-supplied token cannot weaken recovery.
+ */
+const MARKER_SAFE_TOKEN = /^[A-Za-z0-9._:-]{1,128}$/;
+
+/** Fail closed on a token that cannot be embedded in (or matched out of) a name marker. */
+export function assertMarkerSafeToken(token: string): void {
+  if (typeof token !== 'string' || !MARKER_SAFE_TOKEN.test(token)) {
+    throw new Error('jellyfin: correlation token is not marker-safe (expected 1-128 chars of A-Z a-z 0-9 . _ : -)');
+  }
+}
+
 /** The opaque, findable marker embedded in a collection name for token-based recovery. */
-export const tokenMark = (token: string): string => `[cat:${token}]`;
+export const tokenMark = (token: string): string => {
+  assertMarkerSafeToken(token);
+  return `[cat:${token}]`;
+};
 
 /** POST a collection whose name carries the opaque token marker (atomic + recoverable). */
 export function buildCreateTaggedRequest(name: string, itemIds: readonly string[], token: string): HttpRequestSpec {
