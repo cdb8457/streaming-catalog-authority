@@ -264,6 +264,42 @@ catalog_total() {
   digits_or_die "${raw}" "the catalog API total"
 }
 
+# Print the stack's own logs with the operator token removed.
+#
+# WHY THIS EXISTS. A failing browser leg leaves Playwright traces, and a trace records the token that was
+# typed into the token field — so the redaction gate (correctly) quarantines the ENTIRE artifact directory and
+# uploads nothing. That is the right security answer and it leaves a failed gate with no diagnosis at all. The
+# product's own log lines are redaction-safe by construction, so they are the thing to show. The token is
+# removed by literal string replacement rather than `sed`, because a generated token may contain characters
+# that are `sed` syntax.
+dump_stack_logs() {
+  echo "--- stack logs (operator token removed), last 150 lines ---" >&2
+  ( cd "${EXTRACTED}" && docker compose logs --no-color 2>&1 ) \
+    | CAT_TOKEN="${TOKEN}" node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{const t=process.env.CAT_TOKEN;process.stdout.write(t?s.split(t).join("<redacted>"):s)})' \
+    | tail -150 >&2 || true
+  echo "--- end stack logs ---" >&2
+}
+
+# Ask the API directly, before blaming the browser.
+#
+# The browser leg answers "can an operator use this?"; it cannot say whether a failure is in the page or in
+# the service behind it. One authenticated request separates those, and prints the service's OWN explanation
+# (which is a fixed code and sentence — never configuration) when it refuses.
+require_catalog_api() {
+  local body status
+  body="$(mktemp)"
+  status="$( curl -sS -o "${body}" -w '%{http_code}' -H "x-operator-ui-secret: ${TOKEN}" "${BASE_URL}/api/catalog" || echo 000 )"
+  if [ "${status}" != "200" ]; then
+    echo "FAIL: GET /api/catalog answered ${status}, not 200 — the catalog service refused before any browser was involved" >&2
+    echo "      the service said: $(cat "${body}")" >&2
+    rm -f "${body}"
+    dump_stack_logs
+    exit 1
+  fi
+  rm -f "${body}"
+  info "GET /api/catalog answers 200 (${1})"
+}
+
 # A browser leg that ran NO tests is not a browser leg that passed. Playwright's own exit code covers a
 # mistyped grep in current versions, but the number of tests it actually expected is the direct evidence,
 # and it costs one line to read it rather than to trust it.
@@ -285,6 +321,8 @@ info "fresh installation: ${items_before} items, ${events_before} events"
 # ---------------------------------------------------------------------------------------------------------
 # 7. LEG 1 — the empty installation, in a real browser.
 # ---------------------------------------------------------------------------------------------------------
+require_catalog_api "empty installation"
+
 step "real-browser acceptance: the EMPTY installation"
 mkdir -p "${STAGING_DIR}/empty"
 set +e
@@ -297,7 +335,7 @@ PLAYWRIGHT_ARTIFACT_DIR="${STAGING_DIR}/empty" \
     --config "${BROWSER_DIR}/catalog.playwright.config.mjs" --grep "@empty"
 empty_status=$?
 set -e
-[ "${empty_status}" -eq 0 ] || fail "the empty-state browser leg reported failures"
+if [ "${empty_status}" -ne 0 ]; then dump_stack_logs; fail "the empty-state browser leg reported failures"; fi
 require_tests_ran "${STAGING_DIR}/empty" "empty-state"
 info "empty-state guidance verified in a real browser"
 
@@ -335,6 +373,8 @@ info "imported ${items_after_apply} records; the catalog API agrees"
 # ---------------------------------------------------------------------------------------------------------
 # 10. LEG 2 — browsing the imported catalog in a real browser.
 # ---------------------------------------------------------------------------------------------------------
+require_catalog_api "imported catalog"
+
 step "real-browser acceptance: browsing the IMPORTED catalog"
 mkdir -p "${STAGING_DIR}/imported"
 set +e
@@ -347,6 +387,7 @@ PLAYWRIGHT_ARTIFACT_DIR="${STAGING_DIR}/imported" \
     --config "${BROWSER_DIR}/catalog.playwright.config.mjs" --grep "@imported"
 browse_status=$?
 set -e
+if [ "${browse_status}" -ne 0 ]; then dump_stack_logs; fi
 require_tests_ran "${STAGING_DIR}/imported" "imported-catalog"
 
 # ---------------------------------------------------------------------------------------------------------

@@ -264,6 +264,9 @@ test('the orchestrator covers the whole consumer workflow, in order, with a proo
     [/count_rows/, 'counts are read from the database inside the stack, not inferred'],
     [/digits_or_die/, 'a count that could not be READ is a failure, never a count that did not CHANGE'],
     [/require_tests_ran/, 'a browser leg that ran zero tests is a failure, not a pass'],
+    [/require_catalog_api/, 'it asks the API directly before blaming the browser'],
+    [/dump_stack_logs/, 'and prints the stack\'s own logs when a browser leg fails'],
+    [/split\(t\)\.join\("<redacted>"\)/, 'with the operator token removed by literal replacement, not by sed syntax'],
   ];
   for (const [pattern, what] of required) {
     assert(pattern.test(orchestrator), `the orchestrator: ${what}`);
