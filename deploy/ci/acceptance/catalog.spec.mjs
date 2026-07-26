@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { test, expect } from '@playwright/test';
 
 // Phase 262 — the SHIPPED CONSUMER EXPERIENCE, in a real headless Chromium against a real extracted Compose
@@ -9,9 +10,17 @@ import { test, expect } from '@playwright/test';
 // gap between them is where a shipped product breaks: the assets in the image, the read-only import mount, the
 // migration one-shot, the token, and the browser all have to agree at once.
 //
-// TWO LEGS, ONE SPEC. The orchestrator runs this file twice — `--grep @empty` before it imports anything and
-// `--grep @imported` after — because the empty state is a first impression that has to be proved on a real
-// empty installation, not simulated.
+// SEVERAL LEGS, ONE SPEC. The orchestrator runs this file once per leg, by tag, because the states have to be
+// proved in order against a real installation rather than simulated:
+//
+//   @empty     before anything is imported — the first impression, on a genuinely empty install
+//   @preview   the Import panel discovers the snapshot and previews it. NOTHING may be written; the
+//              orchestrator counts rows, events and history entries either side of this leg.
+//   @apply     the explicit, confirmation-bound apply, through the browser
+//   @imported  browsing what was imported: counts, search, filters, sort, paging, detail, hostile titles
+//   @workspace the Phase 265 workspace: export download, import history, and read-only-ness
+//   @reapply   applying the same snapshot again through the browser — idempotent, and recorded
+//   @survived  after a full stop/start: the records AND the import history are still there
 //
 // The operator token arrives ONLY from the environment and is never printed. Every token assertion uses the
 // boolean form, expect(x.includes(TOKEN)).toBe(false), so no failure message can echo it.
@@ -64,7 +73,20 @@ async function loadWithToken(page) {
   await page.locator('#refresh').click();
   await expect(page.locator('#verdict')).toHaveText(VERDICT_TEXT, { timeout: 30_000 });
   await expect(page.locator('#catState')).not.toHaveText('-', { timeout: 30_000 });
+  // The import panel loads with everything else, so its inbox listing is populated by the time a leg runs.
+  await expect(page.locator('#impInbox')).not.toHaveText('', { timeout: 30_000 });
   return collected;
+}
+
+/** The snapshot file the orchestrator placed in the read-only import folder. */
+const SNAPSHOT = 'acceptance-snapshot.json';
+
+/** Choose the acceptance snapshot in the Import panel and press Preview. */
+async function previewInBrowser(page) {
+  await page.locator('#impFile').selectOption(SNAPSHOT);
+  await expect(page.locator('#impApply')).toBeDisabled();
+  await page.locator('#impPreview').click();
+  await expect(page.locator('#impTotal')).not.toHaveText('-', { timeout: 30_000 });
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -110,8 +132,94 @@ test('@empty the shell loads clean, and the catalog is the panel that answered',
   expect(catalogResponses.filter((r) => r.status !== 200), 'every catalog response is a 200').toEqual([]);
 });
 
+test('@empty the Import panel is the one panel that writes, and says so before anything is clicked', async ({ page }) => {
+  await loadWithToken(page);
+
+  // It is marked structurally, in words, and by the disabled control — not by colour alone.
+  await expect(page.locator('#import-panel')).toHaveClass(/writes/);
+  await expect(page.locator('#import-panel')).toContainText('only panel on this page that changes anything');
+  await expect(page.locator('#impApply')).toBeDisabled();
+
+  // It discovered the snapshot the operator put in the READ-ONLY import folder, and nothing else.
+  const options = await page.locator('#impFile option').allTextContents();
+  expect(options.some((o) => o.includes(SNAPSHOT)), 'the inbox listed the acceptance snapshot').toBe(true);
+  // There is no way to name a path, fetch a URL or upload a file from this page.
+  expect(await page.locator('#import-panel input[type="file"]').count(), 'no file upload control').toBe(0);
+  expect(await page.locator('#import-panel input[type="url"]').count(), 'no URL control').toBe(0);
+  expect(await page.locator('#import-panel input[type="text"]').count(), 'no free-text path control').toBe(0);
+
+  // Nothing has been imported yet, so the history says so rather than being empty and silent.
+  await expect(page.locator('#impHistory')).toContainText('No import has been applied');
+});
+
 // -----------------------------------------------------------------------------------------------------------
-// LEG 2 — the imported catalog. Run AFTER `ops:catalog-import --apply`.
+// LEG — the preview. Run on the still-empty installation; the orchestrator counts rows either side of it.
+// -----------------------------------------------------------------------------------------------------------
+
+test('@preview previewing a snapshot in the browser reports what it would do, and writes nothing', async ({ page }) => {
+  await loadWithToken(page);
+  await previewInBrowser(page);
+
+  await expect(page.locator('#impTotal')).toHaveText(String(RECORD_COUNT));
+  await expect(page.locator('#impCreate')).toHaveText(String(RECORD_COUNT));
+  await expect(page.locator('#impSame')).toHaveText('0');
+  await expect(page.locator('#impBlocked')).toHaveText('0');
+  await expect(page.locator('#impStatus')).toContainText('Nothing was written');
+  // Only now is apply enabled, and it says what it is bound to.
+  await expect(page.locator('#impApply')).toBeEnabled();
+  await expect(page.locator('#impStatus')).toContainText('bound to this exact file');
+
+  // The catalog is still empty: a preview is a read.
+  await expect(page.locator('#catTotal')).toHaveText('0');
+  await expect(page.locator('#catState')).toHaveText('EMPTY');
+
+  // And the preview echoed no content of any kind.
+  const panel = (await page.locator('#import-panel').textContent()) ?? '';
+  expect(panel.includes(SECRET_REF), 'the preview never shows a provider reference value').toBe(false);
+  expect(panel.includes('Acceptance Fixture'), 'the preview never echoes a title').toBe(false);
+});
+
+test('@preview choosing a different file disarms the confirmation', async ({ page }) => {
+  await loadWithToken(page);
+  await previewInBrowser(page);
+  await expect(page.locator('#impApply')).toBeEnabled();
+
+  // The shipped example snapshot is in the same folder, placed there by the orchestrator.
+  await page.locator('#impFile').selectOption('example-catalog-snapshot.json');
+  await expect(page.locator('#impApply')).toBeDisabled();
+  await expect(page.locator('#impStatus')).toContainText('Preview it before applying it');
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// LEG — the apply. The one write this whole acceptance performs through a browser.
+// -----------------------------------------------------------------------------------------------------------
+
+test('@apply applying the previewed snapshot imports exactly the previewed records', async ({ page }) => {
+  await loadWithToken(page);
+  await previewInBrowser(page);
+  await expect(page.locator('#impCreate')).toHaveText(String(RECORD_COUNT));
+
+  await page.locator('#impApply').click();
+  await expect(page.locator('#impStatus')).toContainText('Imported', { timeout: 60_000 });
+  await expect(page.locator('#impStatus')).toContainText(`${RECORD_COUNT} created`);
+
+  // The catalog reloaded itself as part of the apply, and now holds exactly those records.
+  await expect(page.locator('#catTotal')).toHaveText(String(RECORD_COUNT), { timeout: 30_000 });
+  await expect(page.locator('#catState')).toHaveText('RESULTS');
+
+  // The apply is spent: the button is disarmed until another preview is read.
+  await expect(page.locator('#impApply')).toBeDisabled();
+
+  // And it recorded itself, durably.
+  await expect(page.locator('#impHistory')).toContainText('operator-ui');
+  await expect(page.locator('#impHistory')).toContainText(SNAPSHOT);
+
+  const panel = (await page.locator('#import-panel').textContent()) ?? '';
+  expect(panel.includes(SECRET_REF), 'the apply never shows a provider reference value').toBe(false);
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// LEG 2 — the imported catalog. Run AFTER the browser apply.
 // -----------------------------------------------------------------------------------------------------------
 
 test('@imported the imported records are counted, listed and paged', async ({ page }) => {
@@ -326,4 +434,158 @@ test('@imported browsing produces no console error, no CSP violation and no cros
   for (const req of collected.requests) {
     expect(req.url.startsWith('https://'), 'no mixed content on the loopback stack').toBe(false);
   }
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// LEG — the Phase 265 workspace: export, history, page size and the source filter.
+// -----------------------------------------------------------------------------------------------------------
+
+test('@workspace the catalog exports as a sanitized, downloadable snapshot that discloses no reference value', async ({ page }) => {
+  await loadWithToken(page);
+  await expect(page.locator('#catTotal')).toHaveText(String(RECORD_COUNT));
+
+  const [download] = await Promise.all([
+    page.waitForEvent('download', { timeout: 30_000 }),
+    page.locator('#catExport').click(),
+  ]);
+  // The file name comes from a closed grammar the service builds; nothing a browser sent chose it.
+  expect(download.suggestedFilename(), 'the download has a safe, fixed-grammar name')
+    .toMatch(/^catalog-export-[a-z0-9][a-z0-9._-]*\.json$/);
+
+  const body = readFileSync(await download.path(), 'utf8');
+  const parsed = JSON.parse(body);
+  expect(parsed.format, 'the export is a snapshot document').toBe('catalog-authority.snapshot');
+  expect(parsed.version).toBe(1);
+  expect(Array.isArray(parsed.items) && parsed.items.length, 'the export carries every record').toBe(RECORD_COUNT);
+  // The whole point: not one provider reference value, and not the structure either.
+  expect(body.includes(SECRET_REF), 'the export discloses a provider reference value').toBe(false);
+  expect(body.includes('providerRefs'), 'the export carries a reference structure').toBe(false);
+  expect(body.includes(TOKEN), 'the export carries the operator token').toBe(false);
+  // The panel says what was left out rather than producing a file that looks complete.
+  await expect(page.locator('#catExportStatus')).toContainText('provider reference');
+  await expect(page.locator('#catExportStatus')).toContainText('Nothing was written');
+});
+
+test('@workspace the import history is durable, identity-free, and shown back to the operator', async ({ page }) => {
+  await loadWithToken(page);
+  const history = (await page.locator('#impHistory').textContent()) ?? '';
+  expect(history.includes('operator-ui'), 'the history names the surface that did it').toBe(true);
+  expect(history.includes(SNAPSHOT), 'the history names the file').toBe(true);
+  expect(history.includes(SECRET_REF), 'the history holds a provider reference value').toBe(false);
+  expect(history.includes('Acceptance Fixture'), 'the history holds a title').toBe(false);
+  expect(history.includes('/var/lib'), 'the history holds a container path').toBe(false);
+
+  // The API agrees, and carries the same bounded, identity-free shape.
+  const res = await page.request.get(`${BASE_URL}/api/import/history`, { headers: { 'x-operator-ui-secret': TOKEN } });
+  expect(res.status()).toBe(200);
+  const raw = await res.text();
+  expect(raw.includes(SECRET_REF)).toBe(false);
+  expect(JSON.parse(raw).entries.length).toBeGreaterThan(0);
+});
+
+test('@workspace page size and the source filter work, and an out-of-range value is reported not honoured', async ({ page }) => {
+  await loadWithToken(page);
+  await page.locator('#catPageSize').selectOption('50');
+  await page.locator('#catApply').click();
+  await expect(page.locator('#catPage')).toHaveText('1 of 1');
+  await expect(page.locator('#catResults > li')).toHaveCount(RECORD_COUNT);
+
+  // The source the snapshot declared is offered, and narrows to it.
+  const sources = await page.locator('#catSource option').allTextContents();
+  expect(sources.length, 'the source filter offers what this installation holds').toBeGreaterThan(1);
+  await page.locator('#catSource').selectOption({ index: 1 });
+  await page.locator('#catApply').click();
+  await expect(page.locator('#catMatched')).toHaveText(String(RECORD_COUNT));
+
+  // Bounds: an out-of-range page size falls back and SAYS it was ignored, rather than being honoured.
+  const res = await page.request.get(`${BASE_URL}/api/catalog?pageSize=100000&page=0`, {
+    headers: { 'x-operator-ui-secret': TOKEN },
+  });
+  const body = JSON.parse(await res.text());
+  expect(body.pageSize).toBe(25);
+  expect(body.page).toBe(1);
+  expect(body.ignored.length).toBeGreaterThanOrEqual(2);
+});
+
+test('@workspace the import routes require the token, are POST-only, and refuse a cross-origin write', async ({ page }) => {
+  for (const route of ['/api/import/inbox', '/api/import/history']) {
+    expect((await page.request.get(`${BASE_URL}${route}`)).status(), `${route} is 401 without a token`).toBe(401);
+  }
+  for (const route of ['/api/import/preview', '/api/import/apply']) {
+    const noToken = await page.request.post(`${BASE_URL}${route}`, { data: { file: SNAPSHOT } });
+    expect(noToken.status(), `${route} is 401 without a token`).toBe(401);
+
+    const wrongMethod = await page.request.get(`${BASE_URL}${route}`, { headers: { 'x-operator-ui-secret': TOKEN } });
+    expect(wrongMethod.status(), `${route} refuses GET`).toBe(405);
+    expect(wrongMethod.headers()['allow']).toBe('POST');
+
+    const form = await page.request.post(`${BASE_URL}${route}`, {
+      headers: { 'x-operator-ui-secret': TOKEN, 'content-type': 'application/x-www-form-urlencoded' },
+      data: `file=${SNAPSHOT}`,
+    });
+    expect(form.status(), `${route} refuses a form post`).toBe(400);
+
+    const cross = await page.request.post(`${BASE_URL}${route}`, {
+      headers: { 'x-operator-ui-secret': TOKEN, 'content-type': 'application/json', origin: 'http://evil.example' },
+      data: { file: SNAPSHOT },
+    });
+    expect(cross.status(), `${route} refuses a cross-origin write`).toBe(403);
+  }
+
+  // A path is not a name: the inbox is the only place a snapshot can come from.
+  for (const file of ['../../etc/passwd', '/etc/passwd', 'subdir/nested.json', '..']) {
+    const res = await page.request.post(`${BASE_URL}/api/import/preview`, {
+      headers: { 'x-operator-ui-secret': TOKEN, 'content-type': 'application/json' },
+      data: { file },
+    });
+    expect(res.status(), `a path (${file}) is refused`).toBe(400);
+    expect((await res.text()).includes('/etc'), 'the refusal echoed the path').toBe(false);
+  }
+
+  // A forged confirmation is refused, with nothing written.
+  const forged = await page.request.post(`${BASE_URL}/api/import/apply`, {
+    headers: { 'x-operator-ui-secret': TOKEN, 'content-type': 'application/json' },
+    data: { file: SNAPSHOT, confirmation: 'ZmFrZQ.ZmFrZQ' },
+  });
+  expect(forged.status(), 'a forged confirmation is refused').toBe(409);
+  expect((await forged.text()).includes('CONFIRMATION_')).toBe(true);
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// LEG — applying the same snapshot again, through the browser. Idempotent, and still recorded.
+// -----------------------------------------------------------------------------------------------------------
+
+test('@reapply applying the same snapshot again changes nothing, and says so', async ({ page }) => {
+  await loadWithToken(page);
+  await previewInBrowser(page);
+
+  await expect(page.locator('#impCreate')).toHaveText('0');
+  await expect(page.locator('#impSame')).toHaveText(String(RECORD_COUNT));
+  await page.locator('#impApply').click();
+  await expect(page.locator('#impStatus')).toContainText('Nothing changed', { timeout: 60_000 });
+  await expect(page.locator('#catTotal')).toHaveText(String(RECORD_COUNT), { timeout: 30_000 });
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// LEG — after a full stop/start. The data AND the history are still there.
+// -----------------------------------------------------------------------------------------------------------
+
+test('@survived the records and the import history survive a full stop and start', async ({ page }) => {
+  await loadWithToken(page);
+  await expect(page.locator('#catTotal')).toHaveText(String(RECORD_COUNT));
+  await expect(page.locator('#catState')).toHaveText('RESULTS');
+  // Both applies are still recorded: the history outlived the container that wrote it.
+  const res = await page.request.get(`${BASE_URL}/api/import/history`, { headers: { 'x-operator-ui-secret': TOKEN } });
+  expect(res.status()).toBe(200);
+  const entries = JSON.parse(await res.text()).entries;
+  expect(entries.length, 'both browser applies are still in the history').toBeGreaterThanOrEqual(2);
+  expect(entries.every((e) => e.actor === 'operator-ui' || e.actor === 'cli'), 'the actors survived').toBe(true);
+
+  // A record still opens, and still shows no reference value.
+  await page.locator('#catSearch').fill('Zulu Acceptance Fixture 26');
+  await page.locator('#catApply').click();
+  await expect(page.locator('#catResults > li')).toHaveCount(1);
+  await page.locator('#catResults button').first().click();
+  await expect(page.locator('#catDetail')).toContainText('the value is never shown');
+  expect(((await page.locator('#catDetail').textContent()) ?? '').includes(SECRET_REF)).toBe(false);
 });

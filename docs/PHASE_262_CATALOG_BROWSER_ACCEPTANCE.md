@@ -145,6 +145,41 @@ retro-fit it. One command fixes it, with the stack stopped:
 docker compose run --rm --user root --entrypoint sh app -c 'chown -R node:node /var/lib/catalog/keystore'
 ```
 
+## What it covers as of Phases 263-265
+
+The gate grew with the product rather than being duplicated: one orchestrator, one spec, one CI job, more
+legs. In order, against one real extracted Compose stack:
+
+1. **The legacy keystore, repaired.** The stack is stopped and its keystore volume is made root-owned at mode
+   0755 with real key material in it — the exact state of an installation created before v1.1.3, which no
+   image change can reach into. `ops:keystore-check` must recognise it as `REPAIRABLE` and exit **non-zero**;
+   the stack is brought back up; the shipped `keystore-prepare` one-shot must have exited 0; the app must be
+   running as a **non-root** uid; `ops:doctor` must report `keystore-ownership: pass`; and a repeat check must
+   exit 0, proving the repair is idempotent.
+2. **The empty installation** — guidance, and an Import panel that has discovered the snapshot and offers no
+   path, URL or upload control.
+3. **Preview, twice** — from the command line and from the browser. Rows, events **and** import history
+   entries are counted either side and must all be unchanged.
+4. **Apply, from the browser**, bound to the exact previewed bytes, writing exactly one history entry.
+5. **Browsing** the imported catalog: counts, search, filters, sort, paging, record detail, a hostile title
+   rendered as text, and token authentication.
+6. **The workspace**: a real download whose `Content-Disposition` name matches the closed grammar and whose
+   body carries every record and **no provider reference value**; the import history, identity-free; page-size
+   and out-of-range bounds; and the write boundary — 401 without a token, 405 on GET, 400 on a form post, 403
+   cross-origin, 400 on four spellings of a path, and 409 on a forged confirmation.
+7. **Browsing and exporting wrote nothing** — items, events and import history all unchanged across the whole
+   session, and the export API asked directly discloses no reference value and no token.
+8. **Idempotency, through both surfaces.** A browser re-apply and a command-line re-apply each create nothing
+   and append no events — and each still write a history row, because "I ran an import and it changed nothing"
+   is a fact worth keeping.
+9. **A full stop/start.** Records, token, event log and import history all survive, and the browser is driven
+   again afterwards to prove the page still shows them.
+10. **The import mount is still read-only** after an entire import workflow — in Docker's metadata and by a
+    `touch` from inside the container.
+
+Every leg goes through one `run_leg` helper, so a new leg cannot be wired differently by accident, and each
+one still fails if it ran zero tests.
+
 ## Boundaries
 
 - Nothing here contacts a provider, Jellyfin, a media library, Unraid or any endpoint beyond `127.0.0.1`.

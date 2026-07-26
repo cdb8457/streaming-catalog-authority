@@ -200,18 +200,82 @@ info "snapshot (${RECORD_COUNT} records) and the shipped example placed in ./imp
 step "start the extracted standalone stack (bootstrap/migrate runs first, by the shipped ordering)"
 rc_compose_up "${EXTRACTED}"
 
+wait_for_health() {
+  healthy=""
+  for _ in $(seq 1 60); do
+    if curl -fsS -o /dev/null "${BASE_URL}/healthz"; then healthy=yes; break; fi
+    sleep 2
+  done
+  if [ -z "${healthy}" ]; then
+    echo "the stack never became healthy; diagnostics follow:" >&2
+    ( cd "${EXTRACTED}" && docker compose ps && docker compose logs --tail 120 ) >&2 || true
+    fail "${1}"
+  fi
+}
+
 step "wait for /healthz with bounded diagnostics"
-healthy=""
-for _ in $(seq 1 60); do
-  if curl -fsS -o /dev/null "${BASE_URL}/healthz"; then healthy=yes; break; fi
-  sleep 2
-done
-if [ -z "${healthy}" ]; then
-  echo "the stack never became healthy; diagnostics follow:" >&2
-  ( cd "${EXTRACTED}" && docker compose ps && docker compose logs --tail 120 ) >&2 || true
-  fail "/healthz never returned 200 within the bounded wait"
-fi
+wait_for_health "/healthz never returned 200 within the bounded wait"
 info "/healthz is 200 — the migration one-shot completed and the app started behind it"
+
+# ---------------------------------------------------------------------------------------------------------
+# 4b. PHASE 263 — the LEGACY installation, repaired.
+#
+# The image now ships a node-owned keystore directory, so a FRESH volume is already correct and proves
+# nothing about the case that matters: an installation created before that fix, whose volume Docker made
+# root-owned and which no image change can reach back into. So this manufactures exactly that state on the
+# volume this stack just created — root-owned, mode 0755, real key material inside it — and then proves the
+# shipped startup path repairs it and the app comes back up NON-ROOT.
+#
+# It is manufactured with the same `chown -R` an operator would run by hand, in a throwaway root container
+# that holds nothing else. Nothing here weakens the running stack: the app service is untouched.
+# ---------------------------------------------------------------------------------------------------------
+step "manufacture a LEGACY root-owned keystore, exactly as an installation from v1.1.2 has"
+( cd "${EXTRACTED}" && docker compose stop >/dev/null )
+( cd "${EXTRACTED}" && docker compose run --rm --user root --entrypoint sh keystore-prepare \
+    -c 'chown -R root:root /var/lib/catalog/keystore && chmod 755 /var/lib/catalog/keystore && ls -la /var/lib/catalog/keystore >/dev/null' ) >/dev/null \
+  || fail "could not manufacture the legacy keystore state"
+
+# The CHECK sees it, names it, and exits non-zero — which is what makes it usable as a gate.
+set +e
+check_out="$( cd "${EXTRACTED}" && docker compose run --rm --user root --entrypoint npm keystore-prepare run ops:keystore-check 2>&1 )"
+check_status=$?
+set -e
+printf '%s\n' "${check_out}" | grep -q 'REPAIRABLE' \
+  || { printf '%s\n' "${check_out}" >&2; fail "the keystore check did not recognise a legacy root-owned keystore"; }
+[ "${check_status}" -ne 0 ] || fail "the keystore check exited 0 on a keystore that needs repair"
+# The report is redaction-safe: counts, uids and a mode, never a key file name.
+printf '%s\n' "${check_out}" | grep -q 'wrongly owned' || fail "the keystore check did not report what is wrongly owned"
+info "the legacy state is recognised as REPAIRABLE and the check exits non-zero"
+
+step "bring the stack back up: the shipped keystore-prepare one-shot must repair it"
+( cd "${EXTRACTED}" && docker compose up -d >/dev/null )
+wait_for_health "the stack did not become healthy after a legacy keystore was repaired"
+
+prepare_cid="$( cd "${EXTRACTED}" && docker compose ps -aq keystore-prepare | head -1 )"
+[ -n "${prepare_cid}" ] || fail "the keystore-prepare one-shot left no container to inspect — it cannot be said to have run"
+prepare_exit="$( docker inspect --format '{{.State.ExitCode}}' "${prepare_cid}" )"
+[ "${prepare_exit}" = "0" ] || fail "the keystore-prepare one-shot did not exit 0 (got '${prepare_exit:-nothing}')"
+
+# ...and the long-running app is still NON-ROOT. The repair's elevated authority lived in a one-shot.
+app_uid="$( cd "${EXTRACTED}" && docker compose exec -T app id -u | tr -d '[:space:]' )"
+[ "${app_uid}" != "0" ] || fail "the app container is running as root"
+[ -n "${app_uid}" ] || fail "could not read the app container's uid"
+info "keystore-prepare exited 0 and the app is running as uid ${app_uid} (non-root)"
+
+# The repair is IDEMPOTENT: a second check on the now-correct keystore exits 0 and reports nothing to do.
+( cd "${EXTRACTED}" && docker compose run --rm --user root --entrypoint npm keystore-prepare run ops:keystore-check ) >/dev/null \
+  || fail "the keystore check still reports work to do after the repair ran"
+info "a repeat check on the repaired keystore exits 0 — the repair is idempotent"
+
+# And the check that PREDICTS the EACCES failure now passes, read from ops:doctor's own machine-readable
+# contract rather than from its exit code — which is deliberately non-zero on other, unrelated production
+# gates and would say nothing about the keystore either way.
+doctor_json="$( cd "${EXTRACTED}" && docker compose exec -T app npm run --silent ops:doctor -- --json 2>/dev/null | tail -1 )"
+keystore_state="$( printf '%s' "${doctor_json}" | node -e \
+  'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const r=JSON.parse(s);const c=(r.checks||[]).find(x=>x.name==="keystore-ownership");process.stdout.write(c?c.state:"missing")}catch{process.stdout.write("unreadable")}})' )"
+[ "${keystore_state}" = "pass" ] \
+  || fail "ops:doctor reports keystore-ownership as '${keystore_state}' after the repair, not pass"
+info "ops:doctor reports keystore-ownership: pass inside the running container"
 
 # The migration really did run to completion: the app's own dependency is
 # `migrate: service_completed_successfully`, and /healthz refuses 200 until the schema version matches.
@@ -322,34 +386,44 @@ require_tests_ran() {
 
 items_before="$(count_rows items)"
 events_before="$(count_rows events)"
+history_before="$(count_rows import_history)"
 [ "${items_before}" = "0" ] || fail "a fresh installation already has ${items_before} items"
-info "fresh installation: ${items_before} items, ${events_before} events"
+[ "${history_before}" = "0" ] || fail "a fresh installation already has ${history_before} import history entries"
+info "fresh installation: ${items_before} items, ${events_before} events, ${history_before} import history entries"
+
+# One browser leg. Every leg is run the same way, so a new one cannot be wired differently by accident.
+run_leg() {
+  local tag="$1" label="$2"
+  mkdir -p "${STAGING_DIR}/${label}"
+  set +e
+  OPERATOR_UI_ACCEPTANCE_TOKEN="${TOKEN}" \
+  OPERATOR_UI_ACCEPTANCE_BASE_URL="${BASE_URL}" \
+  CATALOG_ACCEPTANCE_SECRET_REF="${SECRET_REF}" \
+  CATALOG_ACCEPTANCE_RECORD_COUNT="${RECORD_COUNT}" \
+  PLAYWRIGHT_ARTIFACT_DIR="${STAGING_DIR}/${label}" \
+    npx --prefix "${BROWSER_DIR}" playwright test \
+      --config "${BROWSER_DIR}/catalog.playwright.config.mjs" --grep "${tag}"
+  LEG_STATUS=$?
+  set -e
+  # The test COUNT is read whatever the outcome: a leg that ran zero tests is not a leg that passed, and
+  # that has to be caught even when the exit code was zero.
+  require_tests_ran "${STAGING_DIR}/${label}" "${label}"
+}
 
 # ---------------------------------------------------------------------------------------------------------
 # 7. LEG 1 — the empty installation, in a real browser.
 # ---------------------------------------------------------------------------------------------------------
 require_catalog_api "empty installation"
 
-step "real-browser acceptance: the EMPTY installation"
-mkdir -p "${STAGING_DIR}/empty"
-set +e
-OPERATOR_UI_ACCEPTANCE_TOKEN="${TOKEN}" \
-OPERATOR_UI_ACCEPTANCE_BASE_URL="${BASE_URL}" \
-CATALOG_ACCEPTANCE_SECRET_REF="${SECRET_REF}" \
-CATALOG_ACCEPTANCE_RECORD_COUNT="${RECORD_COUNT}" \
-PLAYWRIGHT_ARTIFACT_DIR="${STAGING_DIR}/empty" \
-  npx --prefix "${BROWSER_DIR}" playwright test \
-    --config "${BROWSER_DIR}/catalog.playwright.config.mjs" --grep "@empty"
-empty_status=$?
-set -e
-if [ "${empty_status}" -ne 0 ]; then dump_stack_logs; fail "the empty-state browser leg reported failures"; fi
-require_tests_ran "${STAGING_DIR}/empty" "empty-state"
-info "empty-state guidance verified in a real browser"
+step "real-browser acceptance: the EMPTY installation and the Import panel"
+run_leg "@empty" "empty"
+[ "${LEG_STATUS}" -eq 0 ] || { dump_stack_logs; fail "the empty-state browser leg reported failures"; }
+info "empty-state guidance and import discovery verified in a real browser"
 
 # ---------------------------------------------------------------------------------------------------------
-# 8. PREVIEW — and the proof that a preview writes NOTHING.
+# 8. PREVIEW — twice, through both surfaces, and the proof that neither writes anything.
 # ---------------------------------------------------------------------------------------------------------
-step "preview the import (nothing may be written)"
+step "preview the import from the COMMAND LINE (nothing may be written)"
 preview_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file acceptance-snapshot.json )" \
   || fail "the import preview exited non-zero"
 printf '%s\n' "${preview_out}" | grep -qF 'PREVIEW (nothing was written)' || fail "the preview did not announce itself as a preview"
@@ -358,54 +432,81 @@ printf '%s\n' "${preview_out}" | grep -qE "^ +create +${RECORD_COUNT}$" || fail 
 if printf '%s\n' "${preview_out}" | grep -qF "${SECRET_REF}"; then fail "the preview report echoed a provider reference value"; fi
 if printf '%s\n' "${preview_out}" | grep -qF 'Acceptance Fixture'; then fail "the preview report echoed a title"; fi
 
+step "real-browser acceptance: PREVIEW through the Import panel (nothing may be written)"
+run_leg "@preview" "preview"
+[ "${LEG_STATUS}" -eq 0 ] || { dump_stack_logs; fail "the preview browser leg reported failures"; }
+
 items_after_preview="$(count_rows items)"
 events_after_preview="$(count_rows events)"
-[ "${items_after_preview}" = "${items_before}" ] || fail "the preview created rows (${items_before} -> ${items_after_preview})"
-[ "${events_after_preview}" = "${events_before}" ] || fail "the preview appended events (${events_before} -> ${events_after_preview})"
+history_after_preview="$(count_rows import_history)"
+[ "${items_after_preview}" = "${items_before}" ] || fail "a preview created rows (${items_before} -> ${items_after_preview})"
+[ "${events_after_preview}" = "${events_before}" ] || fail "a preview appended events (${events_before} -> ${events_after_preview})"
+[ "${history_after_preview}" = "${history_before}" ] || fail "a preview wrote an import history entry"
 [ "$(catalog_total)" = "0" ] || fail "the catalog is not empty after a preview"
-info "preview wrote nothing: items and events both unchanged"
+info "both previews wrote nothing: items, events and import history all unchanged"
 
 # ---------------------------------------------------------------------------------------------------------
-# 9. APPLY — the real import, through the shipped CLI, from the read-only mount.
+# 9. APPLY — the real import, through the BROWSER, bound to the exact previewed bytes.
 # ---------------------------------------------------------------------------------------------------------
-step "apply the import"
-( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file acceptance-snapshot.json --apply ) \
-  || fail "the import apply exited non-zero"
+step "real-browser acceptance: APPLY the previewed import"
+run_leg "@apply" "apply"
+[ "${LEG_STATUS}" -eq 0 ] || { dump_stack_logs; fail "the apply browser leg reported failures"; }
+
 items_after_apply="$(count_rows items)"
 events_after_apply="$(count_rows events)"
+history_after_apply="$(count_rows import_history)"
 [ "${items_after_apply}" = "${RECORD_COUNT}" ] || fail "expected ${RECORD_COUNT} items after the import, got ${items_after_apply}"
 [ "$(catalog_total)" = "${RECORD_COUNT}" ] || fail "the catalog API does not report ${RECORD_COUNT} records"
-info "imported ${items_after_apply} records; the catalog API agrees"
+[ "${history_after_apply}" = "1" ] || fail "the browser apply did not write exactly one import history entry (got ${history_after_apply})"
+info "imported ${items_after_apply} records from the browser; the catalog API and the import history agree"
 
 # ---------------------------------------------------------------------------------------------------------
-# 10. LEG 2 — browsing the imported catalog in a real browser.
+# 10. LEG 2 — browsing the imported catalog in a real browser, and the Phase 265 workspace.
 # ---------------------------------------------------------------------------------------------------------
 require_catalog_api "imported catalog"
 
 step "real-browser acceptance: browsing the IMPORTED catalog"
-mkdir -p "${STAGING_DIR}/imported"
-set +e
-OPERATOR_UI_ACCEPTANCE_TOKEN="${TOKEN}" \
-OPERATOR_UI_ACCEPTANCE_BASE_URL="${BASE_URL}" \
-CATALOG_ACCEPTANCE_SECRET_REF="${SECRET_REF}" \
-CATALOG_ACCEPTANCE_RECORD_COUNT="${RECORD_COUNT}" \
-PLAYWRIGHT_ARTIFACT_DIR="${STAGING_DIR}/imported" \
-  npx --prefix "${BROWSER_DIR}" playwright test \
-    --config "${BROWSER_DIR}/catalog.playwright.config.mjs" --grep "@imported"
-browse_status=$?
-set -e
+run_leg "@imported" "imported"
+browse_status="${LEG_STATUS}"
 if [ "${browse_status}" -ne 0 ]; then dump_stack_logs; fi
-require_tests_ran "${STAGING_DIR}/imported" "imported-catalog"
+
+step "real-browser acceptance: the WORKSPACE — export, history, paging bounds and the write boundary"
+run_leg "@workspace" "workspace"
+workspace_status="${LEG_STATUS}"
+if [ "${workspace_status}" -ne 0 ]; then dump_stack_logs; fi
 
 # ---------------------------------------------------------------------------------------------------------
-# 11. Browsing is READ-ONLY: no row and no event was written by any of it.
+# 11. Browsing and exporting are READ-ONLY: no row, no event and no history entry was written by any of it.
 # ---------------------------------------------------------------------------------------------------------
-step "browsing wrote no database or event state"
+step "browsing and exporting wrote no database, event or history state"
 items_after_browse="$(count_rows items)"
 events_after_browse="$(count_rows events)"
+history_after_browse="$(count_rows import_history)"
 [ "${items_after_browse}" = "${items_after_apply}" ] || fail "browsing changed the item count (${items_after_apply} -> ${items_after_browse})"
 [ "${events_after_browse}" = "${events_after_apply}" ] || fail "browsing appended events (${events_after_apply} -> ${events_after_browse})"
-info "items and events unchanged by an entire browsing session"
+[ "${history_after_browse}" = "${history_after_apply}" ] || fail "browsing or exporting wrote an import history entry"
+info "items, events and import history unchanged by an entire browsing and exporting session"
+
+# ---------------------------------------------------------------------------------------------------------
+# 11b. The EXPORT, asked for directly, discloses nothing it must not.
+# ---------------------------------------------------------------------------------------------------------
+step "the export API is a sanitized, attachment-safe snapshot"
+export_headers="$(mktemp)"
+export_body="$(mktemp)"
+export_status="$( curl -sS -D "${export_headers}" -o "${export_body}" -w '%{http_code}' \
+  -H "x-operator-ui-secret: ${TOKEN}" "${BASE_URL}/api/catalog/export" || echo 000 )"
+[ "${export_status}" = "200" ] || { cat "${export_body}" >&2; rm -f "${export_headers}" "${export_body}"; fail "GET /api/catalog/export answered ${export_status}, not 200"; }
+grep -qi '^content-disposition: attachment; filename="catalog-export-[a-z0-9][a-z0-9._-]*\.json"' "${export_headers}" \
+  || { cat "${export_headers}" >&2; rm -f "${export_headers}" "${export_body}"; fail "the export did not carry a safe attachment filename"; }
+grep -qi '^x-content-type-options: nosniff' "${export_headers}" || { rm -f "${export_headers}" "${export_body}"; fail "the export can be sniffed"; }
+if grep -qF "${SECRET_REF}" "${export_body}"; then rm -f "${export_headers}" "${export_body}"; fail "the export disclosed a provider reference value"; fi
+if grep -qF "${TOKEN}" "${export_body}"; then rm -f "${export_headers}" "${export_body}"; fail "the export carried the operator token"; fi
+if grep -qF 'providerRefs' "${export_body}"; then rm -f "${export_headers}" "${export_body}"; fail "the export carried a provider reference structure"; fi
+export_count="$( node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(String(JSON.parse(s).items.length))})' < "${export_body}" )"
+[ "$(digits_or_die "${export_count}" "the export record count")" = "${RECORD_COUNT}" ] \
+  || { rm -f "${export_headers}" "${export_body}"; fail "the export carried ${export_count} records, not ${RECORD_COUNT}"; }
+rm -f "${export_headers}" "${export_body}"
+info "the export carries ${RECORD_COUNT} records, a safe attachment name, and no reference value"
 
 # ---------------------------------------------------------------------------------------------------------
 # 12. The logs disclose neither the token nor any content.
@@ -425,39 +526,69 @@ done
 info "no token and no catalog content in the logs"
 
 # ---------------------------------------------------------------------------------------------------------
-# 13. IDEMPOTENCY — the same snapshot applied twice changes nothing.
+# 13. IDEMPOTENCY — the same snapshot applied twice changes nothing, through BOTH surfaces.
 # ---------------------------------------------------------------------------------------------------------
-step "re-apply the same snapshot (idempotency)"
+step "re-apply the same snapshot from the BROWSER (idempotency)"
+run_leg "@reapply" "reapply"
+reapply_status="${LEG_STATUS}"
+if [ "${reapply_status}" -ne 0 ]; then dump_stack_logs; fi
+[ "$(count_rows items)" = "${RECORD_COUNT}" ] || fail "the repeat browser import changed the item count"
+[ "$(count_rows events)" = "${events_after_apply}" ] || fail "the repeat browser import appended events"
+# The HISTORY does grow: "I ran an import and it changed nothing" is a fact worth keeping.
+[ "$(count_rows import_history)" = "2" ] || fail "the repeat browser import was not recorded in the history"
+info "re-applying from the browser created nothing, appended nothing, and was still recorded"
+
+step "re-apply the same snapshot from the COMMAND LINE (idempotency, and both surfaces agree)"
 repeat_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file acceptance-snapshot.json --apply )" \
   || fail "the repeat import exited non-zero"
 printf '%s\n' "${repeat_out}" | grep -qE '^ +create +0$' || fail "the repeat import planned creates; it is not idempotent"
 printf '%s\n' "${repeat_out}" | grep -qE "^ +already present +${RECORD_COUNT}$" || fail "the repeat import did not recognise every record as already present"
 [ "$(count_rows items)" = "${RECORD_COUNT}" ] || fail "the repeat import changed the item count"
 [ "$(count_rows events)" = "${events_after_apply}" ] || fail "the repeat import appended events"
-info "re-applying the same snapshot created nothing and appended nothing"
+[ "$(count_rows import_history)" = "3" ] || fail "the command-line import did not write to the same history"
+info "re-applying from the command line created nothing, appended nothing, and wrote to the SAME history"
 
 # ---------------------------------------------------------------------------------------------------------
-# 14. RESTART PERSISTENCE — the catalog survives a full stop/start, and the migration is idempotent.
+# 14. RESTART PERSISTENCE — the catalog and the import history survive a full stop/start.
 # ---------------------------------------------------------------------------------------------------------
 step "restart the whole stack and re-check (persistence)"
 token_before="$(cat "${TOKEN_FILE}")"
+history_before_restart="$(count_rows import_history)"
 ( cd "${EXTRACTED}" && docker compose stop >/dev/null )
 ( cd "${EXTRACTED}" && docker compose up -d >/dev/null )
-healthy=""
-for _ in $(seq 1 60); do
-  if curl -fsS -o /dev/null "${BASE_URL}/healthz"; then healthy=yes; break; fi
-  sleep 2
-done
-[ -n "${healthy}" ] || fail "the stack did not come back healthy after a restart"
+wait_for_health "the stack did not come back healthy after a restart"
 [ "$(cat "${TOKEN_FILE}")" = "${token_before}" ] || fail "the operator token did not persist across a restart"
 [ "$(count_rows items)" = "${RECORD_COUNT}" ] || fail "the imported records did not survive a restart"
 [ "$(catalog_total)" = "${RECORD_COUNT}" ] || fail "the catalog API does not report the records after a restart"
 [ "$(count_rows events)" = "${events_after_apply}" ] || fail "the restart appended events"
-info "records, token and event log all survived a full stop/start unchanged"
+[ "$(count_rows import_history)" = "${history_before_restart}" ] || fail "the import history did not survive a restart"
+info "records, token, event log and import history all survived a full stop/start unchanged"
 
-# The browser verdict is reported last so the checks above still run and report their own diagnosis first.
-if [ "${browse_status}" -ne 0 ]; then
-  fail "the catalog browsing acceptance reported failures (sanitized diagnostics will be in ${ARTIFACT_DIR})"
+step "real-browser acceptance: the records and the history are still there after the restart"
+run_leg "@survived" "survived"
+survived_status="${LEG_STATUS}"
+if [ "${survived_status}" -ne 0 ]; then dump_stack_logs; fi
+
+# ---------------------------------------------------------------------------------------------------------
+# 15. The import mount is STILL read-only, after everything above.
+# ---------------------------------------------------------------------------------------------------------
+step "the import mount is still read-only after an entire import workflow"
+app_cid="$( cd "${EXTRACTED}" && docker compose ps -q app )"
+[ -n "${app_cid}" ] || fail "could not find the app container after the restart"
+docker inspect --format '{{range .Mounts}}{{if eq .Destination "/var/lib/catalog/import"}}{{.RW}}{{end}}{{end}}' "${app_cid}" \
+  | grep -q '^false$' || fail "the catalog import mount is no longer read-only"
+if ( cd "${EXTRACTED}" && docker compose exec -T app sh -c 'touch /var/lib/catalog/import/still-should-not-exist' ) >/dev/null 2>&1; then
+  rm -f "${EXTRACTED}/import/still-should-not-exist"
+  fail "the container was able to WRITE into the import folder after importing from it"
 fi
+[ -e "${EXTRACTED}/import/still-should-not-exist" ] && fail "a file appeared in the import folder despite the read-only mount"
+info "the import folder is still read-only in metadata and in fact"
+
+# The browser verdicts are reported last so every check above still runs and reports its own diagnosis first.
+for leg_result in "browsing:${browse_status}" "workspace:${workspace_status}" "reapply:${reapply_status}" "survived:${survived_status}"; do
+  if [ "${leg_result#*:}" -ne 0 ]; then
+    fail "the ${leg_result%%:*} acceptance leg reported failures (sanitized diagnostics will be in ${ARTIFACT_DIR})"
+  fi
+done
 
 printf '\ncatalog import-and-browse acceptance: PASS (version %s, %s records)\n' "${RC_VERSION}" "${RECORD_COUNT}"
