@@ -45,6 +45,16 @@ completion, and only then starts the UI. It is idempotent (safe on every `up`), 
 lock, and fail-closed: if it fails, the app container is never started, so there is no half-installed UI to
 open. There is no separate migrate command to remember.
 
+**The keystore repairs itself, once, if it needs to.** Docker creates a fresh volume **root-owned**, while
+this container runs as `node` — so an installation created before v1.1.3 has a keystore the app cannot write,
+and every custodian-backed panel (`ops:doctor`, `/api/status`, the whole Catalog) answers 503 because of it.
+`up -d` now runs a one-shot `keystore-prepare` before anything else. It is the only thing in the stack that
+runs as root; it has **no network, no secrets and one mount**, it changes ownership and nothing else, it
+never reads, writes or deletes key material, and it **refuses** — stopping the stack rather than guessing —
+on any ownership or content state it does not understand. On a correct keystore it writes nothing at all.
+Check it yourself with `npm run ops:keystore-check`; the manual fallback, the rollback and every refusal code
+are in [docs/PHASE_263_KEYSTORE_REPAIR.md](docs/PHASE_263_KEYSTORE_REPAIR.md).
+
 **READY with no records is a real, correct state.** A fresh install reports `READY - NO RECORDS LOADED`: the
 service is operational and the evidence folder is empty. That is not a passing audit, not an authorization,
 and not a Phase 231 result — it means only that the software works and nothing has been read.

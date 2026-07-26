@@ -179,6 +179,7 @@ export type TroubleshootingId =
   | 'records-malformed'
   | 'version-mismatch'
   | 'migration-failed'
+  | 'keystore-not-writable'
   | 'ready-no-records'
   | 'bind-source-not-found'
   | 'not-reachable-from-network'
@@ -267,6 +268,26 @@ const TROUBLESHOOTING: readonly TroubleshootingEntry[] = [
     likelyCause: 'The database setup step failed, so the stack refused to serve a UI in front of a database it cannot use. Its last line names one code: a bad or missing database secret, a database that never became reachable, or a schema left at a version this build does not accept.',
     fix: 'Read the migrate container\'s log — it prints a step code and a fixed sentence, never a password or a connection string. Fix what it names, then run `docker compose up -d` again. The step is idempotent: repeating it after a partial failure resumes rather than conflicts, and it never re-runs work that is already done.',
     commands: { posix: 'docker compose logs migrate', windows: 'docker compose logs migrate' },
+  },
+  {
+    // Phase 263. The symptom an installation created before v1.1.3 shows, and the one this project's own
+    // gate found: an image change fixed fresh installs and could not reach an existing volume.
+    id: 'keystore-not-writable',
+    symptom: 'Status, the self-check and the whole Catalog panel answer "not available", and the app '
+      + 'container\'s log names a permission denied on a path under the keystore.',
+    likelyCause: 'The keystore volume was created by Docker BEFORE this was fixed in the image, so it belongs '
+      + 'to root while the app runs as an unprivileged user. Docker initialises a volume exactly once, so no '
+      + 'image update can reach back into one that already exists. Nothing is damaged and no key is lost — the '
+      + 'app simply cannot write to its own keystore.',
+    fix: 'Bring the stack up again. The shipped stack now runs a one-shot repair before anything else that '
+      + 'fixes the ownership, and it is the only thing in the stack that runs as root: it has no network, no '
+      + 'secrets and one mount, it changes ownership and nothing else, and it refuses rather than guessing on '
+      + 'any state it does not understand. Check the state yourself first with the command below — it writes '
+      + 'nothing. docs/PHASE_263_KEYSTORE_REPAIR.md has the manual fallback and the rollback.',
+    commands: {
+      posix: 'docker compose run --rm keystore-prepare npm run ops:keystore-check',
+      windows: 'docker compose run --rm keystore-prepare npm run ops:keystore-check',
+    },
   },
   {
     id: 'ready-no-records',

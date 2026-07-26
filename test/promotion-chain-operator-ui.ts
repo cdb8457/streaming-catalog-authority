@@ -445,7 +445,11 @@ test('the runtime Compose stack mounts the artifact folder read-only and hardens
   for (const [name, svc] of Object.entries(asMap(doc.services ?? null, 'services'))) {
     const parsed = asMap(svc, `service ${name}`);
     assert(parsed.privileged !== true, `${name} is not privileged`);
-    assert(parsed.network_mode === undefined, `${name} does not choose a host network mode`);
+    // `none` is explicitly allowed and nothing else is. Phase 263's keystore-prepare one-shot asks for NO
+    // network, which is the strictest answer available and the opposite of what this assertion guards
+    // against; `host` and every other value would still fail here.
+    assert(parsed.network_mode === undefined || parsed.network_mode === 'none',
+      `${name} either takes the compose network or none at all — never the host's`);
     const mounts = parsed.volumes === undefined || parsed.volumes === null ? [] : stringList(parsed.volumes, `${name} volumes`);
     for (const mount of mounts.map(parseMount)) {
       assert(!mount.source.includes('docker.sock') && !mount.target.includes('docker.sock'), `${name} mounts no Docker socket`);

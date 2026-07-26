@@ -2,6 +2,7 @@ import type { Client, Pool, PoolClient } from 'pg';
 import { existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import type { KeyCustodian } from '../core/crypto/custodian.js';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
+import { inspectKeystore } from './keystore-repair.js';
 
 /**
  * Phase 5 Stage 5.1 — production self-check ("ops doctor").
@@ -187,11 +188,52 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     else {
       try { accessSync(dir, fsConstants.W_OK); add('keystore', 'pass', 'keystore directory exists and is writable'); }
       catch { add('keystore', 'fail', 'keystore directory exists but is not writable'); }
+      // Phase 263. `accessSync(W_OK)` answers "can I write the directory" and stops there, which is why the
+      // shipped container could report a writable keystore and still die on the FIRST SUBDIRECTORY it had to
+      // create. The ownership check answers the question that actually predicts failure — is this whole tree
+      // mine? — and names the command that fixes it, instead of leaving an operator to work that out from an
+      // EACCES in a log. It is skipped where uids are not a concept (Windows), rather than guessed at.
+      addKeystoreOwnershipCheck(add, dir);
     }
   }
 
   const ok = checks.every((c) => c.state !== 'fail');
   return { ok, checks };
+}
+
+/**
+ * Phase 263 — "is the whole keystore tree owned by the process that has to write it?"
+ *
+ * FAIL vs WARN is the difference between "this will break" and "this is untidy". A foreign OWNER anywhere in
+ * the tree is what produces `EACCES: permission denied, mkdir '/var/lib/catalog/keystore/keys'`, so it is a
+ * FAIL with the repair named. A root directory that is merely readable beyond its owner breaks nothing and is
+ * a WARN — the stacks that run their app as root have exactly that state, legitimately, and turning it into a
+ * failure would make ops:doctor report a working deployment as broken.
+ *
+ * The detail never carries a path or a file name: `inspectKeystore` reports counts, uids and a mode, and this
+ * passes its sentence through unchanged.
+ */
+function addKeystoreOwnershipCheck(add: (name: string, state: CheckState, detail: string) => void, dir: string): void {
+  const uid = typeof process.getuid === 'function' ? process.getuid() : null;
+  const gid = typeof process.getgid === 'function' ? process.getgid() : null;
+  if (uid === null || gid === null) return; // no uids on this platform: there is nothing honest to report
+  let inspection: ReturnType<typeof inspectKeystore>;
+  try {
+    inspection = inspectKeystore(dir, { uid, gid, label: `this process (${uid}:${gid})` });
+  } catch {
+    add('keystore-ownership', 'fail', 'the keystore directory could not be examined to check its ownership (fail-closed)');
+    return;
+  }
+  if (inspection.verdict === 'ALREADY_CORRECT' || inspection.verdict === 'MISSING') {
+    add('keystore-ownership', 'pass', inspection.detail);
+    return;
+  }
+  if (inspection.verdict === 'REPAIRABLE' && inspection.foreignEntries === 0) {
+    add('keystore-ownership', 'warn', inspection.detail);
+    return;
+  }
+  add('keystore-ownership', 'fail',
+    `${inspection.detail} Run the keystore repair with the stack stopped: see docs/PHASE_263_KEYSTORE_REPAIR.md.`);
 }
 
 /** Render a report as redaction-safe text lines (no secret values are ever in a check detail). */

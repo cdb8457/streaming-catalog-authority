@@ -99,6 +99,52 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # ONE-SHOT, AND THE ONLY THING IN THIS STACK THAT RUNS AS ROOT. Phase 263.
+  #
+  # This stack bind-mounts the keystore from a host directory that `deploy/arcane-setup.sh` creates, so the
+  # ownership it ends up with is whatever the host gave it — typically root, while the app runs as `node`.
+  # That is `EACCES` on the first custodian construction: ops:doctor, /api/status and the whole catalog panel.
+  # The same repair the ordinary runtime stack uses fixes it, once, before anything else starts.
+  #
+  # It mounts the keystore and nothing else — no database URL, no secrets, no project folders. It has no
+  # network. It keeps `read_only: true`, drops every capability, and adds back exactly the three that changing
+  # ownership needs. It creates the directory if it is missing and changes OWNERSHIP; it never reads, writes,
+  # moves or deletes key material, never regenerates a secret, and never destroys a directory. A state it does
+  # not understand is REFUSED with nothing changed, and because `migrate` and `app` gate on this exiting zero,
+  # a refusal stops the stack rather than producing a half-working UI. A correct keystore writes nothing at
+  # all, so this is free on every `up` after the first.
+  keystore-prepare:
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.2}
+    init: true
+    restart: "no"
+    environment:
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      CATALOG_KEYSTORE_OWNER: node
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    volumes:
+      - ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/keystore:/var/lib/catalog/keystore
+    entrypoint: ["npm", "run"]
+    command: ["ops:keystore-repair"]
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    user: "0:0"
+    pids_limit: 64
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # One-shot. Applies the schema idempotently under an advisory lock, provisions the runtime credential and
   # the completion secret, and proves the least-privileged runtime connection works. The app will not start
   # unless this exits zero.
@@ -109,6 +155,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Phase 263. `ops:bootstrap` constructs a FileCustodian, so it is the first thing an unwritable keystore
+      # kills. It waits for the repair to exit zero.
+      keystore-prepare:
+        condition: service_completed_successfully
     environment:
       APP_ENV: production
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
@@ -150,6 +200,10 @@ services:
       postgres:
         condition: service_healthy
       migrate:
+        condition: service_completed_successfully
+      # Phase 263. Declared directly rather than relied on transitively: this is the container that dies with
+      # EACCES when the keystore is not writable, so the dependency belongs on it.
+      keystore-prepare:
         condition: service_completed_successfully
     environment:
       APP_ENV: production
