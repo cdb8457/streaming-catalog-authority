@@ -137,12 +137,13 @@ export async function exportCatalog(
   const byExternalId = new Map<string, Map<string, ExportRecord>>();
   const sanitized = { providerRefsOmitted: 0, metadataDropped: 0, recordsSkipped: 0 };
 
-  for (const itemId of ids) {
-    // Fail-closed per record, exactly as the browser does: a lineage that stopped being active mid-export
-    // drops out rather than failing the whole export or being invented into the file.
-    const identity = await reader.readIdentity(itemId).catch(() => null);
-    if (identity === null) continue;
+  // Read with the SAME bounded concurrency the browser's page reads use. Sequentially, an export of the
+  // maximum 5000 records would be 5000 round trips one after another — comfortably past this service's own
+  // 15-second request timeout, so the largest exports would be exactly the ones that never completed.
+  // Bounded rather than unbounded because a page must never open an unbounded fan of connections.
+  const identities = await readIdentities(reader, ids);
 
+  for (const { identity } of identities) {
     sanitized.providerRefsOmitted += (identity.providerRefs ?? []).length;
 
     const title = typeof identity.title === 'string' ? identity.title.trim() : '';
@@ -286,6 +287,38 @@ function serialize(source: string, records: readonly ExportRecord[]): string {
 export function exportFileName(source: string): string {
   const safe = SOURCE_RE.test(source) ? source : 'catalog';
   return `catalog-export-${safe}.json`;
+}
+
+/** How many identities are decrypted at once. The same bound the catalog browser's page reads use. */
+const EXPORT_READ_CONCURRENCY = 8;
+
+/**
+ * Decrypt a list of identities with bounded concurrency, in id order, dropping any that fail closed.
+ *
+ * ORDER IS PRESERVED regardless of which read finishes first: results land in a slot indexed by position, so
+ * an export's determinism does not depend on scheduling. A read that fails closed — a lineage that stopped
+ * being active mid-export, a custodian briefly unreachable — drops the record rather than failing the whole
+ * export or inventing it into the file.
+ */
+async function readIdentities(
+  reader: CatalogReader,
+  ids: readonly string[],
+): Promise<ReadonlyArray<{ itemId: string; identity: NonNullable<Awaited<ReturnType<CatalogReader['readIdentity']>>> }>> {
+  type Entry = { itemId: string; identity: NonNullable<Awaited<ReturnType<CatalogReader['readIdentity']>>> };
+  const out: Array<Entry | null> = new Array<Entry | null>(ids.length).fill(null);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    for (;;) {
+      const index = next;
+      if (index >= ids.length) return;
+      next += 1;
+      const itemId = ids[index]!;
+      const identity = await reader.readIdentity(itemId).catch(() => null);
+      if (identity !== null) out[index] = { itemId, identity };
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(EXPORT_READ_CONCURRENCY, Math.max(ids.length, 1)) }, worker));
+  return out.filter((entry): entry is Entry => entry !== null);
 }
 
 /**

@@ -73,6 +73,15 @@ export async function previewImport(input: PreviewImportInput): Promise<Previewe
 }
 
 export interface ApplyImportInput extends PreviewImportInput {
+  /**
+   * The digest of the exact BYTES on disk, when the caller already has it.
+   *
+   * The HTTP path verified a confirmation against the raw bytes; recomputing the digest here from the decoded
+   * text would record a different value in the history for any file that is not clean UTF-8, so the digest
+   * that was CHECKED and the digest that is RECORDED would be two different numbers describing one file.
+   * Omitted by callers that only ever had the text.
+   */
+  readonly contentDigest?: string;
   readonly authority: Pick<CatalogAuthority, 'addItem' | 'updateIdentity'>;
   /** Where the durable record goes. Omitted only where there is no database to write it to. */
   readonly history?: ImportHistoryStore;
@@ -112,6 +121,7 @@ export async function applyImport(input: ApplyImportInput): Promise<AppliedImpor
     continueOnError: input.continueOnError === true,
   });
 
+  const contentDigest = input.contentDigest ?? contentDigestOf(input.text);
   let recorded = false;
   if (input.history !== undefined) {
     try {
@@ -123,7 +133,7 @@ export async function applyImport(input: ApplyImportInput): Promise<AppliedImpor
         // the other two being right.
         fileName: basename(input.fileName),
         snapshotDigest: result.snapshotDigest,
-        contentDigest: contentDigestOf(input.text),
+        contentDigest,
         total: result.total,
         created: result.created,
         updated: result.updated,
@@ -138,7 +148,7 @@ export async function applyImport(input: ApplyImportInput): Promise<AppliedImpor
     }
   }
 
-  return { snapshot, plan, result, contentDigest: contentDigestOf(input.text), recorded };
+  return { snapshot, plan, result, contentDigest, recorded };
 }
 
 /**

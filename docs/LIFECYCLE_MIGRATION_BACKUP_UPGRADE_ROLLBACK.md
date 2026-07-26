@@ -225,7 +225,7 @@ state it does not understand. On a keystore that is already correct it writes no
 what it would do, without changing anything:
 
 ```
-docker compose run --rm --user root --entrypoint npm keystore-prepare run ops:keystore-check
+docker compose run --rm keystore-prepare ops:keystore-check
 ```
 
 The manual fallback, every refusal code, and how to undo the ownership change are in

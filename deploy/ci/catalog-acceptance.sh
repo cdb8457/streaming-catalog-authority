@@ -237,7 +237,9 @@ step "manufacture a LEGACY root-owned keystore, exactly as an installation from 
 
 # The CHECK sees it, names it, and exits non-zero — which is what makes it usable as a gate.
 set +e
-check_out="$( cd "${EXTRACTED}" && docker compose run --rm --user root --entrypoint npm keystore-prepare run ops:keystore-check 2>&1 )"
+# The EXACT form the troubleshooting table and the documents tell an operator to run, so the gate
+# exercises the documented command rather than a variant of it.
+check_out="$( cd "${EXTRACTED}" && docker compose run --rm keystore-prepare ops:keystore-check 2>&1 )"
 check_status=$?
 set -e
 printf '%s\n' "${check_out}" | grep -q 'REPAIRABLE' \
@@ -263,7 +265,7 @@ app_uid="$( cd "${EXTRACTED}" && docker compose exec -T app id -u | tr -d '[:spa
 info "keystore-prepare exited 0 and the app is running as uid ${app_uid} (non-root)"
 
 # The repair is IDEMPOTENT: a second check on the now-correct keystore exits 0 and reports nothing to do.
-( cd "${EXTRACTED}" && docker compose run --rm --user root --entrypoint npm keystore-prepare run ops:keystore-check ) >/dev/null \
+( cd "${EXTRACTED}" && docker compose run --rm keystore-prepare ops:keystore-check ) >/dev/null \
   || fail "the keystore check still reports work to do after the repair ran"
 info "a repeat check on the repaired keystore exits 0 — the repair is idempotent"
 

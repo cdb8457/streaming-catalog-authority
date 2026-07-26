@@ -333,6 +333,9 @@ export async function importApplyResponse(
   try {
     applied = await applyImport({
       text: file.text,
+      // The digest the confirmation was CHECKED against, carried through so the history records the same
+      // number rather than one recomputed from the decoded text.
+      contentDigest: file.contentDigest,
       lookup: deps.lookup,
       authority: deps.authority,
       history: deps.history,

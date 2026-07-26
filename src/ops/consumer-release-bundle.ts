@@ -386,10 +386,18 @@ When the preview is what you expected, commit it by adding \`--apply\`:
 docker compose exec app npm run ops:catalog-import -- --file example-catalog-snapshot.json --apply
 \`\`\`
 
-Then open the **Catalog** panel in the UI. Re-running the same file changes nothing: item identities are
+You can do exactly the same thing **from the UI**, without a terminal. The **Import a catalog** panel lists
+the files in \`./import/\`, previews the one you choose (writing nothing), and enables **Apply** only once
+you have read that preview. The apply is bound to the exact bytes you previewed: if the file changes in
+between, it is refused rather than performed. Every import, from either surface, is recorded in an import
+history that survives restarts.
+
+Then open the **Catalog** panel in the UI to search, sort, filter and page through what you imported, and to
+**export** it back out as a snapshot file. Re-running the same file changes nothing: item identities are
 derived from the file's own \`source\` and \`externalId\`, so an import is idempotent and cannot
 duplicate a record. The folder is mounted **read-only**, the import contacts no provider, media server or
-network endpoint, and nothing about it is chosen from the browser.
+network endpoint, and the only place a snapshot can come from is that folder — there is no path to type, no
+address to fetch and no file to upload.
 
 ## Upgrading
 
@@ -402,6 +410,20 @@ The image is pinned in \`.env\`. An upgrade is a deliberate edit, never a surpri
 4. \`docker compose up -d\`
 
 Your secrets, database volume and artifact folder are untouched by an image change.
+
+**Upgrading onto this version repairs your keystore, once.** Docker created your keystore volume
+**root-owned** while this container runs as an unprivileged user, so an installation made before this
+release has a keystore the application cannot write — which is why Status, the self-check and the whole
+Catalog panel would answer "not available". \`docker compose up -d\` now runs a one-shot
+\`keystore-prepare\` first. It is the only thing in the stack that runs as root, it has no network, no
+secrets and one mount, it changes **ownership and nothing else**, and it refuses — stopping the stack
+rather than guessing — on any state it does not understand. On a keystore that is already correct it writes
+nothing at all, and it needs no backup first because it reads, writes and deletes no key material. To look
+without changing anything:
+
+\`\`\`
+docker compose run --rm keystore-prepare ops:keystore-check
+\`\`\`
 
 ## Rolling back
 

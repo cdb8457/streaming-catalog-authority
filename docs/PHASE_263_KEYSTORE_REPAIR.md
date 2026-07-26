@@ -131,9 +131,9 @@ If you would rather do it yourself, or the one-shot refused and you want to look
 and then:
 
 ```bash
-# Look, without changing anything:
-docker compose -f docker-compose.runtime.yml run --rm --user root --entrypoint npm \
-  keystore-prepare run ops:keystore-check
+# Look, without changing anything. The service's entrypoint is already `npm run`, so the command
+# is just the script name:
+docker compose -f docker-compose.runtime.yml run --rm keystore-prepare ops:keystore-check
 
 # List the volume yourself:
 docker compose -f docker-compose.runtime.yml run --rm --user root --entrypoint sh \

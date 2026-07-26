@@ -285,8 +285,10 @@ const TROUBLESHOOTING: readonly TroubleshootingEntry[] = [
       + 'any state it does not understand. Check the state yourself first with the command below — it writes '
       + 'nothing. docs/PHASE_263_KEYSTORE_REPAIR.md has the manual fallback and the rollback.',
     commands: {
-      posix: 'docker compose run --rm keystore-prepare npm run ops:keystore-check',
-      windows: 'docker compose run --rm keystore-prepare npm run ops:keystore-check',
+      // The service's entrypoint is already `npm run`, so the command is just the script name. Writing
+      // `npm run ops:keystore-check` here would run `npm run npm run ops:keystore-check`, which fails.
+      posix: 'docker compose run --rm keystore-prepare ops:keystore-check',
+      windows: 'docker compose run --rm keystore-prepare ops:keystore-check',
     },
   },
   {
