@@ -1269,6 +1269,10 @@
       "args": [
         "5454"
       ]
+    },
+    {
+      "file": "catalog-browser-acceptance.ts",
+      "group": "offline"
     }
   ]
 }

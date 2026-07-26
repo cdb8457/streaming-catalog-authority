@@ -1,0 +1,155 @@
+# Phase 262 — the shipped product, imported and browsed in a real browser
+
+## User-visible outcome
+
+Before a release can be published, CI now proves the thing the product is *for*, end to end, on the artifact
+an operator actually downloads:
+
+> extract the release → start it → drop a snapshot file in the folder the README names → preview it (and
+> nothing is written) → apply it → browse your own catalog in a real Chromium.
+
+Phase 248 proved the release **loads** in a browser. Phase 259 proved the import CLI is correct against an
+embedded database, from source. Phase 260 proved the catalog panel is correct against a fake DOM and a server
+started from source. None of them crossed the image, the read-only import mount, the migration one-shot, the
+operator token and the browser *at once* — which is the only place several kinds of breakage can appear.
+
+## The command
+
+```
+REQUIRE_ACCEPTANCE=1 bash deploy/ci/catalog-acceptance.sh
+```
+
+Prerequisites: a running **Docker** daemon, `node`, and the pinned browser harness:
+
+```
+npm --prefix deploy/ci/acceptance ci
+npx --prefix deploy/ci/acceptance playwright install --with-deps chromium
+```
+
+The contract suite — everything below that does not need a daemon — is:
+
+```
+npm run test:phase262-local
+```
+
+## What it does, in order
+
+| # | step | what it proves |
+| --- | --- | --- |
+| 1 | assemble the consumer bundle, extract it | the release is standalone: no `package.json`, `src`, `node_modules` or toolchain, and it ships `example-catalog-snapshot.json` |
+| 2 | build the production image with a local-only tag | never pulled, never pushed, never `latest` |
+| 3 | point the extracted `.env` at that image, on port **8098** | its own loopback port, so it cannot collide with the Phase 248 stack |
+| 4 | run the bundle's `setup.sh` | the operator token is read from disk and never printed |
+| 5 | copy the snapshot into `./import/` | through the **shipped** read-only mount path, exactly as the README instructs |
+| 6 | `docker compose up -d` | the one-shot `migrate` service bootstraps the schema **before** the app exists; the run asserts it exited 0 |
+| 7 | inspect the import mount, and try to write into it from the container | read-only in metadata **and** in fact |
+| 8 | browser leg **@empty** | `EMPTY`, a guidance line that points at importing, and the import instructions on the same page |
+| 9 | `ops:catalog-import -- --file …` (no `--apply`) | the preview announces itself, plans 28 creates, **and the item and event counts do not move** |
+| 10 | the same command with `--apply` | 28 records exist, and the catalog API agrees |
+| 11 | browser leg **@imported** | the whole browsing surface (below) |
+| 12 | re-read the item and event counts | **an entire browsing session wrote nothing** |
+| 13 | read the container logs | no token, no title, no reference value |
+| 14 | apply the same snapshot again | `create 0`, `already present 28`, no new events — idempotent |
+| 15 | `docker compose stop` then `up -d` | records, token and event log all survive; the migration is idempotent |
+| 16 | teardown, on every exit path | containers, volumes, image and temporary directories removed |
+
+Counts in steps 9, 12, 14 and 15 are read with `psql` **inside** the stack, because the database is
+deliberately not published to the host. They are exact row counts, not inferences from the UI.
+
+## What the browser leg asserts
+
+Against the real shipped assets, under the real CSP:
+
+- **empty state** — `EMPTY`, a guidance line naming import, `No records yet.`, and the import panel readable
+  without a token;
+- **counts and paging** — 28 records, 25 on page one and 3 on page two, no record on both pages, all 28 seen
+  exactly once, and `Previous` returning to page one;
+- **search** — a substring match narrowing to one; a no-match search reported `NO_MATCH` with the total
+  intact rather than as an empty catalog; `Clear` restoring everything;
+- **filter** — provider-reference **type** `imdb` narrowing to the one record that has one; an inclusive year
+  range narrowing to three;
+- **sort** — title Z-to-A putting the fixture's only Z-titled record first;
+- **detail** — the operator's own external id and metadata shown back to them, and the provider reference
+  shown as a type plus a fingerprint with the words *the value is never shown*;
+- **hostile title** — `A Hostile <img src=x onerror=…><script>…</script> Title` arrives **verbatim as text**,
+  creates no `img` and no `script` element, does not execute, and needs no CSP violation to be safe (it was
+  never markup);
+- **token authentication** — 401 with no token, 401 for a same-length wrong token, 405 with `Allow: GET` for
+  POST/PUT/PATCH/DELETE, 200 with the token;
+- **no disclosure** — the sentinel reference value appears in no rendered text, no API response body, no
+  serialized DOM and no log line;
+- **no browser persistence** — no cookies, empty `localStorage`, `sessionStorage` and IndexedDB, the token in
+  no URL, request body or serialized DOM, no catalog record persisted anywhere, and a reload leaving an empty
+  token field and an unloaded catalog;
+- **cleanliness** — no console error, no page error, no CSP violation, no cross-origin request, no mixed
+  content.
+
+## The fixture
+
+`deploy/ci/acceptance/fixtures/catalog-acceptance-snapshot.json` — 28 records, checked in, deterministic, and
+**validated by the product's own `parseCatalogSnapshot` in `npm run test:phase262-local`**. A fixture the
+product would reject proves nothing about the product, and finding that out inside a Docker job most
+contributors cannot run is the wrong place to find it out.
+
+It contains no URL, no host, no live-service name: one imdb reference whose value is the disclosure sentinel,
+one hostile title, one undated record, and 25 ordinary ones — one full default page, so the 26th forces a
+second.
+
+## Skip and failure semantics — the part that must never lie
+
+| where | Docker present | Docker absent |
+| --- | --- | --- |
+| a developer machine | runs, passes or fails on behaviour | **exit 3**, prints `SKIP:`, says it is CI-required and was **NOT executed** |
+| CI (`REQUIRE_ACCEPTANCE=1`) | runs, passes or fails on behaviour | **exit 1**, and says why it refused to skip |
+
+There is no path by which "we could not run it" is reported as "it passed". Both directions are executed for
+real in `npm run test:phase262-local`, with the daemon **made** unreachable for the child process — so the
+contract is exercised on a laptop with no daemon and on a CI runner with a healthy one alike, rather than
+inferred from a probe that might disagree with what the orchestrator went on to see.
+
+The CI job `catalog-acceptance` is required: `publish` now needs all **seven** gates
+(`bundle`, `catalog-acceptance`, `image`, `lifecycle`, `rehearsal`, `release-candidate`, `suites`), and the
+job carries no `if:`, so it runs on every event that can reach `publish` and can never be skipped into
+looking green.
+
+## Boundaries
+
+- Nothing here contacts a provider, Jellyfin, a media library, Unraid or any endpoint beyond `127.0.0.1`.
+  The contract suite asserts that, including that every URL in the orchestrator is loopback.
+- It **accepts**; it never publishes. No registry login, no push, no tag, no release asset, no floating image
+  tag. The job has no `permissions:` block, so it inherits the workflow's read-only default and is
+  structurally incapable of publishing.
+- Its Compose project, host port, image tag and artifact directories are all its own, so it can never tear
+  down or interfere with the Phase 248 stack — and the CI teardown step is scoped to its own project label.
+- Artifacts are failure-only, pass through the same redaction gate, and reach the upload directory only by
+  being **promoted** out of staging after the gate passes. A gate failure, or a kill before the gate ran,
+  leaves the upload directory empty rather than merely scrubbed.
+
+## Limitations
+
+- **It was not executed locally.** The development machine for this phase has the Docker CLI and Compose but
+  no daemon (`failed to connect to the docker API at npipe:...`), so the orchestrator's own SKIP path is what
+  ran here, by design. Everything that does not need a daemon — the fixture parsed by the product's parser,
+  the workflow wiring, the orchestrator and spec contracts, and both skip/fail semantics with the daemon made
+  unreachable — was executed. **The real Docker + browser evidence is the CI job**, and this document does
+  not claim otherwise.
+- **One snapshot, one shape.** 28 records exercise paging, search, one filter type and one sort. They do not
+  exercise the 1000-record scan bound, a truncated result, or a catalog large enough to make decryption cost
+  visible.
+- **The empty and imported legs are separate browser runs.** They share a spec file and are selected by tag,
+  so a tag typo would silently run nothing; the orchestrator checks each leg's exit code, but not that it ran
+  a specific number of tests.
+- **`forget` is not exercised here.** Phase 260's suite proves a forgotten record leaves the count and 404s
+  its detail; this acceptance does not repeat it, because an erasure inside a release-acceptance run is a
+  destructive act on a stack that is about to be discarded anyway.
+- **No screenshot is kept on success.** Diagnostics exist only for failures, which is the right default for a
+  gate but means a passing run leaves no visual record.
+- **It proves the amd64 Linux runner.** Like every Docker gate in this repository, the architecture it can
+  actually verify is the one CI runs on.
+
+## Next usable-product step
+
+The catalog can now be filled and read. The obvious next thing an operator needs is to get it back out: a
+**catalog export** in the same snapshot format would complete the round trip, make a catalog portable between
+installations, and give this acceptance its natural closing assertion — export what was imported and compare
+the two documents.

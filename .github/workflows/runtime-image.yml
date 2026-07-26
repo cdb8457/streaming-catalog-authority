@@ -63,9 +63,12 @@ jobs:
         # tells you nothing. A timeout here fails loudly with a readable log instead of occupying a runner.
         timeout-minutes: 15
         run: npm run test:runner
-      - name: Phase 261, 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
-        # Phase 261 is the outbox recovery-by-token suite (a real embedded PostgreSQL, fake adapters only).
+      - name: Phase 262, 261, 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+        # Phase 261 is the outbox recovery-by-token suite (a real embedded PostgreSQL, fake adapters only);
+        # Phase 262 is the contract suite for the catalog import-and-browse acceptance, which checks the
+        # orchestrator, spec, fixture and CI wiring statically and executes the parts that need no daemon.
         run: |
+          npm run test:phase262-local
           npm run test:phase261-local
           npm run test:phase260-local
           npm run test:phase259-local
@@ -188,6 +191,58 @@ jobs:
         with:
           name: rc-acceptance-diagnostics
           path: dist/rc-acceptance-artifacts
+          retention-days: 7
+          if-no-files-found: ignore
+
+  catalog-acceptance:
+    name: Catalog import-and-browse acceptance (real browser, real Compose)
+    # Phase 262. The release-candidate job proves the shipped release LOADS in a browser. This one proves the
+    # shipped release DOES THE THING IT IS FOR: an operator drops a snapshot file into the read-only import
+    # folder the README names, previews it (and nothing is written), applies it, and browses their own catalog
+    # in a real Chromium — empty-state guidance, counts, search, filters, sorting, paging, record detail, a
+    # hostile title rendered as text, token authentication, no provider-reference value anywhere, nothing
+    # persisted in the browser, and no database or event write from browsing. It runs in its OWN disposable
+    # Compose project on its own loopback port, so it shares nothing with the release-candidate stack.
+    #
+    # It ACCEPTS a candidate; it never publishes one — no registry login, no push, no tag, no release asset.
+    # No `permissions:` block, so it inherits the workflow's read-only default and is structurally incapable
+    # of publishing.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install the pinned browser acceptance harness
+        # The same pinned, self-contained toolchain the release-candidate job uses, kept OUT of the
+        # repository's own package.json so the production dependency closure stays exactly pg + tsx.
+        run: |
+          npm --prefix deploy/ci/acceptance ci
+          npx --prefix deploy/ci/acceptance playwright install --with-deps chromium
+      - name: Import a snapshot and browse the catalog in a real browser
+        # REQUIRE_ACCEPTANCE=1 makes a missing daemon or browser a hard failure: CI must not silently skip.
+        env:
+          REQUIRE_ACCEPTANCE: "1"
+        run: bash deploy/ci/catalog-acceptance.sh
+      - name: Always tear down containers and volumes
+        # The orchestrator tears its own stack down on every exit path; this is the belt-and-braces net that
+        # runs even if the job step was cancelled or killed before the trap could. It is scoped to THIS job's
+        # project label, so it can never remove the release-candidate job's resources.
+        if: always()
+        run: |
+          docker ps -aq --filter "label=com.docker.compose.project=catalogauthority-catalogacceptance" | xargs -r docker rm -f
+          docker volume ls -q --filter "label=com.docker.compose.project=catalogauthority-catalogacceptance" | xargs -r docker volume rm
+          docker image rm -f catalog-authority-ops:catalog-acceptance 2>/dev/null || true
+      - name: Upload sanitized acceptance diagnostics (failure only)
+        # Only on failure, short retention, and only AFTER the orchestrator's redaction gate has removed any
+        # token-bearing file and failed the run if it found one. Nothing suspect reaches this step.
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: catalog-acceptance-diagnostics
+          path: dist/catalog-acceptance-artifacts
           retention-days: 7
           if-no-files-found: ignore
 
@@ -333,7 +388,10 @@ jobs:
     # release, or a deliberate dispatch) and is never conditionally skipped; a needed job that failed or was
     # cancelled is not "success", so publish is skipped — a release cannot go out over a failed gate. (rehearsal
     # itself needs release-candidate and lifecycle, so there is no cycle: rehearsal never depends on publish.)
-    needs: [suites, image, bundle, release-candidate, lifecycle, rehearsal]
+    # Phase 262 adds `catalog-acceptance`: the release must also be proved to import and browse a catalog in a
+    # real browser before it can be published. It carries no `if:` either, so it runs on every event that can
+    # reach publish.
+    needs: [suites, image, bundle, release-candidate, catalog-acceptance, lifecycle, rehearsal]
     # A cheap pre-filter only. The real gate is the release-ref step below, which is a tested function and
     # refuses anything this expression might let through.
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)
