@@ -430,26 +430,43 @@ async function main(): Promise<void> {
     assert(res.stderr.includes('no suite was selected'), 'the empty selection was not explained');
   });
 
-  await test('asking for a group this host cannot run reports a named skip, not a usage error', () => {
-    // On a machine with a Docker daemon these suites run and this assertion is about a real run instead; both
-    // outcomes are correct, and neither is "nothing was selected, exit 2", which is what a mistyped filter is.
-    const res = runCli(['--group', 'docker']);
-    assert(res.status === TEST_RUNNER_EXIT_OK || res.status === TEST_RUNNER_EXIT_SUITE_FAILURES,
-      `--group docker exited ${res.status}: ${res.stderr}`);
+  // A TEST MUST NOT RUN THE DOCKER ACCEPTANCE SUITES AS A SIDE EFFECT.
+  //
+  // These two assertions first read `runCli(['--group', 'docker'])` with no further flags. On this project's
+  // development machines that is harmless, because there is no daemon and the runner reports a named skip —
+  // which is exactly what the assertions are about. On a CI runner, which HAS a daemon, the same command
+  // SELECTS the two acceptance suites and RUNS them: a unit suite quietly became a second, unbudgeted
+  // execution of the real-browser and lifecycle gates, inside a step whose purpose is to check the runner's
+  // bookkeeping. It wedged the `suites` job on the first CI run of this branch.
+  //
+  // `--list` is the fix and is also the more honest test. It exercises everything these assertions actually
+  // claim — the group resolves, the suites are named, an unavailable capability is reported rather than
+  // mistaken for a mistyped filter — and it stops before a single suite is spawned, on every host. The
+  // capability DECISION itself is covered exhaustively and hermetically by the `planRun` assertions above,
+  // which need no daemon and no subprocess at all.
+  await test('asking for the docker group names those suites rather than reporting a mistyped selection', () => {
+    const res = runCli(['--group', 'docker', '--list']);
+    assertEq(res.status, TEST_RUNNER_EXIT_OK, `--group docker --list exited ${res.status}: ${res.stderr}`);
     assert(!res.stderr.includes('no suite was selected'),
-      'a capability this host lacks was reported as a mistyped selection');
-    const output = res.stdout + res.stderr;
-    assert(/release-candidate-acceptance\.ts/.test(output), 'the Docker suites were not named at all');
+      'a real group was reported as a mistyped selection');
+    const plan = JSON.parse(res.stdout) as { selected: string[]; skipped: Array<{ file: string; reason: string }> };
+    const named = [...plan.selected, ...plan.skipped.map((s) => s.file)];
+    for (const file of ['release-candidate-acceptance.ts', 'release-lifecycle-acceptance.ts']) {
+      assert(named.includes(file), `${file} was not accounted for by --group docker`);
+    }
+    // Which side each lands on is host-dependent — selected where a daemon exists, skipped where it does
+    // not — and both are correct. The assertion above is the one that matters: neither may go unaccounted for.
   });
 
-  await test('--require-capabilities makes a host without Docker a failure rather than a skip', () => {
-    const lenient = runCli(['--group', 'docker']);
-    const strict = runCli(['--group', 'docker', '--require-capabilities']);
-    // The one case this pins: whenever the lenient run SKIPPED, the strict run must FAIL. (If the host has a
-    // daemon both actually run, and then they agree for the ordinary reason.)
-    if (lenient.stdout.includes('RESULT: SKIPPED')) {
-      assertEq(strict.status, TEST_RUNNER_EXIT_SUITE_FAILURES, 'a required-but-missing capability did not fail');
-      assert(strict.stdout.includes('[REQUIRED]'), 'the strict run does not mark the skip as required');
+  await test('--list plans without spawning, so neither form of the docker request executes anything', () => {
+    // The guarantee that makes the assertion above safe to keep: `--list` returns before the spawner exists.
+    for (const argv of [['--group', 'docker', '--list'], ['--group', 'docker', '--require-capabilities', '--list']]) {
+      const res = runCli(argv);
+      assertEq(res.status, TEST_RUNNER_EXIT_OK, `${argv.join(' ')} exited ${res.status}: ${res.stderr}`);
+      const combined = res.stdout + res.stderr;
+      for (const marker of ['PASS ', 'FAIL ', 'RESULT:', 'Catalog Authority — running']) {
+        assert(!combined.includes(marker), `${argv.join(' ')} executed a suite: found ${JSON.stringify(marker)}`);
+      }
     }
   });
 
