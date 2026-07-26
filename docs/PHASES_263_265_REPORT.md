@@ -68,7 +68,7 @@ that already existed, and that was the stated remaining limitation.
 | `npm run typecheck` | clean |
 | `npm run test:inventory` | `ok: true` — every file under `test/` is inventoried |
 | `npm run test:runner` | 60 passed |
-| `npm test` (aggregate) | **297 suites selected, 297 passed, 0 failed** (2045s) |
+| `npm test` (aggregate) | **297 suites selected, 297 passed, 0 failed** (1586s, re-run after the review remediation) |
 | `npm run test:phase263-local` | 40 passed |
 | `npm run test:phase264-local` | 55 passed |
 | `npm run test:phase265-local` | 22 passed |
