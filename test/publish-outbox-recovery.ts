@@ -250,6 +250,63 @@ async function main(): Promise<void> {
     assert(denied, 'the app role cannot write the proof directly (42501)');
   });
 
+  await test('THE HISTORICAL DEFECT, through the real client: a server that drops the marker is caught, not duplicated', async () => {
+    await resetLedger();
+    // This is the shape of the actual regression: the collection is created, but its NAME does not carry the
+    // `[cat:<token>]` marker, so find-by-token cannot see an artifact that plainly exists. Driven through the
+    // real JellyfinHttpClient and the real mapping — not a fake target — because the two halves of that round
+    // trip are what drifted apart.
+    const fx = new FakeJellyfin({ library: { [`tmdb:${REFVAL}`]: 'lib-1' } });
+    fx.dropsMarker = true;   // a property of the server: every create loses its marker, response or no response
+    const target = new JellyfinOutboxTarget(new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: 'k', fetch: fx.fetch }));
+    const first = await svc(target).publish(await seed(), { dryRun: false });
+    assertEq(first.recovery, 'unrecoverable', 'the create is reported as not findable by its own token');
+    assert(fx.names().every((n) => !n.includes('[cat:')), 'the server really did store a nameless collection');
+
+    // Now the dangerous sequence: a SECOND publish whose response is lost, against the same broken server.
+    fx.createMode = 'create-then-throw';
+    assertEq((await svc(target).publish(await seed(), { dryRun: false })).status, 'ambiguous', 'response lost');
+    const before = fx.count();
+    const r = await svc(target).reconcile();
+    assertEq(r.created, 0, 'reconcile did NOT create a duplicate collection');
+    assertEq(fx.count(), before, 'the server holds no extra collection');
+    assert(r.stuck >= 1, 'the intent is stuck and surfaced instead');
+  });
+
+  await test('a create that never lands leaves no collection behind, through the real client', async () => {
+    await resetLedger();
+    const fx = new FakeJellyfin({ library: { [`tmdb:${REFVAL}`]: 'lib-1' } });
+    fx.createMode = 'throw-before-create';
+    const target = new JellyfinOutboxTarget(new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: 'k', fetch: fx.fetch, maxRetries: 0 }));
+    const id = await seed();
+    const res = await svc(target).publish(id, { dryRun: false });
+    assertEq(res.status, 'ambiguous', 'the intent is ambiguous');
+    assertEq(res.recovery, 'unknown', 'a create that failed proves nothing about recovery');
+    assertEq(fx.count(), 0, 'and no collection exists — "never landed" is not "created and lost"');
+    fx.createMode = 'ok';
+    const r = await svc(target).reconcile();
+    assertEq(r.created, 1, 'reconcile creates the one that was never made');
+    assertEq(fx.count(), 1, 'exactly one collection');
+    assertEq((await rowFor(id)).status, 'published', 'and the intent settles');
+  });
+
+  await test('a failing BoxSet listing through the real client is unknown, never absent', async () => {
+    await resetLedger();
+    const fx = new FakeJellyfin({ library: { [`tmdb:${REFVAL}`]: 'lib-1' } });
+    fx.createMode = 'create-then-throw';
+    const target = new JellyfinOutboxTarget(new JellyfinHttpClient({ baseUrl: 'http://jf.local', apiKey: 'k', fetch: fx.fetch, maxRetries: 0 }));
+    await svc(target).publish(await seed(), { dryRun: false }); // one collection exists, handle lost
+    assertEq(fx.count(), 1, 'the collection exists');
+    fx.findMode = 'throw';                                       // the recovery lookup itself now fails
+    const blind = await svc(target).reconcile();
+    assertEq(blind.created, 0, 'a failed lookup never licenses a create');
+    assertEq(fx.count(), 1, 'no duplicate while the server could not be read');
+    fx.findMode = 'ok';
+    const seeing = await svc(target).reconcile();
+    assertEq(seeing.adopted, 1, 'and it adopts once the lookup works again');
+    assertEq(fx.count(), 1, 'still exactly one collection');
+  });
+
   await test('contradictory create — a token resolving to a DIFFERENT artifact fails closed', async () => {
     await resetLedger();
     const id = await seed(); const t = new ProbeTarget(); t.markerMode = 'points-elsewhere';

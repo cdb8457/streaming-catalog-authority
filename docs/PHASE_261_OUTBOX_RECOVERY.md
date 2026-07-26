@@ -138,7 +138,7 @@ $ npx tsx test/jellyfin-outbox.ts 5450
 3 passed, 0 failed.
 ```
 
-**`npm run test:phase261-local`** — `test/publish-outbox-recovery.ts`, 21 assertions, all passing, against a
+**`npm run test:phase261-local`** — `test/publish-outbox-recovery.ts`, 24 assertions, all passing, against a
 real embedded PostgreSQL 16 and fake in-process adapters only:
 
 - the marker **round trip**: whichever create parameter carries the marker is the value `matchIdByToken`
@@ -146,6 +146,11 @@ real embedded PostgreSQL 16 and fake in-process adapters only:
 - marker **safety**: `tok]en`, `[cat:evil]`, `tok en`, empty and 129-character tokens all refused, and
   `[cat:ab]` proved not to match a lookup for `a`;
 - **adoption** through a fake target and through the real `JellyfinHttpClient` over the shared fake server;
+- **the historical defect itself, end to end through the real client and the real mapping**: a server that
+  drops the marker, then a lost response against that same server — the exact sequence that used to make a
+  duplicate — now ends `stuck` with no second collection;
+- through the real client: a create that **never landed** leaves no collection and is later created once; a
+  **failing BoxSet listing** never licenses a create and adopts once it works again;
 - **unrecoverable** and **contradictory** creates reported, latched, and refusing to create;
 - the refusal **surviving the process that learned it**, and **healing** when a later create verifies;
 - **duplicate token** refused by the database's unique index, with nothing created for the refused intent;

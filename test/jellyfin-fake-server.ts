@@ -23,8 +23,7 @@ const stat = (s: number): HttpResponseLike => ({ ok: s >= 200 && s < 300, status
 export type CreateMode =
   | 'ok'                  // creates, responds
   | 'throw-before-create' // the request never lands: nothing is created
-  | 'create-then-throw'   // created + tagged server-side, then the RESPONSE is lost
-  | 'drop-marker';        // creates and responds, but stores a name WITHOUT the token marker
+  | 'create-then-throw';  // created + tagged server-side, then the RESPONSE is lost
 
 /** How the server behaves on the BoxSet listing that recovery-by-token reads. */
 export type FindMode = 'ok' | 'throw';
@@ -41,6 +40,13 @@ export class FakeJellyfin {
 
   createMode: CreateMode = 'ok';
   findMode: FindMode = 'ok';
+  /**
+   * A server that stores a name of its own choosing, discarding the `[cat:<token>]` recovery marker. It is
+   * a property of the SERVER, not of one request — which is why it is a flag rather than a create mode: the
+   * marker is dropped whether the response is delivered or lost, and the combination of the two is exactly
+   * the sequence that used to produce a duplicate external collection.
+   */
+  dropsMarker = false;
   /** Every request line the client sent, for assertions about what was and was not disclosed. */
   readonly requests: Array<{ method: string; url: string }> = [];
 
@@ -74,9 +80,7 @@ export class FakeJellyfin {
       if (name === null) return stat(400); // a create with no name cannot carry the recovery marker
       if (this.createMode === 'throw-before-create') throw new Error('the create request never landed');
       const id = `jf-col-${++this.counter}`;
-      // 'drop-marker' models a server that stores a name of its own choosing — the pathology that makes
-      // "not found" stop meaning "absent".
-      this.collections.set(id, this.createMode === 'drop-marker' ? '' : name);
+      this.collections.set(id, this.dropsMarker ? '' : name);
       if (this.createMode === 'create-then-throw') throw new Error('created server-side, then the response was lost');
       return ok({ Id: id });
     }
@@ -92,6 +96,4 @@ export class FakeJellyfin {
   /** Collections currently on the server. */
   count(): number { return this.collections.size; }
   names(): string[] { return [...this.collections.values()]; }
-  /** Plant a collection the product did not create (adversarial adoption cases). */
-  plant(id: string, name: string): void { this.collections.set(id, name); }
 }
