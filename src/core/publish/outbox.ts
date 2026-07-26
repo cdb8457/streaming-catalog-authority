@@ -129,8 +129,11 @@ export class OutboxService {
     const recovery: RecoveryProof = found === handle ? 'verified' : found === null ? 'unrecoverable' : 'contradictory';
     if (recovery !== 'verified') this.recoveryBroken = true;
     // Recording the proof must never lose the create itself: a handle we hold is a tracked artifact, and
-    // failing here would throw that away.
-    try { await recordRecoveryProof(db, intentId, recovery); } catch { /* surfaced by the result */ }
+    // throwing from here would discard it. What a failure means depends on where we are, and both are
+    // fail-closed: on the publish path (`db` is the pool) the proof is simply not recorded and the caller
+    // still settles the handle; inside reconcile's transaction a failed statement aborts it, so the settle
+    // and COMMIT that follow fail too and the pass rolls back and reports `stuck` — never a false success.
+    try { await recordRecoveryProof(db, intentId, recovery); } catch { /* see above */ }
     return { handle, recovery };
   }
 
