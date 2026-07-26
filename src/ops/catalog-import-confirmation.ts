@@ -153,7 +153,12 @@ export class ImportConfirmations {
   }
 
   private mac(body: string): Buffer {
-    return createHmac('sha256', this.key).update(`catalog-authority/import-confirmation/v1 ${body}`, 'utf8').digest();
+    // The separator is a NUL, written as an ESCAPE and not as a literal byte. `\u0000` and a raw 0x00
+    // are the same character to the template literal, so the MAC input is byte-for-byte what it always was —
+    // but a literal NUL in a source file survives no diff, no patch, no editor and no terminal reliably, and
+    // a signing input that a copy of this file can silently change is a signing input that will one day be
+    // changed. `test/operator-ui-import-endpoint.ts` pins both the escape and the resulting digest.
+    return createHmac('sha256', this.key).update(`catalog-authority/import-confirmation/v1\u0000${body}`, 'utf8').digest();
   }
 
   private prune(now: number): void {

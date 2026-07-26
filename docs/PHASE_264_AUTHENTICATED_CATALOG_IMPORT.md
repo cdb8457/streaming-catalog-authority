@@ -29,18 +29,48 @@ Compose file; the host side is a folder the operator chose, mounted `:ro`. There
 fetch, no browser file upload, no provider call and no directory walk. The browser contributes a **name from
 a listing this service produced**, and nothing else.
 
-Four independent checks, in this order, each a refusal rather than a repair:
+### One descriptor: the file that is checked is the file that is read
+
+The first version of this resolved the path, `lstat`ed it, and then read it **by path** — three separate
+resolutions of one name, with a window between each. The import folder is read-only to the *container*; it is
+not read-only to whoever is at the host. So between the check and the read the name could be pointed
+somewhere else: the checks would pass against a small regular file and the read would return whatever the
+name meant a moment later — a symlink's target, a different file, an unbounded one.
+
+The name is now opened **once**, and every question after that is asked of the **descriptor**:
 
 1. **The name matches a closed grammar** — `^[A-Za-z0-9][A-Za-z0-9._-]{0,127}\.json$`. No separator, no
    `..`, no dot-file, no control character, no space, no percent-encoding. Traversal is not something this
    code defends against after the fact; it is something that cannot be spelled.
-2. **The inbox is configured and resolvable.**
-3. **The resolved real path is inside the resolved inbox root** — checked after `realpath` on both sides, so a
-   symlink planted inside the folder cannot point out of it — and is a **direct child**, so a file two levels
-   down (which the listing never offered) is refused too.
-4. **What is there is a regular, non-empty, bounded file** — checked with `lstat`, before it is read, and the
-   size re-checked against the bytes actually read so a file that grew in between is refused rather than
-   half-honoured.
+2. **The inbox root is resolved once.**
+3. **`open(join(root, name), O_RDONLY | O_NOFOLLOW)`** — a symlink at that final component makes the *open*
+   fail, atomically, rather than being detected and then re-raced.
+4. **`fstat(fd)`** — asked of the open file description, not of a name. A directory, device, socket or FIFO is
+   refused here even if it was substituted after the listing offered it, because this is the object we hold.
+5. **The size is enforced from that `fstat`, before a single byte is read.**
+6. **The bytes are read from that descriptor**, bounded at one byte more than the `fstat` promised, and the
+   size is enforced **again** against what actually came back — so a file that grew in between is refused
+   rather than silently truncated into something that still parses.
+7. **The descriptor is closed on every path**, including every refusal.
+
+**This is deliberately not another pathname recheck.** Re-resolving the path a second, third or fourth time
+only moves the window; it never closes it. Containment is structural instead: the grammar admits no
+separator, so `join(root, name)` has exactly one component below an already-resolved root, and `O_NOFOLLOW`
+refuses to traverse a link at that component. After the open there is no path in use at all, so there is
+nothing left for a rename to redirect.
+
+**The listing is advisory; only the open is authoritative.** `/api/import/inbox` uses `lstat` to decide what
+to offer, which is inherently a snapshot of a moment. Nothing rests on it — a candidate it offered is
+re-decided from scratch, against a descriptor, when it is actually opened, so a stale listing costs a refusal
+and never a disclosure.
+
+**Platform limit, stated rather than glossed.** `O_NOFOLLOW` is POSIX. The shipped product runs in a Linux
+container and gets the guarantee above in full. On a platform whose Node build does not define the flag
+(Windows), the open cannot atomically refuse a link: the module reports `noFollowAtOpen: false`, uses a
+best-effort `lstat` pre-check in its place, and does **not** claim the window is closed there. A link
+introduced after that pre-check *would* be followed on such a platform, and the suite pins that fact
+deliberately so no document can quietly contradict it. Everything else — one descriptor, `fstat` on it, both
+size bounds, no re-open by name — holds everywhere.
 
 The listing itself skips anything that is not a plain, bounded `.json` file and **counts** what it skipped by
 reason. A skipped name is never echoed: it is still somebody's filesystem.
@@ -160,11 +190,20 @@ questions with different threat models, and collapsing them would mean the brows
 
 ## Proof
 
-`npm run test:phase264-local` (`test/operator-ui-import-endpoint.ts`) — 44 assertions covering path traversal
+`npm run test:phase264-local` (`test/operator-ui-import-endpoint.ts`) — 55 assertions covering path traversal
 in fourteen spellings, symlinks, oversized and empty files, non-string names, a bounded and deterministic
 listing, confirmation forgery, tampering, replay, expiry, cross-process rejection and substitution, the
 content-type / origin / size rules, auth and method on all four routes, fail-closed with no database, the v6
 grants and CHECKs, and the whole preview → refuse → apply → repeat flow against a real PostgreSQL.
+
+**The check-to-open race is proved, not argued.** A real filesystem cannot be made to lose that race on
+demand, so the syscalls are injected and the swap is scheduled exactly where it hurts: the pathname is
+repointed at a symlink *at the moment of the open*, after every validation has passed. The suite asserts the
+open refuses it, that no byte from outside the folder appears in the refusal, that **no call after the open
+carries a pathname at all** (a re-resolution would be another window), that the descriptor is closed exactly
+once on every path, and separately covers a symlink present at open time, a non-regular descriptor, a file
+that grew between the `fstat` and the read, both size bounds, an empty descriptor by either route, a stale
+listing, and — honestly — what a platform without `O_NOFOLLOW` does and does not give you.
 
 `deploy/ci/catalog-acceptance.sh` proves the same workflow through a real browser against a real Compose
 stack.
@@ -180,3 +219,9 @@ stack.
   catalog subsequently became — a later erasure does not rewrite an older row, and should not.
 * **The inbox lists at most 200 files** and says when it stopped. A folder with more than that needs the
   command line, which takes a name directly.
+* **`O_NOFOLLOW` is POSIX.** On a platform without it the open cannot atomically refuse a symlink, and the
+  module says so on every result rather than pretending otherwise. This is a developer-machine limitation:
+  the shipped container is Linux.
+* **The command-line path resolves by name**, as it always has. It is used by an operator who already has
+  shell access to the container, so a race against themselves is not a boundary this product is defending;
+  the browser path is the one that takes an untrusted name, and it is the one bound to a descriptor.

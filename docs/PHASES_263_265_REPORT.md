@@ -31,10 +31,11 @@ that already existed, and that was the stated remaining limitation.
 
 * Four routes behind the existing token: `/api/import/{inbox,preview,apply,history}`. `preview` and `apply`
   are the only non-GET routes in the service, named explicitly rather than matched by prefix.
-* A snapshot can come only from the read-only mounted inbox. Four independent checks: a closed name grammar
-  in which a separator, `..`, a dot-file and a control character **cannot be spelled**; the inbox resolving;
-  containment re-checked after `realpath` on both sides **and** direct-child only; and an `lstat`
-  regular-file/size check before the read, re-checked against the bytes actually read.
+* A snapshot can come only from the read-only mounted inbox, and the file that is **checked** is the file
+  that is **read**: a closed name grammar in which a separator, `..`, a dot-file and a control character
+  cannot be spelled, then `open(O_RDONLY | O_NOFOLLOW)` **once**, then `fstat` on that descriptor, the size
+  enforced from it before any read, the bytes read from the same descriptor, and the size enforced again
+  against what came back. Nothing after the open mentions a pathname, so there is no window left to race.
 * **Preview writes nothing, structurally**: it is handed a read-only lookup and no authority and no history
   store, so nothing in its scope can write.
 * **Apply is bound to the previewed bytes** by a signed, single-use, 15-minute confirmation. Substitution,
@@ -69,7 +70,7 @@ that already existed, and that was the stated remaining limitation.
 | `npm run test:runner` | 60 passed |
 | `npm test` (aggregate) | **297 suites selected, 297 passed, 0 failed** (2045s) |
 | `npm run test:phase263-local` | 40 passed |
-| `npm run test:phase264-local` | 44 passed |
+| `npm run test:phase264-local` | 55 passed |
 | `npm run test:phase265-local` | 22 passed |
 | Compose config, all five shipped stacks | resolve |
 | Release bundle assembly + `test:release-delivery` | 26 passed |
@@ -120,6 +121,29 @@ rather than skips. **CI is the evidence for those legs, and it is still outstand
 
 Everything that does not need a Docker daemon was run to completion locally and is reported above.
 
+## Independent-review remediation
+
+Two findings from an independent review, both fixed here.
+
+**1. A check-to-open TOCTOU in the import inbox.** The module resolved a path, `lstat`ed it, then read it
+**by path** — three resolutions of one name with a window between each. The pre-existing "classic race" test
+only swapped bytes between a preview and an apply, which the confirmation digest already caught; it said
+nothing about the window inside a single read. Closed by binding validation and read to **one descriptor**
+with real no-follow semantics at the open, rather than by adding another pathname recheck (which moves a
+window, never closes it). Proved with an **injected syscall surface** that repoints the name at a symlink at
+the moment of the open: the open refuses it, no byte from outside the folder reaches the refusal, and **no
+call after the open carries a pathname at all**. Also covered: symlink-at-open, non-regular descriptor,
+growth between `fstat` and read, both size bounds, an empty descriptor by either route, descriptor closure on
+every path, and a stale listing. The `O_NOFOLLOW` platform limit is stated on every result and pinned by a
+test that asserts what a platform without it does **not** give you.
+
+**2. A literal NUL byte in a signing input.** `catalog-import-confirmation.ts` carried a raw `0x00` in the
+HMAC prefix. It is now the escape ` ` — the same character to the compiler, so the MAC input is
+byte-for-byte unchanged (asserted three ways: the language equivalence, the source containing the escape and
+no raw byte, and the issuer still verifying its own token). A **no-control-byte source guard** now covers
+every `.ts` file under `src/` and `test/`; the four other pre-existing offenders were converted to escapes
+too, because a guard that exempts the files already violating it cannot prevent the next one.
+
 ## Limitations, stated
 
 * **The confirmation does not survive a restart**, by design. A page open across an upgrade must preview
@@ -135,3 +159,8 @@ Everything that does not need a Docker daemon was run to completion locally and 
   page.
 * **Search and sort over encrypted identity are bounded** and say when they did not see everything. That is
   the cost of crypto-shredding being a real erasure, not a defect.
+* **`O_NOFOLLOW` is POSIX.** On a platform without it the import open cannot atomically refuse a symlink, and
+  the module reports that on every result rather than pretending otherwise. The shipped container is Linux.
+* **The command-line import still resolves by name.** It is used by an operator who already has shell access
+  to the container, so a race against themselves is not a boundary being defended; the browser path is the
+  one that takes an untrusted name, and it is the one bound to a descriptor.

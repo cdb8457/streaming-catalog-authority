@@ -3,13 +3,16 @@ import { request, type Server } from 'node:http';
 import { createServer as createNetServer } from 'node:net';
 import { mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { readFileSync } from 'node:fs';
+import { join, resolve } from 'node:path';
+import { createHash } from 'node:crypto';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import {
   INBOX_MAX_ENTRIES,
   INBOX_NAME_RE,
   CatalogInboxError,
+  type InboxFs,
+  type InboxStat,
   listImportInbox,
   readInboxFile,
 } from '../src/ops/catalog-import-inbox.js';
@@ -180,10 +183,15 @@ async function main(): Promise<void> {
       assert(!listing.candidates.some((c) => c.name === 'linked.json'), 'and never offers it');
       rmSync(join(inbox, 'linked.json'), { force: true });
     }
-    // Independent of symlink support: the containment check is what the resolution rule rests on, and the
-    // grammar above already refuses every spelling of a path.
-    assert(readRepo('src/ops/catalog-import-inbox.ts').includes('realpathSync'),
-      'containment is checked after symlink resolution');
+    // Independent of whether this platform can create a link: containment is STRUCTURAL, not a re-resolution.
+    // The name grammar admits no separator, so there is exactly one component below an already-resolved root,
+    // and `O_NOFOLLOW` refuses to traverse a link at that component — atomically, at the open. This used to
+    // assert `realpathSync`, i.e. that the path was resolved a SECOND time; that is what left the
+    // check-to-open window, and re-resolving is precisely what the module no longer does.
+    const source = readRepo('src/ops/catalog-import-inbox.ts');
+    assert(source.includes('O_NOFOLLOW'), 'the open refuses to follow a link rather than detecting one afterwards');
+    assert(!/readFileSync|realpathSync\(candidate\)/.test(source),
+      'and nothing reads or re-resolves the file by pathname after it has been opened');
   });
 
   await test('a file over the size limit is refused before it is read', () => {
@@ -201,6 +209,261 @@ async function main(): Promise<void> {
     assertEq(file.text, snapshotJson(4), 'the exact bytes');
     assertEq(file.bytes, Buffer.byteLength(snapshotJson(4), 'utf8'), 'the byte count');
     assert(/^[0-9a-f]{64}$/.test(file.contentDigest), 'a sha256 of the bytes');
+  });
+
+  // -------------------------------------------------------------------------------------------------------
+  // THE CHECK-TO-OPEN RACE, closed and PROVED against an injected syscall surface.
+  //
+  // The pre-existing "classic race" test only swaps BYTES between a preview and an apply, which the
+  // confirmation digest catches. It says nothing about the window INSIDE a single read: validate a pathname,
+  // then read that pathname again and get something else. A real filesystem cannot be made to lose that race
+  // on demand, so the syscalls are injected and the swap is scheduled exactly where it hurts.
+  // -------------------------------------------------------------------------------------------------------
+
+  const OUTSIDE_BYTES = 'SECRET-FROM-OUTSIDE-THE-IMPORT-FOLDER-'.repeat(4);
+  const FAKE_ROOT = resolve('/var/lib/catalog/import');
+  const FAKE_ENV = { [CATALOG_IMPORT_DIR_ENV]: FAKE_ROOT } as NodeJS.ProcessEnv;
+
+  interface FakeInode {
+    readonly kind: 'file' | 'dir' | 'symlink' | 'other';
+    /** For a symlink, the bytes its TARGET holds — what a following read would have returned. */
+    readonly content?: string;
+    /** What fstat reports, where it must differ from the content (growth, or a lying stat). */
+    readonly statSize?: number;
+  }
+
+  interface FakeCall { readonly op: string; readonly path?: string; readonly fd?: number }
+
+  class FakeInboxFs implements InboxFs {
+    readonly calls: FakeCall[] = [];
+    readonly openFds = new Set<number>();
+    /** Fires at the START of `open`, so a swap lands after every validation and before the descriptor exists. */
+    onOpen: (() => void) | null = null;
+    private readonly inodes = new Map<string, FakeInode>();
+    private readonly fdInodes = new Map<number, FakeInode>();
+    private nextFd = 3;
+
+    constructor(readonly noFollow: number | null = 0x20000) {}
+
+    put(name: string, inode: FakeInode): this {
+      this.inodes.set(join(FAKE_ROOT, name), inode);
+      return this;
+    }
+
+    realpath(path: string): string {
+      this.calls.push({ op: 'realpath', path });
+      return path;
+    }
+
+    readdir(path: string): readonly string[] {
+      this.calls.push({ op: 'readdir', path });
+      return [...this.inodes.keys()].map((full) => full.slice(FAKE_ROOT.length + 1));
+    }
+
+    lstat(path: string): InboxStat | null {
+      this.calls.push({ op: 'lstat', path });
+      const inode = this.inodes.get(path);
+      if (inode === undefined) return null;
+      return {
+        isFile: inode.kind === 'file',
+        isSymbolicLink: inode.kind === 'symlink',
+        size: inode.statSize ?? (inode.content ?? '').length,
+      };
+    }
+
+    open(path: string, flags: number): number {
+      this.onOpen?.();
+      this.calls.push({ op: 'open', path });
+      const inode = this.inodes.get(path);
+      if (inode === undefined) throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      // A real O_NOFOLLOW open of a symlink fails with ELOOP. WITHOUT the flag the kernel follows it — which
+      // is the platform difference this fake reproduces rather than papers over.
+      if (inode.kind === 'symlink' && this.noFollow !== null && (flags & this.noFollow) !== 0) {
+        throw Object.assign(new Error('ELOOP'), { code: 'ELOOP' });
+      }
+      if (inode.kind === 'dir') throw Object.assign(new Error('EISDIR'), { code: 'EISDIR' });
+      const fd = this.nextFd;
+      this.nextFd += 1;
+      this.openFds.add(fd);
+      this.fdInodes.set(fd, inode);
+      return fd;
+    }
+
+    fstat(fd: number): InboxStat {
+      this.calls.push({ op: 'fstat', fd });
+      const inode = this.fdInodes.get(fd)!;
+      // fstat RESOLVES: a descriptor opened through a link reports the target and never a link. That is
+      // exactly why the refusal has to happen at the open and cannot be recovered here.
+      return {
+        isFile: inode.kind === 'file' || inode.kind === 'symlink',
+        isSymbolicLink: false,
+        size: inode.statSize ?? (inode.content ?? '').length,
+      };
+    }
+
+    read(fd: number, buffer: Buffer, offset: number, length: number, position: number | null): number {
+      this.calls.push({ op: 'read', fd });
+      const content = Buffer.from(this.fdInodes.get(fd)!.content ?? '', 'utf8');
+      const from = position ?? 0;
+      if (from >= content.byteLength) return 0;
+      return content.copy(buffer, offset, from, Math.min(from + length, content.byteLength));
+    }
+
+    close(fd: number): void {
+      this.calls.push({ op: 'close', fd });
+      this.openFds.delete(fd);
+    }
+  }
+
+  const isInboxError = (err: unknown): boolean => err instanceof CatalogInboxError;
+  /** Every call the module made AFTER it opened the descriptor. */
+  const callsAfterOpen = (fs: FakeInboxFs): readonly FakeCall[] => {
+    const index = fs.calls.findIndex((c) => c.op === 'open');
+    return index === -1 ? [] : fs.calls.slice(index + 1);
+  };
+
+  await test('RACE: the pathname is swapped after validation, and no outside bytes come back', () => {
+    const fs = new FakeInboxFs();
+    fs.put('good.json', { kind: 'file', content: snapshotJson(2) });
+    // THE SWAP. At the moment of the open the name stops meaning the file that was validated and starts
+    // meaning a symlink whose target is outside the folder. This is the window the old code lost: it
+    // resolved and stat'ed a path, then read that path again.
+    fs.onOpen = () => { fs.put('good.json', { kind: 'symlink', content: OUTSIDE_BYTES }); };
+
+    const err = assertThrows(() => readInboxFile('good.json', FAKE_ENV, fs), 'the swapped name is refused');
+    assert(isInboxError(err), 'refused as an inbox error');
+    const message = String((err as Error).message);
+    assert(/symbolic link/.test(message), 'and says the name became a link');
+    assert(!message.includes('SECRET-FROM-OUTSIDE'), 'the refusal carries no byte from outside the folder');
+    assertEq(fs.openFds.size, 0, 'no descriptor was leaked by the refusal');
+  });
+
+  await test('RACE: after the open, the module never mentions a pathname again', () => {
+    // The structural claim, and what makes the race unwinnable rather than merely unlikely: a re-resolution
+    // — ANY call carrying a path once the descriptor exists — would be another window.
+    const fs = new FakeInboxFs();
+    fs.put('good.json', { kind: 'file', content: snapshotJson(3) });
+    const file = readInboxFile('good.json', FAKE_ENV, fs);
+
+    assertEq(fs.calls.filter((c) => c.op === 'open').length, 1, 'the file is opened exactly once');
+    const after = callsAfterOpen(fs);
+    assert(after.length > 0, 'work happens after the open');
+    for (const call of after) {
+      assertEq(call.path, undefined, `${call.op} after the open carries a pathname — that is another window`);
+      assert(['fstat', 'read', 'close'].includes(call.op), `${call.op} is not a descriptor operation`);
+    }
+    assertEq(fs.calls.filter((c) => c.op === 'close').length, 1, 'the descriptor is closed exactly once');
+    assertEq(fs.openFds.size, 0, 'nothing is left open');
+
+    // What came back describes the bytes that were READ, and only those.
+    assertEq(file.text, snapshotJson(3), 'the bytes are the file that was opened');
+    assertEq(file.bytes, Buffer.byteLength(snapshotJson(3), 'utf8'), 'the length is of those bytes');
+    assertEq(file.contentDigest, createHash('sha256').update(Buffer.from(snapshotJson(3), 'utf8')).digest('hex'),
+      'and the digest is of those bytes, never of a size something else reported');
+    assertEq(file.noFollowAtOpen, true, 'the open refused to follow links');
+  });
+
+  await test('RACE: a symlink already present at open time is refused, not followed', () => {
+    const fs = new FakeInboxFs();
+    fs.put('link.json', { kind: 'symlink', content: OUTSIDE_BYTES });
+    const err = assertThrows(() => readInboxFile('link.json', FAKE_ENV, fs), 'a symlink is refused');
+    assert(isInboxError(err), 'refused as an inbox error');
+    assert(!String((err as Error).message).includes('SECRET-FROM-OUTSIDE'), 'nothing from the target leaks');
+    assertEq(fs.openFds.size, 0, 'no descriptor leaked');
+  });
+
+  await test('a NON-REGULAR descriptor is refused on the descriptor, and the descriptor is closed', () => {
+    for (const kind of ['dir', 'other'] as const) {
+      const fs = new FakeInboxFs();
+      fs.put('weird.json', { kind, content: 'x' });
+      const err = assertThrows(() => readInboxFile('weird.json', FAKE_ENV, fs), `a ${kind} is refused`);
+      assert(isInboxError(err), `a ${kind} is refused as an inbox error`);
+      assert(/not a regular file/.test(String((err as Error).message)), `a ${kind} says what it is not`);
+      assertEq(fs.openFds.size, 0, `no descriptor leaked refusing a ${kind}`);
+    }
+  });
+
+  await test('a file that GREW between the fstat and the read is refused, never truncated into looking valid', () => {
+    const fs = new FakeInboxFs();
+    // fstat says 10 bytes; the descriptor actually holds far more. Truncating to 10 would hand the parser a
+    // prefix of a document and call it the file.
+    fs.put('growing.json', { kind: 'file', content: snapshotJson(5), statSize: 10 });
+    const err = assertThrows(() => readInboxFile('growing.json', FAKE_ENV, fs), 'growth is refused');
+    assert(isInboxError(err), 'refused as an inbox error');
+    assert(/grew while it was being read/.test(String((err as Error).message)), 'and says so plainly');
+    assertEq(fs.openFds.size, 0, 'no descriptor leaked');
+  });
+
+  await test('the size bound is enforced BEFORE the read from the fstat, and AFTER it from the bytes', () => {
+    // BEFORE: the fstat alone is over the limit, so nothing is read at all.
+    const before = new FakeInboxFs();
+    before.put('huge.json', { kind: 'file', content: 'x', statSize: IMPORT_MAX_BYTES + 1 });
+    const beforeErr = assertThrows(() => readInboxFile('huge.json', FAKE_ENV, before), 'an oversized fstat is refused');
+    assert(/limit/.test(String((beforeErr as Error).message)), 'the refusal names the limit');
+    assertEq(before.calls.some((c) => c.op === 'read'), false, 'and NOT ONE byte was read');
+    assertEq(before.openFds.size, 0, 'no descriptor leaked');
+
+    // AFTER: the fstat is within bounds and the descriptor holds more than it promised.
+    const after = new FakeInboxFs();
+    after.put('liar.json', { kind: 'file', content: 'y'.repeat(IMPORT_MAX_BYTES + 64), statSize: IMPORT_MAX_BYTES });
+    assert(isInboxError(assertThrows(() => readInboxFile('liar.json', FAKE_ENV, after), 'an oversized read is refused')),
+      'refused as an inbox error');
+    assertEq(after.openFds.size, 0, 'no descriptor leaked');
+  });
+
+  await test('an empty descriptor is refused, whether the fstat or the read is what says so', () => {
+    const byStat = new FakeInboxFs();
+    byStat.put('empty.json', { kind: 'file', content: '' });
+    assert(isInboxError(assertThrows(() => readInboxFile('empty.json', FAKE_ENV, byStat), 'an empty file is refused')),
+      'refused as an inbox error');
+    assertEq(byStat.openFds.size, 0, 'no descriptor leaked');
+
+    // The fstat claims content; the descriptor yields nothing. Refused rather than parsed as an empty string.
+    const byRead = new FakeInboxFs();
+    byRead.put('vanished.json', { kind: 'file', content: '', statSize: 128 });
+    assert(isInboxError(assertThrows(() => readInboxFile('vanished.json', FAKE_ENV, byRead), 'a vanished body is refused')),
+      'refused as an inbox error');
+    assertEq(byRead.openFds.size, 0, 'no descriptor leaked');
+  });
+
+  await test('PLATFORM: without O_NOFOLLOW the module reports what it has, and does not claim what it has not', () => {
+    // THE HONEST HALF. On a platform whose Node build does not define the flag, the open CANNOT refuse a link
+    // atomically. What follows asserts what the module REPORTS, not that the window is closed — because it is
+    // not, and a test that pretended otherwise would be the dishonest kind. The shipped product runs in a
+    // Linux container, where the flag exists and the first three RACE tests above are the behaviour.
+    const fs = new FakeInboxFs(null);
+    fs.put('plain.json', { kind: 'file', content: snapshotJson(2) });
+    const file = readInboxFile('plain.json', FAKE_ENV, fs);
+    assertEq(file.noFollowAtOpen, false, 'the result states that the open could not refuse a link');
+    assertEq(file.text, snapshotJson(2), 'and the read still comes from the one descriptor');
+
+    // A link that is ALREADY there is still refused, by the best-effort pre-check.
+    const linked = new FakeInboxFs(null);
+    linked.put('link.json', { kind: 'symlink', content: OUTSIDE_BYTES });
+    const err = assertThrows(() => readInboxFile('link.json', FAKE_ENV, linked), 'an existing link is still refused');
+    assert(isInboxError(err), 'refused as an inbox error');
+    assert(!String((err as Error).message).includes('SECRET-FROM-OUTSIDE'), 'nothing from the target leaks');
+
+    // ...and a link introduced AFTER that pre-check is NOT caught there. Pinned deliberately, so the
+    // limitation is a recorded fact rather than an assumption a document can quietly contradict.
+    const raced = new FakeInboxFs(null);
+    raced.put('swap.json', { kind: 'file', content: snapshotJson(1) });
+    raced.onOpen = () => { raced.put('swap.json', { kind: 'symlink', content: OUTSIDE_BYTES }); };
+    const followed = readInboxFile('swap.json', FAKE_ENV, raced);
+    assertEq(followed.noFollowAtOpen, false, 'the residual window is REPORTED rather than hidden');
+    assertEq(followed.text, OUTSIDE_BYTES,
+      'which is exactly what "no atomic refusal" means on such a platform, written down rather than glossed');
+  });
+
+  await test('the listing is advisory: what it offers is re-decided against a descriptor when it is opened', () => {
+    const fs = new FakeInboxFs();
+    fs.put('offered.json', { kind: 'file', content: snapshotJson(2) });
+    assertEq(listImportInbox(FAKE_ENV, fs).candidates.map((c) => c.name).join(','), 'offered.json',
+      'the listing offers it');
+    // It becomes a link before anybody opens it. The listing was not wrong; it was a moment ago.
+    fs.put('offered.json', { kind: 'symlink', content: OUTSIDE_BYTES });
+    assert(isInboxError(assertThrows(() => readInboxFile('offered.json', FAKE_ENV, fs), 'the open refuses it anyway')),
+      'a stale listing costs a refusal, never a disclosure');
   });
 
   await test('the listing is bounded and deterministic', () => {
@@ -313,6 +576,52 @@ async function main(): Promise<void> {
     for (const bad of [undefined, null, 42, {}, []]) {
       assert(!issuer.verify(bad, CLAIMS.contentDigest, CLAIMS.bytes).ok, 'a non-string confirmation is refused');
     }
+  });
+
+  // -------------------------------------------------------------------------------------------------------
+  // No literal control bytes in TypeScript sources — and the signing input unchanged by saying so.
+  // -------------------------------------------------------------------------------------------------------
+
+  await test('the confirmation separator is an ESCAPE in the source, and the same byte it always was', () => {
+    // A literal NUL survives no diff, no patch, no editor and no terminal reliably. In a SIGNING input that
+    // is a byte somebody can change without anyone seeing it change — so it is written as an escape, and
+    // these three assertions are what make "same MAC input" a fact rather than a claim.
+    assertEq('\u0000', String.fromCharCode(0), 'the escape and the raw byte are the same character');
+    const source = readRepo('src/ops/catalog-import-confirmation.ts');
+    assert(source.includes('import-confirmation/v1\\u0000${body}'),
+      'the separator is written as an escape in the MAC input');
+    assert(!source.split('').some((c) => c.charCodeAt(0) === 0), 'and not as a raw byte anywhere in the file');
+
+    // ...and the issuer still verifies its own token end to end, so the change did not merely typecheck.
+    const issuer = new ImportConfirmations(() => 1_000_000, Buffer.alloc(32, 7));
+    assertEq(issuer.verify(issuer.issue(CLAIMS), CLAIMS.contentDigest, CLAIMS.bytes).ok, true,
+      'a confirmation this issuer made still verifies');
+  });
+
+  await test('no TypeScript source in this repository carries a literal control byte', () => {
+    // The guard, over the whole tree rather than over the file that prompted it: one that exempts the files
+    // already violating it cannot prevent the next one. Tab, newline and carriage return are how source is
+    // written; every other C0 byte is an escape waiting to be lost.
+    const offenders: string[] = [];
+    const walk = (dir: string): readonly string[] =>
+      readdirSync(join(repoRoot, dir), { withFileTypes: true }).flatMap((entry) => {
+        if (entry.name === 'node_modules') return [];
+        const rel = `${dir}/${entry.name}`;
+        if (entry.isDirectory()) return walk(rel);
+        return entry.isFile() && rel.endsWith('.ts') ? [rel] : [];
+      });
+    for (const rel of [...walk('src'), ...walk('test')]) {
+      const text = readRepo(rel);
+      for (let i = 0; i < text.length; i += 1) {
+        const code = text.charCodeAt(i);
+        if (code < 0x20 && code !== 0x09 && code !== 0x0a && code !== 0x0d) {
+          offenders.push(`${rel} (byte ${code})`);
+          break;
+        }
+      }
+    }
+    assertEq(offenders.join('; '), '',
+      'write it as an escape instead: it is the same character to the compiler and it survives being moved around');
   });
 
   // -------------------------------------------------------------------------------------------------------
