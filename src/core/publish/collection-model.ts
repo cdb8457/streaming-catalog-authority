@@ -4,7 +4,7 @@ import type { Pool, PoolClient } from 'pg';
 // Phase 269 — the DURABLE IDENTITY of a managed collection, and who is allowed to see what about it.
 //
 // WHAT THIS REPLACES. Through Phase 268 the durable unit of external work was a `publish_ledger` row, which is
-// per (item, target). An accepted plan of thirty records therefore became thirty Jellyfin collections, each
+// per (item, target). An accepted plan of thirty records therefore became thirty external collections, each
 // named after one record — which is not what the operator did. They typed ONE name and chose the records that
 // go IN it. This module is the missing noun: a managed collection has its own row, its own lifecycle, its own
 // recovery token and its own membership, and a plan addresses it by a derived key rather than by accident.
@@ -20,7 +20,7 @@ import type { Pool, PoolClient } from 'pg';
 //     record the reconciler reads, and nothing else. A handle is what makes an external copy revocable, it is
 //     meaningless outside the revoker, and a field that never reaches a response cannot be rendered by a panel
 //     that renders whatever it is given. This is the same discipline `createLedgerReader` already applies.
-//   * Membership is opaque catalog item ids. NEVER a Jellyfin library item id: storing those would make
+//   * Membership is opaque catalog item ids. NEVER a target-side library item id: storing those would make
 //     membership survive crypto-shredding — after a forget the record's identity is gone, but a stored
 //     external id would still say exactly which library items came from it. The reconciler RESOLVES ids each
 //     pass through `withPublishableIdentity`, which fails closed on a forgotten record, so a forgotten member
@@ -29,8 +29,10 @@ import type { Pool, PoolClient } from 'pg';
 // NOTHING HERE WRITES OUTSIDE THE OWNER-DEFINED FUNCTIONS. Every mutation is a `cat_collection_*` SECURITY
 // DEFINER call; the runtime role holds SELECT and EXECUTE and never INSERT/UPDATE/DELETE on either table.
 
-/** The one target this plane drives. Named, not derived, so a new target cannot appear by accident. */
-export const MANAGED_COLLECTION_TARGET = 'jellyfin';
+// THIS MODULE NAMES NO TARGET, AND `test/deploy.ts` HAS ENFORCED THAT SINCE PHASE 9. `src/core/publish` is
+// the target-agnostic publish machinery: every function here takes `target` as a parameter, and the one
+// installation-level answer to "which target" lives beside the planner in `src/ops/collection-plan.ts`. A
+// concrete provider named here would be a coupling that a later second target has to unpick.
 
 export type ManagedCollectionStatus =
   | 'planned' | 'in_flight' | 'ambiguous'
@@ -53,7 +55,8 @@ export const MANAGED_COLLECTION_MAX_MEMBERS = 500;
 /** What any surface outside the reconciler may learn about a managed collection. No token, no handle. */
 export interface ManagedCollectionSummary {
   readonly id: string;
-  readonly target: typeof MANAGED_COLLECTION_TARGET;
+  /** The external system this collection lives on. A value, not a literal type: see the note above. */
+  readonly target: string;
   readonly collectionKey: string;
   readonly name: string;
   readonly status: ManagedCollectionStatus;
@@ -119,7 +122,7 @@ interface SummaryRow {
 function toSummary(row: SummaryRow): ManagedCollectionSummary {
   return {
     id: String(row.id),
-    target: row.target as typeof MANAGED_COLLECTION_TARGET,
+    target: String(row.target),
     collectionKey: row.collection_key,
     name: row.name,
     status: row.status as ManagedCollectionStatus,

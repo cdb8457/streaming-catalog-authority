@@ -22,7 +22,6 @@ import {
   type LedgerReader,
 } from '../src/ops/collection-plan.js';
 import {
-  MANAGED_COLLECTION_TARGET,
   collectionKeyFor,
   createManagedCollectionReader,
   setManagedMembers,
@@ -134,8 +133,8 @@ function fakeManaged(
 ): ManagedCollectionReader {
   const summary: ManagedCollectionSummary | null = collection === null ? null : {
     id: '1',
-    target: MANAGED_COLLECTION_TARGET,
-    collectionKey: collectionKeyFor(MANAGED_COLLECTION_TARGET, collection.name),
+    target: COLLECTION_PLAN_TARGET,
+    collectionKey: collectionKeyFor(COLLECTION_PLAN_TARGET, collection.name),
     name: collection.name,
     status: collection.status ?? 'published',
     settled: collection.settled ?? true,

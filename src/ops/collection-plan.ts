@@ -56,7 +56,13 @@ import {
 
 export const COLLECTION_PLAN_REPORT = 'phase-269-collection-plan';
 export const COLLECTION_PLAN_VERSION = 2;
-/** The only target this plane drives. Named, not derived, so a new target cannot appear by accident. */
+/**
+ * The only target this plane drives. Named, not derived, so a new target cannot appear by accident.
+ *
+ * IT IS DECLARED HERE AND NOWHERE IN `src/core/publish`. That module is the target-agnostic machinery and
+ * `test/deploy.ts` has enforced since Phase 9 that nothing in it names a provider; every function there takes
+ * `target` as a parameter, and this is the one place that answers it for this installation.
+ */
 export const COLLECTION_PLAN_TARGET = 'jellyfin';
 
 /** How many catalog records one collection may hold. A plan somebody cannot read is a plan nobody checks. */

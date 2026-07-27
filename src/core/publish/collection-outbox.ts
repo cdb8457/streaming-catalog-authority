@@ -80,7 +80,7 @@ export interface CollectionTarget {
    * A new pass is starting: discard anything cached from the last one.
    *
    * WHY THIS EXISTS AT ALL. `resolve` matches provider references against the target's library LOCALLY (the
-   * server-side filters are unreliable across Jellyfin versions), which means every call would otherwise walk
+   * server-side filters are unreliable across target versions), which means every call would otherwise walk
    * the whole library again — five hundred members against a hundred-thousand-item library is fifty million
    * rows fetched to answer one question. A target may therefore hold ONE snapshot of the candidate listing per
    * pass. That is also the more correct behaviour: every member of a collection is then resolved against the
