@@ -255,12 +255,12 @@ case "${csp}" in
   *unsafe-inline*|*unsafe-eval*) echo "FAIL: the CSP still allows unsafe-inline/unsafe-eval" >&2; echo "${csp}" >&2; exit 1 ;;
 esac
 # The shell must carry no inline script body and no inline style block — everything is external.
-if printf '%s' "${shell}" | grep -qiE '<style|<script>[^<]'; then
+if grep -qiE '<style|<script>[^<]' <<<"${shell}"; then
   echo "FAIL: the shell still carries an inline script or style" >&2
   exit 1
 fi
-printf '%s' "${shell}" | grep -q '<script src="/assets/app.js" defer></script>'
-printf '%s' "${shell}" | grep -q '<link rel="stylesheet" href="/assets/app.css">'
+grep -q '<script src="/assets/app.js" defer></script>' <<<"${shell}"
+grep -q '<link rel="stylesheet" href="/assets/app.css">' <<<"${shell}"
 echo "  script-src/style-src are 'self', no unsafe-inline, and the shell references only external assets"
 
 step "the static assets are served with the right type and no token"
