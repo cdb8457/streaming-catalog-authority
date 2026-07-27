@@ -89,6 +89,7 @@ async function acquireMigrationLock(client: Client, options: MigrateOptions): Pr
 export const MIGRATED_TABLES: readonly string[] = [
   'events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations',
   'publish_ledger', 'schema_meta', 'import_history', 'collection_control_history',
+  'managed_collections', 'managed_collection_members',
 ];
 
 /**
