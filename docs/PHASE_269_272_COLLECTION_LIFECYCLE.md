@@ -242,7 +242,70 @@ address. `--json` prints the same plan with `title` and `year` **removed** (not 
 | `npm run test:phase270-local` | `test/collection-execution.ts` — the four gates; the narrowed disclosure; one execute → one collection; replay and staleness refused; one collection on the real server holding both items, named by the operator; add-only and remove-only set differences; **no removal from a failed listing or an incomplete resolution**; a lost create response adopted by token; a failing lookup creating nothing; restart persistence; partial and total erasure; a failed delete staying queued; the v8 engine still finishing and revoking; cross-origin/body-bound refusals; a full disclosure scan. |
 | `npm run test:phase271-local` | `test/collection-drift.ts` — the read-only target refusing every write; an audit writing nothing at all; external deletion and two-way membership drift detected; every failure mode as `unknown` and never repairable; recovery-untrusted suppressing recreate; a repair changing nothing external; a wrong re-arm ending in adoption; audit-vs-repair gating; the separate confirmation issuer; a stale repair refused. |
 | `npm run test:phase272-local` | `test/collection-cli.ts` — strict parsing; the shared services; the digest echo; a closed switch refusing; the whole loop end to end; audit read-only and repair gated; revoke end to end; the same durable history; and a scan of everything the command line printed. |
-| `deploy/ci/jellyfin-control-acceptance.sh` | drives the shipped image, the migration, a real Chromium and a **local fake Jellyfin** through the grouped lifecycle. |
+| `deploy/ci/jellyfin-control-acceptance.sh` | drives the shipped image, the migration, a real Chromium and a **local fake Jellyfin** through the grouped lifecycle. **NOT RUN for this change — see below.** |
+
+## Verification status
+
+The four suites above, `npm run typecheck`, and the aggregate `offline` and `db` groups were run and passed.
+The Docker/Chromium acceptance gate **was not run, and nothing here should be read as saying it passed.**
+
+**What was attempted, verbatim:**
+
+```
+$ docker info --format '{{.ServerVersion}}'
+29.6.1
+exit=0
+
+$ timeout 90 docker pull hello-world
+Using default tag: latest
+exit=124                      # 124 = timed out; the pull never progressed past the tag line
+
+$ timeout 300 bash deploy/ci/jellyfin-control-acceptance.sh
+==> prerequisites
+    docker daemon reachable, node present, pinned Playwright harness present
+==> assemble the consumer release bundle and extract it
+    extracted v1.1.2 standalone to a directory named catalog-authority-operator-ui-v1.1.2
+==> the shipped bundle wires no media server and turns no switch on
+    the shipped bundle names no JELLYFIN_ setting anywhere
+==> build the production image locally (local-only tag, never published)
+#0 building with "desktop-linux" instance using docker-container driver
+#1 [internal] booting buildkit
+#1 pulling image moby/buildkit:buildx-stable-1
+                              # stalled here until the bound killed it; teardown ran
+```
+
+**The blocker, precisely:** the environment has a working Docker daemon but no route to a container registry.
+The gate must build the production image, and BuildKit must first pull `moby/buildkit:buildx-stable-1`. It
+never arrives. This is environmental and says nothing about the change.
+
+**Why the gate's own `skip()` did not catch it.** Its prerequisite check asks whether the daemon is
+*reachable* — and it is. A reachable daemon with an unreachable registry is indistinguishable from a working
+one until the first pull. A registry preflight was deliberately NOT added: under `REQUIRE_ACCEPTANCE=1` a
+`skip` becomes a hard failure, so a probe with any timeout would turn a CI runner with a merely slow registry
+into a red build. Trading a real gate for a convenience on one laptop is the wrong direction.
+
+**What therefore remains unproven by execution here**, and should be run before this branch is merged:
+
+* the shipped image, the migration one-shot and the operator token end to end;
+* the browser legs (`@jf-disabled`, `@jf-discovery`, `@jf-plan`, `@jf-refused`, `@jf-queue`, `@jf-reconcile`,
+  `@jf-history`) against a real Chromium, including the panel changes this phase made to them;
+* the orchestrator's new Phase 269-272 steps: one collection rather than one per record, partial erasure
+  leaving the collection standing, the drift audit noticing an externally deleted collection without changing
+  durable state, a refused repair digest, and the operator CLI parity leg.
+
+What IS covered without it: every one of those behaviours has an assertion in the four suites above, against a
+real PostgreSQL and a fake media server over real HTTP. `test/jellyfin-control-acceptance.ts` (12 assertions,
+offline) additionally checks that the orchestrator asserts each new claim, that every spec tag it runs exists
+and every spec tag is run, and that helpers are defined before their first use. That is a static check of the
+gate, not a run of it.
+
+Run it with:
+
+```
+REQUIRE_ACCEPTANCE=1 bash deploy/ci/jellyfin-control-acceptance.sh
+```
+
+on a host that can reach a registry, or rely on the CI job `jellyfin-acceptance`.
 
 ## Limitations
 
