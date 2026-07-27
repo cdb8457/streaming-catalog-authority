@@ -63,11 +63,17 @@ jobs:
         # tells you nothing. A timeout here fails loudly with a readable log instead of occupying a runner.
         timeout-minutes: 15
         run: npm run test:runner
-      - name: Phase 262, 261, 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+      - name: Phase 265, 264, 263, 262, 261, 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
+        # Phase 263 is the keystore repair suite (an injected filesystem, so every ownership state is proved
+        # on every platform, plus the shipped Compose wiring); Phase 264 is the authenticated import
+        # workflow and Phase 265 the catalog workspace, both against a real embedded PostgreSQL.
         # Phase 261 is the outbox recovery-by-token suite (a real embedded PostgreSQL, fake adapters only);
         # Phase 262 is the contract suite for the catalog import-and-browse acceptance, which checks the
         # orchestrator, spec, fixture and CI wiring statically and executes the parts that need no daemon.
         run: |
+          npm run test:phase265-local
+          npm run test:phase264-local
+          npm run test:phase263-local
           npm run test:phase262-local
           npm run test:phase261-local
           npm run test:phase260-local
@@ -100,9 +106,16 @@ jobs:
           npm run test:release-guard
           npm run test:versioned-release-cut
       - name: Compose files still resolve
+        # EVERY shipped stack, not only the ordinary-computer one. Phase 263 added a service to two of them,
+        # and a stack that no longer resolves is a stack nobody can start — including the ones this change
+        # deliberately did NOT touch, which is exactly where an accidental edit would go unnoticed. The
+        # Arcane file needs its one required variable and is checked in both directions by the step below.
         run: |
           docker compose -f docker-compose.runtime.yml config --quiet
           docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml config --quiet
+          docker compose -f docker-compose.unraid.yml config --quiet
+          docker compose -f docker-compose.deploy.yml config --quiet
+          docker compose -f docker-compose.yml config --quiet
       - name: The Arcane stack refuses to resolve without its required variables, and resolves with them
         # Both directions, because "it refuses" and "it works" are different claims and a stack that only
         # ever refuses is not an install path. The temporary directory stands in for an Unraid host project

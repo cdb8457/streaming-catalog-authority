@@ -470,14 +470,19 @@ await test('the Arcane setup refuses a path that is not an absolute host path', 
 await test('the yaml the Arcane stack is written in parses to the services it claims', () => {
   const doc = compose('docker-compose.arcane.yml');
   const names = Object.keys(asMap(doc.services ?? null, 'services')).sort().join(',');
-  assertEq(names, 'app,migrate,postgres', 'exactly three services, and no second web server');
+  // Phase 263 adds a fourth: the `keystore-prepare` one-shot that repairs an existing installation's
+  // root-owned keystore. It is not a second web server — it has no ports, no network at all, and exits.
+  assertEq(names, 'app,keystore-prepare,migrate,postgres', 'exactly four services, and no second web server');
   assertEq(doc.name, 'catalogauthority-arcane',
     'under its own project name, so it cannot collide with an ordinary-computer stack on the same host');
   // Nothing in this stack may reach the host's Docker socket or its network stack.
   for (const [name, svc] of Object.entries(asMap(doc.services ?? null, 'services'))) {
     const parsed = asMap(svc, `service ${name}`);
     assert(parsed.privileged !== true, `${name} is not privileged`);
-    assert(parsed.network_mode === undefined, `${name} does not choose a host network mode`);
+    // `none` is explicitly allowed and nothing else is: the Phase 263 repair one-shot asks for NO network,
+    // which is the strictest answer available and the opposite of the thing this assertion guards against.
+    assert(parsed.network_mode === undefined || parsed.network_mode === 'none',
+      `${name} either takes the compose network or none at all — never the host's`);
     assert(!yamlStrings(parsed).some((v) => v.includes('docker.sock')), `${name} does not mount the Docker socket`);
   }
 });

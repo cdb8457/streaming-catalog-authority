@@ -1074,14 +1074,32 @@ await test('the existing status, logs and promotion-chain routes behave exactly 
   } finally { await h.stop(); }
 });
 
-await test('the UI still offers no mutation, and the new panel adds no form or method that could', async () => {
+await test('the UI mutates through exactly two named routes, and nothing else on the page can', async () => {
+  // PHASE 264 CHANGED THIS INVARIANT ON PURPOSE, and the assertion is NARROWED rather than dropped. It used
+  // to read "the UI still offers no mutation" and "nothing in the script issues a POST" — true then, and
+  // deliberately false now, because importing a catalog from a browser is the product step that phase adds.
+  // What must stay true is the SHAPE of the exception: two named routes, exactly one place in the script
+  // that can issue a POST at all, and still no form. Relaxing this to "there are some POSTs" would have
+  // stopped it being able to notice a third one.
   const h = await startHarness();
   try {
     const html = (await httpGet(h.port, '/')).body;
     const script = (await httpGet(h.port, '/assets/app.js')).body;
+    // No form: a form is the one element that can be made to submit cross-origin without JavaScript, and
+    // this page has never had one.
     assert(!/<form\b/i.test(html), 'there is no form on the page');
-    assert(!/method\s*:\s*['"]POST/i.test(script), 'and nothing in the script issues a POST');
-    assert(!/fetch\([^)]*method/i.test(script), 'every fetch is a plain GET');
+
+    // Exactly ONE place in the script sets an HTTP method at all.
+    const methodSites = script.match(/method:\s*'[A-Z]+'/g) ?? [];
+    assertEq(methodSites.length, 1, 'exactly one place in the script sets an HTTP method');
+    assertEq(methodSites[0], "method: 'POST'", 'and that method is POST');
+
+    // ...and the only paths that reach it are the two import routes.
+    const posted = (script.match(/postJson\('([^']+)'/g) ?? [])
+      .map((m) => m.replace(/^postJson\('/, '').replace(/'$/, ''));
+    assertEq(posted.sort().join(','), '/api/import/apply,/api/import/preview',
+      'the only routes the page posts to are the import preview and apply');
+
     assert(html.includes('Setup &amp; Diagnostics'), 'the new panel is present');
     assert(html.includes('First-run checklist'), 'and so is the checklist a locked-out user needs');
     assert(html.includes('Troubleshooting'), 'and the troubleshooting table');

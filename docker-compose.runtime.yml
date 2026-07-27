@@ -69,6 +69,70 @@ services:
       driver: json-file
       options: { max-size: "10m", max-file: "3" }
 
+  # ONE-SHOT, AND THE ONLY THING IN THIS STACK THAT RUNS AS ROOT. Phase 263.
+  #
+  # WHY IT HAS TO EXIST. Docker initialises a named volume from what the IMAGE has at that path — ownership
+  # included — and only ONCE, the first time the volume is created. Dockerfile.runtime now ships the keystore
+  # directory owned by `node`, which fixes every installation made from that image onwards and fixes nothing
+  # for a volume that already exists. An installation from v1.1.2 or earlier still has a root-owned keystore
+  # that the non-root app cannot write, which is `EACCES` on the first custodian construction: ops:doctor,
+  # /api/status and the entire catalog panel. No image change can reach back into an existing volume; only
+  # something with the authority to chown can, and this is that something.
+  #
+  # HOW NARROW IT IS. It mounts the keystore volume and NOTHING else — no database URL, no secrets, no import
+  # folder, no promotion records. `network_mode: none` gives it no network at all, so it cannot contact
+  # anything even in principle. It keeps `read_only: true` (its writes land on the volume), drops every
+  # capability and adds back exactly the three that changing ownership needs. It runs, decides, and exits.
+  #
+  # WHAT IT IS ALLOWED TO DO. Create the keystore directory if it is missing, and change the OWNER of what is
+  # already there. It never reads, writes, moves or deletes key material, never regenerates a secret, and
+  # never destroys or recreates a volume. An ownership or content state it does not understand — a symlink, a
+  # device node, two different foreign owners, an entry that is not part of a keystore — is REFUSED with a
+  # named code and nothing changed, and because `app` and `migrate` gate on this exiting zero, a refusal stops
+  # the stack instead of letting it start against a keystore nobody understands.
+  #
+  # IT IS IDEMPOTENT AND FREE AFTER THE FIRST RUN. A correct keystore reports ALREADY_CORRECT and performs no
+  # filesystem write at all, so leaving this in the startup path costs nothing on every subsequent `up`.
+  #
+  # THE LONG-RUNNING APP IS UNCHANGED: still `user: "node"`, still `read_only: true`, still `cap_drop: ALL`,
+  # still `no-new-privileges`. Elevated authority lives here, for a few milliseconds, and nowhere else.
+  keystore-prepare:
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.2}
+    init: true
+    restart: "no"
+    environment:
+      CUSTODIAN_KEYSTORE_DIR: /var/lib/catalog/keystore
+      # The user the app and migrate services run as, named once so the repair and the services cannot drift.
+      CATALOG_KEYSTORE_OWNER: node
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+      NPM_CONFIG_UPDATE_NOTIFIER: "false"
+    volumes:
+      - keystore:/var/lib/catalog/keystore
+    entrypoint: ["npm", "run"]
+    command: ["ops:keystore-repair"]
+    network_mode: none
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    cap_add:
+      # Exactly what changing an owner and tightening a directory mode needs, and nothing else. CHOWN to set
+      # the owner, FOWNER to change the mode of a directory this process does not own, DAC_OVERRIDE to walk
+      # into a tree whose permissions were written for somebody else.
+      - CHOWN
+      - FOWNER
+      - DAC_OVERRIDE
+    security_opt:
+      - no-new-privileges:true
+    user: "0:0"
+    pids_limit: 64
+    mem_limit: 256m
+    cpus: 1.0
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
   # ONE-SHOT. Runs to completion on every `up`, then exits. It is not a server, has no ports, publishes
   # nothing, and never restarts — `restart: "no"` is load-bearing, because a restarting one-shot would race
   # itself and could never satisfy `service_completed_successfully`.
@@ -83,6 +147,11 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Phase 263. `ops:bootstrap` constructs a FileCustodian, so it is the FIRST thing an unwritable keystore
+      # kills. It waits for the repair to exit zero for the same reason the app waits for this: a refusal must
+      # stop the stack, not surface later as a half-installed UI.
+      keystore-prepare:
+        condition: service_completed_successfully
     environment:
       APP_ENV: production
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
@@ -138,6 +207,11 @@ services:
       # migration therefore produces no UI at all, rather than a UI that reports itself healthy in front of a
       # database it cannot use — which is exactly what v1.1.0 did.
       migrate:
+        condition: service_completed_successfully
+      # Phase 263. Declared here as well as on `migrate`, rather than relied on transitively: this is the
+      # container that dies with EACCES when the keystore is not writable, so the dependency that guarantees a
+      # repaired keystore belongs on it directly. A refusal means no UI at all, which is the correct outcome.
+      keystore-prepare:
         condition: service_completed_successfully
     environment:
       APP_ENV: production

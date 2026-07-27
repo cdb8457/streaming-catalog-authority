@@ -247,19 +247,38 @@ test('the orchestrator covers the whole consumer workflow, in order, with a proo
     [/touch \/var\/lib\/catalog\/import/, 'and proves it by trying to write into it from the container'],
     [/cp "\$\{FIXTURE\}"/, 'it places the snapshot through the shipped host-side import folder'],
     [/example-catalog-snapshot\.json/, 'and checks the documented example ships with the bundle'],
-    [/--grep "@empty"/, 'it drives the browser against the EMPTY installation first'],
+    [/run_leg "@empty"/, 'it drives the browser against the EMPTY installation first'],
     [/ops:catalog-import -- --file [^\n]*\n/, 'it runs the documented import command'],
     [/PREVIEW \(nothing was written\)/, 'it requires the preview to announce itself'],
-    [/the preview created rows/, 'it proves a preview writes no rows'],
-    [/the preview appended events/, 'and appends no events'],
-    [/--apply/, 'it applies the import'],
-    [/--grep "@imported"/, 'then drives the browser against the imported catalog'],
+    [/run_leg "@preview"/, 'and previews through the browser too'],
+    [/a preview created rows/, 'it proves a preview writes no rows'],
+    [/a preview appended events/, 'and appends no events'],
+    [/a preview wrote an import history entry/, 'and writes no import history entry'],
+    [/run_leg "@apply"/, 'it applies the import through the browser, bound to the previewed bytes'],
+    [/--apply/, 'and the command-line apply path is still exercised'],
+    [/run_leg "@imported"/, 'then drives the browser against the imported catalog'],
+    [/run_leg "@workspace"/, 'and against the Phase 265 workspace: export, history and paging bounds'],
     [/browsing changed the item count/, 'it proves browsing writes no rows'],
     [/browsing appended events/, 'and appends no events'],
+    [/browsing or exporting wrote an import history entry/, 'and that exporting writes no history entry'],
+    [/content-disposition: attachment/i, 'it checks the export is an attachment with a safe file name'],
+    [/the export disclosed a provider reference value/, 'and that the export discloses no reference value'],
     [/idempotency/i, 'it re-applies the same snapshot'],
     [/not idempotent/, 'and fails if the repeat run creates anything'],
+    [/run_leg "@reapply"/, 'through the browser as well as the command line'],
     [/persistence/i, 'it restarts the stack'],
     [/did not survive a restart/, 'and requires the records to survive'],
+    [/the import history did not survive a restart/, 'and the import history too'],
+    [/run_leg "@survived"/, 'and re-drives the browser after the restart'],
+    // Phase 263 — the legacy keystore, manufactured on the real volume and repaired by the shipped
+    // startup path. This is the half of the Phase 262 defect that no image change could reach.
+    [/chown -R root:root \/var\/lib\/catalog\/keystore/, 'it manufactures a LEGACY root-owned keystore'],
+    [/ops:keystore-check/, 'and proves the check recognises it'],
+    [/the keystore check exited 0 on a keystore that needs repair/, 'and that the check fails closed'],
+    [/keystore-prepare one-shot did not exit 0/, 'it requires the repair one-shot to have run and exited zero'],
+    [/the app container is running as root/, 'and the app to come back up NON-ROOT'],
+    [/keystore-ownership/, 'and ops:doctor to report the ownership check as passing'],
+    [/import mount is no longer read-only/, 'and the import mount to still be read-only afterwards'],
     [/appeared in the server logs/, 'it checks the logs disclose nothing'],
     [/count_rows/, 'counts are read from the database inside the stack, not inferred'],
     [/digits_or_die/, 'a count that could not be READ is a failure, never a count that did not CHANGE'],
@@ -271,6 +290,46 @@ test('the orchestrator covers the whole consumer workflow, in order, with a proo
   for (const [pattern, what] of required) {
     assert(pattern.test(orchestrator), `the orchestrator: ${what}`);
   }
+});
+
+test('every function the orchestrator calls is defined before the line that calls it', () => {
+  // THE DEFECT THIS PINS, found by CI on the first delivery run of Phase 263. A step was added ABOVE the
+  // block where `digits_or_die` was defined, and bash resolves a function name at CALL time against what has
+  // been defined so far — so the call failed with `digits_or_die: command not found` and the whole gate
+  // exited 127. Nothing could catch it locally: that step only runs against a real Docker daemon, so the
+  // first execution of the line was on a CI runner.
+  //
+  // This is a STATIC check of the same property, which needs no daemon and runs everywhere. It reads the
+  // shell the same way bash does — top to bottom — and asks, at each call site, whether the name has been
+  // defined yet.
+  const lines = read(ORCHESTRATOR).split('\n');
+  const defined = new Set<string>();
+  const definitions = new Map<string, number>();
+  // Two shapes are used in this file: `name() {` on its own line, and `name() { ...; }` on one line.
+  const DEFINITION = /^([a-z_][a-z0-9_]*)\(\)\s*\{/;
+  for (const [index, line] of lines.entries()) {
+    const match = DEFINITION.exec(line);
+    if (match !== null) definitions.set(match[1]!, index);
+  }
+  assert(definitions.size >= 8, `the orchestrator defines functions to check (found ${definitions.size})`);
+
+  const problems: string[] = [];
+  for (const [index, raw] of lines.entries()) {
+    const definition = DEFINITION.exec(raw);
+    if (definition !== null) { defined.add(definition[1]!); continue; }
+    // Strip comments and here-doc-ish noise before looking for calls; a name inside a comment is prose.
+    const line = raw.replace(/#.*$/, '');
+    for (const [name, definedAt] of definitions) {
+      if (defined.has(name)) continue;
+      // A call is the name at a command position: start of line, after `$(`, `&&`, `||`, `;`, `|` or `!`.
+      const call = new RegExp(`(^|[;&|(]|\\$\\()\\s*${name}\\b`);
+      if (call.test(line)) {
+        problems.push(`${name} is called on line ${index + 1} but not defined until line ${definedAt + 1}`);
+      }
+    }
+  }
+  assertEq(problems.join('; '), '',
+    'bash resolves a function name at call time, so a call above its definition is a 127 exit on the runner');
 });
 
 test('the orchestrator honours every boundary this phase must not cross', () => {

@@ -275,6 +275,66 @@ END $$;
 CREATE INDEX IF NOT EXISTS publish_ledger_recovery_proof_idx
   ON publish_ledger (target, recovery_proof_at DESC) WHERE recovery_proof IS NOT NULL;
 
+-- v5 -> v6 upgrade (Phase 264): the durable IMPORT HISTORY.
+--
+-- WHY IT IS A TABLE AND NOT A LOG LINE. An operator who applies an import from a browser has to be able to
+-- answer "what did I already load, and when?" after the container that served the page has been replaced.
+-- The log buffer is in memory and 200 entries deep; the answer has to outlive both.
+--
+-- IT IS IDENTITY-FREE, LIKE publish_ledger AND FOR THE SAME REASON. It stores COUNTS, two digests and the
+-- operator's own labels: the snapshot's `source` and the base NAME of the file it came from. It never stores
+-- a title, a year, a provider ref value, an external id, a metadata value, ciphertext, an item id, a
+-- directory or a path — the CHECKs below make several of those impossible rather than merely unwritten, and
+-- `file_name` is constrained to a single path-free component so a row can never carry a filesystem layout.
+--
+-- APPEND-ONLY IN PRACTICE: the app role gets SELECT and ONE SECURITY DEFINER writer that only ever INSERTs.
+-- There is no update path and no delete path exposed to the runtime at all.
+CREATE TABLE IF NOT EXISTS import_history (
+  id              BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  applied_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Which surface did it: the command line, or the authenticated operator UI. A closed set.
+  actor           TEXT NOT NULL CHECK (actor IN ('cli', 'operator-ui')),
+  -- The snapshot's own source label. Same shape the import parser enforces.
+  source          TEXT NOT NULL CHECK (source ~ '^[a-z0-9][a-z0-9._-]{0,63}$'),
+  -- A path-free file name. The CHECK is what makes "no directory ever reaches this column" a property of the
+  -- database rather than a habit of the caller.
+  file_name       TEXT NOT NULL CHECK (file_name ~ '^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$'),
+  -- sha256 of the NORMALIZED document (order-independent), and of the exact bytes on disk. Neither is
+  -- reversible and neither names any content.
+  snapshot_digest TEXT NOT NULL CHECK (snapshot_digest ~ '^[0-9a-f]{64}$'),
+  content_digest  TEXT NOT NULL CHECK (content_digest  ~ '^[0-9a-f]{64}$'),
+  total           INTEGER NOT NULL CHECK (total     >= 0),
+  created         INTEGER NOT NULL CHECK (created   >= 0),
+  updated         INTEGER NOT NULL CHECK (updated   >= 0),
+  unchanged       INTEGER NOT NULL CHECK (unchanged >= 0),
+  blocked         INTEGER NOT NULL CHECK (blocked   >= 0),
+  failed          INTEGER NOT NULL CHECK (failed    >= 0),
+  outcome         TEXT NOT NULL CHECK (outcome IN ('complete', 'incomplete'))
+);
+CREATE INDEX IF NOT EXISTS import_history_applied_idx ON import_history (applied_at DESC, id DESC);
+
+-- The ONE writer. SECURITY DEFINER so the least-privileged runtime can append a row without holding INSERT
+-- on the table (and therefore without holding UPDATE or DELETE on it either). Every argument is a bound
+-- parameter; nothing is interpolated. A value that violates a CHECK raises rather than being stored, so a
+-- caller cannot smuggle a path or an unknown outcome in by getting the argument order wrong.
+CREATE OR REPLACE FUNCTION cat_import_record(
+  p_actor TEXT, p_source TEXT, p_file_name TEXT, p_snapshot_digest TEXT, p_content_digest TEXT,
+  p_total INTEGER, p_created INTEGER, p_updated INTEGER, p_unchanged INTEGER, p_blocked INTEGER,
+  p_failed INTEGER, p_outcome TEXT)
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE v_id BIGINT;
+BEGIN
+  INSERT INTO public.import_history (
+    actor, source, file_name, snapshot_digest, content_digest,
+    total, created, updated, unchanged, blocked, failed, outcome)
+  VALUES (
+    p_actor, p_source, p_file_name, p_snapshot_digest, p_content_digest,
+    p_total, p_created, p_updated, p_unchanged, p_blocked, p_failed, p_outcome)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END;
+$$;
+
 -- ------------------------------------------------------- append-only guard ---
 
 CREATE OR REPLACE FUNCTION events_no_update_delete() RETURNS trigger
@@ -837,9 +897,12 @@ REVOKE ALL ON schema_meta FROM PUBLIC;
 REVOKE ALL ON schema_meta FROM app;         -- migration version is owner-only (not app-readable)
 REVOKE ALL ON publish_ledger FROM PUBLIC;
 REVOKE ALL ON publish_ledger FROM app;      -- owner-managed; app mutates ONLY via cat_publish_* fns
+REVOKE ALL ON import_history FROM PUBLIC;
+REVOKE ALL ON import_history FROM app;      -- owner-managed; app APPENDS only via cat_import_record
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs, item_key_control TO app;
 GRANT SELECT ON publish_ledger TO app;      -- identity-free; app/ops read it for reconcile + reporting
+GRANT SELECT ON import_history TO app;      -- identity-free; the operator UI reads its own import history
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM app;
@@ -877,6 +940,7 @@ REVOKE ALL ON FUNCTION
   cat_publish_settle(BIGINT, TEXT),
   cat_publish_mark_failed(BIGINT),
   cat_publish_record_recovery(BIGINT, TEXT),
+  cat_import_record(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT),
   set_completion_secret(TEXT),
   set_schema_version(INTEGER),
   set_app_role_password(TEXT),
@@ -913,5 +977,6 @@ GRANT EXECUTE ON FUNCTION
   cat_publish_mark_ambiguous(BIGINT),
   cat_publish_settle(BIGINT, TEXT),
   cat_publish_mark_failed(BIGINT),
-  cat_publish_record_recovery(BIGINT, TEXT)
+  cat_publish_record_recovery(BIGINT, TEXT),
+  cat_import_record(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT)
 TO app;

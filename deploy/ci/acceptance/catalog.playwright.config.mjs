@@ -29,6 +29,10 @@ export default defineConfig({
   use: {
     baseURL,
     headless: true,
+    // Stated rather than inherited. Phase 265's export leg drives a REAL download and reads the file back
+    // off disk; that only works with downloads accepted, and a leg whose whole subject depends on a
+    // framework default is a leg that breaks silently the day the default changes.
+    acceptDownloads: true,
     ignoreHTTPSErrors: false,
     screenshot: 'only-on-failure',
     trace: 'retain-on-failure',

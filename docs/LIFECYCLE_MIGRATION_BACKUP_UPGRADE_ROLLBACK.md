@@ -97,6 +97,11 @@ checklist step and the **Backup & restore** panel render from it, and a test hol
 | 3 | **The secret files** | The KEK unwraps nothing, shred completion can never verify, and PostgreSQL refuses the password its volume was initialised with. |
 | 4 | **The promotion record artifacts** | The evidence you loaded. This product never produced those files and cannot recreate them. |
 
+The **import history** added in v1.1.3 lives inside the database, so component 1 already covers it — there is
+no fifth thing to back up. A catalog **export** from the UI is not a backup either: it is deterministic and
+re-importable, but it deliberately omits every provider reference value, so it can never stand in for the
+database and the keystore together.
+
 ```
 docker compose exec -T postgres pg_dump -U postgres catalog > ./catalog-backup.sql
 docker compose cp app:/var/lib/catalog/keystore ./keystore-backup
@@ -201,6 +206,34 @@ took before I upgraded" is something you can check rather than something you rem
 | v1.0.0 | 3 | |
 | v1.1.0 | 3 | No schema change; rolling back to v1.0.0 needs no restore. |
 | v1.1.1 | 4 | Adds an app-readable schema-version reader and an owner-only setter for the runtime role's password. **Rolling back from v1.1.1 to v1.1.0 or v1.0.0 requires restoring a pre-upgrade backup.** |
+| v1.1.2 | 5 | Adds durable evidence, on the publish ledger, of what a create proved about recovery-by-token. **Rolling back from v1.1.2 requires restoring a pre-upgrade backup.** |
+| v1.1.3 | 6 | Adds the identity-free `import_history` table and its one append-only writer, so the Import panel and `ops:catalog-import` share a durable record of what was loaded. **Rolling back from v1.1.3 requires restoring a pre-upgrade backup.** |
+
+### Upgrading onto v1.1.3: the keystore is repaired for you, once
+
+Docker creates a fresh named volume **root-owned**, while this container runs as `node`. An installation
+created before v1.1.3 therefore has a keystore the application cannot write, which is `EACCES` on the first
+custodian construction — `ops:doctor`, `/api/status` and the whole Catalog panel. The image now ships the
+directory owned by `node`, which fixes new installs and cannot reach back into a volume that already exists.
+
+`docker compose up -d` now runs a one-shot `keystore-prepare` before anything else. It is the **only** thing
+in the stack that runs as root, it has no network, no secrets and one mount, it changes **ownership and
+nothing else**, and it **refuses** — stopping the stack rather than guessing — on any ownership or content
+state it does not understand. On a keystore that is already correct it writes nothing at all.
+
+**Nothing about it needs a backup first**, because it reads, writes, moves and deletes no key material. Check
+what it would do, without changing anything:
+
+```
+docker compose run --rm keystore-prepare ops:keystore-check
+```
+
+The manual fallback, every refusal code, and how to undo the ownership change are in
+`docs/PHASE_263_KEYSTORE_REPAIR.md`.
+
+The stacks that run their containers as **root** — `docker-compose.unraid.yml` and
+`docker-compose.deploy.yml` — deliberately do not get this one-shot: root ownership is correct there, and a
+chown to `node` would break them.
 
 ---
 

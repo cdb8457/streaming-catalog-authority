@@ -194,7 +194,7 @@ await test('adversarial: artifacts stuffed with markup and script cannot reach t
       "javascript:alert('x')",
       '</style><iframe src="https://evil"></iframe>',
       '<form action="https://evil"><input name=a>',
-      ' <svg onload=alert(1)>',
+      '\u0000<svg onload=alert(1)>',
     ];
     for (const payload of payloads) {
       const hostile: Reports = { ...buildSyntheticChain(root), 235: { report: payload, injected: payload, [payload]: payload } as unknown as Rec };

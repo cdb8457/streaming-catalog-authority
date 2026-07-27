@@ -519,7 +519,7 @@ export function buildBlockerTaxonomy(): BlockerTaxonomyReport {
   const entries: CategorizedBlocker[] = BLOCKERS.map((b) => {
     if (!/^[A-Z][A-Z0-9_]*$/.test(b.code)) problems.push('MALFORMED_CODE');
     if (b.op.length === 0) problems.push('MISSING_OP');
-    const key = `${b.code} ${b.op}`;
+    const key = `${b.code}\u0000${b.op}`;
     if (seen.has(key)) problems.push('DUPLICATE_ENTRY'); else seen.add(key);
     return { code: b.code, op: b.op, category: categoryOf(b.code) };
   });

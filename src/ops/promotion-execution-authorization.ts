@@ -186,8 +186,8 @@ export function buildExecutionAuthorization(input: ExecutionAuthorizationInput):
     blockers.push('ITEM_COUNT_NOT_ONE');
   } else if (approvalEvidenceValid) {
     const it = asObject(items[0]);
-    const planApprovalIdDigest = digest(APPROVAL_ID_SCOPE, asString(it.approvalId) ?? ' ');
-    const planItemDigest = digest(ITEM_SCOPE, asString(it.itemId) ?? ' ');
+    const planApprovalIdDigest = digest(APPROVAL_ID_SCOPE, asString(it.approvalId) ?? '\u0000');
+    const planItemDigest = digest(ITEM_SCOPE, asString(it.itemId) ?? '\u0000');
     const planSourceDigest = asSha256(it.sourceDigest);
     const planDestinationDigest = asSha256(it.destinationDigest);
     const approvalMatch = planApprovalIdDigest === asSha256(buildEv.obj.approvalIdDigest);

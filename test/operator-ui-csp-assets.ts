@@ -199,7 +199,7 @@ function serializeDom(elements: Map<string, FakeElement>): string {
   for (const el of elements.values()) {
     parts.push(el.tagName, el.id, el.className, ...Object.values(el.attributes), el.textContent);
   }
-  return parts.join('');
+  return parts.join('\u0001');
 }
 
 interface RunResult {
