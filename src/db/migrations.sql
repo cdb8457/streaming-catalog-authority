@@ -582,8 +582,11 @@ BEGIN
      AND NOT (item_id = ANY (COALESCE(p_item_ids, ARRAY[]::TEXT[])));
   GET DIAGNOSTICS n = ROW_COUNT;
 
+  -- DISTINCT is load-bearing, not tidiness: `ON CONFLICT DO UPDATE` raises "cannot affect row a second time"
+  -- if the same id appears twice in one statement. The caller's ids are already unique today; a function that
+  -- crashes when a future caller passes a duplicate is a function that will one day crash.
   INSERT INTO public.managed_collection_members (collection_id, item_id, state)
-  SELECT p_id, x, 'intended' FROM unnest(COALESCE(p_item_ids, ARRAY[]::TEXT[])) AS x
+  SELECT DISTINCT p_id, x, 'intended' FROM unnest(COALESCE(p_item_ids, ARRAY[]::TEXT[])) AS x
   ON CONFLICT (collection_id, item_id) DO UPDATE
     SET state = 'intended',
         synced = CASE WHEN public.managed_collection_members.state = 'removing' THEN FALSE
