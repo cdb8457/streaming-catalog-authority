@@ -1814,8 +1814,16 @@ test('jellyfin smoke ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢�
   const withFetch = walkTs(fileURLToPath(new URL('../src', import.meta.url)))
     .filter((f) => readFileSync(f, 'utf8').includes('globalThis.fetch'))
     .map((f) => f.replace(/\\/g, '/'));
-  assert(withFetch.length === 7, `exactly seven src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
-  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|jellyfin-live-readonly-smoke-cli|jellyfin-live-evidence-capture-cli|jellyfin-live-readonly-mapping-cli|jellyfin-write-proof-cli|publish-reconcile-cli|torbox-smoke-cli)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs');
+  // Phase 266 added the EIGHTH, and it is the first that is not a CLI: `resolveJellyfinTransport` is the one
+  // expression in the operator UI that can produce a real transport, and it returns nothing unless
+  // JELLYFIN_ENABLE_NETWORK is exactly "true". It is named here rather than the rule being loosened, so a
+  // ninth file still fails this check.
+  assert(withFetch.length === 8, `exactly eight src files use globalThis.fetch (got: ${withFetch.join(', ')})`);
+  assert(withFetch.every((f) => /src\/ops\/(jellyfin-smoke-cli|jellyfin-live-readonly-smoke-cli|jellyfin-live-evidence-capture-cli|jellyfin-live-readonly-mapping-cli|jellyfin-write-proof-cli|publish-reconcile-cli|torbox-smoke-cli|operator-ui-jellyfin-endpoint)\.ts$/.test(f)), 'globalThis.fetch only in the operator smoke/reconcile CLIs and the one gated UI resolver');
+  // ...and that resolver really is gated: it must consult the network switch before it hands anything back.
+  const resolver = read('src/ops/operator-ui-jellyfin-endpoint.ts');
+  assert(/isJellyfinControlNetworkEnabled\(env\)\) return undefined/.test(resolver),
+    'the operator UI transport resolver returns nothing while the network switch is off');
 });
 
 test('jellyfin mapping ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬ÃƒÂ¢Ã¢â€šÂ¬Ã‚Â Phase 14 pagination is present + bounded; doc wired', () => {

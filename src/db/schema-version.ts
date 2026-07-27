@@ -22,7 +22,11 @@
 // v6 (Phase 264): adds the durable, identity-free import_history table + cat_import_record, so an operator
 //                who applies an import from the browser can still answer "what did I already load, and
 //                when?" after the container that served the page has been replaced.
-export const MIGRATION_VERSION = 6;
+// v7 (Phase 267/268): adds the durable, identity-free collection_control_history table +
+//                cat_collection_record, so the plan an operator previewed, the plan they queued into the
+//                publish outbox, and every reconcile and revoke that followed are answerable after the
+//                container that served the page has been replaced.
+export const MIGRATION_VERSION = 7;
 
 /**
  * The advisory-lock key `ops:bootstrap` serialises on.

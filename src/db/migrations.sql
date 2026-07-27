@@ -335,6 +335,76 @@ BEGIN
 END;
 $$;
 
+-- --------------------------------------------- Phase 267/268 collection control history ---
+--
+-- WHAT IT IS. One append-only row per thing an operator DID with the Jellyfin collection control plane: a
+-- plan they previewed, a plan they queued, a reconcile pass, a revoke. It answers "what did I ask this
+-- installation to do to my media server, and when?" after the container that served the page is gone.
+--
+-- IT IS IDENTITY-FREE, like publish_ledger and import_history and for the same reason. A row holds COUNTS,
+-- two DIGESTS, an actor, an action and the collection NAME the operator typed into this product's own form —
+-- which is a label they chose, exactly as `import_history.source` is. It never holds an item id, a title, a
+-- year, a provider reference (value OR type), an external id, a Jellyfin id, an external handle, an api key,
+-- an address or a path. The CHECKs below make several of those impossible rather than merely unwritten: the
+-- name is constrained to the same closed grammar the planner enforces, and both digests to 64 hex characters,
+-- so a row can never carry free text that was not validated on the way in.
+--
+-- WHY THE DIGESTS ARE THE POINT. `plan_digest` says WHAT was proposed and `basis_digest` says WHAT IT WAS
+-- DECIDED FROM. Two rows with the same plan digest and different basis digests are the same intent computed
+-- against a catalog that moved — which is exactly the situation an execute must refuse, and exactly the
+-- situation an operator reading their history later needs to be able to see.
+--
+-- APPEND-ONLY IN PRACTICE: the app role gets SELECT and ONE SECURITY DEFINER writer that only ever INSERTs.
+-- There is no update path and no delete path exposed to the runtime at all.
+CREATE TABLE IF NOT EXISTS collection_control_history (
+  id            BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  recorded_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- Which surface did it. A closed set, like import_history.actor.
+  actor         TEXT NOT NULL CHECK (actor IN ('cli', 'operator-ui')),
+  -- What was done. `planned` is a PREVIEW and wrote nothing external; the rest are the execution verbs.
+  action        TEXT NOT NULL CHECK (action IN ('planned', 'queued', 'reconciled', 'revoked')),
+  -- The external system. A closed set so a new target cannot appear without a migration.
+  target        TEXT NOT NULL CHECK (target IN ('jellyfin')),
+  -- The operator's own label for the PLAN, in the planner's closed grammar. It is not the name of anything in
+  -- Jellyfin (a created collection is named after the record it holds), and it is never catalog content.
+  -- The planner's own closed grammar. `-` is written LAST in the class rather than escaped: a backslash
+  -- inside a bracket expression means different things to different regex engines, and a CHECK that has to
+  -- be right in PostgreSQL's ARE dialect specifically is not the place to rely on one of them.
+  name          TEXT NOT NULL CHECK (name ~ '^[A-Za-z0-9][A-Za-z0-9 ''&,.()+:_-]{0,63}$'),
+  plan_digest   TEXT NOT NULL CHECK (plan_digest  ~ '^[0-9a-f]{64}$'),
+  basis_digest  TEXT NOT NULL CHECK (basis_digest ~ '^[0-9a-f]{64}$'),
+  selected      INTEGER NOT NULL CHECK (selected  >= 0),
+  created       INTEGER NOT NULL CHECK (created   >= 0),
+  updated       INTEGER NOT NULL CHECK (updated   >= 0),
+  unchanged     INTEGER NOT NULL CHECK (unchanged >= 0),
+  revoked       INTEGER NOT NULL CHECK (revoked   >= 0),
+  blocked       INTEGER NOT NULL CHECK (blocked   >= 0),
+  failed        INTEGER NOT NULL CHECK (failed    >= 0),
+  outcome       TEXT NOT NULL CHECK (outcome IN ('preview', 'complete', 'incomplete', 'refused'))
+);
+CREATE INDEX IF NOT EXISTS collection_control_history_recorded_idx ON collection_control_history (recorded_at DESC, id DESC);
+
+-- The ONE writer. SECURITY DEFINER so the least-privileged runtime can append a row without holding INSERT
+-- on the table (and therefore without holding UPDATE or DELETE on it either). Every argument is a bound
+-- parameter; nothing is interpolated. A value that violates a CHECK raises rather than being stored.
+CREATE OR REPLACE FUNCTION cat_collection_record(
+  p_actor TEXT, p_action TEXT, p_target TEXT, p_name TEXT, p_plan_digest TEXT, p_basis_digest TEXT,
+  p_selected INTEGER, p_created INTEGER, p_updated INTEGER, p_unchanged INTEGER, p_revoked INTEGER,
+  p_blocked INTEGER, p_failed INTEGER, p_outcome TEXT)
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE v_id BIGINT;
+BEGIN
+  INSERT INTO public.collection_control_history (
+    actor, action, target, name, plan_digest, basis_digest,
+    selected, created, updated, unchanged, revoked, blocked, failed, outcome)
+  VALUES (
+    p_actor, p_action, p_target, p_name, p_plan_digest, p_basis_digest,
+    p_selected, p_created, p_updated, p_unchanged, p_revoked, p_blocked, p_failed, p_outcome)
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END;
+$$;
+
 -- ------------------------------------------------------- append-only guard ---
 
 CREATE OR REPLACE FUNCTION events_no_update_delete() RETURNS trigger
@@ -899,10 +969,13 @@ REVOKE ALL ON publish_ledger FROM PUBLIC;
 REVOKE ALL ON publish_ledger FROM app;      -- owner-managed; app mutates ONLY via cat_publish_* fns
 REVOKE ALL ON import_history FROM PUBLIC;
 REVOKE ALL ON import_history FROM app;      -- owner-managed; app APPENDS only via cat_import_record
+REVOKE ALL ON collection_control_history FROM PUBLIC;
+REVOKE ALL ON collection_control_history FROM app;  -- owner-managed; app APPENDS only via cat_collection_record
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs, item_key_control TO app;
 GRANT SELECT ON publish_ledger TO app;      -- identity-free; app/ops read it for reconcile + reporting
 GRANT SELECT ON import_history TO app;      -- identity-free; the operator UI reads its own import history
+GRANT SELECT ON collection_control_history TO app;  -- identity-free; the operator UI reads its own plan history
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM app;
@@ -941,6 +1014,7 @@ REVOKE ALL ON FUNCTION
   cat_publish_mark_failed(BIGINT),
   cat_publish_record_recovery(BIGINT, TEXT),
   cat_import_record(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT),
+  cat_collection_record(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT),
   set_completion_secret(TEXT),
   set_schema_version(INTEGER),
   set_app_role_password(TEXT),
@@ -978,5 +1052,6 @@ GRANT EXECUTE ON FUNCTION
   cat_publish_settle(BIGINT, TEXT),
   cat_publish_mark_failed(BIGINT),
   cat_publish_record_recovery(BIGINT, TEXT),
-  cat_import_record(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT)
+  cat_import_record(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT),
+  cat_collection_record(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT)
 TO app;

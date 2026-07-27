@@ -1074,13 +1074,19 @@ await test('the existing status, logs and promotion-chain routes behave exactly 
   } finally { await h.stop(); }
 });
 
-await test('the UI mutates through exactly two named routes, and nothing else on the page can', async () => {
+await test('the UI mutates through exactly six named routes, and nothing else on the page can', async () => {
   // PHASE 264 CHANGED THIS INVARIANT ON PURPOSE, and the assertion is NARROWED rather than dropped. It used
   // to read "the UI still offers no mutation" and "nothing in the script issues a POST" — true then, and
   // deliberately false now, because importing a catalog from a browser is the product step that phase adds.
-  // What must stay true is the SHAPE of the exception: two named routes, exactly one place in the script
-  // that can issue a POST at all, and still no form. Relaxing this to "there are some POSTs" would have
-  // stopped it being able to notice a third one.
+  // What must stay true is the SHAPE of the exception: NAMED routes, exactly one place in the script that can
+  // issue a POST at all, and still no form. Relaxing this to "there are some POSTs" would have stopped it
+  // being able to notice one nobody meant to add.
+  //
+  // PHASE 268 ADDED FOUR MORE, and the list is spelled out here rather than the check being loosened. Two of
+  // them (plan, execute) write only to this installation; two (reconcile, revoke) are the ones that can reach
+  // a media server, and both are behind four deployment switches on top of the token. The script drives the
+  // last two through a helper that is handed a THUNK naming its own route, precisely so both literals stay
+  // visible to the scan below.
   const h = await startHarness();
   try {
     const html = (await httpGet(h.port, '/')).body;
@@ -1094,11 +1100,18 @@ await test('the UI mutates through exactly two named routes, and nothing else on
     assertEq(methodSites.length, 1, 'exactly one place in the script sets an HTTP method');
     assertEq(methodSites[0], "method: 'POST'", 'and that method is POST');
 
-    // ...and the only paths that reach it are the two import routes.
+    // ...and the only paths that reach it are the named import and collection-control routes.
     const posted = (script.match(/postJson\('([^']+)'/g) ?? [])
       .map((m) => m.replace(/^postJson\('/, '').replace(/'$/, ''));
-    assertEq(posted.sort().join(','), '/api/import/apply,/api/import/preview',
-      'the only routes the page posts to are the import preview and apply');
+    assertEq([...new Set(posted)].sort().join(','),
+      '/api/collections/execute,/api/collections/plan,/api/collections/reconcile,/api/collections/revoke,'
+      + '/api/import/apply,/api/import/preview',
+      'the only routes the page posts to are the two import routes and the four collection-control routes');
+    // A path is never BUILT: every call site passes a literal, so no value from a response, a field or a
+    // helper's parameter can become a route this page posts to. Counted rather than pattern-matched, because
+    // the one occurrence that is not a call is the function's own declaration.
+    const callSites = (script.match(/postJson\(/g) ?? []).length - (script.match(/function postJson\(/g) ?? []).length;
+    assertEq(posted.length, callSites, 'every path the page posts to is a literal at its call site');
 
     assert(html.includes('Setup &amp; Diagnostics'), 'the new panel is present');
     assert(html.includes('First-run checklist'), 'and so is the checklist a locked-out user needs');
