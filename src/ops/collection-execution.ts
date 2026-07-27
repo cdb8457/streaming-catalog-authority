@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import type { CatalogAuthority } from '../core/catalog/authority.js';
 import type { PublishableField } from '../core/adapters/publisher.js';
 import { loadPublishConsent } from '../core/publish/consent.js';
-import { planPublish, latestRecoveryProof } from '../core/publish/ledger.js';
+import { planPublishIfAbsent, latestRecoveryProof } from '../core/publish/ledger.js';
 import { OutboxService, type OutboxTarget, type ReconcileResult } from '../core/publish/outbox.js';
 import { runRevocation, type RevocationRunResult } from '../core/publish/reconcile.js';
 import type { RevocationAdapter } from '../core/adapters/revoke.js';
@@ -157,27 +157,16 @@ export async function queueCollectionPlan(deps: CollectionQueueDeps, plan: Colle
 
   for (const action of plan.actions) {
     if (action.action !== 'create') continue;
-    // Re-read this item's ledger state under the current transaction visibility, immediately before writing.
-    let existing: number;
     try {
-      const { rows } = await deps.pool.query(
-        `SELECT count(*)::int AS n FROM publish_ledger
-          WHERE item_id = $1 AND target = $2 AND status IN ('planned','in_flight','ambiguous','published','revoke_pending')`,
-        [action.itemId, COLLECTION_PLAN_TARGET],
-      );
-      existing = Number(rows[0].n);
-    } catch {
-      failed += 1;
-      continue;
-    }
-    if (existing > 0) { resumed += 1; continue; }
-    try {
-      const intentId = await planPublish(deps.pool, {
+      // One SQL statement, backed by the partial unique index. Two valid confirmations may reach this line
+      // concurrently; exactly one inserts and every loser receives NULL and resumes the winner's work.
+      const intentId = await planPublishIfAbsent(deps.pool, {
         itemId: action.itemId,
         target: COLLECTION_PLAN_TARGET,
         token: newToken(),
         disclosedFields: COLLECTION_DISCLOSED_FIELDS,
       });
+      if (intentId === null) { resumed += 1; continue; }
       intentIds.push(intentId);
       queued += 1;
     } catch {

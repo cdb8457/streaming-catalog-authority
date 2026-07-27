@@ -26,7 +26,9 @@
 //                cat_collection_record, so the plan an operator previewed, the plan they queued into the
 //                publish outbox, and every reconcile and revoke that followed are answerable after the
 //                container that served the page has been replaced.
-export const MIGRATION_VERSION = 7;
+// v8 (Phase 268 review remediation): makes one active publish intent per (item_id,target) a database
+//                invariant and adds an atomic insert-if-absent command, closing concurrent execute races.
+export const MIGRATION_VERSION = 8;
 
 /**
  * The advisory-lock key `ops:bootstrap` serialises on.

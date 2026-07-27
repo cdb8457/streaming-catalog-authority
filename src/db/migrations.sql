@@ -226,6 +226,13 @@ CREATE TABLE IF NOT EXISTS publish_ledger (
 CREATE INDEX IF NOT EXISTS publish_ledger_item_idx ON publish_ledger (item_id);
 CREATE INDEX IF NOT EXISTS publish_ledger_status_idx ON publish_ledger (status);
 CREATE UNIQUE INDEX IF NOT EXISTS publish_ledger_token_uk ON publish_ledger (correlation_token) WHERE correlation_token IS NOT NULL;
+-- At most one live intent may exist for an item/target pair. Without this database invariant, two
+-- independently-confirmed operator requests can both observe "no intent", insert different tokens, and
+-- later create duplicate external artifacts. Terminal rows deliberately fall out of the index so a later
+-- explicit publish after a completed revoke/failed attempt remains possible.
+CREATE UNIQUE INDEX IF NOT EXISTS publish_ledger_active_item_target_uk
+  ON publish_ledger (item_id, target)
+  WHERE status IN ('planned', 'in_flight', 'ambiguous', 'published', 'revoke_pending');
 
 -- v2 -> v3 upgrade (idempotent; no-ops on a fresh v3 table): add the token, allow a NULL handle, and
 -- replace the old 3-value status CHECK with the 7-state one.
@@ -880,6 +887,25 @@ BEGIN
 END;
 $$;
 
+-- Atomically plan an intent only when this item/target has no active intent. Returns NULL when another
+-- transaction already owns the work. The partial-index conflict target is the concurrency boundary: a
+-- caller-side SELECT followed by INSERT is not an idempotency guarantee.
+CREATE OR REPLACE FUNCTION cat_publish_plan_if_absent(
+  p_item_id TEXT, p_target TEXT, p_token TEXT, p_fields TEXT[])
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE v_id BIGINT;
+BEGIN
+  IF p_token IS NULL OR length(btrim(p_token)) = 0 THEN RAISE EXCEPTION 'publish intent requires a correlation token'; END IF;
+  INSERT INTO public.publish_ledger (item_id, target, correlation_token, disclosed_fields, status)
+  VALUES (p_item_id, p_target, p_token, COALESCE(p_fields, '{}'), 'planned')
+  ON CONFLICT (item_id, target)
+    WHERE status IN ('planned', 'in_flight', 'ambiguous', 'published', 'revoke_pending')
+  DO NOTHING
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END;
+$$;
+
 -- Per-intent advisory lock (xact-scoped): serializes reconcilers so a single intent is acted on once
 -- (no duplicate external creates). Distinct hash namespace from cat_lock_item.
 CREATE OR REPLACE FUNCTION cat_publish_lock_intent(p_id BIGINT)
@@ -1007,6 +1033,7 @@ REVOKE ALL ON FUNCTION
   cat_publish_mark_revoked(BIGINT),
   cat_publish_mark_attempt(BIGINT),
   cat_publish_plan(TEXT, TEXT, TEXT, TEXT[]),
+  cat_publish_plan_if_absent(TEXT, TEXT, TEXT, TEXT[]),
   cat_publish_lock_intent(BIGINT),
   cat_publish_mark_in_flight(BIGINT),
   cat_publish_mark_ambiguous(BIGINT),
@@ -1046,6 +1073,7 @@ GRANT EXECUTE ON FUNCTION
   cat_publish_mark_revoked(BIGINT),
   cat_publish_mark_attempt(BIGINT),
   cat_publish_plan(TEXT, TEXT, TEXT, TEXT[]),
+  cat_publish_plan_if_absent(TEXT, TEXT, TEXT, TEXT[]),
   cat_publish_lock_intent(BIGINT),
   cat_publish_mark_in_flight(BIGINT),
   cat_publish_mark_ambiguous(BIGINT),

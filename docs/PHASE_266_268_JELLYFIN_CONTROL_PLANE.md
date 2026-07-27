@@ -153,9 +153,10 @@ operator's execute, or a reconcile that settled an intent all change the basis w
 browser can see.
 
 **Idempotency has two independent guards.** The confirmation is single-use and a moved basis is refused, so a
-replayed execute cannot reach the queue at all — and the queue re-reads the ledger immediately before each
-write anyway and counts an already-queued record as *resumed*. Duplicate external collections are the failure
-this whole design exists to prevent, so it is prevented twice.
+replayed execute cannot reach the queue at all — and the queue uses one atomic database command backed by a
+partial unique index over every active `(item_id, target)` pair. Two independently confirmed requests racing
+the same plan cannot both insert: exactly one owns the intent and the other counts it as *resumed*. Duplicate
+external collections are the failure this whole design exists to prevent, so it is prevented twice.
 
 **It cannot bypass anything that was already there.** A create runs inside
 `CatalogAuthority.withPublishableIdentity`, which fails closed on a forgotten or shredded record and discloses
@@ -169,6 +170,10 @@ state this product can be in, so it stays visible.
 Schema **v7** adds `collection_control_history`: one append-only row per decision — previewed, queued,
 reconciled, revoked — written through one SECURITY DEFINER function the runtime holds `EXECUTE` on, over a
 table it holds only `SELECT` on. There is no update path and no delete path exposed to the runtime at all.
+
+Schema **v8** adds the active-intent uniqueness invariant and `cat_publish_plan_if_absent`, the atomic
+insert-or-resume command used by collection execution. The invariant lives in PostgreSQL rather than in a
+caller-side check, so concurrent service requests and separate service processes receive the same answer.
 
 A row holds counts, an outcome, the two digests, an actor, an action and the collection **name** the operator
 typed into this product's own form. That is the complete list: no record id, no title, no provider reference
@@ -202,9 +207,10 @@ digest moving when identity moves, every rejection, the confirmation's replay/ex
 refusals, and — against a real PostgreSQL — that an entire planning session writes no row, no event and no
 ledger entry.
 
-`npm run test:phase268-local` (`test/collection-execution.ts`) — the four gates, queue idempotency, a stale
-plan refused, a replayed confirmation refused, a lost create response recovered by token without duplicating,
-restart persistence, revocation of a forgotten record, and the cross-origin and body-bound refusals.
+`npm run test:phase268-local` (`test/collection-execution.ts`) — the four gates, sequential and concurrent
+queue idempotency (two independently confirmed executions produce one intent), a stale plan refused, a
+replayed confirmation refused, a lost create response recovered by token without duplicating, restart
+persistence, revocation of a forgotten record, and the cross-origin and body-bound refusals.
 
 `deploy/ci/jellyfin-control-acceptance.sh` drives all of it through a real Chromium against a real Compose
 stack and a **local fake Jellyfin server**, and proves that browsing the panel writes no database row and

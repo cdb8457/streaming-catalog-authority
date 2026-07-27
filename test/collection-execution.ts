@@ -663,6 +663,79 @@ async function main(): Promise<void> {
       assertEq(gated.body.writesRefusal, 'WRITES_DISABLED', 'and names the switch');
     });
 
+    await test('two independently confirmed executions racing the same plan queue exactly one intent', async () => {
+      const currentPool = (await import('../src/db/pool.js')).getPool();
+      const currentAuthority = new CatalogAuthority(currentPool, createCustodian(loadCustodianConfig()));
+      const currentReader = createCatalogReader(currentPool, currentAuthority);
+      const currentLedger = createLedgerReader(currentPool);
+      const beforeIds = new Set(await currentReader.listActiveIds(100, 0));
+      const concurrentRef = `${SECRET_REF}-concurrent`;
+      const concurrentImport = await applyImport({
+        text: `${JSON.stringify({
+          format: 'catalog-authority.snapshot',
+          version: 1,
+          source: 'concurrent-execute',
+          items: [{
+            externalId: 'e-concurrent',
+            title: 'Concurrent Execute',
+            providerRefs: [{ type: 'imdb', value: concurrentRef }],
+          }],
+        })}\n`,
+        lookup: createExistingStateLookup(currentPool),
+        authority: currentAuthority,
+        actor: 'cli',
+        fileName: 'concurrent.json',
+      });
+      assertEq(concurrentImport.result.created, 1, 'the concurrent fixture did not import');
+      const concurrentId = (await currentReader.listActiveIds(100, 0)).find((id) => !beforeIds.has(id));
+      assert(concurrentId !== undefined, 'the concurrent fixture id was not found');
+
+      const built = await buildCollectionPlan(currentReader, currentLedger, {
+        name: 'Concurrent picks',
+        itemIds: [concurrentId],
+      });
+      assert(built.ok, 'the concurrent plan was refused');
+      assertEq(built.plan.counts.create, 1, 'the concurrent plan should create one intent');
+      const confirmations = new CollectionConfirmations();
+      const before = await ledgerCount();
+      const execute = () => collectionExecuteResponse({
+        confirmation: confirmations.issue({
+          name: built.plan.name,
+          planDigest: built.plan.planDigest,
+          basisDigest: built.plan.basisDigest,
+          create: built.plan.counts.create,
+          update: built.plan.counts.update,
+          revoke: built.plan.counts.revoke,
+        }),
+        confirmDigest: built.plan.planDigest,
+        itemIds: [concurrentId],
+      }, {
+        reader: currentReader,
+        ledger: currentLedger,
+        confirmations,
+        history: createCollectionHistoryStore(currentPool),
+        pool: currentPool,
+        env,
+      });
+
+      const [left, right] = await Promise.all([execute(), execute()]);
+      assertEq(left.status, 200, `the left execute answered ${left.status}`);
+      assertEq(right.status, 200, `the right execute answered ${right.status}`);
+      const outcomes = [left, right].map((result) => result.body.queued as Record<string, number>);
+      assertEq(outcomes.reduce((sum, result) => sum + result.queued!, 0), 1,
+        'exactly one execution owns the new intent');
+      assertEq(outcomes.reduce((sum, result) => sum + result.resumed!, 0), 1,
+        'the losing execution resumes the winner');
+      assertEq(await ledgerCount(), before + 1, 'the ledger grew by exactly one row');
+      const active = (await admin.query(
+        `SELECT count(*)::int AS n FROM publish_ledger
+          WHERE item_id = $1 AND target = 'jellyfin'
+            AND status IN ('planned','in_flight','ambiguous','published','revoke_pending')`,
+        [concurrentId],
+      )).rows[0].n as number;
+      assertEq(active, 1, 'the database invariant permits one active item/target intent');
+    });
+
     await test('a reconcile or revoke with a closed gate refuses, having built no client', async () => {
       const pool4 = (await import('../src/db/pool.js')).getPool();
       const authority4 = new CatalogAuthority(pool4, createCustodian(loadCustodianConfig()));
