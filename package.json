@@ -563,7 +563,12 @@
     "test:phase266-local": "tsx test/jellyfin-control-plane.ts",
     "test:phase267-local": "tsx test/collection-plan-preview.ts 5460",
     "test:phase268-local": "tsx test/collection-execution.ts 5461",
-    "test:phase268-acceptance": "tsx test/jellyfin-control-acceptance.ts"
+    "test:phase268-acceptance": "tsx test/jellyfin-control-acceptance.ts",
+    "ops:collections": "tsx src/ops/collection-command-cli.ts",
+    "test:phase269-local": "tsx test/collection-plan-preview.ts 5462",
+    "test:phase270-local": "tsx test/collection-execution.ts 5463",
+    "test:phase271-local": "tsx test/collection-drift.ts 5464",
+    "test:phase272-local": "tsx test/collection-cli.ts 5465"
   },
   "dependencies": {
     "pg": "^8.13.1",
