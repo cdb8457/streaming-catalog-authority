@@ -96,6 +96,7 @@
   var colName = document.getElementById('colName');
   var colSearch = document.getElementById('colSearch');
   var colUseShown = document.getElementById('colUseShown');
+  var colRemove = document.getElementById('colRemove');
   var colPlanStatus = document.getElementById('colPlanStatus');
   var colSelected = document.getElementById('colSelected');
   var colCreate = document.getElementById('colCreate');
@@ -888,7 +889,8 @@
     disarmPlan('');
     resetPlanCounts();
     var request = { name: colName.value };
-    if (colUseShown.checked) request.itemIds = catalogShownIds.slice(0);
+    if (colRemove.checked) request.mode = 'revoke';
+    else if (colUseShown.checked) request.itemIds = catalogShownIds.slice(0);
     else request.search = colSearch.value;
     colPlanStatus.className = 'status';
     colPlanStatus.textContent = 'Working out what would happen. Nothing is being written and nothing is being sent.';
@@ -928,7 +930,8 @@
       confirmation: collectionConfirmation,
       confirmDigest: typed,
     };
-    if (colUseShown.checked) request.itemIds = catalogShownIds.slice(0);
+    if (colRemove.checked) request.mode = 'revoke';
+    else if (colUseShown.checked) request.itemIds = catalogShownIds.slice(0);
     else request.search = colSearch.value;
     var data;
     try {
@@ -1118,6 +1121,7 @@
   colName.addEventListener('input', function () { if (collectionPlan !== null) disarmPlan('The name changed. Preview the plan again.'); });
   colSearch.addEventListener('input', function () { if (collectionPlan !== null) disarmPlan('The selection changed. Preview the plan again.'); });
   colUseShown.addEventListener('change', function () { if (collectionPlan !== null) disarmPlan('The selection changed. Preview the plan again.'); });
+  colRemove.addEventListener('change', function () { if (collectionPlan !== null) disarmPlan('What this plan would do changed. Preview it again.'); });
   document.getElementById('impPreview').addEventListener('click', previewImport);
   impApplyBtn.addEventListener('click', applyImport);
   // Choosing a different file throws away the previous file's confirmation. The server would refuse the

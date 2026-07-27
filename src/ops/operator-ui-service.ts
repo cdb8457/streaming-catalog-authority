@@ -1635,6 +1635,8 @@ nothing.</p>
 <input id="colSearch" type="search" autocomplete="off" spellcheck="false"></div>
 <div class="field"><label for="colUseShown">Use the records shown in the Catalog panel instead</label>
 <input id="colUseShown" type="checkbox"></div>
+<div class="field"><label for="colRemove">Remove this collection from the media server instead</label>
+<input id="colRemove" type="checkbox"></div>
 <div class="actions"><button id="colPreview" type="button">Preview the plan (writes nothing)</button></div>
 <p class="status" id="colPlanStatus" role="status" aria-live="polite"></p>
 <div class="grid">
