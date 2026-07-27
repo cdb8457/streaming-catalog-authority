@@ -158,6 +158,13 @@ whose `create`, `addMembers`, `removeMembers` and `remove` methods **throw**. It
 three write switches for a read would mean an operator has to turn writing **on** to find out whether something
 is wrong.
 
+**Why that narrower gate does not touch the consent boundary.** `PUBLISH_EXTERNAL_IDENTITY` gates identity
+*leaving* the crypto-shredding boundary. An audit decrypts identity in process — which an authenticated
+operator's catalog panel already does, with no media-server switch at all — and **sends none of it**: reference
+matching is local, so the candidate listing is fetched and compared here and a reference value never becomes a
+query parameter. That is asserted directly, against the request lines the fake server received rather than
+against the responses this product produced, because only the former can show what was transmitted.
+
 **Six verdicts, and the third one is the point:**
 
 | | |

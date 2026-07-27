@@ -47,7 +47,9 @@ import { installCompletionSecret } from './crypto-setup.js';
 //     the world once the marker has been observed not to round-trip.
 //   - A REPAIR PLAN IS DETERMINISTIC AND DIGEST-CONFIRMED, from a SEPARATE issuer: a plan confirmation must
 //     not verify as a repair confirmation.
-//   - A REPAIR NEEDS THE FOUR WRITE SWITCHES, while the audit needs only the network one.
+//   - A REPAIR NEEDS THE FOUR WRITE SWITCHES, while the audit needs only the network one — and that narrower
+//     gate is only defensible because a whole audit TRANSMITS no provider reference, no title and no record
+//     id, which is asserted against the request lines the server actually received.
 //   - A REPAIR WRITES DURABLE STATE ONLY. It creates nothing and deletes nothing; the ordinary reconcile and
 //     revoke passes do that, under their own gates — and a re-armed collection whose artifact turns out to
 //     still exist is ADOPTED by token rather than duplicated.
@@ -82,6 +84,8 @@ interface FakeJellyfin {
   readonly baseUrl: string;
   readonly collections: Map<string, FakeCollection>;
   readonly library: Record<string, string>;
+  /** Every request line the client sent. The audit's whole disclosure claim is asserted against this. */
+  readonly requests: Array<{ method: string; url: string }>;
   breakLookup: boolean;
   breakMemberList: boolean;
   breakCandidates: boolean;
@@ -91,11 +95,13 @@ interface FakeJellyfin {
 async function startFakeJellyfin(initialLibrary: Record<string, string>): Promise<FakeJellyfin> {
   const library = { ...initialLibrary };
   const collections = new Map<string, FakeCollection>();
+  const requests: Array<{ method: string; url: string }> = [];
   let counter = 0;
   const state = { breakLookup: false, breakMemberList: false, breakCandidates: false };
 
   const server: Server = createServer((req: IncomingMessage, res: ServerResponse) => {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+    requests.push({ method: req.method ?? 'GET', url: req.url ?? '/' });
     const json = (value: unknown, status = 200): void => {
       res.statusCode = status;
       res.setHeader('Content-Type', 'application/json');
@@ -158,6 +164,7 @@ async function startFakeJellyfin(initialLibrary: Record<string, string>): Promis
     baseUrl: `http://127.0.0.1:${port}`,
     collections,
     library,
+    requests,
     get breakLookup() { return state.breakLookup; },
     set breakLookup(value: boolean) { state.breakLookup = value; },
     get breakMemberList() { return state.breakMemberList; },
@@ -581,6 +588,31 @@ async function main(): Promise<void> {
       const text = JSON.stringify(rows);
       for (const forbidden of [SECRET_REF, 'jf-col-', 'jf-item-', 'Drift Alpha']) {
         assert(!text.includes(forbidden), `the history disclosed ${forbidden}`);
+      }
+    });
+
+    await test('a whole drift audit TRANSMITS no provider reference, no title and no record id', async () => {
+      // THIS IS WHAT MAKES THE AUDIT'S NARROWER GATE DEFENSIBLE. It runs on the network switch alone, without
+      // PUBLISH_EXTERNAL_IDENTITY — and that is only sound because it decrypts identity IN PROCESS and sends
+      // none of it. Reference matching is local: the candidate listing is fetched and compared here, so a
+      // reference value never becomes a query parameter. Asserting on the RESPONSES this suite collected would
+      // not show that; only the request lines the server actually received do.
+      fake.requests.length = 0;
+      const report = await auditCollectionDrift(auditRuntime());
+      assert(report.counts.scanned > 0, 'the audit examined something, so the scan below is not vacuous');
+      assert(fake.requests.length > 0, 'and it really did contact the server');
+      const sent = fake.requests.map((r) => `${r.method} ${decodeURIComponent(r.url)}`).join(' | ');
+      for (const forbidden of [SECRET_REF, 'Drift Alpha', 'Drift Bravo', 'd-1', 'd-2', API_KEY]) {
+        assert(!sent.includes(forbidden), `the audit put ${forbidden} in a request`);
+      }
+      for (const id of ids) {
+        assert(!sent.includes(id), 'the audit put a catalog record id in a request');
+      }
+      // And it asked for nothing it does not need: no create, no membership mutation, no delete.
+      for (const request of fake.requests) {
+        assert(!(request.method === 'POST' && request.url.startsWith('/Collections')),
+          'a read-only audit sent a create');
+        assert(request.method !== 'DELETE', 'a read-only audit sent a delete');
       }
     });
 
