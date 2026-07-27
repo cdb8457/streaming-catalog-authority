@@ -231,10 +231,10 @@ echo "  support report produced, with no URL and no secret path in it"
 
 step "the UI shell is served"
 shell="$(curl -fsS "${BASE_URL}/")"
-printf '%s' "${shell}" | grep -q 'Promotion Record Chain'
-printf '%s' "${shell}" | grep -q 'Setup &amp; Diagnostics'
-printf '%s' "${shell}" | grep -q 'First-run checklist'
-if printf '%s' "${shell}" | grep -qF "${TOKEN}"; then
+grep -q 'Promotion Record Chain' <<<"${shell}"
+grep -q 'Setup &amp; Diagnostics' <<<"${shell}"
+grep -q 'First-run checklist' <<<"${shell}"
+if grep -qF "${TOKEN}" <<<"${shell}"; then
   echo "FAIL: the served page contains the operator token" >&2
   exit 1
 fi

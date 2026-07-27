@@ -283,10 +283,12 @@ count_rows() {
   raw="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM ${1}" | tr -d '[:space:]' )"
   digits_or_die "${raw}" "the row count for ${1}"
 }
-# What the fake server holds, read through the app container (the fake publishes no host port).
+# What the fake server holds, read from inside the fake container itself (it publishes no host port).
+# This measurement must not depend on the app container's DNS being ready in the same instant Compose reports
+# both containers started; the product's own discovery request below is the end-to-end DNS/network proof.
 fake_collection_count() {
   local raw
-  raw="$( jf_compose exec -T app node -e "fetch('http://jellyfin-fake:8096/_control/state').then(r=>r.json()).then(s=>process.stdout.write(String(s.collections.length)))" | tr -d '[:space:]' )"
+  raw="$( jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/state').then(r=>r.json()).then(s=>process.stdout.write(String(s.collections.length)))" | tr -d '[:space:]' )"
   digits_or_die "${raw}" "the fake server collection count"
 }
 
@@ -371,7 +373,7 @@ info "queued ${queued_rows} durable intents and sent nothing"
 # 8. AMBIGUOUS RECOVERY, then the ordinary reconcile. The lost response comes FIRST, deliberately.
 # ---------------------------------------------------------------------------------------------------------
 step "make the next create lose its response, then reconcile"
-jf_compose exec -T app node -e "fetch('http://jellyfin-fake:8096/_control/lose-next-create',{method:'POST'}).then(()=>process.exit(0))" >/dev/null \
+jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/lose-next-create',{method:'POST'}).then(()=>process.exit(0))" >/dev/null \
   || fail "could not arm the lost-response case on the fake server"
 first_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/reconcile")"
 printf '%s' "${first_json}" | grep -q '"code":"OPERATOR_UI_COLLECTION_RECONCILED"' \
