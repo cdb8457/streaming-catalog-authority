@@ -159,4 +159,38 @@ test.describe('Jellyfin control plane', () => {
     // And the outbox status is still what it was before the restart.
     await expect(page.locator('#colOutstanding')).toHaveText('0');
   });
+
+  test('@jf-remove the panel removes a managed collection, and only with that plan\'s own digest', async ({ page }) => {
+    await signIn(page);
+    await page.fill('#colName', 'Acceptance picks');
+    // Revoke mode takes NO selection: the server refuses one, so the page must not send one either.
+    await page.check('#colRemove');
+    await page.click('#colPreview');
+    await expect(page.locator('#colPlanStatus')).toContainText('Nothing was written', { timeout: 30_000 });
+    await expect(page.locator('#colPlanStatus')).toContainText('no media server was contacted');
+    // The plan says the COLLECTION goes, not merely that records leave it.
+    await expect(page.locator('#colDigests')).toContainText('REVOKE');
+
+    const digest = await planDigest(page);
+    expect(digest, 'the revoke plan digest is a full sha256').toMatch(/^[0-9a-f]{64}$/);
+
+    // A WRONG digest is refused by the page itself, before a request is made. A destructive plan is exactly
+    // the one where that must hold.
+    await page.fill('#colConfirm', 'f'.repeat(64));
+    await page.click('#colExecute');
+    await expect(page.locator('#colExecuteStatus')).toContainText('not this plan');
+
+    // The right digest queues the removal — and STILL sends nothing. Queuing is not doing, here too.
+    await page.fill('#colConfirm', digest);
+    await page.click('#colExecute');
+    await expect(page.locator('#colExecuteStatus')).toContainText('queued for removal', { timeout: 30_000 });
+    await expect(page.locator('#colExecuteStatus')).toContainText('Nothing has been sent to a media server yet');
+    await expect(page.locator('#colConfirm')).toHaveValue('');
+    await expect(page.locator('#colExecute')).toBeDisabled();
+
+    const text = await pageText(page);
+    for (const forbidden of [SECRET_REF, TOKEN, 'jf-col-', 'jf-item-']) {
+      expect(text, `the removal plan disclosed ${forbidden}`).not.toContain(forbidden);
+    }
+  });
 });

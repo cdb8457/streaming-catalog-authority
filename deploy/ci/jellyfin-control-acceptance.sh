@@ -30,7 +30,9 @@
 #  12. DRIFT AUDIT AND GATED REPAIR. A collection deleted on the server is detected, and the repair is
 #      digest-confirmed and writes durable state only.
 #  13. OPERATOR CLI PARITY. The same lifecycle, headless, through the same services and the same gates.
-#  14. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
+#  14. BROWSER-DRIVEN REMOVAL. The panel queues a whole-collection revoke by its own digest, sends nothing,
+#      and the revoke pass then takes it off the server.
+#  15. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
 #
 # PREREQUISITES: a running Docker daemon, `node`, and the pinned acceptance harness in deploy/ci/acceptance/.
 # FAIL vs SKIP is explicit and identical to Phases 248 and 262:
@@ -547,7 +549,32 @@ printf '%s' "${cli_refused}" | grep -q 'DIGEST_MISMATCH' \
 info "the CLI reads the same model, refuses a wrong digest, and discloses nothing"
 
 # ---------------------------------------------------------------------------------------------------------
-# 14. BROWSER-ONLY VIEWING CHANGES NOTHING, in the database or on the media server.
+# 14. REMOVING A COLLECTION FROM THE PANEL. Phase 269's revoke mode, driven by a real browser: the operator
+#     asks for the collection to go, confirms it by typing its own digest, and STILL nothing is sent until the
+#     revoke pass runs. It is placed last of the acting steps because it ends with nothing on the server.
+# ---------------------------------------------------------------------------------------------------------
+step "real-browser acceptance: queue a removal of the whole collection from the panel"
+[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] \
+  || fail "there is no managed collection to remove, so this leg would prove nothing"
+run_leg "@jf-remove" "remove"
+[ "${LEG_STATUS}" -eq 0 ] || { dump_stack_logs; fail "the remove browser leg reported failures"; }
+[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] \
+  || { dump_stack_logs; fail "confirming a removal in the browser deleted something before any revoke pass ran"; }
+queued_removal="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM managed_collections WHERE status = 'revoke_pending'" | tr -d '[:space:]' )"
+[ "$(digits_or_die "${queued_removal}" "the queued-removal count")" = "${PLAN_COLLECTIONS}" ] \
+  || fail "the browser removal was not recorded as queued for revocation"
+info "the browser queued the removal durably and sent nothing"
+
+step "the revoke pass carries out the removal the browser confirmed"
+removal_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/revoke")"
+printf '%s' "${removal_json}" | grep -q '"code":"OPERATOR_UI_COLLECTION_REVOKED"' \
+  || { echo "${removal_json}" >&2; dump_stack_logs; fail "the revoke pass after the browser removal did not run"; }
+[ "$(fake_collection_count)" = "0" ] \
+  || { echo "${removal_json}" >&2; dump_stack_logs; fail "the confirmed removal never reached the media server"; }
+info "the collection the browser asked to remove is gone from the media server"
+
+# ---------------------------------------------------------------------------------------------------------
+# 15. BROWSER-ONLY VIEWING CHANGES NOTHING, in the database or on the media server.
 # ---------------------------------------------------------------------------------------------------------
 step "a whole viewing session writes no row, no event, no ledger entry and no external collection"
 items_v="$(count_rows items)"

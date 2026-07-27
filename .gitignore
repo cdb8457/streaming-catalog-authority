@@ -19,3 +19,8 @@ _wire.py
 # Phase 259: operator catalog snapshots. Somebody’s library is not this repository’s content.
 # Root-anchored: a bare `import/` would also ignore any future source directory of that name.
 /import/
+
+# Playwright's own run artifacts. They carry absolute local paths, which is exactly what
+# deploy/ci/acceptance/redact-artifacts.sh exists to keep out of anything shared.
+deploy/ci/acceptance/test-results/
+deploy/ci/acceptance/playwright-report/
