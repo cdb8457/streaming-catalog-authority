@@ -40,12 +40,10 @@ export type ManagedCollectionStatus =
 
 export type ManagedMemberState = 'intended' | 'removing';
 
-/** States in which a collection still has, or may still have, an external artifact this product owns. */
-export const MANAGED_ACTIVE_STATUSES: readonly ManagedCollectionStatus[] =
-  ['planned', 'in_flight', 'ambiguous', 'published', 'revoke_pending'];
-
-/** States a reconcile pass acts on to CREATE or ADOPT an artifact. */
-export const MANAGED_CREATE_STATUSES: readonly ManagedCollectionStatus[] = ['planned', 'in_flight', 'ambiguous'];
+// THE ACTIVE AND CREATE STATUS SETS ARE NOT DECLARED HERE. They exist once, in SQL: the partial unique index
+// `managed_collections_active_uk` and the WHERE clause of each `cat_collection_*` writer. A TypeScript copy
+// would be a second definition nothing compares against the first, and the failure mode of two definitions of
+// "which states are active" is that they diverge without anything noticing.
 
 /** How many managed collections one read considers. A bound, not a guess: a truncated read says so. */
 export const MANAGED_COLLECTION_MAX_ROWS = 500;

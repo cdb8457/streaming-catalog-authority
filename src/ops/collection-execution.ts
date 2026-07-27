@@ -14,7 +14,6 @@ import {
   type CollectionTarget,
 } from '../core/publish/collection-outbox.js';
 import {
-  collectionKeyFor,
   createManagedCollectionReader,
   latestManagedRecoveryProof,
   lockManagedCollection,
@@ -425,11 +424,6 @@ export async function runCollectionRevocation(pool: Pool, runtime: CollectionRun
   const grouped = await runtime.collections.revoke();
   const legacy = await runRevocation(pool, runtime.legacyRevoker);
   return { grouped, legacy };
-}
-
-/** The durable identity a name addresses on this target. Exported so a CLI and a route agree on one derivation. */
-export function collectionKeyForName(name: string): string {
-  return collectionKeyFor(COLLECTION_PLAN_TARGET, name);
 }
 
 export type CollectionAuditRefusal = Extract<CollectionExecutionRefusal, 'NETWORK_DISABLED' | 'NOT_CONFIGURED'>;

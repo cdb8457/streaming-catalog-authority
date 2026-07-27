@@ -111,13 +111,6 @@ export class JellyfinHttpClient implements JellyfinClient {
     return { items: all, truncated: true }; // every page was full: there may be more we never asked for
   }
 
-  /** {@link findItemsByRefs}, reporting whether the candidate scan saw the whole library. */
-  async findItemsByRefsChecked(refs: readonly JellyfinRef[]): Promise<{ ids: string[]; truncated: boolean }> {
-    if (refs.length === 0) return { ids: [], truncated: false };
-    const page = await this.listCandidateItems();
-    return { ids: matchItems(refs, page.rows), truncated: page.truncated };
-  }
-
   /**
    * The raw candidate rows, with their `ProviderIds`, and whether the scan saw the whole library.
    *
