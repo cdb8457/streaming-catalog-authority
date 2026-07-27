@@ -835,8 +835,12 @@ async function main(): Promise<void> {
     });
 
     await fake.close();
-    await admin.end();
     await closePool();
+    await admin.end();
+    // Let pg deliver the socket-close events caused by Pool.end() before the embedded server is stopped.
+    // With more than one pooled connection (the concurrency proof above), stopping PostgreSQL in the same
+    // turn can otherwise turn an orderly teardown into an unhandled administrator-command error on Linux.
+    await new Promise<void>((resolve) => setImmediate(resolve));
     if (pg !== undefined) await pg.stop();
   }
 

@@ -214,7 +214,10 @@ if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::add-mask::${TOKEN}"; fi
 JELLYFIN_KEY="$(node -e 'process.stdout.write(require("crypto").randomBytes(24).toString("hex"))')"
 if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::add-mask::${JELLYFIN_KEY}"; fi
 printf '%s\n' "${JELLYFIN_KEY}" > "${EXTRACTED}/secrets/jellyfin_api_key"
-chmod 600 "${EXTRACTED}/secrets/jellyfin_api_key"
+# The containing secrets directory is mode 0700 (created by setup.sh), which is the host confidentiality
+# boundary. The bind-mounted file must be readable by uid 1000 in both non-root containers; its host owner is
+# the CI runner, so mode 0600 would make the fixture unreadable after the bind mount.
+chmod 644 "${EXTRACTED}/secrets/jellyfin_api_key"
 info "secrets generated; operator token and Jellyfin API key written to files and masked"
 
 step "place the offline snapshot in the shipped read-only import folder"
