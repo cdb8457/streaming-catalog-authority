@@ -61,6 +61,25 @@ step() { printf '\n==> %s\n' "$1"; }
 info() { printf '    %s\n' "$1"; }
 fail() { echo "FAIL: $1" >&2; exit 1; }
 
+# A count that fails to be READ must never look like a count that did not CHANGE. Two unreadable counts
+# compare equal to each other, so a broken psql would turn "browsing wrote nothing" into a vacuous pass —
+# the exact shape of dishonest evidence this whole phase exists to avoid. Every counter therefore refuses to
+# return anything that is not a bare number, and refusing exits the run.
+#
+# DEFINED HERE, WITH THE OTHER TINY HELPERS, RATHER THAN BESIDE THE COUNTERS THAT USE IT. It used to sit next
+# to `count_rows` much further down, which was fine until a step ABOVE that point needed it: bash resolves a
+# function name at CALL time against what has been defined SO FAR, so the call failed with
+# `digits_or_die: command not found` and the gate exited 127 — on CI, because the step that calls it only
+# runs against a real Docker daemon and nothing local could reach it. Defined before the first executable
+# line of the run, no step added later can land above it. `test/catalog-browser-acceptance.ts` now checks
+# that property for every function in this file rather than trusting it.
+digits_or_die() {
+  case "${1}" in
+    ''|*[!0-9]*) echo "FAIL: ${2} did not return a number — the measurement failed, so nothing may be concluded from it" >&2; exit 1 ;;
+  esac
+  printf '%s' "${1}"
+}
+
 skip() {
   if [ "${REQUIRE_ACCEPTANCE}" = "1" ]; then
     fail "$1 (REQUIRE_ACCEPTANCE=1 — a CI runner that cannot run this is broken, not passing)"
@@ -349,16 +368,6 @@ info "import mount is read-only in metadata and in fact"
 # 6. Counting helpers. The database is not published to the host, so counts are read INSIDE the stack.
 # ---------------------------------------------------------------------------------------------------------
 
-# A count that fails to be READ must never look like a count that did not CHANGE. Two unreadable counts
-# compare equal to each other, so a broken psql would turn "browsing wrote nothing" into a vacuous pass —
-# the exact shape of dishonest evidence this whole phase exists to avoid. Both helpers therefore refuse to
-# return anything that is not a bare number, and refusing exits the run.
-digits_or_die() {
-  case "${1}" in
-    ''|*[!0-9]*) echo "FAIL: ${2} did not return a number — the measurement failed, so nothing may be concluded from it" >&2; exit 1 ;;
-  esac
-  printf '%s' "${1}"
-}
 count_rows() {
   local raw
   raw="$( cd "${EXTRACTED}" && docker compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM ${1}" | tr -d '[:space:]' )"

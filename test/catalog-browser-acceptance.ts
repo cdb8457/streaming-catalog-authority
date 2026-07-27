@@ -292,6 +292,46 @@ test('the orchestrator covers the whole consumer workflow, in order, with a proo
   }
 });
 
+test('every function the orchestrator calls is defined before the line that calls it', () => {
+  // THE DEFECT THIS PINS, found by CI on the first delivery run of Phase 263. A step was added ABOVE the
+  // block where `digits_or_die` was defined, and bash resolves a function name at CALL time against what has
+  // been defined so far — so the call failed with `digits_or_die: command not found` and the whole gate
+  // exited 127. Nothing could catch it locally: that step only runs against a real Docker daemon, so the
+  // first execution of the line was on a CI runner.
+  //
+  // This is a STATIC check of the same property, which needs no daemon and runs everywhere. It reads the
+  // shell the same way bash does — top to bottom — and asks, at each call site, whether the name has been
+  // defined yet.
+  const lines = read(ORCHESTRATOR).split('\n');
+  const defined = new Set<string>();
+  const definitions = new Map<string, number>();
+  // Two shapes are used in this file: `name() {` on its own line, and `name() { ...; }` on one line.
+  const DEFINITION = /^([a-z_][a-z0-9_]*)\(\)\s*\{/;
+  for (const [index, line] of lines.entries()) {
+    const match = DEFINITION.exec(line);
+    if (match !== null) definitions.set(match[1]!, index);
+  }
+  assert(definitions.size >= 8, `the orchestrator defines functions to check (found ${definitions.size})`);
+
+  const problems: string[] = [];
+  for (const [index, raw] of lines.entries()) {
+    const definition = DEFINITION.exec(raw);
+    if (definition !== null) { defined.add(definition[1]!); continue; }
+    // Strip comments and here-doc-ish noise before looking for calls; a name inside a comment is prose.
+    const line = raw.replace(/#.*$/, '');
+    for (const [name, definedAt] of definitions) {
+      if (defined.has(name)) continue;
+      // A call is the name at a command position: start of line, after `$(`, `&&`, `||`, `;`, `|` or `!`.
+      const call = new RegExp(`(^|[;&|(]|\\$\\()\\s*${name}\\b`);
+      if (call.test(line)) {
+        problems.push(`${name} is called on line ${index + 1} but not defined until line ${definedAt + 1}`);
+      }
+    }
+  }
+  assertEq(problems.join('; '), '',
+    'bash resolves a function name at call time, so a call above its definition is a 127 exit on the runner');
+});
+
 test('the orchestrator honours every boundary this phase must not cross', () => {
   const lower = orchestrator.toLowerCase();
   for (const forbidden of [
