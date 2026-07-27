@@ -11,8 +11,10 @@ import {
   INBOX_MAX_ENTRIES,
   INBOX_NAME_RE,
   CatalogInboxError,
+  INBOX_UNSUPPORTED_PLATFORM_MESSAGE,
   type InboxFs,
   type InboxStat,
+  inboxNoFollowSupported,
   listImportInbox,
   readInboxFile,
 } from '../src/ops/catalog-import-inbox.js';
@@ -28,6 +30,7 @@ import {
   IMPORT_PREVIEW_ROUTE,
   IMPORT_REQUEST_MAX_BYTES,
   checkWriteRequestHeaders,
+  importPreviewResponse,
 } from '../src/ops/operator-ui-import-endpoint.js';
 import { CATALOG_IMPORT_DIR_ENV } from '../src/ops/catalog-import.js';
 import { IMPORT_MAX_BYTES } from '../src/core/catalog/import-snapshot.js';
@@ -102,6 +105,25 @@ async function main(): Promise<void> {
   // The inbox: one read-only folder, and nowhere else
   // -------------------------------------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------------------------------
+  // THE REAL FILESYSTEM, AND WHERE IT CANNOT BE USED.
+  //
+  // Phase 264's inbox refuses to return content on a platform whose Node build does not define O_NOFOLLOW,
+  // because it cannot open a file and be certain it did not follow a link. That refusal is the product's
+  // behaviour and it is correct — but it also means the real-filesystem inbox tests below, and the HTTP
+  // preview/apply flow at the end of this file, CANNOT run there: the module declines to read anything.
+  //
+  // They are skipped LOUDLY rather than adjusted to pass, because adjusting them would mean asserting the
+  // fallback that was just removed. The injected-syscall suite above proves the decision logic on every
+  // platform, and CI runs on Linux, where none of this is skipped.
+  const INBOX_SUPPORTED = inboxNoFollowSupported();
+  const skipUnsupported = (what: string): boolean => {
+    if (INBOX_SUPPORTED) return false;
+    console.log(`        (SKIPPED on this platform: ${what} — O_NOFOLLOW is undefined here, so the inbox `
+      + 'refuses to read anything at all. CI runs on Linux, where it does not.)');
+    return true;
+  };
+
   const inbox = join(WORK, 'import');
   mkdirSync(inbox, { recursive: true });
   const outside = join(WORK, 'outside');
@@ -115,6 +137,7 @@ async function main(): Promise<void> {
   const ENV = { [CATALOG_IMPORT_DIR_ENV]: inbox } as NodeJS.ProcessEnv;
 
   await test('the inbox lists only plain, bounded .json files, and counts what it skipped', () => {
+    if (skipUnsupported('the real-filesystem inbox listing')) return;
     const listing = listImportInbox(ENV);
     assertEq(listing.state, 'CANDIDATES', 'state');
     assertEq(listing.candidates.map((c) => c.name).join(','), 'library.json', 'exactly the one usable file');
@@ -127,6 +150,7 @@ async function main(): Promise<void> {
   });
 
   await test('an unconfigured or unreadable inbox is a STATE with guidance, never a crash', () => {
+    if (skipUnsupported('the real-filesystem inbox states')) return;
     const none = listImportInbox({} as NodeJS.ProcessEnv);
     assertEq(none.state, 'NOT_CONFIGURED', 'no variable set');
     assert(none.guidance.includes(CATALOG_IMPORT_DIR_ENV), 'it names the variable');
@@ -136,6 +160,7 @@ async function main(): Promise<void> {
   });
 
   await test('an empty inbox says so and points at the format, rather than reporting a fault', () => {
+    if (skipUnsupported('the real-filesystem empty-inbox state')) return;
     const empty = join(WORK, 'empty-inbox');
     mkdirSync(empty, { recursive: true });
     const listing = listImportInbox({ [CATALOG_IMPORT_DIR_ENV]: empty } as NodeJS.ProcessEnv);
@@ -195,6 +220,7 @@ async function main(): Promise<void> {
   });
 
   await test('a file over the size limit is refused before it is read', () => {
+    if (skipUnsupported('the real-filesystem size bound')) return;
     const big = join(inbox, 'huge.json');
     writeFileSync(big, 'x'.repeat(IMPORT_MAX_BYTES + 1));
     const err = assertThrows(() => readInboxFile('huge.json', ENV), 'an oversized file is refused');
@@ -204,6 +230,7 @@ async function main(): Promise<void> {
   });
 
   await test('a readable snapshot comes back with its exact bytes and their digest', () => {
+    if (skipUnsupported('reading a real snapshot off disk')) return;
     const file = readInboxFile('library.json', ENV);
     assertEq(file.name, 'library.json', 'name');
     assertEq(file.text, snapshotJson(4), 'the exact bytes');
@@ -390,8 +417,36 @@ async function main(): Promise<void> {
     fs.put('growing.json', { kind: 'file', content: snapshotJson(5), statSize: 10 });
     const err = assertThrows(() => readInboxFile('growing.json', FAKE_ENV, fs), 'growth is refused');
     assert(isInboxError(err), 'refused as an inbox error');
-    assert(/grew while it was being read/.test(String((err as Error).message)), 'and says so plainly');
+    assert(/changed size while it was being read/.test(String((err as Error).message)), 'and says so plainly');
     assertEq(fs.openFds.size, 0, 'no descriptor leaked');
+  });
+
+  await test('a file TRUNCATED between the fstat and the read is refused, not handed over as a prefix', () => {
+    // The quieter half of the same defect, and the more dangerous one. A short read hands the parser a
+    // PREFIX of a document — and a prefix of a valid snapshot can itself parse as a valid snapshot with some
+    // of the records missing, which would import as a smaller catalog nobody asked for and nothing would
+    // flag. Growth at least tends to produce garbage; truncation produces a plausible lie.
+    const fs = new FakeInboxFs();
+    fs.put('shrinking.json', { kind: 'file', content: snapshotJson(2), statSize: 4096 });
+    const err = assertThrows(() => readInboxFile('shrinking.json', FAKE_ENV, fs), 'truncation is refused');
+    assert(isInboxError(err), 'refused as an inbox error');
+    assert(/changed size while it was being read/.test(String((err as Error).message)), 'and says so plainly');
+    assertEq(fs.openFds.size, 0, 'no descriptor leaked');
+  });
+
+  await test('a descriptor whose byte count matches the fstat exactly is the only one accepted', () => {
+    // Both directions, from one table, so neither can be fixed without the other.
+    for (const [what, statSize] of [['grew', 8], ['was truncated', 8192]] as Array<[string, number]>) {
+      const fs = new FakeInboxFs();
+      fs.put('moving.json', { kind: 'file', content: snapshotJson(3), statSize });
+      assert(isInboxError(assertThrows(() => readInboxFile('moving.json', FAKE_ENV, fs), `a file that ${what} is refused`)),
+        `a file that ${what} is refused as an inbox error`);
+      assertEq(fs.openFds.size, 0, `no descriptor leaked when a file ${what}`);
+    }
+    const exact = new FakeInboxFs();
+    exact.put('steady.json', { kind: 'file', content: snapshotJson(3) });
+    assertEq(readInboxFile('steady.json', FAKE_ENV, exact).text, snapshotJson(3),
+      'and a file whose size did not move is read');
   });
 
   await test('the size bound is enforced BEFORE the read from the fstat, and AFTER it from the bytes', () => {
@@ -418,7 +473,8 @@ async function main(): Promise<void> {
       'refused as an inbox error');
     assertEq(byStat.openFds.size, 0, 'no descriptor leaked');
 
-    // The fstat claims content; the descriptor yields nothing. Refused rather than parsed as an empty string.
+    // The fstat claims content; the descriptor yields nothing. Refused rather than parsed as an empty string
+    // — now by the size-mismatch rule, which is the same refusal reached one check earlier.
     const byRead = new FakeInboxFs();
     byRead.put('vanished.json', { kind: 'file', content: '', statSize: 128 });
     assert(isInboxError(assertThrows(() => readInboxFile('vanished.json', FAKE_ENV, byRead), 'a vanished body is refused')),
@@ -426,33 +482,69 @@ async function main(): Promise<void> {
     assertEq(byRead.openFds.size, 0, 'no descriptor leaked');
   });
 
-  await test('PLATFORM: without O_NOFOLLOW the module reports what it has, and does not claim what it has not', () => {
-    // THE HONEST HALF. On a platform whose Node build does not define the flag, the open CANNOT refuse a link
-    // atomically. What follows asserts what the module REPORTS, not that the window is closed — because it is
-    // not, and a test that pretended otherwise would be the dishonest kind. The shipped product runs in a
-    // Linux container, where the flag exists and the first three RACE tests above are the behaviour.
+  await test('PLATFORM: without O_NOFOLLOW the module returns NO content and performs NO open', () => {
+    // An earlier version of this test asserted the OPPOSITE: that such a platform fell back to a
+    // check-then-open and RETURNED the raced bytes, pinned as a documented limitation. Documenting a
+    // vulnerability does not stop it being one. A security boundary that hands back bytes through a path it
+    // knows can be raced has not been made safe by writing the fact down, so the fallback is gone and this
+    // asserts the refusal instead.
     const fs = new FakeInboxFs(null);
     fs.put('plain.json', { kind: 'file', content: snapshotJson(2) });
-    const file = readInboxFile('plain.json', FAKE_ENV, fs);
-    assertEq(file.noFollowAtOpen, false, 'the result states that the open could not refuse a link');
-    assertEq(file.text, snapshotJson(2), 'and the read still comes from the one descriptor');
-
-    // A link that is ALREADY there is still refused, by the best-effort pre-check.
-    const linked = new FakeInboxFs(null);
-    linked.put('link.json', { kind: 'symlink', content: OUTSIDE_BYTES });
-    const err = assertThrows(() => readInboxFile('link.json', FAKE_ENV, linked), 'an existing link is still refused');
+    const err = assertThrows(() => readInboxFile('plain.json', FAKE_ENV, fs),
+      'a perfectly ordinary file is refused when the guarantee is unavailable');
     assert(isInboxError(err), 'refused as an inbox error');
-    assert(!String((err as Error).message).includes('SECRET-FROM-OUTSIDE'), 'nothing from the target leaks');
+    const message = String((err as Error).message);
+    assert(/symbolic link/.test(message), 'and says which guarantee is missing');
+    assert(/command-line import/.test(message), 'and names the path that still works');
+    assert(!message.includes('catalog-authority.snapshot'), 'no byte of the file it refused to read comes back');
 
-    // ...and a link introduced AFTER that pre-check is NOT caught there. Pinned deliberately, so the
-    // limitation is a recorded fact rather than an assumption a document can quietly contradict.
-    const raced = new FakeInboxFs(null);
-    raced.put('swap.json', { kind: 'file', content: snapshotJson(1) });
-    raced.onOpen = () => { raced.put('swap.json', { kind: 'symlink', content: OUTSIDE_BYTES }); };
-    const followed = readInboxFile('swap.json', FAKE_ENV, raced);
-    assertEq(followed.noFollowAtOpen, false, 'the residual window is REPORTED rather than hidden');
-    assertEq(followed.text, OUTSIDE_BYTES,
-      'which is exactly what "no atomic refusal" means on such a platform, written down rather than glossed');
+    // NOT ONE SYSCALL. An open performed and then regretted is still an open, so the refusal lands before
+    // anything touches the filesystem at all — no resolve, no stat, and above all no open.
+    assertEq(fs.calls.length, 0, 'the refusal made no filesystem call whatsoever');
+    assertEq(fs.openFds.size, 0, 'and opened nothing');
+  });
+
+  await test('PLATFORM: the refusal has no escape hatch, and covers every name equally', () => {
+    // An opt-out here — a flag, an environment variable, an argument — would be the vulnerable fallback
+    // under another name. There is deliberately none, so the same refusal applies to every name including
+    // the ones an operator is most likely to try.
+    for (const name of ['library.json', 'a.json', 'A0.json', 'z-9_.json']) {
+      const fs = new FakeInboxFs(null);
+      fs.put(name, { kind: 'file', content: snapshotJson(1) });
+      assert(isInboxError(assertThrows(() => readInboxFile(name, FAKE_ENV, fs), `${name} is refused`)),
+        `${name} is refused as an inbox error`);
+      assertEq(fs.calls.length, 0, `${name} made no filesystem call`);
+    }
+    // ...and an environment with no import folder configured at all still refuses for the PLATFORM reason
+    // first, because on such a platform configuring one would not have helped.
+    const bare = new FakeInboxFs(null);
+    const err = assertThrows(() => readInboxFile('library.json', {} as NodeJS.ProcessEnv, bare), 'still refused');
+    assert(/symbolic link/.test(String((err as Error).message)), 'the platform is the reason given');
+  });
+
+  await test('PLATFORM: the LISTING says so as a state, rather than offering files it would never open', () => {
+    const fs = new FakeInboxFs(null);
+    fs.put('offered.json', { kind: 'file', content: snapshotJson(2) });
+    const listing = listImportInbox(FAKE_ENV, fs);
+    assertEq(listing.state, 'UNSUPPORTED_PLATFORM', 'the panel gets a state, not an error');
+    assertEq(listing.candidates.length, 0, 'and is offered nothing it could not then read');
+    assert(/command-line import/.test(listing.guidance), 'the guidance names the path that still works');
+    assertEq(listing.guidance, INBOX_UNSUPPORTED_PLATFORM_MESSAGE,
+      'and the panel and the refusal say the same words, so they cannot describe it differently');
+    assertEq(fs.calls.length, 0, 'the listing touched no filesystem either');
+  });
+
+  await test('every file this module DOES return was opened under O_NOFOLLOW', () => {
+    // The invariant the type cannot state: `noFollowAtOpen` is `true` on every returned value, because the
+    // only other possibility is a refusal.
+    const fs = new FakeInboxFs();
+    fs.put('a.json', { kind: 'file', content: snapshotJson(1) });
+    fs.put('b.json', { kind: 'file', content: snapshotJson(2) });
+    for (const name of ['a.json', 'b.json']) {
+      assertEq(readInboxFile(name, FAKE_ENV, fs).noFollowAtOpen, true, `${name} was opened with the guarantee`);
+    }
+    assertEq(inboxNoFollowSupported(new FakeInboxFs(null)), false, 'and the predicate is what decides it');
+    assertEq(inboxNoFollowSupported(new FakeInboxFs(0x20000)), true, 'in both directions');
   });
 
   await test('the listing is advisory: what it offers is re-decided against a descriptor when it is opened', () => {
@@ -467,6 +559,7 @@ async function main(): Promise<void> {
   });
 
   await test('the listing is bounded and deterministic', () => {
+    if (skipUnsupported('the real-filesystem listing bound')) return;
     const many = join(WORK, 'many');
     mkdirSync(many, { recursive: true });
     for (let i = 0; i < INBOX_MAX_ENTRIES + 5; i += 1) {
@@ -764,7 +857,13 @@ async function main(): Promise<void> {
     // database is down is exactly the operator trying to work out what to do next.
     const listing = await call(IMPORT_INBOX_ROUTE, { token: TOKEN });
     assertEq(listing.status, 200, 'the inbox needs no database');
-    assert(listing.body.includes('library.json'), 'and lists the snapshot');
+    if (INBOX_SUPPORTED) {
+      assert(listing.body.includes('library.json'), 'and lists the snapshot');
+    } else {
+      // Still a 200 with a STATE, which is the point of the assertion above: the inbox route answers
+      // without a database whatever it has to say.
+      assert(listing.body.includes('UNSUPPORTED_PLATFORM'), 'and says why it can offer nothing here');
+    }
 
     for (const res of [
       await call(IMPORT_HISTORY_ROUTE, { token: TOKEN }),
@@ -775,6 +874,25 @@ async function main(): Promise<void> {
       assert(!/postgres|password|DATABASE_URL|\/run\/secrets/i.test(res.body), 'the failure leaked configuration');
       assert(!res.body.includes(WORK), 'the failure leaked a path');
     }
+  });
+
+  await test('an unsupported platform is a 503 about the INSTALLATION, not a 400 about the file', async () => {
+    // The mapping is only reachable on a platform that actually lacks the flag, so this asserts in whichever
+    // direction the machine running it gives — and it is the one assertion here that a Linux CI runner
+    // CANNOT make and a Windows developer machine can. Both halves are written down so neither is a gap.
+    const response = await importPreviewResponse(
+      { file: 'library.json' },
+      { lookup: async () => [], confirmations: new ImportConfirmations() },
+    );
+    if (INBOX_SUPPORTED) {
+      assert(response.status !== 503 || String(response.body.code) !== 'OPERATOR_UI_IMPORT_UNSUPPORTED_PLATFORM',
+        'a platform WITH the guarantee never reports it as missing');
+      return;
+    }
+    assertEq(response.status, 503, 'a machine that cannot do it safely is unavailable, not given a bad request');
+    assertEq(String(response.body.code), 'OPERATOR_UI_IMPORT_UNSUPPORTED_PLATFORM', 'and the code names the machine');
+    assertEq(String(response.body.wrote), 'nothing', 'and it wrote nothing');
+    assert(/command-line import/.test(String(response.body.message)), 'and points at the path that still works');
   });
 
   await test('the import routes carry the same hardened headers as every other route', async () => {
@@ -797,6 +915,12 @@ async function main(): Promise<void> {
   if (process.env.DATABASE_URL === undefined) {
     try { pg = await startEmbedded(); }
     catch (err) { console.log(`  SKIP  the end-to-end section: an embedded PostgreSQL could not be started: ${(err as Error).message}`); }
+  }
+  if (!INBOX_SUPPORTED) {
+    // The schema and privilege checks below need no inbox and still run; the preview/apply flow reads a real
+    // file through the real module, which refuses here. Said once, plainly, rather than per test.
+    console.log('  SKIP  the HTTP preview/apply flow: O_NOFOLLOW is undefined on this platform, so the inbox');
+    console.log('        refuses to read any file and the flow cannot be exercised. CI runs on Linux.');
   }
 
   if (process.env.DATABASE_URL !== undefined) {
@@ -879,6 +1003,7 @@ async function main(): Promise<void> {
 
     let confirmation = '';
     await test('a PREVIEW over HTTP writes nothing at all, and says so', async () => {
+      if (!INBOX_SUPPORTED) return;
       const res = await post(IMPORT_PREVIEW_ROUTE, { file: 'library.json' });
       assertEq(res.status, 200, `preview answered ${res.status}: ${res.body}`);
       const body = JSON.parse(res.body) as { wrote: string; preview: { created: number; total: number }; confirmation: string };
@@ -897,6 +1022,7 @@ async function main(): Promise<void> {
     });
 
     await test('an APPLY with a STALE confirmation is refused, with nothing written', async () => {
+      if (!INBOX_SUPPORTED) return;
       const stale = new ImportConfirmations(() => 1).issue({
         name: 'library.json', bytes: 1, contentDigest: 'a'.repeat(64), snapshotDigest: 'b'.repeat(64),
         source: 'my-library', updateExisting: false,
@@ -908,6 +1034,7 @@ async function main(): Promise<void> {
     });
 
     await test('an APPLY of a SUBSTITUTED file is refused, with nothing written', async () => {
+      if (!INBOX_SUPPORTED) return;
       const preview = JSON.parse((await post(IMPORT_PREVIEW_ROUTE, { file: 'library.json' })).body) as { confirmation: string };
       // The classic race: the operator previewed one file and the host replaced it before they confirmed.
       writeFileSync(join(inbox, 'library.json'), snapshotJson(9));
@@ -919,6 +1046,7 @@ async function main(): Promise<void> {
     });
 
     await test('an APPLY confirming a DIFFERENT file than the one previewed is refused', async () => {
+      if (!INBOX_SUPPORTED) return;
       writeFileSync(join(inbox, 'other.json'), snapshotJson(2, 'other-library'));
       const preview = JSON.parse((await post(IMPORT_PREVIEW_ROUTE, { file: 'other.json' })).body) as { confirmation: string };
       const res = await post(IMPORT_APPLY_ROUTE, { file: 'library.json', confirmation: preview.confirmation });
@@ -928,6 +1056,7 @@ async function main(): Promise<void> {
     });
 
     await test('an APPLY with the RIGHT confirmation imports exactly what was previewed', async () => {
+      if (!INBOX_SUPPORTED) return;
       const preview = JSON.parse((await post(IMPORT_PREVIEW_ROUTE, { file: 'library.json' })).body) as { confirmation: string };
       const res = await post(IMPORT_APPLY_ROUTE, { file: 'library.json', confirmation: preview.confirmation });
       assertEq(res.status, 200, `apply answered ${res.status}: ${res.body}`);
@@ -946,6 +1075,7 @@ async function main(): Promise<void> {
     });
 
     await test('the history row is identity-free: counts and digests, never content', async () => {
+      if (!INBOX_SUPPORTED) return;
       const { rows } = await admin.query('SELECT * FROM import_history ORDER BY id DESC LIMIT 1');
       const row = rows[0] as Record<string, unknown>;
       assertEq(row.actor, 'operator-ui', 'the actor is the browser surface');
@@ -961,6 +1091,7 @@ async function main(): Promise<void> {
     });
 
     await test('applying the SAME snapshot again changes nothing, and says so', async () => {
+      if (!INBOX_SUPPORTED) return;
       const middle = await counts();
       const preview = JSON.parse((await post(IMPORT_PREVIEW_ROUTE, { file: 'library.json' })).body) as {
         confirmation: string; preview: { created: number; unchanged: number };
@@ -977,6 +1108,7 @@ async function main(): Promise<void> {
     });
 
     await test('the history route serves what was written, newest first, bounded', async () => {
+      if (!INBOX_SUPPORTED) return;
       const res = await live(IMPORT_HISTORY_ROUTE, { token: TOKEN });
       assertEq(res.status, 200, `the history answered ${res.status}: ${res.body}`);
       const body = JSON.parse(res.body) as { entries: Array<{ source: string; created: number; appliedAt: string }>; limit: number };
@@ -1014,6 +1146,7 @@ async function main(): Promise<void> {
     });
 
     await test('a MALFORMED snapshot is refused whole, with every problem named and nothing written', async () => {
+      if (!INBOX_SUPPORTED) return;
       writeFileSync(join(inbox, 'broken.json'), JSON.stringify({
         format: 'catalog-authority.snapshot',
         version: 1,
@@ -1035,6 +1168,7 @@ async function main(): Promise<void> {
     });
 
     await test('nothing in the service log buffer carries a token, a path or record content', async () => {
+      if (!INBOX_SUPPORTED) return;
       const res = await live('/api/logs', { token: TOKEN });
       assertEq(res.status, 200, 'the log route answered');
       assert(!res.body.includes(TOKEN), 'the log buffer holds the operator token');

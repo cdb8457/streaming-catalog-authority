@@ -70,7 +70,7 @@ that already existed, and that was the stated remaining limitation.
 | `npm run test:runner` | 60 passed |
 | `npm test` (aggregate) | **297 suites selected, 297 passed, 0 failed** (1586s, re-run after the review remediation) |
 | `npm run test:phase263-local` | 40 passed |
-| `npm run test:phase264-local` | 55 passed |
+| `npm run test:phase264-local` | 61 passed |
 | `npm run test:phase265-local` | 22 passed |
 | Compose config, all five shipped stacks | resolve |
 | Release bundle assembly + `test:release-delivery` | 26 passed |
@@ -144,6 +144,30 @@ no raw byte, and the issuer still verifying its own token). A **no-control-byte 
 every `.ts` file under `src/` and `test/`; the four other pre-existing offenders were converted to escapes
 too, because a guard that exempts the files already violating it cannot prevent the next one.
 
+### Second review pass
+
+Two further findings, both fixed.
+
+**The unsupported-platform fallback was a documented vulnerability.** Where `O_NOFOLLOW` is undefined the
+module fell back to a check-then-open and *returned the bytes*, reporting `noFollowAtOpen: false`, with a
+test pinning the residual window as a limitation. Writing a vulnerability down does not stop it being one.
+It now **refuses before its first syscall** — no resolve, no stat, no open — with no flag or environment
+variable to turn it off, because an escape hatch would be the fallback under another name. The listing
+reports `UNSUPPORTED_PLATFORM` as a state; preview and apply answer `503` about the *installation* rather
+than `400` about the file. `ops:catalog-import` is unaffected, and Linux behaviour is unchanged.
+
+**A short read was silently accepted.** The size check only caught growth. A file truncated mid-read handed
+the parser a *prefix* — and a prefix of a valid snapshot can itself parse as a valid snapshot with records
+missing, importing a smaller catalog nobody asked for with nothing to flag it. The byte count must now equal
+the `fstat` **exactly, in either direction**.
+
+Cost, stated: on a platform without the flag the real-filesystem inbox tests and the HTTP preview/apply flow
+**cannot run**, because the module declines to read anything. They are skipped loudly rather than adjusted to
+pass — adjusting them would mean asserting the fallback that was just removed. The injected-syscall suite
+proves the decision logic on every platform, and CI is Linux, where nothing is skipped. One assertion runs
+only on an unsupported platform (the `503` mapping) and is therefore verified here and not in CI; the
+converse half is asserted too, so neither direction is a gap.
+
 ## Limitations, stated
 
 * **The confirmation does not survive a restart**, by design. A page open across an upgrade must preview
@@ -159,8 +183,9 @@ too, because a guard that exempts the files already violating it cannot prevent 
   page.
 * **Search and sort over encrypted identity are bounded** and say when they did not see everything. That is
   the cost of crypto-shredding being a real erasure, not a defect.
-* **`O_NOFOLLOW` is POSIX.** On a platform without it the import open cannot atomically refuse a symlink, and
-  the module reports that on every result rather than pretending otherwise. The shipped container is Linux.
+* **`O_NOFOLLOW` is POSIX, and without it the browser import does not work at all** — by design, because the
+  alternative is a fallback that can be raced. The Import panel says so and `ops:catalog-import` still works.
+  The shipped container is Linux and is unaffected.
 * **The command-line import still resolves by name.** It is used by an operator who already has shell access
   to the container, so a race against themselves is not a boundary being defended; the browser path is the
   one that takes an untrusted name, and it is the one bound to a descriptor.

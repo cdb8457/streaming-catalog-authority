@@ -48,16 +48,27 @@ import { CATALOG_IMPORT_DIR_ENV } from './catalog-import.js';
 // root, and `O_NOFOLLOW` refuses to traverse a link at that component. There is no path left for a rename to
 // redirect, because after the open there is no path in use at all.
 //
-// PLATFORM LIMITATION, STATED RATHER THAN GLOSSED. `O_NOFOLLOW` is POSIX. The shipped product runs in a Linux
-// container and gets the guarantee above in full. On a platform whose Node build does not define the flag
-// (Windows), the open cannot atomically refuse a link, and this module says so: `noFollowAtOpen` on the
-// result is `false`, a best-effort `lstat` pre-check is used in its place, and the residual window is a
-// documented property of that platform rather than a silent difference. Everything else — one descriptor,
-// `fstat` on it, both size bounds, no re-open by name — holds everywhere.
+// WITHOUT THAT GUARANTEE, THIS MODULE RETURNS NOTHING. `O_NOFOLLOW` is POSIX. The shipped product runs in a
+// Linux container and has it. Where a Node build does not define the flag, the open cannot atomically refuse
+// a link — and the answer to that is to REFUSE, before any file is opened at all, not to fall back to a
+// check-then-open that is known to be raceable.
+//
+// An earlier version of this did fall back, reported `noFollowAtOpen: false`, and had a test pinning the
+// residual window as a documented property. That was honest and it was still wrong: a documented
+// vulnerability is a vulnerability, and a security boundary that returns bytes through a path it knows can
+// be raced has not been made safe by writing the fact down. Nothing about the Linux behaviour changes; what
+// changes is that an unsupported platform now gets a refusal instead of content.
+//
+// The listing says so too, as a STATE rather than an error, so the panel explains itself instead of offering
+// files that could never be opened.
 //
 // THE LISTING IS ADVISORY, AND ONLY THE OPEN IS AUTHORITATIVE. `listImportInbox` uses `lstat` to decide what
 // to offer, which is inherently a snapshot of a moment. Nothing rests on it: a candidate it offered is
 // re-decided from scratch, against a descriptor, when it is actually opened.
+//
+// THE COMMAND LINE IS A DIFFERENT PATH AND IS NOT AFFECTED. `ops:catalog-import` resolves a path an operator
+// typed, in a shell they already have inside the container. It takes no untrusted name, so it is not the
+// boundary this file defends, and it keeps working everywhere.
 
 /** How many candidates one listing will report. */
 export const INBOX_MAX_ENTRIES = 200;
@@ -89,7 +100,13 @@ export interface InboxCandidate {
   readonly bytes: number;
 }
 
-export type InboxState = 'NOT_CONFIGURED' | 'UNREADABLE' | 'EMPTY' | 'CANDIDATES';
+export type InboxState =
+  /** This platform cannot open a file without possibly following a link, so nothing is offered. */
+  | 'UNSUPPORTED_PLATFORM'
+  | 'NOT_CONFIGURED'
+  | 'UNREADABLE'
+  | 'EMPTY'
+  | 'CANDIDATES';
 
 export interface InboxListing {
   readonly state: InboxState;
@@ -102,12 +119,33 @@ export interface InboxListing {
   readonly guidance: string;
 }
 
+/** Said identically by the listing and by the refusal, so a panel and an error cannot describe it differently. */
+export const INBOX_UNSUPPORTED_PLATFORM_MESSAGE =
+  'This installation cannot import a snapshot from the browser: the system it is running on cannot open a '
+  + 'file while guaranteeing it did not follow a symbolic link, and this page will not read a file it cannot '
+  + 'make that guarantee about. The shipped Docker image does not have this limitation. Use the '
+  + 'command-line import instead, which takes a path you type rather than a name from a web page.';
+
 export class CatalogInboxError extends Error {
   readonly code = 'CATALOG_IMPORT_INBOX_REJECTED';
 
   constructor(message: string) {
     super(message);
     this.name = 'CatalogInboxError';
+  }
+}
+
+/**
+ * The platform cannot give the guarantee, so nothing was opened and nothing is returned.
+ *
+ * A SUBCLASS rather than a message a caller has to match on, because it is a different KIND of answer: every
+ * other refusal here is about the file somebody named, and this one is about the machine. A route that
+ * reported it as a bad file would send an operator to check a file that is perfectly fine.
+ */
+export class CatalogInboxUnsupportedPlatformError extends CatalogInboxError {
+  constructor() {
+    super(INBOX_UNSUPPORTED_PLATFORM_MESSAGE);
+    this.name = 'CatalogInboxUnsupportedPlatformError';
   }
 }
 
@@ -170,6 +208,17 @@ export const realInboxFs: InboxFs = {
   noFollow: typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : null,
 };
 
+/**
+ * Can this platform open a file and be certain it did not follow a symlink to get there?
+ *
+ * The one question that decides whether the import inbox works at all. It is exported so the refusal, the
+ * listing state and the tests all ask it the same way rather than each re-deriving it.
+ */
+export function inboxNoFollowSupported(fs: InboxFs = realInboxFs): boolean {
+  return fs.noFollow !== null;
+}
+
+
 const NO_SKIPS: Record<InboxSkipReason, number> = {
   'not-a-regular-file': 0, symlink: 0, 'not-a-json-name': 0, empty: 0, 'too-large': 0, unreadable: 0,
 };
@@ -197,6 +246,18 @@ export function inboxRoot(env: NodeJS.ProcessEnv = process.env, fs: InboxFs = re
  * disclosure.
  */
 export function listImportInbox(env: NodeJS.ProcessEnv = process.env, fs: InboxFs = realInboxFs): InboxListing {
+  // FIRST, because it outranks every other state: on a platform that cannot refuse a link at the open there
+  // is nothing this panel could offer that it would be willing to read. Offering files anyway would be
+  // offering a button that always fails.
+  if (!inboxNoFollowSupported(fs)) {
+    return {
+      state: 'UNSUPPORTED_PLATFORM',
+      candidates: [],
+      skipped: { ...NO_SKIPS },
+      truncated: false,
+      guidance: INBOX_UNSUPPORTED_PLATFORM_MESSAGE,
+    };
+  }
   const configured = env[CATALOG_IMPORT_DIR_ENV];
   if (configured === undefined || configured.trim() === '') {
     return {
@@ -283,13 +344,13 @@ export interface InboxFile {
   readonly contentDigest: string;
   readonly text: string;
   /**
-   * True when the open itself refused to follow a symlink (`O_NOFOLLOW`).
+   * Always `true`, and carried on the value so a caller need not take it on trust.
    *
-   * Reported rather than assumed. On a platform whose Node build does not define the flag the refusal is a
-   * best-effort `lstat` before the open instead, which leaves a window this module will not pretend it has
-   * closed. The shipped product runs on Linux, where this is always `true`.
+   * This module returns no content at all where the open cannot atomically refuse a symlink, so a file that
+   * exists was opened under `O_NOFOLLOW`. The field is an invariant the type system cannot state; a test
+   * asserts it holds for every file this function returns.
    */
-  readonly noFollowAtOpen: boolean;
+  readonly noFollowAtOpen: true;
 }
 
 /**
@@ -309,6 +370,14 @@ export function readInboxFile(
       'that is not a name this page can use: a snapshot must be a plain .json file name from the import '
       + 'folder, with no folder part in it');
   }
+  // BEFORE ANYTHING TOUCHES THE FILESYSTEM. Not one syscall is made on a platform that cannot give the
+  // guarantee — no resolve, no stat and above all no OPEN — because an open performed and then regretted is
+  // still an open. There is no flag, no environment variable and no argument that turns this off: an escape
+  // hatch here would be the vulnerable fallback under another name.
+  if (!inboxNoFollowSupported(fs)) {
+    throw new CatalogInboxUnsupportedPlatformError();
+  }
+
   const root = inboxRoot(env, fs);
   if (root === null) {
     throw new CatalogInboxError('this installation has no readable import folder configured');
@@ -317,24 +386,10 @@ export function readInboxFile(
   // because a second resolution is a second window.
   const path = join(root, name);
 
-  const noFollowAtOpen = fs.noFollow !== null;
-  if (!noFollowAtOpen) {
-    // DEGRADED, AND SAID SO. Without O_NOFOLLOW the open cannot refuse a link atomically, so a link is
-    // looked for first. This is best-effort by construction — the window it leaves is exactly the one
-    // O_NOFOLLOW exists to remove — and it is why `noFollowAtOpen` travels on the result.
-    let pre: InboxStat | null;
-    try {
-      pre = fs.lstat(path);
-    } catch {
-      throw new CatalogInboxError('that snapshot could not be read');
-    }
-    if (pre === null) throw new CatalogInboxError('no such snapshot file in the import folder');
-    if (pre.isSymbolicLink) throw new CatalogInboxError('that snapshot is not a regular file');
-  }
-
-  // `| 0` is deliberately NOT used as a fallback: on a platform without the flag that would quietly turn
-  // "refuse to follow a link" into "follow it", which is the difference this whole function is about.
-  const flags = fs.noFollow === null ? fsConstants.O_RDONLY : fsConstants.O_RDONLY | fs.noFollow;
+  // `| 0` is deliberately NOT used as a fallback: it would quietly turn "refuse to follow a link" into
+  // "follow it", which is the difference this whole function is about. The refusal above is why this
+  // non-null assertion is sound.
+  const flags = fsConstants.O_RDONLY | fs.noFollow!;
   let fd: number;
   try {
     fd = fs.open(path, flags);
@@ -368,18 +423,23 @@ export function readInboxFile(
     }
 
     // ONE BYTE MORE THAN THE FSTAT SAID, and never more than the limit. That extra byte is what detects a
-    // file which GREW between the fstat and the read: without it a growing file would be silently truncated
-    // at exactly the size we expected and would look like a perfectly valid snapshot. Sizing the buffer from
-    // the fstat rather than from the 8 MiB limit also means an ordinary snapshot allocates its own size, not
-    // the maximum, on every preview.
+    // file which GREW between the fstat and the read. Sizing the buffer from the fstat rather than from the
+    // 8 MiB limit also means an ordinary snapshot allocates its own size, not the maximum, on every preview.
     const expected = stats.size;
     const raw = readWholeDescriptor(fs, fd, Math.min(IMPORT_MAX_BYTES + 1, expected + 1));
 
-    // AFTER the read, against what was actually returned rather than against what was promised.
-    if (raw.byteLength > expected) {
+    // EXACTLY WHAT THE FSTAT SAID, IN EITHER DIRECTION.
+    //
+    // More is a file that grew; fewer is a file that was TRUNCATED mid-read, and the second is the more
+    // dangerous of the two because it is silent. A short read hands the parser a PREFIX of a document — and
+    // a prefix of a valid snapshot can itself be a valid snapshot with some of the records missing, which
+    // would import as a smaller catalog that nobody asked for and nothing would flag. The descriptor
+    // promised a size; anything else means the file changed underneath it, and the only safe answer to
+    // "what I read is not what I checked" is to read nothing.
+    if (raw.byteLength !== expected) {
       throw new CatalogInboxError(
-        'that snapshot grew while it was being read, so what was checked is not what was read. Nothing was '
-        + 'imported. Copy the file into the import folder complete, then try again.');
+        'that snapshot changed size while it was being read, so what was checked is not what was read. '
+        + 'Nothing was imported. Copy the file into the import folder complete, then try again.');
     }
     if (raw.byteLength > IMPORT_MAX_BYTES) {
       throw new CatalogInboxError(`that snapshot is larger than the ${IMPORT_MAX_BYTES}-byte limit`);
@@ -394,7 +454,7 @@ export function readInboxFile(
       // only one of them is what the apply will be checked against.
       contentDigest: createHash('sha256').update(raw).digest('hex'),
       text: raw.toString('utf8'),
-      noFollowAtOpen,
+      noFollowAtOpen: true,
     };
   } finally {
     // Every path, including every throw above.

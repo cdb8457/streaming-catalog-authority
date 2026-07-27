@@ -2,7 +2,12 @@ import type { IncomingMessage } from 'node:http';
 import { CatalogImportError } from '../core/catalog/import-snapshot.js';
 import type { CatalogAuthority } from '../core/catalog/authority.js';
 import type { ExistingStateLookup } from './catalog-import.js';
-import { CatalogInboxError, listImportInbox, readInboxFile } from './catalog-import-inbox.js';
+import {
+  CatalogInboxError,
+  CatalogInboxUnsupportedPlatformError,
+  listImportInbox,
+  readInboxFile,
+} from './catalog-import-inbox.js';
 import { ImportConfirmations } from './catalog-import-confirmation.js';
 import { applyImport, previewImport } from './catalog-import-service.js';
 import type { ImportHistoryStore } from './import-history.js';
@@ -222,6 +227,11 @@ export async function importPreviewResponse(
   try {
     file = readInboxFile(body.file, env);
   } catch (err) {
+    // A platform that cannot open a file safely is a 503 about the INSTALLATION, not a 400 about the file:
+    // reporting it as a bad file would send an operator to check a file that is perfectly fine.
+    if (err instanceof CatalogInboxUnsupportedPlatformError) {
+      return refusal(503, 'IMPORT_UNSUPPORTED_PLATFORM', err.message);
+    }
     if (err instanceof CatalogInboxError) return refusal(400, 'IMPORT_FILE_REJECTED', err.message);
     return refusal(503, 'IMPORT_INBOX_UNAVAILABLE', 'The import folder could not be read.');
   }
@@ -297,6 +307,11 @@ export async function importApplyResponse(
   try {
     file = readInboxFile(body.file, env);
   } catch (err) {
+    // A platform that cannot open a file safely is a 503 about the INSTALLATION, not a 400 about the file:
+    // reporting it as a bad file would send an operator to check a file that is perfectly fine.
+    if (err instanceof CatalogInboxUnsupportedPlatformError) {
+      return refusal(503, 'IMPORT_UNSUPPORTED_PLATFORM', err.message);
+    }
     if (err instanceof CatalogInboxError) return refusal(400, 'IMPORT_FILE_REJECTED', err.message);
     return refusal(503, 'IMPORT_INBOX_UNAVAILABLE', 'The import folder could not be read.');
   }

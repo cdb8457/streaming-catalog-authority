@@ -49,8 +49,11 @@ The name is now opened **once**, and every question after that is asked of the *
    refused here even if it was substituted after the listing offered it, because this is the object we hold.
 5. **The size is enforced from that `fstat`, before a single byte is read.**
 6. **The bytes are read from that descriptor**, bounded at one byte more than the `fstat` promised, and the
-   size is enforced **again** against what actually came back — so a file that grew in between is refused
-   rather than silently truncated into something that still parses.
+   byte count must then equal that `fstat` **exactly, in either direction**. More is a file that grew; fewer
+   is a file that was **truncated mid-read** — and the second is the more dangerous, because a prefix of a
+   valid snapshot can itself parse as a valid snapshot with records missing, which would import as a smaller
+   catalog nobody asked for and nothing would flag. "What I read is not what I checked" has exactly one safe
+   answer: read nothing.
 7. **The descriptor is closed on every path**, including every refusal.
 
 **This is deliberately not another pathname recheck.** Re-resolving the path a second, third or fourth time
@@ -64,13 +67,29 @@ to offer, which is inherently a snapshot of a moment. Nothing rests on it — a 
 re-decided from scratch, against a descriptor, when it is actually opened, so a stale listing costs a refusal
 and never a disclosure.
 
-**Platform limit, stated rather than glossed.** `O_NOFOLLOW` is POSIX. The shipped product runs in a Linux
-container and gets the guarantee above in full. On a platform whose Node build does not define the flag
-(Windows), the open cannot atomically refuse a link: the module reports `noFollowAtOpen: false`, uses a
-best-effort `lstat` pre-check in its place, and does **not** claim the window is closed there. A link
-introduced after that pre-check *would* be followed on such a platform, and the suite pins that fact
-deliberately so no document can quietly contradict it. Everything else — one descriptor, `fstat` on it, both
-size bounds, no re-open by name — holds everywhere.
+**Without that guarantee, this returns nothing.** `O_NOFOLLOW` is POSIX. The shipped product runs in a Linux
+container and has it. Where a Node build does not define the flag, the open cannot atomically refuse a link —
+and the answer is to **refuse**, before any file is opened at all.
+
+An earlier version of this phase fell back to a check-then-open there, reported `noFollowAtOpen: false`, and
+had a test pinning the residual window as a documented limitation. That was honest and it was still wrong: a
+documented vulnerability is a vulnerability, and a boundary that returns bytes through a path it knows can be
+raced has not been made safe by writing the fact down. So:
+
+* `readInboxFile` throws **before its first syscall** — no resolve, no stat and above all no open, because an
+  open performed and then regretted is still an open. There is no flag, environment variable or argument that
+  turns this off; an escape hatch would be the fallback under another name.
+* `/api/import/inbox` answers `200` with state `UNSUPPORTED_PLATFORM` and guidance, so the panel explains
+  itself instead of offering files that could never be opened.
+* `/api/import/preview` and `/api/import/apply` answer `503 OPERATOR_UI_IMPORT_UNSUPPORTED_PLATFORM` — a
+  statement about the *installation*, not a `400` about the file, because reporting it as a bad file would
+  send an operator to check a file that is perfectly fine.
+* `ops:catalog-import` is **unaffected**. It resolves a path an operator typed in a shell they already have
+  inside the container; it takes no untrusted name, so it is not the boundary this defends.
+
+**Nothing about the Linux behaviour changes.** Everything else — one descriptor, `fstat` on it, both size
+bounds, no re-open by name — is unchanged, and `noFollowAtOpen` is now `true` on every value this module
+returns, because the only other outcome is a refusal.
 
 The listing itself skips anything that is not a plain, bounded `.json` file and **counts** what it skipped by
 reason. A skipped name is never echoed: it is still somebody's filesystem.
@@ -190,7 +209,7 @@ questions with different threat models, and collapsing them would mean the brows
 
 ## Proof
 
-`npm run test:phase264-local` (`test/operator-ui-import-endpoint.ts`) — 55 assertions covering path traversal
+`npm run test:phase264-local` (`test/operator-ui-import-endpoint.ts`) — 61 assertions covering path traversal
 in fourteen spellings, symlinks, oversized and empty files, non-string names, a bounded and deterministic
 listing, confirmation forgery, tampering, replay, expiry, cross-process rejection and substitution, the
 content-type / origin / size rules, auth and method on all four routes, fail-closed with no database, the v6
@@ -202,8 +221,9 @@ repointed at a symlink *at the moment of the open*, after every validation has p
 open refuses it, that no byte from outside the folder appears in the refusal, that **no call after the open
 carries a pathname at all** (a re-resolution would be another window), that the descriptor is closed exactly
 once on every path, and separately covers a symlink present at open time, a non-regular descriptor, a file
-that grew between the `fstat` and the read, both size bounds, an empty descriptor by either route, a stale
-listing, and — honestly — what a platform without `O_NOFOLLOW` does and does not give you.
+that grew between the `fstat` and the read, one that was **truncated** between them, both size bounds, an
+empty descriptor by either route, a stale listing, and a platform without `O_NOFOLLOW` returning **no content
+and performing no open at all** — asserted down to "the refusal made zero filesystem calls".
 
 `deploy/ci/catalog-acceptance.sh` proves the same workflow through a real browser against a real Compose
 stack.
@@ -219,9 +239,14 @@ stack.
   catalog subsequently became — a later erasure does not rewrite an older row, and should not.
 * **The inbox lists at most 200 files** and says when it stopped. A folder with more than that needs the
   command line, which takes a name directly.
-* **`O_NOFOLLOW` is POSIX.** On a platform without it the open cannot atomically refuse a symlink, and the
-  module says so on every result rather than pretending otherwise. This is a developer-machine limitation:
-  the shipped container is Linux.
+* **`O_NOFOLLOW` is POSIX, and without it the browser import does not work at all.** That is deliberate: the
+  module refuses rather than falling back. On a developer machine without the flag the Import panel reports
+  `UNSUPPORTED_PLATFORM` and `ops:catalog-import` is the way in. The shipped container is Linux and is
+  unaffected.
+* **The real-filesystem inbox tests and the HTTP preview/apply flow cannot run on such a platform**, because
+  the module declines to read anything. They are skipped loudly rather than adjusted to pass — adjusting them
+  would mean asserting the fallback that was removed. The injected-syscall suite proves the decision logic
+  everywhere, and CI runs on Linux, where nothing is skipped.
 * **The command-line path resolves by name**, as it always has. It is used by an operator who already has
   shell access to the container, so a race against themselves is not a boundary this product is defending;
   the browser path is the one that takes an untrusted name, and it is the one bound to a descriptor.
