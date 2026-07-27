@@ -68,7 +68,7 @@ that already existed, and that was the stated remaining limitation.
 | `npm run typecheck` | clean |
 | `npm run test:inventory` | `ok: true` — every file under `test/` is inventoried |
 | `npm run test:runner` | 60 passed |
-| `npm test` (aggregate) | **297 suites selected, 297 passed, 0 failed** (1586s, re-run after the review remediation) |
+| `npm test` (aggregate) | **297 suites selected, 297 passed, 0 failed** (1492s, re-run after the second review pass) |
 | `npm run test:phase263-local` | 40 passed |
 | `npm run test:phase264-local` | 61 passed |
 | `npm run test:phase265-local` | 22 passed |
@@ -167,6 +167,14 @@ pass — adjusting them would mean asserting the fallback that was just removed.
 proves the decision logic on every platform, and CI is Linux, where nothing is skipped. One assertion runs
 only on an unsupported platform (the `503` mapping) and is therefore verified here and not in CI; the
 converse half is asserted too, so neither direction is a gap.
+
+### One aggregate run flaked, and it was not this change
+
+The first aggregate after the fail-closed change reported `test-runner.ts — exit 1`. It is not related: that
+suite spawns real child processes and exercises `cutover-parser.ts`, neither of which this change touches. It
+passed 3/3 standalone immediately afterwards and the re-run of the full aggregate was 297/297. Recorded
+rather than quietly re-run, because "I ran it again and it passed" is only worth anything if the first result
+is also written down.
 
 ## Limitations, stated
 
