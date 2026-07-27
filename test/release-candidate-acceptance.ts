@@ -138,7 +138,7 @@ test('publish cannot run unless the release-candidate acceptance succeeded too',
   // browse acceptance; publish now depends on all seven. This test keeps proving that the release-candidate
   // gate in particular is required (its own concern); the exact set is asserted here, so dropping
   // release-candidate — or any other gate — FAILS this.
-  assertEq([...needs].sort().join(','), 'bundle,catalog-acceptance,image,lifecycle,rehearsal,release-candidate,suites',
+  assertEq([...needs].sort().join(','), 'bundle,catalog-acceptance,image,jellyfin-acceptance,lifecycle,rehearsal,release-candidate,suites',
     'publish depends on exactly the seven gates, nothing more, nothing less');
 
   // GitHub skipped-job semantics: a needed job that is SKIPPED causes publish (which has no status function

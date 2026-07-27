@@ -63,6 +63,17 @@ jobs:
         # tells you nothing. A timeout here fails loudly with a readable log instead of occupying a runner.
         timeout-minutes: 15
         run: npm run test:runner
+      - name: Phase 268, 267, 266 — the Jellyfin control plane
+        # Phase 266 is the connection and the read-only discovery surface (an injected transport plus a fake
+        # Jellyfin this suite starts on loopback — no network beyond 127.0.0.1). Phases 267 and 268 are the
+        # planner, the confirmation and the execution workflow, both against a real embedded PostgreSQL with a
+        # fake media server on loopback. Phase 268's acceptance contract suite checks the CI wiring, the
+        # compose override and the fixture statically, on a machine with no Docker daemon.
+        run: |
+          npm run test:phase268-acceptance
+          npm run test:phase268-local
+          npm run test:phase267-local
+          npm run test:phase266-local
       - name: Phase 265, 264, 263, 262, 261, 260, 259, 257, 256, 255, 254, 253, 252, 251, 250, 249, 248, 247, 246, 245, 245 release delivery, 244, 243, 242
         # Phase 263 is the keystore repair suite (an injected filesystem, so every ownership state is proved
         # on every platform, plus the shipped Compose wiring); Phase 264 is the authenticated import
@@ -259,6 +270,40 @@ jobs:
           retention-days: 7
           if-no-files-found: ignore
 
+  jellyfin-acceptance:
+    name: Jellyfin control plane acceptance (real browser, real Compose, local fake server)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Install the pinned browser acceptance harness
+        run: |
+          npm --prefix deploy/ci/acceptance ci
+          npx --prefix deploy/ci/acceptance playwright install --with-deps chromium
+      - name: Discover, plan, queue, reconcile, recover and revoke against a local fake Jellyfin
+        env:
+          # A runner that cannot run this is broken, not passing: a missing prerequisite is a hard failure.
+          REQUIRE_ACCEPTANCE: 1
+        run: bash deploy/ci/jellyfin-control-acceptance.sh
+      - name: Always tear down containers and volumes
+        if: always()
+        run: |
+          docker compose -p catalogauthority-jellyfinacceptance down -v --remove-orphans 2>/dev/null || true
+          docker image rm -f catalog-authority-ops:jellyfin-acceptance 2>/dev/null || true
+      - name: Upload sanitized acceptance diagnostics (failure only)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jellyfin-acceptance-diagnostics
+          path: dist/jellyfin-acceptance-artifacts
+          if-no-files-found: ignore
+          retention-days: 7
+
   lifecycle:
     name: Release lifecycle acceptance (fresh, restart, upgrade, rollback)
     # Phase 249. Proves the DOCUMENTED lifecycle an ordinary self-hosted operator lives through: fresh
@@ -401,10 +446,13 @@ jobs:
     # release, or a deliberate dispatch) and is never conditionally skipped; a needed job that failed or was
     # cancelled is not "success", so publish is skipped — a release cannot go out over a failed gate. (rehearsal
     # itself needs release-candidate and lifecycle, so there is no cycle: rehearsal never depends on publish.)
+    # Phase 268 adds `jellyfin-acceptance`: a release that can queue external writes must also be proved to
+    # refuse them by default, to queue only a digest-confirmed plan, and to recover a lost create without
+    # duplicating — against a real browser, a real Compose stack and a local fake media server.
     # Phase 262 adds `catalog-acceptance`: the release must also be proved to import and browse a catalog in a
     # real browser before it can be published. It carries no `if:` either, so it runs on every event that can
     # reach publish.
-    needs: [suites, image, bundle, release-candidate, catalog-acceptance, lifecycle, rehearsal]
+    needs: [suites, image, bundle, release-candidate, catalog-acceptance, jellyfin-acceptance, lifecycle, rehearsal]
     # A cheap pre-filter only. The real gate is the release-ref step below, which is a tested function and
     # refuses anything this expression might let through.
     if: github.event_name == 'release' || (github.event_name == 'workflow_dispatch' && inputs.publish)

@@ -83,6 +83,35 @@
   var impBlocked = document.getElementById('impBlocked');
   var impNotes = document.getElementById('impNotes');
   var impHistory = document.getElementById('impHistory');
+  var jfState = document.getElementById('jfState');
+  var jfHostClass = document.getElementById('jfHostClass');
+  var jfNetwork = document.getElementById('jfNetwork');
+  var jfWrites = document.getElementById('jfWrites');
+  var jfStatus = document.getElementById('jfStatus');
+  var jfLibraries = document.getElementById('jfLibraries');
+  var jfCollections = document.getElementById('jfCollections');
+  var jfManagedCount = document.getElementById('jfManagedCount');
+  var jfVersion = document.getElementById('jfVersion');
+  var jfManaged = document.getElementById('jfManaged');
+  var colName = document.getElementById('colName');
+  var colSearch = document.getElementById('colSearch');
+  var colUseShown = document.getElementById('colUseShown');
+  var colPlanStatus = document.getElementById('colPlanStatus');
+  var colSelected = document.getElementById('colSelected');
+  var colCreate = document.getElementById('colCreate');
+  var colUpdate = document.getElementById('colUpdate');
+  var colRevoke = document.getElementById('colRevoke');
+  var colDigests = document.getElementById('colDigests');
+  var colActions = document.getElementById('colActions');
+  var colConfirm = document.getElementById('colConfirm');
+  var colExecuteBtn = document.getElementById('colExecute');
+  var colExecuteStatus = document.getElementById('colExecuteStatus');
+  var colOutstanding = document.getElementById('colOutstanding');
+  var colUnrevoked = document.getElementById('colUnrevoked');
+  var colPublished = document.getElementById('colPublished');
+  var colRecovery = document.getElementById('colRecovery');
+  var colRunStatus = document.getElementById('colRunStatus');
+  var colHistory = document.getElementById('colHistory');
   // The only pieces of state this page keeps. The token is never stored anywhere, including here.
   var catalogPage = 1;
   var catalogPageCount = 1;
@@ -93,6 +122,15 @@
   var importConfirmation = null;
   var importConfirmedFile = null;
   var knownSources = [];
+  // Phase 267/268. The plan the LAST preview returned, and the confirmation it was issued with. Held
+  // together and discarded together, exactly like the import's file/confirmation pair: a confirmation
+  // without the digest it names cannot be used, and a plan that has been queued must not leave the button
+  // armed. The server refuses a mismatch anyway — this is so the button somebody is looking at agrees with
+  // what the server would do.
+  var collectionPlan = null;
+  var collectionConfirmation = null;
+  // The record ids the catalog panel is currently showing, so a plan can be built from exactly those.
+  var catalogShownIds = [];
 
   // Error text an operator can act on. A bare "request failed" sends someone to the logs for a problem whose
   // answer is "you pasted a stale token"; the status code already knows which of those it is.
@@ -356,6 +394,7 @@
     var dd = document.createElement('dd'); dd.textContent = 'Not loaded.'; artifactSummary.appendChild(dd);
     resetCatalog();
     resetImportPanel();
+    resetCollectionPanel();
   }
   // ---------------------------------------------------------------------------------------------------------
   // Phase 260 — the catalog.
@@ -419,6 +458,7 @@
     if (data.ignored && data.ignored.length > 0) notes.push('Ignored, and the default used instead: ' + data.ignored.join(', ') + '.');
     catTruncated.textContent = notes.join(' ');
     catResults.replaceChildren();
+    catalogShownIds = [];
     var items = data.items || [];
     var seen = [];
     for (var q = 0; q < items.length; q++) {
@@ -442,6 +482,9 @@
       button.setAttribute('data-item-id', items[i].itemId);
       li.appendChild(button);
       catResults.appendChild(li);
+      // Remembered so the collection panel can plan over exactly what is on screen. Ids only: the panel
+      // sends them straight back to a route that already decides what it will disclose about each one.
+      catalogShownIds.push(items[i].itemId);
     }
   }
   function setDetailRows(rows) {
@@ -747,6 +790,249 @@
     offerSources([]);
   }
 
+  // ---------------------------------------------------------------------------------------------------------
+  // Phase 266/267/268 — the Jellyfin control plane.
+  //
+  // THREE STEPS, EACH ONE HARDER TO REACH THAN THE LAST. Discovery reads and lists nothing. A plan preview
+  // reads this installation's own catalog and ledger and contacts nothing. Queuing needs the deployment
+  // switches, the confirmation the preview issued, AND the plan's own digest typed back — the digest is
+  // deliberately NOT pre-filled, because a confirmation a page can supply for you is a confirmation that
+  // confirms nothing.
+  //
+  // Every value below is written with textContent, exactly like every other panel here.
+  // ---------------------------------------------------------------------------------------------------------
+  function disarmPlan(why) {
+    collectionPlan = null;
+    collectionConfirmation = null;
+    colExecuteBtn.disabled = true;
+    if (why) { colPlanStatus.className = 'status'; colPlanStatus.textContent = why; }
+  }
+  function setKv(target, rows) {
+    target.replaceChildren();
+    for (var i = 0; i < rows.length; i++) {
+      var dt = document.createElement('dt'); dt.textContent = rows[i][0]; target.appendChild(dt);
+      var dd = document.createElement('dd'); dd.textContent = rows[i][1]; target.appendChild(dd);
+    }
+  }
+  function renderConnection(connection) {
+    if (!connection) return;
+    jfHostClass.textContent = connection.hostClass || 'not configured';
+    jfNetwork.textContent = connection.networkEnabled ? 'on' : 'off (default)';
+    jfWrites.textContent = connection.writesEnabled ? 'ON' : 'off (default)';
+  }
+  function renderDiscovery(data) {
+    jfState.textContent = data.state || '-';
+    renderConnection(data.connection);
+    var d = data.discovery;
+    jfLibraries.textContent = d ? String(d.libraries) : '-';
+    jfCollections.textContent = d ? String(d.collections) : '-';
+    jfManagedCount.textContent = d ? String((d.managed || []).length) : '-';
+    jfVersion.textContent = d && d.version ? d.version : 'not reported';
+    var managed = (d && d.managed) || [];
+    setList(jfManaged, managed.map(function (m) {
+      return m.name + '  (' + m.collectionDigest + ')' + (m.marked ? '' : ' — marker unreadable');
+    }));
+    jfStatus.className = data.ok ? 'status' : 'status err';
+    jfStatus.textContent = data.guidance || '';
+  }
+  async function loadJellyfin() {
+    if (token.value === '') return;
+    var data;
+    try {
+      data = await getState('/api/jellyfin/discovery');
+    } catch (err) {
+      jfState.textContent = 'UNAVAILABLE';
+      jfStatus.className = 'status err';
+      jfStatus.textContent = err.message;
+      return;
+    }
+    renderDiscovery(data);
+  }
+  function describeAction(action) {
+    return action.action.toUpperCase() + '  ' + (action.title || '(unreadable record)')
+      + (action.year === null || action.year === undefined ? '' : ' (' + action.year + ')')
+      + '  — ' + action.reason.toLowerCase().split('_').join(' ')
+      + (action.refCount ? ', ' + action.refCount + ' reference(s): ' + action.refTypes.join(', ') : '')
+      + '  [' + action.itemId + ']';
+  }
+  function renderPlan(plan) {
+    colSelected.textContent = String(plan.counts.selected);
+    colCreate.textContent = String(plan.counts.create);
+    colUpdate.textContent = String(plan.counts.update);
+    colRevoke.textContent = String(plan.counts.revoke);
+    setKv(colDigests, [
+      ['Plan digest', plan.planDigest],
+      ['Basis digest', plan.basisDigest],
+      ['Blocked', String(plan.counts.blocked)],
+      ['Already published', String(plan.counts.unchanged)]]);
+    setList(colActions, plan.actions.map(describeAction));
+  }
+  function resetPlanCounts() {
+    colSelected.textContent = '-'; colCreate.textContent = '-'; colUpdate.textContent = '-';
+    colRevoke.textContent = '-';
+    setKv(colDigests, [['Plan digest', 'No plan previewed.']]);
+    setList(colActions, []);
+  }
+  async function previewPlan() {
+    if (token.value === '') {
+      colPlanStatus.className = 'status err';
+      colPlanStatus.textContent = 'Paste your operator token first.';
+      return;
+    }
+    disarmPlan('');
+    resetPlanCounts();
+    var request = { name: colName.value };
+    if (colUseShown.checked) request.itemIds = catalogShownIds.slice(0);
+    else request.search = colSearch.value;
+    colPlanStatus.className = 'status';
+    colPlanStatus.textContent = 'Working out what would happen. Nothing is being written and nothing is being sent.';
+    var data;
+    try {
+      data = await postJson('/api/collections/plan', request);
+    } catch (err) {
+      colPlanStatus.className = 'status err';
+      colPlanStatus.textContent = err.message;
+      return;
+    }
+    renderPlan(data.plan);
+    collectionPlan = data.plan;
+    collectionConfirmation = data.confirmation;
+    colExecuteBtn.disabled = false;
+    colPlanStatus.className = 'status ok-text';
+    colPlanStatus.textContent = data.guidance
+      + ' Nothing was written and no media server was contacted. To queue it, copy the plan digest below into '
+      + 'the confirm box.';
+    await loadCollectionHistory();
+  }
+  async function executePlan() {
+    if (collectionPlan === null || collectionConfirmation === null) {
+      disarmPlan('Preview a plan before queuing one.');
+      return;
+    }
+    var typed = colConfirm.value.trim();
+    if (typed !== collectionPlan.planDigest) {
+      colExecuteStatus.className = 'status err';
+      colExecuteStatus.textContent = 'That is not this plan\'s digest. Copy the plan digest exactly. Nothing was queued.';
+      return;
+    }
+    colExecuteBtn.disabled = true;
+    colExecuteStatus.className = 'status';
+    colExecuteStatus.textContent = 'Queuing...';
+    var request = {
+      confirmation: collectionConfirmation,
+      confirmDigest: typed,
+    };
+    if (colUseShown.checked) request.itemIds = catalogShownIds.slice(0);
+    else request.search = colSearch.value;
+    var data;
+    try {
+      data = await postJson('/api/collections/execute', request);
+    } catch (err) {
+      // The confirmation is spent either way: the server consumes it before it decides, so re-arming the
+      // button here would offer a retry that could only be refused.
+      disarmPlan('');
+      colExecuteStatus.className = 'status err';
+      colExecuteStatus.textContent = err.message;
+      await loadCollectionStatus();
+      await loadCollectionHistory();
+      return;
+    }
+    disarmPlan('');
+    colConfirm.value = '';
+    colExecuteStatus.className = data.ok ? 'status ok-text' : 'status err';
+    colExecuteStatus.textContent = data.guidance;
+    await loadCollectionStatus();
+    await loadCollectionHistory();
+  }
+  function renderCollectionStatus(data) {
+    var st = data.status || {};
+    var counts = st.counts || {};
+    colOutstanding.textContent = String(st.outstanding === undefined ? '-' : st.outstanding);
+    colUnrevoked.textContent = String(st.unrevoked === undefined ? '-' : st.unrevoked);
+    colPublished.textContent = String(counts.published === undefined ? '-' : counts.published);
+    colRecovery.textContent = st.recoveryProof || 'none recorded';
+    colRunStatus.className = 'status';
+    colRunStatus.textContent = (st.guidance || '') + (data.writesEnabled ? '' : ' ' + (data.writesMessage || ''));
+  }
+  async function loadCollectionStatus() {
+    if (token.value === '') return;
+    var data;
+    try {
+      data = await getState('/api/collections/status');
+    } catch (err) {
+      colRunStatus.className = 'status err';
+      colRunStatus.textContent = err.message;
+      return;
+    }
+    if (!data.ok) {
+      colRunStatus.className = 'status err';
+      colRunStatus.textContent = data.message || 'The collection outbox could not be read.';
+      return;
+    }
+    renderCollectionStatus(data);
+  }
+  function describeCollectionHistory(entry) {
+    return entry.recordedAt + '  ' + entry.action + '  ' + entry.name + '  (' + entry.actor + ')  '
+      + 'selected ' + entry.selected + ', created ' + entry.created + ', resumed ' + entry.updated
+      + ', revoked ' + entry.revoked + ', blocked ' + entry.blocked + ', failed ' + entry.failed
+      + '  — ' + entry.outcome + ', plan ' + String(entry.planDigest).slice(0, 12);
+  }
+  async function loadCollectionHistory() {
+    if (token.value === '') return;
+    var data;
+    try {
+      data = await getState('/api/collections/history');
+    } catch (err) {
+      setList(colHistory, [err.message]);
+      return;
+    }
+    if (!data.ok) { setList(colHistory, [data.message || 'The collection history is not available.']); return; }
+    var entries = data.entries || [];
+    setList(colHistory, entries.length === 0 ? [data.guidance] : entries.map(describeCollectionHistory));
+  }
+  // `send` is a THUNK that names its own route, rather than a path parameter. The suite asserts that every
+  // route this page can POST to appears as a literal in this file; a helper taking a path would pass that
+  // check while making it blind to the two routes it drives, which is exactly the drift the check exists for.
+  async function runCollectionPass(send, label) {
+    if (token.value === '') {
+      colRunStatus.className = 'status err';
+      colRunStatus.textContent = 'Paste your operator token first.';
+      return;
+    }
+    colRunStatus.className = 'status';
+    colRunStatus.textContent = label + '...';
+    var data;
+    try {
+      data = await send();
+    } catch (err) {
+      colRunStatus.className = 'status err';
+      colRunStatus.textContent = err.message;
+      await loadCollectionStatus();
+      return;
+    }
+    colRunStatus.className = data.ok ? 'status ok-text' : 'status err';
+    colRunStatus.textContent = data.guidance || label + ' finished.';
+    await loadCollectionStatus();
+    await loadCollectionHistory();
+  }
+  function resetCollectionPanel() {
+    disarmPlan('');
+    resetPlanCounts();
+    colConfirm.value = '';
+    colPlanStatus.className = 'status'; colPlanStatus.textContent = '';
+    colExecuteStatus.className = 'status'; colExecuteStatus.textContent = '';
+    colRunStatus.className = 'status'; colRunStatus.textContent = '';
+    colOutstanding.textContent = '-'; colUnrevoked.textContent = '-';
+    colPublished.textContent = '-'; colRecovery.textContent = '-';
+    setList(colHistory, []);
+    jfState.textContent = '-'; jfHostClass.textContent = '-'; jfNetwork.textContent = '-';
+    jfWrites.textContent = '-'; jfLibraries.textContent = '-'; jfCollections.textContent = '-';
+    jfManagedCount.textContent = '-'; jfVersion.textContent = '-';
+    jfStatus.className = 'status'; jfStatus.textContent = '';
+    setList(jfManaged, []);
+    catalogShownIds = [];
+  }
+
   async function refresh() {
     statusText.className = 'status';
     statusText.textContent = 'Loading...';
@@ -771,6 +1057,12 @@
     // trying to work out what to do next.
     await loadHistory();
     await loadInbox();
+    // The Jellyfin control plane last, and in this order. Discovery may contact a media server, so it must
+    // never be what a page waits on before showing everything it already knows; the two reads after it are
+    // SELECTs against this installation's own database.
+    await loadJellyfin();
+    await loadCollectionStatus();
+    await loadCollectionHistory();
     var i = settled[0], s = settled[1], l = settled[2], c = settled[3], r = settled[4];
     var problems = [];
     if (i.status === 'fulfilled') renderInstallation(i.value); else problems.push(i.reason.message);
@@ -806,6 +1098,20 @@
     loadCatalog();
   });
   document.getElementById('catExport').addEventListener('click', exportCatalogFile);
+  document.getElementById('jfCheck').addEventListener('click', loadJellyfin);
+  document.getElementById('colPreview').addEventListener('click', previewPlan);
+  colExecuteBtn.addEventListener('click', executePlan);
+  document.getElementById('colReconcile').addEventListener('click', function () {
+    runCollectionPass(function () { return postJson('/api/collections/reconcile', {}); }, 'Reconciling');
+  });
+  document.getElementById('colRevokeBtn').addEventListener('click', function () {
+    runCollectionPass(function () { return postJson('/api/collections/revoke', {}); }, 'Revoking');
+  });
+  // Changing what would be selected throws the previous plan away. The server refuses a stale plan anyway;
+  // this is so the button somebody is looking at agrees with what the server would do.
+  colName.addEventListener('input', function () { if (collectionPlan !== null) disarmPlan('The name changed. Preview the plan again.'); });
+  colSearch.addEventListener('input', function () { if (collectionPlan !== null) disarmPlan('The selection changed. Preview the plan again.'); });
+  colUseShown.addEventListener('change', function () { if (collectionPlan !== null) disarmPlan('The selection changed. Preview the plan again.'); });
   document.getElementById('impPreview').addEventListener('click', previewImport);
   impApplyBtn.addEventListener('click', applyImport);
   // Choosing a different file throws away the previous file's confirmation. The server would refuse the

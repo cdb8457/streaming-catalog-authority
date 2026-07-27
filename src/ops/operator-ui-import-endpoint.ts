@@ -9,6 +9,13 @@ import {
   readInboxFile,
 } from './catalog-import-inbox.js';
 import { ImportConfirmations } from './catalog-import-confirmation.js';
+import {
+  checkWriteRequestHeaders,
+  readJsonRequestBody,
+  writeBodyRejectionStatus,
+  type WriteBodyRejection,
+  type WriteBodyResult,
+} from './operator-ui-request-body.js';
 import { applyImport, previewImport } from './catalog-import-service.js';
 import type { ImportHistoryStore } from './import-history.js';
 import { IMPORT_HISTORY_MAX_ROWS } from './import-history.js';
@@ -66,113 +73,26 @@ export interface ImportEndpointResponse {
   readonly body: Record<string, unknown>;
 }
 
-export type ImportBodyRejection =
-  | 'TOO_LARGE' | 'NOT_JSON' | 'BAD_CONTENT_TYPE' | 'CROSS_ORIGIN' | 'UNREADABLE' | 'BAD_SHAPE';
-
-export type ImportBodyResult =
-  | { readonly ok: true; readonly value: Record<string, unknown> }
-  | { readonly ok: false; readonly rejection: ImportBodyRejection; readonly message: string };
-
-const BODY_REJECTION_MESSAGES: Record<ImportBodyRejection, string> = {
-  TOO_LARGE: 'That request is larger than this endpoint accepts. It carries a file name and a confirmation, and nothing else.',
-  NOT_JSON: 'That request body is not valid JSON.',
-  BAD_CONTENT_TYPE: 'This endpoint accepts application/json only.',
-  CROSS_ORIGIN: 'This endpoint accepts requests from its own page only.',
-  UNREADABLE: 'That request body could not be read.',
-  BAD_SHAPE: 'That request body is not the shape this endpoint accepts.',
-};
-
 /**
- * Is this request allowed to be a write at all?
+ * The import's own names for the shared write-body machinery.
  *
- * Checked BEFORE the body is read, so a refused request never causes bytes to be buffered. Absent headers are
- * ALLOWED on purpose: `curl`, the shipped acceptance harness and a request from a script legitimately send
- * neither `Origin` nor `Sec-Fetch-Site`, and refusing those would break the documented command-line path
- * without stopping any browser — a browser always sends `Origin` on a cross-origin request, which is exactly
- * the case being refused. The token in a custom header is what carries the authority either way.
+ * Phase 267 moved the implementation to `operator-ui-request-body.ts` so the second write surface (the
+ * collection control plane) could not grow a second copy of the cross-origin, content-type and size checks.
+ * These aliases keep the import's public API exactly as it was.
  */
-export function checkWriteRequestHeaders(req: Pick<IncomingMessage, 'headers'>): ImportBodyResult | null {
-  const contentType = header(req, 'content-type');
-  if (contentType === undefined) return bodyReject('BAD_CONTENT_TYPE');
-  const mediaType = contentType.split(';')[0]!.trim().toLowerCase();
-  if (mediaType !== 'application/json') return bodyReject('BAD_CONTENT_TYPE');
+export type ImportBodyRejection = WriteBodyRejection;
+export type ImportBodyResult = WriteBodyResult;
 
-  const site = header(req, 'sec-fetch-site');
-  if (site !== undefined && site !== 'same-origin' && site !== 'none') return bodyReject('CROSS_ORIGIN');
+export { checkWriteRequestHeaders };
 
-  const origin = header(req, 'origin');
-  if (origin !== undefined && origin !== 'null') {
-    const host = header(req, 'host');
-    let originHost: string;
-    try {
-      originHost = new URL(origin).host;
-    } catch {
-      return bodyReject('CROSS_ORIGIN');
-    }
-    // HOST AND PORT, DELIBERATELY NOT THE SCHEME. This service speaks plain HTTP, and a documented,
-    // supported deployment puts it behind a reverse proxy that terminates TLS — in which case the browser's
-    // Origin is `https://…` while the request that reaches here is `http://`. Comparing the scheme would
-    // refuse every proxied installation while buying almost nothing: an origin that differs only by scheme
-    // requires an attacker to already be serving TLS on this exact host and port, and a cross-SITE page —
-    // the thing this check exists to refuse — always differs by host.
-    if (host === undefined || originHost !== host) return bodyReject('CROSS_ORIGIN');
-  }
-  return null;
-}
-
-/**
- * Read a bounded JSON object body.
- *
- * The bound is enforced as bytes arrive rather than after: a caller that streams megabytes at this endpoint
- * is disconnected at the limit, not buffered to it. A `Content-Length` that already exceeds the bound is
- * refused before a single chunk is read.
- */
-export async function readImportRequestBody(req: IncomingMessage): Promise<ImportBodyResult> {
-  const headerCheck = checkWriteRequestHeaders(req);
-  if (headerCheck !== null) { req.resume(); return headerCheck; }
-
-  const declared = header(req, 'content-length');
-  if (declared !== undefined) {
-    const length = Number(declared);
-    if (!Number.isInteger(length) || length < 0 || length > IMPORT_REQUEST_MAX_BYTES) {
-      req.resume();
-      return bodyReject('TOO_LARGE');
-    }
-  }
-
-  const chunks: Buffer[] = [];
-  let total = 0;
-  try {
-    for await (const chunk of req) {
-      const buffer = chunk as Buffer;
-      total += buffer.byteLength;
-      if (total > IMPORT_REQUEST_MAX_BYTES) {
-        // PAUSE, do not destroy. Destroying the request tears the socket down before the refusal can be
-        // written, so the caller sees a hung-up connection instead of "that request is too large" — a
-        // correct refusal that reads as a crash. Pausing stops reading immediately (nothing further is
-        // buffered), and Node closes the connection after the response because the body was not consumed.
-        req.pause();
-        return bodyReject('TOO_LARGE');
-      }
-      chunks.push(buffer);
-    }
-  } catch {
-    return bodyReject('UNREADABLE');
-  }
-
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-  } catch {
-    return bodyReject('NOT_JSON');
-  }
-  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return bodyReject('BAD_SHAPE');
-  return { ok: true, value: parsed as Record<string, unknown> };
+/** Read the import's bounded JSON body. A file name and a confirmation, and nothing else, fits easily. */
+export function readImportRequestBody(req: IncomingMessage): Promise<ImportBodyResult> {
+  return readJsonRequestBody(req, IMPORT_REQUEST_MAX_BYTES);
 }
 
 export function importBodyRejectionResponse(result: Extract<ImportBodyResult, { ok: false }>): ImportEndpointResponse {
   return {
-    status: result.rejection === 'TOO_LARGE' ? 413 : result.rejection === 'CROSS_ORIGIN' ? 403 : 400,
+    status: writeBodyRejectionStatus(result.rejection),
     body: {
       ok: false,
       code: `OPERATOR_UI_IMPORT_${result.rejection}`,
@@ -445,12 +365,3 @@ function previewProblems(err: CatalogImportError): readonly string[] {
   return err.problems.slice(0, 50);
 }
 
-function bodyReject(rejection: ImportBodyRejection): ImportBodyResult {
-  return { ok: false, rejection, message: BODY_REJECTION_MESSAGES[rejection] };
-}
-
-function header(req: Pick<IncomingMessage, 'headers'>, name: string): string | undefined {
-  const value = req.headers[name];
-  if (value === undefined) return undefined;
-  return Array.isArray(value) ? value[0] : value;
-}

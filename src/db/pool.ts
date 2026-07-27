@@ -88,7 +88,7 @@ async function acquireMigrationLock(client: Client, options: MigrateOptions): Pr
 /** The tables a completed migration must have left behind. Names only — no contents are ever read here. */
 export const MIGRATED_TABLES: readonly string[] = [
   'events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations',
-  'publish_ledger', 'schema_meta', 'import_history',
+  'publish_ledger', 'schema_meta', 'import_history', 'collection_control_history',
 ];
 
 /**

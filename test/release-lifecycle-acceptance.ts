@@ -122,10 +122,10 @@ test('publish cannot run unless the lifecycle acceptance succeeded too', () => {
   // Phase 252 added the final rehearsal and Phase 262 the catalog import-and-browse acceptance; publish now
   // depends on all seven. This suite's own concern is the LIFECYCLE gate above; the exact set is pinned here
   // so that dropping any gate — including this one — fails.
-  for (const required of ['suites', 'image', 'bundle', 'release-candidate', 'catalog-acceptance', 'lifecycle', 'rehearsal']) {
+  for (const required of ['suites', 'image', 'bundle', 'release-candidate', 'catalog-acceptance', 'jellyfin-acceptance', 'lifecycle', 'rehearsal']) {
     assert(needs.includes(required), `publish needs ${required}`);
   }
-  assertEq([...needs].sort().join(','), 'bundle,catalog-acceptance,image,lifecycle,rehearsal,release-candidate,suites',
+  assertEq([...needs].sort().join(','), 'bundle,catalog-acceptance,image,jellyfin-acceptance,lifecycle,rehearsal,release-candidate,suites',
     'publish depends on exactly the seven gates, nothing more, nothing less');
 
   // Skipped-job semantics: lifecycle carries no `if:`, so it runs on every event that can reach publish and

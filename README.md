@@ -115,6 +115,36 @@ the import reads exactly one file and contacts no provider, media server, librar
 record whose item was previously forgotten is reported blocked rather than silently resurrected. Reports carry
 counts and per-record digests only — never a title, a provider ref value or a path.
 
+## Jellyfin collections, if you want them
+
+This product can curate collections on **your own** Jellyfin server. It does not do so by default, and it
+cannot be made to by accident.
+
+**Four switches, and all four are off.** `JELLYFIN_ENABLE_NETWORK=true` lets it open a socket at all;
+`JELLYFIN_ALLOW_LIVE_PUBLISH=true` lets it create anything; `JELLYFIN_ALLOW_COLLECTION_WRITES=true` lets the
+browser drive that; `PUBLISH_EXTERNAL_IDENTITY=allow` lets record identity leave the boundary that
+crypto-shredding erases within. With the first one unset there is no network transport in the process at all.
+
+**The API key comes from a file, and the address must be on your own network.** `JELLYFIN_API_KEY_FILE`, like
+every other secret here — an inline `JELLYFIN_API_KEY` is refused, not merely discouraged. The address must be
+a private literal (10.x, 172.16-31.x, 192.168.x, 127.0.0.1, an IPv6 ULA) or a local name (a Compose service
+name, or `.local` / `.lan` / `.internal`). A public name is refused, redirects are never followed, and every
+request is re-checked against the one address you configured.
+
+**Three steps, each harder to reach than the last.** *Discovery* counts libraries and collections and lists no
+media item at all. *Planning* works out what would change, from your own catalog and publish ledger — it
+contacts nothing and writes nothing. *Queuing* needs the write switches **and** needs you to type the plan's
+own digest back, and even then it only writes durable intents: nothing reaches your server until a reconcile
+pass runs, which recovers each intent by its own token and so cannot create the same collection twice.
+
+**What actually gets made:** one Jellyfin collection per selected record, named after that record, holding the
+library items its provider references matched. The name you give a plan labels the plan — it is what the
+history records — and is not the name of anything in Jellyfin.
+
+Everything it did is in a durable history that survives a restart, and forgetting a record brings its external
+copy back. The boundaries, the guarantees and the limits:
+[docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md](docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md).
+
 The format, its bounds and every design decision:
 [docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md](docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md).
 The browser: [docs/PHASE_260_CATALOG_BROWSER.md](docs/PHASE_260_CATALOG_BROWSER.md).

@@ -65,6 +65,18 @@ export async function planPublish(db: Db, args: { itemId: string; target: string
   return String(rows[0].id);
 }
 
+/** Atomically write a durable intent, or return null when this item/target already has active work. */
+export async function planPublishIfAbsent(
+  db: Db,
+  args: { itemId: string; target: string; token: string; disclosedFields: readonly PublishableField[] },
+): Promise<string | null> {
+  const { rows } = await db.query(
+    'SELECT cat_publish_plan_if_absent($1, $2, $3, $4) AS id',
+    [args.itemId, args.target, args.token, [...args.disclosedFields]],
+  );
+  return rows[0].id === null ? null : String(rows[0].id);
+}
+
 /** Take the xact-scoped per-intent advisory lock (call inside a transaction on the same client). */
 export async function lockIntent(db: Db, id: string): Promise<void> { await db.query('SELECT cat_publish_lock_intent($1)', [id]); }
 export async function markInFlight(db: Db, id: string): Promise<boolean> { return (await db.query('SELECT cat_publish_mark_in_flight($1) AS ok', [id])).rows[0].ok === true; }

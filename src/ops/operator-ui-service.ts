@@ -79,15 +79,49 @@ import {
   IMPORT_HISTORY_ROUTE,
   IMPORT_INBOX_ROUTE,
   IMPORT_PREVIEW_ROUTE,
+  IMPORT_REQUEST_MAX_BYTES,
   IMPORT_ROUTES,
   importApplyResponse,
   importBodyRejectionResponse,
   importHistoryResponse,
   importInboxResponse,
   importPreviewResponse,
-  readImportRequestBody,
 } from './operator-ui-import-endpoint.js';
 import { ImportConfirmations } from './catalog-import-confirmation.js';
+import {
+  JELLYFIN_DISCOVERY_ROUTE,
+  JELLYFIN_ROUTES,
+  JELLYFIN_STATUS_ROUTE,
+  jellyfinDiscoveryResponse,
+  jellyfinStatusResponse,
+  resolveJellyfinTransport,
+} from './operator-ui-jellyfin-endpoint.js';
+import {
+  COLLECTIONS_EXECUTE_ROUTE,
+  COLLECTIONS_HISTORY_ROUTE,
+  COLLECTIONS_PLAN_ROUTE,
+  COLLECTIONS_RECONCILE_ROUTE,
+  COLLECTIONS_REQUEST_MAX_BYTES,
+  COLLECTIONS_REVOKE_ROUTE,
+  COLLECTIONS_ROUTES,
+  COLLECTIONS_STATUS_ROUTE,
+  COLLECTIONS_WRITE_ROUTES,
+  collectionExecuteResponse,
+  collectionHistoryResponse,
+  collectionPlanResponse,
+  collectionReconcileResponse,
+  collectionRevokeResponse,
+  collectionStatusResponse,
+  type CollectionsEndpointResponse,
+} from './operator-ui-collections-endpoint.js';
+import { CollectionConfirmations } from './collection-confirmation.js';
+import { createCollectionHistoryStore } from './collection-history.js';
+import { createLedgerReader } from './collection-plan.js';
+import {
+  readJsonRequestBody,
+  writeBodyRejectionStatus,
+  type WriteBodyResult,
+} from './operator-ui-request-body.js';
 import { createExistingStateLookup } from './catalog-import.js';
 import { createImportHistoryStore } from './import-history.js';
 
@@ -352,6 +386,14 @@ export function createOperatorUiServiceServer(
   // the apply that follows and by nothing else — not by another process, and not after a restart. See
   // catalog-import-confirmation.ts for why that is the fail-closed direction.
   const confirmations = new ImportConfirmations();
+  // Phase 267/268. The same discipline, and a SEPARATE issuer with its own key: a confirmation for an import
+  // must never verify as a confirmation for a collection execute, and two issuers with two keys is how that
+  // is guaranteed rather than argued.
+  const collectionConfirmations = new CollectionConfirmations();
+  // Phase 266. The ONE transport this service can ever obtain, resolved once at startup. It is `undefined`
+  // unless JELLYFIN_ENABLE_NETWORK is exactly "true", so with the switch off there is no transport in this
+  // process for any route to use — networking is off by ABSENCE, not by a branch somebody has to remember.
+  const jellyfinTransport = resolveJellyfinTransport();
 
   const server = createServer(async (req, res) => {
     const method = req.method ?? '';
@@ -365,15 +407,19 @@ export function createOperatorUiServiceServer(
       return;
     }
 
-    // Phase 264. The ONLY two routes in this service that accept a method other than GET, named explicitly
+    // Phase 264/268. The ONLY routes in this service that accept a method other than GET, named explicitly
     // rather than derived from a prefix: a prefix match is how a route nobody meant to expose becomes
-    // writable later. Everything else in this file is a read and answers 405 to anything but GET.
-    const writable = path === IMPORT_PREVIEW_ROUTE || path === IMPORT_APPLY_ROUTE;
+    // writable later. Two of them belong to the import and four to the collection control plane; everything
+    // else in this file is a read and answers 405 to anything but GET.
+    const writable = path === IMPORT_PREVIEW_ROUTE || path === IMPORT_APPLY_ROUTE
+      || COLLECTIONS_WRITE_ROUTES.includes(path);
     const known = path === '/' || path === '/healthz' || path === '/api/status' || path === '/api/logs'
       || path === '/api/promotion-chain' || path === '/api/installation' || path === '/api/version'
       || path === SUPPORT_REPORT_ROUTE
       || path === CATALOG_BROWSE_ROUTE || path === CATALOG_ITEM_ROUTE || path === CATALOG_EXPORT_ROUTE
       || IMPORT_ROUTES.includes(path)
+      || JELLYFIN_ROUTES.includes(path)
+      || COLLECTIONS_ROUTES.includes(path)
       || path === OPERATOR_UI_APP_JS_ROUTE || path === OPERATOR_UI_APP_CSS_ROUTE;
     const allowed = writable ? 'POST' : 'GET';
     if (method === 'HEAD') {
@@ -382,22 +428,33 @@ export function createOperatorUiServiceServer(
       return;
     }
 
-    // Phase 264 — the controlled-WRITE surface. Reached only by an exact-path POST, only with a valid
-    // operator token, and only through the bounded body reader, which refuses a cross-origin request, a
-    // body that is not declared application/json, and anything over 4 KiB before it parses a byte.
+    // Phase 264/268 — the controlled-WRITE surface. Reached only by an exact-path POST, only with a valid
+    // operator token, and only through the bounded body reader, which refuses a cross-origin request, a body
+    // that is not declared application/json, and anything over the route's own bound before it parses a byte.
     if (writable && method === 'POST') {
       if (!isAuthorized(req, auth)) {
         ignoreRequestBody(req);
         sendUnauthorized(res);
-        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected import request without a valid operator token.');
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected a write request without a valid operator token.');
         return;
       }
-      const body = await readImportRequestBody(req);
+      // Each write surface states its OWN size bound. An import request carries a file name and a
+      // confirmation; a collection plan carries up to five hundred record identifiers. One number for both
+      // would either refuse a legitimate plan or let an import buffer eight times what it can ever need.
+      const isCollectionWrite = COLLECTIONS_WRITE_ROUTES.includes(path);
+      const body: WriteBodyResult = await readJsonRequestBody(
+        req, isCollectionWrite ? COLLECTIONS_REQUEST_MAX_BYTES : IMPORT_REQUEST_MAX_BYTES);
       if (!body.ok) {
-        const rejection = importBodyRejectionResponse(body);
+        const rejection = isCollectionWrite
+          ? collectionBodyRejectionResponse(body)
+          : importBodyRejectionResponse(body);
         sendJson(res, rejection.status, rejection.body);
         // The rejection CLASS and nothing else. A body that was refused is not a body to describe.
-        logs.add('warn', 'operation', 'IMPORT_REQUEST_REJECTED', `Refused an import request: ${body.rejection}.`);
+        logs.add('warn', 'operation', 'WRITE_REQUEST_REJECTED', `Refused a write request: ${body.rejection}.`);
+        return;
+      }
+      if (isCollectionWrite) {
+        await handleCollectionWrite(path, body.value, res, logs, collectionConfirmations, jellyfinTransport);
         return;
       }
       await handleImportWrite(path, body.value, res, logs, confirmations);
@@ -714,6 +771,62 @@ export function createOperatorUiServiceServer(
       return;
     }
 
+    // Phase 266 — the Jellyfin control plane's two READ routes, behind the SAME token as every other
+    // operational route. `/api/jellyfin/status` contacts nothing at all; `/api/jellyfin/discovery` contacts
+    // the configured server ONLY when the network switch is on, and answers a DISABLED state otherwise.
+    if (path === JELLYFIN_STATUS_ROUTE || path === JELLYFIN_DISCOVERY_ROUTE) {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected a Jellyfin request without a valid operator token.');
+        return;
+      }
+      ignoreRequestBody(req);
+      if (path === JELLYFIN_STATUS_ROUTE) {
+        const result = jellyfinStatusResponse();
+        sendJson(res, result.status, result.body);
+        logs.add('info', 'connector', 'JELLYFIN_STATUS_READ',
+          'Served the Jellyfin connection state. Nothing was contacted.');
+        return;
+      }
+      const result = await jellyfinDiscoveryResponse(
+        jellyfinTransport === undefined ? {} : { fetch: jellyfinTransport });
+      sendJson(res, result.status, result.body);
+      // The STATE only. Not a host, not a version, not a count of somebody's libraries — /api/logs serves
+      // this buffer to a browser, and the shape of a media server is not something to leave lying in it.
+      logs.add(result.status === 200 ? 'info' : 'warn', 'connector', 'JELLYFIN_DISCOVERY',
+        `Ran Jellyfin discovery with state=${String(result.body.state)}.`);
+      return;
+    }
+
+    // Phase 267/268 — the control plane's two READ routes. Both end in SELECTs. The status route also reports
+    // whether this installation may write at all, so a panel can distinguish "nothing outstanding" from
+    // "outstanding work this stack is not permitted to act on", which are very different situations.
+    if (path === COLLECTIONS_STATUS_ROUTE || path === COLLECTIONS_HISTORY_ROUTE) {
+      if (!isAuthorized(req, auth)) {
+        ignoreRequestBody(req);
+        sendUnauthorized(res);
+        logs.add('warn', 'operation', 'AUTH_REJECTED', 'Rejected a collection request without a valid operator token.');
+        return;
+      }
+      ignoreRequestBody(req);
+      let result: CollectionsEndpointResponse;
+      try {
+        const pool = getPool();
+        result = path === COLLECTIONS_STATUS_ROUTE
+          ? await collectionStatusResponse(pool)
+          : await collectionHistoryResponse(createCollectionHistoryStore(pool));
+      } catch {
+        // A database that is not available is a STATE of this panel, not a crash. Both routes answer 503 with
+        // a fixed sentence that names no configuration.
+        result = await collectionHistoryResponse(undefined);
+      }
+      sendJson(res, result.status, result.body);
+      logs.add(result.status === 200 ? 'info' : 'warn', 'operation', 'COLLECTION_READ',
+        path === COLLECTIONS_STATUS_ROUTE ? 'Served the collection outbox status.' : 'Served the collection history.');
+      return;
+    }
+
     if (path === '/api/logs') {
       if (!isAuthorized(req, auth)) {
         ignoreRequestBody(req);
@@ -808,6 +921,130 @@ async function handleImportWrite(
     applied === undefined
       ? `Refused an import apply: ${String(result.body.code)}.`
       : `Applied an import: ${applied.created ?? 0} created, ${applied.updated ?? 0} updated.`);
+}
+
+/**
+ * Phase 267/268 — the four routes of the collection control plane that accept a POST.
+ *
+ * WHAT EACH ONE IS HANDED IS THE POINT, AND IT IS DIFFERENT FOR EACH:
+ *
+ *   PLAN gets a `CatalogReader`, a `LedgerReader`, the confirmation issuer and the history store. There is no
+ *   authority, no outbox, no adapter and NO TRANSPORT in its scope, so "a plan preview wrote nothing and
+ *   contacted nothing" is a property of this function rather than a promise made elsewhere.
+ *
+ *   EXECUTE additionally gets the pool, because queuing writes durable intents. It still gets no transport:
+ *   queuing contacts nothing, and a route that cannot reach a transport cannot contact anything by accident.
+ *
+ *   RECONCILE and REVOKE are the only two that get the transport, and they get it only when the network
+ *   switch resolved one at startup. Both also get the authority, because a create runs inside
+ *   `withPublishableIdentity` — which is what keeps a forgotten record from being published.
+ *
+ * A POOL OR CUSTODIAN THAT CANNOT BE CONSTRUCTED IS A 503 WITH A FIXED SENTENCE — never a partial write, and
+ * never a description of what is misconfigured, which is Setup & Diagnostics' job to answer safely.
+ *
+ * THE LOG LINE CARRIES A VERDICT AND COUNTS. No collection name, no record id, no digest, no host —
+ * /api/logs serves this buffer to a browser.
+ */
+async function handleCollectionWrite(
+  path: string,
+  body: Record<string, unknown>,
+  res: ServerResponse,
+  logs: OperatorUiServiceLogBuffer,
+  confirmations: CollectionConfirmations,
+  transport: ReturnType<typeof resolveJellyfinTransport>,
+): Promise<void> {
+  let pool: ReturnType<typeof getPool>;
+  try {
+    pool = getPool();
+  } catch {
+    sendJson(res, 503, {
+      ok: false,
+      code: 'OPERATOR_UI_COLLECTION_UNAVAILABLE',
+      report: 'phase-267-268-collection-control-plane',
+      wrote: 'nothing',
+      contacted: 'nothing',
+      message: 'This installation\'s database is not available. Check Setup & Diagnostics for its state.',
+    });
+    logs.add('warn', 'operation', 'COLLECTION_UNAVAILABLE',
+      'A collection request failed safely before contacting the database.');
+    return;
+  }
+
+  let reader: ReturnType<typeof createCatalogReader>;
+  let authority: CatalogAuthority;
+  try {
+    authority = new CatalogAuthority(pool, createCustodian(loadCustodianConfig()));
+    reader = createCatalogReader(pool, authority);
+  } catch {
+    sendJson(res, 503, {
+      ok: false,
+      code: 'OPERATOR_UI_COLLECTION_UNAVAILABLE',
+      report: 'phase-267-268-collection-control-plane',
+      wrote: 'nothing',
+      contacted: 'nothing',
+      message: 'This installation cannot read its catalog right now. Check Setup & Diagnostics for its state.',
+    });
+    logs.add('warn', 'operation', 'COLLECTION_UNAVAILABLE', 'A collection request failed safely before reading anything.');
+    return;
+  }
+
+  const ledger = createLedgerReader(pool);
+  const history = createCollectionHistoryStore(pool);
+  let result: CollectionsEndpointResponse;
+
+  if (path === COLLECTIONS_PLAN_ROUTE) {
+    result = await collectionPlanResponse(body, { reader, ledger, confirmations, history });
+    sendJson(res, result.status, result.body);
+    logs.add(result.status === 200 ? 'info' : 'warn', 'operation', 'COLLECTION_PLANNED',
+      result.status === 200
+        ? 'Previewed a collection plan. Nothing was written and nothing was contacted.'
+        : `Refused a collection plan: ${String(result.body.code)}.`);
+    return;
+  }
+
+  if (path === COLLECTIONS_EXECUTE_ROUTE) {
+    result = await collectionExecuteResponse(body, { reader, ledger, confirmations, history, pool });
+    sendJson(res, result.status, result.body);
+    const queued = result.body.queued as { queued?: number; revokeQueued?: number } | undefined;
+    logs.add(result.status < 300 ? 'info' : 'warn', 'operation', 'COLLECTION_QUEUED',
+      queued === undefined
+        ? `Refused a collection execute: ${String(result.body.code)}.`
+        : `Queued a collection plan: ${queued.queued ?? 0} intent(s), ${queued.revokeQueued ?? 0} revocation(s).`);
+    return;
+  }
+
+  const runtimeDeps = {
+    pool,
+    authority,
+    history,
+    ...(transport === undefined ? {} : { fetch: transport }),
+  };
+  result = path === COLLECTIONS_RECONCILE_ROUTE
+    ? await collectionReconcileResponse(runtimeDeps)
+    : await collectionRevokeResponse(runtimeDeps);
+  sendJson(res, result.status, result.body);
+  const outcome = result.body.result as Record<string, number> | undefined;
+  logs.add(result.status === 200 ? 'info' : 'warn', 'connector',
+    path === COLLECTIONS_RECONCILE_ROUTE ? 'COLLECTION_RECONCILED' : 'COLLECTION_REVOKED',
+    outcome === undefined
+      ? `Refused a collection ${path === COLLECTIONS_RECONCILE_ROUTE ? 'reconcile' : 'revoke'}: ${String(result.body.code)}.`
+      : `Ran a collection ${path === COLLECTIONS_RECONCILE_ROUTE ? 'reconcile' : 'revoke'} pass: `
+        + Object.entries(outcome).map(([key, value]) => `${key}=${value}`).join(' ') + '.');
+}
+
+/** The collection surface's own body rejection shape. Same rules, its own code prefix and report name. */
+function collectionBodyRejectionResponse(result: Extract<WriteBodyResult, { ok: false }>): CollectionsEndpointResponse {
+  return {
+    status: writeBodyRejectionStatus(result.rejection),
+    body: {
+      ok: false,
+      code: `OPERATOR_UI_COLLECTION_${result.rejection}`,
+      report: 'phase-267-268-collection-control-plane',
+      wrote: 'nothing',
+      contacted: 'nothing',
+      message: result.message,
+    },
+  };
 }
 
 export async function buildOperatorUiServiceStatus(
@@ -1195,7 +1432,7 @@ function buildOperatorUiServiceHtml(): string {
 <body>
 <div class="shell">
 <header><h1>Catalog Authority</h1>
-<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#catalog-panel">Catalog</a><a href="#import-panel">Import a catalog</a><a href="#status-panel">Status</a><a href="#backup-panel">Backup &amp; restore</a><a href="#support-panel">Support report</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
+<nav aria-label="Sections"><a href="#setup-panel">Setup &amp; Diagnostics</a><a href="#catalog-panel">Catalog</a><a href="#import-panel">Import a catalog</a><a href="#jellyfin-panel">Jellyfin collections</a><a href="#status-panel">Status</a><a href="#backup-panel">Backup &amp; restore</a><a href="#support-panel">Support report</a><a href="#promotion-panel">Promotion record chain</a><a href="#logs-panel">Logs</a></nav>
 <div class="badge">read-only operator UI</div></header>
 <main>
 <section class="panel">
@@ -1318,6 +1555,80 @@ installation shows, and the instructions for filling it should not need a workin
   `<li><strong>${escapeHtml(row.field)}</strong> <span class="muted">${row.required ? 'required' : 'optional'}</span>`
   + `<p>${escapeHtml(row.rule)}</p></li>`).join('')}</ul>
 <p class="hint">${escapeHtml(CATALOG_IMPORT_BOUNDS)}</p>
+</section>
+<section class="panel wide writes" id="jellyfin-panel">
+<h2>Jellyfin collections</h2>
+<p class="warnbox"><strong>Read-only until you switch writing on, and then only one plan at a time.</strong>
+Discovery reads: it counts libraries and collections and never lists a single media item. Planning reads
+this installation's own catalog and publish ledger and contacts nothing at all. Queuing needs
+<code>JELLYFIN_ALLOW_COLLECTION_WRITES=true</code>, and needs you to type back the plan's own digest — so
+what runs is the plan you read, not whatever the catalog happens to say later.</p>
+<p class="hint"><strong>What actually gets made.</strong> One Jellyfin collection per selected record, named
+after that record, holding the library items its provider references matched. The name you type below labels
+the <em>plan</em> — it is what the history records and what the confirmation is about — and it is not the
+name of any collection in Jellyfin.</p>
+<h3>Connection</h3>
+<p class="muted">Configured by secret file only. The address, the API key and this page's own token never
+appear below: what you see is a state, a host class and counts.</p>
+<div class="grid">
+<div class="metric"><span>State</span><strong id="jfState">-</strong></div>
+<div class="metric"><span>Address class</span><strong id="jfHostClass">-</strong></div>
+<div class="metric"><span>Networking</span><strong id="jfNetwork">-</strong></div>
+<div class="metric"><span>Writes</span><strong id="jfWrites">-</strong></div>
+</div>
+<div class="actions"><button id="jfCheck" type="button">Check the connection (read-only)</button></div>
+<p class="status" id="jfStatus" role="status" aria-live="polite"></p>
+<div class="grid">
+<div class="metric"><span>Libraries</span><strong id="jfLibraries">-</strong></div>
+<div class="metric"><span>Collections</span><strong id="jfCollections">-</strong></div>
+<div class="metric"><span>Made by this product</span><strong id="jfManagedCount">-</strong></div>
+<div class="metric"><span>Server version</span><strong id="jfVersion">-</strong></div>
+</div>
+<ul class="list" id="jfManaged"><li class="muted">Not checked.</li></ul>
+<h3>Plan a collection</h3>
+<p class="muted">Choose the records by searching your own catalog, or use exactly the records the Catalog
+panel is showing. A preview writes nothing and sends nothing.</p>
+<div class="field"><label for="colName">Name this plan</label>
+<input id="colName" type="text" autocomplete="off" spellcheck="false" maxlength="64"></div>
+<div class="field"><label for="colSearch">Records matching</label>
+<input id="colSearch" type="search" autocomplete="off" spellcheck="false"></div>
+<div class="field"><label for="colUseShown">Use the records shown in the Catalog panel instead</label>
+<input id="colUseShown" type="checkbox"></div>
+<div class="actions"><button id="colPreview" type="button">Preview the plan (writes nothing)</button></div>
+<p class="status" id="colPlanStatus" role="status" aria-live="polite"></p>
+<div class="grid">
+<div class="metric"><span>Selected</span><strong id="colSelected">-</strong></div>
+<div class="metric ok"><span>Would create</span><strong id="colCreate">-</strong></div>
+<div class="metric"><span>Would resume</span><strong id="colUpdate">-</strong></div>
+<div class="metric warn"><span>Would revoke</span><strong id="colRevoke">-</strong></div>
+</div>
+<dl class="kv" id="colDigests"><dt>Plan digest</dt><dd>No plan previewed.</dd></dl>
+<ul class="list" id="colActions"><li class="muted">No plan previewed.</li></ul>
+<h3>Queue it</h3>
+<p class="muted">Copy the plan digest above into the box and choose Queue. Nothing is sent to your media
+server by this step: it writes durable intents that a reconcile pass then carries out, so a crash in between
+leaves recorded work rather than an unrecorded change.</p>
+<div class="field"><label for="colConfirm">Type the plan digest to confirm</label>
+<input id="colConfirm" type="text" autocomplete="off" spellcheck="false" maxlength="64"></div>
+<div class="actions"><button id="colExecute" type="button" disabled>Queue this exact plan</button></div>
+<p class="status" id="colExecuteStatus" role="status" aria-live="polite"></p>
+<h3>Carry out and undo</h3>
+<p class="muted">Reconcile acts on whatever is queued, recovering each intent by its own durable token — so
+running it twice, or after a restart, cannot create the same collection twice. Revoke removes external
+copies of records that have been forgotten.</p>
+<div class="grid">
+<div class="metric"><span>Queued, unsettled</span><strong id="colOutstanding">-</strong></div>
+<div class="metric warn"><span>Awaiting revoke</span><strong id="colUnrevoked">-</strong></div>
+<div class="metric"><span>Published</span><strong id="colPublished">-</strong></div>
+<div class="metric"><span>Recovery proof</span><strong id="colRecovery">-</strong></div>
+</div>
+<div class="actions"><button id="colReconcile" type="button">Reconcile now</button>
+<button id="colRevokeBtn" type="button">Revoke forgotten copies</button></div>
+<p class="status" id="colRunStatus" role="status" aria-live="polite"></p>
+<h3>What this installation has decided</h3>
+<p class="muted">Every plan previewed, queued, reconciled or revoked here. Counts, digests and the names you
+chose — no record content is kept, and it survives a restart.</p>
+<ul class="list" id="colHistory"><li class="muted">Not loaded.</li></ul>
 </section>
 <section class="panel wide" id="firstrun-panel">
 <h2>First-run checklist</h2>

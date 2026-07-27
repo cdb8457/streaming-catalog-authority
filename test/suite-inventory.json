@@ -1291,6 +1291,34 @@
       "args": [
         "5459"
       ]
+    },
+    {
+      "file": "jellyfin-control-plane.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "collection-plan-preview.ts",
+      "group": "db",
+      "args": [
+        "5460"
+      ],
+      "requires": []
+    },
+    {
+      "file": "collection-execution.ts",
+      "group": "db",
+      "args": [
+        "5461"
+      ],
+      "requires": []
+    },
+    {
+      "file": "jellyfin-control-acceptance.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }
