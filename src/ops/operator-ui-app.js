@@ -848,24 +848,30 @@
     }
     renderDiscovery(data);
   }
-  function describeAction(action) {
-    return action.action.toUpperCase() + '  ' + (action.title || '(unreadable record)')
-      + (action.year === null || action.year === undefined ? '' : ' (' + action.year + ')')
-      + '  — ' + action.reason.toLowerCase().split('_').join(' ')
-      + (action.refCount ? ', ' + action.refCount + ' reference(s): ' + action.refTypes.join(', ') : '')
-      + '  [' + action.itemId + ']';
+  function describeMember(member) {
+    return member.action.toUpperCase() + '  ' + (member.title || '(unreadable record)')
+      + (member.year === null || member.year === undefined ? '' : ' (' + member.year + ')')
+      + '  — ' + member.reason.toLowerCase().split('_').join(' ')
+      + (member.refCount ? ', ' + member.refCount + ' reference(s): ' + member.refTypes.join(', ') : '')
+      + '  [' + member.itemId + ']';
   }
   function renderPlan(plan) {
     colSelected.textContent = String(plan.counts.selected);
-    colCreate.textContent = String(plan.counts.create);
-    colUpdate.textContent = String(plan.counts.update);
-    colRevoke.textContent = String(plan.counts.revoke);
-    setKv(colDigests, [
+    colCreate.textContent = String(plan.counts.add);
+    colUpdate.textContent = String(plan.counts.keep);
+    colRevoke.textContent = String(plan.counts.remove);
+    var rows = [
+      ['This collection', plan.collection.action.toUpperCase() + ' — '
+        + plan.collection.reason.toLowerCase().split('_').join(' ')],
+      ['Would hold', String(plan.counts.resulting) + ' record(s)'],
       ['Plan digest', plan.planDigest],
       ['Basis digest', plan.basisDigest],
-      ['Blocked', String(plan.counts.blocked)],
-      ['Already published', String(plan.counts.unchanged)]]);
-    setList(colActions, plan.actions.map(describeAction));
+      ['Blocked', String(plan.counts.blocked)]];
+    if (plan.legacy && plan.legacy.perItemLive > 0) {
+      rows.push(['Older per-record collections', String(plan.legacy.perItemLive) + ' (untouched by this plan)']);
+    }
+    setKv(colDigests, rows);
+    setList(colActions, plan.members.map(describeMember));
   }
   function resetPlanCounts() {
     colSelected.textContent = '-'; colCreate.textContent = '-'; colUpdate.textContent = '-';
@@ -973,8 +979,8 @@
   }
   function describeCollectionHistory(entry) {
     return entry.recordedAt + '  ' + entry.action + '  ' + entry.name + '  (' + entry.actor + ')  '
-      + 'selected ' + entry.selected + ', created ' + entry.created + ', resumed ' + entry.updated
-      + ', revoked ' + entry.revoked + ', blocked ' + entry.blocked + ', failed ' + entry.failed
+      + 'selected ' + entry.selected + ', in ' + entry.created + ', kept ' + entry.updated
+      + ', out ' + entry.revoked + ', blocked ' + entry.blocked + ', failed ' + entry.failed
       + '  — ' + entry.outcome + ', plan ' + String(entry.planDigest).slice(0, 12);
   }
   async function loadCollectionHistory() {

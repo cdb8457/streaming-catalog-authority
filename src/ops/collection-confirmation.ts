@@ -74,6 +74,26 @@ const REJECTION_MESSAGES: Record<CollectionConfirmationRejection, string> = {
 /** A digest is 64 lower-case hex characters, and is compared as one. */
 export const COLLECTION_DIGEST_RE = /^[0-9a-f]{64}$/;
 
+/**
+ * The operator's own echo of a digest, compared in constant time.
+ *
+ * ONE IMPLEMENTATION, TWO SURFACES. Phase 272 gives the collection plane a command line, and the thing that
+ * must not differ between a browser and a terminal is exactly this: whether the digest somebody stated is the
+ * digest of the plan about to run. Exporting the comparison — rather than letting a CLI write `a === b` —
+ * means the two surfaces cannot drift, and that the CLI inherits the constant-time property for free.
+ *
+ * It is constant-time over a value an attacker could grind against. Both sides are fixed-length hex by the
+ * regex above, so a length mismatch is already impossible; the guard is kept because that is a property of the
+ * regex rather than of this line, and `timingSafeEqual` throws on unequal lengths.
+ */
+export function digestEchoMatches(echoed: unknown, expected: string): boolean {
+  if (typeof echoed !== 'string' || !COLLECTION_DIGEST_RE.test(echoed)) return false;
+  if (!COLLECTION_DIGEST_RE.test(expected)) return false;
+  const a = Buffer.from(echoed, 'utf8');
+  const b = Buffer.from(expected, 'utf8');
+  return a.length === b.length && timingSafeEqual(a, b);
+}
+
 export class CollectionConfirmations {
   private readonly key: Buffer;
   /** nonce -> the moment it stops being replayable. Pruned lazily; never consulted past the TTL. */

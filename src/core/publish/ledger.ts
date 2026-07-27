@@ -99,13 +99,18 @@ export async function recordRecoveryProof(db: Db, id: string, proof: RecoveryPro
  * Only the latest matters: a target whose recovery was once broken and has since been proved working
  * again must not stay quarantined forever, and a target that was working and has just broken must stop
  * being trusted immediately.
+ *
+ * Phase 269 — IT READS BOTH TABLES, through `cat_collection_recovery_proof`. The proof is a statement about
+ * the TARGET's behaviour — whether a `[cat:<token>]` marker written into a collection name can be read back
+ * out — and from schema v9 two engines write that same marker to that same server. A grouped create that has
+ * just observed the marker failing to round-trip must stop this reconciler creating too, or one lost response
+ * becomes a duplicate per-record collection. The union is computed in the database because the ordering has to
+ * be by proof time across both sources, and doing it in two queries here would be two chances to get that
+ * wrong.
  */
 export async function latestRecoveryProof(db: Db, target: string): Promise<RecoveryProofLabel | null> {
-  const { rows } = await db.query(
-    `SELECT recovery_proof FROM publish_ledger
-      WHERE target = $1 AND recovery_proof IS NOT NULL
-      ORDER BY recovery_proof_at DESC, id DESC LIMIT 1`, [target]);
-  return (rows[0]?.recovery_proof as RecoveryProofLabel | undefined) ?? null;
+  const { rows } = await db.query('SELECT cat_collection_recovery_proof($1) AS recovery_proof', [target]);
+  return (rows[0]?.recovery_proof as RecoveryProofLabel | null | undefined) ?? null;
 }
 
 /** Actionable outbox intents for a target (planned/in_flight/ambiguous), oldest first. */

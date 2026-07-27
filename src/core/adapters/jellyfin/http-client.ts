@@ -85,14 +85,61 @@ export class JellyfinHttpClient implements JellyfinClient {
   /** Walk `/Items` pages (StartIndex/Limit) and aggregate — a single unpaged fetch would miss matches
    *  beyond Jellyfin's default page. Bounded by MAX_PAGES; stops on the first short page. */
   private async getAllPages(op: string, build: (startIndex: number, limit: number) => HttpRequestSpec): Promise<unknown[]> {
+    return (await this.getAllPagesChecked(op, build)).items;
+  }
+
+  /**
+   * The same walk, but it SAYS whether it saw everything.
+   *
+   * Phase 270 removes library items from a collection by set difference, and a difference computed from a
+   * listing that silently stopped at `MAX_PAGES` would read the unseen remainder as "not intended" and take it
+   * out. A bound that is hit is therefore reported rather than absorbed: `truncated` is the caller's licence to
+   * refuse to remove anything. `getAllPages` above keeps the old shape for the read-only callers that only ever
+   * add to a match set, where an incomplete page is a missed match and never a destructive one.
+   */
+  private async getAllPagesChecked(
+    op: string,
+    build: (startIndex: number, limit: number) => HttpRequestSpec,
+  ): Promise<{ items: unknown[]; truncated: boolean }> {
     const all: unknown[] = [];
     for (let page = 0; page < MAX_PAGES; page++) {
       const body = await this.requestJson(op, build(page * this.pageLimit, this.pageLimit), true); // idempotent GET
       const items = pageItems(body);
       all.push(...items);
-      if (items.length < this.pageLimit) break; // last (short) page
+      if (items.length < this.pageLimit) return { items: all, truncated: false }; // last (short) page
     }
-    return all;
+    return { items: all, truncated: true }; // every page was full: there may be more we never asked for
+  }
+
+  /** {@link findItemsByRefs}, reporting whether the candidate scan saw the whole library. */
+  async findItemsByRefsChecked(refs: readonly JellyfinRef[]): Promise<{ ids: string[]; truncated: boolean }> {
+    if (refs.length === 0) return { ids: [], truncated: false };
+    const page = await this.listCandidateItems();
+    return { ids: matchItems(refs, page.rows), truncated: page.truncated };
+  }
+
+  /**
+   * The raw candidate rows, with their `ProviderIds`, and whether the scan saw the whole library.
+   *
+   * Exposed separately from the matching so ONE scan can serve every member of a collection: Phase 270
+   * resolves up to five hundred records per pass, and matching is local, so a per-record scan would walk the
+   * library five hundred times. The caller that caches it (`JellyfinCollectionTarget`) discards the snapshot
+   * at the start of each pass.
+   */
+  async listCandidateItems(): Promise<{ rows: unknown[]; truncated: boolean }> {
+    const page = await this.getAllPagesChecked('findItemsByRefs', (start, limit) => buildFindCandidatesRequest(start, limit));
+    return { rows: page.items, truncated: page.truncated };
+  }
+
+  /** {@link listCollectionItemIds}, reporting whether the member listing saw the whole collection. */
+  async listCollectionItemIdsChecked(collectionId: string): Promise<{ ids: string[]; truncated: boolean }> {
+    const page = await this.getAllPagesChecked('listCollectionItemIds', (start, limit) => buildCollectionItemsRequest(collectionId, start, limit));
+    const ids: string[] = [];
+    for (const raw of page.items) {
+      const id = (raw as { Id?: unknown }).Id;
+      if (typeof id === 'string') ids.push(id);
+    }
+    return { ids, truncated: page.truncated };
   }
 
   /**
