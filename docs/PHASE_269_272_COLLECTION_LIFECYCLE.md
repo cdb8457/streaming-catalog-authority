@@ -138,6 +138,12 @@ rather than absorbed.
 one: a collection whose members all still exist but match no library item has a library problem, and deleting an
 operator's collection over that would be a destructive answer to a benign situation.
 
+**Removing a collection is something an operator asks for, on either surface.** `mode: 'revoke'` — the
+panel's "Remove this collection from the media server instead" checkbox, or the CLI's `--revoke` — produces a
+plan whose action is `revoke` and whose members are all `remove`. It takes no selection: a caller who sends one
+has misread what it does, and being told is better than being surprised. It is confirmed by digest like any
+other plan, and it queues; the revoke pass is what deletes.
+
 **Revoke creates nothing.** It sweeps the forgotten, takes their items out of the collections that survive,
 deletes the collections that must go, and then runs the per-record revocation for the v8 rows. A delete that
 fails leaves the row `revoke_pending` and retryable — an unrevoked external copy of a forgotten record is the
