@@ -250,6 +250,10 @@ address. `--json` prints the same plan with `title` and `year` **removed** (not 
 * **Membership is resolved, not stored.** A record whose provider references match nothing in the library
   contributes nothing, and a collection whose members all match nothing is reported `unresolved` rather than
   created. That is visible in `status` and in the reconcile counts, but it is not an alert.
+* **A collection that exhausts the retry budget is terminal.** It is marked `failed`, surfaced in `status`, and
+  needs a fresh plan; the same name then starts a new collection with a new token. It cannot leave an
+  untracked artifact behind: a pass only reaches the budget check *after* the token lookup returned nothing,
+  and a lookup that cannot be trusted defers before the check rather than reaching it.
 * **Two steps, still.** Queuing is not doing. That is the property that makes a crash survivable.
 * **The audit does not enumerate a media server.** It looks at the collections this installation created, by
   their own tokens. A collection this product created and then lost every record of is not findable by it.
