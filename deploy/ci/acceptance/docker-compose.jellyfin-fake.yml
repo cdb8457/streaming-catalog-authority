@@ -1,0 +1,67 @@
+# Catalog Authority — Phase 266-268 acceptance OVERRIDE. Never shipped, never part of a release bundle.
+#
+# WHAT IT DOES. Adds a local fake Jellyfin to the extracted release stack and points the app at it, so the
+# control plane can be exercised end to end against a real server over a real network — one that exists only
+# for the length of the run and holds nothing real.
+#
+# IT IS AN OVERRIDE, NOT A CHANGE TO THE SHIPPED STACK. `deploy/ci/jellyfin-control-acceptance.sh` copies this
+# file into the extracted directory and composes it on top of the bundle's own docker-compose.yml. The shipped
+# file is untouched, so what an operator downloads still has no Jellyfin wiring at all and the switches are
+# still off by default.
+#
+# THE FAKE SERVER IS ON THE COMPOSE NETWORK AND NOWHERE ELSE. It publishes no host port, so nothing outside
+# the stack can reach it, and the app addresses it by its Compose SERVICE NAME — which is a single label and
+# therefore exactly the "local name" shape the private-network policy admits.
+#
+# THE API KEY IS A FILE, because the control plane refuses an inline one. It is mounted read-only from the
+# extracted directory's own secrets folder, exactly as every other secret in this product is.
+
+services:
+  jellyfin-fake:
+    image: node:22-alpine
+    init: true
+    restart: "no"
+    environment:
+      JELLYFIN_FAKE_PORT: "8096"
+      JELLYFIN_FAKE_API_KEY_FILE: /run/secrets/jellyfin_api_key
+    entrypoint: ["/bin/sh", "-c"]
+    # The key is read from the mounted file and handed to the fake as an environment variable INSIDE the
+    # container, so it never appears in this file, in `docker inspect` of the app, or in the repository.
+    command: ["JELLYFIN_FAKE_API_KEY=$$(cat /run/secrets/jellyfin_api_key) exec node /opt/fake/server.mjs"]
+    volumes:
+      - ./fake-jellyfin/server.mjs:/opt/fake/server.mjs:ro
+      - ./secrets/jellyfin_api_key:/run/secrets/jellyfin_api_key:ro
+    # Reachable from the app over the Compose network, and from nowhere else: no host port is published.
+    expose:
+      - "8096"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "node"
+    pids_limit: 64
+    mem_limit: 256m
+    logging:
+      driver: json-file
+      options: { max-size: "10m", max-file: "3" }
+
+  app:
+    environment:
+      # `jellyfin-fake` is a single-label Compose service name, which is exactly the shape the private-network
+      # policy admits — and it resolves only inside this stack.
+      JELLYFIN_BASE_URL: http://jellyfin-fake:8096
+      JELLYFIN_API_KEY_FILE: /run/secrets/jellyfin_api_key
+      # The four switches, all four turned on for this run and all four off in the shipped stack.
+      JELLYFIN_ENABLE_NETWORK: "true"
+      JELLYFIN_ALLOW_LIVE_PUBLISH: "true"
+      JELLYFIN_ALLOW_COLLECTION_WRITES: "${JELLYFIN_ALLOW_COLLECTION_WRITES:-false}"
+      PUBLISH_EXTERNAL_IDENTITY: "${PUBLISH_EXTERNAL_IDENTITY:-deny}"
+      JELLYFIN_TIMEOUT_MS: "5000"
+    volumes:
+      - ./secrets/jellyfin_api_key:/run/secrets/jellyfin_api_key:ro
+    depends_on:
+      jellyfin-fake:
+        condition: service_started

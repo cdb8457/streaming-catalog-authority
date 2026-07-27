@@ -562,7 +562,8 @@
     "test:image-pull-preflight-request": "tsx test/image-pull-preflight-request.ts",
     "test:phase266-local": "tsx test/jellyfin-control-plane.ts",
     "test:phase267-local": "tsx test/collection-plan-preview.ts 5460",
-    "test:phase268-local": "tsx test/collection-execution.ts 5461"
+    "test:phase268-local": "tsx test/collection-execution.ts 5461",
+    "test:phase268-acceptance": "tsx test/jellyfin-control-acceptance.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

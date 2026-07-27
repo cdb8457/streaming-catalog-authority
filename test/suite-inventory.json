@@ -1313,6 +1313,12 @@
         "5461"
       ],
       "requires": []
+    },
+    {
+      "file": "jellyfin-control-acceptance.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }
