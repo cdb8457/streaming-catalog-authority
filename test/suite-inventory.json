@@ -1302,7 +1302,7 @@
       "file": "collection-plan-preview.ts",
       "group": "db",
       "args": [
-        "5460"
+        "5462"
       ],
       "requires": []
     },
@@ -1310,7 +1310,23 @@
       "file": "collection-execution.ts",
       "group": "db",
       "args": [
-        "5461"
+        "5463"
+      ],
+      "requires": []
+    },
+    {
+      "file": "collection-drift.ts",
+      "group": "db",
+      "args": [
+        "5464"
+      ],
+      "requires": []
+    },
+    {
+      "file": "collection-cli.ts",
+      "group": "db",
+      "args": [
+        "5465"
       ],
       "requires": []
     },

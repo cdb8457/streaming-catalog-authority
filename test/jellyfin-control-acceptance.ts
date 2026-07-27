@@ -202,15 +202,32 @@ test('the spec scans for everything that must never be on the page, and drives t
 test('the orchestrator proves the claims it says it proves', () => {
   const script = read(ORCHESTRATOR);
   for (const claim of [
-    'DISABLED', 'contacted something', 'queued an intent', 'created a collection on the media server',
+    'DISABLED', 'contacted something', 'queued a per-record intent', 'created a collection on the media server',
     'produced a duplicate', 'a repeat reconcile created something', 'did not survive a restart',
-    'still on the media server', 'viewing changed the media server',
+    'viewing changed the media server',
+    // Phase 269/270: ONE plan is ONE collection, and a PARTIAL erasure leaves the rest standing.
+    'a plan must not become one collection per record',
+    'still in the collection',
+    'a PARTIAL erasure removed the whole collection',
+    'a membership row for the forgotten record survived its removal',
+    // Phase 271: the drift audit is a read, and the repair is digest-confirmed and writes durable state only.
+    'the audit did not notice the externally deleted collection',
+    'the audit changed the durable state',
+    'a wrong repair digest was accepted',
+    'the repair itself created something on the media server',
+    'the repaired collection was not recreated by the ordinary pass',
+    // Phase 272: the command line is not a bypass, and it discloses nothing.
+    'the CLI accepted a wrong confirmation digest',
+    'the collection CLI printed something it must never print',
+    'a refused CLI apply changed the media server',
   ]) {
     assert(script.includes(claim), `the orchestrator asserts: ${claim}`);
   }
   // The counts are read through digits_or_die, so an unreadable measurement can never look unchanged.
   assert(script.includes('digits_or_die "${raw}" "the row count for'), 'row counts refuse a non-number');
   assert(script.includes('digits_or_die "${raw}" "the fake server collection count"'), 'so does the external count');
+  assert(script.includes('digits_or_die "${raw}" "the fake server collection member count"'),
+    'and so does the MEMBERSHIP count, which is the other half of what a grouped collection claims');
 });
 
 test('the shipped release bundle carries no Jellyfin wiring, and the orchestrator checks that too', () => {

@@ -8,7 +8,10 @@
 // WHAT IT IMPLEMENTS, AND NOTHING ELSE:
 //   GET  /System/Info                    the authentication proof and the version
 //   GET  /Items?IncludeItemTypes=...     library folders, box sets, and provider-id-bearing items
+//   GET  /Items?parentId=<id>            the members of one collection (Phase 270's membership read)
 //   POST /Collections?name=&ids=         create, returning an opaque id
+//   POST /Collections/<id>/Items?ids=    add members  (Phase 270)
+//   DELETE /Collections/<id>/Items?ids=  remove members (Phase 270)
 //   DELETE /Items/<id>                   delete a collection by its opaque id
 //
 // IT ENFORCES THE API KEY. Every request must carry `X-Emby-Token` matching JELLYFIN_FAKE_API_KEY, or it
@@ -76,7 +79,7 @@ const server = createServer((req, res) => {
   if (url.pathname === '/_control/state') {
     send(res, 200, {
       ok: true,
-      collections: [...collections.values()].map((c) => ({ id: c.id, name: c.name, items: c.ids.length })),
+      collections: [...collections.values()].map((c) => ({ id: c.id, name: c.name, items: c.ids.length, ids: [...c.ids] })),
       created: counter,
     });
     return;
@@ -109,6 +112,28 @@ const server = createServer((req, res) => {
     return;
   }
 
+  // Phase 270 membership. A managed collection's members are ADDED and REMOVED by set difference, so the
+  // fake has to hold membership rather than only a name — otherwise the acceptance would prove a create and
+  // nothing about the reconcile that keeps the collection honest afterwards.
+  const collectionItems = /^\/Collections\/([^/]+)\/Items$/.exec(url.pathname);
+  if (collectionItems !== null) {
+    const collection = collections.get(decodeURIComponent(collectionItems[1]));
+    if (!collection) { send(res, 404, {}); return; }
+    const ids = (url.searchParams.get('ids') ?? '').split(',').filter(Boolean);
+    if (req.method === 'POST') {
+      for (const id of ids) if (!collection.ids.includes(id)) collection.ids.push(id);
+      send(res, 200, {});
+      return;
+    }
+    if (req.method === 'DELETE') {
+      collection.ids = collection.ids.filter((id) => !ids.includes(id));
+      send(res, 200, {});
+      return;
+    }
+    send(res, 405, {});
+    return;
+  }
+
   if (req.method === 'DELETE' && url.pathname.startsWith('/Items/')) {
     const id = decodeURIComponent(url.pathname.slice('/Items/'.length));
     if (!collections.has(id)) { send(res, 404, {}); return; }
@@ -118,6 +143,16 @@ const server = createServer((req, res) => {
   }
 
   if (url.pathname === '/Items') {
+    // The MEMBER listing, spelled exactly as the mapping pins it (lowercase `parentId`).
+    const parentId = url.searchParams.get('parentId');
+    if (parentId !== null) {
+      const start = Number(url.searchParams.get('startIndex') ?? '0');
+      const limit = Number(url.searchParams.get('limit') ?? '500');
+      const member = collections.get(parentId);
+      const rows = (member?.ids ?? []).map((id) => ({ Id: id }));
+      send(res, 200, { Items: rows.slice(start, start + limit), TotalRecordCount: rows.length });
+      return;
+    }
     const types = (url.searchParams.get('IncludeItemTypes') ?? '').split(',').filter(Boolean);
     const start = Number(url.searchParams.get('StartIndex') ?? '0');
     const limit = Number(url.searchParams.get('Limit') ?? '500');

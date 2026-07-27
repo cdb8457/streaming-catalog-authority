@@ -60,6 +60,12 @@ test.describe('Jellyfin control plane', () => {
     await expect(page.locator('#jfVersion')).toHaveText('10.9.11');
   });
 
+  /** The plan digest, located by its LABEL rather than by its position in the list. */
+  async function planDigest(page) {
+    return (await page.locator('#colDigests dt', { hasText: /^Plan digest$/ })
+      .locator('xpath=following-sibling::dd[1]').first().innerText()).trim();
+  }
+
   test('@jf-plan a plan preview shows what would happen, and says it wrote and contacted nothing', async ({ page }) => {
     await signIn(page);
     await page.fill('#colName', 'Acceptance picks');
@@ -69,9 +75,15 @@ test.describe('Jellyfin control plane', () => {
     await expect(page.locator('#colPlanStatus')).toContainText('no media server was contacted');
     await expect(page.locator('#colSelected')).not.toHaveText('-');
 
-    // The plan digest is on screen, in full, because it is what the operator has to type back.
-    const digest = await page.locator('#colDigests dd').first().innerText();
+    // The plan digest is on screen, in full, because it is what the operator has to type back. It is found
+    // BY ITS LABEL rather than by position: the collection's own verdict now leads the list, and a positional
+    // locator would silently start asserting about a different row.
+    const digest = await planDigest(page);
     expect(digest, 'the plan digest is a full sha256').toMatch(/^[0-9a-f]{64}$/);
+
+    // ONE PLAN IS ONE COLLECTION. The panel says which collection, and how many records it would hold.
+    await expect(page.locator('#colDigests')).toContainText('This collection');
+    await expect(page.locator('#colDigests')).toContainText('Would hold');
 
     // A plan never shows a provider reference value.
     const text = await pageText(page);
@@ -87,7 +99,7 @@ test.describe('Jellyfin control plane', () => {
     await page.fill('#colSearch', 'Acceptance Collection');
     await page.click('#colPreview');
     await expect(page.locator('#colPlanStatus')).toContainText('Nothing was written', { timeout: 30_000 });
-    const digest = await page.locator('#colDigests dd').first().innerText();
+    const digest = await planDigest(page);
 
     // A WRONG digest is refused by the page itself, before a request is made.
     await page.fill('#colConfirm', 'f'.repeat(64));
@@ -107,11 +119,12 @@ test.describe('Jellyfin control plane', () => {
     await page.fill('#colSearch', 'Acceptance Collection');
     await page.click('#colPreview');
     await expect(page.locator('#colPlanStatus')).toContainText('Nothing was written', { timeout: 30_000 });
-    const digest = await page.locator('#colDigests dd').first().innerText();
+    const digest = await planDigest(page);
 
     await page.fill('#colConfirm', digest);
     await page.click('#colExecute');
-    await expect(page.locator('#colExecuteStatus')).toContainText('Queued', { timeout: 30_000 });
+    // ONE collection, holding the records that were chosen — not one collection per record.
+    await expect(page.locator('#colExecuteStatus')).toContainText('One collection is now recorded as holding', { timeout: 30_000 });
     await expect(page.locator('#colExecuteStatus')).toContainText('Nothing has been sent to a media server yet');
     // The confirm box is cleared and the button re-disabled: one preview, one execute.
     await expect(page.locator('#colConfirm')).toHaveValue('');
@@ -122,12 +135,12 @@ test.describe('Jellyfin control plane', () => {
   test('@jf-reconcile a reconcile pass carries the queued work out, and a second one does nothing', async ({ page }) => {
     await signIn(page);
     await page.click('#colReconcile');
-    await expect(page.locator('#colRunStatus')).toContainText('Adopted', { timeout: 60_000 });
+    await expect(page.locator('#colRunStatus')).toContainText('Created', { timeout: 60_000 });
     await expect(page.locator('#colOutstanding')).toHaveText('0', { timeout: 30_000 });
     await expect(page.locator('#colPublished')).not.toHaveText('0');
 
     await page.click('#colReconcile');
-    await expect(page.locator('#colRunStatus')).toContainText('created 0', { timeout: 60_000 });
+    await expect(page.locator('#colRunStatus')).toContainText('Created 0 collection(s)', { timeout: 60_000 });
   });
 
   test('@jf-history the durable history survived the restart, and still discloses nothing', async ({ page }) => {
