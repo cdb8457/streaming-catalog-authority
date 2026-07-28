@@ -106,6 +106,18 @@ test('the release image convention matches the one the project already documente
   assert(doc.includes(RELEASE_IMAGE_REF), 'the phase doc names the exact pinned reference');
 });
 
+test('package metadata, lockfile metadata and the active release tag agree', () => {
+  const expected = RELEASE_IMAGE_TAG.replace(/^v/, '');
+  const pkg = JSON.parse(read('package.json')) as { version?: string };
+  const lock = JSON.parse(read('package-lock.json')) as {
+    version?: string;
+    packages?: Record<string, { version?: string }>;
+  };
+  assertEq(pkg.version, expected, 'package.json reports the active release version');
+  assertEq(lock.version, expected, 'package-lock.json reports the active release version');
+  assertEq(lock.packages?.['']?.version, expected, 'the lockfile root package reports the active release version');
+});
+
 test('an operator can override the image, and the documented override is a digest pin', () => {
   const doc = read('docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md');
   assert(doc.includes('CATALOG_AUTHORITY_IMAGE'), 'the doc names the override variable');
