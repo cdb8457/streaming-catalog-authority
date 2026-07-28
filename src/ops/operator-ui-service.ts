@@ -97,19 +97,23 @@ import {
   resolveJellyfinTransport,
 } from './operator-ui-jellyfin-endpoint.js';
 import {
+  COLLECTIONS_AUDIT_ROUTE,
   COLLECTIONS_EXECUTE_ROUTE,
   COLLECTIONS_HISTORY_ROUTE,
   COLLECTIONS_PLAN_ROUTE,
   COLLECTIONS_RECONCILE_ROUTE,
+  COLLECTIONS_REPAIR_ROUTE,
   COLLECTIONS_REQUEST_MAX_BYTES,
   COLLECTIONS_REVOKE_ROUTE,
   COLLECTIONS_ROUTES,
   COLLECTIONS_STATUS_ROUTE,
   COLLECTIONS_WRITE_ROUTES,
+  collectionAuditResponse,
   collectionExecuteResponse,
   collectionHistoryResponse,
   collectionPlanResponse,
   collectionReconcileResponse,
+  collectionRepairResponse,
   collectionRevokeResponse,
   collectionStatusResponse,
   type CollectionsEndpointResponse,
@@ -117,6 +121,7 @@ import {
 import { CollectionConfirmations } from './collection-confirmation.js';
 import { createCollectionHistoryStore } from './collection-history.js';
 import { createLedgerReader } from './collection-plan.js';
+import { createManagedCollectionReader } from '../core/publish/collection-model.js';
 import {
   readJsonRequestBody,
   writeBodyRejectionStatus,
@@ -390,6 +395,10 @@ export function createOperatorUiServiceServer(
   // must never verify as a confirmation for a collection execute, and two issuers with two keys is how that
   // is guaranteed rather than argued.
   const collectionConfirmations = new CollectionConfirmations();
+  // Phase 271. A THIRD issuer, with its own key again, for repair confirmations. A repair authorises a
+  // different write from a plan — re-arming a collection whose external copy an audit found gone — and one
+  // signing key for both would make "I previewed a plan" sufficient to apply a repair somebody else audited.
+  const repairConfirmations = new CollectionConfirmations();
   // Phase 266. The ONE transport this service can ever obtain, resolved once at startup. It is `undefined`
   // unless JELLYFIN_ENABLE_NETWORK is exactly "true", so with the switch off there is no transport in this
   // process for any route to use — networking is off by ABSENCE, not by a branch somebody has to remember.
@@ -454,7 +463,7 @@ export function createOperatorUiServiceServer(
         return;
       }
       if (isCollectionWrite) {
-        await handleCollectionWrite(path, body.value, res, logs, collectionConfirmations, jellyfinTransport);
+        await handleCollectionWrite(path, body.value, res, logs, collectionConfirmations, repairConfirmations, jellyfinTransport);
         return;
       }
       await handleImportWrite(path, body.value, res, logs, confirmations);
@@ -924,20 +933,26 @@ async function handleImportWrite(
 }
 
 /**
- * Phase 267/268 — the four routes of the collection control plane that accept a POST.
+ * Phases 267-271 — the six routes of the collection control plane that accept a POST.
  *
  * WHAT EACH ONE IS HANDED IS THE POINT, AND IT IS DIFFERENT FOR EACH:
  *
- *   PLAN gets a `CatalogReader`, a `LedgerReader`, the confirmation issuer and the history store. There is no
- *   authority, no outbox, no adapter and NO TRANSPORT in its scope, so "a plan preview wrote nothing and
- *   contacted nothing" is a property of this function rather than a promise made elsewhere.
+ *   PLAN gets a `CatalogReader`, a `LedgerReader`, a `ManagedCollectionReader`, the confirmation issuer and
+ *   the history store. There is no authority, no outbox, no adapter and NO TRANSPORT in its scope, so "a
+ *   plan preview wrote nothing and contacted nothing" is a property of this function rather than a promise
+ *   made elsewhere.
  *
- *   EXECUTE additionally gets the pool, because queuing writes durable intents. It still gets no transport:
- *   queuing contacts nothing, and a route that cannot reach a transport cannot contact anything by accident.
+ *   EXECUTE additionally gets the pool, because queuing writes the durable collection and its membership.
+ *   It still gets no transport: queuing contacts nothing, and a route that cannot reach a transport cannot
+ *   contact anything by accident.
  *
- *   RECONCILE and REVOKE are the only two that get the transport, and they get it only when the network
- *   switch resolved one at startup. Both also get the authority, because a create runs inside
- *   `withPublishableIdentity` — which is what keeps a forgotten record from being published.
+ *   RECONCILE, REVOKE, AUDIT and REPAIR are the four that get the transport, and they get it only when the
+ *   network switch resolved one at startup. All four also get the authority, because resolving a member's
+ *   library items runs inside `withPublishableIdentity` — which is what keeps a forgotten record from being
+ *   published, and what makes a forgotten member resolve to nothing so its items come back out.
+ *
+ *   AUDIT and REPAIR share the SEPARATE repair confirmation issuer, and the audit's runtime hands the
+ *   auditor a target whose write methods throw.
  *
  * A POOL OR CUSTODIAN THAT CANNOT BE CONSTRUCTED IS A 503 WITH A FIXED SENTENCE — never a partial write, and
  * never a description of what is misconfigured, which is Setup & Diagnostics' job to answer safely.
@@ -951,6 +966,7 @@ async function handleCollectionWrite(
   res: ServerResponse,
   logs: OperatorUiServiceLogBuffer,
   confirmations: CollectionConfirmations,
+  repairConfirmations: CollectionConfirmations,
   transport: ReturnType<typeof resolveJellyfinTransport>,
 ): Promise<void> {
   let pool: ReturnType<typeof getPool>;
@@ -989,11 +1005,12 @@ async function handleCollectionWrite(
   }
 
   const ledger = createLedgerReader(pool);
+  const managed = createManagedCollectionReader(pool);
   const history = createCollectionHistoryStore(pool);
   let result: CollectionsEndpointResponse;
 
   if (path === COLLECTIONS_PLAN_ROUTE) {
-    result = await collectionPlanResponse(body, { reader, ledger, confirmations, history });
+    result = await collectionPlanResponse(body, { reader, ledger, managed, confirmations, history });
     sendJson(res, result.status, result.body);
     logs.add(result.status === 200 ? 'info' : 'warn', 'operation', 'COLLECTION_PLANNED',
       result.status === 200
@@ -1003,13 +1020,14 @@ async function handleCollectionWrite(
   }
 
   if (path === COLLECTIONS_EXECUTE_ROUTE) {
-    result = await collectionExecuteResponse(body, { reader, ledger, confirmations, history, pool });
+    result = await collectionExecuteResponse(body, { reader, ledger, managed, confirmations, history, pool });
     sendJson(res, result.status, result.body);
-    const queued = result.body.queued as { queued?: number; revokeQueued?: number } | undefined;
+    const queued = result.body.queued as { action?: string; members?: number; removing?: number } | undefined;
     logs.add(result.status < 300 ? 'info' : 'warn', 'operation', 'COLLECTION_QUEUED',
       queued === undefined
         ? `Refused a collection execute: ${String(result.body.code)}.`
-        : `Queued a collection plan: ${queued.queued ?? 0} intent(s), ${queued.revokeQueued ?? 0} revocation(s).`);
+        : `Queued one collection: ${String(queued.action)}, ${queued.members ?? 0} member(s), `
+          + `${queued.removing ?? 0} queued to come out.`);
     return;
   }
 
@@ -1019,17 +1037,38 @@ async function handleCollectionWrite(
     history,
     ...(transport === undefined ? {} : { fetch: transport }),
   };
+
+  if (path === COLLECTIONS_AUDIT_ROUTE || path === COLLECTIONS_REPAIR_ROUTE) {
+    const auditDeps = { ...runtimeDeps, repairConfirmations };
+    result = path === COLLECTIONS_AUDIT_ROUTE
+      ? await collectionAuditResponse(auditDeps)
+      : await collectionRepairResponse(body, auditDeps);
+    sendJson(res, result.status, result.body);
+    // COUNTS AND A VERDICT ONLY. Not a collection name, not a digest, not a host: /api/logs serves this
+    // buffer to a browser.
+    const counts = path === COLLECTIONS_AUDIT_ROUTE
+      ? (result.body.drift as { counts?: Record<string, number> } | undefined)?.counts
+      : result.body.result as Record<string, number> | undefined;
+    logs.add(result.status < 300 ? 'info' : 'warn', 'connector',
+      path === COLLECTIONS_AUDIT_ROUTE ? 'COLLECTION_AUDITED' : 'COLLECTION_REPAIRED',
+      counts === undefined
+        ? `Refused a collection ${path === COLLECTIONS_AUDIT_ROUTE ? 'audit' : 'repair'}: ${String(result.body.code)}.`
+        : `Ran a collection ${path === COLLECTIONS_AUDIT_ROUTE ? 'audit' : 'repair'}: `
+          + Object.entries(counts).map(([key, value]) => `${key}=${value}`).join(' ') + '.');
+    return;
+  }
+
   result = path === COLLECTIONS_RECONCILE_ROUTE
     ? await collectionReconcileResponse(runtimeDeps)
     : await collectionRevokeResponse(runtimeDeps);
   sendJson(res, result.status, result.body);
-  const outcome = result.body.result as Record<string, number> | undefined;
+  const outcome = result.body.result as { grouped?: Record<string, number> } | undefined;
   logs.add(result.status === 200 ? 'info' : 'warn', 'connector',
     path === COLLECTIONS_RECONCILE_ROUTE ? 'COLLECTION_RECONCILED' : 'COLLECTION_REVOKED',
-    outcome === undefined
+    outcome?.grouped === undefined
       ? `Refused a collection ${path === COLLECTIONS_RECONCILE_ROUTE ? 'reconcile' : 'revoke'}: ${String(result.body.code)}.`
       : `Ran a collection ${path === COLLECTIONS_RECONCILE_ROUTE ? 'reconcile' : 'revoke'} pass: `
-        + Object.entries(outcome).map(([key, value]) => `${key}=${value}`).join(' ') + '.');
+        + Object.entries(outcome.grouped).map(([key, value]) => `${key}=${value}`).join(' ') + '.');
 }
 
 /** The collection surface's own body rejection shape. Same rules, its own code prefix and report name. */
@@ -1586,21 +1625,25 @@ appear below: what you see is a state, a host class and counts.</p>
 </div>
 <ul class="list" id="jfManaged"><li class="muted">Not checked.</li></ul>
 <h3>Plan a collection</h3>
-<p class="muted">Choose the records by searching your own catalog, or use exactly the records the Catalog
-panel is showing. A preview writes nothing and sends nothing.</p>
-<div class="field"><label for="colName">Name this plan</label>
+<p class="muted">One plan is one collection on your media server, holding the records you choose. Re-planning
+the same name updates that collection rather than making a second one. Choose the records by searching your
+own catalog, or use exactly the records the Catalog panel is showing. A preview writes nothing and sends
+nothing.</p>
+<div class="field"><label for="colName">Name this collection</label>
 <input id="colName" type="text" autocomplete="off" spellcheck="false" maxlength="64"></div>
 <div class="field"><label for="colSearch">Records matching</label>
 <input id="colSearch" type="search" autocomplete="off" spellcheck="false"></div>
 <div class="field"><label for="colUseShown">Use the records shown in the Catalog panel instead</label>
 <input id="colUseShown" type="checkbox"></div>
+<div class="field"><label for="colRemove">Remove this collection from the media server instead</label>
+<input id="colRemove" type="checkbox"></div>
 <div class="actions"><button id="colPreview" type="button">Preview the plan (writes nothing)</button></div>
 <p class="status" id="colPlanStatus" role="status" aria-live="polite"></p>
 <div class="grid">
 <div class="metric"><span>Selected</span><strong id="colSelected">-</strong></div>
-<div class="metric ok"><span>Would create</span><strong id="colCreate">-</strong></div>
-<div class="metric"><span>Would resume</span><strong id="colUpdate">-</strong></div>
-<div class="metric warn"><span>Would revoke</span><strong id="colRevoke">-</strong></div>
+<div class="metric ok"><span>Would go in</span><strong id="colCreate">-</strong></div>
+<div class="metric"><span>Already in it</span><strong id="colUpdate">-</strong></div>
+<div class="metric warn"><span>Would come out</span><strong id="colRevoke">-</strong></div>
 </div>
 <dl class="kv" id="colDigests"><dt>Plan digest</dt><dd>No plan previewed.</dd></dl>
 <ul class="list" id="colActions"><li class="muted">No plan previewed.</li></ul>
@@ -1613,9 +1656,10 @@ leaves recorded work rather than an unrecorded change.</p>
 <div class="actions"><button id="colExecute" type="button" disabled>Queue this exact plan</button></div>
 <p class="status" id="colExecuteStatus" role="status" aria-live="polite"></p>
 <h3>Carry out and undo</h3>
-<p class="muted">Reconcile acts on whatever is queued, recovering each intent by its own durable token — so
-running it twice, or after a restart, cannot create the same collection twice. Revoke removes external
-copies of records that have been forgotten.</p>
+<p class="muted">Reconcile acts on whatever is queued, recovering each collection by its own durable token —
+so running it twice, or after a restart, cannot create the same collection twice — and then makes its
+membership match what you confirmed. Revoke takes forgotten records back out and removes the collections that
+must go.</p>
 <div class="grid">
 <div class="metric"><span>Queued, unsettled</span><strong id="colOutstanding">-</strong></div>
 <div class="metric warn"><span>Awaiting revoke</span><strong id="colUnrevoked">-</strong></div>

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Catalog Authority — Phases 266-268 Jellyfin control plane acceptance orchestrator.
+# Catalog Authority — Phases 266-272 Jellyfin collection lifecycle acceptance orchestrator.
 #
 # WHAT THIS PROVES THAT NOTHING ELSE DOES. The unit suites drive the modules against injected transports and
 # an embedded database. This drives the SHIPPED PRODUCT: the release bundle, extracted; the production image;
@@ -25,8 +25,16 @@
 #   7. AMBIGUOUS RECOVERY. A create whose response is LOST is adopted by token, with no duplicate.
 #   8. IDEMPOTENCY. A second reconcile does nothing at all.
 #   9. REVOKE. A forgotten record's external copy comes back.
-#  10. RESTART PERSISTENCE. Everything survives a full stop/start.
-#  11. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
+#  10. RESTART PERSISTENCE. The application and database survive a stop/start while the external fake
+#      Jellyfin remains running, just as a real media server would.
+#  11. PARTIAL ERASURE. Forgetting ONE member takes its library items out and leaves the collection standing.
+#  12. DRIFT AUDIT AND GATED REPAIR. A collection deleted on the server is detected, and the repair is
+#      digest-confirmed and writes durable state only.
+#  13. OPERATOR CLI PARITY. The same lifecycle, headless, through the same services and the same gates.
+#  14. BROWSER-DRIVEN REMOVAL, END TO END. The panel previews a whole-collection revoke, confirms it by its
+#      own digest, queues it, carries it out with its own Revoke control, and then reads the media server back
+#      through the product's own discovery surface to see it gone. This script does not revoke for it.
+#  15. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
 #
 # PREREQUISITES: a running Docker daemon, `node`, and the pinned acceptance harness in deploy/ci/acceptance/.
 # FAIL vs SKIP is explicit and identical to Phases 248 and 262:
@@ -60,9 +68,11 @@ JELLYFIN_KEY=""
 # not an API body, not a log line.
 SECRET_REF="tt-jellyfin-acceptance-ref-1"
 RECORD_COUNT=4
-# Records the plan selects (the three named "Acceptance Collection ..."), of which two carry a reference the
-# fake server can match and one does not.
-PLAN_CREATES=2
+# ONE accepted plan is ONE collection (Phase 269). The plan selects the three records named
+# "Acceptance Collection ...", of which two carry a reference the fake server can match and one does not — so
+# it produces ONE collection holding TWO library items.
+PLAN_COLLECTIONS=1
+PLAN_MEMBERS=2
 
 # shellcheck source=deploy/ci/acceptance/rc-teardown.sh
 source "${BROWSER_DIR}/rc-teardown.sh"
@@ -294,6 +304,18 @@ fake_collection_count() {
   raw="$( jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/state').then(r=>r.json()).then(s=>process.stdout.write(String(s.collections.length)))" | tr -d '[:space:]' )"
   digits_or_die "${raw}" "the fake server collection count"
 }
+# How many LIBRARY ITEMS the managed collections hold in total. Phase 270 reconciles membership by set
+# difference, so "the collection exists" is no longer the whole claim — what is IN it is the other half.
+fake_member_count() {
+  local raw
+  raw="$( jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/state').then(r=>r.json()).then(s=>process.stdout.write(String(s.collections.reduce((n,c)=>n+c.items,0))))" | tr -d '[:space:]' )"
+  digits_or_die "${raw}" "the fake server collection member count"
+}
+# The opaque id of the first managed collection the fake holds. Used only to prove one survives a partial
+# erasure; it is never printed.
+fake_first_collection_id() {
+  jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/state').then(r=>r.json()).then(s=>process.stdout.write(String((s.collections[0]||{}).id||'')))" | tr -d '[:space:]'
+}
 
 items_before="$(count_rows items)"
 events_before="$(count_rows events)"
@@ -348,7 +370,9 @@ run_leg "@jf-refused" "refused"
 step "discovery and planning wrote NO row, NO event and NO ledger entry, and created nothing externally"
 [ "$(count_rows items)" = "${items_before}" ] || fail "discovery or planning created a record"
 [ "$(count_rows events)" = "${events_before}" ] || fail "discovery or planning appended an event"
-[ "$(count_rows publish_ledger)" = "0" ] || fail "discovery or planning queued an intent"
+[ "$(count_rows publish_ledger)" = "0" ] || fail "discovery or planning queued a per-record intent"
+[ "$(count_rows managed_collections)" = "0" ] || fail "discovery or planning recorded a managed collection"
+[ "$(count_rows managed_collection_members)" = "0" ] || fail "discovery or planning recorded a membership row"
 [ "$(fake_collection_count)" = "0" ] || fail "discovery or planning created a collection on the media server"
 # The PLAN history is the one thing that grows, and it grows on purpose.
 plans_recorded="$(count_rows collection_control_history)"
@@ -367,10 +391,14 @@ info "all four switches are on for this run"
 step "real-browser acceptance: queue the exact plan by typing its own digest"
 run_leg "@jf-queue" "queue"
 [ "${LEG_STATUS}" -eq 0 ] || { dump_stack_logs; fail "the queue browser leg reported failures"; }
-queued_rows="$(count_rows publish_ledger)"
-[ "${queued_rows}" = "${PLAN_CREATES}" ] || fail "expected ${PLAN_CREATES} queued intents, got ${queued_rows}"
-[ "$(fake_collection_count)" = "0" ] || fail "queuing sent something to the media server — it must only write durable intents"
-info "queued ${queued_rows} durable intents and sent nothing"
+queued_collections="$(count_rows managed_collections)"
+queued_members="$(count_rows managed_collection_members)"
+[ "${queued_collections}" = "${PLAN_COLLECTIONS}" ] \
+  || fail "expected ${PLAN_COLLECTIONS} managed collection, got ${queued_collections} — a plan must not become one collection per record"
+[ "${queued_members}" = "${PLAN_MEMBERS}" ] || fail "expected ${PLAN_MEMBERS} membership rows, got ${queued_members}"
+[ "$(count_rows publish_ledger)" = "0" ] || fail "a grouped plan wrote a per-record ledger row"
+[ "$(fake_collection_count)" = "0" ] || fail "queuing sent something to the media server — it must only write durable state"
+info "queued ${queued_collections} collection holding ${queued_members} record(s), and sent nothing"
 
 # ---------------------------------------------------------------------------------------------------------
 # 8. AMBIGUOUS RECOVERY, then the ordinary reconcile. The lost response comes FIRST, deliberately.
@@ -390,36 +418,47 @@ second_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-
 printf '%s' "${second_json}" | grep -q '"code":"OPERATOR_UI_COLLECTION_RECONCILED"' \
   || { echo "${second_json}" >&2; dump_stack_logs; fail "the recovery reconcile did not run"; }
 external_total="$(fake_collection_count)"
-[ "${external_total}" = "${PLAN_CREATES}" ] \
-  || { echo "${second_json}" >&2; dump_stack_logs; fail "expected exactly ${PLAN_CREATES} external collections, got ${external_total} — a lost response produced a duplicate"; }
-published="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM publish_ledger WHERE status = 'published'" | tr -d '[:space:]' )"
-[ "$(digits_or_die "${published}" "the published intent count")" = "${PLAN_CREATES}" ] || fail "not every intent settled as published"
-info "exactly ${external_total} external collections exist and ${published} intents are published — no duplicate"
+[ "${external_total}" = "${PLAN_COLLECTIONS}" ] \
+  || { echo "${second_json}" >&2; dump_stack_logs; fail "expected exactly ${PLAN_COLLECTIONS} external collection, got ${external_total} — a lost response produced a duplicate"; }
+external_members="$(fake_member_count)"
+[ "${external_members}" = "${PLAN_MEMBERS}" ] \
+  || { echo "${second_json}" >&2; dump_stack_logs; fail "the collection holds ${external_members} library item(s), expected ${PLAN_MEMBERS}"; }
+published="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM managed_collections WHERE status = 'published'" | tr -d '[:space:]' )"
+[ "$(digits_or_die "${published}" "the published collection count")" = "${PLAN_COLLECTIONS}" ] || fail "the collection did not settle as published"
+info "exactly ${external_total} external collection exists, holding ${external_members} item(s) — no duplicate"
 
 step "IDEMPOTENCY: a third reconcile does nothing at all"
 third_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/reconcile")"
 printf '%s' "${third_json}" | grep -q '"created":0' || { echo "${third_json}" >&2; fail "a repeat reconcile created something"; }
 printf '%s' "${third_json}" | grep -q '"adopted":0' || { echo "${third_json}" >&2; fail "a repeat reconcile adopted something"; }
-[ "$(fake_collection_count)" = "${PLAN_CREATES}" ] || fail "a repeat reconcile changed the media server"
+printf '%s' "${third_json}" | grep -q '"added":0' || { echo "${third_json}" >&2; fail "a repeat reconcile added a library item"; }
+printf '%s' "${third_json}" | grep -q '"removed":0' || { echo "${third_json}" >&2; fail "a repeat reconcile removed a library item"; }
+[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] || fail "a repeat reconcile changed the media server"
+[ "$(fake_member_count)" = "${PLAN_MEMBERS}" ] || fail "a repeat reconcile changed the collection's membership"
 info "a repeat reconcile created nothing, adopted nothing and changed nothing"
 
 step "real-browser acceptance: driving a reconcile from the panel is also a no-op once everything is settled"
 run_leg "@jf-reconcile" "reconcile"
 [ "${LEG_STATUS}" -eq 0 ] || { dump_stack_logs; fail "the reconcile browser leg reported failures"; }
-[ "$(fake_collection_count)" = "${PLAN_CREATES}" ] || fail "the browser reconcile changed the media server"
+[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] || fail "the browser reconcile changed the media server"
 
 # ---------------------------------------------------------------------------------------------------------
 # 9. RESTART PERSISTENCE.
 # ---------------------------------------------------------------------------------------------------------
-step "restart the whole stack and re-check (persistence)"
+step "restart the application and database, then re-check persistence"
 history_before_restart="$(count_rows collection_control_history)"
-jf_compose stop >/dev/null
+# Jellyfin is an EXTERNAL system for this test. The local fake is intentionally in-memory, so stopping it
+# would erase the external artifact and turn an application-restart test into an accidental media-server
+# reset. Stop the application/database boundary only; leave jellyfin-fake running exactly as a real server
+# would remain running while this product restarts.
+jf_compose stop app postgres >/dev/null
 JELLYFIN_ALLOW_COLLECTION_WRITES=true PUBLISH_EXTERNAL_IDENTITY=allow jf_compose up -d >/dev/null
 wait_for_health "the stack did not come back healthy after a restart"
-[ "$(count_rows publish_ledger)" = "${PLAN_CREATES}" ] || fail "the queued work did not survive a restart"
+[ "$(count_rows managed_collections)" = "${PLAN_COLLECTIONS}" ] || fail "the managed collection did not survive a restart"
+[ "$(count_rows managed_collection_members)" = "${PLAN_MEMBERS}" ] || fail "the membership did not survive a restart"
 [ "$(count_rows collection_control_history)" = "${history_before_restart}" ] || fail "the plan history did not survive a restart"
 [ "$(count_rows items)" = "${items_before}" ] || fail "the catalog did not survive a restart"
-info "the ledger, the plan history and the catalog all survived a full stop/start"
+info "the managed collection, its membership, the plan history, the catalog and the external artifact survived the application/database restart"
 
 step "real-browser acceptance: the history is still there after the restart"
 run_leg "@jf-history" "history"
@@ -429,9 +468,11 @@ if [ "${history_status}" -ne 0 ]; then dump_stack_logs; fi
 # ---------------------------------------------------------------------------------------------------------
 # 10. REVOKE: an erasure reaches outside.
 # ---------------------------------------------------------------------------------------------------------
-step "forget a published record, and prove its external copy comes back"
-forget_id="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT item_id FROM publish_ledger WHERE status = 'published' ORDER BY id LIMIT 1" | tr -d '[:space:]' )"
-[ -n "${forget_id}" ] || fail "there is no published row to forget"
+step "forget ONE member, and prove its library items come out while the collection stands"
+survivor_id="$(fake_first_collection_id)"
+[ -n "${survivor_id}" ] || fail "there is no external collection to observe"
+forget_id="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT item_id FROM managed_collection_members WHERE state = 'intended' ORDER BY item_id LIMIT 1" | tr -d '[:space:]' )"
+[ -n "${forget_id}" ] || fail "there is no member to forget"
 # `cat_forget_begin` is the first half of an erasure: it marks the record forgotten and starts the shred. That
 # is exactly the state that must compel an external copy to come back, and driving it directly is honest —
 # this gate is about what the CONTROL PLANE does about an erasure, not about the erasure machinery itself,
@@ -441,13 +482,108 @@ jf_compose exec -T postgres psql -U postgres -d catalog -c "SELECT cat_forget_be
 revoke_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/revoke")"
 printf '%s' "${revoke_json}" | grep -q '"code":"OPERATOR_UI_COLLECTION_REVOKED"' \
   || { echo "${revoke_json}" >&2; dump_stack_logs; fail "the revoke pass did not run"; }
-remaining="$(fake_collection_count)"
-[ "${remaining}" -lt "${PLAN_CREATES}" ] \
-  || { echo "${revoke_json}" >&2; dump_stack_logs; fail "the forgotten record's external copy is still on the media server"; }
-info "the forgotten record's external copy was removed; ${remaining} collection(s) remain"
+partial_members="$(fake_member_count)"
+[ "${partial_members}" -lt "${PLAN_MEMBERS}" ] \
+  || { echo "${revoke_json}" >&2; dump_stack_logs; fail "the forgotten record's library items are still in the collection"; }
+[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] \
+  || { echo "${revoke_json}" >&2; dump_stack_logs; fail "a PARTIAL erasure removed the whole collection"; }
+# And no durable row still associates the forgotten record with anything.
+still_a_member="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM managed_collection_members WHERE item_id = '${forget_id}'" | tr -d '[:space:]' )"
+[ "$(digits_or_die "${still_a_member}" "the forgotten member row count")" = "0" ] \
+  || fail "a membership row for the forgotten record survived its removal"
+info "the forgotten record's items came out, the collection stands with ${partial_members} item(s), and no row remains"
 
 # ---------------------------------------------------------------------------------------------------------
-# 11. BROWSER-ONLY VIEWING CHANGES NOTHING, in the database or on the media server.
+# 12. DRIFT AUDIT AND EXPLICITLY GATED REPAIR (Phase 271).
+# ---------------------------------------------------------------------------------------------------------
+step "delete the collection directly on the media server, and prove the audit notices"
+jf_compose exec -T jellyfin-fake node -e "const fs=require('node:fs');const key=fs.readFileSync(process.env.JELLYFIN_FAKE_API_KEY_FILE,'utf8').trim();fetch('http://127.0.0.1:8096/_control/state').then(r=>{if(!r.ok)throw new Error('state '+r.status);return r.json()}).then(s=>{if(!s.collections[0])throw new Error('no collection');return fetch('http://127.0.0.1:8096/Items/'+encodeURIComponent(s.collections[0].id),{method:'DELETE',headers:{'X-Emby-Token':key}})}).then(r=>{if(!r.ok)throw new Error('delete '+r.status)}).catch(()=>process.exit(1))" >/dev/null \
+  || fail "could not delete the collection on the fake server"
+[ "$(fake_collection_count)" = "0" ] || fail "the collection was not deleted on the fake server"
+audit_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
+printf '%s' "${audit_json}" | grep -q '"code":"OPERATOR_UI_COLLECTION_AUDITED"' \
+  || { echo "${audit_json}" >&2; dump_stack_logs; fail "the drift audit did not run"; }
+printf '%s' "${audit_json}" | grep -q '"verdict":"external-missing"' \
+  || { echo "${audit_json}" >&2; fail "the audit did not notice the externally deleted collection"; }
+printf '%s' "${audit_json}" | grep -q '"wrote":"nothing"' || fail "the audit did not say it wrote nothing"
+audit_state="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT status FROM managed_collections ORDER BY id DESC LIMIT 1" | tr -d '[:space:]' )"
+[ "${audit_state}" = "published" ] || fail "the audit changed the durable state — an audit is a read"
+info "the audit reported the collection as externally missing, and changed nothing"
+
+step "a repair needs the digest it printed, writes durable state only, and is carried out by the ordinary pass"
+repair_digest="$(printf '%s' "${audit_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).repair.planDigest)})')"
+repair_confirmation="$(printf '%s' "${audit_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).confirmation)})')"
+[ -n "${repair_digest}" ] || fail "the audit issued no repair digest"
+wrong_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' \
+  -d "{\"confirmation\":\"${repair_confirmation}\",\"confirmDigest\":\"$(printf 'f%.0s' $(seq 64))\"}" "${BASE_URL}/api/collections/repair")"
+printf '%s' "${wrong_json}" | grep -q 'DIGEST_MISMATCH' || { echo "${wrong_json}" >&2; fail "a wrong repair digest was accepted"; }
+audit2_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
+repair_digest="$(printf '%s' "${audit2_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).repair.planDigest)})')"
+repair_confirmation="$(printf '%s' "${audit2_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).confirmation)})')"
+repair_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' \
+  -d "{\"confirmation\":\"${repair_confirmation}\",\"confirmDigest\":\"${repair_digest}\"}" "${BASE_URL}/api/collections/repair")"
+printf '%s' "${repair_json}" | grep -q '"code":"OPERATOR_UI_COLLECTION_REPAIRED"' \
+  || { echo "${repair_json}" >&2; dump_stack_logs; fail "the repair did not apply"; }
+[ "$(fake_collection_count)" = "0" ] || fail "the repair itself created something on the media server"
+printf '%s' "${repair_json}" | grep -q '"wrote":"durable collection state only"' || fail "the repair did not say what it wrote"
+repair_reconcile="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/reconcile")"
+printf '%s' "${repair_reconcile}" | grep -q '"code":"OPERATOR_UI_COLLECTION_RECONCILED"' \
+  || { echo "${repair_reconcile}" >&2; fail "the reconcile after the repair did not run"; }
+[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] \
+  || { echo "${repair_reconcile}" >&2; dump_stack_logs; fail "the repaired collection was not recreated by the ordinary pass"; }
+info "the repair wrote durable state only, and the ordinary reconcile pass recreated the collection"
+
+# ---------------------------------------------------------------------------------------------------------
+# 13. OPERATOR CLI PARITY (Phase 272). The same services, the same gates, headless.
+# ---------------------------------------------------------------------------------------------------------
+step "the operator CLI reads the same model and enforces the same digest"
+cli_status="$( jf_compose exec -T app npm run --silent ops:collections -- status 2>&1 )" \
+  || { echo "${cli_status}" >&2; fail "the collection CLI could not read the status"; }
+printf '%s' "${cli_status}" | grep -q 'managed collections' || { echo "${cli_status}" >&2; fail "the CLI status does not describe the managed model"; }
+for forbidden in "${SECRET_REF}" "${JELLYFIN_KEY}" 'jf-col-' 'jf-item-'; do
+  if printf '%s' "${cli_status}" | grep -qF "${forbidden}"; then
+    fail "the collection CLI printed something it must never print"
+  fi
+done
+cli_audit="$( jf_compose exec -T app npm run --silent ops:collections -- audit 2>&1 )" \
+  || { echo "${cli_audit}" >&2; fail "the collection CLI could not run a drift audit"; }
+printf '%s' "${cli_audit}" | grep -q 'read-only' || { echo "${cli_audit}" >&2; fail "the CLI audit does not say it is a read"; }
+cli_refused="$( jf_compose exec -T app npm run --silent ops:collections -- apply --name 'Acceptance picks' --search 'Acceptance Collection' --confirm-digest "$(printf 'f%.0s' $(seq 64))" 2>&1 || true )"
+printf '%s' "${cli_refused}" | grep -q 'DIGEST_MISMATCH' \
+  || { echo "${cli_refused}" >&2; fail "the CLI accepted a wrong confirmation digest"; }
+[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] || fail "a refused CLI apply changed the media server"
+info "the CLI reads the same model, refuses a wrong digest, and discloses nothing"
+
+# ---------------------------------------------------------------------------------------------------------
+# 14. REMOVING A COLLECTION FROM THE PANEL. Phase 269's revoke mode, driven by a real browser: the operator
+#     asks for the collection to go, confirms it by typing its own digest, and STILL nothing is sent until the
+#     revoke pass runs. It is placed last of the acting steps because it ends with nothing on the server.
+# ---------------------------------------------------------------------------------------------------------
+step "real-browser acceptance: the panel removes a collection end to end"
+# THE BROWSER DOES THE WHOLE THING. It previews, confirms by digest, queues, clicks Revoke, and then reads the
+# media server back through the product's own discovery surface to see the collection is gone. This script
+# deliberately does NOT POST /api/collections/revoke for this leg: a shell that finishes the job would make
+# the leg a proof of the queue rather than of the lifecycle. Everything below the leg is corroboration, read
+# AFTER the fact.
+[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] \
+  || fail "there is no managed collection to remove, so this leg would prove nothing"
+run_leg "@jf-remove" "remove"
+[ "${LEG_STATUS}" -eq 0 ] || { dump_stack_logs; fail "the remove browser leg reported failures"; }
+
+# Corroboration, from outside the product: the fake server really has nothing of ours left, and the durable
+# row really says revoked rather than merely queued.
+[ "$(fake_collection_count)" = "0" ] \
+  || { dump_stack_logs; fail "the browser reported a deletion the media server did not perform"; }
+removed_state="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT status FROM managed_collections ORDER BY id DESC LIMIT 1" | tr -d '[:space:]' )"
+[ "${removed_state}" = "revoked" ] \
+  || { dump_stack_logs; fail "the durable row records '${removed_state}' rather than a completed revoke"; }
+still_pending="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM managed_collections WHERE status = 'revoke_pending'" | tr -d '[:space:]' )"
+[ "$(digits_or_die "${still_pending}" "the outstanding revoke count")" = "0" ] \
+  || fail "an external copy is still queued for revocation after the browser reported it deleted"
+info "the browser previewed, confirmed, queued, carried out and verified the removal without this script's help"
+
+# ---------------------------------------------------------------------------------------------------------
+# 15. BROWSER-ONLY VIEWING CHANGES NOTHING, in the database or on the media server.
 # ---------------------------------------------------------------------------------------------------------
 step "a whole viewing session writes no row, no event, no ledger entry and no external collection"
 items_v="$(count_rows items)"

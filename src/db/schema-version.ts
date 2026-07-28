@@ -28,7 +28,14 @@
 //                container that served the page has been replaced.
 // v8 (Phase 268 review remediation): makes one active publish intent per (item_id,target) a database
 //                invariant and adds an atomic insert-if-absent command, closing concurrent execute races.
-export const MIGRATION_VERSION = 8;
+// v9 (Phase 269): the MANAGED COLLECTION — one accepted operator plan is one external collection holding the
+//                selected records, rather than N records becoming N collections. Adds managed_collections
+//                (durable plan/collection identity, lifecycle, correlation token, recovery proof) and
+//                managed_collection_members (opaque catalog ids and their state), with the same
+//                one-active-row-per-identity database invariant the per-item outbox has. The v8 per-item
+//                publish_ledger rows are NOT migrated, reinterpreted or touched: they remain per-item
+//                collections, still tracked, still revocable, and are reported as legacy wherever they matter.
+export const MIGRATION_VERSION = 9;
 
 /**
  * The advisory-lock key `ops:bootstrap` serialises on.

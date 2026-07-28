@@ -60,6 +60,12 @@ test.describe('Jellyfin control plane', () => {
     await expect(page.locator('#jfVersion')).toHaveText('10.9.11');
   });
 
+  /** The plan digest, located by its LABEL rather than by its position in the list. */
+  async function planDigest(page) {
+    return (await page.locator('#colDigests dt', { hasText: /^Plan digest$/ })
+      .locator('xpath=following-sibling::dd[1]').first().innerText()).trim();
+  }
+
   test('@jf-plan a plan preview shows what would happen, and says it wrote and contacted nothing', async ({ page }) => {
     await signIn(page);
     await page.fill('#colName', 'Acceptance picks');
@@ -69,9 +75,15 @@ test.describe('Jellyfin control plane', () => {
     await expect(page.locator('#colPlanStatus')).toContainText('no media server was contacted');
     await expect(page.locator('#colSelected')).not.toHaveText('-');
 
-    // The plan digest is on screen, in full, because it is what the operator has to type back.
-    const digest = await page.locator('#colDigests dd').first().innerText();
+    // The plan digest is on screen, in full, because it is what the operator has to type back. It is found
+    // BY ITS LABEL rather than by position: the collection's own verdict now leads the list, and a positional
+    // locator would silently start asserting about a different row.
+    const digest = await planDigest(page);
     expect(digest, 'the plan digest is a full sha256').toMatch(/^[0-9a-f]{64}$/);
+
+    // ONE PLAN IS ONE COLLECTION. The panel says which collection, and how many records it would hold.
+    await expect(page.locator('#colDigests')).toContainText('This collection');
+    await expect(page.locator('#colDigests')).toContainText('Would hold');
 
     // A plan never shows a provider reference value.
     const text = await pageText(page);
@@ -87,7 +99,7 @@ test.describe('Jellyfin control plane', () => {
     await page.fill('#colSearch', 'Acceptance Collection');
     await page.click('#colPreview');
     await expect(page.locator('#colPlanStatus')).toContainText('Nothing was written', { timeout: 30_000 });
-    const digest = await page.locator('#colDigests dd').first().innerText();
+    const digest = await planDigest(page);
 
     // A WRONG digest is refused by the page itself, before a request is made.
     await page.fill('#colConfirm', 'f'.repeat(64));
@@ -107,11 +119,12 @@ test.describe('Jellyfin control plane', () => {
     await page.fill('#colSearch', 'Acceptance Collection');
     await page.click('#colPreview');
     await expect(page.locator('#colPlanStatus')).toContainText('Nothing was written', { timeout: 30_000 });
-    const digest = await page.locator('#colDigests dd').first().innerText();
+    const digest = await planDigest(page);
 
     await page.fill('#colConfirm', digest);
     await page.click('#colExecute');
-    await expect(page.locator('#colExecuteStatus')).toContainText('Queued', { timeout: 30_000 });
+    // ONE collection, holding the records that were chosen — not one collection per record.
+    await expect(page.locator('#colExecuteStatus')).toContainText('One collection is now recorded as holding', { timeout: 30_000 });
     await expect(page.locator('#colExecuteStatus')).toContainText('Nothing has been sent to a media server yet');
     // The confirm box is cleared and the button re-disabled: one preview, one execute.
     await expect(page.locator('#colConfirm')).toHaveValue('');
@@ -122,12 +135,12 @@ test.describe('Jellyfin control plane', () => {
   test('@jf-reconcile a reconcile pass carries the queued work out, and a second one does nothing', async ({ page }) => {
     await signIn(page);
     await page.click('#colReconcile');
-    await expect(page.locator('#colRunStatus')).toContainText('Adopted', { timeout: 60_000 });
+    await expect(page.locator('#colRunStatus')).toContainText('Created', { timeout: 60_000 });
     await expect(page.locator('#colOutstanding')).toHaveText('0', { timeout: 30_000 });
     await expect(page.locator('#colPublished')).not.toHaveText('0');
 
     await page.click('#colReconcile');
-    await expect(page.locator('#colRunStatus')).toContainText('created 0', { timeout: 60_000 });
+    await expect(page.locator('#colRunStatus')).toContainText('Created 0 collection(s)', { timeout: 60_000 });
   });
 
   test('@jf-history the durable history survived the restart, and still discloses nothing', async ({ page }) => {
@@ -145,5 +158,74 @@ test.describe('Jellyfin control plane', () => {
     }
     // And the outbox status is still what it was before the restart.
     await expect(page.locator('#colOutstanding')).toHaveText('0');
+  });
+
+  test('@jf-remove the panel removes a managed collection end to end, and proves it from the panel', async ({ page }) => {
+    await signIn(page);
+
+    // WHAT THIS LEG IS FOR. Not "the browser can queue a removal" — the browser can drive the WHOLE
+    // lifecycle: preview, confirm by digest, queue, carry out, and then see for itself that the collection
+    // is gone from the media server. An acceptance that queued in the panel and then finished the job with
+    // curl would prove the queue and call it the lifecycle.
+
+    // Where we start: the product's own read-only discovery says one collection out there is its own.
+    await page.click('#jfCheck');
+    await expect(page.locator('#jfState')).toHaveText('CONNECTED', { timeout: 30_000 });
+    await expect(page.locator('#jfManagedCount')).toHaveText('1');
+    await expect(page.locator('#jfManaged')).toContainText('Acceptance picks');
+
+    await page.fill('#colName', 'Acceptance picks');
+    // Revoke mode takes NO selection: the server refuses one, so the page must not send one either.
+    await page.check('#colRemove');
+    await page.click('#colPreview');
+    await expect(page.locator('#colPlanStatus')).toContainText('Nothing was written', { timeout: 30_000 });
+    await expect(page.locator('#colPlanStatus')).toContainText('no media server was contacted');
+    // The plan says the COLLECTION goes, not merely that records leave it.
+    await expect(page.locator('#colDigests')).toContainText('REVOKE');
+
+    const digest = await planDigest(page);
+    expect(digest, 'the revoke plan digest is a full sha256').toMatch(/^[0-9a-f]{64}$/);
+
+    // A WRONG digest is refused by the page itself, before a request is made. A destructive plan is exactly
+    // the one where that must hold.
+    await page.fill('#colConfirm', 'f'.repeat(64));
+    await page.click('#colExecute');
+    await expect(page.locator('#colExecuteStatus')).toContainText('not this plan');
+
+    // The right digest queues the removal — and STILL sends nothing. Queuing is not doing, here too.
+    await page.fill('#colConfirm', digest);
+    await page.click('#colExecute');
+    await expect(page.locator('#colExecuteStatus')).toContainText('queued for removal', { timeout: 30_000 });
+    await expect(page.locator('#colExecuteStatus')).toContainText('Nothing has been sent yet');
+    await expect(page.locator('#colConfirm')).toHaveValue('');
+    await expect(page.locator('#colExecute')).toBeDisabled();
+    await expect(page.locator('#colUnrevoked')).toHaveText('1', { timeout: 30_000 });
+
+    // AND THE PANEL PROVES IT SENT NOTHING, by asking the media server: the collection is still there.
+    await page.click('#jfCheck');
+    await expect(page.locator('#jfManagedCount')).toHaveText('1', { timeout: 30_000 });
+    await expect(page.locator('#jfManaged')).toContainText('Acceptance picks');
+
+    // Now carry it out, from the panel's own control.
+    await page.click('#colRevokeBtn');
+    // runCollectionPass refreshes status after the response, so the stable visible completion contract is
+    // the refreshed zero-outstanding state rather than the transient response guidance.
+    await expect(page.locator('#colRunStatus')).toContainText('Nothing is outstanding', { timeout: 60_000 });
+    await expect(page.locator('#colUnrevoked')).toHaveText('0', { timeout: 30_000 });
+
+    // THE BROWSER VERIFIES ABSENCE ITSELF, through the same read-only discovery surface it started from —
+    // not through a shell command reading the fixture behind the product's back.
+    await page.click('#jfCheck');
+    await expect(page.locator('#jfState')).toHaveText('CONNECTED', { timeout: 30_000 });
+    await expect(page.locator('#jfManagedCount')).toHaveText('0', { timeout: 30_000 });
+    await expect(page.locator('#jfManaged')).not.toContainText('Acceptance picks');
+    // The collection this product did NOT create is still there and still unnamed: a revoke removes what
+    // this installation owns, and nothing else.
+    await expect(page.locator('#jfCollections')).toHaveText('1');
+
+    const text = await pageText(page);
+    for (const forbidden of [SECRET_REF, TOKEN, 'jf-col-', 'jf-item-', 'Somebody elses private collection']) {
+      expect(text, `the removal leg disclosed ${forbidden}`).not.toContain(forbidden);
+    }
   });
 });

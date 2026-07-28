@@ -22,7 +22,8 @@ import type { Pool } from 'pg';
 export const COLLECTION_HISTORY_MAX_ROWS = 50;
 
 export type CollectionHistoryActor = 'cli' | 'operator-ui';
-export type CollectionHistoryAction = 'planned' | 'queued' | 'reconciled' | 'revoked';
+/** `planned` and `audited` wrote nothing external; the rest are the execution verbs. */
+export type CollectionHistoryAction = 'planned' | 'queued' | 'reconciled' | 'revoked' | 'audited' | 'repaired';
 export type CollectionHistoryOutcome = 'preview' | 'complete' | 'incomplete' | 'refused';
 
 export interface CollectionHistoryCounts {

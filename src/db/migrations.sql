@@ -368,8 +368,10 @@ CREATE TABLE IF NOT EXISTS collection_control_history (
   recorded_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
   -- Which surface did it. A closed set, like import_history.actor.
   actor         TEXT NOT NULL CHECK (actor IN ('cli', 'operator-ui')),
-  -- What was done. `planned` is a PREVIEW and wrote nothing external; the rest are the execution verbs.
-  action        TEXT NOT NULL CHECK (action IN ('planned', 'queued', 'reconciled', 'revoked')),
+  -- What was done. `planned` is a PREVIEW and `audited` a read-only drift comparison — both wrote nothing
+  -- external; the rest are the execution verbs. The CHECK is re-stated as a NAMED constraint further down so
+  -- an already-deployed v7/v8 database gains the two Phase 271 verbs too.
+  action        TEXT NOT NULL CHECK (action IN ('planned', 'queued', 'reconciled', 'revoked', 'audited', 'repaired')),
   -- The external system. A closed set so a new target cannot appear without a migration.
   target        TEXT NOT NULL CHECK (target IN ('jellyfin')),
   -- The operator's own label for the PLAN, in the planner's closed grammar. It is not the name of anything in
@@ -410,6 +412,415 @@ BEGIN
   RETURNING id INTO v_id;
   RETURN v_id;
 END;
+$$;
+
+-- v8 -> v9 (Phase 271): the audit history gains two verbs — `audited` (a read-only drift comparison) and
+-- `repaired` (a digest-confirmed repair that wrote durable state). The CHECK is replaced rather than added to
+-- in place, because `CREATE TABLE IF NOT EXISTS` above does nothing on an already-deployed database and the
+-- constraint it carries would keep rejecting the new verbs forever. It is dropped BY ITS OWN NAME and by any
+-- older auto-named CHECK on `action`, exactly as the v2 -> v3 publish_ledger status upgrade does.
+DO $$
+DECLARE c_name TEXT;
+BEGIN
+  FOR c_name IN
+    SELECT conname FROM pg_constraint
+     WHERE conrelid = 'public.collection_control_history'::regclass AND contype = 'c'
+       AND pg_get_constraintdef(oid) ILIKE '%action%'
+       AND pg_get_constraintdef(oid) NOT ILIKE '%audited%'
+  LOOP EXECUTE format('ALTER TABLE public.collection_control_history DROP CONSTRAINT %I', c_name); END LOOP;
+  IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'collection_control_history_action_chk'
+                   AND conrelid = 'public.collection_control_history'::regclass) THEN
+    ALTER TABLE public.collection_control_history ADD CONSTRAINT collection_control_history_action_chk
+      CHECK (action IN ('planned', 'queued', 'reconciled', 'revoked', 'audited', 'repaired'));
+  END IF;
+END $$;
+
+-- ------------------------------- v8 -> v9 (Phase 269): the MANAGED COLLECTION ---
+--
+-- WHAT CHANGED, AND WHY A NEW TABLE RATHER THAN A COLUMN ON publish_ledger.
+--
+-- Through Phase 268 an accepted plan of N catalog records produced N Jellyfin collections, one per record,
+-- because the durable unit of external work was the publish_ledger row and a ledger row is per (item, target).
+-- That is not what the operator asked for: they named ONE collection and chose the records that go IN it.
+-- Making the ledger express a group would mean either overloading `item_id` with a group identity (it is
+-- CHECKed as a record uuid, and the revocation driver joins it to `items`) or widening the active-uniqueness
+-- invariant that stops two confirmed executes from creating two external copies. Both would weaken a rule that
+-- already carries evidence. So the group gets its OWN durable identity, with its own lifecycle, and the ledger
+-- keeps meaning exactly what it has always meant.
+--
+-- THE V8 ROWS ARE NOT TOUCHED, REINTERPRETED OR MIGRATED. A per-item collection created before this phase is
+-- still a per-item collection: still tracked, still revocable, still swept by cat_publish_reconcile_forgotten.
+-- Nothing here reads them as members of a group and nothing here rewrites them. They are REPORTED — by the
+-- planner, the status surface and the drift audit — as legacy per-item rows, so an operator can see they exist
+-- and decide. Silently adopting an artifact this model did not create is exactly the class of mistake the
+-- token-marker rules elsewhere in this schema exist to prevent.
+--
+-- IT IS IDENTITY-FREE, on the same terms as publish_ledger. A collection row holds: the operator's own label
+-- in the planner's closed grammar, a derived key, an opaque correlation token, the opaque external handle, a
+-- lifecycle status, two digests and counts of attempts. A member row holds the opaque catalog item id and a
+-- state. There is NO provider id, NO title, NO year, NO search term, NO Jellyfin name, NO Jellyfin library
+-- item id, NO address, NO key and NO path anywhere in either table, and the CHECKs make most of those
+-- impossible rather than merely unwritten.
+--
+-- WHY NO FOREIGN KEY FROM A MEMBER TO `items`. Same reason publish_ledger has none: the row must SURVIVE
+-- forget, because it is what drives the external removal of a forgotten record's library items. A cascade
+-- here would delete the only durable evidence that an external copy needs cleaning up.
+--
+-- WHY MEMBERSHIP IS BY CATALOG ITEM ID AND NEVER BY JELLYFIN ITEM ID. Storing the matched library ids would
+-- make membership survive crypto-shredding: after a forget the record's identity is unrecoverable, but a
+-- stored external id would still name exactly which library items came from it. Membership therefore stores
+-- only the opaque catalog id, and the reconciler RESOLVES it to library items each pass through
+-- `withPublishableIdentity`, which fails closed on a forgotten record. A forgotten member resolves to nothing,
+-- falls out of the intended set, and is removed by set difference — without this product ever having recorded
+-- what it was.
+CREATE TABLE IF NOT EXISTS managed_collections (
+  id                BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+  -- The external system. A closed set, so a new target cannot appear without a migration.
+  target            TEXT NOT NULL CHECK (target IN ('jellyfin')),
+  -- The durable identity of the managed collection: a domain-separated digest of (target, name). Derived
+  -- rather than random so the same operator label always addresses the same collection, which is what makes
+  -- re-planning an UPDATE instead of a second collection with the same name.
+  collection_key    TEXT NOT NULL CHECK (collection_key ~ '^[0-9a-f]{64}$'),
+  -- The operator's own label, in the planner's closed grammar (identical to collection_control_history.name).
+  -- Unlike Phase 267/268 this label IS what the external collection is called — which REMOVES a disclosure
+  -- rather than adding one: a per-item collection was named after the record's title, and a grouped one is
+  -- named after a string the operator typed into this product's own form.
+  name              TEXT NOT NULL CHECK (name ~ '^[A-Za-z0-9][A-Za-z0-9 ''&,.()+:_-]{0,63}$'),
+  -- The opaque recovery key, embedded in the external name as `[cat:<token>]`. Marker-safe by CHECK, so a
+  -- token that could forge or hide inside another product's marker cannot be stored, let alone sent.
+  correlation_token TEXT NOT NULL CHECK (correlation_token ~ '^[A-Za-z0-9._:-]{1,128}$'),
+  external_handle   TEXT CHECK (external_handle IS NULL OR length(btrim(external_handle)) > 0),
+  status            TEXT NOT NULL DEFAULT 'planned'
+                      CONSTRAINT managed_collections_status_chk
+                      CHECK (status IN ('planned', 'in_flight', 'ambiguous', 'published', 'revoke_pending', 'revoked', 'failed')),
+  -- TRUE whenever the intended membership may differ from what is out there. Set by every membership write,
+  -- cleared only by a pass that observed the two agree. It is deliberately pessimistic: a spurious TRUE costs
+  -- one idempotent comparison, a spurious FALSE leaves an external collection wrong and unnoticed.
+  needs_sync        BOOLEAN NOT NULL DEFAULT TRUE,
+  attempt_count     INTEGER NOT NULL DEFAULT 0,
+  plan_digest       TEXT NOT NULL CHECK (plan_digest  ~ '^[0-9a-f]{64}$'),
+  basis_digest      TEXT NOT NULL CHECK (basis_digest ~ '^[0-9a-f]{64}$'),
+  -- Phase 261's recovery evidence, per collection. Same three labels, same meaning, same reason it is durable:
+  -- the process that creates is not the process that reconciles.
+  recovery_proof    TEXT CHECK (recovery_proof IS NULL OR recovery_proof IN ('verified', 'unrecoverable', 'contradictory')),
+  recovery_proof_at TIMESTAMPTZ,
+  created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- A token addresses exactly one collection. Recovery-by-token adopting two rows is not a state to recover from.
+CREATE UNIQUE INDEX IF NOT EXISTS managed_collections_token_uk ON managed_collections (correlation_token);
+-- AT MOST ONE ACTIVE COLLECTION PER (target, key). This is the grouped analogue of
+-- publish_ledger_active_item_target_uk and it exists for the same reason: two independently confirmed
+-- executes must not be able to both observe "absent" and create two external collections with one name.
+-- Terminal rows fall out of the index so a name may be used again after a completed revoke.
+CREATE UNIQUE INDEX IF NOT EXISTS managed_collections_active_uk
+  ON managed_collections (target, collection_key)
+  WHERE status IN ('planned', 'in_flight', 'ambiguous', 'published', 'revoke_pending');
+CREATE INDEX IF NOT EXISTS managed_collections_status_idx ON managed_collections (target, status);
+CREATE INDEX IF NOT EXISTS managed_collections_recovery_idx
+  ON managed_collections (target, recovery_proof_at DESC) WHERE recovery_proof IS NOT NULL;
+
+CREATE TABLE IF NOT EXISTS managed_collection_members (
+  collection_id BIGINT NOT NULL REFERENCES managed_collections (id) ON DELETE CASCADE,
+  -- The OPAQUE catalog record id. No FK to items, deliberately (see above).
+  item_id       TEXT NOT NULL CHECK (item_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+  -- `intended` = this record belongs in the collection. `removing` = it was dropped from the plan or its
+  -- record was forgotten, and its library items have to come back out. A removed row is DELETED, not kept:
+  -- membership is not an audit log (collection_control_history is), and a row nobody acts on is a record of
+  -- an association that no longer exists.
+  state         TEXT NOT NULL DEFAULT 'intended' CHECK (state IN ('intended', 'removing')),
+  -- Whether a pass has observed this member's library items actually present in the external collection.
+  synced        BOOLEAN NOT NULL DEFAULT FALSE,
+  added_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at    TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (collection_id, item_id)
+);
+CREATE INDEX IF NOT EXISTS managed_collection_members_item_idx ON managed_collection_members (item_id);
+CREATE INDEX IF NOT EXISTS managed_collection_members_state_idx ON managed_collection_members (collection_id, state);
+
+-- Insert-or-adopt, atomically. Returns the id of the ACTIVE collection for this (target, key): the one just
+-- inserted, or the one that already existed. The partial-index conflict target is the concurrency boundary —
+-- a caller-side SELECT then INSERT is not an idempotency guarantee, and this is the statement two racing
+-- confirmed executes both run.
+--
+-- IT NEVER REWRITES THE CORRELATION TOKEN. The token is the only durable pointer to an external artifact that
+-- may already exist; replacing it on the update path would orphan that artifact beyond recovery. The digests
+-- ARE refreshed, because they record which plan most recently defined this collection.
+CREATE OR REPLACE FUNCTION cat_collection_upsert(
+  p_target TEXT, p_key TEXT, p_name TEXT, p_token TEXT, p_plan_digest TEXT, p_basis_digest TEXT)
+RETURNS BIGINT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE v_id BIGINT;
+BEGIN
+  IF p_token IS NULL OR length(btrim(p_token)) = 0 THEN RAISE EXCEPTION 'a managed collection requires a correlation token'; END IF;
+  INSERT INTO public.managed_collections (target, collection_key, name, correlation_token, plan_digest, basis_digest)
+  VALUES (p_target, p_key, p_name, p_token, p_plan_digest, p_basis_digest)
+  ON CONFLICT (target, collection_key)
+    WHERE status IN ('planned', 'in_flight', 'ambiguous', 'published', 'revoke_pending')
+  DO UPDATE SET plan_digest = EXCLUDED.plan_digest,
+                basis_digest = EXCLUDED.basis_digest,
+                needs_sync = TRUE,
+                updated_at = now()
+  RETURNING id INTO v_id;
+  RETURN v_id;
+END;
+$$;
+
+-- Set the INTENDED membership of a collection to exactly `p_item_ids`, in one transaction.
+--
+-- Three effects, and the order matters: anything currently intended and no longer named becomes `removing`
+-- (never deleted here — a row nobody has acted on externally is the only thing that will drive the removal);
+-- anything named becomes `intended` again, clearing a stale `removing`; anything new is inserted. The
+-- collection is flagged needs_sync whenever the set differs. Returns the number of member rows written.
+CREATE OR REPLACE FUNCTION cat_collection_set_members(p_id BIGINT, p_item_ids TEXT[])
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER; m INTEGER;
+BEGIN
+  UPDATE public.managed_collection_members
+     SET state = 'removing', updated_at = now()
+   WHERE collection_id = p_id
+     AND state <> 'removing'
+     AND NOT (item_id = ANY (COALESCE(p_item_ids, ARRAY[]::TEXT[])));
+  GET DIAGNOSTICS n = ROW_COUNT;
+
+  -- DISTINCT is load-bearing, not tidiness: `ON CONFLICT DO UPDATE` raises "cannot affect row a second time"
+  -- if the same id appears twice in one statement. The caller's ids are already unique today; a function that
+  -- crashes when a future caller passes a duplicate is a function that will one day crash.
+  INSERT INTO public.managed_collection_members (collection_id, item_id, state)
+  SELECT DISTINCT p_id, x, 'intended' FROM unnest(COALESCE(p_item_ids, ARRAY[]::TEXT[])) AS x
+  ON CONFLICT (collection_id, item_id) DO UPDATE
+    SET state = 'intended',
+        synced = CASE WHEN public.managed_collection_members.state = 'removing' THEN FALSE
+                      ELSE public.managed_collection_members.synced END,
+        updated_at = now();
+  GET DIAGNOSTICS m = ROW_COUNT;
+
+  UPDATE public.managed_collections SET needs_sync = TRUE, updated_at = now() WHERE id = p_id;
+  RETURN n + m;
+END;
+$$;
+
+-- Per-collection advisory lock (xact-scoped): serializes reconcilers and the queue path so one collection is
+-- acted on once. A distinct hash namespace from cat_lock_item and cat_publish_lock_intent.
+CREATE OR REPLACE FUNCTION cat_collection_lock(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  PERFORM pg_advisory_xact_lock(hashtextextended('managed_collection:' || p_id::text, 0));
+END;
+$$;
+
+-- Mark in_flight (bumping attempt_count) just before an external create. Only from a retry-eligible state.
+CREATE OR REPLACE FUNCTION cat_collection_mark_in_flight(p_id BIGINT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.managed_collections SET status = 'in_flight', attempt_count = attempt_count + 1, updated_at = now()
+   WHERE id = p_id AND status IN ('planned', 'ambiguous', 'failed');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+-- Mark an in_flight collection AMBIGUOUS (create sent, outcome unknown). Recovery is by token.
+CREATE OR REPLACE FUNCTION cat_collection_mark_ambiguous(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.managed_collections SET status = 'ambiguous', updated_at = now()
+   WHERE id = p_id AND status = 'in_flight';
+END;
+$$;
+
+-- Capture the external handle and settle to 'published'. Only from a non-terminal, non-revoking state, and it
+-- refuses to change a handle that is already captured to a DIFFERENT one: two handles for one token is
+-- contradictory state, and overwriting would orphan the first artifact.
+CREATE OR REPLACE FUNCTION cat_collection_settle(p_id BIGINT, p_handle TEXT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  IF p_handle IS NULL OR length(btrim(p_handle)) = 0 THEN RAISE EXCEPTION 'settle requires a non-empty external handle'; END IF;
+  UPDATE public.managed_collections SET external_handle = p_handle, status = 'published', updated_at = now()
+   WHERE id = p_id AND status IN ('planned', 'in_flight', 'ambiguous')
+     AND (external_handle IS NULL OR external_handle = p_handle);
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+-- Mark FAILED (bounded by the reconciler's retry budget). Never from a revoking or terminal state.
+CREATE OR REPLACE FUNCTION cat_collection_mark_failed(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.managed_collections SET status = 'failed', updated_at = now()
+   WHERE id = p_id AND status IN ('planned', 'in_flight', 'ambiguous');
+END;
+$$;
+
+-- Record what a create PROVED about recovery-by-token for this collection (Phase 261's evidence, grouped).
+CREATE OR REPLACE FUNCTION cat_collection_record_recovery(p_id BIGINT, p_proof TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  IF p_proof IS NULL OR p_proof NOT IN ('verified', 'unrecoverable', 'contradictory') THEN
+    RAISE EXCEPTION 'unknown recovery proof';
+  END IF;
+  UPDATE public.managed_collections SET recovery_proof = p_proof, recovery_proof_at = now(), updated_at = now()
+   WHERE id = p_id;
+END;
+$$;
+
+-- A pass observed the external collection to hold exactly the intended set: clear needs_sync and mark the
+-- intended members synced. Only from 'published' — a collection that is not settled cannot have been observed.
+CREATE OR REPLACE FUNCTION cat_collection_mark_synced(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.managed_collection_members SET synced = TRUE, updated_at = now()
+   WHERE collection_id = p_id AND state = 'intended' AND NOT synced;
+  UPDATE public.managed_collections SET needs_sync = FALSE, updated_at = now()
+   WHERE id = p_id AND status = 'published';
+END;
+$$;
+
+-- Drop the member rows a pass has finished removing externally. Only `removing` rows, only the named ones.
+CREATE OR REPLACE FUNCTION cat_collection_drop_members(p_id BIGINT, p_item_ids TEXT[])
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  DELETE FROM public.managed_collection_members
+   WHERE collection_id = p_id AND state = 'removing'
+     AND item_id = ANY (COALESCE(p_item_ids, ARRAY[]::TEXT[]));
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END;
+$$;
+
+-- Queue a managed collection for external DELETION. Allowed from every non-terminal state, including one that
+-- never settled: an ambiguous create may have produced an artifact whose handle was lost, and the revoke pass
+-- finds it by token. Returns whether it transitioned.
+CREATE OR REPLACE FUNCTION cat_collection_mark_revoke_pending(p_id BIGINT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.managed_collections SET status = 'revoke_pending', needs_sync = TRUE, updated_at = now()
+   WHERE id = p_id AND status IN ('planned', 'in_flight', 'ambiguous', 'published', 'failed');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+-- The external copy is confirmed gone: revoke_pending -> revoked, and the membership rows go with it. The
+-- rows are deleted rather than kept because there is no longer an association to drive anything, and because
+-- keeping the member list of a deleted collection retains catalog ids for no purpose. The COLLECTION row
+-- stays: it is the durable evidence that this installation created and removed an external artifact.
+CREATE OR REPLACE FUNCTION cat_collection_mark_revoked(p_id BIGINT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.managed_collections SET status = 'revoked', needs_sync = FALSE, updated_at = now()
+   WHERE id = p_id AND status = 'revoke_pending';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN DELETE FROM public.managed_collection_members WHERE collection_id = p_id; END IF;
+  RETURN n > 0;
+END;
+$$;
+
+-- A revoke attempt failed: bump attempt_count and KEEP the row revoke_pending so an unrevoked external copy
+-- stays visible and retryable. Never silently dropped.
+CREATE OR REPLACE FUNCTION cat_collection_mark_attempt(p_id BIGINT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.managed_collections SET attempt_count = attempt_count + 1, updated_at = now()
+   WHERE id = p_id AND status = 'revoke_pending';
+END;
+$$;
+
+-- How forget drives GROUPED removal, without forget itself being modified.
+--
+-- Every intended member whose record is no longer readable — forgotten, or gone from `items` entirely —
+-- becomes `removing`, and its collection is flagged needs_sync so the next pass computes the difference and
+-- takes those library items back out. A collection whose members ALL became unreadable is additionally queued
+-- for revocation: an external collection with nothing left in it is not a collection anybody asked for, and
+-- leaving it is drift. Returns the number of member rows queued for removal.
+CREATE OR REPLACE FUNCTION cat_collection_reconcile_forgotten()
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.managed_collection_members m
+     SET state = 'removing', updated_at = now()
+   WHERE m.state = 'intended'
+     AND EXISTS (SELECT 1 FROM public.managed_collections c
+                  WHERE c.id = m.collection_id
+                    AND c.status IN ('planned', 'in_flight', 'ambiguous', 'published'))
+     AND NOT EXISTS (SELECT 1 FROM public.items i
+                      WHERE i.id = m.item_id AND i.present AND NOT i.forgotten);
+  GET DIAGNOSTICS n = ROW_COUNT;
+
+  UPDATE public.managed_collections c SET needs_sync = TRUE, updated_at = now()
+   WHERE c.status IN ('planned', 'in_flight', 'ambiguous', 'published')
+     AND EXISTS (SELECT 1 FROM public.managed_collection_members m
+                  WHERE m.collection_id = c.id AND m.state = 'removing');
+
+  UPDATE public.managed_collections c SET status = 'revoke_pending', needs_sync = TRUE, updated_at = now()
+   WHERE c.status IN ('planned', 'in_flight', 'ambiguous', 'published')
+     AND NOT EXISTS (SELECT 1 FROM public.managed_collection_members m
+                      WHERE m.collection_id = c.id AND m.state = 'intended');
+  RETURN n;
+END;
+$$;
+
+-- Phase 271 repair: RE-ARM a settled collection whose external artifact a drift audit proved absent.
+--
+-- IT DOES NOT RECREATE ANYTHING. It moves the row back to 'planned' and drops the handle that no longer names
+-- anything, so the ORDINARY reconcile path — with its token lookup, its recovery-proof check, its bounded
+-- retry budget and its consent gate — is what decides whether to create. That matters twice over: a repair
+-- can never be a shortcut around a gate, and if the audit was WRONG and the artifact is still there, reconcile
+-- finds it by its own token and ADOPTS it rather than making a second one. The token is deliberately kept for
+-- exactly that reason.
+--
+-- Only from 'published': an unsettled collection has no handle to drop and is already on the create path.
+CREATE OR REPLACE FUNCTION cat_collection_rearm(p_id BIGINT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.managed_collections
+     SET status = 'planned', external_handle = NULL, attempt_count = 0, needs_sync = TRUE, updated_at = now()
+   WHERE id = p_id AND status = 'published';
+  GET DIAGNOSTICS n = ROW_COUNT;
+  IF n > 0 THEN
+    UPDATE public.managed_collection_members SET synced = FALSE, updated_at = now()
+     WHERE collection_id = p_id AND state = 'intended';
+  END IF;
+  RETURN n > 0;
+END;
+$$;
+
+-- Phase 271 repair: flag a settled collection for a membership comparison on the next pass. The mildest
+-- possible repair write — it schedules a READ-AND-DIFF, and the diff itself is still governed by the "never
+-- remove on partial knowledge" rule in the reconciler.
+CREATE OR REPLACE FUNCTION cat_collection_touch(p_id BIGINT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  UPDATE public.managed_collections SET needs_sync = TRUE, updated_at = now()
+   WHERE id = p_id AND status IN ('planned', 'in_flight', 'ambiguous', 'published');
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n > 0;
+END;
+$$;
+
+-- The most recent recovery proof for a target, across BOTH the per-item ledger and the managed collections.
+--
+-- WHY BOTH. The proof is a statement about the TARGET's behaviour — whether a `[cat:<token>]` marker written
+-- into a collection name can be read back out — and both paths write the same marker to the same server. A
+-- server that has just been observed to drop the marker must stop being trusted by the grouped reconciler even
+-- though the observation was made by the per-item one, and vice versa. Only the LATEST matters, so a target
+-- that has been proved working again is trusted again.
+CREATE OR REPLACE FUNCTION cat_collection_recovery_proof(p_target TEXT)
+RETURNS TEXT LANGUAGE sql STABLE SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+  SELECT proof FROM (
+    SELECT recovery_proof AS proof, recovery_proof_at AS at, id AS tie
+      FROM public.publish_ledger WHERE target = p_target AND recovery_proof IS NOT NULL
+    UNION ALL
+    SELECT recovery_proof AS proof, recovery_proof_at AS at, id AS tie
+      FROM public.managed_collections WHERE target = p_target AND recovery_proof IS NOT NULL
+  ) AS proofs ORDER BY at DESC, tie DESC LIMIT 1;
 $$;
 
 -- ------------------------------------------------------- append-only guard ---
@@ -997,11 +1408,17 @@ REVOKE ALL ON import_history FROM PUBLIC;
 REVOKE ALL ON import_history FROM app;      -- owner-managed; app APPENDS only via cat_import_record
 REVOKE ALL ON collection_control_history FROM PUBLIC;
 REVOKE ALL ON collection_control_history FROM app;  -- owner-managed; app APPENDS only via cat_collection_record
+REVOKE ALL ON managed_collections FROM PUBLIC;
+REVOKE ALL ON managed_collections FROM app;         -- owner-managed; app mutates ONLY via cat_collection_* fns
+REVOKE ALL ON managed_collection_members FROM PUBLIC;
+REVOKE ALL ON managed_collection_members FROM app;  -- owner-managed; app mutates ONLY via cat_collection_* fns
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs, item_key_control TO app;
 GRANT SELECT ON publish_ledger TO app;      -- identity-free; app/ops read it for reconcile + reporting
 GRANT SELECT ON import_history TO app;      -- identity-free; the operator UI reads its own import history
 GRANT SELECT ON collection_control_history TO app;  -- identity-free; the operator UI reads its own plan history
+GRANT SELECT ON managed_collections TO app;         -- identity-free; the planner, status and drift audit read it
+GRANT SELECT ON managed_collection_members TO app;  -- identity-free; membership is opaque catalog ids only
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM app;
@@ -1042,6 +1459,23 @@ REVOKE ALL ON FUNCTION
   cat_publish_record_recovery(BIGINT, TEXT),
   cat_import_record(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT),
   cat_collection_record(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT),
+  cat_collection_upsert(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT),
+  cat_collection_set_members(BIGINT, TEXT[]),
+  cat_collection_lock(BIGINT),
+  cat_collection_mark_in_flight(BIGINT),
+  cat_collection_mark_ambiguous(BIGINT),
+  cat_collection_settle(BIGINT, TEXT),
+  cat_collection_mark_failed(BIGINT),
+  cat_collection_record_recovery(BIGINT, TEXT),
+  cat_collection_mark_synced(BIGINT),
+  cat_collection_drop_members(BIGINT, TEXT[]),
+  cat_collection_mark_revoke_pending(BIGINT),
+  cat_collection_mark_revoked(BIGINT),
+  cat_collection_mark_attempt(BIGINT),
+  cat_collection_reconcile_forgotten(),
+  cat_collection_recovery_proof(TEXT),
+  cat_collection_rearm(BIGINT),
+  cat_collection_touch(BIGINT),
   set_completion_secret(TEXT),
   set_schema_version(INTEGER),
   set_app_role_password(TEXT),
@@ -1081,5 +1515,22 @@ GRANT EXECUTE ON FUNCTION
   cat_publish_mark_failed(BIGINT),
   cat_publish_record_recovery(BIGINT, TEXT),
   cat_import_record(TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT),
-  cat_collection_record(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT)
+  cat_collection_record(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, INTEGER, TEXT),
+  cat_collection_upsert(TEXT, TEXT, TEXT, TEXT, TEXT, TEXT),
+  cat_collection_set_members(BIGINT, TEXT[]),
+  cat_collection_lock(BIGINT),
+  cat_collection_mark_in_flight(BIGINT),
+  cat_collection_mark_ambiguous(BIGINT),
+  cat_collection_settle(BIGINT, TEXT),
+  cat_collection_mark_failed(BIGINT),
+  cat_collection_record_recovery(BIGINT, TEXT),
+  cat_collection_mark_synced(BIGINT),
+  cat_collection_drop_members(BIGINT, TEXT[]),
+  cat_collection_mark_revoke_pending(BIGINT),
+  cat_collection_mark_revoked(BIGINT),
+  cat_collection_mark_attempt(BIGINT),
+  cat_collection_reconcile_forgotten(),
+  cat_collection_recovery_proof(TEXT),
+  cat_collection_rearm(BIGINT),
+  cat_collection_touch(BIGINT)
 TO app;

@@ -117,6 +117,12 @@ durable history records, what the confirmation is bound to, and what they read b
 in as many words, because a field called "collection name" that does not name a collection would be a promise
 this product does not keep.
 
+> **SUPERSEDED BY PHASE 269.** This is the behaviour Phases 269–272 replaced. The name now names the
+> collection, one accepted plan is one Jellyfin collection holding the selected records, and the durable model
+> is `managed_collections` / `managed_collection_members` (schema v9). The per-record rows described here are
+> **not** migrated or reinterpreted — they remain tracked and revocable by the engine described below. See
+> `docs/PHASE_269_272_COLLECTION_LIFECYCLE.md` and `docs/ADR_001_GROUPED_COLLECTION_MODEL.md`.
+
 ## Phase 268 — execution, in two deliberate halves
 
 **Execute = queue.** The route writes durable `planned` intents into the Phase 12 outbox and returns. **It
@@ -172,7 +178,8 @@ reconciled, revoked — written through one SECURITY DEFINER function the runtim
 table it holds only `SELECT` on. There is no update path and no delete path exposed to the runtime at all.
 
 Schema **v8** adds the active-intent uniqueness invariant and `cat_publish_plan_if_absent`, the atomic
-insert-or-resume command used by collection execution. The invariant lives in PostgreSQL rather than in a
+insert-or-resume command used by collection execution. (Schema **v9**, Phase 269, adds the managed-collection
+model beside this one and changes nothing here.) The invariant lives in PostgreSQL rather than in a
 caller-side check, so concurrent service requests and separate service processes receive the same answer.
 
 A row holds counts, an outcome, the two digests, an actor, an action and the collection **name** the operator
@@ -227,11 +234,11 @@ sends no external request.
   refused and told to use its address on their own network. That is deliberate and conservative.
 * **A plan is decided from the ledger, not from Jellyfin.** A collection deleted directly in Jellyfin is still
   `published` here until a reconcile or revoke pass notices. Discovery is what shows the difference.
-* **One collection per record, not one collection per plan.** A plan of thirty records produces thirty
-  Jellyfin collections, each named after its own record. That is the Phase 10/12 curation model — a collection
-  is the set of library items matching one catalog record's provider references — and this phase deliberately
-  does not change it. If you wanted a single collection holding thirty records' worth of items, this is not
-  yet that.
+* ~~**One collection per record, not one collection per plan.**~~ **RESOLVED IN PHASE 269.** A plan of thirty
+  records produced thirty Jellyfin collections here, each named after its own record. Phase 269 replaced that
+  with one managed collection per accepted plan; the per-record rows this phase created are still tracked,
+  still finished and still revoked, and are never adopted into a group. See
+  `docs/PHASE_269_272_COLLECTION_LIFECYCLE.md`.
 * **The plan name is stored in the audit history.** It is the operator's own label, in a closed grammar,
   exactly as `import_history.file_name` is — but it is free-ish text somebody typed, and an operator who names
   a plan after a single record has put that name in a durable row.
