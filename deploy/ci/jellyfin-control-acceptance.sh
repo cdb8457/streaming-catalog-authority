@@ -30,8 +30,9 @@
 #  12. DRIFT AUDIT AND GATED REPAIR. A collection deleted on the server is detected, and the repair is
 #      digest-confirmed and writes durable state only.
 #  13. OPERATOR CLI PARITY. The same lifecycle, headless, through the same services and the same gates.
-#  14. BROWSER-DRIVEN REMOVAL. The panel queues a whole-collection revoke by its own digest, sends nothing,
-#      and the revoke pass then takes it off the server.
+#  14. BROWSER-DRIVEN REMOVAL, END TO END. The panel previews a whole-collection revoke, confirms it by its
+#      own digest, queues it, carries it out with its own Revoke control, and then reads the media server back
+#      through the product's own discovery surface to see it gone. This script does not revoke for it.
 #  15. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
 #
 # PREREQUISITES: a running Docker daemon, `node`, and the pinned acceptance harness in deploy/ci/acceptance/.
@@ -553,25 +554,28 @@ info "the CLI reads the same model, refuses a wrong digest, and discloses nothin
 #     asks for the collection to go, confirms it by typing its own digest, and STILL nothing is sent until the
 #     revoke pass runs. It is placed last of the acting steps because it ends with nothing on the server.
 # ---------------------------------------------------------------------------------------------------------
-step "real-browser acceptance: queue a removal of the whole collection from the panel"
+step "real-browser acceptance: the panel removes a collection end to end"
+# THE BROWSER DOES THE WHOLE THING. It previews, confirms by digest, queues, clicks Revoke, and then reads the
+# media server back through the product's own discovery surface to see the collection is gone. This script
+# deliberately does NOT POST /api/collections/revoke for this leg: a shell that finishes the job would make
+# the leg a proof of the queue rather than of the lifecycle. Everything below the leg is corroboration, read
+# AFTER the fact.
 [ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] \
   || fail "there is no managed collection to remove, so this leg would prove nothing"
 run_leg "@jf-remove" "remove"
 [ "${LEG_STATUS}" -eq 0 ] || { dump_stack_logs; fail "the remove browser leg reported failures"; }
-[ "$(fake_collection_count)" = "${PLAN_COLLECTIONS}" ] \
-  || { dump_stack_logs; fail "confirming a removal in the browser deleted something before any revoke pass ran"; }
-queued_removal="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM managed_collections WHERE status = 'revoke_pending'" | tr -d '[:space:]' )"
-[ "$(digits_or_die "${queued_removal}" "the queued-removal count")" = "${PLAN_COLLECTIONS}" ] \
-  || fail "the browser removal was not recorded as queued for revocation"
-info "the browser queued the removal durably and sent nothing"
 
-step "the revoke pass carries out the removal the browser confirmed"
-removal_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/revoke")"
-printf '%s' "${removal_json}" | grep -q '"code":"OPERATOR_UI_COLLECTION_REVOKED"' \
-  || { echo "${removal_json}" >&2; dump_stack_logs; fail "the revoke pass after the browser removal did not run"; }
+# Corroboration, from outside the product: the fake server really has nothing of ours left, and the durable
+# row really says revoked rather than merely queued.
 [ "$(fake_collection_count)" = "0" ] \
-  || { echo "${removal_json}" >&2; dump_stack_logs; fail "the confirmed removal never reached the media server"; }
-info "the collection the browser asked to remove is gone from the media server"
+  || { dump_stack_logs; fail "the browser reported a deletion the media server did not perform"; }
+removed_state="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT status FROM managed_collections ORDER BY id DESC LIMIT 1" | tr -d '[:space:]' )"
+[ "${removed_state}" = "revoked" ] \
+  || { dump_stack_logs; fail "the durable row records '${removed_state}' rather than a completed revoke"; }
+still_pending="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM managed_collections WHERE status = 'revoke_pending'" | tr -d '[:space:]' )"
+[ "$(digits_or_die "${still_pending}" "the outstanding revoke count")" = "0" ] \
+  || fail "an external copy is still queued for revocation after the browser reported it deleted"
+info "the browser previewed, confirmed, queued, carried out and verified the removal without this script's help"
 
 # ---------------------------------------------------------------------------------------------------------
 # 15. BROWSER-ONLY VIEWING CHANGES NOTHING, in the database or on the media server.

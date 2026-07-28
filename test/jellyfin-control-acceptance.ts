@@ -199,6 +199,31 @@ test('the spec scans for everything that must never be on the page, and drives t
   assert(spec.includes('toBeDisabled()'), 'and asserts it is disabled before a preview');
 });
 
+test('the removal leg is a LIFECYCLE in the browser, not a queue the shell finishes', () => {
+  const spec = read(SPEC);
+  const script = read(ORCHESTRATOR);
+
+  // The browser must carry the removal out itself...
+  assert(spec.includes("page.click('#colRevokeBtn')"), 'the remove leg drives the real Revoke control');
+  // ...and see for itself that it worked, through the product's own read-only discovery surface rather than
+  // through a shell command reading the fixture behind the product's back.
+  assert(spec.includes("#jfManagedCount"), 'and reads the media server back through discovery');
+  assert(/toHaveText\('0'/.test(spec), 'and asserts the managed count reached zero');
+
+  // AND THE SHELL MUST NOT FINISH THE JOB FOR IT. Between the remove leg and the end of its section there is
+  // no revoke POST: a leg whose deletion is performed by curl proves the queue, not the lifecycle. The check
+  // is scoped to that section because the ERASURE step above it legitimately drives a revoke over HTTP.
+  const from = script.indexOf('run_leg "@jf-remove"');
+  assert(from > 0, 'the orchestrator runs the remove leg');
+  const rest = script.slice(from);
+  const end = rest.indexOf('# ------');
+  const section = end === -1 ? rest : rest.slice(0, end);
+  assert(!section.includes('/api/collections/revoke'),
+    'the orchestrator must not POST a revoke for the browser removal leg');
+  assert(section.includes("SELECT status FROM managed_collections"),
+    'it corroborates the durable state afterwards instead');
+});
+
 test('the orchestrator proves the claims it says it proves', () => {
   const script = read(ORCHESTRATOR);
   for (const claim of [
@@ -216,6 +241,11 @@ test('the orchestrator proves the claims it says it proves', () => {
     'a wrong repair digest was accepted',
     'the repair itself created something on the media server',
     'the repaired collection was not recreated by the ordinary pass',
+    // Phase 269/272: the browser removal leg is a lifecycle, and the shell corroborates it rather than
+    // performing it.
+    'the browser reported a deletion the media server did not perform',
+    'rather than a completed revoke',
+    'an external copy is still queued for revocation after the browser reported it deleted',
     // Phase 272: the command line is not a bypass, and it discloses nothing.
     'the CLI accepted a wrong confirmation digest',
     'the collection CLI printed something it must never print',

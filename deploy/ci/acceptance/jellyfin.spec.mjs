@@ -160,8 +160,20 @@ test.describe('Jellyfin control plane', () => {
     await expect(page.locator('#colOutstanding')).toHaveText('0');
   });
 
-  test('@jf-remove the panel removes a managed collection, and only with that plan\'s own digest', async ({ page }) => {
+  test('@jf-remove the panel removes a managed collection end to end, and proves it from the panel', async ({ page }) => {
     await signIn(page);
+
+    // WHAT THIS LEG IS FOR. Not "the browser can queue a removal" — the browser can drive the WHOLE
+    // lifecycle: preview, confirm by digest, queue, carry out, and then see for itself that the collection
+    // is gone from the media server. An acceptance that queued in the panel and then finished the job with
+    // curl would prove the queue and call it the lifecycle.
+
+    // Where we start: the product's own read-only discovery says one collection out there is its own.
+    await page.click('#jfCheck');
+    await expect(page.locator('#jfState')).toHaveText('CONNECTED', { timeout: 30_000 });
+    await expect(page.locator('#jfManagedCount')).toHaveText('1');
+    await expect(page.locator('#jfManaged')).toContainText('Acceptance picks');
+
     await page.fill('#colName', 'Acceptance picks');
     // Revoke mode takes NO selection: the server refuses one, so the page must not send one either.
     await page.check('#colRemove');
@@ -187,10 +199,32 @@ test.describe('Jellyfin control plane', () => {
     await expect(page.locator('#colExecuteStatus')).toContainText('Nothing has been sent to a media server yet');
     await expect(page.locator('#colConfirm')).toHaveValue('');
     await expect(page.locator('#colExecute')).toBeDisabled();
+    await expect(page.locator('#colUnrevoked')).toHaveText('1', { timeout: 30_000 });
+
+    // AND THE PANEL PROVES IT SENT NOTHING, by asking the media server: the collection is still there.
+    await page.click('#jfCheck');
+    await expect(page.locator('#jfManagedCount')).toHaveText('1', { timeout: 30_000 });
+    await expect(page.locator('#jfManaged')).toContainText('Acceptance picks');
+
+    // Now carry it out, from the panel's own control.
+    await page.click('#colRevokeBtn');
+    await expect(page.locator('#colRunStatus')).toContainText('deleted 1 collection(s)', { timeout: 60_000 });
+    await expect(page.locator('#colRunStatus')).toContainText('still out there');
+    await expect(page.locator('#colUnrevoked')).toHaveText('0', { timeout: 30_000 });
+
+    // THE BROWSER VERIFIES ABSENCE ITSELF, through the same read-only discovery surface it started from —
+    // not through a shell command reading the fixture behind the product's back.
+    await page.click('#jfCheck');
+    await expect(page.locator('#jfState')).toHaveText('CONNECTED', { timeout: 30_000 });
+    await expect(page.locator('#jfManagedCount')).toHaveText('0', { timeout: 30_000 });
+    await expect(page.locator('#jfManaged')).not.toContainText('Acceptance picks');
+    // The collection this product did NOT create is still there and still unnamed: a revoke removes what
+    // this installation owns, and nothing else.
+    await expect(page.locator('#jfCollections')).toHaveText('1');
 
     const text = await pageText(page);
-    for (const forbidden of [SECRET_REF, TOKEN, 'jf-col-', 'jf-item-']) {
-      expect(text, `the removal plan disclosed ${forbidden}`).not.toContain(forbidden);
+    for (const forbidden of [SECRET_REF, TOKEN, 'jf-col-', 'jf-item-', 'Somebody elses private collection']) {
+      expect(text, `the removal leg disclosed ${forbidden}`).not.toContain(forbidden);
     }
   });
 });
