@@ -497,7 +497,7 @@ info "the forgotten record's items came out, the collection stands with ${partia
 # 12. DRIFT AUDIT AND EXPLICITLY GATED REPAIR (Phase 271).
 # ---------------------------------------------------------------------------------------------------------
 step "delete the collection directly on the media server, and prove the audit notices"
-jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/state').then(r=>r.json()).then(s=>fetch('http://127.0.0.1:8096/Items/'+s.collections[0].id,{method:'DELETE',headers:{'X-Emby-Token':process.env.JELLYFIN_FAKE_API_KEY}})).then(()=>process.exit(0))" >/dev/null \
+jf_compose exec -T jellyfin-fake node -e "const fs=require('node:fs');const key=fs.readFileSync(process.env.JELLYFIN_FAKE_API_KEY_FILE,'utf8').trim();fetch('http://127.0.0.1:8096/_control/state').then(r=>{if(!r.ok)throw new Error('state '+r.status);return r.json()}).then(s=>{if(!s.collections[0])throw new Error('no collection');return fetch('http://127.0.0.1:8096/Items/'+encodeURIComponent(s.collections[0].id),{method:'DELETE',headers:{'X-Emby-Token':key}})}).then(r=>{if(!r.ok)throw new Error('delete '+r.status)}).catch(()=>process.exit(1))" >/dev/null \
   || fail "could not delete the collection on the fake server"
 [ "$(fake_collection_count)" = "0" ] || fail "the collection was not deleted on the fake server"
 audit_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
