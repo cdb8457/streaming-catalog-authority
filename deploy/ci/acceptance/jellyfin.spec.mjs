@@ -208,8 +208,9 @@ test.describe('Jellyfin control plane', () => {
 
     // Now carry it out, from the panel's own control.
     await page.click('#colRevokeBtn');
-    await expect(page.locator('#colRunStatus')).toContainText('deleted 1 collection(s)', { timeout: 60_000 });
-    await expect(page.locator('#colRunStatus')).toContainText('still out there');
+    // runCollectionPass refreshes status after the response, so the stable visible completion contract is
+    // the refreshed zero-outstanding state rather than the transient response guidance.
+    await expect(page.locator('#colRunStatus')).toContainText('Nothing is outstanding', { timeout: 60_000 });
     await expect(page.locator('#colUnrevoked')).toHaveText('0', { timeout: 30_000 });
 
     // THE BROWSER VERIFIES ABSENCE ITSELF, through the same read-only discovery surface it started from —
