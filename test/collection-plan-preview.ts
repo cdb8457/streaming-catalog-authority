@@ -63,7 +63,10 @@ import { installCompletionSecret } from './crypto-setup.js';
 //     that settled, moves the basis without moving the plan — the case a single digest would miss.
 //   - PLANNING CONTACTS NOTHING AND WRITES NOTHING. Proved structurally (the function is handed three readers)
 //     and empirically (row, event, ledger and collection counts across a real PostgreSQL are unchanged).
-//   - ERASURE OUTRANKS THE SELECTION. A forgotten member is removed whether or not it was selected.
+//   - ERASURE OUTRANKS THE SELECTION. A forgotten member is removed whether or not it was selected, and a
+//     re-selection can never talk the plan out of an erasure.
+//   - A QUEUED REMOVAL IS CANCELLABLE UNTIL A PASS ACTS ON IT. Re-selecting a dropped record RESTORES it, and
+//     re-selecting the last one stops the collection being revoked as emptied.
 //   - THE V8 PER-ITEM ROWS ARE REPORTED AND NEVER REINTERPRETED. A pre-upgrade per-record collection is not
 //     read as membership, not adopted, and not acted on by a grouped plan.
 //   - THE DURABLE MODEL IS IDENTITY-FREE AND THE DATABASE ENFORCES IT. No column can hold a title, a provider
@@ -291,12 +294,67 @@ async function main(): Promise<void> {
     assertEq(plan.counts.add, 2, 'the other two still go in');
   });
 
-  await test('a member already queued for removal stays queued for removal', async () => {
+  // A QUEUED REMOVAL IS A DECISION, NOT A VERDICT. Queuing is not doing, so a member in `removing` still has
+  // its library items out there until a pass takes them out — and an operator who changes their mind before
+  // that pass runs must be able to say so. These five cases are the whole of that rule.
+
+  await test('a member queued for removal and STILL not selected stays queued for removal', async () => {
     const managed = fakeManaged({ name: 'Weekend picks' }, [member(1), member(3, 'removing', false)]);
     const plan = await planOf({ reader: fakeReader(three), managed }, { name: 'Weekend picks', itemIds: [allIds[0]!] });
     const pending = plan.members.find((m) => m.itemId === idFor(3));
     assertEq(pending?.action, 'remove', 'a pending removal is not forgotten about');
-    assertEq(pending?.reason, 'PENDING_REMOVAL', 'and is reported as one');
+    assertEq(pending?.reason, 'PENDING_REMOVAL', 'and it says so, rather than reading as a fresh deselection');
+    assertEq(plan.counts.resulting, 1, 'and it does not count towards what the collection would hold');
+  });
+
+  await test('a member queued for removal that is SELECTED again is RESTORED, not removed', async () => {
+    const managed = fakeManaged({ name: 'Weekend picks' }, [member(1), member(3, 'removing', false)]);
+    const plan = await planOf({ reader: fakeReader(three), managed }, { name: 'Weekend picks', itemIds: [allIds[0]!, allIds[2]!] });
+    const restored = plan.members.find((m) => m.itemId === idFor(3));
+    assertEq(restored?.action, 'add', 'the operator changed their mind, and the plan lets them');
+    assertEq(restored?.reason, 'RESTORED', 'and says the row was put BACK rather than newly created');
+    assertEq(plan.counts.remove, 0, 'nothing comes out');
+    assertEq(plan.counts.resulting, 2, 'and the collection would hold both again');
+  });
+
+  await test('re-selecting the LAST member prevents the collection being revoked as emptied', async () => {
+    const managed = fakeManaged({ name: 'Weekend picks' }, [member(3, 'removing', false)]);
+    // Not re-selected: the collection would hold nothing, so the collection itself goes.
+    const emptied = await planOf({ reader: fakeReader(three), managed }, { name: 'Weekend picks', itemIds: [allIds[0]!] });
+    assertEq(emptied.counts.resulting, 1, 'the newly selected record would be the only thing in it');
+    // Re-selected, and nothing else: the collection survives holding it.
+    const kept = await planOf({ reader: fakeReader(three), managed }, { name: 'Weekend picks', itemIds: [allIds[2]!] });
+    assertEq(kept.counts.resulting, 1, 'the restored member is what the collection would hold');
+    assert(kept.collection.action !== 'revoke',
+      'a collection whose last member was put back must NOT be revoked out from under the operator');
+    assertEq(kept.collection.action, 'update', 'it is an ordinary membership update');
+  });
+
+  await test('a re-selection can never override an erasure', async () => {
+    const readable = [three[0]!, three[1]!]; // record 3 is no longer readable
+    const managed = fakeManaged({ name: 'Weekend picks' }, [member(1), member(3, 'removing', false)]);
+    const plan = await planOf({ reader: fakeReader(readable), managed }, { name: 'Weekend picks', itemIds: allIds });
+    const gone = plan.members.find((m) => m.itemId === idFor(3));
+    assertEq(gone?.action, 'remove', 'a forgotten record cannot be ticked back in');
+    assertEq(gone?.reason, 'FORGOTTEN', 'and the reason given is the erasure, not the pending removal');
+  });
+
+  await test('a re-selection cannot override a record that has lost its last reference', async () => {
+    const stripped = three.map((r) => (r.itemId === idFor(3) ? { ...r, identity: { ...r.identity, providerRefs: [] } } : r));
+    const managed = fakeManaged({ name: 'Weekend picks' }, [member(1), member(3, 'removing', false)]);
+    const plan = await planOf({ reader: fakeReader(stripped), managed }, { name: 'Weekend picks', itemIds: allIds });
+    const gone = plan.members.find((m) => m.itemId === idFor(3));
+    assertEq(gone?.action, 'remove', 'nothing justifies its library items staying');
+    assertEq(gone?.reason, 'NO_PROVIDER_REFS', 'and the reason is exact');
+  });
+
+  await test('whole-collection revoke still takes out a member queued for removal', async () => {
+    const managed = fakeManaged({ name: 'Weekend picks' }, [member(1), member(3, 'removing', false)]);
+    const plan = await planOf({ reader: fakeReader(three), managed }, { name: 'Weekend picks', mode: 'revoke' });
+    const pending = plan.members.find((m) => m.itemId === idFor(3));
+    assertEq(pending?.action, 'remove', 'revoke mode takes everything out');
+    assertEq(pending?.reason, 'REVOKING', 'for the reason the operator gave');
+    assertEq(plan.counts.resulting, 0, 'leaving nothing');
   });
 
   await test('a record with no provider reference cannot go in, and is taken out if it is already in', async () => {

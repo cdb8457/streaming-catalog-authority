@@ -59,6 +59,9 @@ import { OPERATOR_UI_LOCAL_AUTH_HEADER, loadOperatorUiLocalAuthRuntime } from '.
 //   - AN AMBIGUOUS OR LOST RESPONSE IS RECOVERED BY TOKEN, WITHOUT DUPLICATING.
 //   - A LOOKUP FAILURE IS NEVER ABSENCE. Nothing is created while the token lookup is failing.
 //   - MEMBERSHIP RECONCILES BY SET DIFFERENCE, AND NEVER REMOVES ON PARTIAL KNOWLEDGE.
+//   - A QUEUED REMOVAL IS CANCELLABLE UNTIL A PASS ACTS ON IT — across a restart — and re-selecting the last
+//     member stops the collection being revoked as emptied. Once the removal HAS landed, putting the record
+//     back is an ordinary add.
 //   - FORGETTING A MEMBER TAKES ITS LIBRARY ITEMS BACK OUT — partially, leaving the rest — and forgetting the
 //     last member deletes the collection. A failed delete stays queued rather than being marked done.
 //   - A RESTART LOSES AND DUPLICATES NOTHING.
@@ -395,6 +398,7 @@ async function main(): Promise<void> {
     };
     const alpha = await idOf('Executed Alpha');
     const bravo = await idOf('Executed Bravo');
+    const charlie = await idOf('Executed Charlie (no reference)');
 
     const fake = await startFakeJellyfin({
       [`imdb:${SECRET_REF}-1`]: 'jf-item-1',
@@ -687,6 +691,119 @@ async function main(): Promise<void> {
       await queue('Weekend picks', [alpha, bravo]);
       await reconcile();
       assertEq([...named('Weekend picks')!.ids].sort().join(','), 'jf-item-1,jf-item-2', 'restored');
+    });
+
+    // ---------------------------------------------------------------------------------------------------
+    // A QUEUED REMOVAL IS CANCELLABLE UNTIL A PASS ACTS ON IT. Queuing is not doing, in this direction too:
+    // a dropped record's library items are still out there until a reconcile takes them out, so an operator
+    // who changes their mind in between must be able to. Against a real database and a real fake server,
+    // because the durable state transition (`removing` -> `intended`) is the half a unit test cannot show.
+    // ---------------------------------------------------------------------------------------------------
+
+    const memberStateOf = async (name: string, itemId: string): Promise<string | null> => {
+      const { rows } = await admin.query(
+        `SELECT m.state FROM managed_collection_members m
+           JOIN managed_collections c ON c.id = m.collection_id
+          WHERE c.collection_key = $1 AND m.item_id = $2`,
+        [collectionKeyFor('jellyfin', name), itemId]);
+      return rows.length === 0 ? null : String(rows[0].state);
+    };
+
+    await test('a removal cancelled before any pass runs never reaches the media server', async () => {
+      await queue('Second thoughts', [alpha, delta]);
+      await reconcile();
+      const target = named('Second thoughts')!;
+      assertEq([...target.ids].sort().join(','), 'jf-item-1,jf-item-4', 'it holds both to begin with');
+
+      // The operator drops one record...
+      await queue('Second thoughts', [alpha]);
+      assertEq(await memberStateOf('Second thoughts', delta), 'removing', 'the durable state says it is on its way out');
+
+      // ...and changes their mind before a reconcile ever runs.
+      const plan = await planFor('Second thoughts', [alpha, delta]);
+      assertEq(plan.members.find((m) => m.itemId === delta)?.action, 'add', 'a re-selected record goes back in');
+      assertEq(plan.members.find((m) => m.itemId === delta)?.reason, 'RESTORED', 'and the plan says it was restored');
+      assertEq(plan.counts.remove, 0, 'nothing would come out');
+      await queue('Second thoughts', [alpha, delta]);
+      assertEq(await memberStateOf('Second thoughts', delta), 'intended', 'and the durable state is back to intended');
+
+      const removesBefore = fake.removes.length;
+      const result = await reconcile();
+      assertEq(result.grouped.removed, 0, 'the pass removed nothing');
+      assertEq(fake.removes.length, removesBefore, 'and sent no remove request at all');
+      assertEq([...target.ids].sort().join(','), 'jf-item-1,jf-item-4', 'so the collection is untouched');
+    });
+
+    await test('a cancelled removal survives a restart as a cancellation, not as a removal', async () => {
+      await queue('Second thoughts', [alpha]);
+      await queue('Second thoughts', [alpha, delta]);
+
+      // The container dies between the operator changing their mind and any pass running.
+      await closePool();
+      pool = getPool();
+      authority = new CatalogAuthority(pool, createCustodian(loadCustodianConfig()));
+
+      const removesBefore = fake.removes.length;
+      const result = await reconcile();
+      assertEq(result.grouped.removed, 0, 'the restart did not resurrect the removal');
+      assertEq(fake.removes.length, removesBefore, 'and nothing was sent');
+      assertEq([...named('Second thoughts')!.ids].sort().join(','), 'jf-item-1,jf-item-4', 'the collection still holds both');
+
+      // IDEMPOTENT: a further pass over the cancelled state does nothing either.
+      const again = await reconcile();
+      assertEq(again.grouped.added, 0, 'a repeat pass adds nothing');
+      assertEq(again.grouped.removed, 0, 'and removes nothing');
+    });
+
+    await test('a record whose removal DID land can be added back, as an ordinary add', async () => {
+      await queue('Second thoughts', [alpha]);
+      const removed = await reconcile();
+      assertEq(removed.grouped.removed, 1, 'this time the removal happened');
+      assertEq(named('Second thoughts')!.ids.join(','), 'jf-item-1', 'and its library item left');
+      assertEq(await memberStateOf('Second thoughts', delta), null,
+        'the row that drove it is dropped once the removal actually landed');
+
+      // With no row left to restore, putting it back is a plain add rather than a restoration.
+      const plan = await planFor('Second thoughts', [alpha, delta]);
+      assertEq(plan.members.find((m) => m.itemId === delta)?.action, 'add', 'it goes in again');
+      assertEq(plan.members.find((m) => m.itemId === delta)?.reason, 'NOT_A_MEMBER',
+        'and the reason distinguishes a fresh add from a cancelled removal');
+      await queue('Second thoughts', [alpha, delta]);
+
+      const result = await reconcile();
+      assertEq(result.grouped.added, 1, 'exactly one library item went back in');
+      assertEq([...named('Second thoughts')!.ids].sort().join(','), 'jf-item-1,jf-item-4', 'and the collection holds both again');
+    });
+
+    await test('re-selecting the LAST member stops the collection being revoked as emptied', async () => {
+      await queue('Only one', [delta]);
+      await reconcile();
+      const only = named('Only one')!;
+      assertEq(only.ids.join(','), 'jf-item-4', 'it holds its single member');
+
+      // Re-planned around a record that can hold nothing, the collection would be emptied — and an emptied
+      // collection is revoked rather than left standing. This is the state the operator must be able to back
+      // out of, because backing out of it is the difference between a membership change and a deletion.
+      const emptied = await planFor('Only one', [charlie]);
+      assertEq(emptied.counts.resulting, 0, 'it would hold nothing');
+      assertEq(emptied.collection.action, 'revoke', 'so the collection itself would go');
+      await queue('Only one', [charlie]);
+      assertEq(await memberStateOf('Only one', delta), 'removing', 'its only member is on its way out');
+
+      // The operator changes their mind before any pass runs.
+      const restored = await planFor('Only one', [delta]);
+      assertEq(restored.members.find((m) => m.itemId === delta)?.reason, 'RESTORED', 'the last member can be put back');
+      assertEq(restored.counts.resulting, 1, 'so the collection would hold one');
+      assert(restored.collection.action !== 'revoke',
+        'and it is NOT revoked out from under them — that is the whole point of this case');
+      assertEq(restored.collection.action, 'update', 'it is an ordinary membership update');
+      await queue('Only one', [delta]);
+
+      const result = await reconcile();
+      assertEq(result.grouped.queuedRevoke, 0, 'nothing was queued for deletion');
+      assert(fake.collections.has(only.id), 'and the collection is still on the media server');
+      assertEq(only.ids.join(','), 'jf-item-4', 'holding the member that was put back');
+      assertEq((await statusOf('Only one'))?.status, 'published', 'with its durable row still published');
     });
 
     await test('a create whose response is LOST is adopted by token, without creating a duplicate', async () => {

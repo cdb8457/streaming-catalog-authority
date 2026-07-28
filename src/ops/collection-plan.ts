@@ -117,6 +117,8 @@ export type MemberAction = 'add' | 'keep' | 'remove' | 'blocked';
 export type MemberReason =
   | 'NOT_A_MEMBER'
   | 'ALREADY_MEMBER'
+  /** Selected again after being dropped, before any pass acted on the drop. See `decideMember`. */
+  | 'RESTORED'
   | 'DESELECTED'
   | 'PENDING_REMOVAL'
   | 'FORGOTTEN'
@@ -451,6 +453,23 @@ function parseMode(raw: unknown): CollectionPlanMode | null {
  * it is not, it cannot go in (`blocked`). A record with no provider reference is the same shape of problem —
  * the target matches library items BY reference, so a record with none contributes nothing and a member that
  * has lost its last reference is a member whose items nothing can justify keeping.
+ *
+ * A QUEUED REMOVAL IS A DECISION, NOT A VERDICT, AND THE ORDER OF THESE TESTS IS WHAT MAKES THAT TRUE. Queuing
+ * is not doing: a member in `removing` has been dropped from the plan but its library items are still out
+ * there until a pass takes them out. An operator who drops a record and changes their mind before that pass
+ * runs must be able to say so — and until this ordering was corrected they could not, because `removing` was
+ * tested FIRST and returned `remove` whatever else was true. Re-selecting the record produced a plan that
+ * still removed it; if it was the last member, the collection was revoked out from under them.
+ *
+ * So `removing` is no longer a test of its own. A row in that state is judged by the same three questions as
+ * any other: can this record still be read, does it still have a reference, and is it selected NOW. Selected,
+ * readable and referenced means it belongs — `RESTORED` rather than `NOT_A_MEMBER`, because the row exists and
+ * is being put back rather than created. Not selected means it stays queued, and says `PENDING_REMOVAL` so the
+ * plan distinguishes "you dropped this a moment ago" from "you dropped this just now".
+ *
+ * WHAT A RE-SELECTION CANNOT DO IS OVERRIDE AN ERASURE. The unreadable and no-reference tests come first, so a
+ * forgotten record that somebody ticks again is still `remove`/`FORGOTTEN`. That is the one direction this
+ * must never be persuadable in.
  */
 function decideMember(
   mode: CollectionPlanMode,
@@ -462,7 +481,6 @@ function decideMember(
   if (mode === 'revoke') {
     return isMember ? { action: 'remove', reason: 'REVOKING' } : { action: 'blocked', reason: 'REVOKING' };
   }
-  if (row !== null && row.state === 'removing') return { action: 'remove', reason: 'PENDING_REMOVAL' };
   if (identity === null) {
     return isMember
       ? { action: 'remove', reason: 'FORGOTTEN' }
@@ -473,7 +491,14 @@ function decideMember(
       ? { action: 'remove', reason: 'NO_PROVIDER_REFS' }
       : { action: 'blocked', reason: 'NO_PROVIDER_REFS' };
   }
-  if (!isSelected) return { action: 'remove', reason: 'DESELECTED' };
+  const pendingRemoval = row !== null && row.state === 'removing';
+  if (!isSelected) {
+    return { action: 'remove', reason: pendingRemoval ? 'PENDING_REMOVAL' : 'DESELECTED' };
+  }
+  // Selected, readable, and matchable: it belongs in the collection. A row that was on its way out is put
+  // BACK — `setManagedMembers` returns it to `intended` and clears `synced`, so the next pass re-checks it
+  // rather than trusting an observation made before the operator changed their mind.
+  if (pendingRemoval) return { action: 'add', reason: 'RESTORED' };
   return isMember ? { action: 'keep', reason: 'ALREADY_MEMBER' } : { action: 'add', reason: 'NOT_A_MEMBER' };
 }
 

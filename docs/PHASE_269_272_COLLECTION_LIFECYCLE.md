@@ -56,11 +56,20 @@ an external copy needs removing.
 | --- | --- |
 | `add` | selected, readable, has references, not yet a member |
 | `keep` | already a member and still selected |
-| `remove` | deselected, forgotten, out of references, or already queued to leave |
+| `remove` | deselected, forgotten, out of references, or still queued to leave |
+| `add` (`RESTORED`) | queued to leave, then selected again before any pass acted on it |
 | `blocked` | cannot go in: unreadable, or no provider reference to match a library item with |
 
-**Erasure outranks the selection.** A member whose record is forgotten is `remove`, whether or not it was
-selected. A record that is merely deselected is `remove` too — but only within the collection the operator just
+**A queued removal is a decision, not a verdict.** Queuing is not doing in this direction either: a member in
+`removing` still has its library items out there until a pass takes them out, so an operator who drops a record
+and changes their mind before that pass runs can say so — re-selecting it yields `add`/`RESTORED` and
+`set_members` returns the row to `intended`. Re-selecting the **last** member is what stops the collection being
+revoked as emptied out from under them. Once the removal has actually landed the row is gone, and putting the
+record back is an ordinary `add`.
+
+**Erasure outranks the selection, and a re-selection can never override it.** A member whose record is
+forgotten is `remove`, whether or not it was selected — the unreadable and no-reference tests run *before* the
+selection is consulted, so a forgotten record that somebody ticks again is still `remove`/`FORGOTTEN`. A record that is merely deselected is `remove` too — but only within the collection the operator just
 re-specified by name, which is a different thing from the Phase 267 rule that a plan must never propose
 revoking an external copy it was not asked about.
 
