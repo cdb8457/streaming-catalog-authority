@@ -25,7 +25,8 @@
 #   7. AMBIGUOUS RECOVERY. A create whose response is LOST is adopted by token, with no duplicate.
 #   8. IDEMPOTENCY. A second reconcile does nothing at all.
 #   9. REVOKE. A forgotten record's external copy comes back.
-#  10. RESTART PERSISTENCE. Everything survives a full stop/start.
+#  10. RESTART PERSISTENCE. The application and database survive a stop/start while the external fake
+#      Jellyfin remains running, just as a real media server would.
 #  11. PARTIAL ERASURE. Forgetting ONE member takes its library items out and leaves the collection standing.
 #  12. DRIFT AUDIT AND GATED REPAIR. A collection deleted on the server is detected, and the repair is
 #      digest-confirmed and writes durable state only.
@@ -444,16 +445,20 @@ run_leg "@jf-reconcile" "reconcile"
 # ---------------------------------------------------------------------------------------------------------
 # 9. RESTART PERSISTENCE.
 # ---------------------------------------------------------------------------------------------------------
-step "restart the whole stack and re-check (persistence)"
+step "restart the application and database, then re-check persistence"
 history_before_restart="$(count_rows collection_control_history)"
-jf_compose stop >/dev/null
+# Jellyfin is an EXTERNAL system for this test. The local fake is intentionally in-memory, so stopping it
+# would erase the external artifact and turn an application-restart test into an accidental media-server
+# reset. Stop the application/database boundary only; leave jellyfin-fake running exactly as a real server
+# would remain running while this product restarts.
+jf_compose stop app postgres >/dev/null
 JELLYFIN_ALLOW_COLLECTION_WRITES=true PUBLISH_EXTERNAL_IDENTITY=allow jf_compose up -d >/dev/null
 wait_for_health "the stack did not come back healthy after a restart"
 [ "$(count_rows managed_collections)" = "${PLAN_COLLECTIONS}" ] || fail "the managed collection did not survive a restart"
 [ "$(count_rows managed_collection_members)" = "${PLAN_MEMBERS}" ] || fail "the membership did not survive a restart"
 [ "$(count_rows collection_control_history)" = "${history_before_restart}" ] || fail "the plan history did not survive a restart"
 [ "$(count_rows items)" = "${items_before}" ] || fail "the catalog did not survive a restart"
-info "the managed collection, its membership, the plan history and the catalog all survived a full stop/start"
+info "the managed collection, its membership, the plan history, the catalog and the external artifact survived the application/database restart"
 
 step "real-browser acceptance: the history is still there after the restart"
 run_leg "@jf-history" "history"
