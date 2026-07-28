@@ -171,8 +171,8 @@ Set `CATALOG_AUTHORITY_IMAGE` in `.env` back to the previous tag or digest and s
 docker compose down && docker compose up -d
 ```
 
-This works because the pin is always an immutable version tag or a digest, never `latest`. `v1.0.0` and
-`v1.1.0` are published and are never re-tagged, rewritten or overwritten, so the old image is still exactly
+This works because the pin is always an immutable version tag or a digest, never `latest`. `v1.0.0` through
+`v1.1.2` are published and are never re-tagged, rewritten or overwritten, so the old image is still exactly
 the old image.
 
 ### What rolling back does not do
@@ -206,8 +206,8 @@ took before I upgraded" is something you can check rather than something you rem
 | v1.0.0 | 3 | |
 | v1.1.0 | 3 | No schema change; rolling back to v1.0.0 needs no restore. |
 | v1.1.1 | 4 | Adds an app-readable schema-version reader and an owner-only setter for the runtime role's password. **Rolling back from v1.1.1 to v1.1.0 or v1.0.0 requires restoring a pre-upgrade backup.** |
-| v1.1.2 | 5 | Adds durable evidence, on the publish ledger, of what a create proved about recovery-by-token. **Rolling back from v1.1.2 requires restoring a pre-upgrade backup.** |
-| v1.1.3 | 6 | Adds the identity-free `import_history` table and its one append-only writer, so the Import panel and `ops:catalog-import` share a durable record of what was loaded. **Rolling back from v1.1.3 requires restoring a pre-upgrade backup.** |
+| v1.1.2 | 4 | Consumer-readiness remediation; no schema change from v1.1.1. |
+| v1.1.3 | 9 | Adds recovery-proof fields, identity-free import and collection-control history, the active-intent invariant, and the managed-collection model. **Rolling back from v1.1.3 requires restoring a pre-upgrade database and keystore backup.** |
 
 ### Upgrading onto v1.1.3: the keystore is repaired for you, once
 

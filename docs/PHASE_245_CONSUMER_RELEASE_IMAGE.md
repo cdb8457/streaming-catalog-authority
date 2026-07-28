@@ -87,22 +87,23 @@ text.
 The published repository is `ghcr.io/cdb8457/catalog-authority-ops`, and the ACTIVE (not yet released) pin is:
 
 ```
-ghcr.io/cdb8457/catalog-authority-ops:v1.1.2
+ghcr.io/cdb8457/catalog-authority-ops:v1.1.3
 ```
 
-Earlier releases stay exactly where they are. `v1.0.0` and `v1.1.0` are published and immutable; nothing in
-this repository re-tags, rewrites or overwrites them, which is what makes the documented rollback — set
-`CATALOG_AUTHORITY_IMAGE` back to the previous tag or digest — a real operation rather than a hope. `v1.1.1`
-(Phase 253) was the first-run remediation: the database migrates itself before the UI is allowed to start, an
-operational install with an empty evidence folder stops reporting itself as unfinished, and there is an
-Arcane/Unraid install path whose bind sources resolve on the host the Docker daemon actually runs on. See
-`docs/PHASE_253_FIRST_RUN_AND_ARCANE.md` and
-`docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md`.
+Earlier releases stay exactly where they are. `v1.0.0` through `v1.1.2` are published and immutable; nothing
+in this repository re-tags, rewrites or overwrites them, which is what makes the documented rollback — set
+`CATALOG_AUTHORITY_IMAGE` back to the previous tag or digest — a real operation rather than a hope.
 
-`v1.1.2` (Phase 254) is the consumer-readiness remediation on top of it: the Arcane install path is actually
-present in the downloadable archive (v1.1.1 documented a file it did not ship), a registry-unqualified local
-build is reported as LOCAL rather than MALFORMED, and publishing now has a final gate that proves an
-anonymous caller can pull the image the release pins. See `docs/PHASE_254_CONSUMER_READINESS.md`.
+`v1.1.1` (Phase 253) was the first-run remediation: the database migrates itself before the UI is allowed to
+start, an operational install with an empty evidence folder stops reporting itself as unfinished, and there
+is an Arcane/Unraid install path whose bind sources resolve on the Docker host. `v1.1.2` (Phase 254) made that
+Arcane path part of the downloadable archive, classified local image builds honestly, and added the anonymous
+pull gate.
+
+`v1.1.3` carries Phases 255–272: support and complete-backup verification, the bounded aggregate test runner,
+offline catalog import and browsing, automatic repair of legacy keystore ownership, and the separately gated
+managed Jellyfin collection lifecycle. See `RELEASE.md`,
+`docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md`, and the Phase 255–272 documents.
 
 **This was wrong when the phase first shipped, and the correction is the point of the remediation.** The
 first version published to `ghcr.io/catalog-authority/…`. Earlier phases wrote the convention with a

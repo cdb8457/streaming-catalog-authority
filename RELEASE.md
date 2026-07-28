@@ -3,10 +3,77 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
+## v1.1.3 - Catalog workspace and managed collections (Phases 255–272)
+
+Release candidate; not yet published. This release turns the installed operator surface into a usable
+catalog workspace, fixes the fresh-volume keystore defect found by the real-browser gate, and adds an
+explicitly gated lifecycle for one managed Jellyfin collection per accepted plan.
+
+Added:
+
+- **A catalog an operator can fill and browse.** A snapshot in the read-only import folder can be previewed
+  without writes, then applied only against the exact bytes previewed. Imports are idempotent, recorded in
+  identity-free durable history, and available through the authenticated UI and `ops:catalog-import`.
+  Catalog search, filtering, paging, record detail and deterministic redacted export use the same stored
+  authority.
+- **A managed collection lifecycle.** One named plan now means one durable collection with selected catalog
+  records as members. Preview, confirmed queueing, reconcile, read-only drift audit, explicit repair and
+  revoke are available in the UI and through `ops:collections`. Re-planning the same name updates the same
+  collection; deselection or erasure drives membership removal; an empty collection is revoked.
+- **A control plane that remains off by default.** Jellyfin network access, live publishing, collection
+  writes and external identity release are four separate gates. The API key comes only from a file, the
+  target must be a private/local address, redirects are refused, and the release gate proves the lifecycle
+  against a local fake Jellyfin in a real browser and real Compose stack. This is not evidence from the
+  operator's live Jellyfin server.
+- **Support and complete rollback artifacts.** The authenticated UI can render a redaction-safe support
+  report. Backup tooling covers the database, keystore, secrets and promotion records, and offline inspection
+  reports which components and schema version a backup actually contains.
+- **A bounded aggregate test runner.** Every test file belongs to an explicit inventory, suites run as
+  separate bounded processes, and a skipped, signalled, timed-out or never-reached suite fails the run.
+
+Fixed:
+
+- **Fresh and existing keystore volumes are usable by the non-root runtime.** The image seeds a fresh volume
+  with `node` ownership. Shipped Compose stacks also run a narrow one-shot `keystore-prepare` before migration
+  and app startup: no network, no secrets, one mount, only the capabilities needed to inspect and repair
+  ownership, and fail-closed refusal for an unexpected tree. It never reads, rewrites or deletes key
+  material.
+- **Recovery after a lost external-create response is provable.** Durable recovery-proof state distinguishes
+  "the token proved nothing exists" from "the token cannot recover this operation," preventing a reconciler
+  from treating ambiguity as permission to create a duplicate.
+- **Package identity agrees with the release.** `package.json`, the lockfile, bundle coordinate, Compose
+  defaults and OCI release label all report `1.1.3`; a regression assertion prevents the stale `1.0.0`
+  package version that made earlier installed-image checks misleading.
+
+Upgrade notes:
+
+- **Schema version 4 → 9.** There are no down-migrations. Before upgrading, back up the database, keystore,
+  secrets and promotion records as one recovery set. Rolling back the image requires restoring the
+  pre-upgrade database and keystore together.
+- **Existing v1.1.2 keystore volumes are repaired automatically on `up -d`.** A refusal stops migration and
+  the UI instead of guessing. See `docs/PHASE_263_KEYSTORE_REPAIR.md` for the check, repair and refusal codes.
+- The release remains a self-hosted authority and operator tool. It adds no provider download, scraping or
+  playback runtime. O4 external/managed custodian evidence and O5 managed KEK custody remain explicit doctor
+  warnings rather than being silently treated as closed.
+
+Release gates: typecheck and local suites; production-image smoke; release bundle and verification packet;
+fresh/restart/upgrade/rollback lifecycle; catalog import-and-browser acceptance; Jellyfin control-plane
+acceptance against a local fake server; release-candidate browser acceptance; and final release rehearsal.
+Publishing remains a separate release-event action.
+
+## v1.1.2 - Consumer readiness (Phase 254)
+
+Published `2026-07-25`, immutable. The Arcane/Unraid install path is present in the downloadable archive,
+registry-unqualified local images are reported as local rather than malformed, and publishing proves that an
+anonymous consumer can pull the exact image digest before attaching the bundle.
+
+Detail: `docs/PHASE_254_CONSUMER_READINESS.md`.
+
 ## v1.1.1 - First-run remediation (Phase 253)
 
-Not yet published. A usability release, driven by a real clean `v1.1.0` installation on Unraid through
-Arcane. Nothing about what this product does changes; what changes is what installing it does to you.
+Published `2026-07-25`, immutable. A usability release, driven by a real clean `v1.1.0` installation on
+Unraid through Arcane. Nothing about what this product does changes; what changes is what installing it does
+to you.
 
 Fixed:
 

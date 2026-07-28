@@ -1,52 +1,76 @@
-# Handoff for review — v1.1.2 (Phase 254), consumer readiness
+# Handoff for review — v1.1.3 release preparation
 
-Branch `cdb8457/v1-1-2-consumer-readiness`, from `a5ef828`. **Not tagged, not released, not merged.**
+Branch `cdb8457/v1-1-3-release`, based on `origin/master` at `04e5130`. **Not tagged, not released, not merged
+and not deployed.**
 
-Three defects, all the same shape: the project believed something about what a stranger receives, and nobody
-had checked.
+This change cuts the release metadata for the work already merged through Phases 255–272. It does not add a
+new feature implementation. The release candidate combines the operator catalog workspace, catalog snapshot
+import, support and backup tooling, bounded test inventory, keystore-volume repair, durable external-create
+recovery, and the explicitly gated managed Jellyfin collection lifecycle.
 
-1. **The Arcane install path was documented but not shipped.** v1.1.1 built it, tested it, released it — and
-   the downloadable archive contained only the ordinary-computer stack, whose *relative* bind sources are
-   exactly what a launcher relocation breaks. `docker-compose.arcane.yml` and `arcane-setup.sh` now ship in
-   the bundle, byte-identical to the tested files, with assembler guards refusing a relative bind source, a
-   defaulted host-project variable, a build-from-source stack, or any baked host identity.
-2. **A local build was reported as MALFORMED.** `catalog-authority-ops:ci` is not malformed; it names no
-   registry. A new `LOCAL` state reports it honestly, preserves the digest pin when there is one, and still
-   says out loud that nobody else could pull it. Genuine rubbish is still `MALFORMED`.
-3. **Nothing checked that a stranger can pull the image.** `ops:image-pull-preflight` asks anonymously, and
-   the publish job runs it as its final gate against the digest the push step reported.
+## Release identity
 
-## The correction that matters most
+- `package.json` and the root lockfile package report `1.1.3`.
+- The consumer bundle coordinate and shipped Compose defaults select `v1.1.3`.
+- A regression test requires the package, lockfile and bundle release identity to agree.
+- `v1.0.0` through `v1.1.2` remain published and immutable.
 
-During v1.1.1 verification I reported the published image as not anonymously readable. **That was wrong.** My
-probe sent an `Accept` header missing the OCI image-index type, and a registry answers `404` — not `406` — for
-a media type the caller did not accept. `docker buildx` publishes an index, so a public image looked absent.
+The publish workflow remains responsible for building the production image, applying the `v1.1.3` OCI
+version label, resolving its digest, proving an anonymous consumer can pull that digest, and attaching the
+verified consumer bundle to the GitHub release.
 
-`ghcr.io/cdb8457/catalog-authority-ops` is **public**. `v1.1.1` resolves anonymously to
-`sha256:3dcd1ad9…` and `v1.1.0` to `sha256:e7dc58b9…`, each exactly the digest its release pins. **No GHCR
-visibility change is required of anyone.** The new gate exists so a future regression is caught by CI rather
-than by a user, and it pins the full media-type set with a test so it cannot repeat my false negative.
+## Upgrade and rollback
 
-## External blockers
+The release upgrades schema version 4 to schema version 9. There are no down-migrations. Before upgrading,
+the operator must back up the database, keystore, secret files and promotion records as one recovery set.
+Rolling back the image requires restoring the matching pre-upgrade database and keystore together.
 
-**None.** Package visibility is already correct. If the gate ever reports `NOT_PUBLIC`, it prints the exact
-human steps (Package settings → Danger Zone → Change visibility → Public) and keeps blocking, because a
-workflow token cannot change its own package's visibility and nothing here pretends otherwise.
+Existing root-owned keystore volumes are handled by the shipped `keystore-prepare` one-shot. Its repair is
+narrow and fail-closed: it has no network or secrets, mounts only the keystore volume, and refuses an
+unexpected tree rather than guessing.
 
-## Verification
+## Required release gates
 
-Typecheck clean. New suites `test/image-pull-preflight.ts` and `test/consumer-bundle-arcane.ts`. The assembled
-bundle was extracted and driven as a consumer would: `docker-compose.yml` resolves, and the Arcane stack
-correctly refuses without its required variables and resolves with them. Phase 242-254 suites green.
+The release PR must pass:
 
-`test/deploy.ts` has one failure that reproduces identically at `a5ef828` — a Windows CRLF artifact in an
-assertion embedding a literal `
-`; it passes in CI on Linux.
+- typecheck and the complete bounded test inventory;
+- production-image smoke and release-bundle checks;
+- fresh, restart, upgrade and rollback lifecycle acceptance;
+- catalog import/browser and Jellyfin control-plane acceptance against local test doubles;
+- release-candidate browser acceptance; and
+- final release rehearsal and verification-packet checks.
+
+The feature head merged as PR #30 with its required GitHub checks green, including suites, image, catalog,
+Jellyfin, lifecycle, bundle and rehearsal jobs. Release-preparation validation is recorded on this PR rather
+than inferred from that earlier run.
+
+Local pre-PR validation completed cleanly:
+
+- `npm run typecheck`;
+- release identity, delivery, readiness, verification, rehearsal, release-guard and consumer-readiness suites;
+- the 305-suite inventory audit and its runner's adversarial suite;
+- focused Phase 259–272 scripts, including their temporary-PostgreSQL integration sections; and
+- release-candidate and lifecycle acceptance contract suites.
+
+Windows cannot exercise Linux `O_NOFOLLOW`, POSIX symlink/mode assertions, or the daemon-backed browser and
+Compose acceptance runs. Those are not counted as local passes; the required Linux CI jobs remain the release
+evidence for them.
+
+## External installation evidence
+
+The Tower test installation remains on the published v1.1.2 digest. It independently confirmed:
+
+- runtime release identity `v1.1.2`, provenance `RELEASE`, digest pinning and bundle agreement;
+- healthy app and PostgreSQL containers, schema version 4 and authenticated API enforcement;
+- reproduction and repair of the legacy root-owned keystore volume; and
+- a least-privileged runtime database identity after credential remediation.
+
+A pre-remediation recovery set is stored on Tower at
+`/mnt/user/projects/catalog-authority-v110-test/manual-backups/20260728T175817Z`. This release-preparation
+branch does not alter that installation.
 
 ## Boundaries
 
-Nothing tagged, published, released, merged or deployed. No package visibility changed. No Unraid contact, no
-`/mnt/user/media/Movies`, no live Jellyfin or provider call, no Phase 231 authorization or execution.
-`v1.0.0`, `v1.1.0` and `v1.1.1` remain published and immutable.
-
-Detail: `docs/PHASE_254_CONSUMER_READINESS.md`.
+Nothing in this branch tags, publishes, releases, merges or deploys v1.1.3. No package visibility changes,
+Unraid media access, live Jellyfin request or provider call are part of this review. Publishing is a separate
+manual release-event action after merge and after every required gate is green.

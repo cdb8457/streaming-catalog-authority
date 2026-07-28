@@ -28,15 +28,14 @@ export class ConsumerReleaseBundleError extends Error {}
  */
 export const RELEASE_IMAGE_REPOSITORY = CANONICAL_IMAGE_REPOSITORY;
 /**
- * The ACTIVE, NOT-YET-RELEASED tag. v1.1.2 (Phase 254) — consumer readiness: the Arcane install path is
- * actually IN the archive, a registry-unqualified local build is classified as local rather than malformed,
- * and a release must prove that a stranger with no credential can pull the image it pins.
+ * The ACTIVE, NOT-YET-RELEASED tag. v1.1.3 (Phases 255–272) — a verifiable backup/support path, offline
+ * catalog import and browsing, self-repair for legacy keystore ownership, and the explicitly gated managed
+ * Jellyfin collection lifecycle.
  *
- * v1.0.0 and v1.1.0 are published, immutable and untouched: this constant selects what a NEW bundle pins,
- * and nothing in this repository rewrites, re-tags or overwrites an existing release. Rolling back to v1.1.0
- * remains exactly the documented `.env` edit, because that tag still resolves to the image it always did.
+ * v1.0.0 through v1.1.2 are published, immutable and untouched: this constant selects what a NEW bundle
+ * pins, and nothing in this repository rewrites, re-tags or overwrites an existing release.
  */
-export const RELEASE_IMAGE_TAG = 'v1.1.2';
+export const RELEASE_IMAGE_TAG = 'v1.1.3';
 export const RELEASE_IMAGE_REF = `${RELEASE_IMAGE_REPOSITORY}:${RELEASE_IMAGE_TAG}`;
 
 /** The bundle root: the folder a user extracts and runs `docker compose up -d` in. */

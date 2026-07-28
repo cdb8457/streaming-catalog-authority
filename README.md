@@ -1,13 +1,15 @@
-# Catalog Authority — Phase 1 (DB-resident authority)
+# Catalog Authority
 
-Event-sourced catalog authority core. **No** provider adapters, media servers, HTTP,
-Hermes, job queues, or UI — by design. The core stands alone.
+Self-hosted, PostgreSQL-backed catalog authority with an authenticated operator UI, offline catalog import
+and browsing, verifiable backup/support tooling, and an optional managed Jellyfin collection control plane.
+Provider and media-server network access is disabled by default; every external write path is separately
+gated and auditable.
 
 ## Run the operator UI on an ordinary computer
 
-One authenticated read-only web UI on `http://127.0.0.1:8099/`, including the **Promotion Record Chain**
-panel over your Phase 231–240 artifacts. It runs a prebuilt, version-pinned image — you need **Docker** and
-nothing else. No checkout, no Node.js, no build.
+One authenticated web UI on `http://127.0.0.1:8099/`, including setup diagnostics, the **Promotion Record
+Chain**, offline catalog import and browsing, and the explicitly gated collection workspace. It runs a
+prebuilt, version-pinned image — you need **Docker** and nothing else. No checkout, no Node.js, no build.
 
 **Install Docker:** Docker Desktop on Windows or macOS, Docker Engine on Linux. Start it.
 
@@ -77,8 +79,9 @@ see [docs/PHASE_253_FIRST_RUN_AND_ARCANE.md](docs/PHASE_253_FIRST_RUN_AND_ARCANE
 requires you to choose a bind address deliberately: it will not publish an operator interface on every
 interface by default, and loopback on a headless server means that server only.
 
-Your artifact folder is mounted **read-only**; the UI performs no mutation, approval, execution or deletion,
-and contacts no media server or provider.
+Your artifact and import folders are mounted **read-only**. Import writes only the validated snapshot into the
+Catalog Authority database after an explicit preview/apply step. Media-server access and writes remain off
+unless their independent gates are deliberately enabled.
 
 ## Fill the catalog, then browse it
 
@@ -131,19 +134,22 @@ a private literal (10.x, 172.16-31.x, 192.168.x, 127.0.0.1, an IPv6 ULA) or a lo
 name, or `.local` / `.lan` / `.internal`). A public name is refused, redirects are never followed, and every
 request is re-checked against the one address you configured.
 
-**Three steps, each harder to reach than the last.** *Discovery* counts libraries and collections and lists no
-media item at all. *Planning* works out what would change, from your own catalog and publish ledger — it
-contacts nothing and writes nothing. *Queuing* needs the write switches **and** needs you to type the plan's
-own digest back, and even then it only writes durable intents: nothing reaches your server until a reconcile
-pass runs, which recovers each intent by its own token and so cannot create the same collection twice.
+**The lifecycle gets progressively harder to reach.** *Discovery* counts libraries and collections without
+listing media items. *Planning* computes one named collection and its intended membership from your catalog;
+it contacts nothing and writes nothing. *Queuing* requires every write switch and the plan's exact digest.
+*Reconcile* then creates or updates that one collection by set difference, with recovery-by-token preventing
+duplicate creation after a lost response. *Audit* compares durable intent with Jellyfin without writing;
+repair and revoke each require their own explicit action.
 
-**What actually gets made:** one Jellyfin collection per selected record, named after that record, holding the
-library items its provider references matched. The name you give a plan labels the plan — it is what the
-history records — and is not the name of anything in Jellyfin.
+**What actually gets made:** one accepted plan is one Jellyfin collection carrying the name the operator
+chose, with the selected catalog records resolved to matching library items. Re-planning the same name updates
+the same managed collection. Deselecting or forgetting a record queues its membership for removal, and
+removing the last member queues the collection itself for revocation.
 
-Everything it did is in a durable history that survives a restart, and forgetting a record brings its external
-copy back. The boundaries, the guarantees and the limits:
-[docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md](docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md).
+Everything is recorded in durable, identity-minimized history that survives restarts. The boundaries,
+guarantees and limits are in
+[docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md](docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md) and
+[docs/PHASE_269_272_COLLECTION_LIFECYCLE.md](docs/PHASE_269_272_COLLECTION_LIFECYCLE.md).
 
 The format, its bounds and every design decision:
 [docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md](docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md).
@@ -152,10 +158,10 @@ The browser: [docs/PHASE_260_CATALOG_BROWSER.md](docs/PHASE_260_CATALOG_BROWSER.
 - Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
 - Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
 
-**Published releases.** `v1.0.0` and `v1.1.0` are published to `ghcr.io/cdb8457/catalog-authority-ops` and are
-immutable — nothing here re-tags or overwrites them, which is what makes the rollback above real. `v1.1.1` is
-the active release these files pin to; until its release workflow runs, that pinned reference names an image
-that is not there yet. Build it from this checkout with the maintainer override:
+**Published releases.** `v1.0.0` through `v1.1.2` are published to
+`ghcr.io/cdb8457/catalog-authority-ops` and are immutable — nothing here re-tags or overwrites them, which is
+what makes rollback real. `v1.1.3` is the active release candidate these files pin to; until its release
+workflow runs, that tag does not exist. Build it from this checkout with the maintainer override:
 
 ```bash
 docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
@@ -189,12 +195,10 @@ npm test -- --concurrency 4           # bounded parallelism (1-8)
 npm run test:docker-suites            # the acceptance suites that need a Docker daemon
 ```
 
-**One suite is currently failing, and it is meant to be visible.** `test/jellyfin-outbox.ts` fails its
-"reconcile adopts by token after a lost create response" case. It failed before the runner existed too — the
-old `&&` chain could not run on Windows and stopped at the first failure, so nobody saw it. It is a real
-Phase 12 outbox defect, it is named in every run summary, and `npm test` exits non-zero because of it. See
-the "What running the aggregate for the first time exposed" section of
-[docs/PHASE_258_TEST_RUNNER.md](docs/PHASE_258_TEST_RUNNER.md).
+The recovery-by-token defect first exposed by the aggregate runner was repaired in Phase 261 and is retained
+as an end-to-end regression case. A release candidate must pass the aggregate suites plus the real-Docker
+image, lifecycle, catalog-browser, Jellyfin-control, bundle and rehearsal gates; a skipped or truncated suite
+is not a pass.
 
 ### Against your own PostgreSQL 16 (or Docker Compose)
 
