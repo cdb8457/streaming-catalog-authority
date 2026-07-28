@@ -196,7 +196,7 @@ test.describe('Jellyfin control plane', () => {
     await page.fill('#colConfirm', digest);
     await page.click('#colExecute');
     await expect(page.locator('#colExecuteStatus')).toContainText('queued for removal', { timeout: 30_000 });
-    await expect(page.locator('#colExecuteStatus')).toContainText('Nothing has been sent to a media server yet');
+    await expect(page.locator('#colExecuteStatus')).toContainText('Nothing has been sent yet');
     await expect(page.locator('#colConfirm')).toHaveValue('');
     await expect(page.locator('#colExecute')).toBeDisabled();
     await expect(page.locator('#colUnrevoked')).toHaveText('1', { timeout: 30_000 });
