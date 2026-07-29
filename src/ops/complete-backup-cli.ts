@@ -1,20 +1,20 @@
-import { join } from 'node:path';
 import { CommandLedger } from './maintenance-safety.js';
 import {
   MaintenanceUsageError,
   parseMaintenanceFlags,
   realCommandRunner,
+  realFileOutputRunner,
   reportRefusal,
 } from './maintenance-cli-shared.js';
 import {
   planCompleteBackup,
   renderCompleteBackup,
   resolveCompleteBackupRequest,
-  runCompleteBackup,
+  runVerifiedCompleteBackup,
   type CompleteBackupRequest,
   type CustodianTopology,
 } from './complete-backup.js';
-import { renderBackupVerification, verifyBackupSet } from './backup-set-verification.js';
+import { renderBackupVerification } from './backup-set-verification.js';
 import { isDirectRun } from './direct-run.js';
 
 // Phase 277/278 — `npm run ops:complete-backup`.
@@ -120,18 +120,30 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     }
 
     const ledger = new CommandLedger();
-    const report = runCompleteBackup(args.request, { runner: realCommandRunner(), ledger });
-    const resolved = resolveCompleteBackupRequest(args.request);
-    const verification = verifyBackupSet(join(resolved.destinationDir, resolved.setName));
+    // ONE CONTRACT: taking it and verifying it are not two calls a caller can get half of. `ok` here is the
+    // conjunction of the set being taken, the stack coming back, and the set verifying.
+    const outcome = runVerifiedCompleteBackup(args.request, {
+      runner: realCommandRunner(), fileRunner: realFileOutputRunner(), ledger,
+    });
 
     if (args.json) {
-      console.log(JSON.stringify({ backup: report, verification }, null, 2));
+      console.log(JSON.stringify(outcome, null, 2));
     } else {
-      console.log(renderCompleteBackup(report));
+      console.log(renderCompleteBackup(outcome.backup));
       console.log('');
-      console.log(renderBackupVerification(verification));
+      console.log(renderBackupVerification(outcome.verification));
+      if (!outcome.ok) {
+        console.log('');
+        // BOTH FACTS, WHERE BOTH ARE TRUE. An operator whose stack is down and whose set did not verify must
+        // not have to read past a green line to find either of them.
+        console.log('THIS BACKUP CYCLE DID NOT SUCCEED:');
+        for (const failure of outcome.failures) console.log(`  - ${failure}`);
+        if (outcome.backup.published) {
+          console.log('  the set itself WAS published and is on disk; the above is about the cycle, not the files.');
+        }
+      }
     }
-    return verification.ok ? COMPLETE_BACKUP_EXIT_OK : COMPLETE_BACKUP_EXIT_FAILED;
+    return outcome.ok ? COMPLETE_BACKUP_EXIT_OK : COMPLETE_BACKUP_EXIT_FAILED;
   } catch (err) {
     console.error(reportRefusal(err));
     return COMPLETE_BACKUP_EXIT_REFUSED;

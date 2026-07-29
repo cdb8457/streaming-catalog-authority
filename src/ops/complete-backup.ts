@@ -1,8 +1,9 @@
 import { createHash } from 'node:crypto';
-import { existsSync, lstatSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
 import { BACKUP_COMPONENT_IDS, REQUIRED_SECRET_FILES, type BackupComponentId } from './backup-components.js';
+import { REQUIRED_COMPONENTS as INSPECTOR_REQUIRED_COMPONENTS } from './backup-inspect.js';
 import {
   CommandLedger,
   MaintenanceRefused,
@@ -13,12 +14,19 @@ import {
   publishDirectory,
   resolveInsideRoot,
   resolveMaintenanceRoot,
+  assertDirectoryNoFollow,
+  digestFileNoFollow,
+  fileSizeNoFollow,
+  readFileNoFollow,
   runGuarded,
+  runGuardedToFile,
   stagingSuffix,
   writePrivateFile,
   type CommandRunner,
+  type FileOutputRunner,
   type MaintenanceCommand,
 } from './maintenance-safety.js';
+import { verifyBackupSet, type BackupVerificationReport } from './backup-set-verification.js';
 
 // Phase 277 — taking the backup the product has always described, without describing it a second time.
 //
@@ -77,6 +85,15 @@ export const COMPONENT_ARTIFACT_NAMES: Readonly<Record<BackupComponentId, string
   'promotion-records': 'promotion-records-backup',
 });
 
+/**
+ * The components a set MUST hold to be a backup at all.
+ *
+ * Deliberately the same three Phase 257's inspector requires, imported rather than retyped: promotion records
+ * are advisory because an empty records folder is a correct and permanent state for most installations. The
+ * SLOT is still manifested for all four — absence is recorded, never omitted.
+ */
+export const REQUIRED_COMPONENT_IDS: readonly BackupComponentId[] = INSPECTOR_REQUIRED_COMPONENTS;
+
 export type CustodianTopology = 'inline' | 'sidecar';
 
 /** Services that must not be writing while the database and the keystore are taken. */
@@ -118,7 +135,10 @@ export interface BackupComponentResult {
 export interface CompleteBackupReport {
   readonly report: typeof COMPLETE_BACKUP_REPORT;
   readonly version: typeof COMPLETE_BACKUP_VERSION;
+  /** Taken AND the stack came back. A set on disk alone is not this. */
   readonly ok: boolean;
+  /** Whether a complete set reached its final name. A failed restart does not un-publish a good set. */
+  readonly published: boolean;
   /** The set's own name. The operator chose it; it is not a path. */
   readonly setName: string;
   readonly custodian: CustodianTopology;
@@ -136,6 +156,8 @@ export interface CompleteBackupReport {
 
 export interface CompleteBackupDeps {
   readonly runner: CommandRunner;
+  /** The runner that binds a child's stdout to a file. The database dump is the only user of it. */
+  readonly fileRunner: FileOutputRunner;
   readonly ledger: CommandLedger;
   /** Injected so a suite can produce a set with a fixed timestamp. Never used for a name or a decision. */
   readonly now?: () => Date;
@@ -281,6 +303,7 @@ export function runCompleteBackup(
   const stagingDir = join(resolved.destinationDir, `.${resolved.setName}.staging-${stagingSuffix()}`);
   const notes: string[] = [];
   let restarted = false;
+  let published = false;
   try {
     createPrivateDirectory(stagingDir, 'backup staging directory');
 
@@ -300,19 +323,24 @@ export function runCompleteBackup(
         quiesced.push(service);
       }
 
-      const dump = runGuarded(deps.runner, deps.ledger, {
+      // THE DUMP GOES STRAIGHT INTO THE FILE. The child's stdout IS the descriptor; the bytes never enter
+      // this process, so there is no encoding to get wrong and no buffer to exceed. See `realFileOutputRunner`.
+      const dumpPath = join(stagingDir, COMPONENT_ARTIFACT_NAMES.database);
+      const dump = runGuardedToFile(deps.fileRunner, deps.ledger, {
         program: 'docker',
         args: ['compose', 'exec', '-T', 'postgres', 'pg_dump', '-U', 'postgres', 'catalog'],
         cwd: resolved.projectRoot,
         purpose: 'dump the database while nothing is writing',
-      });
-      if (dump.status !== 0 || dump.stdout.length === 0) {
-        throw new MaintenanceRefused('the database dump did not run, or produced nothing. Nothing was written.');
+      }, dumpPath);
+      if (dump.status !== 0) {
+        throw new MaintenanceRefused('the database dump did not run. Nothing was written.');
       }
-      // The runner hands back BYTES AS A STRING and this writes them; nothing is redirected by a shell, so
-      // there is no re-encoding step to get wrong. That is the same defect the Phase 256 Windows guidance
-      // exists for, closed here by never involving a shell rather than by choosing the right one.
-      writePrivateFile(join(stagingDir, COMPONENT_ARTIFACT_NAMES.database), dump.stdout, 'database dump');
+      // ASKED OF THE FILE, NOT OF THE RUNNER. A runner that reported success and wrote nothing is exactly the
+      // failure a size check catches and a status check does not.
+      const dumped = fileSizeNoFollow(dumpPath);
+      if (dumped <= 0) {
+        throw new MaintenanceRefused('the database dump produced no bytes. Nothing was written.');
+      }
 
       if (resolved.custodian === 'inline') {
         const copy = runGuarded(deps.runner, deps.ledger, {
@@ -328,6 +356,20 @@ export function runCompleteBackup(
         }
       } else {
         copyTree(resolved.sidecarStateDir!, join(stagingDir, COMPONENT_ARTIFACT_NAMES.keystore), 'sidecar keystore');
+      }
+
+      // ---- STILL INSIDE THE WINDOW: the other two components ----------------------------------------
+      //
+      // THE DEFECT THIS CLOSES. The first version copied the secrets and the promotion records AFTER the app
+      // had been started again. It looked harmless — nothing writes to a read-only records mount, and the
+      // setup script does not rewrite secrets — but "nothing writes to it" is a belief about a directory an
+      // operator owns, and a four-component set whose components come from two different moments is exactly
+      // the inconsistency the whole window exists to prevent. All four now come from one quiesced moment;
+      // the cost is a few more seconds of downtime and the benefit is that the claim is true.
+      copyTree(resolved.secretsDir, join(stagingDir, COMPONENT_ARTIFACT_NAMES.secrets), 'secrets');
+      if (resolved.promotionRecordsDir !== null) {
+        copyTree(resolved.promotionRecordsDir, join(stagingDir, COMPONENT_ARTIFACT_NAMES['promotion-records']),
+          'promotion records');
       }
     } finally {
       // ALWAYS, on every path out of the window: a refusal, a throw, a failed step, a success.
@@ -352,31 +394,41 @@ export function runCompleteBackup(
         }
       }
     }
-    // ---- outside the window: copies of things nothing was writing to anyway ---------------------------
+    // ---- outside the window: describing what was taken, and publishing it ------------------------------
 
-    copyTree(resolved.secretsDir, join(stagingDir, COMPONENT_ARTIFACT_NAMES.secrets), 'secrets');
-    if (resolved.promotionRecordsDir !== null) {
-      copyTree(resolved.promotionRecordsDir, join(stagingDir, COMPONENT_ARTIFACT_NAMES['promotion-records']), 'promotion records');
-    }
-
+    // ALL FOUR SLOTS ARE MANIFESTED, present or absent. `BACKUP_COMPONENT_IDS` is the model's own list, so a
+    // component that exists in the model and not in this set is a recorded `present: false` rather than a
+    // silence somebody later reads as "there were only three".
     const components = BACKUP_COMPONENT_IDS.map((id) => describeComponent(stagingDir, id));
     assertRequiredSecretFiles(join(stagingDir, COMPONENT_ARTIFACT_NAMES.secrets));
+    for (const id of REQUIRED_COMPONENT_IDS) {
+      const component = components.find((entry) => entry.id === id);
+      if (component === undefined || !component.present) {
+        throw new MaintenanceRefused(
+          `the ${id} component is not in the staged set, so this is not a complete backup. Nothing was published.`);
+      }
+    }
 
     const manifest = buildManifest(resolved, components, now());
     writePrivateFile(join(stagingDir, BACKUP_MANIFEST_NAME), manifest.text, 'backup manifest');
 
     publishDirectory(stagingDir, resolved.finalDir, 'backup set');
+    published = true;
 
     if (!components.some((component) => component.id === 'promotion-records' && component.present)) {
       notes.push('This installation has no promotion record artifacts. That is a correct and permanent state for '
-        + 'many installations, and it does not make the set incomplete.');
+        + 'many installations, and it does not make the set incomplete — the slot is recorded as absent rather '
+        + 'than left out.');
     }
-    notes.push('Nothing was fetched and no media path was read. Verify the set before you rely on it.');
+    notes.push('Nothing was fetched and no media path was read.');
 
     return {
       report: COMPLETE_BACKUP_REPORT,
       version: COMPLETE_BACKUP_VERSION,
-      ok: true,
+      // A BACKUP THAT LEFT THE STACK DOWN IS NOT A SUCCESSFUL BACKUP. The set may be perfect and the operator
+      // still has an outage; reporting `ok: true` would put that fact underneath a green line.
+      ok: restarted,
+      published,
       setName: resolved.setName,
       custodian: resolved.custodian,
       components,
@@ -391,6 +443,39 @@ export function runCompleteBackup(
   } finally {
     lock.release();
   }
+}
+
+/**
+ * Take a complete backup AND verify it, as one contract.
+ *
+ * THE DEFECT THIS CLOSES. `runCompleteBackup` returned a report with `ok: true` on its own, and only the CLI
+ * happened to verify afterwards. Any other caller — a future scheduler, a future route, a future phase — got
+ * an unverified success that looked exactly like a verified one, and the CLI's extra step was the only thing
+ * standing between the two. There is now no way to obtain a successful outcome without a verification
+ * attached to it: `ok` on this result is the conjunction of taking it, restarting the stack, and the set
+ * verifying, and the verification report travels with it.
+ */
+export interface CompleteBackupOutcome {
+  readonly ok: boolean;
+  readonly backup: CompleteBackupReport;
+  readonly verification: BackupVerificationReport;
+  /** Every closed reason this outcome is not `ok`. Empty when it is. */
+  readonly failures: readonly string[];
+}
+
+export function runVerifiedCompleteBackup(
+  request: CompleteBackupRequest,
+  deps: CompleteBackupDeps,
+): CompleteBackupOutcome {
+  const backup = runCompleteBackup(request, deps);
+  const resolved = resolveCompleteBackupRequest(request);
+  const verification = verifyBackupSet(join(resolved.destinationDir, resolved.setName));
+  const failures: string[] = [];
+  if (!backup.restarted) {
+    failures.push('the stack did not come back up after the backup, and it is down now');
+  }
+  if (!verification.ok) failures.push('the set that was taken does not verify');
+  return { ok: failures.length === 0, backup, verification, failures };
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -431,8 +516,13 @@ function buildManifest(
 export function readBackupManifest(setDir: string): BackupManifest {
   let raw: string;
   try {
-    raw = readFileSync(join(setDir, BACKUP_MANIFEST_NAME), 'utf8');
-  } catch {
+    // THE MANIFEST IS OPENED THE SAME WAY EVERY COMPONENT IS. It is the document every other check is
+    // compared against, so reading it through a name that could have become a link would undermine all of
+    // them at once.
+    raw = readFileNoFollow(join(setDir, BACKUP_MANIFEST_NAME), 'backup manifest', 4 * 1024 * 1024)
+      .bytes.toString('utf8');
+  } catch (err) {
+    if (err instanceof MaintenanceRefused && err.message.includes('symbolic link')) throw err;
     throw new MaintenanceRefused('this backup set has no manifest, so what it should contain cannot be established');
   }
   let parsed: unknown;
@@ -461,21 +551,28 @@ export function readBackupManifest(setDir: string): BackupManifest {
  * `cpSync` is deliberately NOT used with `dereference`: the tree was already proved to contain no symbolic
  * link, and this copies the entries it walked rather than following anything it finds later.
  */
-function copyTree(source: string, destination: string, what: string): void {
+export function copyTree(source: string, destination: string, what: string): void {
   assertPlainTree(source, what);
   createPrivateDirectory(destination, `${what} copy`);
   const walk = (from: string, to: string): void => {
+    // THE DIRECTORY ITSELF IS OPENED WITHOUT FOLLOWING A LINK before it is listed, so a directory swapped for
+    // a link between the walk deciding to descend and actually descending is refused rather than followed.
+    assertDirectoryNoFollow(from, `${what} directory`);
     for (const entry of readdirSync(from).slice().sort()) {
       const child = join(from, entry);
       const target = join(to, entry);
+      // `lstat` HERE IS ADVISORY AND ONLY DECIDES WHICH BRANCH TO TRY. What makes the copy safe is that the
+      // file branch below opens with `O_NOFOLLOW` and reads THAT descriptor: a leaf swapped to a symbolic
+      // link after this `lstat` is refused at the open, not read through. The first version re-opened by
+      // path, which is what made the window real.
       const stats = lstatSync(child);
       if (stats.isSymbolicLink()) throw new MaintenanceRefused(`the ${what} gained a symbolic link while it was being copied`);
       if (stats.isDirectory()) { createPrivateDirectory(target, `${what} copy`); walk(child, target); continue; }
       if (!stats.isFile()) throw new MaintenanceRefused(`the ${what} gained a special file while it was being copied`);
-      // BYTES, NOT TEXT. A secret file, a wrapped key or an operator's own promotion artifact may hold any
-      // byte at all, and a backup that round-tripped it through a string encoding would restore something
-      // subtly different from what it copied.
-      writePrivateFile(target, readFileSync(child), `${what} copy`);
+      // BYTES, NOT TEXT, AND FROM ONE DESCRIPTOR. A secret file, a wrapped key or an operator's own promotion
+      // artifact may hold any byte at all, and a backup that round-tripped it through a string encoding would
+      // restore something subtly different from what it copied.
+      writePrivateFile(target, readFileNoFollow(child, `${what} entry`).bytes, `${what} copy`);
     }
   };
   walk(source, destination);
@@ -493,11 +590,11 @@ export function describeComponent(setDir: string, id: BackupComponentId): Backup
     throw new MaintenanceRefused(`the ${id} component of this set is a symbolic link, which a backup must never be`);
   }
   if (stats.isFile()) {
-    const bytes = readFileSync(path);
-    return {
-      id, artifact, present: true, bytes: bytes.byteLength, entries: 1,
-      digest: createHash('sha256').update(bytes).digest('hex'),
-    };
+    // OPENED, `fstat`ED AND DIGESTED AS ONE OBJECT, AND STREAMED. The digest describes the bytes read from the
+    // descriptor, not the bytes at a name that could have changed since the `lstat` above — and a database
+    // dump larger than any in-memory bound is digested without ever being held.
+    const digested = digestFileNoFollow(path, `${id} component`);
+    return { id, artifact, present: true, bytes: digested.size, entries: 1, digest: digested.digest };
   }
   // A DIRECTORY IS DIGESTED OVER ITS CANONICAL LISTING PLUS EACH FILE'S OWN DIGEST. Names and digests, in a
   // total order — never the bytes concatenated, which would make the digest depend on the walk order.
@@ -505,6 +602,7 @@ export function describeComponent(setDir: string, id: BackupComponentId): Backup
   let entries = 0;
   let bytes = 0;
   const walk = (current: string, prefix: string): void => {
+    assertDirectoryNoFollow(current, `${id} component directory`);
     for (const entry of readdirSync(current).slice().sort()) {
       const child = join(current, entry);
       const relative = prefix === '' ? entry : `${prefix}/${entry}`;
@@ -516,7 +614,8 @@ export function describeComponent(setDir: string, id: BackupComponentId): Backup
       if (!childStats.isFile()) {
         throw new MaintenanceRefused(`the ${id} component of this set holds a special file, which a backup must never do`);
       }
-      const content = readFileSync(child);
+      // Same discipline as the single-file branch: the digest is of the object that was opened.
+      const content = readFileNoFollow(child, `${id} component entry`).bytes;
       entries += 1;
       bytes += content.byteLength;
       hash.update(`f ${relative} ${createHash('sha256').update(content).digest('hex')}\n`);

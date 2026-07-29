@@ -6,8 +6,9 @@ import {
   reportRefusal,
 } from './maintenance-cli-shared.js';
 import {
-  assertDisposableRootIsEmptyish,
   planRehearsal,
+  planRehearsalCommands,
+  rehearsalCleanupCommand,
   renderRehearsal,
   resolveRehearsal,
   runRehearsal,
@@ -29,8 +30,10 @@ export const REHEARSAL_EXIT_REFUSED = 3;
 function usage(): string {
   return [
     'usage: npm run ops:upgrade-rehearsal -- --production <dir> --production-project <name> \\',
-    '         --disposable <dir> --label <name> --backup-set <dir> \\',
-    '         --current-image <ref> --candidate-image <ref> (--plan | --confirm-digest <hex>)',
+    '         --disposable <dir> --label <name> --compose-file <rel> --backup-set <dir> \\',
+    '         --import-snapshot <file> --current-image <ref> --candidate-image <ref> \\',
+    '         --expect-current-version <x.y.z> --expect-candidate-version <x.y.z> \\',
+    '         --expect-current-schema <n> --expect-candidate-schema <n> (--plan | --confirm-digest <hex>)',
     '',
     'Rehearses an upgrade AND the rollback that makes it reversible, in a disposable Compose project, from a',
     'backup set that verifies. Merely putting the old image back is not a rollback once a migration has run;',
@@ -41,9 +44,16 @@ function usage(): string {
     '  --production-project <name> your real Compose project name, for the same reason',
     '  --disposable <dir>          a scratch directory beside production, never inside it',
     '  --label <name>              names the disposable project: catalog-rehearsal-<label>',
-    '  --backup-set <dir>          a complete backup set that verifies',
+    '  --compose-file <rel>        YOUR Compose definition for the disposable stack, inside that directory.',
+    '                              This command writes an override beside it; it never writes the definition.',
+    '  --backup-set <dir>          a complete backup set that verifies. All four components are restored.',
+    '  --import-snapshot <file>    a representative catalog snapshot, previewed, applied and replayed',
     '  --current-image <ref>       the image you run now. An exact tag or a sha256 digest; never "latest".',
     '  --candidate-image <ref>     the image you are considering. Same rule.',
+    '  --expect-current-version    the exact product version INSIDE the current image (never read off its tag)',
+    '  --expect-candidate-version  the exact product version inside the candidate image',
+    '  --expect-current-schema     the schema version the current build expects — and the set\'s own version',
+    '  --expect-candidate-schema   the schema version the candidate build expects once its migration has run',
     '',
     'then one of:',
     '  --plan                      print what would happen, and the digest to confirm it with',
@@ -67,15 +77,24 @@ export function parseRehearsalArgs(argv: readonly string[]): {
   readonly json: boolean;
 } {
   const parsed = parseMaintenanceFlags(argv, {
-    values: ['production', 'production-project', 'disposable', 'label', 'backup-set', 'current-image',
-      'candidate-image', 'confirm-digest'],
+    values: ['production', 'production-project', 'disposable', 'label', 'compose-file', 'backup-set',
+      'import-snapshot', 'current-image', 'candidate-image', 'expect-current-version', 'expect-candidate-version',
+      'expect-current-schema', 'expect-candidate-schema', 'confirm-digest'],
     switches: ['plan', 'cleanup', 'json'],
   });
-  const required = ['production', 'production-project', 'disposable', 'label', 'backup-set', 'current-image',
-    'candidate-image'];
+  const required = ['production', 'production-project', 'disposable', 'label', 'compose-file', 'backup-set',
+    'import-snapshot', 'current-image', 'candidate-image', 'expect-current-version', 'expect-candidate-version',
+    'expect-current-schema', 'expect-candidate-schema'];
   for (const name of required) {
     if (parsed.values[name] === undefined) throw new MaintenanceUsageError(`--${name} is required`);
   }
+  // A SCHEMA VERSION IS A NUMBER, and one that is not is a usage error rather than a NaN carried into a
+  // comparison that would then never hold.
+  const schema = (name: string): number => {
+    const raw = parsed.values[name]!;
+    if (!/^[0-9]{1,9}$/.test(raw)) throw new MaintenanceUsageError(`--${name} must be a whole schema version number`);
+    return Number(raw);
+  };
   const plan = parsed.switches.has('plan');
   const confirm = parsed.values['confirm-digest'] ?? null;
   if (plan && confirm !== null) {
@@ -93,9 +112,17 @@ export function parseRehearsalArgs(argv: readonly string[]): {
       productionProject: parsed.values['production-project']!,
       disposableRoot: parsed.values.disposable!,
       label: parsed.values.label!,
+      composeFile: parsed.values['compose-file']!,
       backupSet: parsed.values['backup-set']!,
+      importSnapshot: parsed.values['import-snapshot']!,
       currentImage: parsed.values['current-image']!,
       candidateImage: parsed.values['candidate-image']!,
+      expect: {
+        currentVersion: parsed.values['expect-current-version']!,
+        candidateVersion: parsed.values['expect-candidate-version']!,
+        currentSchema: schema('expect-current-schema'),
+        candidateSchema: schema('expect-candidate-schema'),
+      },
       confirmDigest: confirm,
       cleanup: parsed.switches.has('cleanup'),
     },
@@ -118,20 +145,40 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
 
   try {
     const resolved = resolveRehearsal(args.request);
-    assertDisposableRootIsEmptyish(resolved.disposableRoot);
     if (args.plan) {
+      // THE PLAN MAY NAME THE REFERENCES IN FULL. They are the operator's own words, printed back to them on
+      // their own terminal, and choosing between two images is impossible without seeing which two. The
+      // durable report carries digests instead; that asymmetry is the whole redaction boundary.
       console.log(`This rehearsal would run in the disposable project "${resolved.projectName}", from the backup`);
       console.log('set you named, between these two exact images:');
-      console.log(`  current    ${resolved.currentImage}`);
-      console.log(`  candidate  ${resolved.candidateImage}`);
+      console.log(`  current    ${resolved.currentImage}  (expected version ${resolved.expect.currentVersion}, `
+        + `schema ${resolved.expect.currentSchema})`);
+      console.log(`  candidate  ${resolved.candidateImage}  (expected version ${resolved.expect.candidateVersion}, `
+        + `schema ${resolved.expect.candidateSchema})`);
       console.log('');
-      for (const command of planRehearsal(resolved)) {
-        console.log(`  ${command.program} ${command.args.join(' ')}`);
-        console.log(`      ${command.purpose}`);
+      console.log('Steps, in this order:');
+      for (const step of planRehearsal(resolved)) {
+        console.log(`  ${step.leg.padEnd(8)} ${step.id.padEnd(22)} ${step.proves}`);
+        for (const action of step.actions) {
+          if (action.kind === 'prepare-workspace') {
+            console.log('      prepare a private restore workspace holding all four components and your import');
+          } else if (action.kind === 'write-override') {
+            console.log(`      write the ${action.role} Compose override, pinning that image and mounting them`);
+          } else {
+            console.log(`      ${action.command.program} ${action.command.args.join(' ')}`);
+          }
+        }
       }
       console.log('');
-      console.log('Production is never addressed. Nothing is pulled. No media, media-server or acquisition');
-      console.log('command exists in this plan or in what this command is permitted to run.');
+      console.log('Then, only if you pass --cleanup and every step held, and only while this rehearsal\'s own');
+      console.log('marker is still on that root:');
+      const cleanup = rehearsalCleanupCommand(resolved);
+      console.log(`  ${cleanup.program} ${cleanup.args.join(' ')}`);
+      console.log('');
+      console.log(`That is ${planRehearsalCommands(resolved).length} commands, every one of them in the disposable`);
+      console.log('root under this rehearsal\'s own project name. Production is never addressed. Nothing is pulled.');
+      console.log('No media, media-server or acquisition command exists in this plan or in what this command is');
+      console.log('permitted to run at all.');
       console.log('');
       console.log(`plan digest: ${resolved.planDigest}`);
       console.log('Re-run with --confirm-digest <that digest> to carry it out.');

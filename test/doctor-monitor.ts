@@ -4,9 +4,15 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
   DOCTOR_MONITOR_EXIT,
+  DOCTOR_MONITOR_LOCK_DIRNAME,
   DOCTOR_MONITOR_STATE_NAME,
   EXIT_FOR_STATE,
+  MAX_CHECK_DETAIL_LENGTH,
+  MAX_CHECK_NAME_LENGTH,
+  MAX_DOCTOR_CHECKS,
+  MAX_DOCTOR_STDOUT_BYTES,
   classifyDoctor,
+  isUsableCheckName,
   parseDoctorJson,
   readMonitorState,
   renderDoctorMonitor,
@@ -15,6 +21,7 @@ import {
 } from '../src/ops/doctor-monitor.js';
 import { DOCTOR_REPORT_VERSION, formatDoctorJson, type DoctorReport } from '../src/ops/doctor.js';
 import { parseDoctorMonitorArgs } from '../src/ops/doctor-monitor-cli.js';
+import { acquireLockDirectory } from '../src/ops/maintenance-safety.js';
 import { assertLedgerIsClean, fakeDoctorJson, fakeToolchain } from './helpers/fake-toolchain.js';
 
 // Phase 278 — the scheduled doctor monitor.
@@ -149,8 +156,9 @@ test('the consecutive count survives runs and resets only on health', () => {
   assertEq(healthy.report.consecutiveFailures, 0, 'and health resets it');
   // ...and it is DURABLE: read back from the file, not from memory.
   const persisted = readMonitorState(join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME));
-  assert(persisted !== null, 'the state file is readable');
-  assertEq(persisted.consecutiveFailures, 0, 'and holds the reset count');
+  assertEq(persisted.kind, 'state', 'the state file is readable');
+  assert(persisted.kind === 'state', 'the state file is readable');
+  assertEq(persisted.state.consecutiveFailures, 0, 'and holds the reset count');
 });
 
 test('a WARN on the fiftieth consecutive run still exits WARN, never FAIL', () => {
@@ -187,18 +195,20 @@ test('the state file is replaced atomically and leaves no temporary behind', () 
   assertEq(entries.filter((n) => n.includes('.tmp-')).length, 0, 'no temporary state file survived');
   assertEq(entries.length, 1, 'and there is exactly one state file');
   const persisted = readMonitorState(join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME));
-  assertEq(persisted?.state, 'WARN', 'holding the latest run');
+  assert(persisted.kind === 'state' && persisted.state.state === 'WARN', 'holding the latest run');
   if (process.platform !== 'win32') {
     assertEq(statSync(join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME)).mode & 0o077, 0, 'and it is private');
   }
 });
 
-test('a previous state file that is not this build\'s is a fresh start, not a crash', () => {
+test('a previous state file that is not this build\'s is reported, not silently believed or crashed on', () => {
   const root = makeProject('stale-state');
   writeFileSync(join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME), '{"report":"something-else"}\n', 'utf8');
-  assertEq(readMonitorState(join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME)), null, 'it is not read as state');
+  const previous = readMonitorState(join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME));
+  assertEq(previous.kind, 'unreadable', 'a file that is there and is not state is UNREADABLE, not ABSENT');
   const { report } = run(root, ['fail']);
-  assertEq(report.consecutiveFailures, 1, 'and the count starts again rather than throwing');
+  assertEq(report.consecutiveFailures, 1, 'the count starts again rather than throwing');
+  assertEq(report.state, 'INVALID', 'and the run says the monitor could not account for its own history');
 });
 
 test('a missing state directory refuses rather than creating one somewhere', () => {
@@ -232,6 +242,149 @@ test('the CLI parser is strict and takes no credential', () => {
   ] as Array<[string[], string]>) {
     refuses(() => parseDoctorMonitorArgs(argv), needle, `the arguments ${argv.join(' ')}`);
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The corrections. Every test below FAILS on the first implementation of this tranche.
+// ---------------------------------------------------------------------------------------------------------
+
+test('a check name that is not an identifier makes the whole report INVALID, and is never persisted', () => {
+  // THE DEFECT: any string at all was accepted as a check name, then written into a durable file and echoed
+  // to a terminal. The doctor's output crosses a container boundary — a name is a place a path, a URL, an
+  // escape sequence or a fragment of a connection string can arrive, and "it is only a name" is exactly the
+  // reasoning that puts one in a support ticket.
+  const hostile = [
+    '/mnt/user/media/Movies',
+    'https://registry.example.invalid/v2/',
+    'C:\\Users\\someone\\secrets\\custodian_kek',
+    `check${String.fromCharCode(27)}[31m-red`,
+    `two${String.fromCharCode(10)}lines`,
+    'name with spaces',
+    'UPPERCASE',
+    'trailing-',
+    'x'.repeat(MAX_CHECK_NAME_LENGTH + 1),
+    '',
+    '../../etc/passwd',
+    'postgres://user:hunter2@db/catalog',
+  ];
+  for (const name of hostile) {
+    assertEq(isUsableCheckName(name), false, `${JSON.stringify(name.slice(0, 24))} is not a usable check name`);
+    const root = makeProject(`hostile-${hostile.indexOf(name)}`);
+    const json = JSON.stringify({
+      reportVersion: DOCTOR_REPORT_VERSION, ok: true,
+      checks: [{ name: 'environment', state: 'pass', detail: 'd' }, { name, state: 'pass', detail: 'd' }],
+    });
+    const { report } = run(root, json);
+    assertEq(report.state, 'INVALID', `a report carrying ${JSON.stringify(name.slice(0, 24))} is INVALID`);
+    assertEq(report.checks.length, 0, 'and nothing from it is kept');
+    const raw = readFileSync(join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME), 'utf8');
+    assert(!raw.includes(name.slice(0, 12)) || name.length < 4,
+      `the durable state file must not carry ${JSON.stringify(name.slice(0, 24))}`);
+  }
+  // ...and the names the shipped doctor actually emits are all accepted, so the guard is not merely strict.
+  for (const real of ['environment', 'db-owner-reachable', 'schema-version', 'runtime-least-privileged']) {
+    assertEq(isUsableCheckName(real), true, `${real} is a name the shipped doctor emits`);
+  }
+});
+
+test('a report that is enormous, or repeats a name, is INVALID rather than absorbed', () => {
+  const root = makeProject('bounds');
+  const many = JSON.stringify({
+    reportVersion: DOCTOR_REPORT_VERSION, ok: true,
+    checks: Array.from({ length: MAX_DOCTOR_CHECKS + 1 }, (_unused, index) => ({ name: `check-${index}`, state: 'pass', detail: 'd' })),
+  });
+  assertEq(run(root, many).report.state, 'INVALID', 'more checks than a report may carry is INVALID');
+
+  const huge = JSON.stringify({
+    reportVersion: DOCTOR_REPORT_VERSION, ok: true,
+    checks: [{ name: 'environment', state: 'pass', detail: 'x'.repeat(MAX_CHECK_DETAIL_LENGTH + 1) }],
+  });
+  assertEq(run(makeProject('bounds-detail'), huge).report.state, 'INVALID', 'a detail past the bound is INVALID');
+
+  // Past the stdout bound the answer is refused WITHOUT being parsed at all — the bound exists to stop an
+  // unbounded allocation, so it cannot be enforced after the allocation.
+  assertEq(parseDoctorJson(`${' '.repeat(MAX_DOCTOR_STDOUT_BYTES + 1)}{"reportVersion":1,"ok":true,"checks":[]}`), null,
+    'an answer past the stdout bound is not parsed');
+
+  const duplicated = JSON.stringify({
+    reportVersion: DOCTOR_REPORT_VERSION, ok: false,
+    checks: [{ name: 'schema-version', state: 'pass', detail: 'd' }, { name: 'schema-version', state: 'fail', detail: 'd' }],
+  });
+  assertEq(run(makeProject('bounds-dupes'), duplicated).report.state, 'INVALID',
+    'two checks of one name is a report that disagrees with itself');
+});
+
+test('a doctor that exits non-zero is never HEALTHY, whatever its output says', () => {
+  // THE DEFECT: only stdout was read. A doctor that failed, a container that was not running, or anything
+  // else on that descriptor could produce a healthy-looking body behind a non-zero status and be believed.
+  const root = makeProject('status-mismatch');
+  const tools = fakeToolchain({
+    doctorJson: fakeDoctorJson(['pass', 'pass']),
+    doctorStatus: 7,
+    doctorStderr: 'something went wrong in a way that names a path\n',
+  });
+  const report = runDoctorMonitor({ projectRoot: root, stateDir: 'monitor' },
+    { runner: tools.runner, ledger: tools.ledger, now: () => new Date(0) });
+  assertEq(report.state, 'INVALID', 'a healthy body behind a failed command is not health');
+  assertEq(report.exitCode, DOCTOR_MONITOR_EXIT.INVALID, 'and the exit code says so');
+  assert(report.notes.some((n) => n.includes('exited non-zero')), 'and the status is reported as a fact');
+  assert(report.notes.some((n) => n.includes('error stream')), 'and so is the presence of error output');
+  // The stderr TEXT is never carried anywhere.
+  const printed = [renderDoctorMonitor(report), JSON.stringify(report),
+    readFileSync(join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME), 'utf8')].join('\n');
+  assert(!printed.includes('names a path'), 'while what it actually said is not repeated');
+});
+
+test('the inverse also holds: a zero exit that reports a failure is a disagreement, not a pass', () => {
+  const root = makeProject('status-inverse');
+  const tools = fakeToolchain({ doctorJson: fakeDoctorJson(['fail']), doctorStatus: 0 });
+  const report = runDoctorMonitor({ projectRoot: root, stateDir: 'monitor' },
+    { runner: tools.runner, ledger: tools.ledger, now: () => new Date(0) });
+  assertEq(report.state, 'INVALID', 'a FAIL body behind a successful command is a disagreement');
+});
+
+test('a corrupt state file cannot be used to reset the consecutive-failure count', () => {
+  // THE DEFECT: an unreadable previous state was treated as "no previous state", so the count restarted at
+  // one. That makes the count — the number an alerting threshold is set against — resettable by anything that
+  // can write one byte into that file, including a partial write from a machine that lost power.
+  const root = makeProject('counter-reset');
+  const stateFile = join(root, 'monitor', DOCTOR_MONITOR_STATE_NAME);
+  for (let index = 0; index < 4; index += 1) run(root, ['fail']);
+  const before = run(root, ['fail']).report;
+  assertEq(before.consecutiveFailures, 5, 'five failures in a row');
+
+  writeFileSync(stateFile, '{"report":"phase-278-doctor-monitor","version":1,"consecutiveFailures":', 'utf8');
+  const after = run(root, ['pass']).report;
+  assertEq(after.state, 'INVALID', 'a corrupt memory is not a healthy run');
+  assert(after.notes.some((n) => n.includes('could not be continued')), 'and it says the history was lost');
+  assertEq(after.consecutiveFailures, 1, 'and the count does not silently return to zero');
+
+  // A NEGATIVE OR NON-INTEGER COUNT IS NOT A COUNT. The same file is the obvious place to write one.
+  for (const forged of ['-5', '1e999', '"3"', 'null', '0.5']) {
+    writeFileSync(stateFile,
+      `{"report":"phase-278-doctor-monitor","version":1,"state":"FAIL","consecutiveFailures":${forged}}\n`, 'utf8');
+    assertEq(readMonitorState(stateFile).kind, 'unreadable', `a count of ${forged} is not a count`);
+  }
+});
+
+test('two monitor runs cannot both read N and publish N+1', () => {
+  // THE DEFECT: the read-modify-write of the count had no lock at all. A schedule that fires while the last
+  // run is still going — or an operator running it by hand during one — produced two runs that both read 4
+  // and both wrote 5, and the run that should have crossed a threshold of 6 never happened.
+  const root = makeProject('overlap');
+  run(root, ['fail']);
+  const held = acquireLockDirectory(join(root, 'monitor', DOCTOR_MONITOR_LOCK_DIRNAME), 'held for the test');
+  try {
+    const tools = fakeToolchain();
+    refuses(() => runDoctorMonitor({ projectRoot: root, stateDir: 'monitor' },
+      { runner: tools.runner, ledger: tools.ledger }), 'another doctor-monitor run', 'an overlapping run');
+    assertEq(tools.lines().length, 0, 'and the second run did not even start the doctor');
+  } finally {
+    held.release();
+  }
+  // ...and the lock is released by a normal run, so the next one is not blocked by it.
+  assertEq(run(root, ['fail']).report.consecutiveFailures, 2, 'the count continues once the lock is free');
+  assertEq(existsSync(join(root, 'monitor', DOCTOR_MONITOR_LOCK_DIRNAME)), false, 'and the lock is gone');
 });
 
 // ---------------------------------------------------------------------------------------------------------

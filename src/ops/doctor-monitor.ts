@@ -1,10 +1,12 @@
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { DOCTOR_REPORT_VERSION, type CheckState, type DoctorCheck } from './doctor.js';
 import {
   MaintenanceRefused,
+  acquireLockDirectory,
   assertUsableName,
+  readFileNoFollow,
   resolveInsideRoot,
   resolveMaintenanceRoot,
   runGuarded,
@@ -39,6 +41,40 @@ import { publishTemporary, SnapshotProducePathError } from './catalog-snapshot-p
 export const DOCTOR_MONITOR_REPORT = 'phase-278-doctor-monitor';
 export const DOCTOR_MONITOR_VERSION = 1;
 export const DOCTOR_MONITOR_STATE_NAME = 'doctor-monitor-state.json';
+export const DOCTOR_MONITOR_LOCK_DIRNAME = '.doctor-monitor.lock';
+
+// -----------------------------------------------------------------------------------------------------------
+// WHAT COMES BACK FROM THE STACK IS INPUT, NOT TESTIMONY.
+// -----------------------------------------------------------------------------------------------------------
+//
+// The doctor's JSON arrives from a process inside a container. It is this product's own tool and its contract
+// is stable — and it is still the output of something that could have been replaced, misconfigured or wedged,
+// and the answer is read on a schedule, written to a durable file, and rendered to a terminal. So every
+// field is bounded and every name is checked against a vocabulary before anything is kept.
+//
+// A CHECK NAME IS AN IDENTIFIER, and this is the shape the shipped doctor emits: lowercase words joined by
+// single hyphens. Anything else — a path, a URL, an escape sequence, a fragment of a secret that ended up in
+// a name by accident — is not softened, sliced or escaped on the way through. It makes the whole report
+// INVALID, because a report carrying a name of a shape this product never emits is not a report this build
+// understands.
+
+/** The most checks a doctor report may carry. The shipped doctor emits a dozen; this is room, not a target. */
+export const MAX_DOCTOR_CHECKS = 64;
+/** The most a check name may be. */
+export const MAX_CHECK_NAME_LENGTH = 64;
+/** The most a `detail` may be. It is never persisted — this bounds what is parsed at all. */
+export const MAX_CHECK_DETAIL_LENGTH = 4096;
+/** The most the doctor may say. A report past this is not a report; it is something else on that descriptor. */
+export const MAX_DOCTOR_STDOUT_BYTES = 256 * 1024;
+/** The most a state file may be. It is this module's own small document; anything larger is not one. */
+export const MAX_STATE_FILE_BYTES = 1024 * 1024;
+
+/** Lowercase words joined by single hyphens, and nothing else. */
+export const CHECK_NAME_PATTERN = /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/;
+
+export function isUsableCheckName(name: string): boolean {
+  return name.length > 0 && name.length <= MAX_CHECK_NAME_LENGTH && CHECK_NAME_PATTERN.test(name);
+}
 
 /**
  * Exit codes, distinct per state.
@@ -104,6 +140,10 @@ export interface DoctorMonitorDeps {
  * moment it matters.
  */
 export function parseDoctorJson(text: string): { readonly ok: boolean; readonly checks: readonly DoctorCheck[] } | null {
+  // BOUNDED BEFORE IT IS PARSED. `JSON.parse` on an unbounded string is an unbounded allocation, and a monitor
+  // that can be made to exhaust memory by whatever is on the other end of a pipe is a monitor that stops
+  // reporting exactly when something is wrong.
+  if (Buffer.byteLength(text, 'utf8') > MAX_DOCTOR_STDOUT_BYTES) return null;
   let parsed: unknown;
   try {
     parsed = JSON.parse(text.trim());
@@ -114,11 +154,21 @@ export function parseDoctorJson(text: string): { readonly ok: boolean; readonly 
   const doc = parsed as { reportVersion?: unknown; ok?: unknown; checks?: unknown };
   if (doc.reportVersion !== DOCTOR_REPORT_VERSION) return null;
   if (typeof doc.ok !== 'boolean' || !Array.isArray(doc.checks)) return null;
+  if (doc.checks.length > MAX_DOCTOR_CHECKS) return null;
   const checks: DoctorCheck[] = [];
+  const seen = new Set<string>();
   for (const raw of doc.checks) {
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) return null;
     const check = raw as { name?: unknown; state?: unknown; detail?: unknown };
     if (typeof check.name !== 'string' || typeof check.detail !== 'string') return null;
+    // THE NAME IS THE ONLY FIELD THAT SURVIVES INTO A DURABLE FILE AND A TERMINAL, so it is the one field
+    // checked against a vocabulary rather than merely typed.
+    if (!isUsableCheckName(check.name)) return null;
+    // DUPLICATES ARE REFUSED, NOT DEDUPLICATED. Two checks of one name mean the report and the count disagree,
+    // and a monitor that quietly picks one has decided which of two answers about your installation to keep.
+    if (seen.has(check.name)) return null;
+    seen.add(check.name);
+    if (check.detail.length > MAX_CHECK_DETAIL_LENGTH) return null;
     if (check.state !== 'pass' && check.state !== 'warn' && check.state !== 'fail') return null;
     checks.push({ name: check.name, state: check.state, detail: check.detail });
   }
@@ -148,17 +198,37 @@ export const EXIT_FOR_STATE: Readonly<Record<MonitorState, number>> = Object.fre
   INVALID: DOCTOR_MONITOR_EXIT.INVALID,
 });
 
-/** Read the previous state, or start from nothing. A missing or unreadable file is a fresh start, not a fault. */
-export function readMonitorState(stateFile: string): DoctorMonitorState | null {
-  if (!existsSync(stateFile)) return null;
+/**
+ * What the previous run left, and — where there is nothing usable — WHICH KIND of nothing.
+ *
+ * THE DIFFERENCE IS THE WHOLE POINT. "No file yet" is a first run. "A file that will not parse" is the
+ * monitor's own memory having been lost or altered, and the two must not collapse into the same answer:
+ * collapsing them means the consecutive-failure count — the one number that distinguishes a blip from an
+ * outage, and the number an alerting threshold is set against — can be reset to zero by corrupting a file.
+ */
+export type PreviousMonitorState =
+  | { readonly kind: 'absent' }
+  | { readonly kind: 'unreadable' }
+  | { readonly kind: 'state'; readonly state: DoctorMonitorState };
+
+export function readMonitorState(stateFile: string): PreviousMonitorState {
+  if (!existsSync(stateFile)) return { kind: 'absent' };
+  let parsed: Partial<DoctorMonitorState>;
   try {
-    const parsed = JSON.parse(readFileSync(stateFile, 'utf8')) as Partial<DoctorMonitorState>;
-    if (parsed.report !== DOCTOR_MONITOR_REPORT || parsed.version !== DOCTOR_MONITOR_VERSION) return null;
-    if (typeof parsed.consecutiveFailures !== 'number' || !Number.isInteger(parsed.consecutiveFailures)) return null;
-    return parsed as DoctorMonitorState;
+    parsed = JSON.parse(
+      readFileNoFollow(stateFile, 'monitor state file', MAX_STATE_FILE_BYTES).bytes.toString('utf8'),
+    ) as Partial<DoctorMonitorState>;
   } catch {
-    return null;
+    return { kind: 'unreadable' };
   }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return { kind: 'unreadable' };
+  if (parsed.report !== DOCTOR_MONITOR_REPORT || parsed.version !== DOCTOR_MONITOR_VERSION) return { kind: 'unreadable' };
+  const count = parsed.consecutiveFailures;
+  if (typeof count !== 'number' || !Number.isInteger(count) || count < 0) return { kind: 'unreadable' };
+  if (parsed.state !== 'HEALTHY' && parsed.state !== 'WARN' && parsed.state !== 'FAIL' && parsed.state !== 'INVALID') {
+    return { kind: 'unreadable' };
+  }
+  return { kind: 'state', state: parsed as DoctorMonitorState };
 }
 
 /**
@@ -177,6 +247,29 @@ export function runDoctorMonitor(request: DoctorMonitorRequest, deps: DoctorMoni
   }
   const now = deps.now ?? (() => new Date());
   const stateFile = join(stateDir, DOCTOR_MONITOR_STATE_NAME);
+
+  // ONE MONITOR AT A TIME, AROUND THE WHOLE READ-MODIFY-WRITE. Two schedulers — or a scheduler and an
+  // operator running it by hand — that both read a count of 4 both publish 5, and the run that should have
+  // crossed an alerting threshold of 6 never does. The lock is taken BEFORE the previous state is read and
+  // released after the new one is published, because it is the pair that has to be atomic, not either half.
+  const lock = acquireLockDirectory(join(stateDir, DOCTOR_MONITOR_LOCK_DIRNAME),
+    'another doctor-monitor run is in progress for this project, or one was interrupted and left its lock '
+    + `behind (${DOCTOR_MONITOR_LOCK_DIRNAME} in the monitor state directory). This run did nothing: the `
+    + 'consecutive-failure count is only correct if one run at a time keeps it.');
+  try {
+    return monitorUnderLock(projectRoot, service, stateFile, now, deps);
+  } finally {
+    lock.release();
+  }
+}
+
+function monitorUnderLock(
+  projectRoot: string,
+  service: string,
+  stateFile: string,
+  now: () => Date,
+  deps: DoctorMonitorDeps,
+): DoctorMonitorReport {
   const previous = readMonitorState(stateFile);
 
   const outcome = runGuarded(deps.runner, deps.ledger, {
@@ -189,14 +282,30 @@ export function runDoctorMonitor(request: DoctorMonitorRequest, deps: DoctorMoni
   });
 
   const parsed = parseDoctorJson(outcome.stdout);
-  const state: MonitorState = parsed === null ? 'INVALID' : classifyDoctor(parsed);
-  const checks: readonly MonitorCheckSummary[] = parsed === null
+  // THE PROCESS AND ITS OUTPUT MUST AGREE. The doctor exits non-zero when it found something; a body that
+  // parses as HEALTHY behind a non-zero status means the two disagree about your installation, and there is
+  // no honest way to pick one. A monitor that took the JSON and dropped the status would report health from a
+  // command that failed — including the case where the JSON never came from the doctor at all.
+  const statusOk = outcome.status === 0;
+  const classified: MonitorState = parsed === null ? 'INVALID' : classifyDoctor(parsed);
+  // A LOST HISTORY IS NOT A ZERO EITHER. Where the previous file existed and could not be read, the monitor's
+  // own memory is the thing that failed, and that is a finding about the monitor rather than about the stack.
+  const historyLost = previous.kind === 'unreadable';
+  const understood = classified !== 'INVALID' && statusOk === (classified === 'HEALTHY' || classified === 'WARN');
+  const state: MonitorState = understood && !historyLost ? classified : 'INVALID';
+
+  // NOTHING THIS BUILD DID NOT UNDERSTAND IS EVER PERSISTED. Where the doctor's own answer was understood the
+  // validated names are kept even if the RUN is INVALID for a reason outside them (a lost history), because
+  // that answer is real and is what an operator needs to read. Where it was not, the durable file records no
+  // names at all rather than names of an unknown provenance.
+  const checks: readonly MonitorCheckSummary[] = parsed === null || !understood
     ? []
     : parsed.checks.map((check) => ({ name: check.name, state: check.state }));
 
   // CONSECUTIVE means consecutive. A healthy run resets it; every other state — including INVALID — adds to
   // it, because "I could not tell" happening five times in a row is itself the finding.
-  const consecutiveFailures = state === 'HEALTHY' ? 0 : (previous?.consecutiveFailures ?? 0) + 1;
+  const previousCount = previous.kind === 'state' ? previous.state.consecutiveFailures : 0;
+  const consecutiveFailures = state === 'HEALTHY' ? 0 : previousCount + 1;
 
   // A CANONICAL JSON DOCUMENT RATHER THAN A SEPARATOR. Two fields joined by a delimiter are two fields a
   // value containing that delimiter can blur; JSON quotes them, and it keeps this file free of the control
@@ -220,6 +329,22 @@ export function runDoctorMonitor(request: DoctorMonitorRequest, deps: DoctorMoni
   if (state === 'INVALID') {
     notes.push('The doctor did not answer in the shape this build understands. That is not evidence of health: '
       + 'treat it as an outage of the check itself.');
+  }
+  // THE STATUS AND THE STDERR ARE FACTS ABOUT THE RUN AND ARE REPORTED AS FACTS — a closed sentence and a
+  // byte count. The stderr TEXT is never carried: it is written by whatever was on the other end of that pipe
+  // and can hold a path, a connection string or a fragment of a secret.
+  if (!statusOk) {
+    notes.push('The doctor command itself exited non-zero. Whatever it printed was not treated as a healthy '
+      + 'answer, whether or not it parsed as one.');
+  }
+  if (outcome.stderr.length > 0) {
+    notes.push(`The doctor wrote ${Buffer.byteLength(outcome.stderr, 'utf8')} bytes to its error stream. The text `
+      + 'is deliberately not carried here; run the doctor directly to read it.');
+  }
+  if (historyLost) {
+    notes.push('The previous monitor state file was there and could not be read. The consecutive-failure count '
+      + 'could not be continued, so this run counts as one rather than as none, and it is INVALID: a monitor '
+      + 'that cannot remember cannot tell you a blip from an outage.');
   }
   if (consecutiveFailures >= 3) {
     notes.push(`This is run ${consecutiveFailures} in a row that was not healthy.`);

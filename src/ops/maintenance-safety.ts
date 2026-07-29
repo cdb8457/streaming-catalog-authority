@@ -1,8 +1,9 @@
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import {
-  closeSync, constants as fsConstants, existsSync, fsyncSync, lstatSync, mkdirSync, openSync, readdirSync,
-  realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync,
+  closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync,
+  readSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
+import type { Stats } from 'node:fs';
 import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 // Phases 277-280 — the safety floor every host-side maintenance command stands on.
@@ -83,6 +84,16 @@ export interface CommandOutcome {
 /** Injected. Nothing in this module can start a process on its own. */
 export type CommandRunner = (command: MaintenanceCommand) => CommandOutcome;
 
+/**
+ * A runner that binds the child's stdout DIRECTLY to a file this product created.
+ *
+ * Separate from `CommandRunner` on purpose: a command whose output is an artifact and a command whose output
+ * is a report are different things, and giving them one type is how a dump ends up decoded into a string. The
+ * `destination` is always a path the caller created inside its own private staging directory; there is no
+ * shell and no caller-supplied redirection anywhere in this tranche.
+ */
+export type FileOutputRunner = (command: MaintenanceCommand, destination: string) => CommandOutcome;
+
 export interface LedgerEntry {
   readonly program: string;
   readonly args: readonly string[];
@@ -145,24 +156,41 @@ export const FORBIDDEN_ARGUMENT_TOKENS: readonly string[] = Object.freeze([
 ]);
 
 /**
- * `docker` subcommands a maintenance command may use.
+ * The ONLY `docker` family a maintenance command may use.
  *
- * `pull`, `login`, `push` and `build` are absent and that is the point: every image these commands use must
- * already be on the host, which is what makes `--pull never` an honest flag rather than a hopeful one.
+ * IT USED TO BE SEVEN, AND THAT WAS A GUARD THAT DID NOT MATCH ITS CLAIM. `image`, `volume`, `container`,
+ * `inspect`, `info` and `version` were listed because they sounded harmless, and nothing then constrained the
+ * VERB under them — so `docker image pull`, `docker volume rm` and `docker container rm` were all permitted by
+ * a guard whose documented purpose is that this product never fetches and never removes what it did not
+ * create. Nothing in this tranche used any of them. A family nobody uses is a family that should not be
+ * reachable, so there is one, and its verbs are closed.
  */
-export const PERMITTED_DOCKER_SUBCOMMANDS: readonly string[] = Object.freeze([
-  'compose', 'image', 'volume', 'container', 'inspect', 'info', 'version',
+export const PERMITTED_DOCKER_SUBCOMMANDS: readonly string[] = Object.freeze(['compose']);
+
+/** Compose verbs. `pull` is absent so that `--pull never` is a description rather than a hope. */
+export const PERMITTED_COMPOSE_SUBCOMMANDS: readonly string[] = Object.freeze([
+  'up', 'down', 'stop', 'start', 'create', 'exec', 'run', 'cp', 'ps', 'config', 'kill',
 ]);
 
-/** Compose subcommands. `pull` is absent for the same reason. */
-export const PERMITTED_COMPOSE_SUBCOMMANDS: readonly string[] = Object.freeze([
-  'up', 'down', 'stop', 'start', 'create', 'exec', 'run', 'cp', 'ps', 'logs', 'config', 'kill',
-]);
+/**
+ * The ONLY global flags that may sit between `compose` and its verb, and whether each takes a value.
+ *
+ * A CLOSED SHAPE RATHER THAN A SKIP LOOP. The first version stepped forward by two for anything starting with
+ * `-`, which means a malformed or unknown flag could shift the verb out of view entirely: `compose --nonsense
+ * pull` parsed as if the verb were whatever landed at the index it happened to reach. Parsing the flags this
+ * product actually emits — and refusing everything else — makes the verb the verb.
+ */
+export const PERMITTED_COMPOSE_GLOBAL_FLAGS: Readonly<Record<string, 'value'>> = Object.freeze({
+  '-f': 'value',
+  '-p': 'value',
+  '--file': 'value',
+  '--project-name': 'value',
+});
 
 /**
  * Refuse a command that is outside what maintenance is allowed to do.
  *
- * Called on EVERY command before it is handed to the runner, including in the planners' own tests, so a
+ * Called on EVERY command before it is handed to the runner, including by the planners' own tests, so a
  * command that would be forbidden cannot even be planned.
  */
 export function assertPermittedCommand(command: MaintenanceCommand): void {
@@ -187,22 +215,37 @@ export function assertPermittedCommand(command: MaintenanceCommand): void {
       }
     }
   }
-  if (command.program === 'docker') {
-    const subcommand = command.args[0];
-    if (subcommand === undefined || !PERMITTED_DOCKER_SUBCOMMANDS.includes(subcommand)) {
+  if (command.program !== 'docker') return;
+
+  const family = command.args[0];
+  if (family === undefined || !PERMITTED_DOCKER_SUBCOMMANDS.includes(family)) {
+    throw new MaintenanceRefused(
+      `maintenance may only use these docker subcommands: ${PERMITTED_DOCKER_SUBCOMMANDS.join(', ')}. Every other `
+      + 'family — image, volume, container — carries verbs that fetch or remove, and maintenance does neither.');
+  }
+
+  // The global flags, parsed as a closed shape. Anything unknown ends the command, not the loop.
+  let index = 1;
+  while (index < command.args.length) {
+    const argument = command.args[index]!;
+    if (!argument.startsWith('-')) break;
+    const kind = PERMITTED_COMPOSE_GLOBAL_FLAGS[argument];
+    if (kind === undefined) {
       throw new MaintenanceRefused(
-        `maintenance may only use these docker subcommands: ${PERMITTED_DOCKER_SUBCOMMANDS.join(', ')}`);
+        `a compose command carried the global flag "${argument}", which is not one of the ones this product `
+        + `emits (${Object.keys(PERMITTED_COMPOSE_GLOBAL_FLAGS).join(', ')}). A flag nobody parses is a flag that `
+        + 'can move the verb out of view.');
     }
-    if (subcommand === 'compose') {
-      // Skip the file/project flags to find the verb. `-f <path>` and `-p <name>` are the only ones planned.
-      let index = 1;
-      while (index < command.args.length && command.args[index]!.startsWith('-')) index += 2;
-      const verb = command.args[index];
-      if (verb === undefined || !PERMITTED_COMPOSE_SUBCOMMANDS.includes(verb)) {
-        throw new MaintenanceRefused(
-          `maintenance may only use these compose subcommands: ${PERMITTED_COMPOSE_SUBCOMMANDS.join(', ')}`);
-      }
+    const value = command.args[index + 1];
+    if (value === undefined || value.startsWith('-')) {
+      throw new MaintenanceRefused(`the compose global flag "${argument}" was given no value`);
     }
+    index += 2;
+  }
+  const verb = command.args[index];
+  if (verb === undefined || !PERMITTED_COMPOSE_SUBCOMMANDS.includes(verb)) {
+    throw new MaintenanceRefused(
+      `maintenance may only use these compose subcommands: ${PERMITTED_COMPOSE_SUBCOMMANDS.join(', ')}`);
   }
 }
 
@@ -212,6 +255,24 @@ export function assertPermittedCommand(command: MaintenanceCommand): void {
  * The ledger records the command BEFORE its status is known and again with it, so a command that hung or
  * threw is still in the evidence. A refusal never reaches the runner at all.
  */
+export function runGuardedToFile(
+  runner: FileOutputRunner,
+  ledger: CommandLedger,
+  command: MaintenanceCommand,
+  destination: string,
+): CommandOutcome {
+  assertPermittedCommand(command);
+  let outcome: CommandOutcome;
+  try {
+    outcome = runner(command, destination);
+  } catch (err) {
+    ledger.record(command, -1);
+    throw new MaintenanceRefused(`a maintenance step could not be run: ${describeRunnerFailure(err)}`);
+  }
+  ledger.record(command, outcome.status);
+  return outcome;
+}
+
 export function runGuarded(runner: CommandRunner, ledger: CommandLedger, command: MaintenanceCommand): CommandOutcome {
   assertPermittedCommand(command);
   let outcome: CommandOutcome;
@@ -229,7 +290,10 @@ export function runGuarded(runner: CommandRunner, ledger: CommandLedger, command
 function describeRunnerFailure(err: unknown): string {
   const code = (err as NodeJS.ErrnoException | undefined)?.code;
   if (typeof code === 'string' && /^[A-Z]{1,16}$/.test(code)) return code;
-  return err instanceof Error ? err.name : 'an unknown failure';
+  // THE NAME, ONLY IF IT LOOKS LIKE ONE. An error's `name` is writable, so a thrown object can carry anything
+  // there — including a path or a fragment of a message somebody meant to keep out of a report.
+  const name = err instanceof Error ? err.name : '';
+  return /^[A-Za-z]{1,32}$/.test(name) ? name : 'an unknown failure';
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -405,6 +469,163 @@ export function assertPlainTree(directory: string, what: string, maxEntries = 50
 // Creating and publishing
 // -----------------------------------------------------------------------------------------------------------
 
+// -----------------------------------------------------------------------------------------------------------
+// Reading a file that must not have been swapped underneath us
+// -----------------------------------------------------------------------------------------------------------
+
+/**
+ * Can this platform open a file and be certain it did not follow a symbolic link to get there?
+ *
+ * The same question `catalog-import-inbox.ts` asks, for the same reason and with the same answer: where the
+ * guarantee cannot be given, the answer is to REFUSE rather than to read and hope.
+ */
+export function noFollowSupported(): boolean {
+  return typeof fsConstants.O_NOFOLLOW === 'number';
+}
+
+/**
+ * Open a name ONCE, without following a symbolic link to reach it, and hand back the descriptor.
+ *
+ * WHERE THE PLATFORM CAN PROMISE IT, THE PROMISE IS ATOMIC. `O_NOFOLLOW` refuses a link at the open itself,
+ * so there is no window at all between deciding what a name is and holding what it named.
+ *
+ * WHERE IT CANNOT — Windows, which has no `O_NOFOLLOW` — the fallback is stated honestly rather than either
+ * skipped or fatal. `lstat` refuses a link (Windows reports reparse points as links, so this is a real
+ * refusal, not a formality), the name is opened, and the open file description's identity is compared to the
+ * one that was inspected. A swap between the two operations changes the file index and is refused. That is a
+ * DETECTED race rather than an IMPOSSIBLE one, and the difference is written down here rather than implied by
+ * a shared function name. The shipped deployment is Linux and takes the atomic path.
+ *
+ * Returning 0 or "unsupported" instead would have made every read on this platform fail closed — which sounds
+ * safe and is actually how a suite stops testing anything.
+ */
+function openNoFollowDescriptor(path: string, what: string): number {
+  if (noFollowSupported()) {
+    try {
+      return openSync(path, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW as number));
+    } catch (err) {
+      throw openFailure(err, what);
+    }
+  }
+  let before: Stats;
+  try {
+    before = lstatSync(path);
+  } catch {
+    throw new MaintenanceRefused(`the ${what} could not be opened`);
+  }
+  if (before.isSymbolicLink()) {
+    throw new MaintenanceRefused(`the ${what} is a symbolic link, and this command will not follow one`);
+  }
+  let fd: number;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY);
+  } catch (err) {
+    throw openFailure(err, what);
+  }
+  let after: Stats;
+  try {
+    after = fstatSync(fd);
+  } catch {
+    try { closeSync(fd); } catch { /* the refusal below is the outcome either way */ }
+    throw new MaintenanceRefused(`the ${what} could not be inspected once it was open`);
+  }
+  // A ZERO INDEX PROVES NOTHING, so it is not accepted as agreement.
+  if (before.ino === 0 || after.ino === 0 || before.ino !== after.ino) {
+    try { closeSync(fd); } catch { /* as above */ }
+    throw new MaintenanceRefused(
+      `the ${what} was replaced while it was being opened, so what was checked is not what would have been read`);
+  }
+  return fd;
+}
+
+function openFailure(err: unknown, what: string): MaintenanceRefused {
+  const code = (err as NodeJS.ErrnoException).code;
+  if (code === 'ELOOP' || code === 'EMLINK') {
+    return new MaintenanceRefused(`the ${what} is a symbolic link, and this command will not follow one`);
+  }
+  if (code === 'EISDIR') return new MaintenanceRefused(`the ${what} is not a regular file`);
+  return new MaintenanceRefused(`the ${what} could not be opened`);
+}
+
+/** How much of one component file this module will read into memory at once. */
+export const MAX_COMPONENT_FILE_BYTES = 256 * 1024 * 1024;
+
+export interface OpenedFile {
+  readonly bytes: Buffer;
+  readonly size: number;
+}
+
+/**
+ * Read a file through ONE descriptor, opened without following a link, and answer every question of that
+ * descriptor rather than of the name.
+ *
+ * THE DEFECT THIS CLOSES. The first version of the backup `lstat`ed each entry, decided it was a plain file,
+ * and then RE-OPENED it by path to read, copy or digest it. Three resolutions of one name with a window
+ * between each: a leaf swapped to a symbolic link in that window would be `lstat`ed as a file and read as
+ * whatever it pointed at, and the digest recorded for a component would describe somebody else's bytes.
+ * Backups run on a schedule, against a directory other things can write to, which is exactly where that
+ * window is real.
+ *
+ * SO THE NAME IS USED ONCE. `open(O_RDONLY | O_NOFOLLOW)` refuses a link AT THE OPEN, atomically; `fstat`
+ * then asks the open file description what it is; the bytes are read from that descriptor; and the size is
+ * re-checked against what was actually read, so a file that grew or was truncated mid-read is refused rather
+ * than absorbed.
+ */
+export function readFileNoFollow(path: string, what: string, maxBytes = MAX_COMPONENT_FILE_BYTES): OpenedFile {
+  const fd = openNoFollowDescriptor(path, what);
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new MaintenanceRefused(`the ${what} is not a regular file`);
+    if (stats.size > maxBytes) {
+      throw new MaintenanceRefused(`the ${what} is larger than the ${maxBytes} bytes this command will read`);
+    }
+    // ONE BYTE MORE THAN THE FSTAT SAID. That extra byte is what detects a file which GREW between the fstat
+    // and the read; a short read is caught by the same comparison from the other side.
+    const buffer = Buffer.allocUnsafe(Math.min(maxBytes + 1, stats.size + 1));
+    let total = 0;
+    for (;;) {
+      if (total >= buffer.byteLength) break;
+      const read = readSync(fd, buffer, total, buffer.byteLength - total, total);
+      if (read <= 0) break;
+      total += read;
+    }
+    if (total !== stats.size) {
+      throw new MaintenanceRefused(
+        `the ${what} changed size while it was being read, so what was checked is not what was read`);
+    }
+    return { bytes: buffer.subarray(0, total), size: stats.size };
+  } finally {
+    try { closeSync(fd); } catch { /* a descriptor that will not close is not a reason to fail a completed read */ }
+  }
+}
+
+/**
+ * List a directory that was opened without following a link, and classify each entry from an `lstat` taken
+ * for the walk only.
+ *
+ * The classification is advisory and is stated as such: what makes the WALK safe is that every FILE it
+ * reaches is then opened with `O_NOFOLLOW`, so an entry that turns into a link between the listing and the
+ * open is refused at the open rather than followed. A directory that turns into a link is refused when the
+ * walk descends into it, for the same reason.
+ */
+export function assertDirectoryNoFollow(path: string, what: string): void {
+  let fd: number;
+  try {
+    fd = openNoFollowDescriptor(path, what);
+  } catch (err) {
+    // A DIRECTORY OPENED FOR READING IS `EISDIR` ON SOME PLATFORMS AND FINE ON OTHERS. Either way the name
+    // exists and was not a link — which is the entire question being asked — so that one refusal is the
+    // answer "yes", and every other refusal still propagates.
+    if (err instanceof MaintenanceRefused && err.message.endsWith('is not a regular file')) return;
+    throw err;
+  }
+  try {
+    if (!fstatSync(fd).isDirectory()) throw new MaintenanceRefused(`the ${what} is not a directory`);
+  } finally {
+    try { closeSync(fd); } catch { /* as above */ }
+  }
+}
+
 /** Create a directory that only its owner can read, refusing an existing name. */
 export function createPrivateDirectory(path: string, what: string): void {
   try {
@@ -484,17 +705,26 @@ export interface MaintenanceLock {
  * process is alive, and guessing wrong here means two writers.
  */
 export function acquireMaintenanceLock(root: string): MaintenanceLock {
-  const path = join(root, MAINTENANCE_LOCK_DIRNAME);
+  return acquireLockDirectory(join(root, MAINTENANCE_LOCK_DIRNAME),
+    'another maintenance command is already running for this project, or one was interrupted and left its '
+    + `lock behind (${MAINTENANCE_LOCK_DIRNAME} in the project root). Wait for it, or remove that directory `
+    + 'once you are sure nothing is running.');
+}
+
+/**
+ * `mkdir` as a lock, at a caller-chosen name.
+ *
+ * SEPARATE LOCKS FOR SEPARATE INVARIANTS. The project lock exists so two commands cannot stop and start the
+ * same stack at once. A read-modify-write of one small state file needs its own, held for a much shorter
+ * time and taken where the file lives — sharing the project lock would mean a five-minute monitor schedule
+ * refusing every time a backup is running, which teaches an operator to ignore its exit code.
+ */
+export function acquireLockDirectory(path: string, contention: string): MaintenanceLock {
   try {
     mkdirSync(path, { mode: PRIVATE_DIR_MODE });
   } catch (err) {
-    if ((err as NodeJS.ErrnoException).code === 'EEXIST') {
-      throw new MaintenanceRefused(
-        'another maintenance command is already running for this project, or one was interrupted and left its '
-        + `lock behind (${MAINTENANCE_LOCK_DIRNAME} in the project root). Wait for it, or remove that directory `
-        + 'once you are sure nothing is running.');
-    }
-    throw new MaintenanceRefused('the maintenance lock could not be taken; check the project root is writable');
+    if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw new MaintenanceRefused(contention);
+    throw new MaintenanceRefused('the maintenance lock could not be taken; check the directory it lives in is writable');
   }
   // What is inside it is diagnostic only. No secret, no path: a pid and the moment it was taken.
   try {
@@ -512,4 +742,106 @@ export function acquireMaintenanceLock(root: string): MaintenanceLock {
 /** A short, unguessable suffix for a staging directory beside its final name. */
 export function stagingSuffix(): string {
   return randomBytes(6).toString('hex');
+}
+
+/**
+ * The size of a file, asked of a descriptor opened without following a link.
+ *
+ * Used to check that a command which wrote straight into a file actually wrote something: a runner that
+ * reported success and produced nothing is exactly what a status check misses.
+ */
+export function fileSizeNoFollow(path: string): number {
+  let fd: number;
+  try {
+    fd = openNoFollowDescriptor(path, 'file');
+  } catch {
+    // ABSENT, UNREADABLE AND SWAPPED-FOR-A-LINK ALL ANSWER THE SAME QUESTION HERE: how many bytes are there to
+    // be trusted? In each case, none — and the caller refuses on a zero.
+    return 0;
+  }
+  try {
+    const stats = fstatSync(fd);
+    return stats.isFile() ? stats.size : 0;
+  } finally {
+    try { closeSync(fd); } catch { /* nothing rests on this close */ }
+  }
+}
+
+/** How much of a file is held in memory while it is being digested or copied. The file itself is streamed. */
+export const DIGEST_CHUNK_BYTES = 1 << 20;
+
+/**
+ * Copy one file, streaming, from a descriptor opened without following a link into a private new one.
+ *
+ * SAME REASON AS THE DIGEST. A database dump is larger than any bound this module is willing to hold in
+ * memory, and a restore workspace needs its own writable copy of it — so the copy is streamed rather than the
+ * file being read whole and written back. The destination is created `O_EXCL` and private, and a failure
+ * removes it: a half-written dump that stayed on disk would be restored from.
+ */
+export function copyFileNoFollow(source: string, destination: string, what: string): number {
+  const from = openNoFollowDescriptor(source, what);
+  let to: number;
+  try {
+    if (!fstatSync(from).isFile()) throw new MaintenanceRefused(`the ${what} is not a regular file`);
+    try {
+      to = openSync(destination, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, PRIVATE_FILE_MODE);
+    } catch {
+      throw new MaintenanceRefused(`the ${what} copy could not be created; something already holds that name`);
+    }
+    let copied = 0;
+    try {
+      const buffer = Buffer.allocUnsafe(DIGEST_CHUNK_BYTES);
+      for (;;) {
+        const read = readSync(from, buffer, 0, buffer.byteLength, copied);
+        if (read <= 0) break;
+        writeSync(to, buffer, 0, read, copied);
+        copied += read;
+      }
+      fsyncSync(to);
+    } catch {
+      try { unlinkSync(destination); } catch { /* the refusal is the outcome either way */ }
+      throw new MaintenanceRefused(`the ${what} could not be copied in full, so the copy was removed`);
+    } finally {
+      try { closeSync(to); } catch { /* nothing rests on this close */ }
+    }
+    return copied;
+  } finally {
+    try { closeSync(from); } catch { /* as above */ }
+  }
+}
+
+/**
+ * Digest a file through ONE descriptor, streaming, with no bound on the file and a fixed bound on memory.
+ *
+ * THE DUMP IS WHY THIS EXISTS. A database dump can be larger than any sensible in-memory limit, and
+ * `readFileNoFollow`'s bound is there to stop a component file from deciding how much memory this process
+ * uses. Digesting is the one operation that needs the whole file and none of it at once, so it gets its own
+ * function rather than a raised limit that would apply everywhere.
+ *
+ * Same discipline as every other read here: opened without following a link, `fstat`ed on the descriptor, and
+ * the size re-checked against what was actually read, so a file that changed under it is refused rather than
+ * digested halfway.
+ */
+export function digestFileNoFollow(path: string, what: string): { readonly digest: string; readonly size: number } {
+  const fd = openNoFollowDescriptor(path, what);
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isFile()) throw new MaintenanceRefused(`the ${what} is not a regular file`);
+    const hash = createHash('sha256');
+    const buffer = Buffer.allocUnsafe(DIGEST_CHUNK_BYTES);
+    let total = 0;
+    for (;;) {
+      const read = readSync(fd, buffer, 0, buffer.byteLength, total);
+      if (read <= 0) break;
+      hash.update(buffer.subarray(0, read));
+      total += read;
+    }
+    if (total !== stats.size) {
+      throw new MaintenanceRefused(
+        `the ${what} changed size while it was being digested, so what was measured is not what is there`);
+    }
+    return { digest: hash.digest('hex'), size: total };
+  } finally {
+    try { closeSync(fd); } catch { /* nothing rests on this close */ }
+  }
 }

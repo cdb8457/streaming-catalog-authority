@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
@@ -43,6 +44,8 @@ export type VerificationFinding =
   | 'COMPONENT_SYMLINK'
   | 'COMPONENT_SPECIAL'
   | 'SCHEMA_INCOMPATIBLE'
+  | 'SCHEMA_DISAGREEMENT'
+  | 'SCHEMA_INDETERMINATE'
   | 'INSPECTOR_REFUSED';
 
 export interface VerificationProblem {
@@ -62,8 +65,19 @@ export interface BackupVerificationReport {
   readonly problems: readonly VerificationProblem[];
   /** The Phase 257 inspector's own verdict, unmodified. */
   readonly inspectorVerdict: BackupInspection['verdict'];
+  /** True only for a set this build could actually restore. An intact older set verifies and is NOT this. */
+  readonly restorableUnderThisBuild: boolean;
   readonly manifestSchemaVersion: number;
   readonly buildSchemaVersion: number;
+  /**
+   * A digest over everything the manifest declares about this set: its name, its schema version and every
+   * component's recorded digest.
+   *
+   * WHAT IT IS FOR: comparing one verification to another. A caller that reads a set — a rehearsal restoring
+   * from it — verifies before and after and compares this, so "the set was only ever read" is checked rather
+   * than promised. It is empty on a set that could not be read at all.
+   */
+  readonly setDigest: string;
   readonly wrote: 'nothing';
   readonly network: 'none';
   readonly notes: readonly string[];
@@ -164,23 +178,83 @@ export function verifyBackupSet(setDir: string): BackupVerificationReport {
       + 'restored under this build.');
   }
 
-  // 5. THE SHIPPED OFFLINE INSPECTOR, run over the same directory and reported unmodified.
+  // 5. THE SHIPPED OFFLINE INSPECTOR, run over the same directory — AND ITS VERDICT CONSUMED, not merely
+  // reported.
+  //
+  // THE DEFECT THIS CLOSES. The first version read only `inspection.missing`, so a set the inspector called
+  // AHEAD (a dump from a newer build, which this build must never restore) or INDETERMINATE (the schema could
+  // not be established at all) verified as `ok: true` with the damning verdict sitting in a field beside it.
+  // A verification that runs the authoritative check and then ignores what it said is worse than one that
+  // never ran it, because it carries the authority without the judgement.
   let inspection: BackupInspection;
   try {
     inspection = inspectBackupDirectory(resolved);
   } catch (err) {
     return failed(setName, [...problems, {
       finding: 'INSPECTOR_REFUSED', component: null,
+      // The inspector's own messages are this product's own words, and carry no path.
       detail: err instanceof Error ? err.message : 'the offline inspector refused this set',
     }], 'INCOMPLETE', manifest.schemaVersion, notes);
   }
-  if (inspection.missing.length > 0) {
-    for (const id of inspection.missing) {
+  for (const id of inspection.missing) {
+    problems.push({
+      finding: 'COMPONENT_MISSING', component: id,
+      detail: `the offline inspector does not recognise a ${id} component in this set`,
+    });
+  }
+
+  // 5a. THE VERDICT ITSELF. Every one of the inspector's five is decided here, and only two of them can
+  // belong to a set this build is willing to call verified.
+  let restorableUnderThisBuild = false;
+  switch (inspection.verdict) {
+    case 'CURRENT':
+      // The dump holds THIS build's schema, so the manifest must say so too. A manifest that disagrees with
+      // the dump it describes has been edited, and the dump is what a restore actually replays.
+      if (manifest.schemaVersion !== MIGRATION_VERSION) {
+        problems.push({
+          finding: 'SCHEMA_DISAGREEMENT', component: 'database',
+          detail: `the dump holds this build's schema (${MIGRATION_VERSION}) and the manifest records `
+            + `${manifest.schemaVersion}. One of them has been changed since the set was taken.`,
+        });
+      } else {
+        restorableUnderThisBuild = true;
+      }
+      break;
+    case 'ROLLBACK_POINT':
+      // A GENUINE OLDER SET IS INTACT AND IS NOT RESTORABLE HERE, and both halves are said. The manifest must
+      // agree that it is older; a manifest claiming the current schema over an older dump is a disagreement.
+      if (manifest.schemaVersion >= MIGRATION_VERSION) {
+        problems.push({
+          finding: 'SCHEMA_DISAGREEMENT', component: 'database',
+          detail: `the dump predates this build's schema and the manifest records ${manifest.schemaVersion}, `
+            + `which is not older than this build's ${MIGRATION_VERSION}.`,
+        });
+      } else {
+        notes.push('This set is INTACT and is a rollback point for the older version it came from. It CANNOT be '
+          + 'restored under this build — that is the same fact said the other way round, not a fault.');
+      }
+      break;
+    case 'AHEAD':
       problems.push({
-        finding: 'COMPONENT_MISSING', component: id,
-        detail: `the offline inspector does not recognise a ${id} component in this set`,
+        finding: 'SCHEMA_INCOMPATIBLE', component: 'database',
+        detail: 'the dump holds a NEWER schema than this build understands. Restoring it here would put an '
+          + 'older build in front of a schema it does not know.',
       });
-    }
+      break;
+    case 'INDETERMINATE':
+      problems.push({
+        finding: 'SCHEMA_INDETERMINATE', component: 'database',
+        detail: 'which schema this set\'s dump holds could not be established — a compressed archive, a scan '
+          + 'bound, no schema row, or two dumps that disagree. That is an unanswered question, and a backup '
+          + 'cannot be verified on one.',
+      });
+      break;
+    case 'INCOMPLETE':
+      problems.push({
+        finding: 'COMPONENT_MISSING', component: null,
+        detail: 'the offline inspector reports this set as incomplete',
+      });
+      break;
   }
 
   notes.push('Nothing was restored and nothing was changed. This proves what the set CONTAINS and that it is '
@@ -194,12 +268,32 @@ export function verifyBackupSet(setDir: string): BackupVerificationReport {
     verified,
     problems,
     inspectorVerdict: inspection.verdict,
+    restorableUnderThisBuild,
     manifestSchemaVersion: manifest.schemaVersion,
     buildSchemaVersion: MIGRATION_VERSION,
+    setDigest: manifestDigest(setName, manifest),
     wrote: 'nothing',
     network: 'none',
     notes,
   };
+}
+
+/**
+ * A digest over what the manifest says this set IS.
+ *
+ * Deliberately over the DECLARED digests rather than a re-read of the bytes: the component bytes have just
+ * been checked against exactly those declarations, so this summarises a verification that already happened
+ * instead of doing it a second time. Two verifications of an untouched set produce the same value; a change
+ * to any component, or to the manifest, changes it.
+ */
+function manifestDigest(setName: string, manifest: BackupManifest): string {
+  const canonical = JSON.stringify([
+    BACKUP_VERIFY_REPORT,
+    setName,
+    manifest.schemaVersion,
+    manifest.components.map((component) => [component.id, component.present, component.digest, component.bytes]),
+  ]);
+  return createHash('sha256').update(canonical, 'utf8').digest('hex');
 }
 
 function failed(
@@ -217,8 +311,10 @@ function failed(
     verified: [],
     problems,
     inspectorVerdict,
+    restorableUnderThisBuild: false,
     manifestSchemaVersion,
     buildSchemaVersion: MIGRATION_VERSION,
+    setDigest: '',
     wrote: 'nothing',
     network: 'none',
     notes: [...notes],
