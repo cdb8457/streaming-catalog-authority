@@ -517,6 +517,21 @@ test('both fresh database starts wait for a declared healthcheck before either r
   }), 'no healthcheck', 'a definition that cannot prove database readiness');
 });
 
+test('both restores prepare only the known runtime role, without a login or credential', () => {
+  const resolved = resolveRehearsal(req(makeWorld('restore-role')));
+  const commands = planRehearsalCommands(resolved);
+  const roleCommands = commands.filter((command) => command.args.includes('psql') && command.args.includes('-c'));
+  assertEq(roleCommands.length, 2, 'the upgrade and rollback each prepare the ACL target');
+  for (const command of roleCommands) {
+    const sql = command.args[command.args.indexOf('-c') + 1]!;
+    assert(sql.includes("rolname = 'app'"), 'the command checks only the product-managed runtime role');
+    assert(sql.includes('CREATE ROLE app;'), 'the placeholder uses PostgreSQL\'s non-authenticating default');
+    for (const forbidden of ['PASSWORD', 'LOGIN PASSWORD', 'DATABASE_URL', 'secret']) {
+      assert(!sql.includes(forbidden), `the role preparation carries no ${forbidden}`);
+    }
+  }
+});
+
 test('an unmarked root holding somebody\'s files is never claimed, and never cleaned', () => {
   // THE DEFECT: a rehearsal wrote into, and offered to remove volumes from, any directory it was pointed at.
   const world = makeWorld('unowned');
@@ -689,7 +704,10 @@ test('a rollback restore that fails is reported as "this upgrade is not reversib
   let seen = 0;
   const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
   const counting = (command: Parameters<typeof tools.runner>[0]) => {
-    if (command.args.includes('psql')) { seen += 1; if (seen === 2) return { status: 1, stdout: '', stderr: '' }; }
+    if (command.args.includes('psql') && command.args.some((arg) => arg.endsWith('/catalog-backup.sql'))) {
+      seen += 1;
+      if (seen === 2) return { status: 1, stdout: '', stderr: '' };
+    }
     return tools.runner(command);
   };
   const resolved = resolveRehearsal(req(world));
