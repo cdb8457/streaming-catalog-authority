@@ -1,13 +1,16 @@
-# Handoff for review — v1.2.5
+# Handoff for review — v1.2.6
 
-Branch `cdb8457/v1-2-5-jellyfin-recursive`, based on the published v1.2.4 merge
-`ff8c2174579d113c32825bec9a025baa735e4d0e`. Earlier releases remain published and immutable.
+Branch `cdb8457/v1-2-6-sidecar-rehearsal-hardening`, based on the published v1.2.5 merge
+`efd426148f31ea9af82a37f3215b8497809ba065`. Earlier releases remain published and immutable.
 
 ## Release scope
 
 - Carry all prior release corrections forward unchanged.
-- Include `Recursive=true` when reading a collection's members so Jellyfin 10.11 returns descendants.
-- Assert the live-discovered request requirement in the focused Jellyfin HTTP contract.
+- Bound the steady-state sidecar's Go scheduler so its health handshake stays within the 128-PID service
+  limit on high-core hosts.
+- Make the disposable upgrade/rollback rehearsal select the restored managed-ring root key and leave the
+  restored legacy static KEK unselected, matching the shipped root-only runtime.
+- Assert both corrections in the focused deployment and rehearsal suites.
 - Retain every v1.2.0 offline, Jellyfin, collection lifecycle, recovery, O4 sidecar, and O5 managed-custody
   boundary unchanged.
 
@@ -20,10 +23,10 @@ explicit local test boundaries.
 
 ## Release identity and rollback
 
-- `package.json` and the lockfile report `1.2.5`.
-- The consumer bundle coordinate and shipped Compose defaults select `v1.2.5`.
-- v1.2.5 remains schema version 9.
-- The released v1.1.4 installation is the upgrade source and rollback target. Before upgrade, take and verify
+- `package.json` and the lockfile report `1.2.6`.
+- The consumer bundle coordinate and shipped Compose defaults select `v1.2.6`.
+- v1.2.6 remains schema version 9.
+- The released v1.2.5 installation is the upgrade source and rollback target. Before upgrade, take and verify
   a complete set containing database, keystore, secrets, and promotion records.
 - A rollback after custody or database state changes restores the complete pre-upgrade set; changing only the
   image is not represented as rollback.

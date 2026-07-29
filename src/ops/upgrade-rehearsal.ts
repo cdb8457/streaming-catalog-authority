@@ -209,12 +209,10 @@ export const REHEARSAL_SECRET_CONSUMERS: Readonly<Record<string, readonly {
   /**
    * The variable that must name the mounted path, or `null` where the rehearsal must NOT set one.
    *
-   * `null` IS FOR THE CUSTODY SECRETS THE STACK CHOOSES BETWEEN. Phase 282 gives the sidecar two possible
-   * sources of key material — the static KEK and the ring's root wrapping key — and the daemon REFUSES to
-   * start wired to both, because a process with two answers to "what wraps a DEK" uses whichever branch ran
-   * first. Which one an installation uses is a fact about whether it has migrated, and that is the operator's
-   * stack's decision, not the rehearsal's. So the file is mounted (a restore that did not put it back is a
-   * restore this command must fail) and the choice is left to the definition being rehearsed.
+   * `null` is for a required backup secret that must be restored but must not be selected by this steady-state
+   * rehearsal. Phase 289 makes the runtime definition root-only: the daemon REFUSES to start wired to both
+   * the static KEK and the ring's root wrapping key. The legacy static file therefore remains mounted only to
+   * prove the complete backup restored it, while the root key is the sole selected custody source.
    */
   readonly env: string | null;
 }[]>> = Object.freeze({
@@ -229,9 +227,9 @@ export const REHEARSAL_SECRET_CONSUMERS: Readonly<Record<string, readonly {
   ],
   operator_ui_token: [{ service: 'app', env: 'OPERATOR_UI_TOKEN_FILE' }],
   completion_secret: [{ service: 'sidecar', env: 'SIDECAR_COMPLETION_SECRET_FILE' }],
-  custodian_kek: [{ service: 'sidecar', env: 'SIDECAR_KEK_FILE' }],
-  // Phase 282. Mounted so a restore that lost it fails here, and NOT pointed at: see the `env` docs above.
-  custodian_root_key: [{ service: 'sidecar', env: null }],
+  custodian_kek: [{ service: 'sidecar', env: null }],
+  // Phase 289. The steady-state stack is root-only; this must match its sole custody source.
+  custodian_root_key: [{ service: 'sidecar', env: 'SIDECAR_ROOT_KEY_FILE' }],
 });
 
 /**

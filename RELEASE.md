@@ -3,9 +3,28 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
-## v1.2.5 - Recursive Jellyfin collection membership
+## v1.2.6 - Sidecar and managed-ring rehearsal hardening
 
 Release candidate; not yet published. Schema remains version 9.
+
+Fixed:
+
+- **The steady-state sidecar now bounds the Go scheduler used by `tsx`/esbuild.** A 128-core Unraid host
+  proved that the daemon plus its health probe could exhaust the service's deliberate 128-PID limit before
+  the protocol handshake ran. `GOMAXPROCS=2` preserves that confinement and makes the handshake reliable.
+- **Upgrade and rollback rehearsals now restore root-only managed-ring custody correctly.** The generated
+  override previously selected the restored legacy static KEK even when the runtime selected the restored
+  root key, so the fail-closed sidecar saw both custody sources and refused startup. The static file is still
+  restored as part of the complete recovery set, but only the managed-ring root key is selected.
+- **Both corrections came from real Tower acceptance.** Production remained healthy and untouched while
+  each failed disposable rehearsal retained only its marker-scoped project for diagnosis and exact cleanup.
+
+All earlier product behavior and safety boundaries are unchanged. Catalog Authority still never downloads,
+scrapes, plays, or acquires media and never creates media symlinks.
+
+## v1.2.5 - Recursive Jellyfin collection membership
+
+Published `2026-07-29`, immutable. Schema remains version 9.
 
 Fixed:
 
