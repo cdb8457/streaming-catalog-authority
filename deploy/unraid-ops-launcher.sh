@@ -59,8 +59,17 @@ resolve_custody_mode() {
   CUSTODY_MODE="$(node "$CUSTODY_MODE_HELPER" "$MARKER_FILE")" || {
     status=$?
     if [ "$status" = "4" ]; then
-      CUSTODY_MODE="root-only"
-      return
+      # ---- A MARKER THAT WAS THERE AND IS NOW GONE IS A RACE, NOT A STEADY STATE --------------------
+      #
+      # THE HOLE THIS CLOSES, AND IT IS THE SAME TOCTOU THE DESCRIPTOR READ EXISTS TO REMOVE. Getting here
+      # means the name check above SAW something and the descriptor read found nothing — so the marker was
+      # removed between the two. Treating that as "no marker, therefore the steady state" would let anything
+      # that can unlink one file downgrade an unmigrated installation onto the root-only stack, which is the
+      # exact outcome this launcher was changed to prevent. A genuinely absent marker never reaches this
+      # line: it returned the steady state before the helper was invoked.
+      echo "refusing: the custody runtime mode marker was removed while this command was reading it" >&2
+      echo "nothing was started. Re-run once whatever is changing that file has finished." >&2
+      exit 3
     fi
     echo "refusing: the custody runtime mode marker is not one this build will read" >&2
     echo "run: npm run ops:custody-transition -- --project $REPO_DIR --plan" >&2

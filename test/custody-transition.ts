@@ -293,7 +293,7 @@ await test('the launcher starts a legacy installation on the overlay, and a migr
  * version of this launcher had. The only way to know what `docker compose` receives is to be `docker` and
  * write down what arrived.
  */
-function runLauncher(projectDir: string, verb: string): {
+function runLauncher(projectDir: string, verb: string, helper?: string): {
   readonly status: number; readonly argv: readonly string[]; readonly stderr: string;
 } {
   const binDir = join(WORK, `bin-${randomUUID().slice(0, 8)}`);
@@ -316,7 +316,7 @@ exit 0
       CATALOG_AUTHORITY_COMPOSE_FILE: join(projectDir, RUNTIME_COMPOSE_FILE),
       CATALOG_AUTHORITY_BOOTSTRAP_COMPOSE_FILE: join(projectDir, BOOTSTRAP_COMPOSE_FILE),
       CATALOG_AUTHORITY_CUSTODY_MODE_FILE: join(projectDir, CUSTODY_MODE_FILENAME),
-      CATALOG_AUTHORITY_CUSTODY_MODE_HELPER: join(repoRoot, 'deploy', 'read-custody-mode.mjs'),
+      CATALOG_AUTHORITY_CUSTODY_MODE_HELPER: helper ?? join(repoRoot, 'deploy', 'read-custody-mode.mjs'),
     },
   });
   const argv = existsSync(record)
@@ -387,6 +387,31 @@ await test('the shipped launcher, EXECUTED against a fake docker, hands over exa
     assertEq(refused.argv.length, 0, `${what}: docker was never called`);
   }
   rmSync(join(project, CUSTODY_MODE_FILENAME), { recursive: true, force: true });
+
+  // 6. A MARKER THAT WAS THERE AND IS GONE BY THE TIME THE DESCRIPTOR OPENS IS A RACE, NOT A STEADY STATE.
+  //
+  // THE HOLE THIS CLOSES. Reaching that point means the name check SAW something and the descriptor read
+  // found nothing, so the marker was removed in between. Mapping it to "no marker, therefore root-only"
+  // would let anything that can unlink one file downgrade an unmigrated installation onto the steady-state
+  // stack — the exact outcome this launcher was changed to prevent. A genuinely absent marker never reaches
+  // the helper at all: it returns the steady state before the helper is invoked, which is case 1 above.
+  //
+  // INJECTED DETERMINISTICALLY. A real race is a few microseconds wide; a stub reader that answers ABSENT
+  // while a real marker sits on disk puts the launcher in exactly the state the race produces.
+  writeCustodyRuntimeMode(project, 'bootstrap');
+  const stub = join(WORK, 'absent-reader.mjs');
+  writeFileSync(stub, 'process.exit(4);', 'utf8');
+  const raced = runLauncher(project, 'status', stub);
+  assertEq(raced.status, 3, 'a marker that vanished under the reader is refused');
+  assertEq(raced.argv.length, 0, 'and docker was never called');
+  assert(raced.stderr.includes('removed while this command was reading it'), 'and it says what happened');
+  rmSync(join(project, CUSTODY_MODE_FILENAME), { recursive: true, force: true });
+
+  // AND THE ABSENCE THAT IS NOT A RACE STILL STARTS THE STEADY STATE, so the refusal above is about the
+  // race and not about absence.
+  const genuinelyAbsent = runLauncher(project, 'status');
+  assertEq(genuinelyAbsent.status, 0, 'a genuinely absent marker still runs');
+  assertEq(genuinelyAbsent.argv.join('|'), `compose|-f|${runtimeFile}|ps|-a`, 'on the steady-state file');
 
   // A SYMBOLIC LINK AT THE MARKER IS THE SHARPEST CASE OF ALL — the old reader checked for one and then read
   // through a redirect that follows one — and CREATING a link needs a privilege Windows does not hand a test
