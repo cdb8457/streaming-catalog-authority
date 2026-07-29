@@ -2,10 +2,24 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync } from 'node:fs';
 import { isAbsolute, join, relative, sep } from 'node:path';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
-import { BACKUP_COMPONENT_IDS, type BackupComponentId } from './backup-components.js';
+import {
+  BACKUP_COMPONENT_IDS, REQUIRED_SECRET_FILES, type BackupComponentId,
+} from './backup-components.js';
 import { verifyBackupSet, type BackupVerificationReport } from './backup-set-verification.js';
+import { CATALOG_IMPORT_CONTAINER_DIR, CATALOG_IMPORT_DIR_ENV } from './catalog-import.js';
 import { COMPONENT_ARTIFACT_NAMES, copyTree, readBackupManifest } from './complete-backup.js';
 import { classifyDoctor, parseDoctorJson } from './doctor-monitor.js';
+import { PROMOTION_RECORDS_DEFAULT_DIR, PROMOTION_RECORDS_DIR_ENV } from './operator-ui-promotion-chain.js';
+import {
+  REHEARSAL_PRODUCT_SERVICES,
+  REHEARSAL_SERVICES,
+  assertNoComposeInterpolation,
+  assertNoExternalComposeInputs,
+  parseResolvedComposeModel,
+  resolvedComposeDigest,
+  validateResolvedCompose,
+  type RequiredWiring,
+} from './rehearsal-compose-model.js';
 import {
   CommandLedger,
   MaintenanceRefused,
@@ -15,6 +29,8 @@ import {
   createPrivateDirectory,
   digestFileNoFollow,
   readFileNoFollow,
+  removeOwnFileNoFollow,
+  removeOwnTreeNoFollow,
   resolveInsideRoot,
   resolveMaintenanceRoot,
   runGuarded,
@@ -103,6 +119,38 @@ import {
 // NOTHING HERE TOUCHES MEDIA, A MEDIA SERVER OR AN ACQUISITION SYSTEM. The representative checks are the
 // product's own safe primitives — an import preview, an import apply, a replay, the import history, a
 // catalog read that decrypts — and `maintenance-safety.ts` refuses any argument that would reach further.
+//
+// -----------------------------------------------------------------------------------------------------
+// AND THE SECOND ROUND OF CORRECTIONS: WHAT THE FIRST ONE STILL ASSERTED RATHER THAN PROVED.
+// -----------------------------------------------------------------------------------------------------
+//
+// Everything above was true and none of it was enough, because six claims were still made by a constant.
+//
+//   1. `touchedProduction: false` WAS A LITERAL. A Compose definition decides for itself what it touches: a
+//      bind mount names a host directory, a Docker secret names a host file, an external volume is somebody
+//      else's, and `${VAR:-/mnt/user/appdata/catalog}` is production BY DEFAULT. The shipped Unraid stack
+//      does all of those, so following the documentation exactly would have rehearsed against production
+//      while the report said it had not. Now the fully resolved configuration — Compose's own answer, from
+//      `config`, which starts nothing — is obtained and validated BEFORE the marker is claimed and before a
+//      container could exist, and again after each override is written. See `rehearsal-compose-model.ts`.
+//   2. ONLY `app.image` WAS PINNED. In this stack `migrate` and `sidecar` are the SAME product image, so the
+//      candidate leg ran the candidate app against the CURRENT build's migration and the CURRENT build's
+//      custodian sidecar. The migration is the entire reason a rollback is hard. Every product service is
+//      now pinned in every override, and the resolved model is what proves it.
+//   3. THE RESTORED SECRETS WERE MOUNTED SOMEWHERE NOTHING READ. A generic secrets directory into `app` does
+//      not replace a Docker secret, and the sidecar kept its base state bind and its `/run/secrets/*` files
+//      — production files. Each restored file is now bound at the exact path its service reads, and the
+//      environment variable that names that path is set to it, and both are checked in the resolved model.
+//   4. THE PLAN DIGEST COVERED PATHS, NOT BYTES. A definition, an import snapshot or a whole backup set could
+//      be swapped between `--plan` and the run. The digest now binds the CONTENT of all three, and they are
+//      recomputed immediately before the marker is claimed and refused if any moved.
+//   5. TWO EXIT-ZERO APPLIES ARE NOT IDEMPOTENCE, and a matching stdout behind a NON-ZERO status is not a
+//      pass. The import runs with `--json` and its shipped report is read: the replay must report no new and
+//      no updated record. Every successful assertion requires status zero, and stdout is bounded before it is
+//      parsed.
+//   6. `cleanup.performed: true` MEANT "compose down ran" while a workspace holding a copy of the keystore
+//      and every secret file stayed on disk. Cleanup now removes the fixed, marker-owned artifacts it wrote —
+//      by identity and digest, never a recursive delete of an unverified path — and the marker last.
 
 export const REHEARSAL_REPORT = 'phase-279-280-upgrade-rehearsal';
 export const REHEARSAL_VERSION = 1;
@@ -124,13 +172,124 @@ export const REHEARSAL_OVERRIDE_NAMES: Readonly<Record<RehearsalImageRole, strin
 
 /** Where the restore workspace lands inside the containers. Fixed, so the plan can name it. */
 export const REHEARSAL_RESTORE_MOUNT = '/restore';
-export const REHEARSAL_KEYSTORE_MOUNT = '/var/lib/catalog/keystore';
 export const REHEARSAL_SECRETS_MOUNT = '/run/catalog-rehearsal-secrets';
-export const REHEARSAL_PROMOTION_MOUNT = '/var/lib/catalog/promotion-records';
-export const REHEARSAL_IMPORT_MOUNT = '/var/lib/catalog/import';
 
 /** The representative import snapshot, inside the restore workspace and inside the container. */
 export const REHEARSAL_IMPORT_NAME = 'catalog-rehearsal-import.json';
+
+/** How large a Compose definition this command will read. A stack description, not a data file. */
+export const MAX_COMPOSE_DEFINITION_BYTES = 1024 * 1024;
+
+/**
+ * How much a step's output may be before it is used as evidence.
+ *
+ * A CHECK PARSES WHAT A CONTAINER PRINTED, which is the one place in this command where a value crosses from
+ * inside the disposable stack into this process. Bounding it before `JSON.parse` or a regular expression sees
+ * it means a container that printed a gigabyte cannot decide how much memory this uses, and cannot make a
+ * pattern match take unbounded time.
+ */
+export const MAX_ASSERTION_STDOUT_BYTES = 1024 * 1024;
+
+/** The container path the custodian sidecar keeps its keystore at. The shipped stack's `SIDECAR_STATE_DIR`. */
+export const REHEARSAL_SIDECAR_STATE_MOUNT = '/var/lib/catalog-sidecar/state';
+
+/**
+ * Which service reads each required secret file, and the variable it reads the path from.
+ *
+ * KEYED BY THE PHASE 256 REQUIRED LIST, AND CHECKED AGAINST IT. `requiredRehearsalWiring` refuses if any
+ * entry of `REQUIRED_SECRET_FILES` has no consumer here — so a stack that starts requiring a seventh secret
+ * cannot leave a rehearsal quietly restoring six and calling the restore complete.
+ *
+ * The paths and variable names are the shipped stack's own; a suite asserts every one of them appears in
+ * `docker-compose.unraid.runtime.yml`, so this cannot drift away from the thing it is modelling.
+ */
+export const REHEARSAL_SECRET_CONSUMERS: Readonly<Record<string, readonly {
+  readonly service: string; readonly env: string;
+}[]>> = Object.freeze({
+  postgres_password: [{ service: 'postgres', env: 'POSTGRES_PASSWORD_FILE' }],
+  admin_database_url: [
+    { service: 'migrate', env: 'ADMIN_DATABASE_URL_FILE' },
+    { service: 'app', env: 'ADMIN_DATABASE_URL_FILE' },
+  ],
+  database_url: [
+    { service: 'migrate', env: 'DATABASE_URL_FILE' },
+    { service: 'app', env: 'DATABASE_URL_FILE' },
+  ],
+  operator_ui_token: [{ service: 'app', env: 'OPERATOR_UI_TOKEN_FILE' }],
+  completion_secret: [{ service: 'sidecar', env: 'SIDECAR_COMPLETION_SECRET_FILE' }],
+  custodian_kek: [{ service: 'sidecar', env: 'SIDECAR_KEK_FILE' }],
+});
+
+/**
+ * Everything the restored set must actually reach, derived from the component model and the secret list.
+ *
+ * THIS IS THE WHOLE OF "THE RESTORE WAS REAL". Each entry is checked against the RESOLVED configuration, so
+ * "the keystore is mounted" means Compose, after merging the operator's definition with this command's
+ * override, would give the sidecar the copy this rehearsal made — and not the base definition's production
+ * bind, which merging cannot remove and which this therefore refuses instead of hiding.
+ */
+export function requiredRehearsalWiring(): readonly RequiredWiring[] {
+  const names = COMPONENT_ARTIFACT_NAMES;
+  const wiring: RequiredWiring[] = [
+    {
+      service: 'postgres',
+      containerPath: `${REHEARSAL_RESTORE_MOUNT}/${names.database}`,
+      env: null,
+      workspaceEntry: names.database,
+      writable: false,
+      proves: 'the database dump the restore replays',
+    },
+    {
+      // THE KEYSTORE GOES WHERE THE CUSTODIAN LIVES, WHICH IN THIS STACK IS THE SIDECAR — not the app. Mounting
+      // it into `app` would have been a mount nothing opened: in sidecar custody mode every unwrap goes through
+      // the sidecar's own state directory, so a rehearsal that left that as the base definition's production
+      // bind decrypted with production's keys and proved nothing about the restored ones.
+      service: 'sidecar',
+      containerPath: REHEARSAL_SIDECAR_STATE_MOUNT,
+      env: 'SIDECAR_STATE_DIR',
+      workspaceEntry: names.keystore,
+      writable: true,
+      proves: 'the custodian keystore every decrypt depends on',
+    },
+    {
+      service: 'app',
+      containerPath: PROMOTION_RECORDS_DEFAULT_DIR,
+      env: PROMOTION_RECORDS_DIR_ENV,
+      workspaceEntry: names['promotion-records'],
+      writable: false,
+      proves: 'the promotion record artifacts',
+    },
+    {
+      service: 'app',
+      containerPath: `${CATALOG_IMPORT_CONTAINER_DIR}/${REHEARSAL_IMPORT_NAME}`,
+      env: null,
+      alsoEnv: { [CATALOG_IMPORT_DIR_ENV]: CATALOG_IMPORT_CONTAINER_DIR },
+      workspaceEntry: REHEARSAL_IMPORT_NAME,
+      writable: false,
+      proves: 'the representative import snapshot',
+    },
+  ];
+  for (const file of REQUIRED_SECRET_FILES) {
+    const consumers = REHEARSAL_SECRET_CONSUMERS[file];
+    if (consumers === undefined || consumers.length === 0) {
+      throw new MaintenanceRefused(
+        `this build does not know which service reads the "${file}" secret, so it cannot prove a rehearsal `
+        + 'restored it into the place that uses it. A secret this product requires and this command cannot '
+        + 'place is a restore nobody can verify: add it to REHEARSAL_SECRET_CONSUMERS.');
+    }
+    for (const consumer of consumers) {
+      wiring.push({
+        service: consumer.service,
+        containerPath: `${REHEARSAL_SECRETS_MOUNT}/${file}`,
+        env: consumer.env,
+        workspaceEntry: `${names.secrets}/${file}`,
+        writable: false,
+        proves: `the restored "${file}" secret`,
+      });
+    }
+  }
+  return wiring;
+}
 
 /** Tags that are not a version. A ref carrying one of these can mean different bytes tomorrow. */
 export const FLOATING_TAGS: readonly string[] = Object.freeze([
@@ -189,6 +348,31 @@ export interface RehearsalRequest {
   readonly expect: RehearsalExpectations;
 }
 
+/**
+ * The CONTENT of the three inputs a rehearsal reads, not the names of them.
+ *
+ * THE DEFECT THIS CLOSES. The plan digest hashed the compose, import and backup-set PATHS. A path is a
+ * promise about where something is, not about what it is: between the `--plan` an operator reads and the
+ * `--confirm-digest` they run, the Compose definition could be edited to add a production bind, the import
+ * snapshot could be replaced, and the whole backup set could be swapped for another one at the same name —
+ * and every one of those would still confirm the digest they had been shown.
+ *
+ * All three are therefore read through the same no-follow, streaming primitives everything else here uses,
+ * bound into the digest, and RE-READ immediately before the marker is claimed. A change between the two is a
+ * refusal, not a note.
+ *
+ * The compose digest is over the definition's BYTES, and that is sufficient BECAUSE `assertNoComposeInterpolation`
+ * refuses any definition whose meaning depends on a variable — so the configuration Compose resolves is a
+ * function of those bytes and of the two overrides this product writes itself. The resolved model is
+ * separately obtained, validated and digested at run time; both facts are in the evidence.
+ */
+export interface RehearsalInputDigests {
+  readonly compose: string;
+  readonly importSnapshot: string;
+  /** The verified set's own digest, from the verification that has to pass before anything runs. */
+  readonly backupSet: string;
+}
+
 export interface ResolvedRehearsal {
   readonly disposableRoot: string;
   readonly projectName: string;
@@ -198,6 +382,7 @@ export interface ResolvedRehearsal {
   readonly currentImage: string;
   readonly candidateImage: string;
   readonly expect: RehearsalExpectations;
+  readonly inputs: RehearsalInputDigests;
   readonly planDigest: string;
 }
 
@@ -299,6 +484,22 @@ export function resolveRehearsal(request: RehearsalRequest): ResolvedRehearsal {
   if (composeName === REHEARSAL_OVERRIDE_NAMES.current || composeName === REHEARSAL_OVERRIDE_NAMES.candidate) {
     throw new MaintenanceRefused('the Compose definition names one of the override files this command writes');
   }
+  // THE DEFINITION'S MEANING MUST BE IN THE DEFINITION. Read through one no-follow descriptor and refused if
+  // it interpolates anything — see `rehearsal-compose-model.ts` for why a variable here is a production escape
+  // and not a convenience.
+  const composeText = readFileNoFollow(composeFile, 'disposable Compose definition', MAX_COMPOSE_DEFINITION_BYTES);
+  assertDisposableComposeText(composeText.bytes.toString('utf8'));
+  const composeDigest = createHash('sha256').update(composeText.bytes).digest('hex');
+  // A `.env` beside the definition is read by Compose whether or not anybody meant it to be, and it can set
+  // `COMPOSE_PROFILES` — which decides which services the resolved stack even has. The definition's bytes are
+  // what the plan digest binds; a second file quietly deciding part of the answer is refused rather than
+  // digested as an afterthought.
+  if (existsSync(join(disposableRoot, '.env'))) {
+    throw new MaintenanceRefused(
+      'the disposable rehearsal root holds a ".env" file. Compose reads it, and what it holds can change which '
+      + 'services the stack resolves to — so the definition would no longer be the whole of what this command '
+      + 'binds into the plan you confirm. Remove it from the rehearsal directory.');
+  }
 
   const backupSet = resolveMaintenanceRoot(request.backupSet, 'backup set directory');
   if (isInside(backupSet, disposableRoot) || backupSet === disposableRoot) {
@@ -324,8 +525,44 @@ export function resolveRehearsal(request: RehearsalRequest): ResolvedRehearsal {
     currentImage: request.currentImage,
     candidateImage: request.candidateImage,
     expect: { ...request.expect },
+    inputs: {
+      compose: composeDigest,
+      // STREAMED, so a representative snapshot larger than any in-memory bound is still bound by content.
+      importSnapshot: digestFileNoFollow(importSnapshot, 'representative import snapshot').digest,
+      // THE SET'S DIGEST IS THE VERIFICATION'S, and a set that does not verify has none. Binding an
+      // unverifiable set's digest into a plan an operator could confirm would be binding nothing.
+      backupSet: verifiedSetDigest(backupSet),
+    },
   };
   return { ...resolved, planDigest: rehearsalPlanDigest(resolved) };
+}
+
+/**
+ * Everything a disposable Compose definition must satisfy in its own TEXT, before Compose ever resolves it.
+ *
+ * Both rules exist for the same reason: the plan digest binds the definition's BYTES, and a definition whose
+ * resolved meaning depends on an ambient variable or on a second file is one whose meaning those bytes do not
+ * determine. See `rehearsal-compose-model.ts` for what each would reach.
+ */
+export function assertDisposableComposeText(text: string): void {
+  assertNoComposeInterpolation(text, 'disposable Compose definition');
+  assertNoExternalComposeInputs(text, 'disposable Compose definition');
+}
+
+/**
+ * The digest of a backup set that verifies NOW, or a refusal.
+ *
+ * Called from `resolveRehearsal`, so `--plan` and the run both fail on an unverifiable set — and so the plan
+ * digest an operator confirms is bound to the exact CONTENTS of the set that was verified when they read it.
+ */
+function verifiedSetDigest(backupSet: string): string {
+  const verification = verifyBackupSet(backupSet);
+  if (!verification.ok || verification.setDigest === '') {
+    throw new MaintenanceRefused(
+      'the backup set this rehearsal would restore does not verify, so the rehearsal would prove nothing about a '
+      + 'restore. Fix or retake the set first. Nothing was started.');
+  }
+  return verification.setDigest;
 }
 
 function assertSchemaVersion(version: number, what: string): void {
@@ -363,8 +600,50 @@ export function rehearsalPlanDigest(plan: Omit<ResolvedRehearsal, 'planDigest'>)
     candidateImage: plan.candidateImage,
     expect: [plan.expect.currentVersion, plan.expect.candidateVersion,
       plan.expect.currentSchema, plan.expect.candidateSchema],
+    // THE CONTENT, NOT ONLY THE NAMES. Swapping the file, the snapshot or the whole set behind any of the
+    // three paths above now produces a different digest, so a confirmation issued for one set of bytes cannot
+    // be spent on another.
+    inputs: [plan.inputs.compose, plan.inputs.importSnapshot, plan.inputs.backupSet],
   });
   return createHash('sha256').update(canonical, 'utf8').digest('hex');
+}
+
+/**
+ * Read the three inputs AGAIN and refuse if any of them moved.
+ *
+ * RUN IMMEDIATELY BEFORE THE MARKER IS CLAIMED, which is the last moment before this command creates anything.
+ * `resolveRehearsal` read them when the plan was computed; between then and here an operator has read a plan,
+ * copied a digest and typed a command, and a definition or a set can be replaced in that window by anything
+ * with write access to it — including this product's own scheduled backup writing a new set over the name.
+ *
+ * The comparison is against the digests bound into the plan the operator confirmed, so this is not "did it
+ * change since a moment ago" but "is it still the thing you agreed to".
+ */
+export function reverifyRehearsalInputs(resolved: ResolvedRehearsal): void {
+  const composeFile = resolveInsideRoot(resolved.disposableRoot, resolved.composeFile, 'compose definition');
+  const composeText = readFileNoFollow(composeFile, 'disposable Compose definition', MAX_COMPOSE_DEFINITION_BYTES);
+  const compose = createHash('sha256').update(composeText.bytes).digest('hex');
+  if (compose !== resolved.inputs.compose) {
+    throw new MaintenanceRefused(
+      'the disposable Compose definition is not the file whose plan you confirmed — its contents changed after '
+      + 'the plan was computed. Nothing was claimed and nothing was started. Re-run with --plan, read it again, '
+      + 'and confirm the digest of what is actually there.');
+  }
+  // Belt and braces: the interpolation rule is re-applied to the bytes that will actually be resolved.
+  assertDisposableComposeText(composeText.bytes.toString('utf8'));
+
+  const snapshot = digestFileNoFollow(resolved.importSnapshot, 'representative import snapshot').digest;
+  if (snapshot !== resolved.inputs.importSnapshot) {
+    throw new MaintenanceRefused(
+      'the representative import snapshot is not the file whose plan you confirmed. Nothing was claimed and '
+      + 'nothing was started.');
+  }
+  if (verifiedSetDigest(resolved.backupSet) !== resolved.inputs.backupSet) {
+    throw new MaintenanceRefused(
+      'the backup set is not the one whose plan you confirmed — a set at that name verifies, and it is a '
+      + 'different set. A rehearsal restores the set an operator chose, not whichever one is there when it runs. '
+      + 'Nothing was claimed and nothing was started.');
+  }
 }
 
 /** Constant-time-ish comparison of an operator's echo against the plan's own digest. */
@@ -392,7 +671,15 @@ export type RehearsalAssertion =
   | { readonly kind: 'exit-zero' }
   | { readonly kind: 'doctor-no-fail' }
   | { readonly kind: 'product-version'; readonly role: RehearsalImageRole; readonly expected: string }
-  | { readonly kind: 'schema-version'; readonly expectedBuild: number; readonly expectedDatabase: number };
+  | { readonly kind: 'schema-version'; readonly expectedBuild: number; readonly expectedDatabase: number }
+  /**
+   * The fully resolved configuration is obtained and validated. `role` is `null` for the operator's bare
+   * definition — the check that runs before anything is claimed or created — and a role once that role's
+   * override has been written on top of it.
+   */
+  | { readonly kind: 'compose-model'; readonly role: RehearsalImageRole | null }
+  /** The shipped import report, read as JSON. `phase` decides what the numbers in it must say. */
+  | { readonly kind: 'import-report'; readonly phase: 'preview' | 'apply' | 'replay' };
 
 export type RehearsalAction =
   /** Prepare the private restore workspace and the import snapshot from the verified set. */
@@ -437,7 +724,19 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
   const restore = (role: RehearsalImageRole, purpose: string): MaintenanceCommand => compose(role,
     ['exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'catalog', '-v', 'ON_ERROR_STOP=1',
       '-f', `${REHEARSAL_RESTORE_MOUNT}/${COMPONENT_ARTIFACT_NAMES.database}`], purpose);
-  const importFile = `${REHEARSAL_IMPORT_MOUNT}/${REHEARSAL_IMPORT_NAME}`;
+  const importFile = `${CATALOG_IMPORT_CONTAINER_DIR}/${REHEARSAL_IMPORT_NAME}`;
+  /**
+   * `docker compose config`, which RESOLVES and STARTS NOTHING.
+   *
+   * It is the only authority on what a definition means: the same merge, extension and normalisation the
+   * daemon would apply at `up`, answered as JSON, with no container, network or volume created. `--no-interpolate`
+   * is deliberate — the definition is already refused if it interpolates, and asking Compose not to do it makes
+   * a variable that slipped past that check produce a visible `${…}` in a bind source rather than a silently
+   * resolved production path.
+   */
+  const configure = (role: RehearsalImageRole | null): MaintenanceCommand =>
+    compose(role, ['config', '--format', 'json', '--no-interpolate'],
+      'resolve the disposable stack without starting any part of it');
 
   /** The three checks that prove an installation is really an installation, run on every leg. */
   const installationChecks = (role: RehearsalImageRole, prefix: string, leg: RehearsalLeg): RehearsalPlanStep[] => [
@@ -506,12 +805,36 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
 
   return [
     {
+      // FIRST, AND BEFORE ANYTHING IS CLAIMED OR CREATED. Everything after this depends on the disposable stack
+      // being disposable, and that is a property of the DEFINITION, not of the directory it sits in.
+      id: 'disposable-stack',
+      leg: 'setup',
+      proves: 'the operator\'s definition resolves to a stack that touches nothing outside this rehearsal',
+      whenNot: 'the disposable Compose definition could reach something this rehearsal does not own',
+      actions: [{ kind: 'command', command: configure(null), assertion: { kind: 'compose-model', role: null } }],
+    },
+    {
       id: 'own-the-root',
       leg: 'setup',
       proves: 'the disposable root belongs to THIS rehearsal, and holds nothing of anybody\'s',
       whenNot: 'the disposable root could not be claimed for this rehearsal',
-      actions: [{ kind: 'prepare-workspace' },
-        { kind: 'write-override', role: 'current' }, { kind: 'write-override', role: 'candidate' }],
+      actions: [{ kind: 'prepare-workspace' }],
+    },
+    {
+      id: 'pin-current',
+      leg: 'setup',
+      proves: 'the CURRENT override pins every product service and wires every restored component in',
+      whenNot: 'the current override did not produce a stack running the current image on the restored copies',
+      actions: [{ kind: 'write-override', role: 'current' },
+        { kind: 'command', command: configure('current'), assertion: { kind: 'compose-model', role: 'current' } }],
+    },
+    {
+      id: 'pin-candidate',
+      leg: 'setup',
+      proves: 'the CANDIDATE override pins every product service and wires every restored component in',
+      whenNot: 'the candidate override did not produce a stack running the candidate image on the restored copies',
+      actions: [{ kind: 'write-override', role: 'candidate' },
+        { kind: 'command', command: configure('candidate'), assertion: { kind: 'compose-model', role: 'candidate' } }],
     },
     {
       id: 'fresh-state',
@@ -561,21 +884,22 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
       whenNot: 'the representative import could not be previewed',
       actions: [{
         kind: 'command',
-        command: app('current', ['run', '--silent', 'ops:catalog-import', '--', '--file', importFile],
+        command: app('current', ['run', '--silent', 'ops:catalog-import', '--', '--file', importFile, '--json'],
           'preview a representative import — without --apply nothing is written'),
-        assertion: exitZero,
+        assertion: { kind: 'import-report', phase: 'preview' },
       }],
     },
     {
       id: 'current-import-apply',
       leg: 'upgrade',
-      proves: 'that same import applies to the restored catalog',
+      proves: 'that same import applies to the restored catalog, and its own report says what it wrote',
       whenNot: 'the representative import could not be applied',
       actions: [{
         kind: 'command',
-        command: app('current', ['run', '--silent', 'ops:catalog-import', '--', '--file', importFile, '--apply'],
+        command: app('current',
+          ['run', '--silent', 'ops:catalog-import', '--', '--file', importFile, '--apply', '--json'],
           'apply the representative import'),
-        assertion: exitZero,
+        assertion: { kind: 'import-report', phase: 'apply' },
       }],
     },
     {
@@ -593,13 +917,17 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
     {
       id: 'candidate-import-replay',
       leg: 'upgrade',
-      proves: 'the same import replays after the migration and is idempotent',
-      whenNot: 'the representative import did not replay after the migration',
+      proves: 'the same import replays after the migration and its own report shows it wrote nothing new',
+      whenNot: 'the replayed import was not idempotent: its report records a durable write on the second run',
       actions: [{
         kind: 'command',
-        command: app('candidate', ['run', '--silent', 'ops:catalog-import', '--', '--file', importFile, '--apply'],
-          'replay the same import and prove it is idempotent'),
-        assertion: exitZero,
+        // THE SHIPPED REPORT, NOT THE EXIT CODE. Two exit-zero applies prove that an import ran twice, which is
+        // not idempotence: a second run that created every record again would exit zero and would have doubled
+        // the catalog. The `--json` report says `created` and `updated`, and on a replay both must be nought.
+        command: app('candidate',
+          ['run', '--silent', 'ops:catalog-import', '--', '--file', importFile, '--apply', '--json'],
+          'replay the same import and read its report to prove it is idempotent'),
+        assertion: { kind: 'import-report', phase: 'replay' },
       }],
     },
     // ---- Phase 280: the rollback, which is a RESTORE and not an image change ------------------------------
@@ -684,19 +1012,31 @@ export interface RehearsalMarker {
 }
 
 /**
- * What a rehearsal is allowed to find in a root it is about to own.
+ * What a rehearsal is allowed to find in a root it is about to claim FOR THE FIRST TIME: the operator's
+ * Compose definition, and nothing else at all.
  *
- * Anything else is somebody's. A rehearsal removes volumes and, on a later run, reuses this directory; a
- * directory that already holds a person's files is not a scratch directory, whatever it is named.
+ * THE DEFECT THIS CLOSES. The first version allowlisted the marker's own name, the restore workspace and both
+ * override files here — the names this command writes. Reaching this function at all means there is no valid
+ * marker, so a file at one of those names was NOT put there by a rehearsal this command can account for: an
+ * interrupted run whose marker was deleted, a directory somebody copied, or something written deliberately.
+ * The old rule let all of those pass the ownership check, wrote a marker over them, and only then failed on
+ * the leftover workspace — having claimed a directory it had just decided it did not own.
+ *
+ * An artifact bearing one of this command's names WITHOUT a matching marker is therefore unowned content, and
+ * unowned content is refused before a marker is written.
  */
-function ownedEntries(resolved: ResolvedRehearsal): readonly string[] {
-  return [
-    REHEARSAL_MARKER_NAME,
-    REHEARSAL_RESTORE_DIRNAME,
-    REHEARSAL_OVERRIDE_NAMES.current,
-    REHEARSAL_OVERRIDE_NAMES.candidate,
-    resolved.composeFile,
-  ];
+function ownedEntriesBeforeFirstClaim(resolved: ResolvedRehearsal): readonly string[] {
+  return [resolved.composeFile];
+}
+
+/**
+ * The fixed artifacts a rehearsal writes into a root it owns.
+ *
+ * A CLOSED LIST OF NAMES, used by the cleanup. Everything on it is produced by this command, at a name this
+ * command chose, and each is verified by identity before it is removed.
+ */
+export function rehearsalOwnedArtifacts(): readonly string[] {
+  return [REHEARSAL_RESTORE_DIRNAME, REHEARSAL_OVERRIDE_NAMES.current, REHEARSAL_OVERRIDE_NAMES.candidate];
 }
 
 /**
@@ -745,13 +1085,15 @@ export function claimDisposableRoot(resolved: ResolvedRehearsal): 'claimed' | 'a
     }
     return 'already-ours';
   }
-  const owned = new Set(ownedEntries(resolved));
+  const owned = new Set(ownedEntriesBeforeFirstClaim(resolved));
   for (const entry of readdirSync(resolved.disposableRoot)) {
     if (!owned.has(entry)) {
       throw new MaintenanceRefused(
-        'the disposable rehearsal root holds files this command did not put there and does not recognise. A '
-        + 'rehearsal destroys volumes and rewrites its own workspace; it will not do that in a directory that '
-        + 'is somebody\'s. Use an empty directory holding only your Compose definition.');
+        'the disposable rehearsal root holds something other than your Compose definition, and it carries no '
+        + 'marker saying this rehearsal owns it. A rehearsal destroys volumes and rewrites its own workspace; it '
+        + 'will not do that in a directory that is somebody\'s — and a leftover workspace, override or marker '
+        + 'from a run this command cannot account for is exactly the case where it must not. Use an empty '
+        + 'directory holding only your Compose definition, or look at what is there and remove it deliberately.');
     }
   }
   const marker: RehearsalMarker = {
@@ -866,23 +1208,42 @@ function digestOfDirectory(directory: string): string {
 export function renderRehearsalOverride(resolved: ResolvedRehearsal, role: RehearsalImageRole): string {
   const image = role === 'current' ? resolved.currentImage : resolved.candidateImage;
   const workspace = `./${REHEARSAL_RESTORE_DIRNAME}`;
-  const names = COMPONENT_ARTIFACT_NAMES;
-  return [
+  const wiring = requiredRehearsalWiring();
+  const lines: string[] = [
     '# Written by ops:upgrade-rehearsal. Disposable: this file belongs to one rehearsal in one scratch root.',
     `# role: ${role}`,
+    '#',
+    '# Every product-image service is pinned to ONE reference, because in this product\'s stack the migration',
+    '# and the custodian sidecar are the same image as the app — so pinning only the app would rehearse the',
+    '# candidate build against the CURRENT build\'s migration, which is the one thing this exists to exercise.',
+    '#',
+    '# Every restored component is bound at the exact path the running image reads, and the variable that names',
+    '# that path is set to it. What Compose actually resolves from this is read back and validated; a base',
+    '# entry that survived the merge is a refusal rather than something this file pretends to have replaced.',
     'services:',
-    '  postgres:',
-    '    volumes:',
-    `      - ${workspace}/${names.database}:${REHEARSAL_RESTORE_MOUNT}/${names.database}:ro`,
-    '  app:',
-    `    image: "${image}"`,
-    '    volumes:',
-    `      - ${workspace}/${names.keystore}:${REHEARSAL_KEYSTORE_MOUNT}`,
-    `      - ${workspace}/${names.secrets}:${REHEARSAL_SECRETS_MOUNT}:ro`,
-    `      - ${workspace}/${names['promotion-records']}:${REHEARSAL_PROMOTION_MOUNT}`,
-    `      - ${workspace}/${REHEARSAL_IMPORT_NAME}:${REHEARSAL_IMPORT_MOUNT}/${REHEARSAL_IMPORT_NAME}:ro`,
-    '',
-  ].join('\n');
+  ];
+  for (const service of [...REHEARSAL_SERVICES]) {
+    lines.push(`  ${service}:`);
+    if (REHEARSAL_PRODUCT_SERVICES.includes(service)) lines.push(`    image: "${image}"`);
+    const mine = wiring.filter((entry) => entry.service === service);
+    const environment: [string, string][] = [];
+    for (const entry of mine) {
+      if (entry.env !== null) environment.push([entry.env, entry.containerPath]);
+      for (const pair of Object.entries(entry.alsoEnv ?? {})) environment.push(pair);
+    }
+    if (environment.length > 0) {
+      lines.push('    environment:');
+      for (const [name, value] of environment) lines.push(`      ${name}: "${value}"`);
+    }
+    if (mine.length > 0) {
+      lines.push('    volumes:');
+      for (const entry of mine) {
+        lines.push(`      - ${workspace}/${entry.workspaceEntry}:${entry.containerPath}${entry.writable ? '' : ':ro'}`);
+      }
+    }
+  }
+  lines.push('');
+  return lines.join('\n');
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -944,8 +1305,42 @@ export interface RehearsalReport {
   /** Which components were restored, and the digest of the copy. Names no content. */
   readonly restored: Readonly<Record<string, string>>;
   readonly steps: readonly RehearsalStep[];
-  /** What was removed at the end, and by what. Empty when evidence was deliberately kept. */
-  readonly cleanup: { readonly performed: boolean; readonly by: string; readonly plan: readonly string[] };
+  /**
+   * The digest of the fully resolved configuration at each point it was validated.
+   *
+   * `base` is the operator's definition alone, checked before anything was claimed or created; the other two
+   * are that definition with each override merged on top. Non-reversible, so they name no host path — and
+   * enough to prove the two legs really resolved to different stacks.
+   */
+  readonly composeModel: {
+    readonly base: string | null;
+    readonly current: string | null;
+    readonly candidate: string | null;
+  };
+  /**
+   * What the representative import actually proved. A CLOSED SET.
+   *
+   * `proved` — the apply made a durable change and the replay made none. `proved-vacuously` — the replay made
+   * none, and neither did the apply, so the snapshot was already present and the second run had nothing to
+   * repeat; true, and weaker than it looks, which is why it is a different word.
+   */
+  readonly importIdempotence: 'proved' | 'proved-vacuously' | 'not-proved' | 'not-reached';
+  /**
+   * What was removed at the end, and by what.
+   *
+   * `performed` is true only when the disposable PROJECT was removed AND every artifact this command wrote —
+   * the workspace holding a copy of the keystore and every secret file, both overrides, and the marker — was
+   * removed with it. `artifacts` says which of those happened, because "cleanup performed" over a directory
+   * still holding key material was the least honest word in the previous report.
+   */
+  readonly cleanup: {
+    readonly performed: boolean;
+    readonly by: string;
+    readonly plan: readonly string[];
+    readonly artifacts: 'not-attempted' | 'removed' | 'incomplete';
+    /** The fixed names that were removed. This command's own, never anything else's. */
+    readonly removed: readonly string[];
+  };
   readonly touchedProduction: false;
   readonly network: 'none';
   readonly mediaOperations: 'none';
@@ -987,7 +1382,12 @@ export function runRehearsal(request: RehearsalRequestWithConfirmation, deps: Re
   const versions: Record<'current' | 'candidate' | 'rollback', VersionVerdict> = {
     current: 'not-reached', candidate: 'not-reached', rollback: 'not-reached',
   };
-  let restored: Readonly<Record<BackupComponentId, string>> = {} as Readonly<Record<BackupComponentId, string>>;
+  const seen: RehearsalObservations = {
+    composeModel: { base: null, current: null, candidate: null },
+    workspace: null,
+    importApplyMutations: null,
+    importReplayMutations: null,
+  };
   let failed = false;
 
   const plan = planRehearsal(resolved);
@@ -995,10 +1395,10 @@ export function runRehearsal(request: RehearsalRequestWithConfirmation, deps: Re
     if (failed) break;
     let detail: string | null = null;
     for (const action of step.actions) {
-      detail = performAction(action, resolved, deps, (role, verdict) => {
+      detail = performAction(action, resolved, deps, seen, (role, verdict) => {
         const slot = step.id.startsWith('rollback') ? 'rollback' : role;
         versions[slot] = verdict;
-      }, (workspace) => { restored = workspace.components; });
+      });
       if (detail !== null) break;
     }
     if (detail === null) {
@@ -1021,13 +1421,16 @@ export function runRehearsal(request: RehearsalRequestWithConfirmation, deps: Re
 
   // ---- cleanup: only the marker-bearing project, and only when nothing failed ---------------------------
   const cleanupCommand = rehearsalCleanupCommand(resolved);
-  const cleanupPlan = [`${cleanupCommand.program} ${cleanupCommand.args.join(' ')}`];
+  const cleanupPlan = [`${cleanupCommand.program} ${cleanupCommand.args.join(' ')}`, ...artifactCleanupPlan()];
   let cleanupPerformed = false;
+  let artifacts: RehearsalReport['cleanup']['artifacts'] = 'not-attempted';
+  let removed: readonly string[] = [];
   if (failed) {
     notes.push('A step did not hold, so the disposable project was LEFT IN PLACE for diagnosis. Nothing was '
       + 'removed, and the root still carries this rehearsal\'s marker, which names the project and the exact '
       + 'plan. When you have finished looking, run the one command in the cleanup plan — it addresses only '
       + 'that marked project.');
+    notes.push(RESTORE_WORKSPACE_WARNING);
   } else if (request.cleanup === true) {
     // MARKER-BOUND. Cleanup is refused unless the root still says it belongs to this exact rehearsal, so a
     // cleanup cannot reach a project this run did not create.
@@ -1035,17 +1438,43 @@ export function runRehearsal(request: RehearsalRequestWithConfirmation, deps: Re
     if (marker === null || marker.projectName !== resolved.projectName || marker.planDigest !== resolved.planDigest) {
       notes.push('The disposable root no longer carries this rehearsal\'s marker, so nothing was removed. '
         + 'Removing resources by anything other than that marker is how a cleanup reaches a real installation.');
+      notes.push(RESTORE_WORKSPACE_WARNING);
     } else {
       const outcome = runGuarded(deps.runner, deps.ledger, cleanupCommand);
-      cleanupPerformed = outcome.status === 0;
-      if (!cleanupPerformed) {
+      if (outcome.status !== 0) {
         notes.push('The disposable project could not be removed. It carries this rehearsal\'s marker and nothing '
           + 'else does; remove it with the command in the cleanup plan.');
+        notes.push(RESTORE_WORKSPACE_WARNING);
+      } else {
+        // ---- AND THE FILES, WHICH THE PROJECT REMOVAL DOES NOT TOUCH -------------------------------------
+        //
+        // THE DEFECT THIS CLOSES. `cleanup.performed: true` used to mean "compose down ran", and left behind a
+        // private workspace holding a COPY OF THE KEYSTORE AND EVERY SECRET FILE, both overrides and the
+        // marker. An operator who read that word and moved on had key material sitting in a scratch directory
+        // they believed had been cleaned up.
+        const outcomeOfArtifacts = removeRehearsalArtifacts(resolved, seen.workspace);
+        removed = outcomeOfArtifacts.removed;
+        artifacts = outcomeOfArtifacts.complete ? 'removed' : 'incomplete';
+        cleanupPerformed = outcomeOfArtifacts.complete;
+        if (!outcomeOfArtifacts.complete) {
+          notes.push('The disposable PROJECT was removed and this rehearsal\'s own files were not, so cleanup is '
+            + 'reported as incomplete rather than done: ' + outcomeOfArtifacts.reason);
+          notes.push(RESTORE_WORKSPACE_WARNING);
+        }
       }
     }
   } else {
     notes.push('The disposable project was left in place. Pass --cleanup to remove it, or run the one command in '
       + 'the cleanup plan yourself.');
+    notes.push(RESTORE_WORKSPACE_WARNING);
+  }
+
+  // ---- what the import actually proved ------------------------------------------------------------------
+  const idempotence = importVerdict(seen);
+  if (idempotence === 'proved-vacuously') {
+    notes.push('The representative import created and updated nothing on its first apply, so the replay had '
+      + 'nothing to repeat. That is a true idempotence result and a weak one: give a snapshot holding at least '
+      + 'one record this installation does not already have, and the replay proves something.');
   }
 
   if (manifest.schemaVersion === MIGRATION_VERSION && resolved.expect.candidateSchema === MIGRATION_VERSION) {
@@ -1081,14 +1510,134 @@ export function runRehearsal(request: RehearsalRequestWithConfirmation, deps: Re
       manifestSchemaVersion: verification.manifestSchemaVersion,
     },
     backupSetUnchanged,
-    restored,
+    restored: seen.workspace === null ? {} : seen.workspace.components,
     steps,
-    cleanup: { performed: cleanupPerformed, by: `compose project ${resolved.projectName}`, plan: cleanupPlan },
+    composeModel: { ...seen.composeModel },
+    importIdempotence: idempotence,
+    cleanup: {
+      performed: cleanupPerformed,
+      by: `compose project ${resolved.projectName}`,
+      plan: cleanupPlan,
+      artifacts,
+      removed,
+    },
+    // NOT A LITERAL ANY MORE. This is emitted only on a path where the fully resolved configuration of every
+    // stack that could have been started was obtained from Compose itself and validated: no bind, secret or
+    // config source outside the marker-owned root, nothing external, no container name, host network,
+    // privileged flag, device, socket or published port, and every writable target inside the workspace this
+    // rehearsal prepared. A run that could not establish that stopped at its first step.
     touchedProduction: false,
     network: 'none',
     mediaOperations: 'none',
     notes,
   };
+}
+
+/** What one run observed, gathered as it goes so the report is assembled from facts rather than from hope. */
+interface RehearsalObservations {
+  composeModel: { base: string | null; current: string | null; candidate: string | null };
+  workspace: RestoreWorkspace | null;
+  /** `created + updated` on the first apply, and on the replay. `null` until that step has run. */
+  importApplyMutations: number | null;
+  importReplayMutations: number | null;
+}
+
+const RESTORE_WORKSPACE_WARNING =
+  'The restore workspace in the disposable root holds a COPY OF YOUR CUSTODIAN KEYSTORE AND EVERY SECRET FILE. '
+  + 'Treat that directory the way you treat the originals, and remove it when you have finished looking.';
+
+function importVerdict(seen: RehearsalObservations): RehearsalReport['importIdempotence'] {
+  if (seen.importApplyMutations === null || seen.importReplayMutations === null) return 'not-reached';
+  if (seen.importReplayMutations !== 0) return 'not-proved';
+  return seen.importApplyMutations > 0 ? 'proved' : 'proved-vacuously';
+}
+
+/** The removals a cleanup would perform, as fixed names. Printed in the plan; never interpolated with a path. */
+function artifactCleanupPlan(): readonly string[] {
+  return [...rehearsalOwnedArtifacts(), REHEARSAL_MARKER_NAME]
+    .map((name) => `remove ${name} from the disposable root, after verifying it is the one this command wrote`);
+}
+
+/**
+ * Remove the fixed artifacts this rehearsal wrote, and nothing else.
+ *
+ * FOUR RULES, AND EACH IS A REFUSAL RATHER THAN A BEST EFFORT.
+ *
+ *   1. ONLY FIXED NAMES. The list is `rehearsalOwnedArtifacts()` plus the marker — names this command chose,
+ *      not names derived from anything read at run time. The operator's Compose definition is not on it and
+ *      is never removed.
+ *   2. VERIFIED BEFORE REMOVED. Each override is digested and compared against the bytes this run wrote; each
+ *      restored component is re-digested and compared against what was recorded when it was copied. A file
+ *      somebody replaced is left alone and makes the cleanup incomplete.
+ *   3. NEVER THROUGH A LINK. `removeOwnTreeNoFollow` walks the tree first and refuses the whole removal if it
+ *      holds a symbolic link, a device, a socket or a pipe, and then unlinks entries as themselves.
+ *   4. THE MARKER LAST. While it is there the root is still bound to this rehearsal, so an interruption
+ *      part-way through leaves a root that the next run refuses rather than one it would claim over.
+ */
+function removeRehearsalArtifacts(resolved: ResolvedRehearsal, workspace: RestoreWorkspace | null): {
+  readonly complete: boolean; readonly removed: readonly string[]; readonly reason: string;
+} {
+  const removed: string[] = [];
+  try {
+    if (workspace === null) {
+      return { complete: false, removed, reason: 'this run did not record what it restored, so nothing was removed.' };
+    }
+    // THE WORKSPACE, RE-VERIFIED. Every component is digested again and must be the copy this run made.
+    for (const [id, digest] of Object.entries(workspace.components)) {
+      const artifact = COMPONENT_ARTIFACT_NAMES[id as BackupComponentId];
+      const path = join(workspace.path, artifact);
+      const actual = id === 'database'
+        ? digestFileNoFollow(path, 'restored database dump').digest
+        : digestOfDirectory(path);
+      if (actual !== digest) {
+        return {
+          complete: false,
+          removed,
+          reason: 'a restored component in the workspace is not the copy this run made, so the workspace was '
+            + 'left in place.',
+        };
+      }
+    }
+    if (digestFileNoFollow(join(workspace.path, REHEARSAL_IMPORT_NAME), 'representative import snapshot').digest
+      !== workspace.importDigest) {
+      return {
+        complete: false,
+        removed,
+        reason: 'the representative import copy is not the one this run made, so the workspace was left in place.',
+      };
+    }
+    removeOwnTreeNoFollow(workspace.path, 'rehearsal restore workspace');
+    removed.push(REHEARSAL_RESTORE_DIRNAME);
+
+    for (const role of ['current', 'candidate'] as const) {
+      const name = REHEARSAL_OVERRIDE_NAMES[role];
+      const expected = createHash('sha256').update(renderRehearsalOverride(resolved, role), 'utf8').digest('hex');
+      removeOwnFileNoFollow(join(resolved.disposableRoot, name), expected, `${role} image override`);
+      removed.push(name);
+    }
+
+    // THE MARKER LAST, and only after re-reading it: the root stays bound to this rehearsal until the very
+    // last thing this command owns has gone.
+    const marker = readRehearsalMarker(resolved.disposableRoot);
+    if (marker === null || marker.projectName !== resolved.projectName || marker.planDigest !== resolved.planDigest) {
+      return { complete: false, removed, reason: 'the marker changed while the cleanup was running.' };
+    }
+    const markerBytes = `${JSON.stringify({
+      report: REHEARSAL_REPORT, version: REHEARSAL_VERSION,
+      projectName: resolved.projectName, planDigest: resolved.planDigest,
+    }, null, 2)}\n`;
+    removeOwnFileNoFollow(join(resolved.disposableRoot, REHEARSAL_MARKER_NAME),
+      createHash('sha256').update(markerBytes, 'utf8').digest('hex'), 'rehearsal marker');
+    removed.push(REHEARSAL_MARKER_NAME);
+    return { complete: true, removed, reason: '' };
+  } catch (err) {
+    return {
+      complete: false,
+      removed,
+      // This product's own closed sentence, or a fixed one. Never a runtime message and never a path.
+      reason: err instanceof MaintenanceRefused ? err.message : 'an artifact could not be removed.',
+    };
+  }
 }
 
 /**
@@ -1113,13 +1662,16 @@ function performAction(
   action: RehearsalAction,
   resolved: ResolvedRehearsal,
   deps: RehearsalDeps,
+  seen: RehearsalObservations,
   recordVersion: (role: RehearsalImageRole, verdict: VersionVerdict) => void,
-  recordWorkspace: (workspace: RestoreWorkspace) => void,
 ): string | null {
   if (action.kind === 'prepare-workspace') {
     try {
+      // IMMEDIATELY BEFORE THE CLAIM, which is the last moment before this command creates anything: the
+      // definition, the snapshot and the set are read again and must still be what the confirmed plan bound.
+      reverifyRehearsalInputs(resolved);
       claimDisposableRoot(resolved);
-      recordWorkspace(prepareRestoreWorkspace(resolved));
+      seen.workspace = prepareRestoreWorkspace(resolved);
       return null;
     } catch (err) {
       // A refusal this product wrote is its own closed sentence and is safe to carry; anything else is not.
@@ -1142,21 +1694,90 @@ function performAction(
   } catch (err) {
     return err instanceof MaintenanceRefused ? err.message : 'the step could not be run';
   }
+  // ONE BOUND, BEFORE ANY OF THE PARSERS BELOW SEE IT. A container that printed more than this decides nothing
+  // about how much memory this process uses or how long a pattern takes to match.
+  if (outcome.stdout.length > MAX_ASSERTION_STDOUT_BYTES) {
+    return 'the step printed more output than this command will read as evidence';
+  }
+  // EVERY SUCCESSFUL ASSERTION REQUIRES A ZERO STATUS, AND NO ASSERTION EVER PASSES ON A BODY ALONE.
+  //
+  // THE DEFECT THIS CLOSES. `doctor-no-fail` and `schema-version` used to accept a MATCHING BODY behind a
+  // NON-ZERO exit — they refused only when a failed process had ALSO printed nothing. A process that failed
+  // and printed a healthy-looking report is precisely the case those two checks exist for, and both passed it.
+  //
+  // The two of them read the body even on a failure, because "the doctor reported FAIL" and "the database is
+  // at another schema version" are the closed sentences an operator can act on and the shipped commands exit
+  // non-zero when they are true. What they may never do is CONCLUDE SUCCESS with a non-zero status: a healthy
+  // body behind a failed process is a disagreement, and a disagreement is a failure of its own.
+  if (outcome.status !== 0 && action.assertion.kind !== 'doctor-no-fail' && action.assertion.kind !== 'schema-version') {
+    return statusFailure(action.assertion);
+  }
+
   switch (action.assertion.kind) {
     case 'exit-zero':
-      return outcome.status === 0 ? null : 'the command did not succeed';
+      return null;
+    case 'compose-model': {
+      try {
+        const model = parseResolvedComposeModel(outcome.stdout, 'resolved disposable stack');
+        const workspace = seen.workspace === null ? null : seen.workspace.path;
+        const role = action.assertion.role;
+        validateResolvedCompose(model, {
+          projectName: resolved.projectName,
+          disposableRoot: resolved.disposableRoot,
+          workspace,
+          // THE BASE DEFINITION IS NOT PINNED, because nothing has pinned it yet: it is checked for being
+          // disposable at all. Each override is then checked for having pinned EVERY product service.
+          pinnedImages: role === null ? null : pinnedImagesFor(resolved, role),
+          wiring: requiredRehearsalWiring(),
+        });
+        seen.composeModel[role === null ? 'base' : role] = resolvedComposeDigest(model);
+        return null;
+      } catch (err) {
+        return err instanceof MaintenanceRefused ? err.message : 'the disposable stack could not be resolved';
+      }
+    }
+    case 'import-report': {
+      const report = readImportReport(outcome.stdout);
+      if (report === null) return 'the import did not answer in the shape this build understands';
+      if (!report.ok) return 'the import reported that it did not complete';
+      if (report.failed !== 0 || report.notAttempted !== 0) return 'the import left records unwritten';
+      if (action.assertion.phase === 'preview') {
+        // A PREVIEW MUST BE A PREVIEW. `mode` is the shipped report's own word for it, and a run that wrote
+        // while claiming to preview would say `apply` here.
+        return report.mode === 'preview' ? null : 'the import preview reported that it had applied';
+      }
+      if (report.mode !== 'apply') return 'the import apply reported that it had only previewed';
+      const mutations = report.created + report.updated;
+      if (action.assertion.phase === 'apply') {
+        if (report.total < 1) return 'the representative import snapshot holds no records, so it proves nothing';
+        seen.importApplyMutations = mutations;
+        return null;
+      }
+      seen.importReplayMutations = mutations;
+      // THE WHOLE OF IDEMPOTENCE, AND THE DEFECT THIS CLOSES. Two exit-zero applies prove an import ran twice.
+      // A second run that created every record again would exit zero, and would have doubled the catalog.
+      return mutations === 0 ? null : 'the replayed import wrote records a second time, so it is not idempotent';
+    }
     case 'doctor-no-fail': {
-      if (outcome.status !== 0 && outcome.stdout.trim() === '') return 'the doctor could not be run at all';
       const parsed = parseDoctorJson(outcome.stdout);
-      if (parsed === null) return 'the doctor did not answer in the shape this build understands';
+      if (parsed === null) {
+        return outcome.status === 0
+          ? 'the doctor did not answer in the shape this build understands'
+          : 'the doctor did not succeed, whatever it printed';
+      }
       const state = classifyDoctor(parsed);
       // THE STATE, WHICH IS ONE OF FOUR WORDS. Never a `detail`: a doctor detail is written for a person at a
       // terminal and can name a path, a uid or a connection.
-      return state === 'FAIL' || state === 'INVALID' ? `the doctor reported ${state}` : null;
+      if (state === 'FAIL' || state === 'INVALID') return `the doctor reported ${state}`;
+      // A HEALTHY BODY BEHIND A FAILED PROCESS. The shipped doctor exits zero exactly when it reports itself
+      // ok, so this is a contradiction — and a rehearsal that accepted it would be accepting a report from a
+      // command that did not finish.
+      return outcome.status === 0
+        ? null
+        : 'the doctor printed a healthy report and did not succeed, which do not agree';
     }
     case 'product-version': {
       const { role } = action.assertion;
-      if (outcome.status !== 0) { recordVersion(role, 'unreadable'); return 'the product version could not be read'; }
       const read = readNpmVersion(outcome.stdout);
       if (read === null) { recordVersion(role, 'unreadable'); return 'the product version could not be read'; }
       if (read !== action.assertion.expected) {
@@ -1167,16 +1788,79 @@ function performAction(
       return null;
     }
     case 'schema-version': {
-      if (outcome.status !== 0 && outcome.stdout.trim() === '') return 'the schema version could not be read';
       const read = readSchemaVersions(outcome.stdout);
       if (read === null) return 'the schema version could not be read';
       if (read.build !== action.assertion.expectedBuild) return 'the running build expects another schema version';
       if (read.database !== action.assertion.expectedDatabase) return 'the database is at another schema version';
-      return null;
+      // The two numbers are the ones the plan declared AND the command that printed them failed. `ops:version`
+      // exits non-zero when the build and the database disagree, so a matching line behind a failure is a
+      // contradiction — and the whole point of this check is that it is never satisfied by a body alone.
+      return outcome.status === 0
+        ? null
+        : 'the schema versions printed are the declared ones and the command did not succeed, which do not agree';
     }
     default:
       return 'the step could not be run';
   }
+}
+
+/** The closed sentence for "this step's process did not succeed", named for what the step was asking. */
+function statusFailure(assertion: RehearsalAssertion): string {
+  switch (assertion.kind) {
+    case 'doctor-no-fail': return 'the doctor did not succeed, whatever it printed';
+    case 'product-version': return 'the product version could not be read';
+    case 'schema-version': return 'the schema version could not be read';
+    case 'compose-model': return 'the disposable stack could not be resolved';
+    case 'import-report': return 'the representative import did not succeed, whatever it printed';
+    default: return 'the command did not succeed';
+  }
+}
+
+/** Which reference each product service must be running on this leg. A closed list, never a probe. */
+export function pinnedImagesFor(resolved: ResolvedRehearsal, role: RehearsalImageRole): Readonly<Record<string, string>> {
+  const image = role === 'current' ? resolved.currentImage : resolved.candidateImage;
+  const pinned: Record<string, string> = {};
+  for (const service of REHEARSAL_PRODUCT_SERVICES) pinned[service] = image;
+  return pinned;
+}
+
+/**
+ * The shipped import report, read as the closed set of numbers this command needs.
+ *
+ * IT IS THE PRODUCT'S OWN CONTRACT, checked by name and shape rather than trusted: the report identifier and
+ * the mode are compared exactly, and every count must be a non-negative whole number. A body that is JSON and
+ * is not that report answers `null`, which is a failure and not a default.
+ */
+export function readImportReport(stdout: string): {
+  readonly ok: boolean; readonly mode: string; readonly total: number;
+  readonly created: number; readonly updated: number; readonly failed: number; readonly notAttempted: number;
+} | null {
+  if (stdout.length > MAX_ASSERTION_STDOUT_BYTES) return null;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout);
+  } catch {
+    return null;
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return null;
+  const doc = parsed as Record<string, unknown>;
+  if (doc.report !== 'phase-259-catalog-import') return null;
+  if (typeof doc.ok !== 'boolean' || (doc.mode !== 'preview' && doc.mode !== 'apply')) return null;
+  const counts: Record<string, number> = {};
+  for (const key of ['total', 'created', 'updated', 'failed', 'notAttempted']) {
+    const value = doc[key];
+    if (typeof value !== 'number' || !Number.isInteger(value) || value < 0) return null;
+    counts[key] = value;
+  }
+  return {
+    ok: doc.ok,
+    mode: doc.mode,
+    total: counts.total!,
+    created: counts.created!,
+    updated: counts.updated!,
+    failed: counts.failed!,
+    notAttempted: counts.notAttempted!,
+  };
 }
 
 /** `npm pkg get version` answers a JSON string. Anything else is unreadable, not guessed at. */
@@ -1224,6 +1908,11 @@ export function renderRehearsal(report: RehearsalReport): string {
   for (const [id, digest] of Object.entries(report.restored)) {
     lines.push(`    ${id.padEnd(20)} ${digest.slice(0, 16)}`);
   }
+  lines.push('  resolved stack digests:');
+  for (const [what, digest] of Object.entries(report.composeModel)) {
+    lines.push(`    ${what.padEnd(20)} ${digest === null ? 'not reached' : digest.slice(0, 16)}`);
+  }
+  lines.push(`  import idempotence ${report.importIdempotence}`);
   lines.push(`  touched production ${report.touchedProduction}`);
   lines.push(`  network            ${report.network}`);
   lines.push(`  media operations   ${report.mediaOperations}`);
@@ -1233,6 +1922,8 @@ export function renderRehearsal(report: RehearsalReport): string {
     if (!entry.ok) lines.push(`          -> ${entry.detail}`);
   }
   lines.push(`  cleanup            ${report.cleanup.performed ? 'removed' : 'not performed'} (${report.cleanup.by})`);
+  lines.push(`  own artifacts      ${report.cleanup.artifacts}`
+    + `${report.cleanup.removed.length === 0 ? '' : ` (${report.cleanup.removed.join(', ')})`}`);
   for (const command of report.cleanup.plan) lines.push(`    plan: ${command}`);
   for (const note of report.notes) lines.push(`  note: ${note}`);
   lines.push(`  RESULT: ${report.ok ? 'OK' : 'INCOMPLETE'}`);

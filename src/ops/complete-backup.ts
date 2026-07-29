@@ -132,11 +132,19 @@ export interface BackupComponentResult {
   readonly digest: string;
 }
 
+/**
+ * What was taken. A DESCRIPTION, AND DELIBERATELY NOT A VERDICT.
+ *
+ * THE DEFECT THIS CLOSES. This report used to carry `ok`, and `ok` was the conjunction of "the set was taken"
+ * and "the stack came back" — but NOT of "the set verifies". Any caller holding one of these could read a
+ * `true` there and stop, and the only thing standing between an unverified success and a verified one was
+ * that the CLI happened to call the verification afterwards. Removing the field removes the path: there is no
+ * `ok` on this type to read, and the only `ok` this module produces is `CompleteBackupOutcome`'s, which cannot
+ * exist without a verification beside it.
+ */
 export interface CompleteBackupReport {
   readonly report: typeof COMPLETE_BACKUP_REPORT;
   readonly version: typeof COMPLETE_BACKUP_VERSION;
-  /** Taken AND the stack came back. A set on disk alone is not this. */
-  readonly ok: boolean;
   /** Whether a complete set reached its final name. A failed restart does not un-publish a good set. */
   readonly published: boolean;
   /** The set's own name. The operator chose it; it is not a path. */
@@ -146,6 +154,8 @@ export interface CompleteBackupReport {
   /** Services stopped for the consistent window, and whether they were started again. */
   readonly quiesced: readonly string[];
   readonly restarted: boolean;
+  /** The ones that did NOT start again, so an outage is a named fact rather than a sentence in a note. */
+  readonly stillStopped: readonly string[];
   readonly schemaVersion: number;
   /** A digest over the manifest, so two reports of one set are comparable without reading it. */
   readonly manifestDigest: string;
@@ -276,14 +286,62 @@ export function planCompleteBackup(resolved: ResolvedBackupRequest, stagingDir: 
 }
 
 /**
- * Take a complete backup.
+ * A backup that failed, WITH the second fact when there is one.
+ *
+ * THE DEFECT THIS CLOSES. When a step inside the quiesced window failed AND the restart afterwards also
+ * failed, only the first of those two facts reached the operator. The `finally` correctly refused to throw of
+ * its own — replacing the failure would have been worse — and recorded the outage as a note; but the note
+ * lived on a report that a thrown failure never returns, so it was dropped on the floor. An operator was told
+ * "the database dump did not run. Nothing was written." and was NOT told that their installation was down.
+ *
+ * The primary failure is therefore preserved word for word as `primary`, and the outage is ADDED to it rather
+ * than substituted for it. Where the stack did come back, the original error is rethrown untouched: there is
+ * nothing to add, and wrapping it would only put this class between an operator and a sentence they can act on.
+ */
+export class CompleteBackupFailed extends MaintenanceRefused {
+  /** The closed sentence of what actually went wrong first. */
+  readonly primary: string;
+  /** The services this command stopped and could not start again. Never empty on this class. */
+  readonly stillStopped: readonly string[];
+
+  constructor(primary: string, stillStopped: readonly string[]) {
+    super(`${primary} AND THE STACK IS STILL DOWN: this command stopped ${stillStopped.length} service(s) for the `
+      + 'consistent window and could not start them again. START THEM BEFORE ANYTHING ELSE — the backup failure '
+      + 'above is the smaller of these two problems.');
+    this.name = 'CompleteBackupFailed';
+    this.primary = primary;
+    this.stillStopped = [...stillStopped];
+  }
+}
+
+/**
+ * Add the outage to a failure, or leave the failure exactly as it is.
+ *
+ * A FOREIGN ERROR NEVER LENDS ITS MESSAGE. Only this product's own refusals carry wording safe to repeat;
+ * anything else becomes a fixed sentence, and the original is not rethrown once there is a second fact to
+ * carry, because losing the outage would be the very defect this exists to close.
+ */
+function withOutage(err: unknown, stillStopped: readonly string[]): unknown {
+  if (stillStopped.length === 0) return err;
+  const primary = err instanceof MaintenanceRefused
+    ? err.message
+    : 'the backup could not be taken, for a reason this command does not have safe wording for.';
+  return new CompleteBackupFailed(primary, stillStopped);
+}
+
+/**
+ * Take a complete backup. INTERNAL — see `runVerifiedCompleteBackup`, which is the only way to a verdict.
  *
  * THE SHAPE OF THE FUNCTION IS THE GUARANTEE. Everything that can refuse happens before the first service is
  * stopped; the stop/take/start window is a `try`/`finally`, so the start runs on every path out; and the set
  * is built in a staging directory beside its final name and published by a rename, so a killed run leaves a
  * staging directory and no set rather than half a set under the name an operator would trust.
+ *
+ * IT IS EXPORTED UNDER A NAME THAT SAYS WHAT IT IS NOT. A suite drives it directly to exercise the refusals of
+ * the taking step, and naming it this way — with no `ok` on what it returns — means no caller can hold its
+ * result and believe a backup succeeded. A suite asserts that nothing else under `src/` calls it.
  */
-export function runCompleteBackup(
+export function takeCompleteBackupWithoutVerifying(
   request: CompleteBackupRequest,
   deps: CompleteBackupDeps,
 ): CompleteBackupReport {
@@ -302,6 +360,14 @@ export function runCompleteBackup(
   const lock = acquireMaintenanceLock(resolved.projectRoot);
   const stagingDir = join(resolved.destinationDir, `.${resolved.setName}.staging-${stagingSuffix()}`);
   const notes: string[] = [];
+  /**
+   * WHAT IS STILL DOWN, tracked outside every inner block on purpose.
+   *
+   * It is the second fact of a dual failure, and it has to survive the unwinding of the block that produced
+   * the first one. `restarted` alone could not do that job: it is `false` before anything has been stopped,
+   * so a refusal from before the window would have claimed an outage that never happened.
+   */
+  const stillStopped: string[] = [];
   let restarted = false;
   let published = false;
   try {
@@ -376,9 +442,13 @@ export function runCompleteBackup(
       //
       // AND IT NEVER THROWS OF ITS OWN. A `finally` that throws REPLACES the error that sent us here, so a
       // failed dump would be reported as a failed restart — losing the one fact an operator needs. Every
-      // start is therefore attempted, its failure is recorded as a note, and whatever brought us here is what
+      // start is therefore attempted, its failure is recorded, and whatever brought us here is what
       // propagates. Every service that WAS stopped gets an attempt, in reverse order, even if an earlier one
       // could not be started.
+      //
+      // WHAT IT NO LONGER DOES IS LOSE THE OUTAGE. Recording it only as a note meant it travelled on a report
+      // that a thrown failure never returns, so a dual failure told an operator about the dump and not about
+      // their stack. `stillStopped` outlives this block, and the catch below carries it into the refusal.
       restarted = true;
       for (const service of [...quiesced].reverse()) {
         try {
@@ -389,6 +459,7 @@ export function runCompleteBackup(
           if (start.status !== 0) throw new MaintenanceRefused('non-zero exit');
         } catch {
           restarted = false;
+          stillStopped.push(service);
           notes.push(`The ${service} service did not start again. Start it before anything else: this command has `
             + 'finished and the stack is down.');
         }
@@ -425,21 +496,24 @@ export function runCompleteBackup(
     return {
       report: COMPLETE_BACKUP_REPORT,
       version: COMPLETE_BACKUP_VERSION,
-      // A BACKUP THAT LEFT THE STACK DOWN IS NOT A SUCCESSFUL BACKUP. The set may be perfect and the operator
-      // still has an outage; reporting `ok: true` would put that fact underneath a green line.
-      ok: restarted,
       published,
       setName: resolved.setName,
       custodian: resolved.custodian,
       components,
       quiesced: resolved.quiesce,
       restarted,
+      stillStopped: [...stillStopped],
       schemaVersion: MIGRATION_VERSION,
       manifestDigest: manifest.digest,
       network: 'none',
       mediaAccess: 'none',
       notes,
     };
+  } catch (err) {
+    // BOTH FACTS, OR THE ONE THAT IS TRUE. This wraps every failure after the staging directory exists —
+    // inside the window and after it — because a restart that failed while the set was being described leaves
+    // exactly the same outage as one that failed while the dump was running.
+    throw withOutage(err, stillStopped);
   } finally {
     lock.release();
   }
@@ -448,12 +522,16 @@ export function runCompleteBackup(
 /**
  * Take a complete backup AND verify it, as one contract.
  *
- * THE DEFECT THIS CLOSES. `runCompleteBackup` returned a report with `ok: true` on its own, and only the CLI
+ * THE DEFECT THIS CLOSES. The taking function returned a report with `ok: true` on its own, and only the CLI
  * happened to verify afterwards. Any other caller — a future scheduler, a future route, a future phase — got
  * an unverified success that looked exactly like a verified one, and the CLI's extra step was the only thing
- * standing between the two. There is now no way to obtain a successful outcome without a verification
- * attached to it: `ok` on this result is the conjunction of taking it, restarting the stack, and the set
- * verifying, and the verification report travels with it.
+ * standing between the two.
+ *
+ * IT IS CLOSED BY SUBTRACTION, NOT BY DISCIPLINE. `CompleteBackupReport` no longer HAS an `ok` field, and the
+ * taking function is named `takeCompleteBackupWithoutVerifying`, so there is no unverified success value in
+ * existence for a caller to read. This is the only function in this module that produces an `ok`, and it
+ * cannot produce one without a verification report beside it. `ok` here is the conjunction of the set being
+ * taken, the stack coming back, and the set verifying.
  */
 export interface CompleteBackupOutcome {
   readonly ok: boolean;
@@ -467,7 +545,7 @@ export function runVerifiedCompleteBackup(
   request: CompleteBackupRequest,
   deps: CompleteBackupDeps,
 ): CompleteBackupOutcome {
-  const backup = runCompleteBackup(request, deps);
+  const backup = takeCompleteBackupWithoutVerifying(request, deps);
   const resolved = resolveCompleteBackupRequest(request);
   const verification = verifyBackupSet(join(resolved.destinationDir, resolved.setName));
   const failures: string[] = [];
@@ -649,12 +727,18 @@ export function assertRequiredSecretFiles(secretsCopy: string): void {
 /** The human summary. Base names, counts, digests and closed-set words. */
 export function renderCompleteBackup(report: CompleteBackupReport): string {
   const lines: string[] = [];
-  lines.push(`Complete backup — ${report.ok ? 'TAKEN' : 'INCOMPLETE'}`);
+  // NO VERDICT LINE. This describes what was taken; whether the CYCLE succeeded is the verification's answer
+  // and is rendered beside this one. A heading here saying "TAKEN" over an unverified set was the same
+  // unearned reassurance the `ok` field was.
+  lines.push(`Complete backup — ${report.published ? 'set published' : 'NOT PUBLISHED'}`);
   lines.push(`  set               ${report.setName}`);
   lines.push(`  custody           ${report.custodian}`);
   lines.push(`  schema version    ${report.schemaVersion}`);
   lines.push(`  quiesced          ${report.quiesced.join(', ')}`);
   lines.push(`  restarted         ${report.restarted}`);
+  if (report.stillStopped.length > 0) {
+    lines.push(`  STILL STOPPED     ${report.stillStopped.join(', ')} — start these before anything else`);
+  }
   lines.push(`  manifest digest   ${report.manifestDigest.slice(0, 16)}`);
   lines.push('  components:');
   for (const component of report.components) {
@@ -664,7 +748,7 @@ export function renderCompleteBackup(report: CompleteBackupReport): string {
   lines.push(`  network           ${report.network}`);
   lines.push(`  media access      ${report.mediaAccess}`);
   for (const note of report.notes) lines.push(`  note: ${note}`);
-  lines.push(`  RESULT: ${report.ok ? 'OK' : 'INCOMPLETE'}`);
+  lines.push('  (whether this backup CYCLE succeeded is the verification below, not this section)');
   return lines.join('\n');
 }
 

@@ -83,10 +83,29 @@ of the name. A leaf swapped for a link between an `lstat` and a read is refused 
 cannot promise that atomically (Windows has no `O_NOFOLLOW`), the fallback refuses a link by `lstat` and then
 compares the opened object's identity to the one inspected, which detects the race rather than preventing it.
 
-**Taking the set and verifying it are one contract.** `runVerifiedCompleteBackup` returns the backup, the
-verification and the failures together, and success means all three: the set was published, the writers came
-back, and the set verified. A stack that never restarted is a failed cycle however good the files on disk are —
-and the report says both facts rather than one.
+**Taking the set and verifying it are one contract, and there is no unverified success to be had.**
+`runVerifiedCompleteBackup` returns the backup, the verification and the failures together, and success means
+all three: the set was published, the writers came back, and the set verified. A stack that never restarted is
+a failed cycle however good the files on disk are — and the report says both facts rather than one.
+
+That used to be enforced by *discipline*: the taking function returned its own `ok`, and only the CLI happened
+to verify afterwards, so any other caller — a scheduler, a route, a later phase — could hold an unverified
+success indistinguishable from a verified one. It is now enforced by *subtraction*. The taking report has **no
+`ok` field at all**, its rendering prints no verdict line, and the function is named
+`takeCompleteBackupWithoutVerifying`. There is no value in existence for a caller to misread, the only `ok`
+this module produces cannot exist without a verification report beside it, and a suite asserts that nothing
+under `src/` calls the unverified taker.
+
+**A dual failure carries both facts.** When a step inside the quiesced window fails *and* the restart
+afterwards fails too, an operator has two problems and the urgent one is the outage. The `finally` still
+refuses to throw of its own — replacing the failure that sent it there would lose the reason — but the outage
+used to be recorded only as a *note*, and notes travel on a report that a thrown failure never returns. So it
+was dropped: an operator was told "the database dump did not run. Nothing was written." and was never told
+their installation was down. A failure that leaves services stopped is now a `CompleteBackupFailed`, carrying
+the primary refusal **word for word** plus the outage and the names of what did not come back; where the stack
+did restart, the original error is rethrown untouched, because there is no second fact to add and a paragraph
+about an outage that did not happen is only noise between an operator and a sentence they can act on. The
+report gained a `stillStopped` list for the same reason.
 
 **Directories are 0700 and files are 0600.** The manifest carries structural metadata and digests — component
 ids, sizes, entry counts, sha256 — and no content, no host path and no secret.
@@ -162,33 +181,125 @@ checked against production's including case, because Compose lower-cases project
 repository is refused (it *means* `latest`), a digest is accepted. Every `up` carries `--pull never`, and
 `pull`, `login` and `push` are not in the permitted subcommand set at all.
 
-**The image is selected, not merely named.** This command writes two Compose **override files** into the root
-it owns, one per role, each pinning `services.app.image` to an exact immutable reference and mounting the
-restored components; every boot passes `-f <your definition> -f <that override>`. Which image a step runs is
-therefore visible in its argument array and provable from the file on disk. The definition being overridden is
-**yours** and is named explicitly — this command never writes a stack definition, because a stack nobody
-declared is a stack nobody reviewed.
+### The definition you supply must itself be disposable, and that is proved before anything is claimed
 
-**All four components are restored.** A private restore workspace is prepared out of the verified set — the
-database, the keystore, the secret files and the promotion records, plus the representative import snapshot you
-name — and every override mounts all of them. Restoring only the dump would mean every decrypt in the rehearsal
-ran against a keystore that never encrypted this data, which is precisely the failure a rehearsal exists to
-catch. The set itself is only ever **read**: it is verified before and after, and the report says whether it
-was unchanged.
+**This is the correction that matters most.** A Compose definition decides for itself what it touches. Running
+it under a different project name in a different directory changes neither of these:
+
+* a **bind mount** names a host directory — `- /mnt/user/appdata/catalog/pgdata:/var/lib/postgresql/data` is
+  your production database directory whatever project is in front of it;
+* a **Docker secret** names a host file — the shipped launcher stack points six of them at your real key
+  material;
+* an **external volume or network** already exists and belongs to something else, and this rehearsal runs
+  `down -v`;
+* `container_name` takes a name **globally**, `network_mode: host`, `privileged`, `devices:` and a Docker
+  socket mount each hand the stack the host, and a published `ports:` entry takes a port on the host;
+* `${VAR}` means "whatever the shell running this happens to hold", and the shipped stacks default theirs to
+  **the production appdata directory**.
+
+So before the marker is claimed and before a container could exist, this command runs `docker compose config`
+— which resolves everything and **starts nothing** — and validates Compose's own answer. It is run again after
+each override is written, over the merged result, because an override can *add* to a `secrets` or `volumes`
+list and cannot remove from one: rather than pretend to have replaced a base entry, this reads what Compose
+actually resolved and refuses if a production source survived.
+
+**Your disposable definition must therefore:** declare exactly the four services this product's stack has
+(`postgres`, `migrate`, `app`, `sidecar`) and no others; keep every piece of persistent state in
+**project-scoped named volumes**; declare **no bind mount**, **no Docker secret or config**, nothing
+**external**, and none of the keys above; and contain **no `${…}` at all**. This command mounts the restored
+backup itself, out of a workspace it owns, at the exact paths the images read.
+
+**The shipped `docker-compose.unraid.runtime.yml` is not such a definition and is refused as one.** That is
+the point: following the previous version of this page would have rehearsed against production while the
+report said `touchedProduction: false`. Write a small definition for the rehearsal — for example:
+
+```yaml
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+  migrate:
+    image: catalog-authority-ops:pinned-by-the-rehearsal
+    environment:
+      APP_ENV: production
+      CUSTODIAN_MODE: sidecar
+      CUSTODIAN_SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
+    volumes:
+      - sidecarrun:/run/catalog-sidecar
+  app:
+    image: catalog-authority-ops:pinned-by-the-rehearsal
+    environment:
+      APP_ENV: production
+      CUSTODIAN_MODE: sidecar
+      CUSTODIAN_SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
+    volumes:
+      - sidecarrun:/run/catalog-sidecar
+  sidecar:
+    image: catalog-authority-ops:pinned-by-the-rehearsal
+    environment:
+      APP_ENV: production
+      SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
+    volumes:
+      - sidecarrun:/run/catalog-sidecar
+volumes:
+  pgdata: {}
+  sidecarrun: {}
+```
+
+The `image:` values above are placeholders: this command pins all three product services itself, so a
+reference here that this host does not hold is a *feature* — a leg that failed to pin would not start.
+
+**The environment is an allowlist too.** Every command runs with `PATH`, `HOME` and the three `DOCKER_*`
+variables and nothing else, so no `CATALOG_AUTHORITY_*`, `COMPOSE_*` or credential-shaped variable of yours
+reaches a compose command or a container.
+
+**The image is selected, not merely named — on every product service.** This command writes two Compose
+**override files** into the root it owns, one per role, each pinning **`app`, `migrate` and `sidecar`** to one
+exact immutable reference and wiring in the restored components; every boot passes `-f <your definition> -f
+<that override>`. In this stack the migration and the custodian sidecar are the *same image as the app*, so
+pinning only `app` — which the first version did — ran the candidate app against the **current** build's
+migration and the **current** build's custodian, and the migration is the entire reason a rollback is hard.
+Which image each service runs is visible in the resolved configuration, and that is what is checked.
+
+**All four components are restored, into the places that read them.** A private restore workspace is prepared
+out of the verified set — the database, the keystore, the secret files and the promotion records, plus the
+representative import snapshot you name. The keystore becomes the **sidecar's** `SIDECAR_STATE_DIR`, because
+in sidecar custody mode that is where every unwrap goes; each required secret file is bound at the exact path
+its consumer reads and the variable naming that path is set to it (`postgres` ← `postgres_password`, `migrate`
+and `app` ← `admin_database_url` and `database_url`, `app` ← `operator_ui_token`, `sidecar` ←
+`completion_secret` and `custodian_kek`); the promotion records and the import snapshot are mounted at their
+own consumers. Each of those is checked **against the resolved configuration**, so "the keystore is mounted"
+means Compose, after merging, would give the sidecar the copy this rehearsal made. The set itself is only ever
+**read**: it is verified before and after, and the report says whether it was unchanged.
 
 **Versions are read, not inferred from a tag.** The plan carries the exact product version and schema version
 expected on each image; the run reads both out of the running container (`npm pkg get version`, and the shipped
 `ops:version` line) and compares them exactly, on the current image, on the candidate after its migration, and
 again after the rollback. A tag is a label somebody typed.
 
-**Nothing runs without the exact plan digest** — which covers the images, the definition, the set, the import
-and all four declared versions, so changing what the rehearsal will accept as a pass changes what you confirm.
-Nothing runs without a backup set that **verifies now**, and whose manifest schema is the one declared for the
-current image.
+**Nothing runs without the exact plan digest** — which covers the images, all four declared versions, and the
+**contents** of the definition, the import snapshot and the backup set, not merely their paths. A file edited,
+a snapshot replaced or a whole set written over the same name between the `--plan` you read and the command
+you run produces a different digest, and the run is refused. Those three are read again **immediately before
+the marker is claimed** and refused if any moved in that window too. Nothing runs without a backup set that
+**verifies now**, and whose manifest schema is the one declared for the current image.
+
+**Every successful check requires the process to have succeeded.** A matching body behind a non-zero exit is a
+*disagreement*, and a disagreement is its own failure — the doctor's report and the `ops:version` line are both
+read on a failure, because their closed sentences are what you act on, but neither can conclude success without
+status zero. Output is bounded before anything parses it.
 
 **The representative work really runs**: the import is previewed (writing nothing), applied, and replayed after
-the migration to show idempotence; the durable history is read; and the catalog is read through a primitive
-that must decrypt to answer. Every collection, media-server, acquisition and network gate stays shut — those
+the migration — and the replay's **own report** must say it created and updated nothing. Two exit-zero applies
+prove only that an import ran twice; an import that re-created every record would exit zero and would have
+doubled the catalog. The evidence carries a closed word for what was actually shown: `proved` when the apply
+made a durable change and the replay made none, `proved-vacuously` when the snapshot was already present and
+the replay had nothing to repeat. The durable history is read, and the catalog is read through a primitive that
+must decrypt to answer. Every collection, media-server, acquisition and network gate stays shut — those
 commands are not in the plan, and the guard would refuse them if they were.
 
 **The plan and the run are one ordered list.** `planRehearsal` builds the steps; `--plan` renders that list and
@@ -199,6 +310,17 @@ the *same* pre-upgrade set into fresh state, boots the *previous* image, and re-
 doctor, read and history checks. A failed step **stops the run, keeps the disposable project for diagnosis and
 removes nothing** — and even `--cleanup` will not remove a failed run's evidence, or run at all unless the root
 still carries this rehearsal's own marker at that moment.
+
+**Cleanup means the files as well as the project.** `cleanup.performed: true` used to mean only that `compose
+down` had run, while the private workspace — holding **a copy of your custodian keystore and every secret
+file** — stayed on disk under a word that said it had been cleaned up. With `--cleanup`, a successful run and
+a marker that still binds the root, this now also removes the workspace, both override files and the marker
+(last), each after proving by digest that it is the artifact this run wrote; the tree is walked and refused
+whole if it holds a symbolic link, a device, a socket or a pipe, so nothing is ever recursively deleted
+through a path this command has not verified. **Your Compose definition is never removed.** If any of that
+does not complete, `cleanup.performed` is `false`, `cleanup.artifacts` is `incomplete`, and the report says
+what is still there and what it contains. Every run *without* `--cleanup`, and every failed run, keeps
+everything for diagnosis — and says plainly that the workspace holds key material.
 
 **The evidence is redacted, including the parts that look harmless.** The durable report carries a
 **non-reversible digest of each image reference** and a **closed word** for each version comparison
@@ -222,8 +344,10 @@ command was issued" is a property of what actually ran.
 | | |
 | --- | --- |
 | `npm run test:phase277-local` | `test/complete-backup.ts` — the four components from one quiesced moment; stop → dump → keystore → start in that order; private modes; sidecar topology copied from the directory it was told and refused when unstated; each component's absence refusing and publishing nothing; a service that will not stop unwinding what it did stop; a failed start reported rather than swallowed; an interrupted run leaving no set and no lock; a second run refused by the lock; an existing name refused with the existing set byte-identical; symlinks, traversal, absolute paths, broad roots and bad names refused; tamper, removal and addition all caught by verification; a set with no manifest pointing at the tool that needs none; a schema-ahead set refused; the manifest carrying no content; a disclosure scan over every report; a clean command ledger; and the guard refusing a fetch, a media path and a shell. |
+| …and the two corrections above | **A dual failure (a dump that fails *and* a restart that fails) raised as `CompleteBackupFailed`, carrying the primary refusal word for word, the outage, and the names of what is still stopped — and printed whole by the CLI's refusal path; a failure with the stack healthy left exactly as it was, with no outage claimed; a failure raised *after* the window still carrying an outage from inside it; the taking report proved to have no `ok` field, in its type, in its serialised form and in its rendering; a set that publishes, restarts and does NOT verify proved to make the cycle `ok: false`; and a scan proving nothing under `src/` calls the unverified taker.** |
 | `npm run test:phase278-local` | `test/doctor-monitor.ts` — the shipped contract parsed from the shipped formatter; every state mapping to a distinct exit code; an unreadable or self-contradicting report classified `INVALID` rather than healthy; a durable consecutive count that resets only on health; a WARN that never escalates; a redacted, atomic, private state file with no `detail`; a stale state file as a fresh start; a missing state directory refused before the doctor runs; no outbound mechanism in the module or the CLI; and the Unraid example's lock, bound, plan-only retention and absence of credentials or URLs. |
-| `npm run test:phase279-local` | `test/upgrade-rehearsal.ts` — floating and bare image refs refused and digests accepted; a disposable root that is, contains or is inside production refused; a project-name collision refused including by case; a backup set or import snapshot inside the disposable root refused; nothing running without the exact digest, without a set that verifies now, or with a set whose schema is not the declared one; **a modelled disposable stack in which two different images are really selected through the override files, all four components are really in the workspace and mounted into every boot, the set is restored twice byte-identically, and the versions and schema versions are really read and compared** — with the harness's own ability to say no asserted; an unmarked root holding somebody's file never claimed and never cleaned; a root marked for another rehearsal refused; a leftover workspace never silently replaced; a doctor FAIL stopping the run and keeping the evidence; a failed rollback restore reported as "not reversible"; cleanup only when asked, only when everything held, and only while the marker still binds the root; and an evidence report carrying reference digests and closed words but no reference, version string, doctor detail, runner message, path, registry, address or secret. |
+| `npm run test:phase279-local` | `test/upgrade-rehearsal.ts` — floating and bare image refs refused and digests accepted; a disposable root that is, contains or is inside production refused; a project-name collision refused including by case; a backup set or import snapshot inside the disposable root refused; nothing running without the exact digest, without a set that verifies now, or with a set whose schema is not the declared one; **a modelled disposable stack — the harness performs a real Compose merge and answers `config` from it — in which two different images are really selected, all four components are really in the workspace and mounted into every boot, the set is restored twice byte-identically, and the versions and schema versions are really read and compared** — with the harness's own ability to say no asserted; an unmarked root holding somebody's file never claimed and never cleaned; a root marked for another rehearsal refused; a leftover workspace never silently replaced; a doctor FAIL stopping the run and keeping the evidence; a failed rollback restore reported as "not reversible"; and an evidence report carrying reference digests and closed words but no reference, version string, doctor detail, runner message, path, registry, address or secret. |
+| …and the second round of corrections | **A production bind, a Docker secret, an external volume, a `container_name`, `network_mode: host`, `privileged`, a device, a published port, an unpinnable extra service and a missing sidecar are each refused at the preflight — with exactly one command issued (`config`, which starts nothing), no marker, no workspace, no override and no `up` or `down`; the shipped `docker-compose.unraid.runtime.yml` refused as a disposable definition; every ambient `CATALOG_*`/`COMPOSE_*` variable proved absent from a command's environment and an unsubstituted bind source refused; every restored component asserted to be the EFFECTIVE source at the exact target and variable its image reads, in both resolved stacks, with no bind outside the workspace anywhere; `migrate` and `sidecar` proved to run the leg's own image on every boot and an unpinned migration refused; the compose definition, import snapshot and backup set each swapped after `--plan` and refused, and a definition swapped between the resolve and the claim refused at the claim with no marker written; a healthy doctor body and a matching schema line each behind a non-zero exit refused; output past the evidence bound refused; a replay that exits zero while reporting a duplicate write refused, with `proved`/`proved-vacuously`/`not-proved` distinguished; cleanup removing the workspace, both overrides and the marker (last) while preserving the operator's definition, refusing a tampered workspace and reporting `incomplete` rather than `performed`; and a leftover artifact of this command's own name refused before any marker is written.** |
 | `npm run test:phase250-local` | `test/release-readiness.ts` — the three new suites are in the single shared required-suite list, so removing any of them from the CI suites job blocks `suites-run-the-acceptances`. |
 
 ## Verification status

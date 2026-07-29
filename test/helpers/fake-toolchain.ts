@@ -3,7 +3,8 @@ import {
   closeSync, constants as fsConstants, existsSync, ftruncateSync, mkdirSync, openSync, readFileSync,
   readdirSync, writeFileSync, writeSync,
 } from 'node:fs';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
+import { parseYaml, type YamlMap, type YamlValue } from '../../src/ops/minimal-yaml.js';
 import {
   CommandLedger,
   type CommandOutcome,
@@ -214,11 +215,24 @@ export interface RehearsalWorldOptions extends FakeToolchainOptions {
   readonly images: Readonly<Record<string, RehearsalImageContents>>;
   /** The schema version the restored set carries. */
   readonly setSchema: number;
+  /** How many records the representative import snapshot holds. Default 3. */
+  readonly importRecords?: number;
+  /**
+   * Make the REPLAY report a duplicate durable write while still exiting zero.
+   *
+   * The whole point of reading the shipped report rather than the exit code: an import that re-created every
+   * record would succeed as a process and would have doubled the catalog. There is no other way to express
+   * that case, and a suite that could not express it could not prove the check works.
+   */
+  readonly importReplayDuplicates?: boolean;
 }
 
 export interface RehearsalUp {
+  /** What image each service in the resolved stack would run, keyed by service name. */
+  readonly images: Readonly<Record<string, string>>;
+  /** The image `app` runs. The rehearsal's version and schema answers come from it. */
   readonly image: string;
-/** Every mount the override wired, as `<host side>:<container side>`, in file order. */
+  /** Every bind the resolved stack wires, as `<host side>:<container side>`, service by service. */
   readonly mounts: readonly string[];
   readonly overrideFile: string;
 }
@@ -236,44 +250,176 @@ export interface RehearsalWorld extends FakeToolchain {
   readonly teardowns: number;
   /** Every `npm ...` invocation inside the app, joined, in order. */
   readonly appCommands: readonly string[];
+  /** Every resolved configuration this world produced, in order, as it answered `compose config`. */
+  readonly configurations: readonly ResolvedFakeStack[];
 }
 
-const OVERRIDE_IMAGE = /^\s*image:\s*"([^"]+)"\s*$/;
-const OVERRIDE_VOLUME = /^\s*-\s*([^:]+):([^:]+)(?::ro)?\s*$/;
+// -----------------------------------------------------------------------------------------------------------
+// The part that makes this a proof: the fake MERGES, the way Compose does
+// -----------------------------------------------------------------------------------------------------------
+//
+// WHY IT HAS TO. Every claim about where the disposable stack points is a claim about the RESOLVED
+// configuration — base definition plus override, merged. A fake that read only the override could not notice
+// that a base bind survived the merge, that a base Docker secret is still there (an override cannot remove
+// one), or that `migrate` was left on the base image. Those are exactly the defects being closed, so the fake
+// answers `docker compose config` from a real merge and the product validates THAT.
+//
+// The merge implemented here is Compose's own for the shapes this product writes: mappings merge key by key,
+// `environment` merges, and mount lists merge BY TARGET with the later file winning. Everything else in the
+// later file replaces.
+
+export interface ResolvedFakeStack {
+  readonly name: string;
+  readonly services: Readonly<Record<string, YamlMap>>;
+}
+
+type MutableMap = Record<string, YamlValue>;
+
+/** Split `A:B[:ro]` the way Compose does, tolerating a Windows drive letter on the host side. */
+function splitMountString(entry: string): { source: string; target: string; readOnly: boolean } {
+  const parts: string[] = [];
+  let rest = entry;
+  // A leading `C:` is a drive, not a separator.
+  const drive = /^([A-Za-z]:[\\/])/.exec(rest);
+  let prefix = '';
+  if (drive !== null) { prefix = drive[1]!; rest = rest.slice(prefix.length); }
+  for (const piece of rest.split(':')) parts.push(piece);
+  const source = `${prefix}${parts[0] ?? ''}`;
+  const target = parts[1] ?? '';
+  const readOnly = (parts[2] ?? '') === 'ro';
+  return { source, target, readOnly };
+}
+
+function isHostSide(source: string): boolean {
+  return source.startsWith('.') || source.startsWith('/') || source.startsWith('\\') || /^[A-Za-z]:[\\/]/.test(source);
+}
+
+/** Long-syntax mounts, keyed by target, so a later file's entry replaces an earlier one at the same target. */
+function mountsByTarget(value: YamlValue | undefined, cwd: string): Map<string, YamlMap> {
+  const out = new Map<string, YamlMap>();
+  if (value === undefined || value === null) return out;
+  for (const entry of value as YamlValue[]) {
+    if (typeof entry === 'string') {
+      const { source, target, readOnly } = splitMountString(entry);
+      out.set(target, isHostSide(source)
+        ? { type: 'bind', source: resolve(cwd, source), target, read_only: readOnly }
+        : { type: 'volume', source, target, read_only: readOnly });
+      continue;
+    }
+    const map = entry as YamlMap;
+    const target = String(map.target ?? '');
+    out.set(target, { ...map, target });
+  }
+  return out;
+}
+
+function mergeService(base: YamlMap | undefined, over: YamlMap | undefined, cwd: string): YamlMap {
+  const merged: MutableMap = { ...(base ?? {}) };
+  for (const [key, value] of Object.entries(over ?? {})) {
+    if (key === 'environment') {
+      merged.environment = { ...(base?.environment as YamlMap ?? {}), ...(value as YamlMap) };
+      continue;
+    }
+    if (key === 'volumes') continue; // handled below, by target
+    merged[key] = value;
+  }
+  const byTarget = mountsByTarget(base?.volumes, cwd);
+  for (const [target, mount] of mountsByTarget(over?.volumes, cwd)) byTarget.set(target, mount);
+  if (byTarget.size > 0) merged.volumes = [...byTarget.values()];
+  return merged;
+}
 
 /**
- * A toolchain that models a disposable stack: images, mounts, restores and a schema version.
+ * Resolve `-f base -f override` into the configuration Compose would produce, and nothing more.
  *
- * It answers `npm pkg get version` and `ops:version` FROM THE IMAGE THE OVERRIDE SELECTED, so a rehearsal
- * that never applied its candidate image gets the current image's answers and its candidate assertions fail.
- * That is the property the previous harness could not express.
+ * NO INTERPOLATION AT ALL, which is what `--no-interpolate` asks for and what this product requires: a `${…}`
+ * in a definition survives into the resolved source as a literal, where the validator sees a path it cannot
+ * prove and refuses.
+ */
+export function resolveFakeCompose(cwd: string, files: readonly string[], projectName: string): ResolvedFakeStack {
+  const documents = files.map((file) => parseYaml(readFileSync(join(cwd, file), 'utf8')));
+  const services: Record<string, YamlMap> = {};
+  const top: MutableMap = {};
+  for (const doc of documents) {
+    for (const [key, value] of Object.entries(doc)) {
+      if (key === 'services') continue;
+      if (key === 'volumes' || key === 'networks' || key === 'secrets' || key === 'configs') {
+        top[key] = { ...(top[key] as YamlMap ?? {}), ...(value as YamlMap) };
+        continue;
+      }
+      top[key] = value;
+    }
+    for (const [name, raw] of Object.entries((doc.services ?? {}) as YamlMap)) {
+      services[name] = mergeService(services[name], raw as YamlMap, cwd);
+    }
+  }
+  return { name: projectName, services, ...top } as ResolvedFakeStack;
+}
+
+/** The JSON `docker compose config --format json` prints for that resolved stack. */
+export function fakeComposeConfigJson(stack: ResolvedFakeStack): string {
+  const services: Record<string, unknown> = {};
+  for (const [name, raw] of Object.entries(stack.services)) {
+    const service: Record<string, unknown> = { ...raw };
+    if (raw.volumes !== undefined) service.volumes = raw.volumes;
+    if (raw.secrets !== undefined) {
+      service.secrets = (raw.secrets as YamlValue[]).map((entry) => (typeof entry === 'string' ? { source: entry } : entry));
+    }
+    // Compose always resolves `environment` to a mapping.
+    service.environment = raw.environment ?? {};
+    services[name] = service;
+  }
+  const asRecord = stack as unknown as Record<string, unknown>;
+  return JSON.stringify({
+    name: stack.name,
+    services,
+    volumes: asRecord.volumes ?? {},
+    networks: asRecord.networks ?? { default: {} },
+    secrets: asRecord.secrets ?? {},
+    configs: asRecord.configs ?? {},
+  });
+}
+
+/**
+ * A toolchain that models a disposable stack: a real Compose merge, per-service images, mounts, restores, a
+ * schema version and a durable catalog the representative import writes into.
+ *
+ * It answers `npm pkg get version` and `ops:version` FROM THE IMAGE THE OVERRIDE SELECTED FOR `app`, and it
+ * refuses an `up` whose MIGRATE or SIDECAR service is on an image this host does not hold — so a rehearsal
+ * that pinned only the app fails here rather than passing quietly. That is the property the previous harness
+ * could not express, and the defect it therefore could not catch.
  */
 export function rehearsalWorld(options: RehearsalWorldOptions): RehearsalWorld {
   const base = fakeToolchain(options);
   const ups: RehearsalUp[] = [];
   const restores: RehearsalRestore[] = [];
   const appCommands: string[] = [];
+  const configurations: ResolvedFakeStack[] = [];
+  const importRecords = options.importRecords ?? 3;
   let teardowns = 0;
   let selected: RehearsalImageContents | null = null;
   let databaseSchema: number | null = null;
+  /** How many of the snapshot's records the disposable catalog durably holds. Destroyed with the volumes. */
+  let importedRecords = 0;
 
-  const readOverride = (cwd: string, args: readonly string[]): RehearsalUp | null => {
-    // The LAST `-f` wins in Compose, which is how an override overrides. The fake reads exactly that file.
-    let file: string | null = null;
+  const composeFiles = (args: readonly string[]): string[] => {
+    const files: string[] = [];
     for (let index = 0; index < args.length - 1; index += 1) {
-      if (args[index] === '-f' || args[index] === '--file') file = args[index + 1]!;
+      if (args[index] === '-f' || args[index] === '--file') files.push(args[index + 1]!);
     }
-    if (file === null || !existsSync(join(cwd, file))) return null;
-    const text = readFileSync(join(cwd, file), 'utf8');
-    let image: string | null = null;
-    const mounts: string[] = [];
-    for (const line of text.split('\n')) {
-      const asImage = OVERRIDE_IMAGE.exec(line);
-      if (asImage !== null) { image = asImage[1]!; continue; }
-      const asVolume = OVERRIDE_VOLUME.exec(line);
-      if (asVolume !== null) mounts.push(`${asVolume[1]!.trim()}:${asVolume[2]!.trim()}`);
+    return files;
+  };
+  const projectOf = (args: readonly string[]): string => {
+    for (let index = 0; index < args.length - 1; index += 1) {
+      if (args[index] === '-p' || args[index] === '--project-name') return args[index + 1]!;
     }
-    return image === null ? null : { image, mounts, overrideFile: file };
+    return '';
+  };
+
+  const resolveStack = (command: MaintenanceCommand): ResolvedFakeStack | null => {
+    const files = composeFiles(command.args);
+    if (files.length === 0 || files.some((file) => !existsSync(join(command.cwd, file)))) return null;
+    return resolveFakeCompose(command.cwd, files, projectOf(command.args));
   };
 
   const runner: CommandRunner = (command: MaintenanceCommand): CommandOutcome => {
@@ -281,21 +427,45 @@ export function rehearsalWorld(options: RehearsalWorldOptions): RehearsalWorld {
     for (const rule of options.failWhen ?? []) {
       if (joined.includes(rule.contains)) return { status: rule.status, stdout: '', stderr: 'injected failure\n' };
     }
+    if (command.args.includes('config')) {
+      const stack = resolveStack(command);
+      if (stack === null) return { status: 1, stdout: '', stderr: 'no such compose file\n' };
+      configurations.push(stack);
+      return { status: 0, stdout: fakeComposeConfigJson(stack), stderr: '' };
+    }
     if (command.args.includes('down')) {
       teardowns += 1;
       // `-v` REMOVES THE VOLUMES, which is what makes the next restore a restore into nothing.
-      if (command.args.includes('-v')) databaseSchema = null;
+      if (command.args.includes('-v')) { databaseSchema = null; importedRecords = 0; }
       return { status: 0, stdout: '', stderr: '' };
     }
     if (command.args.includes('up')) {
-      const up = readOverride(command.cwd, command.args);
-      if (up === null) return { status: 1, stdout: '', stderr: 'no image was selected for this up\n' };
-      const contents = options.images[up.image];
-      if (contents === undefined) return { status: 1, stdout: '', stderr: 'that image is not on this host\n' };
-      ups.push(up);
+      const stack = resolveStack(command);
+      if (stack === null) return { status: 1, stdout: '', stderr: 'no such compose file\n' };
+      const images: Record<string, string> = {};
+      const mounts: string[] = [];
+      for (const [name, service] of Object.entries(stack.services)) {
+        images[name] = String(service.image ?? '');
+        for (const mount of (service.volumes ?? []) as YamlValue[]) {
+          const map = mount as YamlMap;
+          mounts.push(`${String(map.source ?? '')}:${String(map.target ?? '')}`);
+        }
+      }
+      // EVERY PRODUCT SERVICE HAS TO BE AN IMAGE THIS HOST HOLDS. `postgres` is not one of this product's, so
+      // it is not looked up; the other three are, and an `up` that left one on the base definition's reference
+      // fails here exactly as a real host without that image would.
+      for (const service of ['migrate', 'app', 'sidecar']) {
+        if (options.images[images[service] ?? ''] === undefined) {
+          return { status: 1, stdout: '', stderr: `the image for ${service} is not on this host\n` };
+        }
+      }
+      const contents = options.images[images.app!]!;
+      ups.push({ images, image: images.app!, mounts, overrideFile: composeFiles(command.args).slice(-1)[0] ?? '' });
       selected = contents;
-      // THE MIGRATION RUNS ON BOOT. A build that expects a newer schema than the database is at moves it.
-      if (databaseSchema !== null && contents.schema > databaseSchema) databaseSchema = contents.schema;
+      // THE MIGRATION RUNS ON BOOT, and it is the MIGRATE service's image that runs it — which is why that
+      // service is pinned. A build that expects a newer schema than the database is at moves it.
+      const migrate = options.images[images.migrate!]!;
+      if (databaseSchema !== null && migrate.schema > databaseSchema) databaseSchema = migrate.schema;
       return { status: 0, stdout: '', stderr: '' };
     }
     if (command.args.includes('psql')) {
@@ -308,6 +478,7 @@ export function rehearsalWorld(options: RehearsalWorldOptions): RehearsalWorld {
         components: readdirSync(workspace).slice().sort(),
       });
       databaseSchema = options.setSchema;
+      importedRecords = 0;
       return { status: 0, stdout: '', stderr: '' };
     }
     if (command.args.includes('npm')) {
@@ -325,6 +496,35 @@ export function rehearsalWorld(options: RehearsalWorldOptions): RehearsalWorld {
           stderr: '',
         };
       }
+      if (joined.includes('ops:catalog-import')) {
+        const apply = command.args.includes('--apply');
+        const already = importedRecords;
+        const created = already >= importRecords ? 0 : importRecords - already;
+        if (apply) importedRecords = importRecords;
+        // A DUPLICATE WRITE THAT STILL EXITS ZERO. Modelled deliberately: it is the only shape in which the
+        // exit-code check passes and the catalog has been doubled.
+        const duplicated = apply && already >= importRecords && options.importReplayDuplicates === true;
+        return {
+          status: 0,
+          stdout: `${JSON.stringify({
+            ok: true,
+            report: 'phase-259-catalog-import',
+            mode: apply ? 'apply' : 'preview',
+            source: 'a-representative-source',
+            snapshotDigest: 'a'.repeat(64),
+            total: importRecords,
+            created: duplicated ? importRecords : created,
+            updated: 0,
+            unchanged: duplicated ? 0 : importRecords - created,
+            blocked: 0,
+            failed: 0,
+            notAttempted: 0,
+            items: [],
+            notes: [],
+          })}\n`,
+          stderr: '',
+        };
+      }
       return base.runner(command);
     }
     return base.runner(command);
@@ -337,6 +537,7 @@ export function rehearsalWorld(options: RehearsalWorldOptions): RehearsalWorld {
     get restores() { return restores; },
     get teardowns() { return teardowns; },
     get appCommands() { return appCommands; },
+    get configurations() { return configurations; },
   };
 }
 
@@ -360,6 +561,15 @@ export function rehearsalProblems(world: RehearsalWorld, expected: {
   // The LAST boot must be the current image again: that is what makes the rollback a rollback.
   if (selected.length > 0 && selected[selected.length - 1] !== expected.currentImage) {
     problems.push('the last boot was not the current image, so the rollback did not put the previous one back');
+  }
+  // EVERY PRODUCT SERVICE, NOT ONLY THE APP. `migrate` runs the migration and `sidecar` holds the custody
+  // path; a boot that left either on another image rehearsed a mixture of two builds.
+  for (const up of world.ups) {
+    for (const service of ['migrate', 'sidecar']) {
+      if (up.images[service] !== up.image) {
+        problems.push(`a boot ran ${service} on a different image from the app, so that leg was a mixture of builds`);
+      }
+    }
   }
   for (const up of world.ups) {
     for (const component of expected.components) {

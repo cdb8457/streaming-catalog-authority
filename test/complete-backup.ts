@@ -10,12 +10,13 @@ import { REQUIRED_SECRET_FILES, BACKUP_COMPONENT_IDS } from '../src/ops/backup-c
 import {
   BACKUP_MANIFEST_NAME,
   COMPONENT_ARTIFACT_NAMES,
+  CompleteBackupFailed,
   QUIESCED_SERVICES,
   planCompleteBackup,
   readBackupManifest,
   renderCompleteBackup,
   resolveCompleteBackupRequest,
-  runCompleteBackup,
+  takeCompleteBackupWithoutVerifying,
   runVerifiedCompleteBackup,
   type CompleteBackupRequest,
 } from '../src/ops/complete-backup.js';
@@ -118,9 +119,10 @@ console.log('Running Phase 277-278 complete backup and verification suite:\n');
 test('a complete backup takes all four components, from one quiesced moment, and verifies', () => {
   const root = makeProject('happy');
   const tools = fakeToolchain();
-  const report = runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger, now: () => new Date(0) });
+  const report = takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger, now: () => new Date(0) });
 
-  assertEq(report.ok, true, 'the backup reports success');
+  assertEq(report.published, true, 'the set reached its final name');
+  assertEq(report.restarted, true, 'and the stack came back');
   assertEq(report.custodian, 'inline', 'and the topology it was told');
   assertEq(report.quiesced.join(','), QUIESCED_SERVICES.inline.join(','), 'the writers it stopped are the model\'s');
   assertEq(report.restarted, true, 'and it started them again');
@@ -152,7 +154,7 @@ test('a complete backup takes all four components, from one quiesced moment, and
 test('the backup directory and the files in it are private', () => {
   const root = makeProject('private');
   const tools = fakeToolchain();
-  runCompleteBackup(request(root, 'set-p'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-p'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   if (process.platform === 'win32') { console.log('       (POSIX modes are not observable on this platform)'); return; }
   const setDir = join(root, 'backups', 'set-p');
   assertEq(statSync(setDir).mode & 0o077, 0, 'the set directory is not readable by anyone else');
@@ -163,11 +165,11 @@ test('the backup directory and the files in it are private', () => {
 test('the sidecar topology copies the keystore from the directory it was TOLD, and never guesses', () => {
   const root = makeProject('sidecar', { sidecar: true });
   const tools = fakeToolchain();
-  const report = runCompleteBackup(
+  const report = takeCompleteBackupWithoutVerifying(
     request(root, 'set-s', { custodian: 'sidecar', sidecarState: 'sidecar-state' }),
     { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger },
   );
-  assertEq(report.ok, true, 'the sidecar backup succeeded');
+  assertEq(report.published, true, 'the sidecar backup published its set');
   assertEq(report.quiesced.join(','), QUIESCED_SERVICES.sidecar.join(','), 'the custodian is stopped too');
   const keystore = join(root, 'backups', 'set-s', COMPONENT_ARTIFACT_NAMES.keystore);
   assertEq(existsSync(join(keystore, 'keys', 'k1')), true, 'the sidecar keystore was copied');
@@ -188,7 +190,7 @@ test('a missing secrets directory refuses before anything is stopped', () => {
   const root = makeProject('no-secrets');
   rmSync(join(root, 'secrets'), { recursive: true, force: true });
   const tools = fakeToolchain();
-  refuses(() => runCompleteBackup(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
     'secrets directory is not there', 'a missing secrets directory');
   assertEq(tools.lines().length, 0, 'and NOTHING was run: no service was stopped');
   assertEq(existsSync(join(root, 'backups', 'set-x')), false, 'and no set was published');
@@ -197,7 +199,7 @@ test('a missing secrets directory refuses before anything is stopped', () => {
 test('a secrets directory missing one required file refuses, and publishes nothing', () => {
   const root = makeProject('partial-secrets', { secrets: REQUIRED_SECRET_FILES.slice(0, 3) });
   const tools = fakeToolchain();
-  refuses(() => runCompleteBackup(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
     'files a restore', 'a partial secrets directory');
   assertEq(existsSync(join(root, 'backups', 'set-x')), false, 'no set was published');
   // AND THE STACK IS BACK UP. The refusal happened after the window, and the window's `finally` ran.
@@ -207,7 +209,7 @@ test('a secrets directory missing one required file refuses, and publishes nothi
 test('a database dump that produces nothing refuses, publishes nothing, and restarts the stack', () => {
   const root = makeProject('no-dump');
   const tools = fakeToolchain({ dumpText: '' });
-  refuses(() => runCompleteBackup(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
     'produced no bytes', 'an empty dump');
   assertEq(existsSync(join(root, 'backups', 'set-x')), false, 'no set was published');
   assert(tools.lines().some((l) => l.includes('compose start app')), 'and the app was started again anyway');
@@ -216,7 +218,7 @@ test('a database dump that produces nothing refuses, publishes nothing, and rest
 test('a keystore copy that fails refuses, and says why it matters', () => {
   const root = makeProject('no-keystore');
   const tools = fakeToolchain({ failWhen: [{ contains: 'compose cp', status: 1 }] });
-  refuses(() => runCompleteBackup(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
     'can decrypt nothing', 'a failed keystore copy');
   assertEq(existsSync(join(root, 'backups', 'set-x')), false, 'no set was published');
   assert(tools.lines().some((l) => l.includes('compose start app')), 'and the app was started again');
@@ -225,9 +227,9 @@ test('a keystore copy that fails refuses, and says why it matters', () => {
 test('no promotion records is a complete backup, and says so rather than warning', () => {
   const root = makeProject('no-records', { records: false });
   const tools = fakeToolchain();
-  const report = runCompleteBackup(request(root, 'set-r', { promotionRecords: 'promotion-records' }),
+  const report = takeCompleteBackupWithoutVerifying(request(root, 'set-r', { promotionRecords: 'promotion-records' }),
     { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
-  assertEq(report.ok, true, 'it is still a complete backup');
+  assertEq(report.published, true, 'it is still a complete backup');
   assert(report.notes.some((n) => n.includes('correct and permanent state')), 'and the report says why');
   const verification = verifyBackupSet(join(root, 'backups', 'set-r'));
   assertEq(verification.ok, true, 'and it verifies');
@@ -241,7 +243,7 @@ test('a service that will not stop refuses, and the finally still starts what WA
   const root = makeProject('stubborn', { sidecar: true });
   // The app stops; the custodian does not. The window must unwind whatever it managed to stop.
   const tools = fakeToolchain({ failWhen: [{ contains: 'compose stop custodian', status: 1 }] });
-  refuses(() => runCompleteBackup(request(root, 'set-x', { custodian: 'sidecar', sidecarState: 'sidecar-state' }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x', { custodian: 'sidecar', sidecarState: 'sidecar-state' }),
     { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }), 'could not be stopped', 'a service that will not stop');
   const lines = tools.lines();
   assert(lines.some((l) => l.includes('compose start app')), 'the app that WAS stopped is started again');
@@ -251,7 +253,7 @@ test('a service that will not stop refuses, and the finally still starts what WA
 test('a start that fails is reported rather than swallowed', () => {
   const root = makeProject('stuck-start');
   const tools = fakeToolchain({ failWhen: [{ contains: 'compose start app', status: 1 }] });
-  const report = runCompleteBackup(request(root, 'set-k'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  const report = takeCompleteBackupWithoutVerifying(request(root, 'set-k'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   assertEq(report.restarted, false, 'the report does not claim the stack came back');
   assert(report.notes.some((n) => n.includes('the stack is down')), 'and it says so first');
 });
@@ -269,16 +271,80 @@ test('a restart that THROWS does not replace the failure that caused it', () => 
       return tools.runner(command);
     },
   };
-  refuses(() => runCompleteBackup(request(root, 'set-x'), { runner: exploding.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x'), { runner: exploding.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
     'the database dump did not run', 'the ORIGINAL failure, not the restart\'s');
   assertEq(existsSync(join(root, 'backups', 'set-x')), false, 'and nothing was published');
   assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'and the lock was still released');
 });
 
+test('a DUAL failure carries both facts: what went wrong, AND that the stack is still down', () => {
+  // THE DEFECT: the outage was recorded as a note, and notes travel on a report that a THROWN failure never
+  // returns. So when the dump failed and the restart failed too, the operator was told "the database dump did
+  // not run. Nothing was written." and was never told their installation was down — which is by far the
+  // larger of the two problems and the only one that is urgent.
+  const root = makeProject('dual-failure');
+  const tools = fakeToolchain({
+    failWhen: [{ contains: 'pg_dump', status: 1 }, { contains: 'compose start app', status: 1 }],
+  });
+  let caught: unknown = null;
+  try {
+    takeCompleteBackupWithoutVerifying(request(root, 'set-x'),
+      { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  } catch (err) { caught = err; }
+  assert(caught instanceof CompleteBackupFailed, `a dual failure is its own kind: ${String(caught)}`);
+  const failure = caught as CompleteBackupFailed;
+  // BOTH, IN ONE SENTENCE AN OPERATOR READS ONCE.
+  assert(failure.primary.includes('the database dump did not run'),
+    `the primary failure is preserved word for word: ${failure.primary}`);
+  assert(failure.message.includes('the database dump did not run'), 'and it is in the message');
+  assert(failure.message.includes('THE STACK IS STILL DOWN'), 'as is the outage');
+  assertEq(failure.stillStopped.join(','), 'app', 'naming what did not come back');
+  // It is still a refusal, so the CLI prints it in full rather than reducing it to an errno.
+  assert(failure instanceof MaintenanceRefused, 'and it is one of this product\'s own refusals');
+  assertEq(reportRefusal(failure), failure.message, 'which the CLI prints whole');
+  assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'and the lock was still released');
+  assertEq(existsSync(join(root, 'backups', 'set-x')), false, 'and nothing was published');
+});
+
+test('a failure with the stack HEALTHY is left exactly as it was, with nothing added', () => {
+  // The other half of the rule: where there is no second fact, nothing is wrapped. An operator reading a
+  // refusal must not have to look past a paragraph about an outage that did not happen.
+  const root = makeProject('single-failure');
+  const tools = fakeToolchain({ failWhen: [{ contains: 'pg_dump', status: 1 }] });
+  let caught: unknown = null;
+  try {
+    takeCompleteBackupWithoutVerifying(request(root, 'set-x'),
+      { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  } catch (err) { caught = err; }
+  assert(caught instanceof MaintenanceRefused, 'it is still a refusal');
+  assert(!(caught instanceof CompleteBackupFailed), 'but not the dual-failure kind');
+  assert(!(caught as Error).message.includes('STILL DOWN'), 'and it claims no outage');
+  assert(tools.lines().some((line) => line.includes('compose start app')), 'because the app really did restart');
+});
+
+test('a failure AFTER the window still carries an outage that happened during it', () => {
+  // The restart can fail while the set is being described or published, which leaves exactly the same outage
+  // as one that failed while the dump was running. The enrichment therefore covers the whole run, not only
+  // the quiesced block.
+  const root = makeProject('late-failure', { records: false });
+  // The app never comes back, AND the secrets copy is emptied before the set is described, so the failure
+  // that propagates is raised well after the window closed.
+  const tools = fakeToolchain({ failWhen: [{ contains: 'compose start app', status: 1 }] });
+  rmSync(join(root, 'secrets', 'custodian_kek'), { force: true });
+  let caught: unknown = null;
+  try {
+    takeCompleteBackupWithoutVerifying(request(root, 'set-x'),
+      { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  } catch (err) { caught = err; }
+  assert(caught instanceof CompleteBackupFailed, `a post-window failure carries the outage too: ${String(caught)}`);
+  assert((caught as CompleteBackupFailed).primary.length > 0, 'with the original reason preserved');
+  assert((caught as Error).message.includes('THE STACK IS STILL DOWN'), 'and the outage named');
+});
+
 test('an interrupted run leaves no set and no lock, and the next run is not blocked by it', () => {
   const root = makeProject('interrupted');
   const tools = fakeToolchain({ failWhen: [{ contains: 'pg_dump', status: 1 }] });
-  refuses(() => runCompleteBackup(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
     'did not run', 'a failed dump');
   assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'the lock was released');
   assertEq(existsSync(join(root, 'backups', 'set-x')), false, 'and no set was published');
@@ -287,8 +353,8 @@ test('an interrupted run leaves no set and no lock, and the next run is not bloc
   assertEq(leftovers.length, 0, 'nothing that is not dot-prefixed was left in the destination');
 
   const second = fakeToolchain();
-  const report = runCompleteBackup(request(root, 'set-2'), { runner: second.runner, fileRunner: second.fileRunner, ledger: second.ledger });
-  assertEq(report.ok, true, 'and the next run succeeds');
+  const report = takeCompleteBackupWithoutVerifying(request(root, 'set-2'), { runner: second.runner, fileRunner: second.fileRunner, ledger: second.ledger });
+  assertEq(report.published, true, 'and the next run publishes');
 });
 
 test('two maintenance runs cannot hold the same project at once', () => {
@@ -296,7 +362,7 @@ test('two maintenance runs cannot hold the same project at once', () => {
   const held = acquireMaintenanceLock(root);
   try {
     const tools = fakeToolchain();
-    refuses(() => runCompleteBackup(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+    refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
       'already running', 'a second run while one holds the lock');
     assertEq(tools.lines().length, 0, 'and the second run stopped nothing');
   } finally {
@@ -308,11 +374,11 @@ test('two maintenance runs cannot hold the same project at once', () => {
 test('an existing set name is refused, and the set that is there is untouched', () => {
   const root = makeProject('existing');
   const first = fakeToolchain();
-  runCompleteBackup(request(root, 'set-1'), { runner: first.runner, fileRunner: first.fileRunner, ledger: first.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: first.runner, fileRunner: first.fileRunner, ledger: first.ledger });
   const before = readFileSync(join(root, 'backups', 'set-1', COMPONENT_ARTIFACT_NAMES.database), 'utf8');
 
   const second = fakeToolchain({ dumpText: fakeDumpText(3) });
-  refuses(() => runCompleteBackup(request(root, 'set-1'), { runner: second.runner, fileRunner: second.fileRunner, ledger: second.ledger }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: second.runner, fileRunner: second.fileRunner, ledger: second.ledger }),
     'already there', 'a repeated set name');
   assertEq(readFileSync(join(root, 'backups', 'set-1', COMPONENT_ARTIFACT_NAMES.database), 'utf8'), before,
     'and the set that was there is byte-identical');
@@ -332,7 +398,7 @@ test('a symbolic link anywhere in a component is refused', () => {
   catch { console.log('       (symlink creation is not permitted on this platform; the link case is not exercised)'); }
   if (!created) return;
   const tools = fakeToolchain();
-  refuses(() => runCompleteBackup(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+  refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
     'symbolic link', 'a symlink in the secrets directory');
   assertEq(existsSync(join(root, 'backups', 'set-x')), false, 'and nothing was published');
   rmSync(link);
@@ -378,7 +444,7 @@ test('a set name with a folder part, a leading dot or traversal is refused', () 
 test('a tampered component is caught, and verification changes nothing', () => {
   const root = makeProject('tampered');
   const tools = fakeToolchain();
-  runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const setDir = join(root, 'backups', 'set-1');
   const dump = join(setDir, COMPONENT_ARTIFACT_NAMES.database);
   if (process.platform !== 'win32') chmodSync(dump, 0o600);
@@ -394,7 +460,7 @@ test('a tampered component is caught, and verification changes nothing', () => {
 test('a removed component and an added artifact are both caught', () => {
   const root = makeProject('missing-extra');
   const tools = fakeToolchain();
-  runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const setDir = join(root, 'backups', 'set-1');
 
   writeFileSync(join(setDir, 'something-else.txt'), 'not declared\n', 'utf8');
@@ -423,7 +489,7 @@ test('a set with no manifest is refused, and says which tool to use instead', ()
 test('a set from a NEWER schema is refused as incompatible', () => {
   const root = makeProject('ahead');
   const tools = fakeToolchain();
-  runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const setDir = join(root, 'backups', 'set-1');
   const manifestPath = join(setDir, BACKUP_MANIFEST_NAME);
   if (process.platform !== 'win32') chmodSync(manifestPath, 0o600);
@@ -444,7 +510,7 @@ test('components are copied BYTE-FAITHFULLY, including bytes that are not text',
   const hostile = Buffer.from([0x00, 0x01, 0xff, 0xfe, 0x80, 0x41, 0x0d, 0x0a, 0xc3, 0x28]);
   writeFileSync(join(root, 'promotion-records', 'binary.bin'), hostile);
   const tools = fakeToolchain();
-  runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const copied = readFileSync(join(root, 'backups', 'set-1', COMPONENT_ARTIFACT_NAMES['promotion-records'], 'binary.bin'));
   assertEq(copied.equals(hostile), true, 'the copied component is byte-identical to the original');
   assertEq(verifyBackupSet(join(root, 'backups', 'set-1')).ok, true, 'and the set still verifies');
@@ -453,7 +519,7 @@ test('components are copied BYTE-FAITHFULLY, including bytes that are not text',
 test('the manifest carries structure and digests, and no content of any kind', () => {
   const root = makeProject('manifest');
   const tools = fakeToolchain();
-  runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const raw = readFileSync(join(root, 'backups', 'set-1', BACKUP_MANIFEST_NAME), 'utf8');
   for (const forbidden of [SECRET_VALUE, root, WORK, 'custodian_kek-value', 'PostgreSQL database dump']) {
     assert(!raw.includes(forbidden), `the manifest must not carry ${forbidden.slice(0, 32)}`);
@@ -470,7 +536,7 @@ test('the manifest carries structure and digests, and no content of any kind', (
 test('no report carries a secret value, a host path or a component\'s content', () => {
   const root = makeProject('disclosure');
   const tools = fakeToolchain();
-  const report = runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  const report = takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const verification = verifyBackupSet(join(root, 'backups', 'set-1'));
   const printed = [
     renderCompleteBackup(report), JSON.stringify(report),
@@ -486,7 +552,7 @@ test('the command ledger reaches no network, registry, media path, media server 
   const root = makeProject('ledger', { sidecar: true });
   for (const req of [request(root, 'set-a'), request(root, 'set-b', { custodian: 'sidecar', sidecarState: 'sidecar-state' })]) {
     const tools = fakeToolchain();
-    runCompleteBackup(req, { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+    takeCompleteBackupWithoutVerifying(req, { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
     const problems = assertLedgerIsClean(tools.lines());
     assertEq(problems.join('; '), '', `the ledger is clean: ${tools.lines().join(' | ')}`);
     assert(tools.lines().length > 0, 'and it is not empty, so the scan is not vacuous');
@@ -529,7 +595,7 @@ test('the dump is written to a descriptor, so bytes that are not text survive it
     Buffer.from(`1\t${MIGRATION_VERSION}\n\\.\n`, 'utf8'),
   ]);
   const tools = fakeToolchain({ dumpBytes: hostile });
-  runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const written = readFileSync(join(root, 'backups', 'set-1', COMPONENT_ARTIFACT_NAMES.database));
   assertEq(written.equals(hostile), true, 'the published dump is byte-identical to what the producer wrote');
   assert(!written.includes(Buffer.from([0xef, 0xbf, 0xbd])), 'and no byte was replaced by U+FFFD');
@@ -542,8 +608,8 @@ test('a dump larger than any in-memory bound succeeds, and is digested without b
   const root = makeProject('dump-huge');
   const size = 600 * 1024 * 1024;
   const tools = fakeToolchain({ dumpSize: size });
-  const report = runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
-  assertEq(report.ok, true, 'a dump past the old cap is taken');
+  const report = takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  assertEq(report.published, true, 'a dump past the old cap is taken');
   const database = report.components.find((c) => c.id === 'database')!;
   assertEq(database.bytes, size, 'and the manifest records its real size');
   assertEq(database.digest.length, 64, 'and it was digested, which means it was read end to end');
@@ -569,7 +635,7 @@ test('every component is taken inside the quiesced window, not just the database
       return tools.runner(command);
     },
   };
-  runCompleteBackup(request(root, 'set-1'), { runner: mutating.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: mutating.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const copied = readFileSync(join(root, 'backups', 'set-1', COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_kek'), 'utf8');
   assertEq(copied, beforeRestart, 'the secrets in the set are the ones from inside the window');
   assert(readFileSync(kek, 'utf8') !== beforeRestart, 'and the test really did move the source, so this is not vacuous');
@@ -599,6 +665,58 @@ test('taking a set and verifying it are one contract, and the verdict decides th
   assertEq(outcome.ok, true, 'a good cycle is ok');
   assertEq(outcome.verification.ok, true, 'and it verified in the same call');
   assertEq(outcome.failures.length, 0, 'with nothing to report');
+});
+
+test('there is NO unverified success to receive: the taking report carries no verdict at all', () => {
+  // THE DEFECT: `runCompleteBackup` returned `ok: true` on its own, and only the CLI happened to verify
+  // afterwards. Any other caller got an unverified success indistinguishable from a verified one. Closing it
+  // by discipline would have lasted until the next caller; closing it by SUBTRACTION means there is no value
+  // in existence to misread.
+  const root = makeProject('no-unverified-ok');
+  const tools = fakeToolchain();
+  const report = takeCompleteBackupWithoutVerifying(request(root, 'set-1'),
+    { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  assert(!('ok' in report), 'the taking report has no ok field');
+  assert(!JSON.stringify(report).includes('"ok"'), 'and none appears in its serialised form either');
+  assert(!renderCompleteBackup(report).includes('RESULT:'), 'nor does its rendering print a verdict line');
+
+  // The ONE function that produces a verdict cannot produce one without a verification beside it.
+  const outcome = runVerifiedCompleteBackup(request(root, 'set-2'),
+    { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  assert('verification' in outcome && outcome.verification.report.length > 0,
+    'the outcome that HAS an ok carries the verification that earned it');
+
+  // A PUBLISHED SET THAT DOES NOT VERIFY IS NOT A SUCCESS, which is the case the removed field would have
+  // reported as one.
+  // The dump the database actually produces holds a schema version this build does not, so the set stages,
+  // publishes and restarts perfectly — and the verification's own inspector disagrees with the manifest that
+  // describes it. Nothing here is injected after the fact: the set really is one that must not be trusted.
+  const damaged = makeProject('published-but-broken');
+  const damaging = fakeToolchain({ dumpText: fakeDumpText(MIGRATION_VERSION - 1) });
+  const broken = runVerifiedCompleteBackup(request(damaged, 'set-1'),
+    { runner: damaging.runner, fileRunner: damaging.fileRunner, ledger: damaging.ledger });
+  assertEq(broken.backup.published, true, 'the set reached its final name');
+  assertEq(broken.backup.restarted, true, 'and the stack came back');
+  assertEq(broken.verification.ok, false, 'but it does not verify');
+  assertEq(broken.ok, false, 'so the CYCLE is not ok — the conjunction, not the taking');
+  assert(broken.failures.some((f) => f.includes('does not verify')), 'and the reason is stated');
+});
+
+test('nothing else in src/ can take a backup without verifying it', () => {
+  // ANTI-DRIFT. The unverified taker exists so a suite can exercise the refusals of the taking step; a future
+  // route, scheduler or phase reaching for it would reintroduce exactly the path this closed.
+  const callers: string[] = [];
+  const walk = (directory: string): void => {
+    for (const entry of readdirSync(directory, { withFileTypes: true })) {
+      const child = join(directory, entry.name);
+      if (entry.isDirectory()) { walk(child); continue; }
+      if (!entry.name.endsWith('.ts')) continue;
+      if (child.endsWith(join('ops', 'complete-backup.ts'))) continue; // where it is defined
+      if (readFileSync(child, 'utf8').includes('takeCompleteBackupWithoutVerifying')) callers.push(entry.name);
+    }
+  };
+  walk(join(repoRoot, 'src'));
+  assertEq(callers.join(','), '', 'no file under src/ calls the unverified taker');
 });
 
 test('the backup reads every component through a descriptor, never by re-opening a name', () => {
@@ -675,7 +793,7 @@ test('an intact set from an OLDER schema verifies as intact and NOT restorable u
   const root = makeProject('rollback-point');
   const older = MIGRATION_VERSION - 1;
   const tools = fakeToolchain({ dumpText: fakeDumpText(older) });
-  runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const setDir = join(root, 'backups', 'set-1');
   const manifestPath = join(setDir, BACKUP_MANIFEST_NAME);
   if (process.platform !== 'win32') chmodSync(manifestPath, 0o600);
@@ -692,7 +810,7 @@ test('an intact set from an OLDER schema verifies as intact and NOT restorable u
 test('a set whose manifest and whose dump disagree about the schema is a finding, not a rounding', () => {
   const root = makeProject('disagreement');
   const tools = fakeToolchain({ dumpText: fakeDumpText(MIGRATION_VERSION) });
-  runCompleteBackup(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request(root, 'set-1'), { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   const setDir = join(root, 'backups', 'set-1');
   const manifestPath = join(setDir, BACKUP_MANIFEST_NAME);
   if (process.platform !== 'win32') chmodSync(manifestPath, 0o600);

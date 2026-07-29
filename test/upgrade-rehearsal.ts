@@ -1,33 +1,46 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MIGRATION_VERSION } from '../src/db/schema-version.js';
 import { REQUIRED_SECRET_FILES } from '../src/ops/backup-components.js';
-import { COMPONENT_ARTIFACT_NAMES, runCompleteBackup, type CompleteBackupRequest } from '../src/ops/complete-backup.js';
+import { COMPONENT_ARTIFACT_NAMES, takeCompleteBackupWithoutVerifying, type CompleteBackupRequest } from '../src/ops/complete-backup.js';
 import {
   FLOATING_TAGS,
+  MAX_ASSERTION_STDOUT_BYTES,
   REHEARSAL_IMPORT_NAME,
   REHEARSAL_MARKER_NAME,
   REHEARSAL_OVERRIDE_NAMES,
   REHEARSAL_PROJECT_PREFIX,
   REHEARSAL_RESTORE_DIRNAME,
+  REHEARSAL_SECRET_CONSUMERS,
   assertImmutableImageRef,
   claimDisposableRoot,
   digestConfirmed,
+  pinnedImagesFor,
   planRehearsal,
   planRehearsalCommands,
+  readImportReport,
   readNpmVersion,
   readSchemaVersions,
   referenceDigest,
   rehearsalCleanupCommand,
   rehearsalPlanDigest,
   renderRehearsal,
+  requiredRehearsalWiring,
   resolveRehearsal,
   runRehearsal,
   type RehearsalRequestWithConfirmation,
 } from '../src/ops/upgrade-rehearsal.js';
+import {
+  REHEARSAL_SERVICES,
+  parseResolvedComposeModel,
+  validateResolvedCompose,
+} from '../src/ops/rehearsal-compose-model.js';
 import { assertPermittedCommand } from '../src/ops/maintenance-safety.js';
+import { narrowedEnvironment } from '../src/ops/maintenance-cli-shared.js';
 import { parseRehearsalArgs } from '../src/ops/upgrade-rehearsal-cli.js';
 import {
   assertLedgerIsClean,
@@ -94,6 +107,47 @@ const CANDIDATE_SCHEMA = MIGRATION_VERSION + 1;
 const COMPOSE_FILE = 'compose.yml';
 const SECRET_VALUE = 'a-kek-value-that-must-never-reach-any-rehearsal-report';
 
+/**
+ * A DISPOSABLE definition, of the shape this command now requires: the four services this product's stack
+ * has, project-scoped named volumes for every piece of persistent state, no bind mount, no Docker secret, no
+ * external anything, and NO `${…}` — so what it resolves to is a function of its bytes.
+ *
+ * The product-image services deliberately name a placeholder reference this host does not hold. Pinning is
+ * therefore load-bearing in every test: a leg that failed to pin `migrate` or `sidecar` gets an image the fake
+ * host does not have and fails, exactly as it would on a real machine.
+ */
+const DISPOSABLE_COMPOSE = [
+  'services:',
+  '  postgres:',
+  '    image: postgres:16',
+  '    environment:',
+  '      POSTGRES_DB: catalog',
+  '      POSTGRES_USER: postgres',
+  '    volumes:',
+  '      - pgdata:/var/lib/postgresql/data',
+  '  migrate:',
+  '    image: catalog-authority-ops:v0.0.0-placeholder',
+  '    environment:',
+  '      APP_ENV: production',
+  '  app:',
+  '    image: catalog-authority-ops:v0.0.0-placeholder',
+  '    environment:',
+  '      APP_ENV: production',
+  '      CUSTODIAN_MODE: sidecar',
+  '    volumes:',
+  '      - sidecarrun:/run/catalog-sidecar',
+  '  sidecar:',
+  '    image: catalog-authority-ops:v0.0.0-placeholder',
+  '    environment:',
+  '      APP_ENV: production',
+  '    volumes:',
+  '      - sidecarrun:/run/catalog-sidecar',
+  'volumes:',
+  '  pgdata: {}',
+  '  sidecarrun: {}',
+  '',
+].join('\n');
+
 interface World {
   readonly production: string;
   readonly disposable: string;
@@ -102,7 +156,7 @@ interface World {
 }
 
 /** A production project with a verified backup set in it, and a disposable root beside it. */
-function makeWorld(name: string): World {
+function makeWorld(name: string, kek: string = SECRET_VALUE): World {
   const world = join(WORK, name);
   const production = join(world, 'production');
   const disposable = join(world, 'disposable');
@@ -110,11 +164,11 @@ function makeWorld(name: string): World {
   mkdirSync(join(production, 'promotion-records'), { recursive: true });
   mkdirSync(disposable, { recursive: true });
   for (const file of REQUIRED_SECRET_FILES) {
-    writeFileSync(join(production, 'secrets', file), file === 'custodian_kek' ? SECRET_VALUE : `${file}\n`, 'utf8');
+    writeFileSync(join(production, 'secrets', file), file === 'custodian_kek' ? kek : `${file}\n`, 'utf8');
   }
   writeFileSync(join(production, 'promotion-records', 'r.json'), '{}\n', 'utf8');
   // The operator's own definition for the disposable stack. This product overrides it and never writes it.
-  writeFileSync(join(disposable, COMPOSE_FILE), 'services:\n  postgres: {}\n  app: {}\n', 'utf8');
+  writeFileSync(join(disposable, COMPOSE_FILE), DISPOSABLE_COMPOSE, 'utf8');
   const importSnapshot = join(world, 'representative-import.json');
   writeFileSync(importSnapshot, '{"records":[{"title":"a representative record"}]}\n', 'utf8');
 
@@ -123,7 +177,7 @@ function makeWorld(name: string): World {
     secrets: 'secrets', promotionRecords: 'promotion-records',
   };
   const tools = fakeToolchain({ dumpText: fakeDumpText(SET_SCHEMA) });
-  runCompleteBackup(request, { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+  takeCompleteBackupWithoutVerifying(request, { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   return { production, disposable, backupSet: join(production, 'backups', 'set-1'), importSnapshot };
 }
 
@@ -263,14 +317,17 @@ test('nothing runs without the exact plan digest', () => {
 
 test('a backup set that does not verify stops the rehearsal before a container exists', () => {
   const world = makeWorld('unverified');
-  // Tamper with the published set: the verification runs NOW, not when the set was taken.
+  // The plan is computed while the set is intact — an operator reads it and copies its digest.
+  const resolved = resolveRehearsal(req(world));
+  // Then the published set is tampered with. The verification runs NOW, not when the set was taken.
   const dump = join(world.backupSet, COMPONENT_ARTIFACT_NAMES.database);
   writeFileSync(dump, `${readFileSync(dump, 'utf8')}-- tampered\n`, 'utf8');
-  const resolved = resolveRehearsal(req(world));
   const tools = fakeToolchain();
   refuses(() => runRehearsal(req(world, { confirmDigest: resolved.planDigest }), { runner: tools.runner, ledger: tools.ledger }),
     'does not verify', 'a tampered set');
   assertEq(tools.lines().length, 0, 'and nothing was started');
+  // And resolving it at all is refused, so --plan cannot print a plan for a set that does not verify.
+  refuses(() => resolveRehearsal(req(world)), 'does not verify', 'planning against a tampered set');
 });
 
 test('a set whose schema is not the one declared for the current image stops the rehearsal', () => {
@@ -424,17 +481,38 @@ test('an unmarked root holding somebody\'s files is never claimed, and never cle
   const world = makeWorld('unowned');
   writeFileSync(join(world.disposable, 'notes-i-care-about.txt'), 'mine\n', 'utf8');
   const resolved = resolveRehearsal(req(world));
-  refuses(() => claimDisposableRoot(resolved), 'did not put there', 'a root holding somebody\'s file');
+  refuses(() => claimDisposableRoot(resolved), 'carries no marker', 'a root holding somebody\'s file');
   assertEq(existsSync(join(world.disposable, REHEARSAL_MARKER_NAME)), false, 'and no marker was written');
 
-  // A run against it fails at the first step and removes nothing.
+  // A run against it fails at the claim and removes nothing. The stack resolved first — that check runs
+  // BEFORE anything is claimed — so the failure is the second step, and no container was ever created.
   const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
   const report = runRehearsal(req(world, { confirmDigest: resolved.planDigest, cleanup: true }),
     { runner: tools.runner, ledger: tools.ledger });
   assertEq(report.ok, false, 'the rehearsal did not hold');
-  assertEq(report.steps[0]!.id, 'own-the-root', 'and it stopped at the very first step');
-  assertEq(tools.lines().length, 0, 'having run no command at all');
-  assertEq(report.cleanup.performed, false, 'and removed nothing');
+  assertEq(report.steps.find((step) => !step.ok)!.id, 'own-the-root', 'and it stopped at the claim');
+  assertEq(tools.lines().join(' | ').includes('up'), false, 'having created nothing');
+  assertEq(tools.lines().join(' | ').includes('down'), false, 'and removed nothing');
+  assertEq(report.cleanup.performed, false, 'and no cleanup was performed');
+});
+
+test('an ARTIFACT of this command\'s own name, with no valid marker, is unowned content', () => {
+  // THE DEFECT THIS CLOSES. The first-claim allowlist held the marker's own name, the restore workspace and
+  // both override files — the names this command writes. Reaching the claim at all means there is NO valid
+  // marker, so a file at one of those names was not put there by a rehearsal this command can account for.
+  // The old rule let it pass, WROTE A MARKER over it, and only then failed on the leftover workspace.
+  for (const [name, make] of [
+    [REHEARSAL_RESTORE_DIRNAME, (path: string) => mkdirSync(path, { recursive: true })],
+    [REHEARSAL_OVERRIDE_NAMES.current, (path: string) => writeFileSync(path, 'services: {}\n', 'utf8')],
+    [REHEARSAL_OVERRIDE_NAMES.candidate, (path: string) => writeFileSync(path, 'services: {}\n', 'utf8')],
+  ] as Array<[string, (path: string) => void]>) {
+    const world = makeWorld(`unowned-${name.replace(/[^a-z]/g, '')}`);
+    make(join(world.disposable, name));
+    const resolved = resolveRehearsal(req(world));
+    refuses(() => claimDisposableRoot(resolved), 'carries no marker', `a leftover ${name}`);
+    assertEq(existsSync(join(world.disposable, REHEARSAL_MARKER_NAME)), false,
+      `and NO MARKER was written over it (${name})`);
+  }
 });
 
 test('a root marked for a DIFFERENT rehearsal is refused rather than adopted', () => {
@@ -461,8 +539,9 @@ test('a restore workspace left by an earlier run is never silently replaced', ()
   const report = runRehearsal(req(world, { confirmDigest: resolved.planDigest }),
     { runner: tools.runner, ledger: tools.ledger });
   assertEq(report.ok, false, 'the second run did not proceed');
-  assert(report.steps[0]!.detail.includes('remove it deliberately'),
-    `and says what to do: ${report.steps[0]!.detail}`);
+  const stopped = report.steps.find((step) => !step.ok)!;
+  assertEq(stopped.id, 'own-the-root', 'at the claim');
+  assert(stopped.detail.includes('remove it deliberately'), `and says what to do: ${stopped.detail}`);
 });
 
 test('the evidence carries reference DIGESTS and closed words, never a reference or a version', () => {
@@ -587,18 +666,100 @@ test('cleanup happens only when asked, only when everything held, and only by th
   assertEq(kept.report.cleanup.performed, false, 'by default nothing is removed');
   assert(kept.report.notes.some((n) => n.includes('left in place')), 'and the report says so');
 
+  assertEq(kept.report.cleanup.artifacts, 'not-attempted', 'and its own artifacts are still there');
+  assertEq(existsSync(join(world.disposable, REHEARSAL_RESTORE_DIRNAME)), true, 'workspace kept for diagnosis');
+  assert(kept.report.notes.some((n) => n.includes('COPY OF YOUR CUSTODIAN KEYSTORE')),
+    'and the report says plainly what is still sitting in that directory');
+
   const removedWorld = makeWorld('cleanup-removed');
   const removed = rehearse(removedWorld, {}, { cleanup: true });
   assertEq(removed.report.cleanup.performed, true, 'with --cleanup the project is removed');
-  const last = removed.tools.lines()[removed.tools.lines().length - 1]!;
+  const composeDown = removed.tools.lines().filter((line) => line.includes('down -v --remove-orphans'));
+  const last = composeDown[composeDown.length - 1]!;
   assert(last.includes(`-p ${removed.resolved.projectName}`), `and only by this project: ${last}`);
-  assert(last.includes('down -v --remove-orphans'), 'through compose, which removes only what it labelled');
+
+  // ...AND THE FILES. `cleanup.performed` used to mean "compose down ran" while a private workspace holding a
+  // copy of the keystore and every secret file stayed on disk under a word that said it had been cleaned up.
+  assertEq(removed.report.cleanup.artifacts, 'removed', 'its own artifacts are gone too');
+  for (const name of [REHEARSAL_RESTORE_DIRNAME, REHEARSAL_OVERRIDE_NAMES.current,
+    REHEARSAL_OVERRIDE_NAMES.candidate, REHEARSAL_MARKER_NAME]) {
+    assertEq(existsSync(join(removedWorld.disposable, name)), false, `${name} was removed`);
+    assert(removed.report.cleanup.removed.includes(name), `and the report names it: ${name}`);
+  }
+  // THE OPERATOR'S OWN DEFINITION IS NEVER TOUCHED.
+  assertEq(existsSync(join(removedWorld.disposable, COMPOSE_FILE)), true, 'the Compose definition is preserved');
+  assertEq(readFileSync(join(removedWorld.disposable, COMPOSE_FILE), 'utf8'), DISPOSABLE_COMPOSE, 'byte for byte');
+  assertEq(readdirSync(removedWorld.disposable).join(','), COMPOSE_FILE, 'and it is the only thing left');
 
   // A failed run NEVER cleans up, even when asked.
   const sick = rehearse(makeWorld('cleanup-sick'), { doctorJson: fakeDoctorJson(['fail']) }, { cleanup: true });
   assertEq(sick.report.cleanup.performed, false, 'a failed rehearsal removes nothing even with --cleanup');
-  assertEq(sick.report.cleanup.plan.length, 1, 'and leaves exactly one cleanup command as a plan');
-  assert(sick.report.cleanup.plan[0]!.includes(sick.resolved.projectName), 'naming only its own project');
+  assertEq(sick.report.cleanup.artifacts, 'not-attempted', 'not its files either');
+  assertEq(sick.report.cleanup.removed.length, 0, 'nothing was removed');
+  assert(sick.report.cleanup.plan[0]!.includes(sick.resolved.projectName), 'the plan names only its own project');
+  assertEq(sick.report.cleanup.plan.length, 5, 'and then the four fixed artifacts it would remove by name');
+  // The removal lines are FIXED NAMES this command chose. The operator's own definition is on none of them —
+  // it appears in the first line only as the `-f` argument of the Compose command, which removes a project.
+  assert(!sick.report.cleanup.plan.slice(1).join(' ').includes(COMPOSE_FILE),
+    'and never removes the operator\'s own Compose definition');
+  for (const name of [REHEARSAL_RESTORE_DIRNAME, REHEARSAL_OVERRIDE_NAMES.current,
+    REHEARSAL_OVERRIDE_NAMES.candidate, REHEARSAL_MARKER_NAME]) {
+    assert(sick.report.cleanup.plan.slice(1).some((line) => line.includes(name)), `the plan names ${name}`);
+  }
+});
+
+test('cleanup refuses a workspace whose contents are not the ones this run made', () => {
+  // A recursive delete of a path this command has not proved it owns is how an automated cleanup removes
+  // somebody's data. Every component is re-digested against what was recorded when it was copied.
+  const world = makeWorld('cleanup-tampered');
+  const resolved = resolveRehearsal(req(world));
+  const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
+  const tampering = (command: Parameters<typeof tools.runner>[0]) => {
+    // Something writes into the workspace after it was prepared — the last `down` is the cleanup itself, so
+    // this lands just before the removal is attempted.
+    if (command.args.includes('history')) {
+      writeFileSync(join(world.disposable, REHEARSAL_RESTORE_DIRNAME, COMPONENT_ARTIFACT_NAMES.secrets,
+        'something-that-was-not-there'), 'x\n', 'utf8');
+    }
+    return tools.runner(command);
+  };
+  const report = runRehearsal(req(world, { confirmDigest: resolved.planDigest, cleanup: true }),
+    { runner: tampering, ledger: tools.ledger });
+  assertEq(report.cleanup.artifacts, 'incomplete', 'the artifact removal did not complete');
+  assertEq(report.cleanup.performed, false, 'so cleanup is NOT reported as performed');
+  assertEq(existsSync(join(world.disposable, REHEARSAL_RESTORE_DIRNAME)), true, 'and the workspace is still there');
+  assert(report.notes.some((n) => n.includes('reported as incomplete rather than done')), 'and it says so');
+  assert(report.notes.some((n) => n.includes('COPY OF YOUR CUSTODIAN KEYSTORE')), 'with the recovery plan');
+});
+
+test('cleanup will not remove a workspace reached through, or holding, a symbolic link', () => {
+  const world = makeWorld('cleanup-symlink');
+  const resolved = resolveRehearsal(req(world));
+  const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
+  let linked = false;
+  const linking = (command: Parameters<typeof tools.runner>[0]) => {
+    if (command.args.includes('history') && !linked) {
+      try {
+        symlinkSync(world.production,
+          join(world.disposable, REHEARSAL_RESTORE_DIRNAME, COMPONENT_ARTIFACT_NAMES.secrets, 'escape'), 'dir');
+        linked = true;
+      } catch { /* an unprivileged Windows session cannot create one; the digest check below still refuses */ }
+    }
+    return tools.runner(command);
+  };
+  const report = runRehearsal(req(world, { confirmDigest: resolved.planDigest, cleanup: true }),
+    { runner: linking, ledger: tools.ledger });
+  // WHAT IS ASSERTED UNCONDITIONALLY: the link's TARGET survives, whether or not this session could create
+  // one. Where a link was made, the removal must also have refused rather than followed it.
+  assertEq(existsSync(world.production), true, 'production is still there');
+  assertEq(existsSync(join(world.production, 'secrets', 'custodian_kek')), true, 'and so is what it holds');
+  if (!linked) {
+    console.log('        (this session cannot create a symbolic link; the target-survives half still ran)');
+    return;
+  }
+  assertEq(report.cleanup.performed, false, 'nothing was removed through a link');
+  assertEq(report.cleanup.artifacts, 'incomplete', 'and the cleanup is honest about it');
+  assertEq(existsSync(join(world.disposable, REHEARSAL_RESTORE_DIRNAME)), true, 'the workspace was left alone');
 });
 
 test('a cleanup whose marker has gone removes NOTHING', () => {
@@ -620,6 +781,526 @@ test('a cleanup whose marker has gone removes NOTHING', () => {
   assert(!tools.lines().slice(-1)[0]!.includes('down -v --remove-orphans')
     || tools.lines().filter((l) => l.includes('down -v')).length <= 2,
   'and no extra teardown was issued beyond the two the legs require');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// THE DISPOSABLE STACK IS PROVED DISPOSABLE — before a marker is claimed and before anything could exist
+// ---------------------------------------------------------------------------------------------------------
+
+/** A world whose disposable definition is whatever the test wants it to be. */
+function worldWith(name: string, compose: string): World {
+  const world = makeWorld(name);
+  writeFileSync(join(world.disposable, COMPOSE_FILE), compose, 'utf8');
+  return world;
+}
+
+/** The valid definition with one service's block replaced. Keeps every other rule satisfied. */
+function withService(service: string, body: readonly string[]): string {
+  const lines = DISPOSABLE_COMPOSE.split('\n');
+  const start = lines.findIndex((line) => line === `  ${service}:`);
+  let end = start + 1;
+  while (end < lines.length && lines[end]!.startsWith('    ')) end += 1;
+  return [...lines.slice(0, start + 1), ...body, ...lines.slice(end)].join('\n');
+}
+
+test('a definition that would reach PRODUCTION is refused before a marker, a volume or a container exists', () => {
+  // THE DEFECT: `touchedProduction: false` was a literal in the report. A Compose definition decides for
+  // itself what it touches, and every one of these resolves to something outside this rehearsal.
+  const productionPath = join(WORK, 'a-production-appdata-directory');
+  mkdirSync(productionPath, { recursive: true });
+  const cases: Array<[string, string, string]> = [
+    ['a production bind mount', withService('postgres', ['    image: postgres:16',
+      '    volumes:', `      - ${productionPath}:/var/lib/postgresql/data`]), 'BIND MOUNT'],
+    ['a Docker secret naming a host file', `${withService('sidecar', ['    image: catalog-authority-ops:v0.0.0-placeholder',
+      '    secrets:', '      - custodian_kek'])}\nsecrets:\n  custodian_kek:\n    file: ${productionPath}/custodian_kek\n`,
+    'Docker secrets or configs'],
+    ['an external volume', DISPOSABLE_COMPOSE.replace('  pgdata: {}', '  pgdata:\n    external: true'),
+      'EXTERNAL volume'],
+    ['a container name', withService('app', ['    image: catalog-authority-ops:v0.0.0-placeholder',
+      '    container_name: catalog-app']), 'container_name'],
+    ['the host network', withService('app', ['    image: catalog-authority-ops:v0.0.0-placeholder',
+      '    network_mode: host']), 'network_mode'],
+    ['a privileged container', withService('app', ['    image: catalog-authority-ops:v0.0.0-placeholder',
+      '    privileged: true']), 'privileged'],
+    ['a host device', withService('app', ['    image: catalog-authority-ops:v0.0.0-placeholder',
+      '    devices:', '      - /dev/dri:/dev/dri']), 'devices'],
+    ['a published host port', withService('app', ['    image: catalog-authority-ops:v0.0.0-placeholder',
+      '    ports:', '      - "8099:8099"']), 'ports'],
+    ['a service nothing pins', DISPOSABLE_COMPOSE.replace('volumes:\n  pgdata:',
+      '  ops:\n    image: catalog-authority-ops:v0.0.0-placeholder\nvolumes:\n  pgdata:'),
+    'does not know how to pin'],
+    ['a missing sidecar', DISPOSABLE_COMPOSE.split('\n').slice(0, DISPOSABLE_COMPOSE.split('\n')
+      .findIndex((line) => line === '  sidecar:')).concat(['volumes:', '  pgdata: {}', '  sidecarrun: {}', ''])
+      .join('\n'), 'no "sidecar" service'],
+  ];
+  for (const [what, compose, needle] of cases) {
+    const world = worldWith(`escape-${what.replace(/[^a-z]/g, '')}`, compose);
+    const resolved = resolveRehearsal(req(world));
+    const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
+    const report = runRehearsal(req(world, { confirmDigest: resolved.planDigest, cleanup: true }),
+      { runner: tools.runner, ledger: tools.ledger });
+    assertEq(report.ok, false, `${what} is refused`);
+    const stopped = report.steps.find((step) => !step.ok)!;
+    assertEq(stopped.id, 'disposable-stack', `${what} stops at the preflight`);
+    assert(stopped.detail.includes(needle), `${what}: expected "${needle}", got: ${stopped.detail}`);
+
+    // BEFORE ANYTHING. The only command issued was `config`, which starts nothing; no marker was written, no
+    // workspace prepared and no override left behind.
+    const ran = tools.lines();
+    assertEq(ran.length, 1, `${what}: exactly one command ran`);
+    assert(ran[0]!.includes('config'), `${what}: and it was the resolve, which creates nothing`);
+    for (const forbidden of ['down', 'up', 'exec']) {
+      assert(!ran.join(' ').includes(` ${forbidden}`), `${what}: no ${forbidden} was issued`);
+    }
+    assertEq(existsSync(join(world.disposable, REHEARSAL_MARKER_NAME)), false, `${what}: no marker`);
+    assertEq(existsSync(join(world.disposable, REHEARSAL_RESTORE_DIRNAME)), false, `${what}: no workspace`);
+    assertEq(readdirSync(world.disposable).join(','), COMPOSE_FILE, `${what}: the root is as it was`);
+    assertEq(report.composeModel.base, null, `${what}: no resolved model was accepted`);
+    assertEq(report.cleanup.performed, false, `${what}: nothing was cleaned up`);
+  }
+});
+
+test('no ambient variable can reach a compose command, and an unresolved one is refused', () => {
+  // THE ENVIRONMENT IS AN ALLOWLIST, AND IT IS THE SECOND HALF OF THE INTERPOLATION RULE. The definition may
+  // name no variable; and even if one slipped through, none of the ones that decide where the shipped stacks
+  // point is ever handed to a child process.
+  const hostile: NodeJS.ProcessEnv = {
+    PATH: '/usr/bin',
+    DOCKER_HOST: 'unix:///var/run/docker.sock',
+    CATALOG_AUTHORITY_APPDATA_DIR: '/mnt/user/appdata/catalog',
+    CATALOG_AUTHORITY_OPS_IMAGE: 'something-else',
+    COMPOSE_FILE: 'a-file-nobody-named.yml',
+    COMPOSE_PROJECT_NAME: 'catalogauthority',
+    OPERATOR_UI_TOKEN: 'a-token',
+  };
+  const narrowed = narrowedEnvironment(hostile);
+  assertEq(narrowed.PATH, '/usr/bin', 'a command can still be found');
+  assertEq(narrowed.DOCKER_HOST, 'unix:///var/run/docker.sock', 'and the daemon it talks to is still chosen');
+  for (const name of ['CATALOG_AUTHORITY_APPDATA_DIR', 'CATALOG_AUTHORITY_OPS_IMAGE', 'COMPOSE_FILE',
+    'COMPOSE_PROJECT_NAME', 'OPERATOR_UI_TOKEN']) {
+    assertEq(narrowed[name], undefined, `${name} never reaches a compose command`);
+  }
+
+  // And a source that still carries a variable is refused rather than joined onto a root and called contained.
+  const world = makeWorld('unresolved-variable');
+  const resolved = resolveRehearsal(req(world));
+  const model = parseResolvedComposeModel(JSON.stringify({
+    name: resolved.projectName,
+    services: {
+      postgres: { image: 'postgres:16', environment: {},
+        volumes: [{ type: 'bind', source: '${CATALOG_AUTHORITY_APPDATA_DIR}/pgdata', target: '/var/lib/postgresql/data' }] },
+      migrate: { image: CURRENT, environment: {}, volumes: [] },
+      app: { image: CURRENT, environment: {}, volumes: [] },
+      sidecar: { image: CURRENT, environment: {}, volumes: [] },
+    },
+    volumes: {}, networks: {}, secrets: {}, configs: {},
+  }), 'resolved disposable stack');
+  refuses(() => validateResolvedCompose(model, {
+    projectName: resolved.projectName,
+    disposableRoot: resolved.disposableRoot,
+    workspace: join(resolved.disposableRoot, REHEARSAL_RESTORE_DIRNAME),
+    pinnedImages: pinnedImagesFor(resolved, 'current'),
+    wiring: requiredRehearsalWiring(),
+  }), 'still carries a variable', 'an unsubstituted bind source');
+});
+
+test('after the merge, a Docker socket, an escape from the root or a writable bind outside the workspace is refused', () => {
+  // These are the rules that apply once there IS a workspace — the state each override preflight validates.
+  // The base definition may declare no bind at all, so these can only be reached through a merge, which is
+  // exactly the situation an override cannot undo and must therefore refuse.
+  const world = makeWorld('merged-escapes');
+  const resolved = resolveRehearsal(req(world));
+  const workspace = join(resolved.disposableRoot, REHEARSAL_RESTORE_DIRNAME);
+  const wiring = requiredRehearsalWiring();
+  const mountsFor = (service: string) => wiring.filter((entry) => entry.service === service).map((entry) => ({
+    type: 'bind',
+    source: join(workspace, entry.workspaceEntry),
+    target: entry.containerPath,
+    read_only: !entry.writable,
+  }));
+  const environmentFor = (service: string) => {
+    const env: Record<string, string> = {};
+    for (const entry of wiring.filter((one) => one.service === service)) {
+      if (entry.env !== null) env[entry.env] = entry.containerPath;
+      Object.assign(env, entry.alsoEnv ?? {});
+    }
+    return env;
+  };
+  const stack = (extra: Record<string, unknown>) => parseResolvedComposeModel(JSON.stringify({
+    name: resolved.projectName,
+    services: {
+      postgres: { image: 'postgres:16', environment: environmentFor('postgres'), volumes: mountsFor('postgres') },
+      migrate: { image: CURRENT, environment: environmentFor('migrate'), volumes: mountsFor('migrate') },
+      app: { image: CURRENT, environment: environmentFor('app'), volumes: mountsFor('app') },
+      sidecar: { image: CURRENT, environment: environmentFor('sidecar'), volumes: mountsFor('sidecar') },
+      ...extra,
+    },
+    volumes: {}, networks: {}, secrets: {}, configs: {},
+  }), 'resolved disposable stack');
+  const check = (model: ReturnType<typeof parseResolvedComposeModel>) => validateResolvedCompose(model, {
+    projectName: resolved.projectName,
+    disposableRoot: resolved.disposableRoot,
+    workspace,
+    pinnedImages: pinnedImagesFor(resolved, 'current'),
+    wiring,
+  });
+  // A well-formed one passes, so the refusals below are not vacuous.
+  check(stack({}));
+
+  refuses(() => check(stack({
+    app: { image: CURRENT, environment: environmentFor('app'),
+      volumes: [...mountsFor('app'),
+        { type: 'bind', source: '/var/run/docker.sock', target: '/var/run/docker.sock' }] },
+  })), 'IS the host', 'a Docker socket mount');
+  refuses(() => check(stack({
+    app: { image: CURRENT, environment: environmentFor('app'),
+      volumes: [...mountsFor('app'),
+        { type: 'bind', source: join(world.production, 'secrets'), target: '/somewhere', read_only: true }] },
+  })), 'OUTSIDE the disposable rehearsal root', 'a bind reaching production');
+  refuses(() => check(stack({
+    app: { image: CURRENT, environment: environmentFor('app'),
+      volumes: [...mountsFor('app'),
+        { type: 'bind', source: resolved.disposableRoot, target: '/somewhere' }] },
+  })), 'WRITABLE bind mount outside the restore workspace', 'a writable bind beside the workspace');
+  refuses(() => check(stack({
+    app: { image: CURRENT, environment: environmentFor('app'),
+      volumes: [...mountsFor('app'), { type: 'volume', source: 'a-volume-nobody-declared', target: '/somewhere' }] },
+  })), 'the definition does not declare', 'an undeclared named volume');
+
+  // AND THE WIRING ITSELF. A component mounted where the image does not read it, or a variable left pointing
+  // at the base definition's production path, is the defect the mount check alone could not see.
+  refuses(() => check(stack({
+    sidecar: { image: CURRENT, environment: { ...environmentFor('sidecar'), SIDECAR_KEK_FILE: '/run/secrets/custodian_kek' },
+      volumes: mountsFor('sidecar') },
+  })), 'read the restored "custodian_kek" secret from the', 'a KEK variable still naming a production path');
+  refuses(() => check(stack({
+    sidecar: { image: CURRENT, environment: environmentFor('sidecar'),
+      volumes: mountsFor('sidecar').filter((mount) => !mount.target.endsWith('catalog-sidecar/state')) },
+  })), 'does not mount anything at the path', 'a sidecar with no restored keystore');
+});
+
+test('the SHIPPED Unraid stack is refused as a disposable definition, which is what it is', () => {
+  // THE DEFECT, EXACTLY AS DOCUMENTED. The shipped launcher stack binds `${CATALOG_AUTHORITY_APPDATA_DIR:-
+  // /mnt/user/appdata/catalog}` — production BY DEFAULT — and declares six Docker secrets naming real key
+  // material. Following the previous documentation would have rehearsed against production while the report
+  // said `touchedProduction: false`.
+  const world = worldWith('shipped-stack', readRepo('docker-compose.unraid.runtime.yml'));
+  refuses(() => resolveRehearsal(req(world)), 'interpolates an environment variable',
+    'the shipped launcher stack as a disposable definition');
+  assertEq(existsSync(join(world.disposable, REHEARSAL_MARKER_NAME)), false, 'and nothing was claimed');
+
+  // ...and so is anything that brings part of the stack in from outside the file the digest binds.
+  for (const [key, line] of [
+    ['env_file', '    env_file:\n      - ./somewhere.env'],
+    ['extends', '    extends:\n      file: another.yml\n      service: app'],
+    ['profiles', '    profiles:\n      - rehearsal'],
+  ] as Array<[string, string]>) {
+    const other = worldWith(`external-${key}`,
+      DISPOSABLE_COMPOSE.replace('  app:\n', `  app:\n${line}\n`));
+    refuses(() => resolveRehearsal(req(other)), `uses "${key}"`, `a definition using ${key}`);
+  }
+  const included = worldWith('external-include', `include:\n  - another.yml\n${DISPOSABLE_COMPOSE}`);
+  refuses(() => resolveRehearsal(req(included)), 'uses "include"', 'a definition using include');
+
+  // And a `.env` beside it, which Compose reads whether or not anybody meant it to.
+  const dotenv = makeWorld('dotenv');
+  writeFileSync(join(dotenv.disposable, '.env'), 'COMPOSE_PROFILES=something\n', 'utf8');
+  refuses(() => resolveRehearsal(req(dotenv)), '".env" file', 'a .env beside the definition');
+});
+
+test('the resolved stack shows every restored component as the EFFECTIVE source, at the path its image reads', () => {
+  // THE DEFECT: the keystore and a generic secrets directory were mounted into `app`, which in sidecar custody
+  // mode reads neither — while `sidecar` kept the base definition's state bind and its `/run/secrets/*` files.
+  const world = makeWorld('effective-sources');
+  const { tools } = rehearse(world);
+  const workspace = join(world.disposable, REHEARSAL_RESTORE_DIRNAME);
+  // Every configuration this run validated, not only the last.
+  const overrideModels = tools.configurations.filter((stack) => Object.values(stack.services)
+    .some((service) => String((service as Record<string, unknown>).image ?? '').includes('v1.1.')));
+  assert(overrideModels.length >= 2, 'both overrides were resolved');
+  for (const stack of overrideModels) {
+    const mountsOf = (service: string): Array<Record<string, unknown>> =>
+      ((stack.services[service] as Record<string, unknown>).volumes ?? []) as Array<Record<string, unknown>>;
+    const sourceAt = (service: string, target: string): string => {
+      const found = mountsOf(service).find((mount) => mount.target === target);
+      return found === undefined ? 'nothing is mounted there' : String(found.source);
+    };
+    const environmentOf = (service: string): Record<string, string> =>
+      (stack.services[service] as Record<string, unknown>).environment as Record<string, string>;
+
+    assertEq(sourceAt('sidecar', '/var/lib/catalog-sidecar/state'),
+      join(workspace, COMPONENT_ARTIFACT_NAMES.keystore), 'the SIDECAR state directory is the restored keystore');
+    assertEq(environmentOf('sidecar').SIDECAR_STATE_DIR, '/var/lib/catalog-sidecar/state',
+      'and the sidecar is told to read it there');
+    assertEq(sourceAt('sidecar', '/run/catalog-rehearsal-secrets/custodian_kek'),
+      join(workspace, COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_kek'), 'the KEK is the restored one');
+    assertEq(environmentOf('sidecar').SIDECAR_KEK_FILE, '/run/catalog-rehearsal-secrets/custodian_kek',
+      'and the sidecar reads it from there rather than from /run/secrets');
+    assertEq(sourceAt('postgres', '/restore/catalog-backup.sql'),
+      join(workspace, COMPONENT_ARTIFACT_NAMES.database), 'the dump the restore replays is the restored one');
+    assertEq(environmentOf('postgres').POSTGRES_PASSWORD_FILE, '/run/catalog-rehearsal-secrets/postgres_password',
+      'and postgres takes its password from the restored secret');
+    assertEq(sourceAt('app', '/var/lib/catalog/promotion-records'),
+      join(workspace, COMPONENT_ARTIFACT_NAMES['promotion-records']), 'promotion records are the restored ones');
+    assertEq(sourceAt('app', `/var/lib/catalog/import/${REHEARSAL_IMPORT_NAME}`),
+      join(workspace, REHEARSAL_IMPORT_NAME), 'and the representative import is the copied one');
+    // EVERY REQUIRED SECRET, at the exact path and variable its consumer uses.
+    for (const [file, consumers] of Object.entries(REHEARSAL_SECRET_CONSUMERS)) {
+      for (const consumer of consumers) {
+        const target = `/run/catalog-rehearsal-secrets/${file}`;
+        assertEq(sourceAt(consumer.service, target),
+          join(workspace, COMPONENT_ARTIFACT_NAMES.secrets, file), `${consumer.service} reads the restored ${file}`);
+        assertEq(environmentOf(consumer.service)[consumer.env], target, `and ${consumer.env} names it`);
+      }
+    }
+  }
+  // AND NO PRODUCTION SOURCE SURVIVED ANYWHERE. Every bind in either resolved stack is inside the workspace.
+  for (const stack of overrideModels) {
+    for (const service of Object.values(stack.services)) {
+      for (const mount of (((service as Record<string, unknown>).volumes ?? []) as Array<Record<string, unknown>>)) {
+        if (mount.type !== 'bind') continue;
+        assert(String(mount.source).startsWith(workspace), `a bind points outside the workspace: ${String(mount.source)}`);
+      }
+    }
+  }
+});
+
+test('every required secret file has a declared consumer, and every one is the shipped stack\'s own', () => {
+  // ANTI-DRIFT, THE SAME RULE THE COMPONENT MODEL FOLLOWS. A stack that starts requiring a seventh secret must
+  // not leave a rehearsal quietly restoring six and calling the restore complete.
+  const declared = Object.keys(REHEARSAL_SECRET_CONSUMERS).slice().sort().join(',');
+  assertEq(declared, [...REQUIRED_SECRET_FILES].slice().sort().join(','),
+    'the consumer map covers exactly the required secret files');
+  const shipped = readRepo('docker-compose.unraid.runtime.yml');
+  for (const consumers of Object.values(REHEARSAL_SECRET_CONSUMERS)) {
+    for (const consumer of consumers) {
+      assert(shipped.includes(`${consumer.env}:`), `the shipped stack reads ${consumer.env}`);
+      assert(shipped.includes(`  ${consumer.service}:`), `and has a ${consumer.service} service`);
+    }
+  }
+  for (const wiring of requiredRehearsalWiring()) {
+    assert(REHEARSAL_SERVICES.includes(wiring.service), `${wiring.service} is one of the modelled services`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// THE CANDIDATE MIGRATION IS PINNED
+// ---------------------------------------------------------------------------------------------------------
+
+test('every product service — migrate and sidecar as well as app — runs the leg\'s own image', () => {
+  // THE DEFECT: only `app.image` was pinned. In this stack `migrate` and `sidecar` are the SAME product image,
+  // so the candidate leg ran the candidate app against the CURRENT build's migration and custodian sidecar —
+  // and the migration is the entire reason a rollback is hard.
+  const world = makeWorld('pinning');
+  const { report, tools } = rehearse(world);
+  assertEq(report.ok, true, 'the rehearsal held');
+  assert(tools.ups.length >= 4, `every leg booted: ${tools.ups.length}`);
+  for (const up of tools.ups) {
+    for (const service of ['migrate', 'app', 'sidecar']) {
+      assertEq(up.images[service], up.image, `${service} runs the same image as the app on every boot`);
+    }
+  }
+  const legs = tools.ups.map((up) => up.images.migrate);
+  assert(legs.includes(CANDIDATE), 'the CANDIDATE migration really ran');
+  assertEq(legs[legs.length - 1], CURRENT, 'and the rollback put the current migration back');
+  assertEq(tools.ups[tools.ups.length - 1]!.images.sidecar, CURRENT, 'with the current sidecar');
+
+  // ...and each override file itself pins all three, which is what makes the above true.
+  for (const [role, image] of [['current', CURRENT], ['candidate', CANDIDATE]] as Array<['current' | 'candidate', string]>) {
+    const text = readFileSync(join(world.disposable, REHEARSAL_OVERRIDE_NAMES[role]), 'utf8');
+    assertEq(text.split(`image: "${image}"`).length - 1, 3, `the ${role} override pins three product services`);
+  }
+});
+
+test('an override that pinned only the app is refused by the resolved model', () => {
+  // The check that catches the defect, exercised directly: a stack where `migrate` is still on the base
+  // reference must not resolve to something this command is willing to boot.
+  const world = makeWorld('pin-only-app');
+  const resolved = resolveRehearsal(req(world));
+  const model = parseResolvedComposeModel(JSON.stringify({
+    name: resolved.projectName,
+    services: {
+      postgres: { image: 'postgres:16', environment: {}, volumes: [] },
+      migrate: { image: 'catalog-authority-ops:v0.0.0-placeholder', environment: {}, volumes: [] },
+      app: { image: CANDIDATE, environment: {}, volumes: [] },
+      sidecar: { image: 'catalog-authority-ops:v0.0.0-placeholder', environment: {}, volumes: [] },
+    },
+    volumes: {}, networks: {}, secrets: {}, configs: {},
+  }), 'resolved disposable stack');
+  refuses(() => validateResolvedCompose(model, {
+    projectName: resolved.projectName,
+    disposableRoot: resolved.disposableRoot,
+    workspace: null,
+    pinnedImages: pinnedImagesFor(resolved, 'candidate'),
+    wiring: requiredRehearsalWiring(),
+  }), 'does not run this leg\'s image on "migrate"', 'a stack with an unpinned migration');
+
+  // And a pin naming a service the definition does not declare is refused rather than inventing one.
+  const pinned = parseResolvedComposeModel(JSON.stringify({
+    name: resolved.projectName,
+    services: {
+      postgres: { image: 'postgres:16', environment: {}, volumes: [] },
+      migrate: { image: CANDIDATE, environment: {}, volumes: [] },
+      app: { image: CANDIDATE, environment: {}, volumes: [] },
+      sidecar: { image: CANDIDATE, environment: {}, volumes: [] },
+    },
+    volumes: {}, networks: {}, secrets: {}, configs: {},
+  }), 'resolved disposable stack');
+  refuses(() => validateResolvedCompose(pinned, {
+    projectName: resolved.projectName,
+    disposableRoot: resolved.disposableRoot,
+    workspace: null,
+    pinnedImages: { ...pinnedImagesFor(resolved, 'candidate'), 'a-service-nobody-declared': CANDIDATE },
+    wiring: requiredRehearsalWiring(),
+  }), 'never adds one', 'a phantom service');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// THE PLAN DIGEST BINDS BYTES, NOT PATHS
+// ---------------------------------------------------------------------------------------------------------
+
+test('swapping the compose definition, the import snapshot or the backup set after --plan is refused', () => {
+  // THE DEFECT: the digest hashed the three PATHS. Between the plan an operator reads and the command they
+  // run, the definition could gain a production bind, the snapshot could be replaced, and the whole set could
+  // be swapped for another one at the same name — and every one of those still confirmed the digest shown.
+  for (const [what, swap] of [
+    ['the compose definition', (world: World) => {
+      writeFileSync(join(world.disposable, COMPOSE_FILE), `${DISPOSABLE_COMPOSE}# and one more line\n`, 'utf8');
+    }],
+    ['the import snapshot', (world: World) => {
+      writeFileSync(world.importSnapshot, '{"records":[{"title":"a DIFFERENT record"}]}\n', 'utf8');
+    }],
+    ['the backup set', (world: World) => {
+      // A DIFFERENT SET, VERIFYING PERFECTLY, AT THE SAME PATH — which is exactly what a retention schedule
+      // writing a new set over an old name does.
+      const other = makeWorld('swap-replacement-set', 'a-completely-different-kek');
+      rmSync(world.backupSet, { recursive: true, force: true });
+      cpSync(other.backupSet, world.backupSet, { recursive: true });
+    }],
+  ] as Array<[string, (world: World) => void]>) {
+    const world = makeWorld(`swap-${what.replace(/[^a-z]/g, '')}`);
+    // The operator reads the plan and copies its digest.
+    const planned = resolveRehearsal(req(world));
+    swap(world);
+    const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
+    refuses(() => runRehearsal(req(world, { confirmDigest: planned.planDigest }),
+      { runner: tools.runner, ledger: tools.ledger }), 'digest you confirmed', `${what} swapped after the plan`);
+    assertEq(tools.lines().length, 0, `${what}: and nothing was started`);
+    assertEq(existsSync(join(world.disposable, REHEARSAL_MARKER_NAME)), false, `${what}: nothing was claimed`);
+    // The plan digest MOVED because the content moved, which is the property that makes the refusal possible.
+    assert(resolveRehearsal(req(world)).planDigest !== planned.planDigest, `${what} is a different plan`);
+  }
+});
+
+test('a definition swapped between the resolve and the marker claim is refused at the claim', () => {
+  // The other window: `resolveRehearsal` reads the three inputs, then steps run, and the marker is claimed.
+  // Anything with write access to that directory can act in between, including this product's own scheduler.
+  const world = makeWorld('swap-mid-run');
+  const resolved = resolveRehearsal(req(world));
+  const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
+  const swapping = (command: Parameters<typeof tools.runner>[0]) => {
+    const outcome = tools.runner(command);
+    // The resolve has just happened and the claim has not. This is the whole window.
+    if (command.args.includes('config')) {
+      writeFileSync(join(world.disposable, COMPOSE_FILE), `${DISPOSABLE_COMPOSE}# swapped mid-run\n`, 'utf8');
+    }
+    return outcome;
+  };
+  const report = runRehearsal(req(world, { confirmDigest: resolved.planDigest }),
+    { runner: swapping, ledger: tools.ledger });
+  assertEq(report.ok, false, 'the run stopped');
+  const stopped = report.steps.find((step) => !step.ok)!;
+  assertEq(stopped.id, 'own-the-root', 'at the claim, which is the last moment before anything is created');
+  assert(stopped.detail.includes('its contents changed after'), `saying why: ${stopped.detail}`);
+  assertEq(existsSync(join(world.disposable, REHEARSAL_MARKER_NAME)), false, 'and no marker was written');
+  assertEq(existsSync(join(world.disposable, REHEARSAL_RESTORE_DIRNAME)), false, 'and no workspace was prepared');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// A BODY IS NEVER A PASS ON ITS OWN, AND A REPLAY IS NOT IDEMPOTENCE
+// ---------------------------------------------------------------------------------------------------------
+
+test('a healthy body behind a FAILED process is a failure, not a pass', () => {
+  // THE DEFECT: `doctor-no-fail` and `schema-version` refused only when a failed process had ALSO printed
+  // nothing — so a process that failed while printing a healthy report passed both.
+  const doctor = rehearse(makeWorld('healthy-body-failed-process'), {
+    doctorJson: fakeDoctorJson(['pass', 'pass']),
+    doctorStatus: 1,
+  });
+  assertEq(doctor.report.ok, false, 'a doctor that printed health and did not succeed is not a pass');
+  const failedDoctor = doctor.report.steps.find((step) => !step.ok)!;
+  assertEq(failedDoctor.id, 'current-doctor', 'and it is the doctor step');
+  assert(failedDoctor.detail.includes('do not agree'), `saying what is wrong: ${failedDoctor.detail}`);
+
+  // ...and the same for the schema reader, whose matching line behind a non-zero exit used to pass.
+  const world = makeWorld('schema-body-failed-process');
+  const resolved = resolveRehearsal(req(world));
+  const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
+  const failingVersion = (command: Parameters<typeof tools.runner>[0]) => {
+    const outcome = tools.runner(command);
+    return command.args.join(' ').includes('ops:version') ? { ...outcome, status: 1 } : outcome;
+  };
+  const report = runRehearsal(req(world, { confirmDigest: resolved.planDigest }),
+    { runner: failingVersion, ledger: tools.ledger });
+  assertEq(report.ok, false, 'a schema line behind a failed process is not a pass');
+  const failedSchema = report.steps.find((step) => !step.ok)!;
+  assertEq(failedSchema.id, 'current-schema', 'and it is the schema step');
+  assert(failedSchema.detail.includes('do not agree'), `saying what is wrong: ${failedSchema.detail}`);
+});
+
+test('output larger than this command will read as evidence is a failure, not a parse', () => {
+  const world = makeWorld('unbounded-output');
+  const resolved = resolveRehearsal(req(world));
+  const tools = rehearsalWorld({ disposableRoot: world.disposable, images: images(), setSchema: SET_SCHEMA });
+  const shouting = (command: Parameters<typeof tools.runner>[0]) => {
+    const outcome = tools.runner(command);
+    return command.args.join(' ').includes('pkg get version')
+      ? { ...outcome, stdout: `${'x'.repeat(MAX_ASSERTION_STDOUT_BYTES + 1)}` } : outcome;
+  };
+  const report = runRehearsal(req(world, { confirmDigest: resolved.planDigest }),
+    { runner: shouting, ledger: tools.ledger });
+  assertEq(report.ok, false, 'the rehearsal did not hold');
+  assert(report.steps.find((step) => !step.ok)!.detail.includes('more output than'), 'and says why');
+});
+
+test('a replay that exits ZERO and reports a duplicate write is NOT idempotence', () => {
+  // THE DEFECT: two exit-zero `--apply` calls were the whole of the idempotence claim. An import that
+  // re-created every record would exit zero and would have doubled the catalog.
+  const world = makeWorld('false-idempotence');
+  const { report } = rehearse(world, { importReplayDuplicates: true });
+  assertEq(report.ok, false, 'the rehearsal did not hold');
+  const stopped = report.steps.find((step) => !step.ok)!;
+  assertEq(stopped.id, 'candidate-import-replay', 'and it is the replay that failed');
+  assert(stopped.detail.includes('not idempotent'), `saying what that means: ${stopped.detail}`);
+  assertEq(report.importIdempotence, 'not-proved', 'and the evidence says so as a closed word');
+
+  // On a good run it IS proved, and the apply really did write something for the replay to not repeat.
+  const good = rehearse(makeWorld('true-idempotence'));
+  assertEq(good.report.importIdempotence, 'proved', 'a real run proves it');
+  const applies = good.tools.appCommands.filter((entry) => entry.includes('catalog-import') && entry.includes('--apply'));
+  assertEq(applies.length, 2, 'from exactly two applies');
+  for (const entry of good.tools.appCommands.filter((entry) => entry.includes('catalog-import'))) {
+    assert(entry.includes('--json'), `every import reads its own report: ${entry}`);
+  }
+
+  // A snapshot that changes nothing is a WEAKER result, and gets a different word rather than the same one.
+  const vacuous = rehearse(makeWorld('vacuous-idempotence'), { importRecords: 0 });
+  assertEq(vacuous.report.ok, false, 'and a snapshot with no records at all does not hold');
+  assert(vacuous.report.steps.find((step) => !step.ok)!.detail.includes('proves nothing'), 'saying why');
+});
+
+test('the shipped import report is read by name and shape, never guessed at', () => {
+  const good = JSON.stringify({
+    ok: true, report: 'phase-259-catalog-import', mode: 'apply',
+    total: 2, created: 2, updated: 0, unchanged: 0, blocked: 0, failed: 0, notAttempted: 0, items: [], notes: [],
+  });
+  assertEq(readImportReport(good)!.created, 2, 'the shipped report parses');
+  assertEq(readImportReport(good.replace('phase-259-catalog-import', 'something-else')), null,
+    'another report is not this one');
+  assertEq(readImportReport(good.replace('"created":2', '"created":-1')), null, 'a negative count is not a count');
+  assertEq(readImportReport(good.replace('"mode":"apply"', '"mode":"whatever"')), null, 'nor is an unknown mode');
+  assertEq(readImportReport('not json at all'), null, 'and text is not a report');
+  assertEq(readImportReport(`{"x":"${'y'.repeat(MAX_ASSERTION_STDOUT_BYTES)}"}`), null, 'nor is something enormous');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -663,10 +1344,14 @@ test('the CLI requires a plan or a digest, never both, and takes no credential',
 });
 
 test('the rehearsal module can issue no media, media-server or acquisition command at all', () => {
-  const source = readRepo('src/ops/upgrade-rehearsal.ts');
-  for (const forbidden of ['jellyfin', 'plex', 'emby', '/mnt/user/media', '.mkv', 'nzb', 'torrent', 'magnet',
-    'curl', 'wget', 'docker pull', 'docker login', 'docker push']) {
-    assert(!source.toLowerCase().includes(forbidden.toLowerCase()), `the rehearsal must not name ${forbidden}`);
+  // BOTH FILES OF THE MODULE. The Compose validator is new and reasons about host paths, which is exactly the
+  // kind of file a media path could arrive in without anybody meaning it to.
+  for (const file of ['src/ops/upgrade-rehearsal.ts', 'src/ops/rehearsal-compose-model.ts']) {
+    const source = readRepo(file);
+    for (const forbidden of ['jellyfin', 'plex', 'emby', '/mnt/user/media', '.mkv', 'nzb', 'torrent', 'magnet',
+      'curl', 'wget', 'docker pull', 'docker login', 'docker push']) {
+      assert(!source.toLowerCase().includes(forbidden.toLowerCase()), `${file} must not name ${forbidden}`);
+    }
   }
   // And the guard would refuse one even if a future edit built it.
   refuses(() => assertPermittedCommand({ program: 'docker', args: ['compose', 'pull'], cwd: WORK, purpose: 'p' }),

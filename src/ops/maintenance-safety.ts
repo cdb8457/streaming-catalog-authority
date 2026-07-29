@@ -744,6 +744,90 @@ export function stagingSuffix(): string {
   return randomBytes(6).toString('hex');
 }
 
+// -----------------------------------------------------------------------------------------------------------
+// Removing something this product created — and nothing else
+// -----------------------------------------------------------------------------------------------------------
+
+/**
+ * Remove ONE regular file whose bytes are the ones this product wrote.
+ *
+ * THE DIGEST IS THE PROOF OF OWNERSHIP. A cleanup that removed "the file at the name we chose" removes
+ * whatever is at that name, which after an operator has edited or replaced it is their file. Opening it
+ * without following a link, digesting THAT descriptor and refusing on a mismatch means the only thing this can
+ * delete is a byte-for-byte copy of something it produced.
+ *
+ * `unlink` is used rather than any recursive removal, so this can never reach a directory or a link target.
+ */
+export function removeOwnFileNoFollow(path: string, expectedDigest: string, what: string): void {
+  const actual = digestFileNoFollow(path, what);
+  if (actual.digest !== expectedDigest) {
+    throw new MaintenanceRefused(
+      `the ${what} is not the file this command wrote, so it was left alone. Look at it and remove it yourself `
+      + 'if it is stale.');
+  }
+  try {
+    unlinkSync(path);
+  } catch {
+    throw new MaintenanceRefused(`the ${what} could not be removed`);
+  }
+}
+
+/** How many entries a removal will walk before it refuses. A tree larger than this is not one of ours. */
+export const MAX_REMOVAL_ENTRIES = 5000;
+
+/**
+ * Remove a directory tree this product created, refusing to follow anything out of it.
+ *
+ * NEVER A RECURSIVE DELETE OF AN UNVERIFIED PATH. `assertPlainTree` walks first and refuses the whole
+ * operation — before a single entry is unlinked — if the tree holds a symbolic link, a device, a socket, a
+ * pipe or more entries than this will handle. Only then is it removed, bottom-up, with `unlink` and `rmdir`:
+ * neither follows a link, so even a link created in the window between the walk and the removal is unlinked as
+ * a link rather than followed to somebody else's bytes.
+ *
+ * The root itself is `lstat`ed and refused if it is a link, so the tree that is walked is the tree that is
+ * removed.
+ */
+export function removeOwnTreeNoFollow(path: string, what: string, maxEntries = MAX_REMOVAL_ENTRIES): number {
+  let stats;
+  try {
+    stats = lstatSync(path);
+  } catch {
+    throw new MaintenanceRefused(`the ${what} could not be examined, so it was left alone`);
+  }
+  if (stats.isSymbolicLink()) {
+    throw new MaintenanceRefused(`the ${what} is a symbolic link, and this command will not remove through one`);
+  }
+  if (!stats.isDirectory()) throw new MaintenanceRefused(`the ${what} is not a directory, so it was left alone`);
+  const walked = assertPlainTree(path, what, maxEntries);
+
+  const removeInside = (current: string): void => {
+    for (const entry of readdirSync(current)) {
+      const child = join(current, entry);
+      let childStats;
+      try {
+        childStats = lstatSync(child);
+      } catch {
+        throw new MaintenanceRefused(`the ${what} holds an entry that could not be examined`);
+      }
+      // A directory is descended into; EVERYTHING ELSE is unlinked as itself. `unlink` on a symbolic link
+      // removes the link and never the target, which is what makes a race here harmless.
+      if (childStats.isDirectory() && !childStats.isSymbolicLink()) { removeInside(child); continue; }
+      try {
+        unlinkSync(child);
+      } catch {
+        throw new MaintenanceRefused(`the ${what} could not be removed in full`);
+      }
+    }
+    try {
+      rmdirSync(current);
+    } catch {
+      throw new MaintenanceRefused(`the ${what} could not be removed in full`);
+    }
+  };
+  removeInside(path);
+  return walked;
+}
+
 /**
  * The size of a file, asked of a descriptor opened without following a link.
  *
