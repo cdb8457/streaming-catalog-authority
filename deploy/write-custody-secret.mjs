@@ -1,7 +1,8 @@
 import {
-  closeSync, constants as fsConstants, fchmodSync, fchownSync, fstatSync, openSync, readSync, unlinkSync,
-  writeSync,
+  closeSync, constants as fsConstants, fchmodSync, fchownSync, fstatSync, openSync, readFileSync,
+  readSync, unlinkSync, writeSync,
 } from 'node:fs';
+import { randomBytes } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 // Writing the ROOT WRAPPING KEY, on a descriptor, so a path swap cannot matter.
@@ -234,11 +235,32 @@ export function writeCustodySecret(path, value, uid, gid, write = writeSync) {
 // GUARDED, so a suite can import the functions above without this running. Everything below is argument
 // handling; every rule is in the functions.
 if (process.argv[1] !== undefined && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const [, , path, value, uidText, gidText] = process.argv;
+  const [, , path, source, uidText, gidText] = process.argv;
   try {
-    if (typeof path !== 'string' || path === '' || typeof value !== 'string') {
-      throw new CustodyRefused('usage: write-custody-secret.mjs <path> <value> <uid> <gid>');
+    // ---- THE KEY NEVER ARRIVES ON A COMMAND LINE -------------------------------------------------------
+    //
+    // THE DEFECT THIS CLOSES. This took the VALUE as `argv[3]`, and the setup scripts called it as
+    // `node write-custody-secret.mjs <path> "$(random_secret)" <uid> <gid>` — so the ROOT WRAPPING KEY of a
+    // brand-new installation, the one value from which every key in that installation can be reached, was
+    // placed on a command line. A command line is visible in `ps` to every account on the host for as long
+    // as the process lives, is recorded by shell history, and is copied into the log of any scheduler that
+    // ran it. The file this helper writes so carefully was created from a value that had already been
+    // published, and the header two hundred lines above promised the opposite.
+    //
+    // So the value comes from one of two places that are not argv, and the choice is explicit:
+    //
+    //   --generate  32 bytes from this process's own CSPRNG, hex-encoded, never printed and never returned.
+    //   --stdin     read from the standard input this process was handed — a private descriptor, not a word
+    //               in a process table.
+    //
+    // Nothing prints the value on either path; the outcome is one closed word.
+    if (typeof path !== 'string' || path === '' || (source !== '--generate' && source !== '--stdin')) {
+      throw new CustodyRefused('usage: write-custody-secret.mjs <path> (--generate|--stdin) <uid> <gid>');
     }
+    const value = source === '--generate'
+      ? randomBytes(32).toString('hex')
+      : readFileSync(0, 'utf8').trim();
+    if (value === '') throw new CustodyRefused('no custody secret was supplied on standard input');
     const outcome = writeCustodySecret(path, value, parseId(uidText, 'UID'), parseId(gidText, 'GID'));
     process.stdout.write(outcome === 'created' ? 'created custody secret\n' : 'verified existing custody secret\n');
   } catch (err) {

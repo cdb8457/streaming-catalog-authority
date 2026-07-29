@@ -113,7 +113,11 @@ else
 fi
 
 write_custody_secret() {
-  name="$1"; value="$2"; outcome=""
+  # THE VALUE IS NOT AN ARGUMENT, HERE OR ANYWHERE. It used to be `"$(random_secret)"` handed to the helper
+  # on its command line — which put the ROOT WRAPPING KEY of a new installation into `ps` for every account
+  # on the host, into shell history, and into the log of any scheduler that ran it. The helper generates it
+  # internally now and never prints it, so this function never holds a key and has nothing to leak.
+  name="$1"; outcome=""
   if [ ! -f "${CUSTODY_HELPER}" ]; then
     printf 'the custody writer is not beside this script, so the root wrapping key cannot be created with the ownership it requires; refusing.\n' >&2
     exit 1
@@ -122,7 +126,7 @@ write_custody_secret() {
     printf 'node is needed to create the root wrapping key on a descriptor rather than through a path; refusing.\n' >&2
     exit 1
   fi
-  outcome="$(node "${CUSTODY_HELPER}" "${SECRETS_DIR}/${name}" "${value}" \
+  outcome="$(node "${CUSTODY_HELPER}" "${SECRETS_DIR}/${name}" --generate \
     "${CUSTODY_RUNTIME_UID}" "${CUSTODY_RUNTIME_GID}")" || {
     printf 'FAILED to establish %s as an owner-only file for the sidecar runtime user; refusing.\n' "${name}" >&2
     exit 1
@@ -177,7 +181,7 @@ write_secret_if_absent custodian_kek "$(random_secret)" "${SECRET_MODE_APP}"
 # AND MODE OF THIS FILE ON THE HOST. It is therefore created owned by the container's runtime user and
 # readable by nobody else, and this script REFUSES rather than continuing if it cannot establish that. A
 # best-effort chown here would produce a root key readable by every account on the box, silently.
-write_custody_secret custodian_root_key "$(random_secret)"
+write_custody_secret custodian_root_key
 write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"
 
 echo "  ready     promotion-records/ (mounted read-only into the container)"

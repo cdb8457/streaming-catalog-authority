@@ -8,22 +8,71 @@ set -eu
 
 REPO_DIR="${CATALOG_AUTHORITY_REPO_DIR:-/mnt/user/appdata/catalog/repo}"
 COMPOSE_FILE="${CATALOG_AUTHORITY_COMPOSE_FILE:-$REPO_DIR/docker-compose.unraid.runtime.yml}"
+BOOTSTRAP_FILE="${CATALOG_AUTHORITY_BOOTSTRAP_COMPOSE_FILE:-$REPO_DIR/docker-compose.unraid.bootstrap.yml}"
+MARKER_FILE="${CATALOG_AUTHORITY_CUSTODY_MODE_FILE:-$REPO_DIR/custody-runtime-mode}"
 BACKUP_DIR="${CATALOG_AUTHORITY_BACKUP_DIR:-/mnt/user/appdata/catalog/backups}"
 EVIDENCE_DIR="${CATALOG_AUTHORITY_EVIDENCE_DIR:-$BACKUP_DIR/evidence}"
 PREVIOUS_KEK_FILE="${CATALOG_AUTHORITY_PREVIOUS_KEK_FILE:-/mnt/user/appdata/catalog/secrets/custodian_kek_previous}"
 
 cd "$REPO_DIR"
 
-compose() {
-  docker compose -f "$COMPOSE_FILE" "$@"
+# ---- WHICH CUSTODY THIS INSTALLATION IS ON, ON EVERY COMMAND -------------------------------------------
+#
+# PHASE 293. This launcher used ONE compose file, which was right while there was only one. There are now two
+# selectable wirings — the canonical root-only steady state, and a temporary bootstrap overlay an
+# installation sits in until `ops:custody-cutover` finishes its migration — and a launcher that ignored the
+# selection would start the WRONG STACK. On an installation that has not migrated, the steady-state file has
+# no static KEK in it at all, so the sidecar refuses to start and every verb below fails behind it.
+#
+# The marker is therefore read on every command, and read the way the rest of this product reads it: one of
+# two words, and anything else — a link, a directory, a word this build does not define — is a REFUSAL rather
+# than a guess, because guessing wrong starts an installation on custody it cannot serve.
+compose_files() {
+  if [ ! -e "$MARKER_FILE" ]; then
+    printf '%s\n' "-f|$COMPOSE_FILE"
+    return
+  fi
+  if [ -L "$MARKER_FILE" ] || [ ! -f "$MARKER_FILE" ]; then
+    echo "refusing: the custody runtime mode marker is not a regular file" >&2
+    exit 3
+  fi
+  mode="$(tr -d '[:space:]' < "$MARKER_FILE")"
+  case "$mode" in
+    root-only) printf '%s\n' "-f|$COMPOSE_FILE" ;;
+    bootstrap) printf '%s\n' "-f|$COMPOSE_FILE|-f|$BOOTSTRAP_FILE" ;;
+    *)
+      echo "refusing: the custody runtime mode marker does not name a mode this build defines" >&2
+      echo "run: npm run ops:custody-transition -- --project $REPO_DIR --plan" >&2
+      exit 3
+      ;;
+  esac
 }
 
+compose() {
+  # The delimiter is why this helper does not just echo spaces: a path with a space in it must survive, and
+  # `-f a -f b` must arrive as four arguments rather than one.
+  old_ifs="$IFS"
+  IFS='|'
+  # shellcheck disable=SC2046
+  set -- $(compose_files) "$@"
+  IFS="$old_ifs"
+  docker compose "$@"
+}
+
+# ---- NOTHING THIS LAUNCHER RUNS MAY FETCH OR BUILD -----------------------------------------------------
+#
+# `docker compose run` and `up` apply the project's PULL POLICY by default, which for a missing image means
+# fetching one. Catalog Authority never downloads, scrapes, plays or acquires anything, and an ops launcher
+# that silently pulled an image would be the one command in this stack that reached a network. `--pull never`
+# makes that a property of every invocation rather than of an operator's memory.
+NO_FETCH="--pull never"
+
 run_ops() {
-  compose run -T --interactive=false --rm ops "$@"
+  compose run -T --interactive=false --rm $NO_FETCH ops "$@"
 }
 
 run_ops_silent() {
-  compose run -T --interactive=false --rm ops --silent "$@"
+  compose run -T --interactive=false --rm $NO_FETCH ops --silent "$@"
 }
 
 run_ui_live_check() {
@@ -31,7 +80,7 @@ run_ui_live_check() {
 }
 
 run_rewrap_plan() {
-  compose run -T --interactive=false --rm \
+  compose run -T --interactive=false --rm $NO_FETCH \
     -e CUSTODIAN_KEK_PREVIOUS_FILE=/run/secrets/custodian_kek_previous \
     -v "$PREVIOUS_KEK_FILE:/run/secrets/custodian_kek_previous:ro" \
     ops ops:rewrap-kek -- --plan --json
@@ -106,14 +155,14 @@ EOF
 
 case "${1:-}" in
   start-postgres)
-    compose up -d postgres
+    compose up -d $NO_FETCH --no-build postgres
     ;;
   start-ui)
-    compose up -d postgres app
+    compose up -d $NO_FETCH --no-build postgres app
     ;;
   restart-ui)
-    compose up -d postgres
-    compose up -d --force-recreate app
+    compose up -d $NO_FETCH --no-build postgres
+    compose up -d $NO_FETCH --no-build --force-recreate app
     ;;
   status)
     compose ps -a

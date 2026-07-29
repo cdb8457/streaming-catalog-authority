@@ -741,7 +741,7 @@ export class CustodyCutoverFailed extends MaintenanceRefused {
  * TAKEN IN THE REPOSITORY'S ORDER AND RELEASED IN THE REVERSE OF IT: rotation lock, then the custodian
  * writer lock, exactly as `runKekMigration` takes them, so two commands can never each hold half.
  */
-function acquireCustodyStateLocks(stateDir: string): {
+export function acquireCustodyStateLocks(stateDir: string): {
   readonly rotation: { release(): void };
   readonly writers: { release(): void };
 } {

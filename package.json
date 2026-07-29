@@ -589,6 +589,7 @@
     "test:phase280-local": "tsx test/upgrade-rehearsal.ts",
     "ops:kek-ring": "tsx src/ops/kek-ring-cli.ts",
     "ops:custody-cutover": "tsx src/ops/custody-cutover-cli.ts",
+    "ops:custody-transition": "tsx src/ops/custody-transition-cli.ts",
     "ops:sidecar-health": "tsx src/ops/sidecar-health-cli.ts",
     "test:sidecar-ipc-hardening": "tsx test/sidecar-ipc-hardening.ts",
     "test:kek-ring": "tsx test/kek-ring.ts",
@@ -600,7 +601,8 @@
     "test:phase284-local": "tsx test/o4-o5-runtime-acceptance.ts",
     "test:kek-correction-gates": "tsx test/kek-correction-gates.ts",
     "test:custodian-storage-ipc-gates": "tsx test/custodian-storage-ipc-gates.ts",
-    "test:custody-cutover": "tsx test/custody-cutover.ts"
+    "test:custody-cutover": "tsx test/custody-cutover.ts",
+    "test:custody-transition": "tsx test/custody-transition.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",
