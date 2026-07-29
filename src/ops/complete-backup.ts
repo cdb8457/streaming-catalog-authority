@@ -103,7 +103,7 @@ export type CustodianTopology = 'inline' | 'sidecar';
 /** Services that must not be writing while the database and the keystore are taken. */
 export const QUIESCED_SERVICES: Readonly<Record<CustodianTopology, readonly string[]>> = Object.freeze({
   inline: Object.freeze(['app']),
-  sidecar: Object.freeze(['app', 'custodian']),
+  sidecar: Object.freeze(['app', 'sidecar']),
 });
 
 export interface CompleteBackupRequest {

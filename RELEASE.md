@@ -3,6 +3,27 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
+## v1.2.5 - Recursive Jellyfin collection membership
+
+Release candidate; not yet published. Schema remains version 9.
+
+Fixed:
+
+- **Collection audits now request recursive descendants from Jellyfin.** Jellyfin 10.11 does not return a
+  collection's members from `GET /Items?parentId=...` unless `Recursive=true` is explicit. The missing
+  parameter made a populated disposable collection appear empty, producing false `MEMBERS_MISSING` drift
+  and ineffective repair loops.
+- **The correction came from the real Tower lifecycle rehearsal.** The direct Jellyfin API proved the
+  collection held its one expected member while Catalog Authority's audit saw zero. The write gates were
+  closed immediately, and this patch adds the required request parameter plus a regression assertion before
+  the bounded lifecycle resumes.
+- **Complete backups now quiesce the shipped sidecar by its real Compose service name.** The sidecar topology
+  previously attempted to stop `custodian`, while the released Unraid service is `sidecar`. That mismatch
+  would refuse a scheduled complete backup after custody cutover; the exact service ledger is now asserted.
+
+All earlier product behavior and safety boundaries are unchanged. Catalog Authority still never downloads,
+scrapes, plays, or acquires media and never creates media symlinks.
+
 ## v1.2.4 - Portable legacy dump grants
 
 Release candidate; not yet published. Schema remains version 9.

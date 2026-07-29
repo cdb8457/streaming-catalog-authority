@@ -171,6 +171,7 @@ test('the sidecar topology copies the keystore from the directory it was TOLD, a
   );
   assertEq(report.published, true, 'the sidecar backup published its set');
   assertEq(report.quiesced.join(','), QUIESCED_SERVICES.sidecar.join(','), 'the custodian is stopped too');
+  assertEq(report.quiesced.join(','), 'app,sidecar', 'the backup stops the shipped sidecar service by its exact Compose name');
   const keystore = join(root, 'backups', 'set-s', COMPONENT_ARTIFACT_NAMES.keystore);
   assertEq(existsSync(join(keystore, 'keys', 'k1')), true, 'the sidecar keystore was copied');
   assert(!tools.lines().some((l) => l.includes('compose cp')), 'and no container copy was needed');
@@ -241,8 +242,8 @@ test('no promotion records is a complete backup, and says so rather than warning
 
 test('a service that will not stop refuses, and the finally still starts what WAS stopped', () => {
   const root = makeProject('stubborn', { sidecar: true });
-  // The app stops; the custodian does not. The window must unwind whatever it managed to stop.
-  const tools = fakeToolchain({ failWhen: [{ contains: 'compose stop custodian', status: 1 }] });
+  // The app stops; the sidecar does not. The window must unwind whatever it managed to stop.
+  const tools = fakeToolchain({ failWhen: [{ contains: 'compose stop sidecar', status: 1 }] });
   refuses(() => takeCompleteBackupWithoutVerifying(request(root, 'set-x', { custodian: 'sidecar', sidecarState: 'sidecar-state' }),
     { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }), 'could not be stopped', 'a service that will not stop');
   const lines = tools.lines();
