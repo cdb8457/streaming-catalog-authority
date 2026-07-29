@@ -686,7 +686,10 @@ export interface ResolvedRetirement extends RetirementRequest {
  * set merely verifying. A set without a keystore is precisely the set that cannot restore a custodian, which
  * is the one thing the proof exists to establish.
  */
-export function planKekRetirement(request: RetirementRequest): ResolvedRetirement {
+export function planKekRetirement(
+  request: RetirementRequest,
+  seams: ProofBindingSeams = {},
+): ResolvedRetirement {
   const stateDir = resolveMaintenanceRoot(request.stateDir, 'sidecar state directory');
   const backupSet = resolveMaintenanceRoot(request.backupSet, 'backup set directory');
   const verification = verifyBackupSet(backupSet);
@@ -703,7 +706,10 @@ export function planKekRetirement(request: RetirementRequest): ResolvedRetiremen
     throw new KekRingError('the KEK ring holds no such generation');
   }
 
-  assertBackupProvesPostRotationState(backupSet, request, ring.active);
+  // THE PROOF IS BOUND TO THE SET THAT VERIFIED. Same rule as the root rotation's: the digest this plan
+  // carries and the custody proof it rests on have to be about the same bytes, or the plan is two claims
+  // about two sets presented as one.
+  assertBackupProvesPostRotationState(backupSet, verification.setDigest, request, ring.active, seams);
 
   const resolved = {
     ...request,
@@ -742,12 +748,14 @@ export function retirementPlanDigest(plan: Omit<ResolvedRetirement, 'planDigest'
  */
 function assertBackupProvesPostRotationState(
   backupSet: string,
+  setDigest: string,
   request: RetirementRequest,
   activeGeneration: number,
+  seams: ProofBindingSeams,
 ): void {
-  const proof = proveBackupRestoresCustody(backupSet,
+  const proof = proveBackupCustodyBoundToSet(backupSet, setDigest,
     'Retiring a generation on that evidence would remove a key nothing else holds. Take a complete backup '
-    + 'now, verify it, and retire against that one.');
+    + 'now, verify it, and retire against that one.', seams);
   if (proof.activeGeneration !== activeGeneration) {
     throw new MaintenanceRefused(
       'the backup you named was taken while a DIFFERENT generation was active, so it is not evidence about the '
@@ -834,6 +842,57 @@ export function proveBackupRestoresCustody(backupSet: string, consequence: strin
     activeGeneration: backedUpRing.active,
     generations: backedUpRing.generations.map((entry) => entry.generation).sort((a, b) => a - b),
   };
+}
+
+/**
+ * The one seam that makes every proof-to-digest binding in this file testable rather than merely written down.
+ *
+ * NOT PASSED ANYWHERE IN PRODUCTION. It stands for a retention schedule, a sync job, a restore or an operator
+ * changing what a plan is reading while the plan is being computed — which is a thing that happens on a NAS,
+ * on a schedule, with nothing coordinating with this command.
+ */
+export interface ProofBindingSeams {
+  /** Runs after a proof and before the re-read that binds it to the digest a plan will carry. */
+  readonly betweenProofAndRebind?: () => void;
+}
+
+/**
+ * Prove a set restores custody, and BIND that proof to the set digest a plan is about to carry.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE DEFECT THIS CLOSES: TWO READS, ONE CLAIM.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * A plan used to call `verifyBackupSet` once and `proveBackupRestoresCustody` separately, then record
+ * `backupSetDigest` from the first and `backupRootKeyId` / `backupRingDigest` / `backupActiveGeneration`
+ * from the second. Those are two reads of a directory nothing holds still. A set replaced at the same path
+ * between them — a retention schedule rolling a nightly, a sync finishing, an operator restoring — produced
+ * a plan whose digest bound SET A while its custody proof described SET B. Both halves were true of
+ * something; neither was true of the same set, and the digest an operator confirmed said they were.
+ *
+ * So the set is verified AGAIN after the proof and must be the same set. What that establishes, precisely:
+ * the manifest and every component digest that made the set verify are unchanged across the whole of the
+ * proof, so the ring, the root key and the wrapped keys the proof opened are the bytes the digest names. A
+ * set that moved is a refusal — this reads a directory it does not own and cannot lock, and the honest
+ * response to "it changed while I was looking" is to say so rather than to publish half a claim.
+ */
+export function proveBackupCustodyBoundToSet(
+  backupSet: string,
+  setDigest: string,
+  consequence: string,
+  seams: ProofBindingSeams = {},
+): BackupCustodyProof {
+  const proof = proveBackupRestoresCustody(backupSet, consequence);
+  seams.betweenProofAndRebind?.();
+  const rebound = verifyBackupSet(backupSet);
+  if (!rebound.ok || rebound.setDigest !== setDigest) {
+    throw new MaintenanceRefused(
+      'the backup set changed while this command was proving it: the set that verified and the set whose '
+      + 'custody proof this plan would carry are not the same bytes. A plan that recorded both would be '
+      + 'binding a digest to a proof about a set that is no longer there. Nothing was changed. Stop whatever '
+      + `is writing that path — a retention schedule, a sync, a restore — and plan again. ${consequence}`);
+  }
+  return proof;
 }
 
 /** A 32-byte key read out of a backup set. No ownership rule: a copied secret file is not the live one. */
@@ -935,7 +994,10 @@ export interface ResolvedRootRotation extends RootRotationRequest {
  * So planning is a pure function of what is on disk. It reads the ring to learn which generation and which
  * root it is bound to, verifies the backup, and returns a digest. Nothing is written.
  */
-export function planRootKeyRotation(request: RootRotationRequest): ResolvedRootRotation {
+export function planRootKeyRotation(
+  request: RootRotationRequest,
+  seams: ProofBindingSeams = {},
+): ResolvedRootRotation {
   const stateDir = resolveMaintenanceRoot(request.stateDir, 'sidecar state directory');
   const backupSet = resolveMaintenanceRoot(request.backupSet, 'backup set directory');
   const fromRoot = readRootWrappingKey(request.rootKeyFile);
@@ -960,9 +1022,13 @@ export function planRootKeyRotation(request: RootRotationRequest): ResolvedRootR
   // after which the previous root key opens nothing: the fallback the whole gate exists to guarantee was
   // never checked for being a fallback. So the set is opened on its own terms and proved to hold a usable
   // root key, a complete ring, and a keystore every wrapped key of which reads under that ring.
-  const backup = proveBackupRestoresCustody(backupSet,
+  //
+  // AND THE PROOF AND THE DIGEST ARE ABOUT THE SAME BYTES. The verification above and the proof below are two
+  // reads of a directory nothing holds still; `proveBackupCustodyBoundToSet` re-verifies afterwards and
+  // refuses a set that moved, so this plan cannot bind one set's digest to another set's custody proof.
+  const backup = proveBackupCustodyBoundToSet(backupSet, verification.setDigest,
     'After a re-seal the PREVIOUS root wrapping key opens nothing, so a set that cannot restore this '
-    + 'installation is not somewhere to go back to. Nothing was changed.');
+    + 'installation is not somewhere to go back to. Nothing was changed.', seams);
   const resolved = {
     ...request,
     stateDir,
@@ -1055,15 +1121,32 @@ export function runRootKeyRotation(
     // `rotateRootWrappingKey` now captures the exact previous bytes, writes, proves, and on failure restores
     // those bytes and verifies the restore — all inside the lock — and throws one error carrying the primary
     // failure and the state the installation was left in.
-    const reseal = rotateRootWrappingKey(resolved.stateDir, fromRoot, toRoot, faults);
+    //
+    // ---- AND THE RING IT WRITES IS THE ONE THIS PLAN WAS COMPUTED OVER, CHECKED BEFORE THE WRITE -----------
+    //
+    // THE SECOND DEFECT THIS CLOSES, WHICH IS ABOUT WHICH LOCK. This function holds the ROTATION lock. Every
+    // other ring mutator holds the RING WRITER lock, and those two exclude nothing of each other's: between
+    // the re-plan above and the write below, a begun rotation, an activation, a retirement or an adoption
+    // could land. The re-seal would then take a ring nobody confirmed under the new root, prove it, and hand
+    // back its digest — and the comparison that used to live HERE, after the call, would refuse an operation
+    // that had already completed. "Nothing was changed" over an installation whose ring only the NEW root
+    // opens is the one outcome worse than either honest one.
+    //
+    // So `preStateDigest` goes IN. It is compared inside the ring writer lock, before the capture is written
+    // over, and a ring that moved is refused with nothing written. No lock is nested to do it.
+    const reseal = rotateRootWrappingKey(resolved.stateDir, fromRoot, toRoot, resolved.preStateDigest, faults);
 
-    // AND THE RING IT PROVED IDENTICAL IS THE ONE THE PLAN WAS COMPUTED OVER. The re-seal's own proof is
-    // "what came back is what went in"; this is "what went in is what the operator confirmed".
+    // UNREACHABLE BY CONSTRUCTION, AND KEPT. The precondition above makes `ringDigest` the digest that was
+    // passed in, so this cannot differ. It stays because the cost is one comparison and the alternative is a
+    // silent success if that ever stops being true — and if it did fire, the state it describes is the one an
+    // operator has to be told about precisely, so the message describes THAT state rather than a refusal.
     if (reseal.ringDigest !== resolved.preStateDigest) {
       throw new MaintenanceRefused(
-        'the ring that was re-sealed is not the ring this plan was computed against. Do not remove the '
-        + 'previous root key file: restore the sidecar state from the verified backup this rotation was '
-        + 'gated on.');
+        'the ring that was re-sealed is not the ring this plan was computed against, AND THE RE-SEAL HAS '
+        + 'ALREADY COMPLETED: the NEW root wrapping key now opens the ring in this state directory and the '
+        + 'previous one does not. Do not remove either root key file. Check the ring with `status` under the '
+        + 'new root, and if it is not the ring you meant to keep, restore the sidecar state from the verified '
+        + 'backup this rotation was gated on.');
     }
     return {
       report: ROOT_ROTATION_REPORT,
@@ -1136,7 +1219,10 @@ export interface ResolvedKekMigration extends KekMigrationRequest {
  * static key to be proved against, and "every key opens" over zero keys is true. The plan records how many
  * keys the proof actually covered, so a report cannot present a vacuous proof as an exhaustive one.
  */
-export function planKekMigration(request: KekMigrationRequest): ResolvedKekMigration {
+export function planKekMigration(
+  request: KekMigrationRequest,
+  seams: ProofBindingSeams = {},
+): ResolvedKekMigration {
   const stateDir = resolveMaintenanceRoot(request.stateDir, 'sidecar state directory');
   const backupSet = resolveMaintenanceRoot(request.backupSet, 'backup set directory');
   if (kekRingExists(stateDir)) {
@@ -1158,6 +1244,20 @@ export function planKekMigration(request: KekMigrationRequest): ResolvedKekMigra
   // bounded no-follow reader — so the unwrap proof below runs over a set that has already been stated.
   const setDigest = keystoreSetDigest(stateDir);
   const keys = assertStaticKekOpensKeystore(stateDir, staticKek);
+  // ---- AND THE SET THE PROOF COVERED IS THE SET THE DIGEST NAMES ------------------------------------------
+  //
+  // THE SAME RULE AS THE BACKUP'S, ONE DIRECTORY OVER. The digest and the unwrap proof are two walks of the
+  // keystore. A key file added, removed or rewritten between them gives a plan that says "all N of these keys
+  // open under this key" about a set the digest does not describe — and a plan is the thing an operator
+  // confirms. The confirmed run additionally holds the custodian writer lock across its own re-plan and
+  // re-checks after the adoption; this makes the PLAN itself honest, which is the half an operator reads.
+  seams.betweenProofAndRebind?.();
+  if (keystoreSetDigest(stateDir) !== setDigest) {
+    throw new MaintenanceRefused(
+      'a wrapped key in this keystore changed while this plan was being computed, so the set every key was '
+      + 'proved to open in is not the set this plan would name. Nothing was changed. Quiesce the app and the '
+      + 'sidecar, then plan again against a keystore nothing is writing.');
+  }
   const resolved = {
     ...request,
     stateDir,

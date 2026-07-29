@@ -307,20 +307,52 @@ const O_DIRECTORY = typeof fsConstants.O_DIRECTORY === 'number' ? fsConstants.O_
  * able to say. A caller that only wants the refusal can ignore the identity.
  *
  * PLATFORM, PLAINLY. On POSIX the answer comes from a descriptor opened with `O_NOFOLLOW | O_DIRECTORY`, so
- * there is no window between deciding what the name is and holding what it named. Windows cannot open a
- * directory for reading, so the answer comes from `lstat` — which also does not follow a link, and so still
- * refuses a symlinked keystore, but is a check on a name rather than on an object being held. The shipped
- * deployment is Linux and takes the first path.
+ * there is no window between deciding what the name is and holding what it named. Where that open fails for
+ * any reason other than absence, a link or a non-directory — a permission refusal, a descriptor limit, an I/O
+ * error — this REFUSES. It used to fall through to `lstat` there, which is the check the comment says is
+ * Windows-only: a POSIX host that would not let this process open the directory got the weaker name-based
+ * answer instead, and a caller that asked for descriptor identity was silently handed something else. A
+ * proof's boundary is not a thing to downgrade because the first attempt was denied.
+ *
+ * WINDOWS IS THE ONE FALLBACK, AND IT IS NAMED. It has no `O_NOFOLLOW` and no `O_DIRECTORY`, and opening a
+ * directory there is not something this can rely on, so the answer comes from `lstat` — which also does not
+ * follow a link, and so still refuses a symlinked keystore, but is a check on a name rather than on an object
+ * being held. That is a weaker guarantee and it is stated rather than implied. The shipped deployment is
+ * Linux and takes the descriptor path.
  */
 export interface StateDirectoryIdentity {
   readonly dev: number;
   readonly ino: number;
 }
 
-export function stateDirectoryIdentity(path: string): StateDirectoryIdentity {
+/**
+ * The one seam that makes the refusal above testable on a host where the open really does succeed.
+ *
+ * NOT PASSED ANYWHERE IN PRODUCTION — every caller of `stateDirectoryIdentity` passes one argument. It exists
+ * because "a permission refusal must not become an `lstat`" is a claim about a branch, and the alternative
+ * (chmod-ing a directory and hoping the suite is not running as root, on a platform that has modes at all) is
+ * a test that silently does not run.
+ */
+export interface StateDirectoryOpenFaults {
+  readonly open?: (path: string) => number;
+  /**
+   * Which platform's rule to apply. Defaults to this one.
+   *
+   * WHY IT IS HERE. "A POSIX open failure is a refusal and a Windows one is the documented fallback" is a
+   * statement about two branches, and a suite can only ever be running on one of them. A rule that is only
+   * checked on the host that happens to be building it is a rule nobody has checked.
+   */
+  readonly windows?: boolean;
+}
+
+export function stateDirectoryIdentity(
+  path: string,
+  faults: StateDirectoryOpenFaults = {},
+): StateDirectoryIdentity {
   let fd: number | null = null;
   try {
-    fd = openSync(path, fsConstants.O_RDONLY | NO_FOLLOW | O_DIRECTORY);
+    const open = faults.open ?? ((p: string) => openSync(p, fsConstants.O_RDONLY | NO_FOLLOW | O_DIRECTORY));
+    fd = open(path);
   } catch (err) {
     const code = (err as NodeJS.ErrnoException).code;
     if (code === 'ELOOP' || code === 'EMLINK') {
@@ -330,6 +362,16 @@ export function stateDirectoryIdentity(path: string): StateDirectoryIdentity {
     }
     if (code === 'ENOENT') throw new CustodianStateError('the state directory is not there');
     if (code === 'ENOTDIR') throw new CustodianStateError('a custodian state path is not a directory');
+    // ---- EVERY OTHER FAILURE IS A REFUSAL, EXCEPT ON WINDOWS ----------------------------------------------
+    //
+    // A POSIX host that would not open this directory has told us something, and it is not "here is a weaker
+    // answer". EACCES, EPERM, EMFILE, EIO: in every one of them the descriptor identity this function exists
+    // to establish was NOT established, and an `lstat` in its place answers a different question about a name
+    // rather than about an object being held. Windows is the stated exception, and the fallback below is the
+    // guarantee that platform can actually support.
+    if (!(faults.windows ?? process.platform === 'win32')) {
+      throw new CustodianStateError('a custodian state directory could not be opened');
+    }
     fd = null;
   }
   if (fd === null) {

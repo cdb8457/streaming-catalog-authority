@@ -10,6 +10,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import {
   KEK_RING_VERSION,
+  RingMovedUnderReSeal,
   RootReSealFailed,
   activeKek,
   adoptStaticKekAsRing,
@@ -20,9 +21,12 @@ import {
   kekRingPath,
   loadKekRing,
   rootKeyId,
+  rotateRootWrappingKey,
   wholeRingDigest,
 } from '../src/core/crypto/kek-ring.js';
-import { readStateDocument, writeStateDocument } from '../src/core/crypto/custodian-state-io.js';
+import {
+  readStateDocument, stateDirectoryIdentity, writeStateDocument,
+} from '../src/core/crypto/custodian-state-io.js';
 import { validateSidecarHealth } from '../src/core/crypto/local-sidecar-runtime.js';
 import { SIDECAR_PROTOCOL_VERSION } from '../src/core/crypto/sidecar-ipc.js';
 import { REQUIRED_SECRET_FILES } from '../src/ops/backup-components.js';
@@ -1388,6 +1392,206 @@ await test('the custody writer writes EVERY byte, and leaves nothing behind when
   assertEq(helper.writeCustodySecret(truncated, 'c'.repeat(64), process.getuid!(), process.getgid!()), 'created',
     'and a real write creates it');
   assertEq(readFileSync(truncated, 'utf8'), 'c'.repeat(64), 'holding exactly the value');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// 8. The transaction is a transaction: one lock domain, one set of bytes, one boundary
+// ---------------------------------------------------------------------------------------------------------
+
+await test('a ring that moves after the plan is refused BEFORE the re-seal writes anything', async () => {
+  // THE DEFECT: two locks that exclude nothing of each other's. `runRootKeyRotation` holds the ROTATION lock;
+  // every other ring mutator holds the RING WRITER lock. Between the re-plan under the first and the write
+  // under the second, a begun rotation, an activation or a retirement could land — and the re-seal would take
+  // THAT ring, put it under the new root, prove it perfectly, and hand back its digest. The comparison then
+  // happened AFTER the write: the command refused, saying nothing was changed, over an installation whose
+  // ring only the new root opened.
+  const { world, newRoot, request } = await reSealWorld('reseal-interposed');
+  const ringFile = kekRingPath(world.stateDir);
+  const planned = planRootKeyRotation(request);
+
+  let interposedBytes: Buffer | null = null;
+  let interposedDigest: string | null = null;
+  let caught: unknown = null;
+  try {
+    runRootKeyRotation({ ...request, confirmDigest: planned.planDigest }, {
+      // A REAL RING MUTATOR, TAKING THE REAL RING WRITER LOCK, in the exact window the defect lived in: after
+      // the under-lock re-plan and before the re-seal takes that lock. Not a file edit standing in for one —
+      // the point at issue is that this mutator's lock and the rotation's lock are different locks.
+      beforeLock: () => {
+        beginPendingGeneration(world.stateDir, world.root, () => 2_000);
+        interposedBytes = readFileSync(ringFile);
+        interposedDigest = wholeRingDigest(loadKekRing(world.stateDir, world.root));
+      },
+    });
+  } catch (err) { caught = err; }
+
+  assert(caught !== null, 'the re-seal is refused');
+  assert(caught instanceof RingMovedUnderReSeal, `and as its own kind: ${String(caught)}`);
+  assert(!(caught instanceof RootReSealFailed), 'NOT as a rollback: there is nothing to roll back');
+  assert((caught as Error).message.includes('NOTHING WAS WRITTEN'), 'and it says so plainly');
+
+  // BYTE FOR BYTE WHAT THE INTERPOSED WRITER LEFT. The re-seal did not touch the file at all — not "wrote it
+  // and put it back", which is a different and worse claim.
+  assert(interposedBytes !== null, 'the mutation ran');
+  assertEq(readFileSync(ringFile).equals(interposedBytes!), true, 'the sealed ring is untouched by the re-seal');
+  // AND THE OLD ROOT STILL OPENS THE WHOLE LOGICAL RING — including the generation the interposed writer added.
+  const after = loadKekRing(world.stateDir, world.root);
+  assertEq(wholeRingDigest(after), interposedDigest!, 'the previous root opens the exact ring on disk');
+  assert(after.pending !== null, 'with the interposed writer\'s work still in it');
+  refuses(() => loadKekRing(world.stateDir, newRoot), 'DIFFERENT root wrapping key', 'the new root never landed');
+  // THE INSTALLATION IS USABLE, which is what "nothing was written" has to mean to be worth saying.
+  const custodian = new FileCustodian(world.stateDir, SECRET, activeKek(after));
+  for (const keyId of world.keyIds) assertEq((await custodian.get(keyId, 0)).length, 32, 'every key still opens');
+  for (const forbidden of [world.root.toString('hex'), newRoot.toString('hex'), SECRET, world.stateDir]) {
+    assert(!(caught as Error).message.includes(forbidden), 'and the refusal carries no key or path');
+  }
+});
+
+await test('the re-seal itself refuses a ring that is not the one it was handed, and writes nothing', async () => {
+  // The precondition put directly: the same expectation the command passes, made stale on purpose. This is
+  // what makes the "the ring that was re-sealed is not the ring this plan was computed against" refusal
+  // unreachable — the mismatch is now caught inside the writer lock, before the capture is written over.
+  const { world, newRoot } = await reSealWorld('reseal-expectation');
+  const ringFile = kekRingPath(world.stateDir);
+  const beforeBytes = readFileSync(ringFile);
+  const beforeDigest = wholeRingDigest(loadKekRing(world.stateDir, world.root));
+
+  refuses(() => rotateRootWrappingKey(world.stateDir, world.root, newRoot, 'a'.repeat(64)),
+    'NOTHING WAS WRITTEN', 'a re-seal handed a ring digest that is not the ring on disk');
+  assertEq(readFileSync(ringFile).equals(beforeBytes), true, 'the file was never opened for writing');
+  assertEq(wholeRingDigest(loadKekRing(world.stateDir, world.root)), beforeDigest, 'the old root still opens it');
+  refuses(() => loadKekRing(world.stateDir, newRoot), 'DIFFERENT root wrapping key', 'and the new root does not');
+
+  // AND THE EXPECTATION THAT MATCHES STILL RE-SEALS, so the precondition is a gate and not a wall.
+  const done = rotateRootWrappingKey(world.stateDir, world.root, newRoot, beforeDigest);
+  assertEq(done.ringDigest, beforeDigest, 'the re-seal reports the ring it was handed');
+  assertEq(wholeRingDigest(loadKekRing(world.stateDir, newRoot)), beforeDigest, 'and the new root opens it');
+});
+
+await test('a root rotation will not bind one set\'s digest to another set\'s custody proof', async () => {
+  // THE DEFECT: `verifyBackupSet` and `proveBackupRestoresCustody` are two reads of a directory nothing holds
+  // still. The plan recorded `backupSetDigest` from the first and the custody fields from the second, so a
+  // set replaced at the same path in between — a retention schedule rolling a nightly, a sync finishing —
+  // produced a plan whose digest named SET A and whose proof described SET B, with nothing saying so.
+  const { world, request } = await reSealWorld('backup-toctou');
+  const decoy = await makeWorld('backup-toctou-decoy');
+  const before = planRootKeyRotation(request);
+
+  // The swap is real: the set at the plan's path is REPLACED by a different set that verifies just as well.
+  const swap = (): void => {
+    rmSync(request.backupSet, { recursive: true, force: true });
+    cpSync(decoy.backupSet, request.backupSet, { recursive: true });
+  };
+  refuses(() => planRootKeyRotation(request, { betweenProofAndRebind: swap }),
+    'not the same bytes', 'a set replaced between the proof and the digest');
+  assertEq(loadKekRing(world.stateDir, world.root).active, 1, 'and nothing was changed');
+
+  // AND THE TWO SETS REALLY ARE DIFFERENT, so what was refused was a binding that would have been wrong
+  // rather than a comparison that could never fail. The decoy now plans on its own terms, self-consistently.
+  const after = planRootKeyRotation(request);
+  assert(after.backupSetDigest !== before.backupSetDigest, 'the swapped set has its own digest');
+  assert(after.backupRingDigest !== before.backupRingDigest, 'and its own custody state');
+  assert(after.planDigest !== before.planDigest, 'so the plan an operator confirmed cannot be spent on it');
+});
+
+await test('a retirement will not bind one set\'s digest to another set\'s custody proof', async () => {
+  const world = await makeWorld('retire-toctou');
+  const plan = planKekRotation(rotationRequest(world));
+  runKekRotation({ ...rotationRequest(world), confirmDigest: plan.planDigest }, runnerFor());
+  // The POST-rotation set, which is the only kind a retirement will look at.
+  const request = {
+    stateDir: world.stateDir, rootKeyFile: world.rootFile,
+    backupSet: takeBackup(world.project, 'set-post'), generation: 1,
+  };
+  const planned = planKekRetirement(request);
+  assert(planned.planDigest.length === 64, 'the retirement plans against the set it verified');
+
+  const decoy = await makeWorld('retire-toctou-decoy');
+  refuses(() => planKekRetirement(request, {
+    betweenProofAndRebind: () => {
+      rmSync(request.backupSet, { recursive: true, force: true });
+      cpSync(decoy.backupSet, request.backupSet, { recursive: true });
+    },
+  }), 'not the same bytes', 'a set replaced between the retirement proof and the digest');
+  assertEq(loadKekRing(world.stateDir, world.root).generations.length, 2,
+    'and the generation is still in the ring');
+});
+
+await test('a migration plan will not claim a key-set proof over a keystore that moved', async () => {
+  // THE SAME RULE, ONE DIRECTORY OVER. `keystoreSetDigest` and the unwrap proof are two walks of the
+  // keystore; a plan that took the digest from one and the proof from the other would tell an operator that
+  // all N of these keys open under this key about a set the digest does not describe.
+  const world = await makeWorld('migrate-set-toctou', { migrate: false });
+  const staticFile = join(world.project, 'static_kek');
+  writeFileSync(staticFile, `${world.staticKek.toString('hex')}\n`, { encoding: 'utf8', mode: 0o600 });
+  const request = {
+    stateDir: world.stateDir, rootKeyFile: world.rootFile,
+    staticKeyFile: staticFile, backupSet: world.backupSet,
+  };
+  const planned = planKekMigration(request);
+  assertEq(planned.keysProved, world.keyIds.length, 'the plan covers every key in the keystore');
+
+  const keysDir = join(world.stateDir, 'keys');
+  const victim = join(keysDir, readdirSync(keysDir)[0]!);
+  const held = readFileSync(victim);
+  refuses(() => planKekMigration(request, {
+    betweenProofAndRebind: () => { rmSync(victim, { force: true }); },
+  }), 'changed while this plan was being computed', 'a key file removed between the proof and the digest');
+  assertEq(existsSync(kekRingPath(world.stateDir)), false, 'and no ring was written');
+  writeFileSync(victim, held);
+  assertEq(planKekMigration(request).planDigest, planned.planDigest, 'the restored keystore plans as it did');
+});
+
+await test('a state directory whose descriptor will not open is refused, not downgraded to a name check', async () => {
+  // THE DEFECT: the comment said the `lstat` fallback was for Windows, which has no `O_NOFOLLOW`. The code
+  // took it on ANY open failure — so on POSIX a permission refusal silently answered a question about a NAME
+  // in place of the descriptor identity a caller asked for. Every proof that brackets a listing with this is
+  // resting on it being a boundary.
+  const dir = join(WORK, 'identity-boundary');
+  mkdirSync(dir, { recursive: true });
+  const real = stateDirectoryIdentity(dir);
+  assert(Number.isFinite(real.dev), 'a real directory has an identity');
+
+  const throwing = (code: string) => (): number => {
+    const err = new Error(code) as NodeJS.ErrnoException;
+    err.code = code;
+    throw err;
+  };
+  // THE THREE THE PLATFORM IS ACTUALLY TELLING US SOMETHING WITH, mapped as they always were.
+  refuses(() => stateDirectoryIdentity(dir, { open: throwing('ENOENT') }), 'is not there', 'an absent name');
+  refuses(() => stateDirectoryIdentity(dir, { open: throwing('ELOOP') }), 'symbolic link', 'a link');
+  refuses(() => stateDirectoryIdentity(dir, { open: throwing('ENOTDIR') }), 'not a directory', 'a non-directory');
+
+  // AND EVERY OTHER ONE, ON POSIX, IS A REFUSAL RATHER THAN A WEAKER ANSWER. Both platform branches are put
+  // here rather than only the one this suite happens to be running on: a rule checked on one host is a rule
+  // half-checked, and the shipped deployment is the branch a Windows dev box would never reach.
+  for (const code of ['EACCES', 'EPERM', 'EMFILE', 'EIO']) {
+    refuses(() => stateDirectoryIdentity(dir, { open: throwing(code), windows: false }), 'could not be opened',
+      `a POSIX ${code} must not become an lstat`);
+    // Windows has neither `O_NOFOLLOW` nor `O_DIRECTORY`, so the name-based check IS the guarantee that
+    // platform can support, and it is still a check — a link and a non-directory are still refused there.
+    assertEq(stateDirectoryIdentity(dir, { open: throwing(code), windows: true }).ino, real.ino,
+      'on Windows the stated fallback answers');
+  }
+  if (POSIX) {
+    const link = join(WORK, 'identity-link');
+    if (!existsSync(link)) symlinkSync(dir, link, 'dir');
+    refuses(() => stateDirectoryIdentity(link, { open: throwing('EACCES'), windows: true }), 'symbolic link',
+      'the Windows fallback still refuses a link');
+  }
+
+  // AND A REAL PERMISSION REFUSAL, where the platform can produce one and this process is not root.
+  if (POSIX && process.getuid!() !== 0) {
+    const walled = join(WORK, 'identity-walled');
+    const inner = join(walled, 'keys');
+    mkdirSync(inner, { recursive: true });
+    chmodSync(walled, 0o000);
+    try {
+      refuses(() => stateDirectoryIdentity(inner), 'could not be opened', 'a directory this process cannot reach');
+      // AND THE CALLER THAT BRACKETS ITS LISTING WITH IT REFUSES TOO, rather than digesting an empty set.
+      refuses(() => keystoreSetDigest(walled), 'not one this build will read', 'the key-set proof over it');
+    } finally { chmodSync(walled, 0o700); }
+  }
 });
 
 await test('the corrections reach no network, media server or acquisition system', () => {

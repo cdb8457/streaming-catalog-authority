@@ -747,11 +747,37 @@ export function retireGeneration(
  *
  * The write is atomic and self-describing (see `custodian-state-io.ts`), so an interrupted re-seal leaves the
  * ring wholly under the old root or wholly under the new — never a file that opens under neither.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * `expectRingDigest`: WHICH RING THIS RE-SEAL WAS DECIDED OVER, CHECKED WHERE THE DECIDING HAPPENS.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * THE DEFECT THIS CLOSES. `ops:kek-ring --root-rotate` serialises itself with the ROTATION lock, and every
+ * other ring mutator — a begun rotation, an activation, a retirement, an adoption — serialises itself with
+ * the RING WRITER lock taken below. Those are two different locks over two different directories, so they do
+ * not exclude each other: between the caller re-reading the ring under ITS lock and this function taking
+ * THIS one, any of those mutators could land. This function would then re-seal the ring it found, prove it
+ * perfectly, and hand back a digest for a ring nobody had confirmed; the caller compared digests AFTER the
+ * write and refused — over an installation whose ring the new root already opens and the old one no longer
+ * does. A refusal that reports "nothing was changed" about a completed re-seal is the worst of the three
+ * possible outcomes, and it was the one that happened.
+ *
+ * So the expectation is passed IN and checked HERE, inside the writer lock and BEFORE the write, which is
+ * the only place where "the ring is still the one you decided over" can be true for the whole write. A ring
+ * that moved is refused with nothing written and the previous root still opening it.
+ *
+ * NO NESTING, SO NO DEADLOCK. The check is a digest comparison over the ring this function has already
+ * loaded; it takes no further lock, and the caller's rotation lock is a different directory.
+ *
+ * `null` means "no expectation", and NOTHING IN PRODUCTION PASSES IT. The only command that re-seals a root
+ * goes through `runRootKeyRotation`, which always passes the pre-state digest the operator confirmed; the
+ * null case is the direct callers in the suites, which are testing this function rather than the operation.
  */
 export function rotateRootWrappingKey(
   stateDir: string,
   fromRoot: Buffer,
   toRoot: Buffer,
+  expectRingDigest: string | null = null,
   faults: RootReSealFaults = {},
 ): RootReSeal {
   if (toRoot.length !== KEY_BYTES) throw new KekRingError('the new root wrapping key is not 32 bytes');
@@ -761,6 +787,11 @@ export function rotateRootWrappingKey(
   const ringDir = join(stateDir, KEK_RING_DIRNAME);
   createStateDirectory(ringDir);
   const path = kekRingPath(stateDir);
+  // The seam that lets a suite put a REAL concurrent ring mutation into the exact window the expectation
+  // above exists to close: after the caller re-read the ring under its own lock, before this one is taken.
+  // It runs OUTSIDE the writer lock deliberately — a mutator called from inside it would deadlock against
+  // the lock it is meant to be racing.
+  faults.beforeLock?.();
   const lock = acquireStateLock(ringDir, KEK_RING_WRITER_LOCK);
   try {
     // ---- CAPTURE, AS BYTES --------------------------------------------------------------------------------
@@ -780,6 +811,15 @@ export function rotateRootWrappingKey(
     // whole document and therefore means everything.
     const before = loadKekRing(stateDir, fromRoot);
     const beforeDigest = wholeRingDigest(before);
+
+    // ---- AND IT IS THE RING THIS RE-SEAL WAS DECIDED OVER, BEFORE A BYTE MOVES ------------------------------
+    //
+    // The last point at which refusing costs nothing. Everything after this line has written the file, so a
+    // ring that moved has to be caught here or be re-sealed under a root nobody confirmed and then reported
+    // as a refusal. This is inside the writer lock, so from here to the write no other ring mutator can run.
+    if (expectRingDigest !== null && beforeDigest !== expectRingDigest) {
+      throw new RingMovedUnderReSeal();
+    }
 
     storeRingUnlocked(stateDir, toRoot, before);
     // The one seam a suite uses to make the proof below fail on demand. It stands for anything that could
@@ -853,10 +893,34 @@ export interface RootReSeal {
  * (asserting the source contains a restore call) proves the code was typed, not that it puts the ring back.
  */
 export interface RootReSealFaults {
+  /**
+   * Runs before the RING WRITER LOCK is taken, so a suite can interpose a real concurrent ring mutation into
+   * the window between the caller's re-plan and this write. Outside the lock, or the mutation would deadlock.
+   */
+  readonly beforeLock?: () => void;
   /** Runs after the new bytes are on disk and before the proof, so the proof can be made to fail. */
   readonly afterWrite?: () => void;
   /** Puts the captured bytes back. Defaults to the real atomic write; a suite overrides it to fail. */
   readonly restore?: (path: string, bytes: Buffer) => void;
+}
+
+/**
+ * The ring moved between the decision and the write, and the write did not happen.
+ *
+ * ITS OWN KIND, DELIBERATELY. It is not a `RootReSealFailed`: nothing was written, so there is nothing to
+ * roll back and no question about which root opens the ring. Telling the two apart is the whole difference
+ * between "your installation is exactly as it was" and "your installation was changed and put back".
+ */
+export class RingMovedUnderReSeal extends KekRingError {
+  constructor() {
+    super(
+      'the KEK ring changed between this re-seal being decided and the moment it would have been written, so '
+      + 'the ring on disk is not the one that was confirmed. NOTHING WAS WRITTEN: the previous root wrapping '
+      + 'key still opens the ring exactly as it did, every generation is still in it, and no key file was '
+      + 'touched. Something else is operating on this state directory — stop it, then plan again against what '
+      + 'is actually there.');
+    this.name = 'RingMovedUnderReSeal';
+  }
 }
 
 /**
