@@ -112,6 +112,9 @@ services:
       # The daemon refuses to start wired to BOTH sources or NEITHER, so the two files are the only two valid
       # wirings and neither of them is something an operator assembles by hand.
       SIDECAR_ROOT_KEY_FILE: /run/catalog-custody/custodian_root_key
+      # Bound the Go scheduler used by tsx/esbuild. On a 128-core host the daemon plus its health probe can
+      # otherwise exhaust this service's deliberate 128-PID limit before the protocol handshake runs.
+      GOMAXPROCS: "2"
       NPM_CONFIG_CACHE: /tmp/npm-cache
     volumes:
       # ---- THE ONLY SERVICE THAT WRITES THIS DIRECTORY ------------------------------------------------

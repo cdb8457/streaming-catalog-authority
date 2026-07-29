@@ -1227,9 +1227,12 @@ test('after the merge, a Docker socket, an escape from the root or a writable bi
   // AND THE WIRING ITSELF. A component mounted where the image does not read it, or a variable left pointing
   // at the base definition's production path, is the defect the mount check alone could not see.
   refuses(() => check(stack({
-    sidecar: { image: CURRENT, environment: { ...environmentFor('sidecar'), SIDECAR_KEK_FILE: '/run/secrets/custodian_kek' },
+    sidecar: { image: CURRENT, environment: {
+      ...environmentFor('sidecar'), SIDECAR_ROOT_KEY_FILE: '/run/catalog-custody/custodian_root_key',
+    },
       volumes: mountsFor('sidecar') },
-  })), 'read the restored "custodian_kek" secret from the', 'a KEK variable still naming a production path');
+  })), 'read the restored "custodian_root_key" secret from the',
+  'a root-key variable still naming a production path');
   refuses(() => check(stack({
     sidecar: { image: CURRENT, environment: environmentFor('sidecar'),
       volumes: mountsFor('sidecar').filter((mount) => !mount.target.endsWith('catalog-sidecar/state')) },
@@ -1290,9 +1293,14 @@ test('the resolved stack shows every restored component as the EFFECTIVE source,
     assertEq(environmentOf('sidecar').SIDECAR_STATE_DIR, '/var/lib/catalog-sidecar/state',
       'and the sidecar is told to read it there');
     assertEq(sourceAt('sidecar', '/run/catalog-rehearsal-secrets/custodian_kek'),
-      join(workspace, COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_kek'), 'the KEK is the restored one');
-    assertEq(environmentOf('sidecar').SIDECAR_KEK_FILE, '/run/catalog-rehearsal-secrets/custodian_kek',
-      'and the sidecar reads it from there rather than from /run/secrets');
+      join(workspace, COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_kek'),
+      'the legacy KEK is restored even though steady state does not select it');
+    assertEq(environmentOf('sidecar').SIDECAR_KEK_FILE, undefined,
+      'the sidecar is not wired to the legacy KEK');
+    assertEq(sourceAt('sidecar', '/run/catalog-rehearsal-secrets/custodian_root_key'),
+      join(workspace, COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_root_key'), 'the root key is the restored one');
+    assertEq(environmentOf('sidecar').SIDECAR_ROOT_KEY_FILE,
+      '/run/catalog-rehearsal-secrets/custodian_root_key', 'the sidecar selects only the managed-ring root key');
     assertEq(sourceAt('postgres', '/restore/catalog-backup.sql'),
       join(workspace, COMPONENT_ARTIFACT_NAMES.database), 'the dump the restore replays is the restored one');
     assertEq(environmentOf('postgres').POSTGRES_PASSWORD_FILE, '/run/catalog-rehearsal-secrets/postgres_password',
@@ -1308,9 +1316,8 @@ test('the resolved stack shows every restored component as the EFFECTIVE source,
         assertEq(sourceAt(consumer.service, target),
           join(workspace, COMPONENT_ARTIFACT_NAMES.secrets, file), `${consumer.service} reads the restored ${file}`);
         if (consumer.env === null) {
-          // A CUSTODY SECRET THE STACK CHOOSES BETWEEN. Mounted so a restore that lost it fails, and
-          // deliberately NOT pointed at — the sidecar refuses to start wired to both key sources, so which
-          // one is used is the operator's migration state and not this command's to decide.
+          // A REQUIRED LEGACY SECRET. It is mounted so a restore that lost it fails, and deliberately NOT
+          // selected because the steady-state sidecar refuses both key sources at once.
           const environment = environmentOf(consumer.service);
           for (const [name, value] of Object.entries(environment)) {
             assert(value !== target, `nothing points at ${file}: ${name} does`);

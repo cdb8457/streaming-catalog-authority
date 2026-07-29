@@ -9617,6 +9617,7 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
     // PHASE 289. The steady state wires the ROOT key; the static KEK is wired by the bootstrap overlay,
     // which is asserted immediately after this block.
     'SIDECAR_ROOT_KEY_FILE: /run/catalog-custody/custodian_root_key',
+    'GOMAXPROCS: "2"',
     'NPM_CONFIG_CACHE: /tmp/npm-cache',
     'command: ["ops:sidecar-daemon", "--", "--serve"]',
     // Phase 284: a health HANDSHAKE, not a test that the socket file exists (which passes for a crashed
@@ -10772,7 +10773,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
 test('Phase 223 release evidence remains intact while package metadata tracks the current release', () => {
   assert(exists('docs/PHASE_223_RELEASE_CUT.md'), 'Phase 223 release cut doc exists');
   assert(exists('test/versioned-release-cut.ts'), 'Phase 223 release cut test exists');
-  assert(pkg.version === '1.2.5', 'package version is the current v1.2.5 release');
+  assert(pkg.version === '1.2.6', 'package version is the current v1.2.6 release');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
   assert(
     (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
