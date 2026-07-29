@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import {
   CustodianStateError,
   readStateFileBytes,
@@ -187,6 +188,22 @@ function isCount(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= Number.MAX_SAFE_INTEGER;
 }
 
+/**
+ * The ONE timestamp shape this build writes: `new Date(ms).toISOString()`, and nothing else.
+ *
+ * WHY EXACTNESS IS THE POINT HERE. `destroyedAt` is not a display string — it is an ATTESTATION INPUT. The
+ * receipt an operator keeps is an HMAC over `keyId\nreceiptId\ndestroyedAt`, so the set of values this field
+ * can hold is the set of things that can appear in a signed line. Accepting "any non-empty text with no
+ * control character" let a tombstone say `destroyedAt: "soon"` and produced a perfectly valid attestation
+ * over it. The round-trip through `Date` is what makes this a real calendar instant rather than a string
+ * that looks like one: `2026-02-30T00:00:00.000Z` matches any regex you would write and is not a date.
+ */
+export function isCanonicalIsoTimestamp(value: unknown): value is string {
+  if (typeof value !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/.test(value)) return false;
+  const parsed = Date.parse(value);
+  return Number.isFinite(parsed) && new Date(parsed).toISOString() === value;
+}
+
 /** A wrapped DEK: lowercase hex, an even number of digits, long enough to hold a nonce and a tag. */
 function isWrappedHex(value: unknown): value is string {
   return typeof value === 'string'
@@ -261,14 +278,24 @@ export const OP_RECORD_SCHEMA: RecordSchema<OpRecord> = {
   },
 };
 
+/** A tombstone and a journal entry are the same three fields; the rule for them is written once. */
+function checkDestructionFields(doc: Record<string, unknown>, refuse: Refuse): void {
+  closed(doc, ['version', 'keyId', 'receiptId', 'destroyedAt'], refuse);
+  checkVersion(doc, refuse);
+  if (!isStoredId(doc.keyId) || !isStoredId(doc.receiptId)) {
+    throw refuse('names an identifier this custodian would not have written');
+  }
+  // EVERY FIELD HERE IS ATTESTATION INPUT, so the timestamp is held to the one form this build writes rather
+  // than to "some text with no newline in it".
+  if (!isCanonicalIsoTimestamp(doc.destroyedAt)) {
+    throw refuse('records a destruction time that is not the instant format this build writes');
+  }
+}
+
 export const TOMBSTONE_SCHEMA: RecordSchema<TombstoneRecord> = {
   kind: 'tombstone',
   check: (doc, refuse) => {
-    closed(doc, ['version', 'keyId', 'receiptId', 'destroyedAt'], refuse);
-    checkVersion(doc, refuse);
-    if (!isStoredId(doc.keyId) || !isStoredId(doc.receiptId) || !isStoredId(doc.destroyedAt)) {
-      throw refuse('names an identifier this custodian would not have written');
-    }
+    checkDestructionFields(doc, refuse);
     return doc as unknown as TombstoneRecord;
   },
 };
@@ -276,11 +303,7 @@ export const TOMBSTONE_SCHEMA: RecordSchema<TombstoneRecord> = {
 export const JOURNAL_SCHEMA: RecordSchema<JournalRecord> = {
   kind: 'destroy journal entry',
   check: (doc, refuse) => {
-    closed(doc, ['version', 'keyId', 'receiptId', 'destroyedAt'], refuse);
-    checkVersion(doc, refuse);
-    if (!isStoredId(doc.keyId) || !isStoredId(doc.receiptId) || !isStoredId(doc.destroyedAt)) {
-      throw refuse('names an identifier this custodian would not have written');
-    }
+    checkDestructionFields(doc, refuse);
     return doc as unknown as JournalRecord;
   },
 };
@@ -347,6 +370,48 @@ export function writeCustodianRecord<T>(path: string, schema: RecordSchema<T>, r
   }
   parseCustodianRecord(body, schema);
   writeStateFileBytes(path, body);
+}
+
+/**
+ * The name a record of this kind lives at: the id, hashed, and nothing else.
+ *
+ * IT IS THE ADDRESS *AND* PART OF THE RECORD, WHICH IS THE WHOLE POINT. Every lookup in this custodian is
+ * "hash the id, open that name" — so the name is a claim about which id the file describes, and the record
+ * inside is a second claim about the same thing. Until they are compared, only one of them has been checked.
+ */
+export function custodianRecordName(id: string): string {
+  return `${createHash('sha256').update(id).digest('hex')}.json`;
+}
+
+/**
+ * The record at this name is the record FOR this name, or it is a refusal.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE HOLE THIS CLOSES: A VALID RECORD AT ANOTHER VALID RECORD'S ADDRESS.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * Every schema in this file checks that a record is WELL FORMED. None of them checked that it is the record
+ * that was asked for, because the id was used to build the path and then thrown away. So a file copied from
+ * one valid name to another valid name passed every check that existed, and each caller then believed the
+ * id INSIDE it:
+ *
+ *   * a key file transplanted onto another key's name unwrapped under its own `keyId` as AAD and returned a
+ *     working DEK for a key the caller did not ask about;
+ *   * an operation record transplanted onto another operation's name made a fresh `provision` replay somebody
+ *     else's operation and hand back that operation's key;
+ *   * a tombstone transplanted onto another key's name reported a live key as destroyed;
+ *   * a journal entry transplanted onto another key's name made recovery destroy the key named INSIDE it —
+ *     a key nothing had asked to destroy, on the strength of a filename.
+ *
+ * None of that requires forging anything. It requires a copy, which is the one operation an attacker with
+ * write access to a keystore directory certainly has. The address and the contents have to agree.
+ */
+export function assertRecordAddress(actual: string, expected: string, kind: CustodianRecordKind): void {
+  if (actual === expected) return;
+  throw new CustodianRecordError(
+    `a custodian ${kind} names a different id from the one it is filed under. Refused: a well-formed record `
+    + 'at another record\'s address is a record that was moved, and acting on the id inside it would be '
+    + 'acting on whichever key the mover chose.');
 }
 
 /**

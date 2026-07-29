@@ -1113,6 +1113,15 @@ await test('a migration holds the keystore writer lock, and a stray write still 
     staticKeyFile: staticFile, backupSet: world.backupSet,
   };
   const keysDir = join(world.stateDir, 'keys');
+  // The stray key file, made the only way a real one is made: by a custodian, under the same static KEK, in
+  // a state directory of its own. Its name is the hash of its own key id, so it is a key file this keystore
+  // could legitimately have gained — which is the point of the injection.
+  const donor = new FileCustodian(join(WORK, 'migrate-concurrent-donor'), SECRET, world.staticKek);
+  await donor.provision('donor-op', 'donor-item', 0);
+  await donor.commitProvision('donor-op');
+  const donorKeys = join(WORK, 'migrate-concurrent-donor', 'keys');
+  const donorName = readdirSync(donorKeys)[0]!;
+  const donorBytes = readFileSync(join(donorKeys, donorName));
   const planned = planKekMigration(request);
 
   let caught: unknown = null;
@@ -1124,10 +1133,15 @@ await test('a migration holds the keystore writer lock, and a stray write still 
         refuses(() => FileCustodian.rewrapKeystore(world.stateDir,
           { fromKek: world.staticKek, toKek: world.staticKek }),
         'another writer holds', 'a custodian write during the migration');
-        // AND THEN A WRITE THAT DOES NOT GO THROUGH THE CLASS AT ALL, which no lock can stop. A copy of a
-        // real key file under a new valid name is exactly the shape a provision produces.
-        const first = readdirSync(keysDir).find((entry) => entry.endsWith('.json'))!;
-        writeFileSync(join(keysDir, `${'d'.repeat(64)}.json`), readFileSync(join(keysDir, first)));
+        // AND THEN A WRITE THAT DOES NOT GO THROUGH THE CLASS AT ALL, which no lock can stop. A REAL key
+        // file — provisioned by another custodian under the same static KEK, so it is filed under its own
+        // id's hash and opens under the key being adopted — is exactly what a provision leaves behind.
+        //
+        // It used to be a COPY of an existing key file under a different valid name, which is not what a
+        // provision produces at all: it is one key file wearing another key's address, and the custodian now
+        // refuses that outright. Injecting it here would have been testing the readdressing rule and calling
+        // it a concurrency test.
+        writeFileSync(join(keysDir, donorName), donorBytes);
       },
     });
   } catch (err) { caught = err; }

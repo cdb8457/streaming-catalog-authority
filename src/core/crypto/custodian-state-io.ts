@@ -108,8 +108,28 @@ function digestOf(text: string): string {
  *
  * Every rule of the parsed reader still applies: the name is opened without following a link, the object is
  * proved to be a regular file ON THE DESCRIPTOR, and the size is bounded before a byte is allocated.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * AND THE FILE IS THE SAME SIZE AFTER THE READ AS IT WAS BEFORE IT.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * THE HOLE THIS CLOSES. The size was taken once, exactly that many bytes were read, and the check afterwards
+ * compared the bytes read against THE SIZE FROM BEFORE — which is trivially satisfied while saying nothing
+ * about what the file became. A writer appending to the same inode during the read left this returning a
+ * PREFIX of the file, and a prefix of a JSON document that happens to close its own brace parses. A caller
+ * would then hold a document it believes is whole, whose file is longer than what it read. Growth and
+ * shrink are both refusals now, checked on the descriptor after the last byte is taken.
+ *
+ * THE DESCRIPTOR PINS THE OBJECT, WHICH IS WHY THIS IS A STATEMENT ABOUT THE FILE AND NOT ABOUT THE NAME.
+ * Something that replaces the name (write-to-temp then rename — how everything in this module writes) leaves
+ * this read on the old inode and cannot affect it. What can affect it is a writer holding the same inode
+ * open, which is exactly what this catches.
  */
-export function readStateFileBytes(path: string, maxBytes = MAX_STATE_BYTES): Buffer {
+export function readStateFileBytes(
+  path: string,
+  maxBytes = MAX_STATE_BYTES,
+  faults: StateReadFaults = {},
+): Buffer {
   const fd = openStateFile(path);
   try {
     const stats = fstatSync(fd);
@@ -125,10 +145,28 @@ export function readStateFileBytes(path: string, maxBytes = MAX_STATE_BYTES): Bu
     // A SHORT READ IS NOT A SHORTER FILE. Believing one would make a truncated capture the thing a rollback
     // restores, which is the failure the capture exists to prevent.
     if (total !== stats.size) throw new CustodianStateError('the state file changed size while it was being read');
+    // The seam a suite uses to grow the file underneath this read on demand. It stands for any writer holding
+    // the same inode open — the only thing that can change what this descriptor refers to.
+    faults.afterRead?.();
+    const after = fstatSync(fd);
+    if (after.size !== stats.size || after.ino !== stats.ino || after.dev !== stats.dev) {
+      throw new CustodianStateError('the state file changed size while it was being read');
+    }
     return buffer;
   } finally {
     try { closeSync(fd); } catch { /* the read is done either way */ }
   }
+}
+
+/**
+ * The one seam that makes the growth check testable without racing a real writer.
+ *
+ * NOT PASSED ANYWHERE IN PRODUCTION. A read that has already returned cannot be shown to have been raced;
+ * this makes the race deterministic, which is the only way a suite can watch the refusal happen.
+ */
+export interface StateReadFaults {
+  /** Runs after the last byte is read and before the file is re-interrogated on the descriptor. */
+  readonly afterRead?: () => void;
 }
 
 /** Whether a state file is THERE, without reading or parsing it. A file that exists but will not parse exists. */
@@ -345,10 +383,48 @@ export interface StateDirectoryOpenFaults {
   readonly windows?: boolean;
 }
 
+/**
+ * WHICH directory, and WHOSE, and reachable by whom — from the one no-follow open.
+ *
+ * `stateDirectoryIdentity` answers only the first of those because that is all its callers needed. A caller
+ * that also has to decide whether a directory is fit to hold key material needs the other two, and the worst
+ * way to give it them is a second open of the same name: between two opens the name can become something
+ * else, so the answer would be about two objects. One open, one `fstat`, all three facts.
+ */
+export interface StateDirectoryFacts extends StateDirectoryIdentity {
+  /** `null` where the platform has no uid this maps to. Never a guess. */
+  readonly uid: number | null;
+  /** The raw mode bits, for a caller that has a rule about them. `null` where they mean nothing. */
+  readonly mode: number | null;
+}
+
+export function stateDirectoryFacts(
+  path: string,
+  faults: StateDirectoryOpenFaults = {},
+): StateDirectoryFacts {
+  return interrogateStateDirectory(path, faults);
+}
+
 export function stateDirectoryIdentity(
   path: string,
   faults: StateDirectoryOpenFaults = {},
 ): StateDirectoryIdentity {
+  const { dev, ino } = interrogateStateDirectory(path, faults);
+  return { dev, ino };
+}
+
+/**
+ * ONE open, ONE `fstat`, every fact both callers need.
+ *
+ * Asking twice would be asking about two moments: between two opens a name can become something else, so a
+ * caller that took its identity from the first and its ownership from the second would be enforcing a rule
+ * against a directory it never identified.
+ */
+function interrogateStateDirectory(
+  path: string,
+  faults: StateDirectoryOpenFaults,
+): StateDirectoryFacts {
+  const windows = faults.windows ?? process.platform === 'win32';
   let fd: number | null = null;
   try {
     const open = faults.open ?? ((p: string) => openSync(p, fsConstants.O_RDONLY | NO_FOLLOW | O_DIRECTORY));
@@ -369,7 +445,7 @@ export function stateDirectoryIdentity(
     // to establish was NOT established, and an `lstat` in its place answers a different question about a name
     // rather than about an object being held. Windows is the stated exception, and the fallback below is the
     // guarantee that platform can actually support.
-    if (!(faults.windows ?? process.platform === 'win32')) {
+    if (!windows) {
       throw new CustodianStateError('a custodian state directory could not be opened');
     }
     fd = null;
@@ -384,12 +460,16 @@ export function stateDirectoryIdentity(
         + 'listed from it would be whatever the link points at.');
     }
     if (!stats.isDirectory()) throw new CustodianStateError('a custodian state path is not a directory');
-    return { dev: stats.dev, ino: stats.ino };
+    // WINDOWS REPORTS NEITHER A uid THIS MAPS TO NOR MODE BITS THAT MEAN ANYTHING — a file created 0600 reads
+    // back 0666 there. `null` says so; inventing a number would let a caller enforce a rule against a value
+    // the platform made up.
+    return { dev: stats.dev, ino: stats.ino, uid: null, mode: null };
   }
   try {
     const stats = fstatSync(fd);
     if (!stats.isDirectory()) throw new CustodianStateError('a custodian state path is not a directory');
-    return { dev: stats.dev, ino: stats.ino };
+    if (windows) return { dev: stats.dev, ino: stats.ino, uid: null, mode: null };
+    return { dev: stats.dev, ino: stats.ino, uid: stats.uid, mode: stats.mode };
   } finally {
     try { closeSync(fd); } catch { /* the interrogation is done either way */ }
   }

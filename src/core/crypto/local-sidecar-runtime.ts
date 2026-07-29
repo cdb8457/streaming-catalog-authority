@@ -236,22 +236,42 @@ function dispatchOnce(
     socket.setEncoding('utf8');
     socket.once('error', () => fail());
     socket.once('connect', () => { socket.write(`${JSON.stringify(request)}\n`); });
-    socket.on('data', (chunk: string) => {
-      buffered += chunk;
-      if (Buffer.byteLength(buffered, 'utf8') > SIDECAR_MAX_RESPONSE_BYTES) { fail('SIDECAR_RESPONSE_TOO_LARGE'); return; }
+
+    /**
+     * NOTHING IS ACTED ON UNTIL THE WHOLE ANSWER IS IN.
+     *
+     * THE DEFECT THIS CLOSES, AND IT SURVIVED THE FIRST ATTEMPT AT IT. The previous version resolved as soon
+     * as it saw a newline, and refused a second frame only when that frame happened to arrive IN THE SAME
+     * CHUNK. TCP and pipes do not work that way: a peer that writes frame one, waits, and then writes frame
+     * two gets its first frame accepted and acted on — the check was against an accident of buffering rather
+     * than against what the peer sent. The shipped daemon writes exactly one line and then ENDS the
+     * connection, so waiting for the end costs nothing real and is the only point at which "the peer sent
+     * one frame and nothing else" is a fact rather than a guess.
+     */
+    const complete = (): void => {
+      if (settled) return;
       const newline = buffered.indexOf('\n');
-      if (newline === -1) return;
-      // ONE ANSWER PER CONNECTION, ON THIS SIDE TOO. The contract is one line and then a close; anything
-      // AFTER that newline is a peer that has misunderstood it, and the right response to a peer whose
-      // framing this build does not recognise is to take none of it rather than the first message of it.
-      if (buffered.length > newline + 1) { fail('SIDECAR_PROTOCOL_MALFORMED'); return; }
+      // NO TERMINATED FRAME AT ALL, or bytes beyond the one this contract carries. Both are peers that have
+      // misunderstood a channel whose whole shape is one line and a close.
+      if (newline === -1 || newline !== buffered.length - 1) { fail('SIDECAR_PROTOCOL_MALFORMED'); return; }
       const wire = parseSidecarWireResponse(buffered.slice(0, newline));
       if (!wire.ok) { fail(wire.code); return; }
       const response = parseSidecarResponse(op, wire.response);
       if (response === null) { fail('SIDECAR_PROTOCOL_MALFORMED'); return; }
       finish(() => resolve(response));
+    };
+
+    socket.on('data', (chunk: string) => {
+      buffered += chunk;
+      // BOUNDED WHILE IT ARRIVES, not after. A peer that never ends is held off by the timeout; a peer that
+      // sends more than the contract carries is cut off here rather than accumulated to the end.
+      if (Buffer.byteLength(buffered, 'utf8') > SIDECAR_MAX_RESPONSE_BYTES) { fail('SIDECAR_RESPONSE_TOO_LARGE'); return; }
+      // A SECOND FRAME IS ALREADY DECIDABLE THE MOMENT ITS TERMINATOR ARRIVES — this is the fast refusal, not
+      // the guarantee. The guarantee is `complete()` below, which runs when the peer has finished.
+      const newline = buffered.indexOf('\n');
+      if (newline !== -1 && newline !== buffered.length - 1) { fail('SIDECAR_PROTOCOL_MALFORMED'); }
     });
-    socket.once('end', () => fail());
+    socket.once('end', complete);
   });
 }
 
@@ -323,10 +343,20 @@ async function handleLine(options: LocalSidecarRuntimeOptions, line: string, soc
         ringActiveCreatedAt: null,
       };
       const health = options.health === undefined ? unproved : await options.health();
-      // A HEALTH PROBE IS INJECTED, SO ITS ANSWER IS CHECKED. The daemon supplies it; nothing else guarantees
-      // it is the shape a client will accept, and a claim of readiness in a shape the client fails closed on
-      // is an outage that reads as a protocol error.
-      if (validateSidecarHealth(health) === null && health.ready) {
+      // ---- A SUCCESS ENVELOPE CARRIES SOMETHING THE CLIENT CONTRACT ACCEPTS, OR IT IS NOT A SUCCESS -------
+      //
+      // THE DEFECT THIS CLOSES, AND MY OWN FIRST ATTEMPT AT IT WAS HALF OF IT. This wrote `ok: true` around
+      // ANY health object whose `ready` was false, and around a malformed one as long as it did not claim
+      // readiness. But `validateSidecarHealth` — the schema the CLIENT applies — rejects `ready: false` and
+      // every malformed field alike, so those were success envelopes whose payload the other end of this
+      // socket refuses by contract. A frame that says "ok" and carries something the reader must throw away
+      // is the protocol lying about itself: the reader cannot tell "the custodian is not ready" from "the
+      // peer is not this product", and those need different responses from an operator.
+      //
+      // Not-ready is a real, ordinary state — a daemon that has not exercised its custodian yet is not ready
+      // — and it now travels as what it is: the closed `SIDECAR_NOT_READY` refusal, which is exactly what a
+      // client that fails closed on readiness needs to hear.
+      if (validateSidecarHealth(health) === null) {
         writeResponse(socket, { ok: false, op: 'health', code: 'SIDECAR_NOT_READY' });
         return;
       }

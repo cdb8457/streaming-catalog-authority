@@ -351,7 +351,15 @@ await test('a runtime with no health probe never claims to be ready', async () =
   try {
     assertEq(await probeSidecarHealth(socketPath, 1_000), null, 'an unproved runtime is not ready');
     const raw = await rawExchange(socketPath, `${JSON.stringify({ op: 'health' })}\n`);
-    assert(raw.includes('"ready":false'), `and says so explicitly: ${raw}`);
+    // NOT-READY TRAVELS AS A REFUSAL, NOT AS A SUCCESS CARRYING `ready: false`.
+    //
+    // This used to assert the wire said `"ready":false` inside an `ok: true` envelope, which was a success
+    // frame whose payload the CLIENT contract rejects — `validateSidecarHealth` refuses `ready: false` like
+    // every other malformed field. A reader could not tell "the custodian is not ready" from "this peer is
+    // not this product", and those want different things from an operator. The closed code says which.
+    assert(raw.includes('SIDECAR_NOT_READY'), `and says so as a closed refusal: ${raw}`);
+    assert(raw.includes('"ok":false'), 'in an error envelope rather than a success one');
+    assert(!raw.includes('"ready":true'), 'and it certainly never claims readiness');
   } finally {
     await runtime.close();
   }

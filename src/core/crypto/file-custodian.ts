@@ -7,12 +7,15 @@ import {
   STATE_DIR_MODE,
   acquireStateLock,
   fsyncDirectoryBestEffort,
+  stateDirectoryFacts,
   stateDirectoryIdentity,
   type StateDirectoryIdentity,
 } from './custodian-state-io.js';
 import {
   CustodianRecordError,
   JOURNAL_SCHEMA,
+  assertRecordAddress,
+  custodianRecordName,
   KEY_RECORD_SCHEMA,
   OP_RECORD_SCHEMA,
   TOMBSTONE_SCHEMA,
@@ -112,6 +115,64 @@ function writeKeyFile(p: string, record: KeyFile): void {
 }
 
 /**
+ * Create one custodian directory if it is not there, and PROVE what is there is fit to hold key material.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHAT IS REFUSED, WHAT IS NOT, AND WHY THE LINE IS THERE AND NOT SOMEWHERE ELSE.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * REFUSED, ALWAYS: a symbolic link, anything that is not a directory, and a directory this process cannot
+ * open. Those are unambiguous — a keystore reached through a link is somebody else's keystore, and there is
+ * no legitimate installation in which one of these names is a link.
+ *
+ * REFUSED ON POSIX: a directory belonging to ANOTHER USER, and one that is GROUP- OR WORLD-WRITABLE. Both are
+ * live custody failures rather than untidiness: an account that can write into `keys/` can replace a wrapped
+ * key file, and the address-binding above is what makes that a refusal rather than a substitution — but only
+ * for a file it can already read. A directory somebody else can write is a keystore somebody else controls.
+ *
+ * NOT REFUSED, DELIBERATELY: group- or world-READABLE (`0755`, which is what `mkdir` under the default umask
+ * produces). Two reasons, and this is the judgement call in this function. First, every installation made
+ * before this build has exactly that, so refusing it would turn an upgrade into an outage for installations
+ * whose keystore is otherwise perfectly sound — and a custodian that will not construct is an app that
+ * reports every item as unreadable. Second, what is IN these directories is wrapped under a KEK that is not
+ * in them, so readability is a weakening rather than a compromise. It is still worth fixing, and the thing
+ * that fixes it is `ops:keystore-repair`, which reports what it found and repairs deliberately.
+ *
+ * NOTHING HERE RE-MODES AN EXISTING DIRECTORY. A create gets `0700`; a directory that is already there is
+ * left exactly as it is and judged. Silently widening or narrowing an operator's permissions from inside a
+ * constructor is how a tool destroys something nobody asked it to touch.
+ */
+function proveCustodianDirectory(dir: string, what: string): StateDirectoryIdentity {
+  try {
+    mkdirSync(dir, { recursive: true, mode: STATE_DIR_MODE });
+  } catch {
+    // A create that fails is not the diagnostic; what is at that name is, and the interrogation below says so.
+  }
+  let facts;
+  try {
+    facts = stateDirectoryFacts(dir);
+  } catch (err) {
+    throw new Error(`the custodian ${what} directory is not one this build will use (${
+      err instanceof CustodianStateError ? err.message : 'it could not be opened'}). Nothing was read or written.`);
+  }
+  if (facts.uid !== null) {
+    const getuid = (process as NodeJS.Process & { getuid?: () => number }).getuid;
+    const uid = typeof getuid === 'function' ? getuid.call(process) : null;
+    if (uid !== null && facts.uid !== uid) {
+      throw new Error(`the custodian ${what} directory belongs to another user. A custodian will not keep key `
+        + 'material in a directory it does not own. Nothing was read or written.');
+    }
+  }
+  if (facts.mode !== null && (facts.mode & 0o022) !== 0) {
+    throw new Error(`the custodian ${what} directory is writable by somebody other than its owner, so any `
+      + 'account on this host could add or replace a wrapped key in it. Refused before anything was read or '
+      + 'written; nothing was changed, because changing an operator\'s permissions from here is not this '
+      + 'command\'s business — see ops:keystore-repair.');
+  }
+  return { dev: facts.dev, ino: facts.ino };
+}
+
+/**
  * Is there a keystore directory here at all?
  *
  * `existsSync` FOLLOWED A LINK AND ANSWERED `false` FOR A DIRECTORY IT COULD NOT REACH. The first made a
@@ -159,21 +220,33 @@ function assertKeystoreUnmoved(keysDir: string, before: StateDirectoryIdentity, 
  * walk rather than shortening it.
  */
 function listKeystoreFiles(keysDir: string, what = 'keystore'): string[] {
+  return listRecordFiles(keysDir, what);
+}
+
+/**
+ * Every record file in one custodian directory, as a STATED set.
+ *
+ * The same rule for the journal as for the keystore, because the journal decides what gets destroyed: the
+ * name must be one this custodian writes, the entry must be a regular file, and the count is bounded. An
+ * unexpected entry stops the walk instead of being skipped — a directory holding one is a directory whose
+ * contents nobody can state, and "recover from the ones I recognised" is not a recovery.
+ */
+function listRecordFiles(dir: string, what: string, noun = 'wrapped key file'): string[] {
   let entries: Dirent[];
   try {
-    entries = readdirSync(keysDir, { withFileTypes: true });
+    entries = readdirSync(dir, { withFileTypes: true });
   } catch {
     throw new Error(`${what}: keystore could not be read`);
   }
   if (entries.length > MAX_KEYSTORE_FILES) {
-    throw new Error(`${what}: this keystore holds more entries than this build will walk`);
+    throw new Error(`${what}: this directory holds more entries than this build will walk`);
   }
   const names: string[] = [];
   for (const entry of entries) {
     if (!KEYSTORE_FILE_NAME.test(entry.name)) {
-      throw new Error(`${what}: this keystore holds an entry that is not a wrapped key file this custodian `
-        + 'wrote — a leftover from an interrupted write, or something put there by hand. The set of keys this '
-        + 'operation covers cannot be stated while it is there.');
+      throw new Error(`${what}: this keystore holds an entry that is not a ${noun} this custodian `
+        + 'wrote — a leftover from an interrupted write, or something put there by hand. The set of records '
+        + 'this operation covers cannot be stated while it is there.');
     }
     if (!entry.isFile()) {
       throw new Error(`${what}: this keystore holds an entry that is not a regular file`);
@@ -183,8 +256,15 @@ function listKeystoreFiles(keysDir: string, what = 'keystore'): string[] {
   return names;
 }
 
-/** One key file, through the bounded no-follow boundary and its closed schema. */
-function readKeystoreFile(p: string, what: string): KeyFile {
+/**
+ * One key file, through the bounded no-follow boundary, its closed schema, AND its own name.
+ *
+ * A WALK READS BY NAME, SO A WALK HAS TO CHECK THE NAME. `entry` came from a listing rather than from an id,
+ * which is the one place where nothing else in this class would ever compare the two: a key file copied onto
+ * another key file's name is well formed, unwraps under its own `keyId` as AAD, and would have been rewrapped
+ * and counted as the key whose name it was wearing.
+ */
+function readKeystoreFile(p: string, what: string, entry?: string): KeyFile {
   let record: KeyFile | null;
   try {
     record = readCustodianRecord(p, KEY_RECORD_SCHEMA);
@@ -197,6 +277,14 @@ function readKeystoreFile(p: string, what: string): KeyFile {
   // LISTED AND THEN GONE IS NOT AN EMPTY KEY FILE. Something removed it between the listing and this read,
   // which means the set this operation is covering is moving underneath it.
   if (record === null) throw new Error(`${what}: a key file was removed while the keystore was being read`);
+  if (entry !== undefined) {
+    try {
+      assertRecordAddress(custodianRecordName(record.keyId), entry, 'key record');
+    } catch (err) {
+      throw new Error(`${what}: ${err instanceof CustodianRecordError ? err.message
+        : 'a key file names a different key from the one it is filed under'}`);
+    }
+  }
   return record;
 }
 
@@ -206,6 +294,22 @@ export class FileCustodian implements KeyCustodian {
   private readonly tombDir: string;
   private readonly opsDir: string;
   private readonly journalDir: string;
+  /**
+   * WHICH directories the two WALKS read from, as they were when this custodian was built.
+   *
+   * A walk that lists a directory trusts the NAME twice — once when it lists and once for every file it opens
+   * under it. Holding the identity turns that into one checkable claim: the directory this listing came from
+   * is the directory this custodian proved at construction, and it did not become another one part way
+   * through the walk.
+   *
+   * ONLY THE TWO THAT ARE WALKED ARE KEPT. All five names are proved at construction, but `ops/` and
+   * `tombstones/` are only ever reached by hashing an id into a name — there is no listing of them to bracket,
+   * so an identity held for them would be a field nothing compares, which reads as a guarantee that is not
+   * enforced. The per-file no-follow open is what protects those, and the address binding is what makes the
+   * file at the name the file for the name.
+   */
+  private readonly keysIdentity: StateDirectoryIdentity;
+  private readonly journalIdentity: StateDirectoryIdentity;
   private readonly completionSecret: string;
   private readonly kek: Buffer;
   private readonly clock: () => number;
@@ -242,13 +346,21 @@ export class FileCustodian implements KeyCustodian {
     this.tombDir = path.join(this.root, 'tombstones');
     this.opsDir = path.join(this.root, 'ops');
     this.journalDir = path.join(this.root, 'journal');
-    // OWNER-ONLY WHERE THIS CREATES THEM. A directory that already exists is NOT re-moded here: changing the
-    // permissions of an installation's keystore is `ops:keystore-repair`'s job, which reports what it found
-    // and refuses anything it cannot account for. What this can promise is that a directory it creates is
-    // never the one that was left readable by everybody, and it says only that.
-    for (const d of [this.keysDir, this.tombDir, this.opsDir, this.journalDir]) {
-      mkdirSync(d, { recursive: true, mode: STATE_DIR_MODE });
-    }
+    // ---- THE FIVE DIRECTORIES ARE PROVED, NOT ASSUMED ----------------------------------------------------
+    //
+    // THE HOLE THIS CLOSES. `mkdirSync(d, { recursive: true })` establishes NOTHING about a name that already
+    // exists: on EEXIST it returns happily, so `<root>/keys` being a symbolic link to somebody else's
+    // directory was a keystore this class read every key out of and wrote every key into, with the no-follow
+    // rules on the FILES intact and useless — the boundary escaped through the parent. The static rewrap had
+    // been given this check; the class that actually holds the keys had not.
+    //
+    // Each name is now opened without following a link, proved to be a directory ON THE DESCRIPTOR, and its
+    // identity remembered so the walks below can prove they are still reading the same directories.
+    proveCustodianDirectory(this.root, 'state');
+    proveCustodianDirectory(this.tombDir, 'tombstone');
+    proveCustodianDirectory(this.opsDir, 'operation');
+    this.keysIdentity = proveCustodianDirectory(this.keysDir, 'keystore');
+    this.journalIdentity = proveCustodianDirectory(this.journalDir, 'destroy journal');
     this.completionSecret = completionSecret;
     this.kek = kek;
     this.clock = clock;
@@ -321,14 +433,25 @@ export class FileCustodian implements KeyCustodian {
   // existence check, an unbounded follow-the-link read, and a cast. Every one of the four kinds is now read
   // through the same bounded, no-follow, regular-file boundary the KEK ring uses, and `null` comes back only
   // for a name that is genuinely not there.
+  //
+  // AND EACH ONE IS BOUND TO THE NAME IT WAS READ UNDER. A schema says a record is well formed; it cannot say
+  // it is the record that was asked for, because the id was used to build the path and then discarded. A file
+  // COPIED from one valid name to another passed every check that existed, and the caller then believed the
+  // id inside it — which is somebody else's key. See `assertRecordAddress`.
   private readKeyFile(keyId: string): KeyFile | null {
-    return readCustodianRecord(this.keyPath(keyId), KEY_RECORD_SCHEMA);
+    const record = readCustodianRecord(this.keyPath(keyId), KEY_RECORD_SCHEMA);
+    if (record !== null) assertRecordAddress(record.keyId, keyId, 'key record');
+    return record;
   }
   private readOp(operationId: string): OpFile | null {
-    return readCustodianRecord(this.opPath(operationId), OP_RECORD_SCHEMA);
+    const record = readCustodianRecord(this.opPath(operationId), OP_RECORD_SCHEMA);
+    if (record !== null) assertRecordAddress(record.operationId, operationId, 'operation record');
+    return record;
   }
   private readTombstone(keyId: string): Tombstone | null {
-    return readCustodianRecord(this.tombPath(keyId), TOMBSTONE_SCHEMA);
+    const record = readCustodianRecord(this.tombPath(keyId), TOMBSTONE_SCHEMA);
+    if (record !== null) assertRecordAddress(record.keyId, keyId, 'tombstone');
+    return record;
   }
 
   /**
@@ -341,6 +464,27 @@ export class FileCustodian implements KeyCustodian {
    */
   private isDestroyed(keyId: string): boolean {
     return this.readTombstone(keyId) !== null;
+  }
+
+  /**
+   * The directory this walk is reading is the directory this custodian proved when it was built.
+   *
+   * A LISTING IS A CLAIM ABOUT A NAME. Everything under it is opened without following a link, and none of
+   * that says the name still refers to the directory whose contents this custodian is entitled to act on.
+   * Comparing the identity turns "it was not a link when I looked" into "it is the same directory I proved".
+   */
+  private assertDirectoryUnmoved(dir: string, expected: StateDirectoryIdentity, what: string): void {
+    let now: StateDirectoryIdentity;
+    try {
+      now = stateDirectoryIdentity(dir);
+    } catch (err) {
+      throw new Error(`the custodian ${what} directory could not be re-established (${
+        err instanceof CustodianStateError ? err.message : 'it could not be opened'}).`);
+    }
+    if (now.dev !== expected.dev || now.ino !== expected.ino) {
+      throw new Error(`the custodian ${what} directory was replaced after this custodian was built. Refused: `
+        + 'what was listed from it is not what this custodian proved it would be reading.');
+    }
   }
 
   private writeKeyRecord(keyId: string, record: KeyFile): void {
@@ -404,7 +548,13 @@ export class FileCustodian implements KeyCustodian {
   // running. When there IS a journal entry, finishing it rewrites a key file and writes a tombstone — that is
   // a write, and it takes the lock like every other one.
   private recover(): void {
-    const journals = readdirSync(this.journalDir).filter((f) => f.endsWith('.json'));
+    // THE JOURNAL IS A CLOSED, BOUNDED SET OF NAMES, NOT A FILTER. `readdirSync(...).filter(endsWith('.json'))`
+    // silently ignored everything else — a `.tmp` from an interrupted write, a directory, a device — so a
+    // journal directory nobody could state was recovered from anyway. And the walk is bracketed by the
+    // directory's identity, so a `journal` swapped for another directory mid-recovery is a refusal rather
+    // than a destruction carried out against whatever appeared.
+    this.assertDirectoryUnmoved(this.journalDir, this.journalIdentity, 'destroy journal');
+    const journals = listRecordFiles(this.journalDir, 'the destroy journal', 'destroy journal entry');
     if (journals.length === 0) return;
     this.withWriteLock(() => {
       for (const f of journals) {
@@ -422,6 +572,12 @@ export class FileCustodian implements KeyCustodian {
         // this build cannot read is a state for a human to look at, not one to guess at.
         const entry = readCustodianRecord(path.join(this.journalDir, f), JOURNAL_SCHEMA);
         if (entry === null) continue;
+        // AND THE ENTRY IS FILED UNDER THE KEY IT NAMES. This is the readdressing case with the sharpest
+        // consequence in the whole class: recovery ACTS on the id inside the record, so an entry copied onto
+        // another key's journal name would have destroyed the key named inside it — a key nothing asked to
+        // destroy, on the strength of a filename somebody chose. Checked BEFORE `finishDestroy` touches
+        // anything, so a transplanted entry destroys neither key.
+        assertRecordAddress(custodianRecordName(entry.keyId), f, 'destroy journal entry');
         this.finishDestroy(entry);
       }
     });
@@ -542,10 +698,16 @@ export class FileCustodian implements KeyCustodian {
     // refusal here for the same reason it is one in the rewrap: a keystore holding one is a keystore whose
     // contents nobody can enumerate, and a sweep that silently skipped it would report a shorter list as if
     // it were the whole one.
+    this.assertDirectoryUnmoved(this.keysDir, this.keysIdentity, 'keystore');
     for (const entry of listKeystoreFiles(this.keysDir)) {
-      const kf = readCustodianRecord(path.join(this.keysDir, entry), KEY_RECORD_SCHEMA);
-      if (kf && kf.state === 'provisional') out.push({ operationId: kf.operationId, itemId: kf.itemId, keyId: kf.keyId, ageMs: now - kf.createdAt });
+      // BOUND TO ITS OWN NAME, like every other read. A key file copied onto another key's name would
+      // otherwise be reported as a stale provisional key that does not exist, and the sweep that acts on
+      // this list destroys what it is told about.
+      const kf = readKeystoreFile(path.join(this.keysDir, entry), 'the stale-provisioning sweep', entry);
+      if (kf.state === 'provisional') out.push({ operationId: kf.operationId, itemId: kf.itemId, keyId: kf.keyId, ageMs: now - kf.createdAt });
     }
+    // AND THE DIRECTORY IS STILL THE ONE THE LIST CAME FROM.
+    this.assertDirectoryUnmoved(this.keysDir, this.keysIdentity, 'keystore');
     return out;
   }
 
@@ -590,7 +752,7 @@ export class FileCustodian implements KeyCustodian {
     for (const f of listKeystoreFiles(keysDir, 'KEK rewrap')) {
       total++;
       const p = path.join(keysDir, f);
-      const kf = readKeystoreFile(p, 'KEK rewrap');
+      const kf = readKeystoreFile(p, 'KEK rewrap', f);
       // already on the new KEK? (idempotent / resumable) — GCM auth makes this decisive.
       try { unwrapDek(opts.toKek, kf.wrappedHex, kf.keyId).fill(0); skipped++; continue; } catch { /* not yet rewrapped */ }
       let dek: Buffer;
@@ -631,7 +793,7 @@ export class FileCustodian implements KeyCustodian {
     const identity = keystoreIdentity(keysDir, 'KEK rewrap preflight');
     for (const f of listKeystoreFiles(keysDir, 'KEK rewrap preflight')) {
       total++;
-      const kf = readKeystoreFile(path.join(keysDir, f), 'KEK rewrap preflight');
+      const kf = readKeystoreFile(path.join(keysDir, f), 'KEK rewrap preflight', f);
       try { unwrapDek(opts.toKek, kf.wrappedHex, kf.keyId).fill(0); alreadyCurrent++; continue; } catch { /* not yet rewrapped */ }
       let dek: Buffer;
       try {

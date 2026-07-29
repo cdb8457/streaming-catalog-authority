@@ -1463,7 +1463,18 @@ export function assertStaticKekOpensKeystore(stateDir: string, staticKek: Buffer
   let plan;
   try {
     plan = FileCustodian.planRewrapKeystore(stateDir, { fromKek: staticKek, toKek: staticKek });
-  } catch {
+  } catch (err) {
+    // A KEYSTORE THIS BUILD WILL NOT WALK IS NOT A WRONG KEY, AND SAYING SO WOULD SEND AN OPERATOR TO THE
+    // WRONG PLACE. The preflight refuses several things that have nothing to do with which key was named — a
+    // `keys` directory that is a link, an entry nobody can account for, a key file filed under another key's
+    // name — and this used to report every one of them as "the static KEK you named does not open ...". An
+    // operator would have gone looking for a key file while their keystore held something they needed to see.
+    const message = err instanceof Error ? err.message : '';
+    if (!message.includes('does not unwrap under')) {
+      throw new MaintenanceRefused(`${message === '' ? 'this keystore could not be read' : message}. Nothing `
+        + 'was changed. That is a problem with the keystore rather than with the key you named: this command '
+        + 'will not adopt a key against a set of wrapped keys it cannot state.');
+    }
     throw new MaintenanceRefused(
       'the static KEK you named does not open the wrapped keys already in this keystore. Adopting it would '
       + 'produce a ring that opens NOTHING — and an item nothing can open is indistinguishable from a '

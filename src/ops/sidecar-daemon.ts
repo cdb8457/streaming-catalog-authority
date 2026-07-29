@@ -138,8 +138,9 @@ export async function startSidecarDaemon(config: SidecarDaemonConfig): Promise<S
     socketPath: config.socketPath,
     custodian,
     // THE HEALTH ANSWER IS EARNED. It exercises the custodian — a real listing over the real state directory —
-    // rather than reporting that a server object exists. A daemon whose keystore has become unreadable
-    // answers `ready: false`, and the app's startup gate refuses to come up in front of it.
+    // rather than reporting that a server object exists. A daemon whose keystore has become unreadable throws
+    // out of this probe, which the runtime turns into the closed `SIDECAR_NOT_READY` refusal, and the app's
+    // startup gate refuses to come up in front of it.
     health: async (): Promise<SidecarHealth> => {
       await custodian.listStaleProvisioning();
       return {

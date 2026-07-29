@@ -128,7 +128,7 @@ boundary, no network path in these modules, and nothing here touches a media ser
 
 ## Phase 288 — the gates
 
-`test/custodian-storage-ipc-gates.ts`, 20 tests. Each adversarial one was **run against the previous code and
+`test/custodian-storage-ipc-gates.ts`, 32 tests. Each adversarial one was **run against the previous code and
 watched to fail**: reverting `file-custodian.ts` alone fails 8 of them; restoring `String(doc.op)` and the
 permissive response parse fails 2 more. The rest are the positive half that the strictness must not break —
 a journaled destroy still completes on restart and is still idempotent across two of them, a legacy versionless
@@ -139,13 +139,86 @@ Three of the six hostile-peer replies were already handled by the per-operation 
 make; the other three — an empty success, a success carrying an error code, and a valid answer followed by a
 second message — were not, and are what this phase closes.
 
+## Corrections after review, and what each one closes
+
+The first cut of this tranche was reviewed against the source rather than against the suite, and six things
+came back. Every one of them was a gap the suite could not see, which is the point: a test that passes proves
+what it exercises, not what it left out.
+
+**A valid record at another valid record's address was accepted.** Every schema checked that a record was well
+FORMED; none checked that it was the record ASKED FOR, because the id built the path and was then discarded.
+A file copied from one valid name to another — the one operation anybody who can write the directory
+certainly has — passed everything, and each caller then believed the id INSIDE it. That is a `get` returning
+a working DEK for a key nobody asked about, a fresh `provision` replaying somebody else's operation, a live
+key reported destroyed, and worst of all a journal entry making recovery destroy the key named inside it. Now
+the address and the contents must agree: every read by id checks the record's own id, every walk checks the
+filename against `sha256(id)`, and recovery checks the journal entry before `finishDestroy` touches anything.
+
+**The parent-directory escape was closed only in the static rewrap.** `mkdirSync(d, {recursive: true})`
+establishes nothing about a name that already exists, so `<root>/keys` as a symbolic link was a keystore this
+class read and wrote every key through with the no-follow rules on the FILES intact and useless. The five
+directories are now proved at construction — opened without following a link, proved to be directories on the
+descriptor, identities remembered — and the walks that list them re-check the identity so a directory swapped
+underneath one is a refusal. The destroy journal is a closed, bounded set of names like the keystore: an entry
+nobody can account for stops recovery instead of being filtered out of it.
+
+Ownership and mode: a directory belonging to another user, or one that is group- or world-**writable**, is
+refused — an account that can write into `keys/` decides which wrapped keys this custodian believes it has.
+Group- or world-**readable** (`0755`, which is what `mkdir` under the default umask produces) is deliberately
+**not** refused: every installation made before this build has exactly that, the material in those directories
+is wrapped under a key that is not in them, and refusing would turn an upgrade into an outage. Nothing is
+re-moded — a create gets `0700`, an existing directory is judged and left alone, and `ops:keystore-repair`
+remains what narrows one deliberately.
+
+**Fragmented multi-frame answers were accepted.** The client resolved as soon as it saw a newline and refused
+a second frame only when that frame happened to arrive in the SAME chunk — so a peer that wrote frame one,
+waited, and wrote frame two had its first frame accepted and acted on. The check was against an accident of
+buffering. Nothing is acted on now until the peer has finished and the whole answer is known to be exactly one
+newline-terminated frame; the shipped daemon writes one line and ends, so this costs nothing real. A frame
+legitimately split across chunks still arrives.
+
+**A health answer the client rejects travelled as a success.** `ok: true` was written around any health object
+whose `ready` was false and around a malformed one that did not claim readiness — but `validateSidecarHealth`,
+the schema the CLIENT applies, refuses those alike. A reader could not tell "the custodian is not ready" from
+"this peer is not this product". Not-ready is now the closed `SIDECAR_NOT_READY` refusal, which is what a
+client that fails closed on readiness needs to hear.
+
+**Two fields were held to "some text" where this build writes one exact form.** `destroyedAt` is attestation
+input — the receipt is an HMAC over the key id, the receipt id and it — so a tombstone could say
+`destroyedAt: "soon"` and be signed. It is now the canonical instant format, round-tripped through `Date` so
+`2026-02-30T00:00:00.000Z` is refused rather than merely matching a regex, in stored records and in wire
+receipts. `ageMs` is a safe, non-negative integer rather than any finite number.
+
+**A raced read returned a prefix.** `readStateFileBytes` took the size once, read exactly that many bytes, and
+then compared the bytes read against the size from before — trivially satisfied, and silent about a writer
+appending to the same inode during the read. A prefix that closes its own brace parses. The file is now
+re-interrogated on the descriptor after the last byte: growth and shrink are both refusals.
+
+One further correction fell out of the first: `assertStaticKekOpensKeystore` reported EVERY preflight failure
+as "the static KEK you named does not open the wrapped keys", including structural refusals that have nothing
+to do with which key was named. An operator would have gone looking for a key file while their keystore held
+something they needed to see. It now distinguishes the two.
+
 ## Verification status
 
 `npm run typecheck` clean. The focused suites (`custodian-contract` 64, `custodian-acceptance` 19,
 `local-sidecar-custodian` 18, `sidecar-daemon` 5, `sidecar-runtime-prototype` 5, `kek-rewrap` 12,
 `keystore-repair` 40, `kek-ring` 13, `kek-rotation` 12, `kek-correction-gates` 38, `o4-o5-runtime-acceptance`
-11, and the new `custodian-storage-ipc-gates` 20) and the aggregate `offline` group — **283 of 283 suites** —
-were run and passed on this branch.
+11, `sidecar-ipc-hardening` 17, and the new `custodian-storage-ipc-gates` 32) and the aggregate `offline`
+group — **283 of 283 suites** — were run and passed on this branch.
+
+The corrections' own gates were held to the same bar as the tranche's: **run against the committed code and
+watched to fail**. Reverting the four hardened source files to that commit fails ten of them, covering every
+one of the six corrections; the record-level timestamp rule was verified separately by neutralising it alone.
+
+**One flake found and fixed in this suite, and one left as an observation.** These gates placed their POSIX
+sockets directly in `/tmp`, which `prepareSocketDirectory` refuses on every Linux host because `/tmp` is
+`1777` — it passed on Windows, which has no parent directory to own, and would have failed on the deployment
+platform. They now use a private `0700` directory, and the one case here that expects a SUCCESS rather than a
+refusal no longer runs on a short timeout. Separately, `external-snapshot-produce.ts` failed once in four
+aggregate runs and passes standalone three times on this branch and three times on a clean tree; it shares no
+code with this tranche and spawns CLI subprocesses, so it is recorded here as an unrelated flake under
+parallel load rather than as something this work touched.
 
 The `db` group was run as well — **32 of 32 suites** against an embedded Postgres — because several of its
 suites read wrapped key files directly and one drives journal recovery through a real restart, which is

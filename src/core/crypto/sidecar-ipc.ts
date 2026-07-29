@@ -1,5 +1,6 @@
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
+import { isCanonicalIsoTimestamp } from './custodian-records.js';
 import type {
   LocalSidecarCustodianRequest,
   LocalSidecarCustodianResponse,
@@ -318,7 +319,10 @@ export function parseSidecarResponse(op: string, value: unknown): SidecarRespons
       const fields = receipt as Record<string, unknown>;
       if (!exactly(fields, ['keyId', 'receiptId', 'destroyedAt', 'attestation'])) return null;
       if (!isIdentifier(fields.keyId) || !isIdentifier(fields.receiptId)) return null;
-      if (!isWireText(fields.destroyedAt) || !isAttestation(fields.attestation)) return null;
+      // THE TIMESTAMP IS ATTESTATION INPUT, NOT PROSE. The receipt is an HMAC over the key id, the receipt id
+      // and this field, joined by newlines — so "any text with no control character in it" let a peer answer
+      // with `destroyedAt: "recently"` and sign it. One instant format, round-tripped through `Date`.
+      if (!isCanonicalIsoTimestamp(fields.destroyedAt) || !isAttestation(fields.attestation)) return null;
       return doc as unknown as SidecarResponse;
     }
     case 'status':
@@ -339,7 +343,10 @@ export function parseSidecarResponse(op: string, value: unknown): SidecarRespons
         // Narrowing those here would make an answer about a legitimately-named item into a refusal, which is
         // a different bug from the one this check exists to prevent.
         if (!isIdentifier(fields.keyId) || !isWireText(fields.operationId) || !isWireText(fields.itemId)) return null;
-        if (typeof fields.ageMs !== 'number' || !Number.isFinite(fields.ageMs) || fields.ageMs < 0) return null;
+        // A DURATION IN WHOLE MILLISECONDS, INSIDE EXACT ARITHMETIC. `isFinite` admitted `1.5` and
+        // `1e21` — a float age is a peer inventing precision this custodian does not measure, and a number
+        // past `MAX_SAFE_INTEGER` is one whose comparisons stop meaning anything.
+        if (typeof fields.ageMs !== 'number' || !Number.isSafeInteger(fields.ageMs) || fields.ageMs < 0) return null;
       }
       return doc as unknown as SidecarResponse;
     }
