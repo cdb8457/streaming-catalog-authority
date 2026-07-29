@@ -911,6 +911,18 @@ test('the acceptance exports produce exactly the records the gates count', () =>
   assertEq(jellyfin.references, 3, 'and three references in total');
 });
 
+test('both Docker acceptances read the preview mode as JSON, not as one whitespace spelling', () => {
+  for (const rel of [
+    'deploy/ci/catalog-acceptance.sh',
+    'deploy/ci/jellyfin-control-acceptance.sh',
+  ]) {
+    const script = readRepo(rel);
+    assert(script.includes('JSON.parse(s).mode'), `${rel} parses the report's mode field`);
+    assert(!script.includes(`grep -q '"mode":"preview"'`),
+      `${rel} does not reject the CLI's deliberately pretty-printed JSON`);
+  }
+});
+
 rmSync(WORK, { recursive: true, force: true });
 
 console.log(`\n${passed} passed, ${failed} failed`);

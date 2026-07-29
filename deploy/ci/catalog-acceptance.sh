@@ -545,7 +545,8 @@ image_digest="$( printf '%s' "${image_produce}" | node -e "let s='';process.stdi
 image_digest="$(hex64_or_die "${image_digest}" "the in-image content digest")"
 [ "${image_digest}" = "${HOST_CONTENT_DIGEST}" ] \
   || fail "the shipped image produced a different snapshot (${image_digest:0:16}) from the host (${HOST_CONTENT_DIGEST:0:16})"
-printf '%s' "${image_produce}" | grep -q '"mode":"preview"' || fail "the in-image production was not a preview"
+image_mode="$( printf '%s' "${image_produce}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).mode))}catch(e){process.stdout.write('UNREADABLE')}})" )"
+[ "${image_mode}" = "preview" ] || fail "the in-image production was not a preview"
 info "the shipped image produced byte-identical output from the same export"
 
 # An export from a download tool naturally knows things this product must never hold. The probe fixture is a

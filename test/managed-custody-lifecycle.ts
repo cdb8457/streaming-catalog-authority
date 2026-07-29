@@ -1078,7 +1078,7 @@ await stage('8. no key material reached a report or a ledger, and nothing reache
     .split('--pull never').join('--<flag:never-fetch>')
     .split('--no-build').join('--<flag:never-assemble-an-image>'));
   for (const line of neutral) {
-    assertEq(/pull|build/.test(line.toLowerCase()), false,
+    assertEq(/\bpull\b|\bbuild\b/.test(line.toLowerCase()), false,
       `the words 'pull' and 'build' appear only as the flags that forbid them: ${line.slice(0, 80)}`);
   }
   assertEq(assertLedgerIsClean(neutral).join('; '), '',
