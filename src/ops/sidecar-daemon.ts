@@ -120,6 +120,10 @@ export async function startSidecarDaemon(config: SidecarDaemonConfig): Promise<S
   const ring = onRing ? loadKekRing(config.stateDir, readRootWrappingKey(config.rootKeyFile!)) : null;
   const kek = ring === null ? readKek(config.kekFile!) : activeKek(ring);
   const ringGeneration = ring === null ? null : ring.active;
+  // The active generation's age, as a number the app may know. Nothing else about the ring crosses.
+  const ringActiveCreatedAt = ring === null
+    ? null
+    : (ring.generations.find((entry) => entry.generation === ring.active)?.createdAt ?? null);
   // EVERY RETAINED GENERATION, FOR UNWRAPPING ONLY. A rotation rewraps the key files before it moves the
   // ring's active pointer, so a daemon that restarted in that window and held only the active KEK would fail
   // to open anything. New wraps still use the active generation alone.
@@ -144,6 +148,7 @@ export async function startSidecarDaemon(config: SidecarDaemonConfig): Promise<S
         ready: true,
         custodian: onRing ? 'sidecar-managed-ring' : 'file-reference-harness',
         ringGeneration,
+        ringActiveCreatedAt,
       };
     },
   });

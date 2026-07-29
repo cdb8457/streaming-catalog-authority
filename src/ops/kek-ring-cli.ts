@@ -1,5 +1,12 @@
 import { createHash } from 'node:crypto';
-import { CommandLedger, MaintenanceRefused, resolveMaintenanceRoot } from './maintenance-safety.js';
+import { join } from 'node:path';
+import { FileCustodian } from '../core/crypto/file-custodian.js';
+import {
+  CommandLedger,
+  MaintenanceRefused,
+  acquireLockDirectory,
+  resolveMaintenanceRoot,
+} from './maintenance-safety.js';
 import {
   MaintenanceUsageError,
   parseMaintenanceFlags,
@@ -12,7 +19,6 @@ import {
   kekRingExists,
   loadKekRing,
   readRootWrappingKey,
-  rotateRootWrappingKey,
   summarizeKekRing,
 } from '../core/crypto/kek-ring.js';
 import { readKeyFileNoFollow } from './kek-ring-secret-io.js';
@@ -20,10 +26,14 @@ import {
   classifyKekRotationAge,
   countKeystoreEntries,
   kekRotationPlanDigest,
+  ROTATION_LOCK_DIRNAME,
+  planKekRetirement,
   planKekRotation,
+  planRootKeyRotation,
   readRotationJournal,
   retireKekGeneration,
   runKekRotation,
+  runRootKeyRotation,
 } from './kek-rotation.js';
 import { verifyBackupSet } from './backup-set-verification.js';
 import { isDirectRun } from './direct-run.js';
@@ -124,7 +134,7 @@ export function parseKekRingArgs(argv: readonly string[]): ParsedKekRingArgs {
   if (generationRaw !== undefined && !/^[0-9]{1,9}$/.test(generationRaw)) {
     throw new MaintenanceUsageError('--generation must be a whole generation number');
   }
-  if ((verb === 'migrate' || verb === 'rotate') && !plan && confirm === null) {
+  if ((verb === 'migrate' || verb === 'rotate' || verb === 'retire') && !plan && confirm === null) {
     throw new MaintenanceUsageError('--confirm-digest is required (or use --plan, which changes nothing)');
   }
   if (verb === 'migrate' && parsed.values['static-file'] === undefined) {
@@ -220,13 +230,41 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
           throw new MaintenanceRefused('the digest you confirmed is not this migration\'s. Nothing was changed.');
         }
         if (args.backupSet === null) throw new MaintenanceRefused('--backup-set is required for a migration');
-        const verification = verifyBackupSet(resolveMaintenanceRoot(args.backupSet, 'backup set directory'));
+        const backupSet = resolveMaintenanceRoot(args.backupSet, 'backup set directory');
+        const verification = verifyBackupSet(backupSet);
         if (!verification.ok) {
           throw new MaintenanceRefused(
             'the complete backup you named does not verify. A migration writes a new ring beside a keystore '
             + 'that cannot be regenerated; without a set that verifies NOW there is nothing to go back to.');
         }
-        const ring = adoptStaticKekAsRing(stateDir, root, staticKek);
+        // ---- THE PROOF THAT MAKES THE ADOPTION MEAN ANYTHING -------------------------------------------
+        //
+        // ADOPTING THE WRONG STATIC KEK PRODUCES A PERFECTLY WELL-FORMED RING THAT OPENS NOTHING. The
+        // migration would report success, the sidecar would start, and every item in the catalog would read
+        // as unreadable — which is indistinguishable from a correct erasure, so nothing would say why. So the
+        // key is proved against the LIVE keystore before a ring is written: every wrapped key must open under
+        // it. A keystore with no keys yet is fine and is said so; a keystore with keys none of which open is
+        // the wrong key and is refused.
+        assertStaticKekOpensKeystore(stateDir, staticKek);
+        // RE-RESOLVED AND RE-VERIFIED UNDER THE LOCK, because everything above happened before it.
+        const migrationLock = acquireLockDirectory(join(stateDir, ROTATION_LOCK_DIRNAME),
+          'another key operation is already running against this sidecar state');
+        let ring;
+        try {
+          if (kekRingExists(stateDir)) {
+            throw new MaintenanceRefused('a KEK ring appeared while this migration was starting; nothing was changed');
+          }
+          const afterLock = verifyBackupSet(backupSet);
+          if (!afterLock.ok || afterLock.setDigest !== verification.setDigest) {
+            throw new MaintenanceRefused(
+              'the complete backup changed between verifying it and taking the lock — a set at that path '
+              + 'verifies and it is a different set. Nothing was changed.');
+          }
+          assertStaticKekOpensKeystore(stateDir, staticKek);
+          ring = adoptStaticKekAsRing(stateDir, root, staticKek);
+        } finally {
+          migrationLock.release();
+        }
         console.log(render('The static KEK is now generation 1 of a sidecar-managed ring.', summarizeKekRing(ring, root), args.json));
         console.log('Nothing was re-wrapped and no key material changed. Run `rotate` to move this installation');
         console.log('onto a key this sidecar generated, then unmount the static KEK file from the stack.');
@@ -255,14 +293,44 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
       }
       case 'rotate': {
         if (args.rootRotate) {
-          const next = readRootWrappingKey(args.newRootFile!);
-          const moved = rotateRootWrappingKey(stateDir, root, next);
-          console.log('The ring is now sealed under the new root wrapping key.');
-          console.log(`  from root ${moved.from}`);
-          console.log(`  to root   ${moved.to}`);
-          console.log('No key file was touched and nothing was re-wrapped: what changed is which 32 bytes open');
-          console.log('the ring. Remove the previous root key file deliberately once you have verified a backup.');
-          return KEK_RING_EXIT_OK;
+          // THE DEFECT THIS CLOSES. `--root-rotate --plan` used to call the re-seal directly: the flag whose
+          // entire purpose is "tell me what would happen" had already done it, and the only warning was that
+          // the output described the change in the past tense. Planning now touches nothing.
+          if (args.backupSet === null) {
+            throw new MaintenanceRefused('--backup-set is required: after a re-seal the OLD root opens nothing');
+          }
+          const rootRequest = {
+            stateDir: args.stateDir,
+            rootKeyFile: args.rootFile,
+            newRootKeyFile: args.newRootFile!,
+            backupSet: args.backupSet,
+          };
+          const planned = planRootKeyRotation(rootRequest);
+          if (args.plan) {
+            console.log('This would RE-SEAL the KEK ring under a new root wrapping key. It rewrites no key');
+            console.log('file and re-wraps nothing: every wrapped key stays under exactly the generation it is');
+            console.log('under now. What changes is which 32 bytes open the ring.');
+            console.log('');
+            console.log(`  from root         ${planned.fromRootKeyId}`);
+            console.log(`  to root           ${planned.toRootKeyId}`);
+            console.log(`  active generation ${planned.activeGeneration} (unchanged by this operation)`);
+            console.log('');
+            console.log('NOTHING HAS BEEN CHANGED BY PRINTING THIS. After it runs, the previous root key opens');
+            console.log('nothing — keep it until you have taken a complete backup under the new one.');
+            console.log('');
+            console.log(`plan digest: ${planned.planDigest}`);
+            return KEK_RING_EXIT_OK;
+          }
+          const report = runRootKeyRotation({ ...rootRequest, confirmDigest: args.confirmDigest });
+          console.log(args.json ? JSON.stringify(report, null, 2) : [
+            'The ring is now sealed under the new root wrapping key.',
+            `  from root          ${report.fromRootKeyId}`,
+            `  to root            ${report.toRootKeyId}`,
+            `  active generation  ${report.activeGeneration}`,
+            `  ring unchanged     ${report.ringUnchanged}`,
+            ...report.notes.map((note) => `  note: ${note}`),
+          ].join('\n'));
+          return report.ok ? KEK_RING_EXIT_OK : KEK_RING_EXIT_FAILED;
         }
         if (args.backupSet === null || args.projectRoot === null || args.projectName === null) {
           throw new MaintenanceRefused('--backup-set, --project and --project-name are required for a rotation');
@@ -304,13 +372,38 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
       }
       case 'retire': {
         if (args.backupSet === null) throw new MaintenanceRefused('--backup-set is required to retire a generation');
-        const outcome = retireKekGeneration({
+        const retirement = {
           stateDir: args.stateDir,
           rootKeyFile: args.rootFile,
           backupSet: args.backupSet,
           generation: args.generation!,
-        });
-        console.log(render(`Generation ${args.generation} was retired.`, outcome.ring, args.json));
+        };
+        // PLANNED AND CONFIRMED LIKE EVERY OTHER IRREVERSIBLE OPERATION HERE. Retirement is the one that
+        // cannot be undone by re-running anything: the moment it lands, every backup taken while that
+        // generation was active stops being restorable by this installation.
+        const planned = planKekRetirement(retirement);
+        if (args.plan) {
+          console.log(`This would REMOVE generation ${planned.generation} from the ring, permanently.`);
+          console.log('');
+          console.log(`  active generation  ${planned.activeGeneration} (unaffected)`);
+          console.log(`  root wrapping key  ${planned.rootKeyId} (reference label, not the key)`);
+          console.log('');
+          console.log('The backup you named has been proved to be one taken AFTER the rotation: its own root');
+          console.log('key opens its own ring, that ring is on the generation this installation is on, and');
+          console.log('every wrapped key inside it opens under that generation. NOTHING HAS BEEN CHANGED BY');
+          console.log('PRINTING THIS.');
+          console.log('');
+          console.log('After it runs, any backup taken while that generation was active can no longer be');
+          console.log('restored by this installation. That is what retirement means.');
+          console.log('');
+          console.log(`plan digest: ${planned.planDigest}`);
+          return KEK_RING_EXIT_OK;
+        }
+        if (args.confirmDigest === null) {
+          throw new MaintenanceUsageError('--confirm-digest is required to retire (or use --plan, which changes nothing)');
+        }
+        const outcome = retireKekGeneration({ ...retirement, confirmDigest: args.confirmDigest });
+        console.log(render(`Generation ${outcome.retired} was retired.`, outcome.ring, args.json));
         for (const note of outcome.notes) console.log(`note: ${note}`);
         return KEK_RING_EXIT_OK;
       }
@@ -318,6 +411,29 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
   } catch (err) {
     console.error(reportRefusal(err));
     return KEK_RING_EXIT_REFUSED;
+  }
+}
+
+/**
+ * Every live wrapped key must open under the static KEK being adopted, or the adoption is refused.
+ *
+ * A keystore with NO keys is a legitimate state (a fresh installation that has not stored anything), and it is
+ * distinguished from "keys that do not open" rather than folded into it — the first is nothing to prove, the
+ * second is the wrong key.
+ */
+function assertStaticKekOpensKeystore(stateDir: string, staticKek: Buffer): void {
+  let plan;
+  try {
+    plan = FileCustodian.planRewrapKeystore(stateDir, { fromKek: staticKek, toKek: staticKek });
+  } catch {
+    throw new MaintenanceRefused(
+      'the static KEK you named does not open the wrapped keys already in this keystore. Adopting it would '
+      + 'produce a ring that opens NOTHING — and an item nothing can open is indistinguishable from a '
+      + 'correctly erased one, so an installation would look empty rather than broken. Nothing was changed.');
+  }
+  if (plan.total > 0 && plan.alreadyCurrent !== plan.total) {
+    throw new MaintenanceRefused(
+      'some wrapped keys in this keystore do not open under the static KEK you named. Nothing was changed.');
   }
 }
 

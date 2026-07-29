@@ -62,6 +62,7 @@ random_secret() {
 # to the postgres user, so it needs no world-read bit and keeps the tighter 0600.
 SECRET_MODE_APP=644     # owner rw, world r — read by the non-root `node` user inside the app container
 SECRET_MODE_ROOT=600    # owner rw only — read by root inside the postgres container, never by a non-root app
+SECRET_MODE_CUSTODY=600 # owner rw only — every KEK in the installation is reachable from the root key
 
 write_secret_if_absent() {
   local name="$1" value="$2" mode="${3:-${SECRET_MODE_APP}}"
@@ -115,7 +116,7 @@ write_secret_if_absent custodian_kek "$(random_secret)" "${SECRET_MODE_APP}"
 # PHASE 282. The ROOT WRAPPING KEY for the sidecar-managed KEK ring. Generated here so a new install
 # has one from the start; an existing install adopts its static KEK with `ops:kek-ring migrate`. It is read
 # only by the custodian sidecar, only from this file, and never from an environment variable or a command line.
-write_secret_if_absent custodian_root_key "$(random_secret)" "${SECRET_MODE_APP}"
+write_secret_if_absent custodian_root_key "$(random_secret)" "${SECRET_MODE_CUSTODY}"
 write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"
 
 mkdir -p "${RECORDS_DIR}"

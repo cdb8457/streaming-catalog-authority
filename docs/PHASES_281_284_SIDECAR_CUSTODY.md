@@ -193,6 +193,48 @@ in the acceptance suite.
 | `npm run test:phase283-local` | `test/kek-rotation.ts` — nothing without the digest or a backup that verifies; a full rotation over a real keystore with the outgoing generation retained; **a crash at every one of the five stages, built from the real operations, proved to leave an installation a restarted sidecar can still read, and proved to resume to completion**; a foreign journal and an orphan pending refused; a key that does not read under the new generation stopping the rotation **before the ring moves**; idempotence; retirement refused against a pre-rotation backup and allowed against a post-rotation one; the doctor's due/overdue words; and no key, path or runtime message in a report. |
 | `npm run test:phase284-local` | `test/o4-o5-runtime-acceptance.ts` — the app's only surface asserted against the wire types and the custodian factory; a daemon refusing to be wired to both key sources or neither; a ring daemon serving, restarting and naming its generation in health; a wrong root failing closed at start; a migrated installation opening pre-migration keys; the shipped stack's health gate and `service_healthy` dependencies; the root secret declared beside the static KEK; the required-secret model; no raw key on any evidence surface or in the state directory; no key material acceptable on a command line; and the O4-closed / O5-not-live-proven wording held to exactly. |
 
+## Review corrections
+
+A review of the first commit found seven defects, each fixed with a regression that fails against the code
+being corrected:
+
+* **A plan mutated.** `rotate --root-rotate --plan` called the re-seal directly — the flag whose purpose is
+  "tell me what would happen" had already done it, and the only warning was the past tense in its output. Root
+  rotation is now a real plan/confirm operation: the digest binds the current ring generation, both root
+  labels and the verified set's own digest; execution re-resolves under the lock and proves the new root opens
+  the **exact** ring before reporting success. **Retirement** — the one irreversible operation here — gained
+  the same gate, plus a lock and a re-resolution.
+* **The migration never checked the key it adopted.** Adopting the wrong static KEK produces a perfectly
+  well-formed ring that opens **nothing**, and an item nothing can open is indistinguishable from a correctly
+  erased one — so the installation would have looked empty rather than broken. Every live wrapped key must now
+  open under the supplied key before a ring is written, re-proved under the lock, with the backup's own digest
+  re-verified there too.
+* **A failed sidecar stop left the app stopped.** The quiesce loop sat outside the block whose `finally`
+  restarts, so stopping `app` and failing to stop `sidecar` reported a refusal about the sidecar and left the
+  installation down. The quiesce is now inside it, and a failure whose restart also fails raises
+  `KekRotationFailed` carrying the primary refusal **and** the still-stopped services.
+* **The rotation bound a path, not a set.** The plan digest now binds `verification.setDigest`, and the lock
+  is followed by a re-resolution and a re-verification of the same digest before anything is stopped.
+* **A journal was trusted.** `verified` skipped the check that makes activation safe. Every resumed stage is
+  now reconciled against the ring and the keystore and resumes from the earliest stage the evidence supports;
+  the journal schema is closed and bounded.
+* **Retirement skipped its whole proof** when the set had no keystore — the one set that cannot restore a
+  custodian at all. It now requires the artifact, proves the backed-up root opens the backed-up ring, proves
+  every backed-up key opens under that ring's active generation, and proves that generation is the one this
+  installation is on.
+* **The shipped transition could not run.** Setup wrote `custodian_root_key` `0644` while the reader refuses
+  any group or other bit, and Compose's short syntax mounts a secret `0444` root-owned. The host mode is now
+  owner-only and the sidecar mounts it in long syntax as `0400` owned by the non-root user the image runs as —
+  the fix is the mount, **not** a weakened reader, which still requires owner-only.
+
+Two smaller ones: the doctor's rotation-age check was dead code (nothing supplied the timestamp), so the
+sidecar's health handshake now carries the active generation's creation time — a number, never a key — and
+`ops:doctor` consumes it without any path to the ring; and the doctor's claim that managed KEK custody was
+"not built" was simply false and has been replaced with the accurate one. Health answers are validated field
+by field with no extras and no contradictions, the ring's outer and inner schemas are closed and bounded,
+`writeStateDocument` loops on short writes, and the writer lock is now **taken** by the function that writes
+the ring rather than being a helper nobody called.
+
 ## Verification status
 
 `npm run typecheck`, the four new suites, the affected existing suites and the aggregate `offline` and `db`

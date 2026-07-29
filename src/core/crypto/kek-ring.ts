@@ -3,6 +3,7 @@ import { constants as fsConstants, closeSync, fstatSync, openSync, readSync } fr
 import { join } from 'node:path';
 import {
   CustodianStateError,
+  acquireStateLock,
   createStateDirectory,
   readStateDocument,
   writeStateDocument,
@@ -248,6 +249,19 @@ function unseal(root: Buffer, sealed: SealedRing): KekRing {
   // a layout it cannot reason about, and the AAD binds the version it DOES know — so an envelope claiming a
   // future one would otherwise decrypt (the AAD is computed from this build's constant) and be read under
   // rules that were never written for it.
+  const envelopeKeys = ['document', 'version', 'rootKeyId', 'nonceHex', 'ciphertextHex', 'tagHex'];
+  const envelope = sealed as unknown as Record<string, unknown>;
+  for (const key of Object.keys(envelope)) {
+    if (!envelopeKeys.includes(key)) throw new KekRingError('the KEK ring envelope carries a field this build does not know');
+  }
+  // SIZES, NOT MERELY TYPES. A 12-byte nonce and a 16-byte tag are what AES-GCM was given; anything else is a
+  // document written by something that is not this build, and reading it would be guessing.
+  if (!/^[0-9a-f]{24}$/.test(String(envelope.nonceHex)) || !/^[0-9a-f]{32}$/.test(String(envelope.tagHex))
+    || !/^[0-9a-f]{2,}$/.test(String(envelope.ciphertextHex))
+    || String(envelope.ciphertextHex).length % 2 !== 0
+    || !/^[0-9a-f]{32}$/.test(String(envelope.rootKeyId))) {
+    throw new KekRingError('the KEK ring envelope is not the shape this build writes');
+  }
   if (sealed.document !== KEK_RING_DOCUMENT || sealed.version !== KEK_RING_VERSION) {
     throw new KekRingError(
       'the KEK ring envelope was written by a version of this product that this build does not understand, or '
@@ -304,9 +318,24 @@ function assertRing(parsed: unknown): KekRing {
   if (!Array.isArray(doc.generations) || doc.generations.length === 0) {
     throw new KekRingError('the KEK ring holds no generations');
   }
+  for (const key of Object.keys(doc as Record<string, unknown>)) {
+    if (!['document', 'version', 'generations', 'active', 'pending', 'createdAt', 'updatedAt'].includes(key)) {
+      throw new KekRingError('the KEK ring carries a field this build does not know');
+    }
+  }
+  if (doc.generations.length > 64) throw new KekRingError('the KEK ring holds more generations than this build will read');
   const seen = new Set<number>();
+  let actives = 0;
+  let pendings = 0;
   for (const entry of doc.generations) {
     if (entry === null || typeof entry !== 'object') throw new KekRingError('the KEK ring holds a malformed generation');
+    for (const key of Object.keys(entry as unknown as Record<string, unknown>)) {
+      if (!['generation', 'state', 'keyHex', 'createdAt', 'origin'].includes(key)) {
+        throw new KekRingError('a generation in the KEK ring carries a field this build does not know');
+      }
+    }
+    if (entry.state === 'active') actives += 1;
+    if (entry.state === 'pending') pendings += 1;
     if (!Number.isInteger(entry.generation) || entry.generation < 1) {
       throw new KekRingError('the KEK ring holds a generation that is not a generation number');
     }
@@ -321,8 +350,16 @@ function assertRing(parsed: unknown): KekRing {
     if (entry.origin !== 'generated-in-sidecar' && entry.origin !== 'adopted-from-static-kek') {
       throw new KekRingError('the KEK ring holds a generation with no recorded origin');
     }
-    if (!Number.isInteger(entry.createdAt)) throw new KekRingError('the KEK ring holds a generation with no timestamp');
+    // POSITIVE AND ORDERED. A zero is not a timestamp — the rotation-age check would read one as the epoch
+    // and call an installation five decades overdue — and a generation cannot predate the ring it is in.
+    if (!Number.isInteger(entry.createdAt) || entry.createdAt < 1) {
+      throw new KekRingError('the KEK ring holds a generation with no usable timestamp');
+    }
   }
+  // EXACTLY ONE ACTIVE, AT MOST ONE PENDING. Two actives is two answers to "what wraps the next DEK"; two
+  // pendings is a rotation that started twice.
+  if (actives !== 1) throw new KekRingError('the KEK ring does not hold exactly one active generation');
+  if (pendings > 1) throw new KekRingError('the KEK ring holds more than one pending generation');
   if (!Number.isInteger(doc.active) || !seen.has(doc.active!)) {
     throw new KekRingError(
       'the KEK ring does not name an active generation that is in it. That is an INCOMPLETE ring — a rotation '
@@ -344,14 +381,23 @@ function assertRing(parsed: unknown): KekRing {
     generations: doc.generations.map((entry) => ({ ...entry })),
     active: doc.active!,
     pending: doc.pending ?? null,
-    createdAt: Number.isInteger(doc.createdAt) ? doc.createdAt! : 0,
-    updatedAt: Number.isInteger(doc.updatedAt) ? doc.updatedAt! : 0,
+    // NO DEFAULT TO ZERO. A ring whose own timestamps are missing is a ring this build did not write, and
+    // silently substituting the epoch would put a made-up number where a fact belongs.
+    createdAt: assertTimestamp(doc.createdAt, 'created'),
+    updatedAt: assertTimestamp(doc.updatedAt, 'updated'),
   };
 }
 
 // -----------------------------------------------------------------------------------------------------------
 // Reading and writing the ring
 // -----------------------------------------------------------------------------------------------------------
+
+function assertTimestamp(value: unknown, what: string): number {
+  if (!Number.isInteger(value) || (value as number) < 1) {
+    throw new KekRingError(`the KEK ring records no usable ${what} time`);
+  }
+  return value as number;
+}
 
 export function kekRingPath(stateDir: string): string {
   return join(stateDir, KEK_RING_DIRNAME, KEK_RING_FILENAME);
@@ -385,9 +431,23 @@ export function loadKekRing(stateDir: string, root: Buffer): KekRing {
   return unseal(root, sealed);
 }
 
+/**
+ * Write the ring, under the writer lock.
+ *
+ * THE LOCK IS TAKEN HERE RATHER THAN CLAIMED ELSEWHERE. `acquireStateLock` existed and nothing called it, so
+ * "single-writer" was a property of a helper nobody used. Every mutation of the ring goes through this
+ * function, so taking it here is what makes the claim true — two processes adding a pending generation at
+ * once now have one of them refused instead of one of them silently discarded.
+ */
 function storeRing(stateDir: string, root: Buffer, ring: KekRing): void {
-  createStateDirectory(join(stateDir, KEK_RING_DIRNAME));
-  writeStateDocument(kekRingPath(stateDir), seal(root, ring));
+  const ringDir = join(stateDir, KEK_RING_DIRNAME);
+  createStateDirectory(ringDir);
+  const lock = acquireStateLock(ringDir, '.kek-ring-writer.lock');
+  try {
+    writeStateDocument(kekRingPath(stateDir), seal(root, ring));
+  } finally {
+    lock.release();
+  }
 }
 
 /**

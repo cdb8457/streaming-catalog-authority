@@ -1,6 +1,7 @@
 import { Client } from 'pg';
 import { loadDbConfig, resolveAppEnv } from '../config/env.js';
 import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
+import { probeSidecarHealth } from '../core/crypto/local-sidecar-runtime.js';
 import { getPool, closePool } from '../db/pool.js';
 import { runDoctor, formatDoctorReport, formatDoctorJson } from './doctor.js';
 
@@ -33,6 +34,15 @@ async function main(): Promise<number> {
       custodianMode: custodianConfig.mode,
       appEnv: resolveAppEnv(),
       keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,
+      // PHASE 283/284. THE ROTATION-AGE CHECK WAS DEAD CODE UNTIL THIS LINE. `runDoctor` has always been able
+      // to report whether a KEK rotation is due, and nothing ever supplied the timestamp — so the check never
+      // ran on any real deployment. It comes from the sidecar's own health handshake, which is the only
+      // process that can open the ring: the app asks over the socket it already has and receives a NUMBER.
+      // `undefined` on a deployment with no sidecar, or one whose sidecar does not answer, which leaves the
+      // check silent rather than guessing an age.
+      ringActiveCreatedAt: custodianConfig.mode === 'sidecar'
+        ? (await probeSidecarHealth(custodianConfig.socketPath))?.ringActiveCreatedAt ?? undefined
+        : undefined,
     });
     console.log(asJson ? formatDoctorJson(report) : formatDoctorReport(report));
     return report.ok ? 0 : 1;

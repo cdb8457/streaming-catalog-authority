@@ -22,6 +22,7 @@ import {
   ROTATION_STAGES,
   classifyKekRotationAge,
   countKeystoreEntries,
+  planKekRetirement,
   planKekRotation,
   readRotationJournal,
   retireKekGeneration,
@@ -111,6 +112,11 @@ async function makeWorld(name: string, keyCount = 4): Promise<World> {
   const rootFile = join(project, 'root_wrapping_key');
   writeFileSync(rootFile, `${root.toString('hex')}\n`, { encoding: 'utf8', mode: 0o600 });
   if (POSIX) chmodSync(rootFile, 0o600);
+  // THE ROOT KEY IS IN THE SECRETS DIRECTORY, so the backup taken below actually contains it. A set holding a
+  // ring and not the root that opens it is a sealed box with no key, and the retirement proof is exactly the
+  // check that used to pass over that — so a world whose backup lacked it could not have exercised it.
+  writeFileSync(join(project, 'secrets', 'custodian_root_key'), `${root.toString('hex')}\n`,
+    { encoding: 'utf8', mode: 0o600 });
   adoptStaticKekAsRing(stateDir, root, staticKek, () => 1_000);
 
   const request: CompleteBackupRequest = {
@@ -400,9 +406,9 @@ await test('retirement is refused against a PRE-rotation backup and allowed agai
   runKekRotation({ ...request(world), confirmDigest: resolved.planDigest }, runnerFor(world));
 
   // The set in `world` was taken BEFORE the rotation: its keystore copy is under generation 1.
-  refuses(() => retireKekGeneration({
+  refuses(() => planKekRetirement({
     stateDir: world.stateDir, rootKeyFile: world.rootFile, backupSet: world.backupSet, generation: 1,
-  }), 'taken BEFORE this rotation', 'retiring against a pre-rotation backup');
+  }), 'taken while a DIFFERENT generation was active', 'retiring against a pre-rotation backup');
   assertEq(loadKekRing(world.stateDir, world.root).generations.length, 2, 'and the generation is still there');
 
   // A backup taken NOW holds keys under the active generation.
@@ -412,10 +418,19 @@ await test('retirement is refused against a PRE-rotation backup and allowed agai
     sidecarState: 'sidecar-state', secrets: 'secrets', promotionRecords: 'promotion-records',
   }, { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   assert(after.ok, 'the post-rotation backup verifies');
-  const outcome = retireKekGeneration({
+  const retirement = {
     stateDir: world.stateDir, rootKeyFile: world.rootFile,
     backupSet: join(world.project, 'backups', 'set-2'), generation: 1,
-  });
+  };
+  const retirementPlan = planKekRetirement(retirement);
+  // PLANNING CHANGES NOTHING, which for the one irreversible operation here is the property that matters.
+  assertEq(loadKekRing(world.stateDir, world.root).generations.length, 2, 'planning removed nothing');
+  refuses(() => retireKekGeneration({ ...retirement, confirmDigest: null }), 'digest you confirmed',
+    'retiring with no confirmation');
+  refuses(() => retireKekGeneration({ ...retirement, confirmDigest: 'f'.repeat(64) }), 'digest you confirmed',
+    'retiring with a wrong confirmation');
+  assertEq(loadKekRing(world.stateDir, world.root).generations.length, 2, 'and neither removed anything');
+  const outcome = retireKekGeneration({ ...retirement, confirmDigest: retirementPlan.planDigest });
   assertEq(outcome.ok, true, 'retirement against a post-rotation backup is allowed');
   assertEq(loadKekRing(world.stateDir, world.root).generations.length, 1, 'and the generation is gone');
 });

@@ -106,6 +106,14 @@ export interface SidecarHealth {
   readonly custodian: 'file-reference-harness' | 'sidecar-managed-ring';
   /** Which KEK generation is active, or `null` where the deployment has no ring. A number, never a key. */
   readonly ringGeneration: number | null;
+  /**
+   * When that generation was created, so a scheduled doctor can say whether a rotation is due.
+   *
+   * A TIMESTAMP IS THE ONLY THING THAT CROSSES. The doctor runs inside the APP, which by design cannot read
+   * the root wrapping key or open the ring — so the one process that CAN reads it and answers with a number.
+   * `null` on a deployment with no ring, which is an honest answer and not a zero.
+   */
+  readonly ringActiveCreatedAt: number | null;
 }
 
 export type SidecarRequest = LocalSidecarCustodianRequest | { readonly op: 'health' };

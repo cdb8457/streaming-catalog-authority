@@ -252,13 +252,42 @@ export async function probeSidecarHealth(
   try {
     assertLocalSocketPath(socketPath);
     const answer = await dispatchOnce(socketPath, { op: 'health' }, timeoutMs);
-    if (answer === null || typeof answer !== 'object') return null;
-    const health = answer as SidecarHealth;
-    if (health.op !== 'health' || health.protocol !== SIDECAR_PROTOCOL_VERSION || health.ready !== true) return null;
-    return health;
+    // STRICTLY, FIELD BY FIELD, WITH NO EXTRAS. This value decides whether the app starts, so a peer that is
+    // not this product's sidecar — or a version of it this build does not understand — must fail closed rather
+    // than have its answer read as far as the fields that happen to match.
+    return validateSidecarHealth(answer);
   } catch {
     return null;
   }
+}
+
+/**
+ * A health answer this build will act on, or `null`.
+ *
+ * EVERY FIELD, AND NO FIELD THIS BUILD DOES NOT DECLARE. `ringGeneration` and `ringActiveCreatedAt` are
+ * either both absent (a deployment with no ring) or both present and positive; a zero timestamp is refused
+ * rather than read as "the epoch", which the age check would call overdue by five decades.
+ */
+export function validateSidecarHealth(answer: unknown): SidecarHealth | null {
+  if (answer === null || typeof answer !== 'object' || Array.isArray(answer)) return null;
+  const doc = answer as Record<string, unknown>;
+  const declared = ['op', 'protocol', 'ready', 'custodian', 'ringGeneration', 'ringActiveCreatedAt'];
+  for (const key of Object.keys(doc)) if (!declared.includes(key)) return null;
+  for (const key of declared) if (!(key in doc)) return null;
+  if (doc.op !== 'health' || doc.protocol !== SIDECAR_PROTOCOL_VERSION || doc.ready !== true) return null;
+  if (doc.custodian !== 'file-reference-harness' && doc.custodian !== 'sidecar-managed-ring') return null;
+  const generation = doc.ringGeneration;
+  const createdAt = doc.ringActiveCreatedAt;
+  const hasRing = generation !== null;
+  if (hasRing) {
+    if (!Number.isInteger(generation) || (generation as number) < 1) return null;
+    if (!Number.isInteger(createdAt) || (createdAt as number) < 1) return null;
+  } else if (createdAt !== null) {
+    // A deployment with no ring has no active generation to date. A timestamp beside a null generation is a
+    // contradiction, and a contradiction is not something to pick the agreeable half of.
+    return null;
+  }
+  return doc as unknown as SidecarHealth;
 }
 
 /** Is something SERVING on this socket right now? Used only to refuse taking a live daemon's name. */
@@ -300,6 +329,7 @@ async function handleLine(options: LocalSidecarRuntimeOptions, line: string, soc
         ready: false,
         custodian: 'file-reference-harness',
         ringGeneration: null,
+        ringActiveCreatedAt: null,
       };
       const health = options.health === undefined ? unproved : await options.health();
       writeResponse(socket, { ok: true, response: health });

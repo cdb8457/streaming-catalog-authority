@@ -80,6 +80,7 @@ random_secret() {
 # the mount. postgres_password is read as root inside its container and keeps the tighter mode.
 SECRET_MODE_APP=644
 SECRET_MODE_ROOT=600
+SECRET_MODE_CUSTODY=600 # owner rw only — every KEK in the installation is reachable from the root key
 
 write_secret_if_absent() {
   name="$1"; value="$2"; mode="${3:-${SECRET_MODE_APP}}"
@@ -118,7 +119,7 @@ write_secret_if_absent custodian_kek "$(random_secret)" "${SECRET_MODE_APP}"
 # PHASE 282. The ROOT WRAPPING KEY for the sidecar-managed KEK ring. Generated here so a new install
 # has one from the start; an existing install adopts its static KEK with `ops:kek-ring migrate`. It is read
 # only by the custodian sidecar, only from this file, and never from an environment variable or a command line.
-write_secret_if_absent custodian_root_key "$(random_secret)" "${SECRET_MODE_APP}"
+write_secret_if_absent custodian_root_key "$(random_secret)" "${SECRET_MODE_CUSTODY}"
 write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"
 
 echo "  ready     promotion-records/ (mounted read-only into the container)"

@@ -186,10 +186,13 @@ test('an INCOMPLETE ring is a refusal, not a default', () => {
   const cases: Array<[string, (ring: Record<string, unknown>) => Record<string, unknown>, string]> = [
     ['no active generation', (r) => ({ ...r, active: 9 }), 'does not name an active generation'],
     ['no generations at all', (r) => ({ ...r, generations: [] }), 'holds no generations'],
+    // With the closed schema this is caught one rule earlier and more precisely: a ring in which nothing is
+    // active does not hold exactly one active generation, which is the structural fact rather than a
+    // consequence of it.
     ['an active that is not active', (r) => ({
       ...r,
       generations: (r.generations as Array<Record<string, unknown>>).map((g) => ({ ...g, state: 'retired' })),
-    }), 'names an active generation that is not active'],
+    }), 'does not hold exactly one active generation'],
     ['two generations with one number', (r) => ({
       ...r,
       generations: [...(r.generations as unknown[]), (r.generations as unknown[])[0]],

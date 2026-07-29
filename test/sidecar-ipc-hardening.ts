@@ -317,7 +317,14 @@ await test('health is a HANDSHAKE: a socket that merely exists does not pass it'
     health: async (): Promise<SidecarHealth> => {
       exercised += 1;
       await custodian.listStaleProvisioning();
-      return { op: 'health', protocol: SIDECAR_PROTOCOL_VERSION, ready: true, custodian: 'file-reference-harness', ringGeneration: null };
+      return {
+        op: 'health',
+        protocol: SIDECAR_PROTOCOL_VERSION,
+        ready: true,
+        custodian: 'file-reference-harness',
+        ringGeneration: null,
+        ringActiveCreatedAt: null,
+      };
     },
   });
   let health: SidecarHealth | null;

@@ -172,7 +172,17 @@ export function writeStateDocument(path: string, doc: unknown): void {
     throw new CustodianStateError('a custodian state file could not be created');
   }
   try {
-    writeSync(fd, Buffer.from(body, 'utf8'));
+    // A SHORT WRITE IS NOT AN ERROR, IT IS A RETURN VALUE. `writeSync` may write fewer bytes than it was
+    // given — on a pipe, a full filesystem, or a signal — and the previous version ignored what it returned.
+    // A state file truncated that way would then fail its own digest on the next read, which is safe but is
+    // the wrong failure: the write is what should complete.
+    const bytes = Buffer.from(body, 'utf8');
+    let written = 0;
+    while (written < bytes.byteLength) {
+      const chunk = writeSync(fd, bytes, written, bytes.byteLength - written, written);
+      if (chunk <= 0) throw new CustodianStateError('a custodian state file could not be written in full');
+      written += chunk;
+    }
     fsyncSync(fd);
   } catch {
     try { closeSync(fd); } catch { /* the refusal below is the outcome */ }
