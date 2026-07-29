@@ -158,12 +158,14 @@ test('unraid runtime compose ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬�
     unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token'),
     'runtime ops can manage the operator token file without exposing a UI write path',
   );
+  // PHASE 289. `custodian_kek` MOVED TO THE BOOTSTRAP OVERLAY and is asserted there instead: the steady
+  // state has no path to the static key at all, which is what stops an upgrade reverting a migrated
+  // installation to static custody. Every other secret is still declared here.
   for (const secret of [
     'postgres_password',
     'admin_database_url',
     'database_url',
     'completion_secret',
-    'custodian_kek',
     'operator_ui_token',
   ]) assert(
     unraidRuntimeCompose.includes(`file: \${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/${secret}`),
@@ -9612,7 +9614,9 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
     'SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock',
     'SIDECAR_STATE_DIR: /var/lib/catalog-sidecar/state',
     'SIDECAR_COMPLETION_SECRET_FILE: /run/secrets/completion_secret',
-    'SIDECAR_KEK_FILE: /run/secrets/custodian_kek',
+    // PHASE 289. The steady state wires the ROOT key; the static KEK is wired by the bootstrap overlay,
+    // which is asserted immediately after this block.
+    'SIDECAR_ROOT_KEY_FILE: /run/catalog-custody/custodian_root_key',
     'NPM_CONFIG_CACHE: /tmp/npm-cache',
     'command: ["ops:sidecar-daemon", "--", "--serve"]',
     // Phase 284: a health HANDSHAKE, not a test that the socket file exists (which passes for a crashed

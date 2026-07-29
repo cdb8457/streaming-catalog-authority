@@ -239,18 +239,33 @@ await test('the shipped stack gates the app on sidecar HEALTH, not on a socket f
   }
 });
 
-await test('the stack declares the root custody secret beside the static KEK, not instead of it', () => {
-  // AN INSTALLATION THAT HAS NOT MIGRATED STILL NEEDS ITS STATIC KEK. A stack that swapped one for the other
-  // on upgrade would leave every existing deployment with a sidecar that cannot open its own keystore — the
-  // exact failure that looks like an empty catalog and reports nothing.
+await test('the steady-state stack is root-only, and the static KEK lives only in the bootstrap overlay', () => {
+  // PHASE 289 MOVED THIS, AND THE PROPERTY IT PROTECTS IS UNCHANGED. An installation that has not migrated
+  // still needs its static KEK — a stack that simply dropped it would leave every existing deployment with a
+  // sidecar that cannot open its own keystore, which is the failure that looks like an empty catalog and
+  // reports nothing. What changed is WHERE that key lives: it used to be declared in the steady-state file
+  // for every installation forever, with a comment telling the operator to hand-edit three lines after
+  // migrating. It is now in a temporary overlay an operator SELECTS, so the steady state has no path to it
+  // at all and an upgrade cannot revert a migrated installation to static custody.
   const text = readRepo('docker-compose.unraid.runtime.yml');
   const doc = parseYaml(text);
   const secrets = asMap(doc.secrets ?? null, 'secrets');
-  assert('custodian_kek' in secrets, 'the static KEK secret is still declared');
-  assert('custodian_root_key' in secrets, 'and the root custody secret is declared beside it');
+  assert(!('custodian_kek' in secrets), 'the steady state declares no static KEK secret');
+  assert('custodian_root_key' in secrets, 'and the root custody secret is declared');
   const sidecar = asMap(asMap(doc.services ?? null, 'services').sidecar ?? null, 'sidecar');
   const wired = JSON.stringify(sidecar.secrets);
-  assert(wired.includes('custodian_kek'), 'the sidecar is still given the static KEK until a migration');
+  assert(!wired.includes('custodian_kek'), 'and the sidecar is given no static KEK in the steady state');
+
+  // THE OVERLAY IS WHERE AN UNMIGRATED INSTALLATION GETS IT, and it takes the root wiring away in the same
+  // breath, because the daemon refuses to start wired to both sources or to neither.
+  const overlay = parseYaml(readRepo('docker-compose.unraid.bootstrap.yml'));
+  assert('custodian_kek' in asMap(overlay.secrets ?? null, 'overlay secrets'),
+    'the bootstrap overlay declares the static KEK');
+  const overlaySidecar = asMap(asMap(overlay.services ?? null, 'overlay services').sidecar ?? null, 'sidecar');
+  assert(JSON.stringify(overlaySidecar.secrets).includes('custodian_kek'), 'and gives it to the sidecar');
+  const overlayEnv = JSON.stringify(overlaySidecar.environment);
+  assert(overlayEnv.includes('SIDECAR_KEK_FILE'), 'wiring the static key');
+  assert(/"SIDECAR_ROOT_KEY_FILE":\s*""/.test(overlayEnv), 'and explicitly unsetting the root key wiring');
   // THE ROOT KEY IS NOT A COMPOSE SECRET. Outside Swarm a `file:` secret is a bind mount and uid/gid/mode
   // are ignored, so the only way to give the sidecar a file whose ownership it can rely on is to mount one.
   assert(!wired.includes('custodian_root_key'), 'the root key does NOT come through the secret mechanism');
@@ -268,7 +283,11 @@ await test('the required-secret model knows about the root custody key', () => {
   // requires and the model does not know is a secret a backup can omit while still verifying.
   assert(REQUIRED_SECRET_FILES.includes('custodian_root_key'),
     `the required secret list covers the root custody key: ${REQUIRED_SECRET_FILES.join(', ')}`);
-  const stack = readRepo('docker-compose.unraid.runtime.yml');
+  // THE SHIPPED STACK IS BOTH FILES NOW. The static KEK is required of an installation that has not migrated
+  // and is declared in the bootstrap overlay; everything else is in the steady-state file. A secret the stack
+  // requires and the model does not know is a secret a backup can omit while still verifying, and that is
+  // what this checks — not which of the two files happens to hold it.
+  const stack = readRepo('docker-compose.unraid.runtime.yml') + readRepo('docker-compose.unraid.bootstrap.yml');
   for (const file of REQUIRED_SECRET_FILES) {
     assert(stack.includes(file), `the shipped stack declares the required secret ${file}`);
   }

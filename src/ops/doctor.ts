@@ -3,6 +3,7 @@ import { existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import type { KeyCustodian } from '../core/crypto/custodian.js';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
 import { inspectKeystore } from './keystore-repair.js';
+import type { SidecarHealth } from '../core/crypto/sidecar-ipc.js';
 import {
   KEK_ROTATION_DUE_DAYS,
   KEK_ROTATION_OVERDUE_DAYS,
@@ -58,14 +59,37 @@ export interface DoctorDeps {
   appEnv: 'production' | 'development' | 'test' | string;
   keystoreDir?: string;
   /**
-   * When the active KEK generation was created, on an installation that has a ring.
+   * What one health handshake with the custodian sidecar said. Phase 292.
    *
-   * SUPPLIED, NEVER OPENED HERE. The doctor runs inside the APP, which by design cannot read the root
-   * wrapping key or the ring — so it takes a timestamp from whatever already had the ring open and reports on
-   * it. A doctor that opened a ring to check its age would be a doctor with a path to every key in the
-   * installation, which is the boundary this whole tranche exists to draw.
+   * SUPPLIED, NEVER PROBED HERE, AND PROBED EXACTLY ONCE BY THE CALLER. Two reasons, and both of them are
+   * about what a doctor is allowed to be:
+   *
+   *   * THE DOCTOR RUNS INSIDE THE APP, which by design cannot read the root wrapping key or open the ring.
+   *     It takes a STRUCTURED RESULT from the one process that can — the sidecar, over the socket the app
+   *     already has — and reports on it. A doctor that opened a ring to check its age would be a doctor with
+   *     a path to every key in the installation, which is the boundary this whole tranche exists to draw.
+   *   * ONE PROBE, ONE ANSWER. An earlier shape had the caller probe for a timestamp and left every other
+   *     custody fact unreported; adding a second probe here would mean two answers that can disagree, and a
+   *     report that disagrees with itself is worse than one that says less.
+   *
+   * `undefined` in sidecar mode is itself a FAILURE, not a reason to stay quiet: it means nobody established
+   * whether the custodian is there, and a custody report that silently omits custody is the exact shape of
+   * the defect this replaces.
    */
-  ringActiveCreatedAt?: number;
+  sidecarCustody?: SidecarCustodyProbe;
+}
+
+/**
+ * The result of ONE health handshake, as the doctor is given it.
+ *
+ * `health` is `null` when the sidecar did not answer something this build will act on — unreachable, not
+ * ready, or an answer that fails the strict schema. Those are one state for the app: there is no custodian
+ * it can trust. They are not distinguished here because the response to all three is the same and because
+ * distinguishing them would mean putting a peer's own text into a report.
+ */
+export interface SidecarCustodyProbe {
+  readonly attempted: true;
+  readonly health: SidecarHealth | null;
 }
 
 /** Run the read-only production self-check. Never throws for an expected failure. */
@@ -83,9 +107,21 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     add('production-gate-o4-external-custodian', 'warn',
       'O4 open: FileCustodian is a hardened reference harness, not external/managed production custodian evidence');
   }
-  if (deps.appEnv === 'production') {
+  // ---- THE O5 GATE, AS IT ACTUALLY STANDS ---------------------------------------------------------------
+  //
+  // WHAT THIS REPLACES, AND WHY IT WAS WORSE THAN NO CHECK. It said, unconditionally and in production:
+  // "O5 open: managed age KEK custody/scheduling is not built". That stopped being true when the
+  // sidecar-managed ring was built, migrated onto, rotated and retired from — so every deployment running
+  // the thing the warning said did not exist was told it did not exist, on every doctor run, forever. A
+  // monitoring check that is wrong in the safe direction still trains an operator to ignore it.
+  //
+  // In SIDECAR mode it is gone entirely: the custody checks below report what this installation is actually
+  // running, which is a fact rather than a gate status. Elsewhere it stays, saying the true thing — the
+  // mechanism exists and this deployment is not using it.
+  if (deps.appEnv === 'production' && deps.custodianMode !== 'sidecar') {
     add('production-gate-o5-managed-kek', 'warn',
-      'O5 open: managed age KEK custody/scheduling is not built; use ops:rewrap-kek -- --plan for redaction-safe preflight');
+      'O5 open for this deployment: sidecar-managed KEK custody is implemented but this stack does not run '
+      + 'the custodian sidecar, so its keys are held the way this mode holds them');
   }
 
   // DB reachability --------------------------------------------------------------
@@ -211,31 +247,98 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
     }
   }
 
-  // Phase 283 — the ring's age, where there is a ring ------------------------------
+  // ---- PHASE 292: WHAT THE CUSTODY SIDECAR ACTUALLY IS, AND HOW OLD ITS KEY IS ---------------------------
   //
-  // A ROTATION IS OVERDUE OR IT IS NOT, AND THAT IS A FACT ABOUT A TIMESTAMP. The check reports a closed word
-  // and the age in days, and it never opens the ring: `deps.ringActiveCreatedAt` is supplied by whatever
-  // already had the ring open (the sidecar's own status command), so the doctor — which the app runs — has no
-  // path to key material even in principle.
-  if (deps.ringActiveCreatedAt !== undefined) {
-    const age = classifyKekRotationAge(deps.ringActiveCreatedAt, Date.now());
-    const days = Math.floor((Date.now() - deps.ringActiveCreatedAt) / (24 * 60 * 60 * 1000));
-    if (age === 'overdue') {
-      add('kek-rotation-age', 'fail',
-        `the active key-encryption key is ${days} days old, past the ${KEK_ROTATION_OVERDUE_DAYS}-day limit. `
-        + 'Run ops:kek-ring rotate with a verified complete backup.');
-    } else if (age === 'due') {
-      add('kek-rotation-age', 'warn',
-        `the active key-encryption key is ${days} days old and a rotation is due at ${KEK_ROTATION_DUE_DAYS} days`);
-    } else if (age === 'unknown') {
-      add('kek-rotation-age', 'warn', 'the active key-encryption key carries no usable creation time');
-    } else {
-      add('kek-rotation-age', 'pass', `the active key-encryption key is ${days} days old`);
-    }
+  // These checks exist so custody is MONITORABLE rather than assumed. In sidecar mode the app's whole key
+  // path is one socket, and until this tranche the doctor said nothing about it beyond "a status probe
+  // responded" — which a sidecar answers while running on a static file, or with a ring it cannot date.
+  //
+  // THE KEK-AGE CHECK IS EMITTED IN EVERY SIDECAR OUTCOME. It used to appear only when a timestamp happened
+  // to be supplied, so the one check that says "your key-encryption key is too old" DISAPPEARED in exactly
+  // the states where something was wrong — no ring, no answer, contradictory metadata. A check that vanishes
+  // when the news is bad is worse than no check: an alert nobody receives reads as an alert nobody needed.
+  if (deps.custodianMode === 'sidecar') {
+    addSidecarCustodyChecks(add, deps.sidecarCustody);
   }
 
   const ok = checks.every((c) => c.state !== 'fail');
   return { ok, checks };
+}
+
+/**
+ * The custody checks, from ONE health handshake. Never opens a ring; never repeats a peer's text.
+ */
+function addSidecarCustodyChecks(
+  add: (name: string, state: CheckState, detail: string) => void,
+  probe: SidecarCustodyProbe | undefined,
+): void {
+  // NO PROBE IS A FAILURE, NOT A SILENCE. In sidecar mode the custodian is the whole key path; a report that
+  // omits it because nobody looked is a report that cannot be monitored.
+  if (probe === undefined) {
+    add('custody-sidecar-health', 'fail',
+      'no custodian health handshake was performed, so this report can say nothing about custody (fail-closed)');
+    add('kek-rotation-age', 'fail',
+      'the age of the active key-encryption key is unknown because no custodian health handshake was performed');
+    return;
+  }
+  if (probe.health === null) {
+    add('custody-sidecar-health', 'fail',
+      'the custodian sidecar did not answer a health handshake this build will act on: it is unreachable, not '
+      + 'ready, or answering something outside the protocol. The app has no custodian it can trust.');
+    add('kek-rotation-age', 'fail',
+      'the age of the active key-encryption key is unknown because the custodian sidecar did not answer');
+    return;
+  }
+  const health = probe.health;
+  add('custody-sidecar-health', 'pass',
+    `the custodian sidecar answered a health handshake on protocol ${health.protocol} (${health.custodian})`);
+
+  if (health.custodian === 'file-reference-harness') {
+    // A VALID ANSWER THAT NAMES THE STATE THIS TRANCHE EXISTS TO END. It is not a failure — the installation
+    // is working — and it is not a pass either, because the key protecting it is a static file nothing can
+    // rotate.
+    add('custody-ring-migration', 'warn',
+      'this installation is on STATIC bootstrap custody: the sidecar holds a key read from a file rather than '
+      + 'a ring it can rotate. Migration to the sidecar-managed ring is PENDING — plan it with '
+      + 'ops:custody-cutover -- --plan.');
+    add('kek-rotation-age', 'warn',
+      'the age of the key-encryption key is not tracked on static custody, because a static key has no '
+      + 'generation to date. It is tracked from the moment this installation migrates to the ring.');
+    return;
+  }
+
+  // ---- A RING, WHOSE METADATA MUST BE COHERENT ----------------------------------------------------------
+  //
+  // The strict schema already refuses a timestamp beside a null generation. What it cannot refuse is a
+  // sidecar that says it is running a ring and reports NO generation: that is internally consistent and
+  // still a contradiction, and the honest response is to fail rather than to report an age nobody has.
+  if (health.ringGeneration === null || health.ringActiveCreatedAt === null) {
+    add('custody-ring-metadata', 'fail',
+      'the custodian sidecar reports the managed ring as its custody mechanism and reports no active '
+      + 'generation to go with it. Those cannot both be true, and this build will not pick the agreeable half.');
+    add('kek-rotation-age', 'fail',
+      'the age of the active key-encryption key cannot be established: the ring metadata contradicts itself');
+    return;
+  }
+  add('custody-ring-metadata', 'pass',
+    `the custodian sidecar is running the managed ring, active generation ${health.ringGeneration}`);
+
+  const now = Date.now();
+  const age = classifyKekRotationAge(health.ringActiveCreatedAt, now);
+  const days = Math.floor((now - health.ringActiveCreatedAt) / (24 * 60 * 60 * 1000));
+  if (age === 'overdue') {
+    add('kek-rotation-age', 'fail',
+      `the active key-encryption key is ${days} days old, past the ${KEK_ROTATION_OVERDUE_DAYS}-day limit. `
+      + 'Run ops:kek-ring rotate with a verified complete backup.');
+  } else if (age === 'due') {
+    add('kek-rotation-age', 'warn',
+      `the active key-encryption key is ${days} days old and a rotation is due at ${KEK_ROTATION_DUE_DAYS} days`);
+  } else if (age === 'unknown') {
+    // A GENERATION DATED IN THE FUTURE, OR NOT DATED AT ALL. Reported, never rounded to "fine".
+    add('kek-rotation-age', 'warn', 'the active key-encryption key carries no usable creation time');
+  } else {
+    add('kek-rotation-age', 'pass', `the active key-encryption key is ${days} days old`);
+  }
 }
 
 /**

@@ -1241,7 +1241,12 @@ test('every required secret file has a declared consumer, and every one is the s
   const declared = Object.keys(REHEARSAL_SECRET_CONSUMERS).slice().sort().join(',');
   assertEq(declared, [...REQUIRED_SECRET_FILES].slice().sort().join(','),
     'the consumer map covers exactly the required secret files');
-  const shipped = readRepo('docker-compose.unraid.runtime.yml');
+  // PHASE 289. THE SHIPPED UNRAID STACK IS TWO SELECTABLE FILES. The steady state is root-only custody; the
+  // static KEK — which an installation that has not migrated still needs, and which a rehearsal must still
+  // restore — is declared and read in the temporary bootstrap overlay. Reading only the steady-state file
+  // here would assert that a secret half the fleet depends on has no consumer at all.
+  const shipped = readRepo('docker-compose.unraid.runtime.yml')
+    + readRepo('docker-compose.unraid.bootstrap.yml');
   for (const consumers of Object.values(REHEARSAL_SECRET_CONSUMERS)) {
     for (const consumer of consumers) {
       if (consumer.env !== null) {

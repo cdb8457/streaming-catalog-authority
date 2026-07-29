@@ -63,7 +63,7 @@ services:
       CUSTODIAN_SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
       NPM_CONFIG_CACHE: /tmp/npm-cache
     volumes:
-      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar:ro
     secrets:
       - admin_database_url
       - database_url
@@ -86,7 +86,7 @@ services:
       CUSTODIAN_SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
       OPERATOR_UI_TOKEN_FILE: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token
     volumes:
-      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar:ro
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:/backups
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token
@@ -104,9 +104,22 @@ services:
       SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock
       SIDECAR_STATE_DIR: /var/lib/catalog-sidecar/state
       SIDECAR_COMPLETION_SECRET_FILE: /run/secrets/completion_secret
-      SIDECAR_KEK_FILE: /run/secrets/custodian_kek
+      # PHASE 289. THE ROOT WRAPPING KEY, AND NOTHING ELSE. This file is the canonical STEADY STATE: the
+      # sidecar opens its KEK ring with the root key and has no path to a static KEK at all. An installation
+      # that has not migrated yet selects the BOOTSTRAP overlay, which puts the static key back for exactly as
+      # long as the migration takes. See docker-compose.unraid.bootstrap.yml and docs/PHASES_289_292.
+      #
+      # The daemon refuses to start wired to BOTH sources or NEITHER, so the two files are the only two valid
+      # wirings and neither of them is something an operator assembles by hand.
+      SIDECAR_ROOT_KEY_FILE: /run/catalog-custody/custodian_root_key
       NPM_CONFIG_CACHE: /tmp/npm-cache
     volumes:
+      # ---- THE ONLY SERVICE THAT WRITES THIS DIRECTORY ------------------------------------------------
+      #
+      # PHASE 289. The sidecar CREATES the socket, so its mount is read-write; every client below mounts the
+      # same directory `:ro`. A client needs to CONNECT to a socket, which is a read operation on the
+      # directory entry — it does not need to create, remove or rename anything in there, and a client that
+      # can rename the socket is a client that can put its own socket at that name and be asked for keys.
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/state:/var/lib/catalog-sidecar/state
       # ---- THE ROOT WRAPPING KEY, AND WHY IT IS A BIND AND NOT A COMPOSE SECRET ------------------------
@@ -127,13 +140,13 @@ services:
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_root_key:/run/catalog-custody/custodian_root_key:ro
     secrets:
       - completion_secret
-      # PHASE 282. BOTH, DELIBERATELY, AND ONLY UNTIL A MIGRATION HAS HAPPENED. An installation that has not
-      # yet run `ops:kek-ring migrate` has every wrapped key under the STATIC KEK, so removing it here would
-      # leave its sidecar unable to open its own keystore. The root custody key is declared beside it so the
-      # migration is possible at all. AFTER migrating, set SIDECAR_ROOT_KEY_FILE, remove SIDECAR_KEK_FILE and
-      # unmount custodian_kek: the daemon refuses to start wired to both, so the cutover cannot be half done.
-      - custodian_kek
-      # THE ROOT KEY IS NOT HERE, AND THAT IS THE POINT. See the bind mount in `volumes:` above.
+      # THE STATIC KEK IS NOT HERE, AND THAT IS THE POINT OF THIS FILE. It exists only in the bootstrap
+      # overlay, only while an installation is being migrated, and only on the sidecar and the one-shot
+      # custody-maintenance service that performs the migration.
+      #
+      # THE ROOT KEY IS NOT A SECRET ENTRY EITHER. See the bind mount in `volumes:` above: outside Swarm a
+      # `file:` secret IS a bind mount, and writing it as one is what makes the host file's own ownership and
+      # mode — which is the whole guarantee — visible to the reader.
     entrypoint: ["npm", "run"]
     command: ["ops:sidecar-daemon", "--", "--serve"]
     healthcheck:
@@ -147,6 +160,59 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 128
+    mem_limit: 256m
+
+  # ---- THE ONE-SHOT CUSTODY MAINTENANCE SERVICE ------------------------------------------------------
+  #
+  # PHASE 289. The narrowly scoped surface that may touch the ring. It exists so that creating a ring on a
+  # fresh installation, and adopting a static key on an existing one, are ORDINARY DOCUMENTED COMMANDS rather
+  # than a hand-assembled `docker run` with the right mounts — which is what the previous version of this
+  # stack left an operator to work out for themselves.
+  #
+  # IT IS NEVER STARTED BY `up`. The profile is what makes that true: `up` selects no profile, and `run`
+  # starts a profiled service by name. It has no `depends_on`, publishes no port, and is removed on exit.
+  #
+  # WHY NOT THE `ops` CONTAINER. `ops` is the general maintenance surface — database URLs, operator token,
+  # backups — and it deliberately has NO path to key material. Giving it the root key so it could perform one
+  # migration would hand every hand-run maintenance command a path to the ring for the life of the
+  # installation. This service has the key material and nothing else: no database, no token, no socket.
+  custody-maintenance:
+    image: ${CATALOG_AUTHORITY_OPS_IMAGE:-repo-ops:latest}
+    restart: "no"
+    profiles:
+      - custody-maintenance
+    environment:
+      APP_ENV: production
+      NPM_CONFIG_CACHE: /tmp/npm-cache
+    volumes:
+      # THE SIDECAR STATE, READ-WRITE: the ring is written into it, and that is the whole operation.
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/state:/var/lib/catalog-sidecar/state
+      # THE ROOT WRAPPING KEY, READ-ONLY, as a bind for the same reason the sidecar's is one.
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_root_key:/run/catalog-custody/custodian_root_key:ro
+      # THE BACKUP SETS A MIGRATION OR A RETIREMENT IS GATED ON, READ-ONLY. Proved before anything is written,
+      # and never written to from here.
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:/backups:ro
+      # THE STATIC KEK IS NOT HERE. It exists only in the bootstrap overlay, only while an installation is
+      # being migrated off it.
+    entrypoint: ["npm", "run"]
+    # The default is the READ-ONLY status verb, so a `run` with no arguments reports rather than changes.
+    command: ["ops:kek-ring", "--", "status", "--state", "/var/lib/catalog-sidecar/state", "--root-file", "/run/catalog-custody/custodian_root_key"]
+    # ---- NO NETWORK AT ALL ---------------------------------------------------------------------------
+    #
+    # `none` is the strongest thing Compose can say here: this container gets a loopback interface and no
+    # route to anything — not the other services, not the LAN, not a registry. The commands it runs are
+    # offline by construction, and this makes that a property of the container rather than a property of the
+    # code inside it. It is the one service in this stack that holds BOTH the root key and (under the
+    # bootstrap overlay) the static key, so it is the one that most deserves to be unable to speak.
+    network_mode: none
     read_only: true
     tmpfs:
       - /tmp
@@ -183,7 +249,7 @@ services:
       # started outside this file's ordering.
       OPERATOR_UI_HEALTHZ_REQUIRES_SCHEMA: "1"
     volumes:
-      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar:ro
     secrets:
       - admin_database_url
       - database_url
@@ -216,8 +282,6 @@ secrets:
     file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/database_url
   completion_secret:
     file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/completion_secret
-  custodian_kek:
-    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_kek
   # PHASE 282. The ROOT WRAPPING KEY. It seals the KEK ring and is read ONLY by the sidecar, only from this
   # file, and never from an environment variable, a command line or any evidence surface. Keep it the way you
   # keep the KEK: it is the one value from which every key in the installation can be reached.

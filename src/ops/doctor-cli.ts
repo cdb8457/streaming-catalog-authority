@@ -34,14 +34,18 @@ async function main(): Promise<number> {
       custodianMode: custodianConfig.mode,
       appEnv: resolveAppEnv(),
       keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,
-      // PHASE 283/284. THE ROTATION-AGE CHECK WAS DEAD CODE UNTIL THIS LINE. `runDoctor` has always been able
-      // to report whether a KEK rotation is due, and nothing ever supplied the timestamp — so the check never
-      // ran on any real deployment. It comes from the sidecar's own health handshake, which is the only
-      // process that can open the ring: the app asks over the socket it already has and receives a NUMBER.
-      // `undefined` on a deployment with no sidecar, or one whose sidecar does not answer, which leaves the
-      // check silent rather than guessing an age.
-      ringActiveCreatedAt: custodianConfig.mode === 'sidecar'
-        ? (await probeSidecarHealth(custodianConfig.socketPath))?.ringActiveCreatedAt ?? undefined
+      // PHASE 292. ONE HANDSHAKE, AND THE WHOLE OF IT GOES IN.
+      //
+      // This used to take a single NUMBER out of the health answer — the active generation's creation time —
+      // and throw the rest away, which is why the doctor could say a rotation was due and could not say
+      // whether the custodian was running a ring at all. The structured result is passed instead, so every
+      // custody check in the report comes from the same answer and none of them can disagree with another.
+      //
+      // `probeSidecarHealth` already validates against the strict schema and answers `null` for unreachable,
+      // not-ready and malformed alike. In sidecar mode the probe is ALWAYS attempted: a missing probe is a
+      // FAIL in the report rather than a check that quietly does not appear.
+      sidecarCustody: custodianConfig.mode === 'sidecar'
+        ? { attempted: true, health: await probeSidecarHealth(custodianConfig.socketPath) }
         : undefined,
     });
     console.log(asJson ? formatDoctorJson(report) : formatDoctorReport(report));
