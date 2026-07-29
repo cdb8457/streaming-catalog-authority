@@ -486,6 +486,9 @@ export function rehearsalWorld(options: RehearsalWorldOptions): RehearsalWorld {
       return { status: 0, stdout: '', stderr: '' };
     }
     if (command.args.includes('psql')) {
+      // The rehearsal prepares the one product-managed ACL target before replaying a pg_dump. It is
+      // credential-free and changes no database contents, so model it separately from the following -f.
+      if (command.args.includes('-c')) return { status: 0, stdout: 'DO\n', stderr: '' };
       const workspace = join(command.cwd, 'catalog-rehearsal-restore');
       if (!existsSync(workspace)) return { status: 1, stdout: '', stderr: 'nothing to restore from\n' };
       const dump = join(workspace, 'catalog-backup.sql');

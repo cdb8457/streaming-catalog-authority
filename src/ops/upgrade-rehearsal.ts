@@ -6,6 +6,7 @@ import {
   BACKUP_COMPONENT_IDS, REQUIRED_SECRET_FILES, type BackupComponentId,
 } from './backup-components.js';
 import { verifyBackupSet, type BackupVerificationReport } from './backup-set-verification.js';
+import { RUNTIME_ROLE_NAME } from './bootstrap.js';
 import { CATALOG_IMPORT_CONTAINER_DIR, CATALOG_IMPORT_DIR_ENV } from './catalog-import.js';
 import { COMPONENT_ARTIFACT_NAMES, copyTree, readBackupManifest } from './complete-backup.js';
 import { classifyDoctor, parseDoctorJson } from './doctor-monitor.js';
@@ -737,6 +738,18 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
   const restore = (role: RehearsalImageRole, purpose: string): MaintenanceCommand => compose(role,
     ['exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'catalog', '-v', 'ON_ERROR_STOP=1',
       '-f', `${REHEARSAL_RESTORE_MOUNT}/${COMPONENT_ARTIFACT_NAMES.database}`], purpose);
+  const prepareRuntimeRole = (role: RehearsalImageRole, purpose: string): MaintenanceCommand => {
+    // pg_dump preserves GRANT targets but does not dump cluster-wide roles. The managed runtime role is a
+    // product constant, not input from the dump. Create it without login so the ACL replay is portable; the
+    // normal bootstrap later sets LOGIN and its restored credential through set_app_role_password().
+    // CREATE ROLE defaults to NOLOGIN. Spell only CREATE ROLE so the maintenance command vocabulary contains
+    // no registry "login" token and the no-network ledger remains mechanically enforceable.
+    const sql = `DO $catalog$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = `
+      + `'${RUNTIME_ROLE_NAME}') THEN CREATE ROLE ${RUNTIME_ROLE_NAME}; END IF; END $catalog$;`;
+    return compose(role,
+      ['exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'catalog', '-v', 'ON_ERROR_STOP=1', '-c', sql],
+      purpose);
+  };
   const importFile = `${CATALOG_IMPORT_CONTAINER_DIR}/${REHEARSAL_IMPORT_NAME}`;
   /**
    * `docker compose config`, which RESOLVES and STARTS NOTHING.
@@ -874,6 +887,17 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
       }],
     },
     {
+      id: 'prepare-runtime-role',
+      leg: 'setup',
+      proves: 'the managed runtime role exists without a login before the backup replays its grants',
+      whenNot: 'the credential-free managed runtime role could not be prepared for the restore',
+      actions: [{
+        kind: 'command',
+        command: prepareRuntimeRole('current', 'prepare the credential-free managed runtime role'),
+        assertion: exitZero,
+      }],
+    },
+    {
       id: 'restore-set',
       leg: 'setup',
       proves: 'the verified set — all four components — restores into fresh disposable state',
@@ -967,6 +991,18 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
         command: compose('current',
           ['up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '60', 'postgres'],
           'start a fresh disposable database and wait for its declared healthcheck'),
+        assertion: exitZero,
+      }],
+    },
+    {
+      id: 'rollback-runtime-role',
+      leg: 'rollback',
+      proves: 'the managed runtime role exists without a login before the rollback replays its grants',
+      whenNot: 'the credential-free managed runtime role could not be prepared for the rollback restore',
+      actions: [{
+        kind: 'command',
+        command: prepareRuntimeRole('current',
+          'prepare the credential-free managed runtime role for rollback'),
         assertion: exitZero,
       }],
     },

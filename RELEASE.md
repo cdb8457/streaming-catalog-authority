@@ -3,9 +3,26 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
-## v1.2.3 - Bounded disposable database readiness
+## v1.2.4 - Portable legacy dump grants
 
 Release candidate; not yet published. Schema remains version 9.
+
+Fixed:
+
+- **The disposable rehearsal prepares the product-managed runtime role before each SQL replay.** PostgreSQL
+  dumps preserve grants but do not include cluster-wide roles. Both restore legs now create the known `app`
+  role using PostgreSQL's non-authenticating default, with no credential in the command; the normal bootstrap
+  later enables it with the password from the restored secret.
+- **The correction came from the real Tower restore.** v1.2.3 waited for a healthy database and then proved
+  the verified dump reached its final grant statements, where the absent role stopped it. A credential-free
+  role preparation made that same dump replay cleanly in the retained disposable project.
+
+All earlier product behavior and safety boundaries are unchanged. Catalog Authority still never downloads,
+scrapes, plays, or acquires media and never creates media symlinks.
+
+## v1.2.3 - Bounded disposable database readiness
+
+Published `2026-07-29`, immutable. Schema remains version 9.
 
 Fixed:
 
