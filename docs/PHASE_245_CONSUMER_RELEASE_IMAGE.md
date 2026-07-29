@@ -87,7 +87,7 @@ text.
 The published repository is `ghcr.io/cdb8457/catalog-authority-ops`, and the ACTIVE (not yet released) pin is:
 
 ```
-ghcr.io/cdb8457/catalog-authority-ops:v1.2.2
+ghcr.io/cdb8457/catalog-authority-ops:v1.2.3
 ```
 
 Earlier releases stay exactly where they are. `v1.0.0` through `v1.2.0` are published and immutable; nothing
@@ -105,10 +105,9 @@ offline catalog import and browsing, automatic repair of legacy keystore ownersh
 managed Jellyfin collection lifecycle. See `RELEASE.md`,
 `docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md`, and the Phase 255–272 documents.
 
-`v1.2.2` keeps schema version 9, carries the Docker Compose 2.40 resolved-environment rehearsal patch, and
-aligns the release-only Jellyfin browser assertion with the already-shipped terminal no-work verdict. The
-published v1.2.0 image remains immutable; all offline, Jellyfin, collection/recovery, and managed-custody
-behavior is unchanged.
+`v1.2.3` keeps schema version 9, carries both prior release corrections, and makes each fresh disposable
+database wait for a declared, bounded healthcheck before replaying the verified backup. Earlier images remain
+immutable; all offline, Jellyfin, collection/recovery, and managed-custody behavior is unchanged.
 
 **This was wrong when the phase first shipped, and the correction is the point of the remediation.** The
 first version published to `ghcr.io/catalog-authority/…`. Earlier phases wrote the convention with a

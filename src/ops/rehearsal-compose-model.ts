@@ -448,6 +448,8 @@ export interface ComposeExpectation {
   readonly pinnedImages: Readonly<Record<string, string>> | null;
   /** Every mount the rehearsal's own override must have established, once there is a workspace. */
   readonly wiring: readonly RequiredWiring[];
+  /** The real rehearsal waits on Compose health, so its database must declare what healthy means. */
+  readonly requirePostgresHealthcheck?: boolean;
 }
 
 /**
@@ -525,6 +527,13 @@ export function validateResolvedCompose(model: ResolvedComposeModel, expect: Com
         + `image (${REHEARSAL_SERVICES.join(', ')} are the ones it does). An unpinned service can boot a build `
         + 'that is neither the current one nor the candidate, which would make the whole comparison meaningless.');
     }
+  }
+  const postgres = model.services.find((service) => service.name === 'postgres')!;
+  if (expect.requirePostgresHealthcheck === true && !postgres.keys.includes('healthcheck')) {
+    throw new MaintenanceRefused(
+      'the resolved disposable stack gives "postgres" no healthcheck. The rehearsal restores immediately after '
+      + 'starting a fresh database, so it must wait for a declared readiness condition rather than race the '
+      + 'server startup. Add a bounded pg_isready healthcheck to the disposable definition.');
   }
 
   for (const service of model.services) {

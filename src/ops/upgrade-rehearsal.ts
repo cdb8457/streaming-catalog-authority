@@ -863,11 +863,13 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
     {
       id: 'database-up',
       leg: 'setup',
-      proves: 'the disposable database starts from an image already on this host',
-      whenNot: 'the disposable database did not start from an image already on this host',
+      proves: 'the disposable database becomes healthy from an image already on this host',
+      whenNot: 'the disposable database did not become healthy from an image already on this host',
       actions: [{
         kind: 'command',
-        command: compose('current', ['up', '-d', '--pull', 'never', 'postgres'], 'start only the database'),
+        command: compose('current',
+          ['up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '60', 'postgres'],
+          'start only the database and wait for its declared healthcheck'),
         assertion: exitZero,
       }],
     },
@@ -958,11 +960,13 @@ export function planRehearsal(resolved: ResolvedRehearsal): readonly RehearsalPl
     {
       id: 'rollback-database',
       leg: 'rollback',
-      proves: 'a fresh disposable database starts again',
-      whenNot: 'the disposable database did not start again',
+      proves: 'a fresh disposable database becomes healthy again',
+      whenNot: 'the disposable database did not become healthy again',
       actions: [{
         kind: 'command',
-        command: compose('current', ['up', '-d', '--pull', 'never', 'postgres'], 'fresh disposable database'),
+        command: compose('current',
+          ['up', '-d', '--pull', 'never', '--wait', '--wait-timeout', '60', 'postgres'],
+          'start a fresh disposable database and wait for its declared healthcheck'),
         assertion: exitZero,
       }],
     },
@@ -1742,6 +1746,7 @@ function performAction(
           // disposable at all. Each override is then checked for having pinned EVERY product service.
           pinnedImages: role === null ? null : pinnedImagesFor(resolved, role),
           wiring: requiredRehearsalWiring(),
+          requirePostgresHealthcheck: true,
         });
         seen.composeModel[role === null ? 'base' : role] = resolvedComposeDigest(model);
         return null;

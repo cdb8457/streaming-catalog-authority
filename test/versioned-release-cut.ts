@@ -39,7 +39,7 @@ test('phase record cuts v1.0.0 with honest warnings and evidence anchors', () =>
 test('release notes preserve the v1.0.0 scope while package metadata reports the current release', () => {
   const release = read('RELEASE.md');
   const pkg = JSON.parse(read('package.json')) as { version: string; scripts: Record<string, string> };
-  assert(pkg.version === '1.2.2', 'package version is the current v1.2.2 release');
+  assert(pkg.version === '1.2.3', 'package version is the current v1.2.3 release');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'phase test script present');
   for (const required of [
     '## v1.0.0 - Current Scope Release',
