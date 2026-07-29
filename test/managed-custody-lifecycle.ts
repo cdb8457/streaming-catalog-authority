@@ -20,12 +20,22 @@ import {
 } from '../src/core/crypto/kek-ring.js';
 import { writeStateDocument } from '../src/core/crypto/custodian-state-io.js';
 import { SIDECAR_PROTOCOL_VERSION } from '../src/core/crypto/sidecar-ipc.js';
-import { REQUIRED_SECRET_FILES } from '../src/ops/backup-components.js';
 import {
+  BACKUP_COMPONENT_IDS,
   COMPONENT_ARTIFACT_NAMES,
-  copyTree,
-  runVerifiedCompleteBackup,
-} from '../src/ops/complete-backup.js';
+  REQUIRED_SECRET_FILES,
+  ROOT_KEY_SECRET_NAME,
+  backupSetHasRing,
+} from '../src/ops/backup-components.js';
+import { copyTree, runVerifiedCompleteBackup } from '../src/ops/complete-backup.js';
+import {
+  REHEARSAL_PROJECT_PREFIX,
+  claimDisposableRoot,
+  planRehearsal,
+  rehearsalCleanupCommand,
+  prepareRestoreWorkspace,
+  resolveRehearsal,
+} from '../src/ops/upgrade-rehearsal.js';
 import {
   planCustodyCutover,
   runCustodyCutover,
@@ -39,6 +49,7 @@ import {
   readCustodyRuntimeMode,
 } from '../src/ops/custody-runtime-mode.js';
 import {
+  classifyCustodyState,
   launcherComposeArgs,
   planCustodyTransition,
   runCustodyTransition,
@@ -91,10 +102,18 @@ import { assertLedgerIsClean, fakeDumpText, fakeToolchain } from './helpers/fake
 // do, so the orchestration runner is injected and the LEDGER is the evidence: which commands would have
 // been built, with which compose files and which mounts. No daemon, no image, no pull, no network.
 //
-// WHAT IS DELIBERATELY ABSENT. There is no database here. The complete backup's database component is the
-// fake toolchain's dump, as it is in every other suite in this tranche, and the product's DATABASE restore
-// rehearsal (`src/ops/rehearse.ts`) needs a live throwaway PostgreSQL — it is out of scope for a no-network
-// run and is named here rather than silently skipped.
+// THE ROLLBACK USES THE SHIPPED DISPOSABLE REHEARSAL. `upgrade-rehearsal.ts` is where this repository
+// restores a complete set: it proves a disposable root is not production, verifies the set, and prepares ALL
+// FOUR components into a workspace, refusing if one is missing. That preparation and its PLAN — including the
+// rollback leg that replays the same pre-upgrade set — are what this file uses and asserts.
+//
+// WHAT IS DELIBERATELY NOT RUN, AND IS NOT PRETENDED OTHERWISE. The rehearsal's Docker legs (starting the
+// disposable stack, replaying the dump into its postgres, importing, upgrading, rolling back) need a daemon
+// and two pinned images; `test/upgrade-rehearsal.ts` drives all of them against the fake toolchain already.
+// Nor is there a live complete-restore COMMAND in this product: the file components are put back here by this
+// rehearsal, using the product's bounded primitives, and that step is labelled as fixture publishing rather
+// than dressed up as a shipped command. The database restore into a throwaway PostgreSQL (`src/ops/rehearse.ts`)
+// needs a database and is out of scope for a no-network run.
 
 let passed = 0;
 let failed = 0;
@@ -180,8 +199,50 @@ const forbidden: string[] = [];
 let preUpgradeSetDigest = '';
 /** The digest of the rotation an operator confirmed, carried across the interruption and the resume. */
 let rotationPlanDigestNow = '';
+/** What the promotion records looked like AFTER the backup, so the rollback's undo is checkable. */
+let driftedRecords = '';
+/** The disposable restore workspace the shipped rehearsal prepared all four components into. */
+let restoreWorkspace = '';
 
 const aadFor = (itemId: string): Aad => ({ itemId, keyEpoch: 0, schemaVersion: SCHEMA_VERSION, field: 'identity' });
+
+/**
+ * A DISPOSABLE Compose definition of the shape the upgrade rehearsal requires: project-scoped named volumes
+ * for every piece of persistent state, no bind mount, no Docker secret, no external anything, and no
+ * `${…}` — so what it resolves to is a function of its bytes. It defines the throwaway stack a rollback
+ * would be rehearsed on; nothing in this file starts it.
+ */
+const DISPOSABLE_COMPOSE = [
+  'services:',
+  '  postgres:',
+  '    image: postgres:16',
+  '    environment:',
+  '      POSTGRES_DB: catalog',
+  '      POSTGRES_USER: postgres',
+  '    volumes:',
+  '      - pgdata:/var/lib/postgresql/data',
+  '  migrate:',
+  '    image: catalog-authority-ops:v0.0.0-placeholder',
+  '    environment:',
+  '      APP_ENV: production',
+  '  app:',
+  '    image: catalog-authority-ops:v0.0.0-placeholder',
+  '    environment:',
+  '      APP_ENV: production',
+  '      CUSTODIAN_MODE: sidecar',
+  '    volumes:',
+  '      - sidecarrun:/run/catalog-sidecar',
+  '  sidecar:',
+  '    image: catalog-authority-ops:v0.0.0-placeholder',
+  '    environment:',
+  '      APP_ENV: production',
+  '    volumes:',
+  '      - sidecarrun:/run/catalog-sidecar',
+  'volumes:',
+  '  pgdata: {}',
+  '  sidecarrun: {}',
+  '',
+].join('\n');
 
 /** Where a backup set lands. A NAME inside the installation's own backups directory, never a path. */
 const setDir = (name: string): string => join(live.backupsDir, name);
@@ -356,7 +417,11 @@ await stage('1. a released v1.1.4 installation: static KEK custody, no ring, no 
   for (const file of [RUNTIME_COMPOSE_FILE, BOOTSTRAP_COMPOSE_FILE]) {
     writeFileSync(join(projectRoot, file), readRepo(file));
   }
-  for (const file of REQUIRED_SECRET_FILES) {
+  // NO ROOT WRAPPING KEY, AND NO PLACEHOLDER FOR ONE. A released v1.1.4 installation has neither, and the
+  // backup model now agrees: a set whose keystore holds no ring does not require the key that seals a ring.
+  // An earlier draft wrote a file at that name so the backup would be accepted — which made the whole "exact
+  // pre-state" claim false and restored an unusable artifact to the most sensitive path in the installation.
+  for (const file of REQUIRED_SECRET_FILES.filter((name) => name !== ROOT_KEY_SECRET_NAME)) {
     writeFileSync(join(secretsDir, file), `${file}\n`, { encoding: 'utf8', mode: 0o600 });
   }
   writeFileSync(join(appdata, 'promotion-records', 'record.json'), '{}\n', 'utf8');
@@ -384,8 +449,8 @@ await stage('1. a released v1.1.4 installation: static KEK custody, no ring, no 
 
   // ---- THE PRE-STATE, STATED RATHER THAN ASSUMED -----------------------------------------------------
   assertEq(kekRingExists(stateDir), false, 'a v1.1.4 installation has no ring');
-  assertEq(existsSync(join(secretsDir, 'custodian_root_key')), true,
-    'the required-secret placeholder is at the root key path while the rollback set is taken (see 1b)');
+  assertEq(existsSync(join(secretsDir, ROOT_KEY_SECRET_NAME)), false,
+    'and nothing at all is at the root wrapping key path');
   assertEq(readCustodyRuntimeMode(projectRoot).declared, false, 'and nobody has declared a runtime mode');
   assertEq(readCustodyRuntimeMode(projectRoot).mode, 'root-only', 'so the default is the steady state');
   const keystoreDigest = keystoreSetDigest(stateDir);
@@ -423,24 +488,17 @@ await stage('1b. the pre-upgrade rollback set is taken by the real command and v
   assertEq(verification.restorableUnderThisBuild, true, 'and this build could actually restore it');
   preUpgradeSetDigest = verification.setDigest;
 
-  // THE HONEST NOTE ABOUT THIS SET, because it is the one place the rehearsal cannot reproduce a released
-  // installation exactly. `REQUIRED_SECRET_FILES` has held `custodian_root_key` since the stack declared it,
-  // so the shipped verifier refuses a complete backup that has no file at that name — which means a genuine
-  // v1.1.4 deployment cannot take a complete rollback set until SOMETHING is there. What this fixture puts
-  // there is the same placeholder every other required secret carries, and the rollback stage at the end
-  // proves exactly that, rather than pretending the file is absent.
-  const restoredRoot = join(setDir('pre-upgrade'), COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_root_key');
-  assertEq(readFileSync(restoredRoot, 'utf8'), 'custodian_root_key\n',
-    'the pre-upgrade set carries the placeholder, not a root wrapping key');
-
-  // AND NOW THE INSTALLATION IS EXACTLY WHAT A RELEASED ONE IS: nothing at all at that path. The placeholder
-  // existed to satisfy the required-secret NAME while the set was taken; leaving it there would make this
-  // rehearsal classify a state no v1.1.4 deployment is in — and the classifier is right to call a file that
-  // is not a key a custody failure rather than a missing prerequisite.
-  rmSync(live.rootKeyFile, { force: true });
-  assertEq(existsSync(live.rootKeyFile), false, 'the live installation has no root wrapping key at all');
-  assertEq(existsSync(join(setDir('pre-upgrade'), COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_root_key')), true,
-    'while the set it just took still holds that name');
+  // ---- AND THE SET IS EXACT: NO ROOT WRAPPING KEY, BECAUSE THE INSTALLATION HAS NONE -----------------
+  //
+  // THIS IS THE PRODUCTION GAP THIS REHEARSAL FOUND. `custodian_root_key` used to be required in every
+  // complete backup from the moment the stack DECLARED it, so this command refused the entire pre-migration
+  // population — the one that most needs a rollback set. The requirement now follows the evidence in the set
+  // (`backupSetHasRing`): no ring, no root key required; a ring, and a valid one is mandatory. So the set
+  // taken here holds exactly what the installation holds, and the rollback at the end restores exactly that.
+  assertEq(existsSync(join(setDir('pre-upgrade'), COMPONENT_ARTIFACT_NAMES.secrets, ROOT_KEY_SECRET_NAME)), false,
+    'the pre-upgrade set carries no root wrapping key, because there is none to carry');
+  assertEq(existsSync(live.rootKeyFile), false, 'and the live installation has none either');
+  assertEq(backupSetHasRing(setDir('pre-upgrade')), false, 'the set holds no ring, which is why that is correct');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -818,26 +876,111 @@ await stage('7. the pre-upgrade set still verifies, byte for byte, after the who
     'and it is digest-for-digest the set that was taken before anything moved — it was only ever READ');
 });
 
-await stage('7b. the exact pre-upgrade state is restored, and the original data comes back', async () => {
-  // ---- THE RESTORE USES THE PRODUCT'S OWN PRIMITIVES, NOT A CONVENIENT COPY ---------------------------
-  //
-  // WHAT EXISTS AND WHAT DOES NOT. This repository has no single "restore a complete set" command: the
-  // DATABASE half is `src/ops/rehearse.ts`, which restores into a throwaway PostgreSQL and is out of scope
-  // for a run with no database. What it does have are the bounded, no-follow primitives the backup itself is
-  // built from — `copyTree`, `removeOwnTreeNoFollow`, `publishDirectory` — and the CUSTODY half of a
-  // rollback is exactly a tree copy of the keystore and the secrets. Those are used here, unmodified. No
-  // restore behaviour is invented; what is absent is named.
-  const restored = join(WORK, 'restore-staging');
-  copyTree(join(setDir('pre-upgrade'), COMPONENT_ARTIFACT_NAMES.keystore), restored, 'restored keystore');
-  removeOwnTreeNoFollow(live.stateDir, 'live keystore');
-  assertEq(existsSync(live.stateDir), false, 'the migrated state directory is gone');
-  publishDirectory(restored, live.stateDir, 'restored keystore');
-  assertEq(existsSync(restored), false, 'and the staging directory was consumed, not left behind');
+await stage('7b. the whole installation drifts, and the drift is what the rollback has to undo', async () => {
+  // A ROLLBACK PROVES NOTHING AGAINST A STATE THAT NEVER MOVED. By now the keystore has been rewrapped onto
+  // generation 2 and generation 1 has been removed, so custody has already drifted a long way from the set.
+  // The two components that had NOT moved are moved here, deliberately, so every component the rollback puts
+  // back is one that visibly needed putting back.
+  writeFileSync(join(live.appdata, 'promotion-records', 'record-after-the-backup.json'),
+    '{"written":"after the pre-upgrade set was taken"}\n', 'utf8');
+  writeFileSync(join(live.appdata, 'promotion-records', 'record.json'), '{"changed":true}\n', 'utf8');
+  writeFileSync(join(live.secretsDir, 'operator_ui_token'), 'a token reissued after the backup\n', 'utf8');
 
-  const restoredSecrets = join(WORK, 'restore-secrets');
-  copyTree(join(setDir('pre-upgrade'), COMPONENT_ARTIFACT_NAMES.secrets), restoredSecrets, 'restored secrets');
-  removeOwnTreeNoFollow(live.secretsDir, 'live secrets');
-  publishDirectory(restoredSecrets, live.secretsDir, 'restored secrets');
+  assert(keystoreSetDigest(live.stateDir) !== live.preState.keystoreDigest, 'custody has drifted');
+  assertEq(readdirSync(join(live.appdata, 'promotion-records')).length, 2, 'and there is a record the set has not');
+  driftedRecords = readdirSync(join(live.appdata, 'promotion-records')).slice().sort().join(',');
+});
+
+await stage('7c. the product prepares ALL FOUR components of the pre-upgrade set into a disposable root', () => {
+  // ---- THE PRODUCT'S OWN RESTORE PREPARATION, NOT A CONVENIENT COPY -----------------------------------
+  //
+  // WHAT IS USED AND WHY. `upgrade-rehearsal.ts` is where this repository restores a complete set: it
+  // resolves a DISPOSABLE root that is structurally proved not to be production, verifies the set, and
+  // `prepareRestoreWorkspace` copies ALL FOUR components into it — refusing outright if one is missing —
+  // through the same bounded no-follow primitives everything else here uses. That is the all-four restore
+  // this rehearsal needs, and it is the shipped one.
+  //
+  // WHAT IS NOT RUN, STATED PLAINLY. The rehearsal's Docker LEGS — starting a disposable stack, replaying
+  // the dump into its postgres, importing, upgrading, rolling back — are not executed here. They need a
+  // daemon and two pinned images, and `test/upgrade-rehearsal.ts` already drives all of them against the
+  // fake toolchain. What this stage takes from the rehearsal is the part that decides what a restore
+  // CONSISTS of, plus the plan that says what would be run — and the plan is asserted, not summarised.
+  const disposable = join(WORK, 'rollback-disposable');
+  mkdirSync(disposable, { recursive: true });
+  writeFileSync(join(disposable, 'compose.yml'), DISPOSABLE_COMPOSE, 'utf8');
+  const importSnapshot = join(WORK, 'representative-import.json');
+  writeFileSync(importSnapshot, '{"records":[{"title":"a representative record"}]}\n', 'utf8');
+
+  const resolved = resolveRehearsal({
+    productionRoot: live.projectRoot,
+    productionProject: 'catalogauthority',
+    disposableRoot: disposable,
+    label: 'rollback',
+    composeFile: 'compose.yml',
+    backupSet: setDir('pre-upgrade'),
+    importSnapshot,
+    currentImage: 'catalog-authority-ops:v1.1.4',
+    candidateImage: 'catalog-authority-ops:v1.1.5',
+    expect: {
+      currentVersion: '1.1.4',
+      candidateVersion: '1.1.5',
+      currentSchema: schemaVersion(),
+      candidateSchema: schemaVersion() + 1,
+    },
+  });
+  reports.push({ rehearsalPlanDigest: resolved.planDigest, inputs: resolved.inputs });
+  assertEq(resolved.inputs.backupSet, preUpgradeSetDigest,
+    'the rehearsal verified the same set this lifecycle took before anything moved');
+
+  assertEq(claimDisposableRoot(resolved), 'claimed', 'the disposable root is claimed by this rehearsal');
+  const workspace = prepareRestoreWorkspace(resolved);
+  restoreWorkspace = workspace.path;
+
+  // ALL FOUR COMPONENTS, WHICH IS THE POINT: a rollback that put back three of them is not a rollback.
+  for (const id of BACKUP_COMPONENT_IDS) {
+    assert(workspace.components[id] !== undefined && workspace.components[id].length === 64,
+      `the workspace holds the ${id} component with a digest over it`);
+  }
+  assertEq(existsSync(join(workspace.path, COMPONENT_ARTIFACT_NAMES.database)), true,
+    'including the database dump, which is the component this rehearsal does not replay itself');
+
+  // AND THE PLAN SAYS WHAT WOULD BE DONE WITH THEM — including the rollback leg that restores the SAME set.
+  const steps = planRehearsal(resolved);
+  const restores = steps.filter((step) => step.actions.some((action) => action.kind === 'command'
+    && action.command.args.includes('psql')
+    && action.command.args.some((word) => word.endsWith(COMPONENT_ARTIFACT_NAMES.database))));
+  assert(restores.length >= 2, 'the plan restores the dump on the setup leg and again on the rollback leg');
+  assert(restores.some((step) => step.leg === 'rollback'), 'and one of those is the rollback');
+  // AND THE DISPOSABLE STATE HAS A DESTRUCTION COMMAND OF ITS OWN, aimed by the marker project name and
+  // taking the volumes with it — which is what makes this rehearsal disposable rather than merely separate.
+  const cleanup = rehearsalCleanupCommand(resolved);
+  assert(cleanup.args.includes('down') && cleanup.args.includes('-v'),
+    'the rehearsal destroys its own stack and its volumes');
+  assert(cleanup.args.includes(resolved.projectName) && resolved.projectName.startsWith(REHEARSAL_PROJECT_PREFIX),
+    'by the marker project name, which is the only thing it may remove');
+});
+
+await stage('7d. the prepared components are published into the installation, and the original data returns', async () => {
+  // ---- FIXTURE PUBLISHING, AND IT IS LABELLED AS SUCH -------------------------------------------------
+  //
+  // The three FILE components are moved from the verified workspace into this disposable installation by
+  // this rehearsal, using the product's bounded primitives — `removeOwnTreeNoFollow` and `publishDirectory`.
+  // It is not a product command and it is not presented as one: no shipped command replaces a live
+  // installation's custody in place, and inventing one inside a test would be inventing production
+  // behaviour. What is being proved here is the CONTENT of the verified workspace — that putting it back
+  // returns the exact pre-upgrade custody and the exact original data — not that a restore command exists.
+  for (const [id, live0] of [
+    ['keystore', live.stateDir],
+    ['secrets', live.secretsDir],
+    ['promotion-records', join(live.appdata, 'promotion-records')],
+  ] as const) {
+    const source = join(restoreWorkspace, COMPONENT_ARTIFACT_NAMES[id]);
+    const staging = join(WORK, `publish-${id}`);
+    copyTree(source, staging, `verified ${id}`);
+    removeOwnTreeNoFollow(live0, `the ${id} being replaced`);
+    publishDirectory(staging, live0, `verified ${id}`);
+    assertEq(existsSync(staging), false, `and the ${id} staging directory was consumed, not left behind`);
+  }
 
   // ---- THE ORIGINAL CUSTODY, PROVED FROM THE RESTORED FILES THEMSELVES --------------------------------
   const restoredStatic = Buffer.from(readFileSync(live.staticKeyFile, 'utf8').trim(), 'hex');
@@ -849,32 +992,52 @@ await stage('7b. the exact pre-upgrade state is restored, and the original data 
     'which is byte-for-byte the keystore that existed before the upgrade');
   assertEq(countKeystoreEntries(live.stateDir), live.preState.keyCount, 'with the same number of keys');
 
-  // ---- NO RING, NO MARKER, AND THE ROOT KEY PATH HOLDS WHAT THAT SET HOLDS ----------------------------
+  // ---- THE RECORDS AND THE SECRETS THAT DRIFTED ARE THE SET'S AGAIN -----------------------------------
+  const records = readdirSync(join(live.appdata, 'promotion-records')).slice().sort();
+  assertEq(records.join(','), 'record.json', 'the record written after the backup is gone');
+  assert(driftedRecords.includes('record-after-the-backup.json'), 'and it really was there before this stage');
+  assertEq(readFileSync(join(live.appdata, 'promotion-records', 'record.json'), 'utf8'), '{}\n',
+    'while the record the set holds is back, byte for byte');
+  assertEq(readFileSync(join(live.secretsDir, 'operator_ui_token'), 'utf8'), 'operator_ui_token\n',
+    'and the secret that was reissued is the one from the set');
+
+  // ---- NO RING, NO MARKER, AND NO ROOT WRAPPING KEY: EXACTLY THE PRE-UPGRADE SHAPE --------------------
   assertEq(kekRingExists(live.stateDir), false, 'the restored installation has no ring, as it had none');
   assertEq(readCustodyRuntimeMode(live.projectRoot).declared, false, 'and no runtime mode is declared');
   assertEq(readCustodyRuntimeMode(live.projectRoot).mode, 'root-only', 'so the launcher default applies');
-  assertEq(readFileSync(live.rootKeyFile, 'utf8'), 'custodian_root_key\n',
-    'and the root key path holds the set placeholder, because that is what the set holds');
+  assertEq(existsSync(live.rootKeyFile), false, 'and there is nothing at the root wrapping key path');
 
-  // THE HONEST CONSEQUENCE, STATED RATHER THAN HIDDEN. `REQUIRED_SECRET_FILES` makes that name mandatory in
-  // every complete backup, so a rollback set taken before the root key existed restores a placeholder there
-  // — and the transition classifier is right to call a file that is not a key a CUSTODY FAILURE rather than
-  // a missing prerequisite. A rolled-back installation therefore has to be given a real root wrapping key
-  // again before it can be re-upgraded, and the command says so instead of silently treating it as absent.
-  refuses(() => planCustodyTransition(transitionRequest('pre-upgrade'), composeRunner()),
-    'not a missing prerequisite', 'a rolled-back installation with the placeholder still at that path');
+  // AND THE PRODUCT CLASSIFIES IT AS WHAT IT IS: a legacy static-custody installation with a PREREQUISITE
+  // still to be met — not a custody failure. That distinction is the whole reason the placeholder had to go.
+  const evidence = classifyCustodyState(transitionRequest('pre-upgrade'));
+  reports.push(evidence);
+  assertEq(evidence.verdict, 'legacy-static', 'the rolled-back installation is legacy-static again');
+  assertEq(evidence.rootKeyReady, false, 'with the root wrapping key reported as a missing prerequisite');
+  assertEq(evidence.ringGeneration, null, 'and no ring generation');
+  assertEq(evidence.keysProved, live.preState.keyCount, 'and every key proved to open under the static KEK');
 
   // ---- AND THE DATA. THE EXACT ORIGINAL BYTES, OUT OF THE RESTORED CUSTODY. ---------------------------
   await everyItemReturnsItsExactData('after the rollback');
+
+  // THE SET WAS ONLY EVER READ.
+  assertEq(verifyBackupSet(setDir('pre-upgrade')).setDigest, preUpgradeSetDigest,
+    'and the set it all came from is digest-for-digest the one that was taken');
 });
 
-await stage('7c. no temporary state is left behind, and the disposable installation is removed', () => {
+await stage('7e. no temporary state is left behind, and the disposable installation is removed', () => {
   // NOTHING THIS LIFECYCLE TOOK IS STILL HELD. A lock directory or a rotation journal left in the state
   // directory would block the next command and is exactly the litter an interrupted run leaves.
   const leftovers = readdirSync(live.stateDir).filter((entry) => entry.startsWith('.') || entry.endsWith('.tmp'));
   assertEq(leftovers.join(','), '', 'no lock directory or temporary file is left in the state directory');
-  assertEq(readdirSync(WORK).filter((entry) => entry.startsWith('restore-')).join(','), '',
-    'and no restore staging directory survived');
+  assertEq(readdirSync(WORK).filter((entry) => entry.startsWith('publish-')).join(','), '',
+    'and no publishing staging directory survived');
+
+  // THE REHEARSAL'S OWN DISPOSABLE ROOT IS THE OTHER THING THAT MUST NOT SURVIVE. It holds a copy of this
+  // installation's keystore and secrets — the restore workspace — so leaving it behind would leave a second
+  // copy of every key on disk. It is removed here by the same rehearsal that claimed it.
+  assertEq(existsSync(restoreWorkspace), true, 'the restore workspace was there to be removed');
+  removeOwnTreeNoFollow(join(WORK, 'rollback-disposable'), 'the disposable rehearsal root', 20_000);
+  assertEq(existsSync(restoreWorkspace), false, 'and the copy of the keystore it held is gone');
 
   rmSync(WORK, { recursive: true, force: true });
   assertEq(existsSync(WORK), false, 'the disposable installation is gone, and it was the only thing created');

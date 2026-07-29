@@ -873,6 +873,77 @@ test('the maintenance modules build no shell command and reach for no shell', ()
   assert([...runner.matchAll(/shell: false/g)].length >= spawns, 'and every one of them runs with no shell');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// The root wrapping key: required by what the SET holds, not by what the stack declares
+// ---------------------------------------------------------------------------------------------------------
+//
+// THE PRODUCTION GAP THESE CLOSE, FOUND BY REHEARSING AN UPGRADE END TO END. `custodian_root_key` was
+// required from the moment the stack declared it rather than from the moment an installation migrated onto a
+// ring. A released v1.1.4 installation has neither a ring nor that file — so the one population that most
+// needs a rollback set, the one about to be upgraded, was the one this command refused. The only way past it
+// was to put something at that name, and a placeholder is worse than the absence: it restores an unusable
+// artifact to the path the whole ring is sealed under.
+
+function withRing(root: string): void {
+  mkdirSync(join(root, 'sidecar-state', 'ring'), { recursive: true });
+  writeFileSync(join(root, 'sidecar-state', 'ring', 'kek-ring.json'),
+    '{"document":"catalog-authority.kek-ring","version":1}\n', 'utf8');
+}
+
+const WITHOUT_ROOT = REQUIRED_SECRET_FILES.filter((name) => name !== 'custodian_root_key');
+const A_REAL_ROOT_KEY = 'b'.repeat(64);
+
+test('a static-custody set with NO ring is complete without a root wrapping key', () => {
+  const root = makeProject('legacy-no-root', { sidecar: true, secrets: WITHOUT_ROOT });
+  const tools = fakeToolchain({ dumpText: fakeDumpText(MIGRATION_VERSION) });
+  const outcome = runVerifiedCompleteBackup(
+    request(root, 'legacy', { custodian: 'sidecar', sidecarState: 'sidecar-state' }),
+    { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger },
+  );
+  assertEq(outcome.ok, true, `a v1.1.4-shaped installation can take a complete backup: ${JSON.stringify(outcome.failures)}`);
+  assertEq(existsSync(join(root, 'backups', 'legacy', COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_root_key')), false,
+    'and the set does not invent a file the installation does not have');
+  assertEq(outcome.verification.ok, true, 'the shipped verifier agrees');
+});
+
+test('a set whose keystore holds a RING is refused without the root key that seals it', () => {
+  const root = makeProject('ring-no-root', { sidecar: true, secrets: WITHOUT_ROOT });
+  withRing(root);
+  const tools = fakeToolchain({ dumpText: fakeDumpText(MIGRATION_VERSION) });
+  refuses(() => takeCompleteBackupWithoutVerifying(
+    request(root, 'sealed-box', { custodian: 'sidecar', sidecarState: 'sidecar-state' }),
+    { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger },
+  ), 'sealed box with no key', 'a ring with no root key');
+  assertEq(existsSync(join(root, 'backups', 'sealed-box')), false, 'and nothing was published');
+});
+
+test('a set whose keystore holds a ring is refused when the root artifact is NOT a key', () => {
+  const root = makeProject('ring-placeholder-root', { sidecar: true });
+  withRing(root);
+  // `makeProject` writes `custodian_root_key-value` at that name: the shape of a placeholder, which is
+  // exactly what a fixture or a hurried operator leaves there.
+  const tools = fakeToolchain({ dumpText: fakeDumpText(MIGRATION_VERSION) });
+  refuses(() => takeCompleteBackupWithoutVerifying(
+    request(root, 'not-a-key', { custodian: 'sidecar', sidecarState: 'sidecar-state' }),
+    { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger },
+  ), 'is not a root wrapping key', 'a placeholder where the root key belongs');
+  assertEq(existsSync(join(root, 'backups', 'not-a-key')), false, 'and nothing was published');
+});
+
+test('a ring plus a real root wrapping key is a complete set', () => {
+  const root = makeProject('ring-with-root', { sidecar: true });
+  withRing(root);
+  writeFileSync(join(root, 'secrets', 'custodian_root_key'), `${A_REAL_ROOT_KEY}\n`, 'utf8');
+  const tools = fakeToolchain({ dumpText: fakeDumpText(MIGRATION_VERSION) });
+  const outcome = runVerifiedCompleteBackup(
+    request(root, 'migrated', { custodian: 'sidecar', sidecarState: 'sidecar-state' }),
+    { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger },
+  );
+  assertEq(outcome.ok, true, `a migrated installation still verifies: ${JSON.stringify(outcome.failures)}`);
+  assertEq(readFileSync(join(root, 'backups', 'migrated', COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_root_key'), 'utf8'),
+    `${A_REAL_ROOT_KEY}\n`, 'and the key it is sealed under is in the set');
+});
+
 rmSync(WORK, { recursive: true, force: true });
 
 console.log(`\n${passed} passed, ${failed} failed`);

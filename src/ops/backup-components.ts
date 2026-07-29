@@ -1,3 +1,6 @@
+import { lstatSync } from 'node:fs';
+import { join } from 'node:path';
+import { KEK_RING_DIRNAME, KEK_RING_FILENAME } from '../core/crypto/kek-ring.js';
 import { parseMount, parseYaml, asMap, asList, type YamlMap, type YamlValue } from './minimal-yaml.js';
 
 // Phase 256 — what a complete backup of this installation actually is.
@@ -231,6 +234,60 @@ export const REQUIRED_SECRET_FILES: readonly string[] = [
 ];
 
 export const OPTIONAL_SECRET_FILES: readonly string[] = ['app_password'];
+
+/** The one secret whose necessity depends on what the keystore in the same set actually holds. */
+export const ROOT_KEY_SECRET_NAME = 'custodian_root_key';
+
+/** Where each component lands inside a set. Here rather than in the writer, because the readers need it too. */
+export const COMPONENT_ARTIFACT_NAMES: Readonly<Record<BackupComponentId, string>> = Object.freeze({
+  database: 'catalog-backup.sql',
+  keystore: 'keystore-backup',
+  secrets: 'secrets-backup',
+  'promotion-records': 'promotion-records-backup',
+});
+
+/**
+ * Does the keystore in this set hold a KEK ring?
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHY THIS QUESTION DECIDES WHETHER A ROOT WRAPPING KEY IS REQUIRED.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * THE GAP THIS CLOSES, AND IT WAS A REAL ONE. `custodian_root_key` was on the required list from the moment
+ * the stack DECLARED the root key, not from the moment an installation migrated onto a ring — deliberately,
+ * so that the list did not depend on which state an installation was in. The consequence was not noticed
+ * until an upgrade was rehearsed end to end: a released v1.1.4 installation has no ring and no root key, so
+ * it could not take a complete backup AT ALL. The one population that most needs a rollback set — the one
+ * about to be upgraded — was the one the backup command refused, and the only way past it was to invent a
+ * file at that name, which is worse than the absence: a placeholder is not a key, and restoring one puts an
+ * unusable artifact where the most sensitive file in the installation belongs.
+ *
+ * So the requirement follows the EVIDENCE IN THE SET, and the rule has three parts:
+ *
+ *   * NO RING, AND THE STATIC CUSTODY IS THERE — the root key may be absent. Nothing in that set is sealed
+ *     under a root key, and `custodian_kek` (which stays required) is what opens it.
+ *   * A RING — a valid root wrapping key IS required. A set holding a ring and no root is a sealed box with
+ *     no key: it restores, nothing opens it, and every item reads as unreadable, which is indistinguishable
+ *     from a correct erasure.
+ *   * A ROOT KEY THAT IS PRESENT IS ALWAYS CARRIED AND ALWAYS CHECKED, ring or not. An installation that has
+ *     one before it migrates gets it backed up, and a file at that name that is not a key is refused rather
+ *     than counted.
+ *
+ * The probe is `lstat`, not a read: a link or a directory named `kek-ring.json` is not a ring, and this
+ * decides a requirement rather than opening anything.
+ */
+export function backupSetHasRing(setDir: string): boolean {
+  const ring = join(setDir, COMPONENT_ARTIFACT_NAMES.keystore, KEK_RING_DIRNAME, KEK_RING_FILENAME);
+  const stats = lstatSync(ring, { throwIfNoEntry: false });
+  return stats !== undefined && stats.isFile();
+}
+
+/** The secret files a set MUST hold, given whether its keystore carries a ring. */
+export function requiredSecretFilesFor(ringPresent: boolean): readonly string[] {
+  return ringPresent
+    ? REQUIRED_SECRET_FILES
+    : REQUIRED_SECRET_FILES.filter((name) => name !== ROOT_KEY_SECRET_NAME);
+}
 
 /**
  * Phase 257 — checking a backup before the day you need it.

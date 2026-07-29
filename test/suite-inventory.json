@@ -1421,6 +1421,12 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "managed-custody-lifecycle.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }

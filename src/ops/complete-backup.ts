@@ -2,7 +2,16 @@ import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, statSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
-import { BACKUP_COMPONENT_IDS, REQUIRED_SECRET_FILES, type BackupComponentId } from './backup-components.js';
+import { MAX_ROOT_KEY_FILE_BYTES, decodeKey } from '../core/crypto/kek-ring.js';
+import {
+  BACKUP_COMPONENT_IDS,
+  COMPONENT_ARTIFACT_NAMES,
+  REQUIRED_SECRET_FILES,
+  ROOT_KEY_SECRET_NAME,
+  backupSetHasRing,
+  requiredSecretFilesFor,
+  type BackupComponentId,
+} from './backup-components.js';
 import { REQUIRED_COMPONENTS as INSPECTOR_REQUIRED_COMPONENTS } from './backup-inspect.js';
 import {
   CommandLedger,
@@ -78,12 +87,7 @@ export const BACKUP_MANIFEST_NAME = 'catalog-backup-manifest.json';
 export const BACKUP_MANIFEST_VERSION = 1;
 
 /** What each component is called inside a published set. Fixed, so the inspector and a restore both know. */
-export const COMPONENT_ARTIFACT_NAMES: Readonly<Record<BackupComponentId, string>> = Object.freeze({
-  database: 'catalog-backup.sql',
-  keystore: 'keystore-backup',
-  secrets: 'secrets-backup',
-  'promotion-records': 'promotion-records-backup',
-});
+export { COMPONENT_ARTIFACT_NAMES };
 
 /**
  * The components a set MUST hold to be a backup at all.
@@ -471,7 +475,12 @@ export function takeCompleteBackupWithoutVerifying(
     // component that exists in the model and not in this set is a recorded `present: false` rather than a
     // silence somebody later reads as "there were only three".
     const components = BACKUP_COMPONENT_IDS.map((id) => describeComponent(stagingDir, id));
-    assertRequiredSecretFiles(join(stagingDir, COMPONENT_ARTIFACT_NAMES.secrets));
+    // WHAT THIS SET NEEDS IS DECIDED BY WHAT IT HOLDS. A keystore with a ring in it must carry the root
+    // wrapping key that opens that ring; one without a ring is a static-custody installation, whose secrets
+    // are complete without a key that does not exist yet. Read from the STAGED copy — the set as it will be
+    // published — rather than from the live installation, so the requirement is a property of the artifact.
+    assertRequiredSecretFiles(join(stagingDir, COMPONENT_ARTIFACT_NAMES.secrets),
+      { ringPresent: backupSetHasRing(stagingDir) });
     for (const id of REQUIRED_COMPONENT_IDS) {
       const component = components.find((entry) => entry.id === id);
       if (component === undefined || !component.present) {
@@ -709,18 +718,44 @@ export function describeComponent(setDir: string, id: BackupComponentId): Backup
  * By NAME, never by content: this checks that six files exist, and opens none of them. The list is
  * `backup-components.ts`'s, which a Phase 256 test pins to what the shipped stacks actually declare.
  */
-export function assertRequiredSecretFiles(secretsCopy: string): void {
+export function assertRequiredSecretFiles(secretsCopy: string, options: { readonly ringPresent: boolean }): void {
   let present: readonly string[];
   try {
     present = readdirSync(secretsCopy);
   } catch {
     throw new MaintenanceRefused('the secrets component could not be listed');
   }
-  const missing = REQUIRED_SECRET_FILES.filter((name) => !present.includes(name));
+  const required = requiredSecretFilesFor(options.ringPresent);
+  const missing = required.filter((name) => !present.includes(name));
   if (missing.length > 0) {
     throw new MaintenanceRefused(
-      `the secrets component is missing ${missing.length} of the ${REQUIRED_SECRET_FILES.length} files a restore `
-      + `needs: ${missing.join(', ')}. Nothing was published.`);
+      `the secrets component is missing ${missing.length} of the ${required.length} files a restore `
+      + `needs: ${missing.join(', ')}.${options.ringPresent
+        ? ' This keystore holds a KEK ring, and a ring without the root wrapping key that seals it restores as'
+        + ' a sealed box with no key.'
+        : ''} Nothing was published.`);
+  }
+  // ---- WHERE A ROOT KEY IS REQUIRED, IT MUST BE A ROOT KEY AND NOT MERELY A NAME ----------------------
+  //
+  // A set holding a RING is sealed under that key: if what is at that name is a placeholder, a truncated
+  // write or a note somebody left there, the set restores into an installation that opens nothing, and it
+  // would have been called complete on the strength of the name alone.
+  //
+  // WHERE IT IS NOT REQUIRED, IT IS CARRIED AND NOT JUDGED. A static-custody set has nothing sealed under a
+  // root key; whatever is at that path is copied as it is found, and the transition classifier — which is
+  // where that file becomes load-bearing — is the thing that refuses a file that is not a key.
+  if (options.ringPresent && present.includes(ROOT_KEY_SECRET_NAME)) {
+    const path = join(secretsCopy, ROOT_KEY_SECRET_NAME);
+    const opened = readFileNoFollow(path, 'root wrapping key in the secrets component', MAX_ROOT_KEY_FILE_BYTES);
+    const decoded = decodeKey(opened.bytes.toString('utf8').trim());
+    opened.bytes.fill(0);
+    if (decoded === null) {
+      throw new MaintenanceRefused(
+        `the secrets component holds a ${ROOT_KEY_SECRET_NAME} that is not a root wrapping key: it does not `
+        + 'hold exactly 32 bytes, hex or base64 encoded. A set is not complete because a file has the right '
+        + 'name. Nothing was published.');
+    }
+    decoded.fill(0);
   }
 }
 
