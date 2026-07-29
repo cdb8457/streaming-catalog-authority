@@ -1,6 +1,7 @@
 import { Client } from 'pg';
 import { loadDbConfig, resolveAppEnv } from '../config/env.js';
 import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
+import { probeSidecarHealth } from '../core/crypto/local-sidecar-runtime.js';
 import { getPool, closePool } from '../db/pool.js';
 import { runDoctor, formatDoctorReport, formatDoctorJson } from './doctor.js';
 
@@ -33,6 +34,19 @@ async function main(): Promise<number> {
       custodianMode: custodianConfig.mode,
       appEnv: resolveAppEnv(),
       keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,
+      // PHASE 292. ONE HANDSHAKE, AND THE WHOLE OF IT GOES IN.
+      //
+      // This used to take a single NUMBER out of the health answer — the active generation's creation time —
+      // and throw the rest away, which is why the doctor could say a rotation was due and could not say
+      // whether the custodian was running a ring at all. The structured result is passed instead, so every
+      // custody check in the report comes from the same answer and none of them can disagree with another.
+      //
+      // `probeSidecarHealth` already validates against the strict schema and answers `null` for unreachable,
+      // not-ready and malformed alike. In sidecar mode the probe is ALWAYS attempted: a missing probe is a
+      // FAIL in the report rather than a check that quietly does not appear.
+      sidecarCustody: custodianConfig.mode === 'sidecar'
+        ? { attempted: true, health: await probeSidecarHealth(custodianConfig.socketPath) }
+        : undefined,
     });
     console.log(asJson ? formatDoctorJson(report) : formatDoctorReport(report));
     return report.ok ? 0 : 1;

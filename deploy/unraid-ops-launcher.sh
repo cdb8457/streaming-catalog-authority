@@ -8,22 +8,98 @@ set -eu
 
 REPO_DIR="${CATALOG_AUTHORITY_REPO_DIR:-/mnt/user/appdata/catalog/repo}"
 COMPOSE_FILE="${CATALOG_AUTHORITY_COMPOSE_FILE:-$REPO_DIR/docker-compose.unraid.runtime.yml}"
+BOOTSTRAP_FILE="${CATALOG_AUTHORITY_BOOTSTRAP_COMPOSE_FILE:-$REPO_DIR/docker-compose.unraid.bootstrap.yml}"
+MARKER_FILE="${CATALOG_AUTHORITY_CUSTODY_MODE_FILE:-$REPO_DIR/custody-runtime-mode}"
 BACKUP_DIR="${CATALOG_AUTHORITY_BACKUP_DIR:-/mnt/user/appdata/catalog/backups}"
 EVIDENCE_DIR="${CATALOG_AUTHORITY_EVIDENCE_DIR:-$BACKUP_DIR/evidence}"
 PREVIOUS_KEK_FILE="${CATALOG_AUTHORITY_PREVIOUS_KEK_FILE:-/mnt/user/appdata/catalog/secrets/custodian_kek_previous}"
 
 cd "$REPO_DIR"
 
-compose() {
-  docker compose -f "$COMPOSE_FILE" "$@"
+# ---- WHICH CUSTODY THIS INSTALLATION IS ON, ON EVERY COMMAND -------------------------------------------
+#
+# PHASE 293. This launcher used ONE compose file, which was right while there was only one. There are now two
+# selectable wirings — the canonical root-only steady state, and a temporary bootstrap overlay an
+# installation sits in until `ops:custody-cutover` finishes its migration — and a launcher that ignored the
+# selection would start the WRONG STACK. On an installation that has not migrated, the steady-state file has
+# no static KEK in it at all, so the sidecar refuses to start and every verb below fails behind it.
+#
+# The marker is therefore read on every command, and read the way the rest of this product reads it: one of
+# two words, and anything else — a link, a directory, a word this build does not define — is a REFUSAL rather
+# than a guess, because guessing wrong starts an installation on custody it cannot serve.
+CUSTODY_MODE_HELPER="${CATALOG_AUTHORITY_CUSTODY_MODE_HELPER:-$REPO_DIR/deploy/read-custody-mode.mjs}"
+
+# The mode, resolved ONCE per invocation into a variable — never into a string of arguments.
+#
+# WHAT THE FIRST VERSION DID AND WHY ALL OF IT WAS WRONG. It emitted `-f|path|-f|path`, set `IFS='|'` and
+# word-split a command substitution back into arguments. Three defects in four lines: `IFS='|'` does not
+# include newline, so the newline `printf` added stayed attached to the LAST compose filename; an unquoted
+# command substitution is GLOB-EXPANDED, so a path containing `*` or `?` became whatever matched it; and a
+# path containing the delimiter, or a space where the old code split on spaces, was silently torn in half.
+#
+# There is no string here now. The branches below pass `-f` and each path as separate quoted arguments, which
+# is the only way a path with a space in it survives.
+resolve_custody_mode() {
+  if [ ! -e "$MARKER_FILE" ] && [ ! -L "$MARKER_FILE" ]; then
+    CUSTODY_MODE="root-only"
+    return
+  fi
+  # A MARKER THAT EXISTS IS READ ON A DESCRIPTOR, WITHOUT FOLLOWING A LINK, by the same rule the product's
+  # own reader uses. `[ -L ]` followed by a redirect is a check on a name and then a read of that name, and
+  # the redirect follows a link the check refused. Refusing to guess is what this does instead.
+  if ! command -v node >/dev/null 2>&1; then
+    echo "refusing: this project declares a custody runtime mode and node is not available to read it" >&2
+    echo "the marker decides which key material the sidecar is wired to; this will not guess at it" >&2
+    exit 3
+  fi
+  if [ ! -f "$CUSTODY_MODE_HELPER" ]; then
+    echo "refusing: the custody mode reader is not beside this launcher" >&2
+    exit 3
+  fi
+  CUSTODY_MODE="$(node "$CUSTODY_MODE_HELPER" "$MARKER_FILE")" || {
+    status=$?
+    if [ "$status" = "4" ]; then
+      # ---- A MARKER THAT WAS THERE AND IS NOW GONE IS A RACE, NOT A STEADY STATE --------------------
+      #
+      # THE HOLE THIS CLOSES, AND IT IS THE SAME TOCTOU THE DESCRIPTOR READ EXISTS TO REMOVE. Getting here
+      # means the name check above SAW something and the descriptor read found nothing — so the marker was
+      # removed between the two. Treating that as "no marker, therefore the steady state" would let anything
+      # that can unlink one file downgrade an unmigrated installation onto the root-only stack, which is the
+      # exact outcome this launcher was changed to prevent. A genuinely absent marker never reaches this
+      # line: it returned the steady state before the helper was invoked.
+      echo "refusing: the custody runtime mode marker was removed while this command was reading it" >&2
+      echo "nothing was started. Re-run once whatever is changing that file has finished." >&2
+      exit 3
+    fi
+    echo "refusing: the custody runtime mode marker is not one this build will read" >&2
+    echo "run: npm run ops:custody-transition -- --project $REPO_DIR --plan" >&2
+    exit 3
+  }
 }
 
+compose() {
+  resolve_custody_mode
+  if [ "$CUSTODY_MODE" = "bootstrap" ]; then
+    docker compose -f "$COMPOSE_FILE" -f "$BOOTSTRAP_FILE" "$@"
+  else
+    docker compose -f "$COMPOSE_FILE" "$@"
+  fi
+}
+
+# ---- NOTHING THIS LAUNCHER RUNS MAY FETCH OR BUILD -----------------------------------------------------
+#
+# `docker compose run` and `up` apply the project's PULL POLICY by default, which for a missing image means
+# fetching one. Catalog Authority never downloads, scrapes, plays or acquires anything, and an ops launcher
+# that silently pulled an image would be the one command in this stack that reached a network. `--pull never`
+# makes that a property of every invocation rather than of an operator's memory.
+NO_FETCH="--pull never"
+
 run_ops() {
-  compose run -T --interactive=false --rm ops "$@"
+  compose run -T --interactive=false --rm $NO_FETCH ops "$@"
 }
 
 run_ops_silent() {
-  compose run -T --interactive=false --rm ops --silent "$@"
+  compose run -T --interactive=false --rm $NO_FETCH ops --silent "$@"
 }
 
 run_ui_live_check() {
@@ -31,7 +107,7 @@ run_ui_live_check() {
 }
 
 run_rewrap_plan() {
-  compose run -T --interactive=false --rm \
+  compose run -T --interactive=false --rm $NO_FETCH \
     -e CUSTODIAN_KEK_PREVIOUS_FILE=/run/secrets/custodian_kek_previous \
     -v "$PREVIOUS_KEK_FILE:/run/secrets/custodian_kek_previous:ro" \
     ops ops:rewrap-kek -- --plan --json
@@ -106,14 +182,14 @@ EOF
 
 case "${1:-}" in
   start-postgres)
-    compose up -d postgres
+    compose up -d $NO_FETCH --no-build postgres
     ;;
   start-ui)
-    compose up -d postgres app
+    compose up -d $NO_FETCH --no-build postgres app
     ;;
   restart-ui)
-    compose up -d postgres
-    compose up -d --force-recreate app
+    compose up -d $NO_FETCH --no-build postgres
+    compose up -d $NO_FETCH --no-build --force-recreate app
     ;;
   status)
     compose ps -a

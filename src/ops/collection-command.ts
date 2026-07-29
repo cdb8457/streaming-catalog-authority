@@ -16,6 +16,7 @@ import {
   createCollectionAuditRuntime,
   createCollectionRuntime,
   checkCollectionWriteGates,
+  describeCollectionWriteGates,
   queueCollectionPlan,
   readCollectionStatus,
   runCollectionReconcile,
@@ -36,6 +37,11 @@ import {
   renderCollectionHistory,
   type CollectionHistoryStore,
 } from './collection-history.js';
+import {
+  matchCatalogToLibrary,
+  renderLibraryMatch,
+  type LibraryMatchReport,
+} from './jellyfin-library-match.js';
 
 // Phase 272 — the collection lifecycle from a terminal, with the same gates and the same services.
 //
@@ -70,10 +76,10 @@ export const COLLECTION_EXIT_USAGE = 2;
 export const COLLECTION_EXIT_REFUSED = 3;
 
 export type CollectionCommandName =
-  | 'preview' | 'apply' | 'status' | 'audit' | 'repair' | 'reconcile' | 'revoke' | 'history';
+  | 'preview' | 'apply' | 'status' | 'match' | 'audit' | 'repair' | 'reconcile' | 'revoke' | 'history';
 
 const COMMANDS: readonly CollectionCommandName[] =
-  ['preview', 'apply', 'status', 'audit', 'repair', 'reconcile', 'revoke', 'history'];
+  ['preview', 'apply', 'status', 'match', 'audit', 'repair', 'reconcile', 'revoke', 'history'];
 
 export class CollectionCommandUsageError extends Error {
   readonly code = 'COLLECTION_COMMAND_USAGE_REJECTED';
@@ -171,6 +177,7 @@ export function collectionCommandUsage(): string {
     '  preview    compute what would happen and print the digest. Writes nothing, contacts nothing.',
     '  apply      queue a previewed plan. Requires --confirm-digest. Contacts nothing.',
     '  status     what this installation currently believes about its managed collections.',
+    '  match      which imported records your media server\'s library actually holds. READ-ONLY.',
     '  audit      compare that belief with the media server. READ-ONLY.',
     '  repair     apply a digest-confirmed repair. Writes durable state only.',
     '  reconcile  carry out queued work: create, adopt by token, make membership match.',
@@ -207,6 +214,7 @@ export type CollectionCommandOutcome =
   | { readonly kind: 'plan'; readonly plan: CollectionPlan }
   | { readonly kind: 'queued'; readonly plan: CollectionPlan; readonly queued: CollectionQueueResult }
   | { readonly kind: 'status'; readonly status: CollectionStatus }
+  | { readonly kind: 'match'; readonly match: LibraryMatchReport }
   | { readonly kind: 'audit'; readonly drift: CollectionDriftReport; readonly repair: CollectionRepairPlan }
   | { readonly kind: 'repaired'; readonly repair: CollectionRepairPlan; readonly result: CollectionRepairResult }
   | { readonly kind: 'reconciled'; readonly result: Awaited<ReturnType<typeof runCollectionReconcile>> }
@@ -253,6 +261,30 @@ export async function runCollectionCommand(
     if (deps.history === undefined) return refused('HISTORY_UNAVAILABLE', 'The collection history could not be read.');
     const entries = await deps.history.list(COLLECTION_HISTORY_MAX_ROWS);
     return { exitCode: COLLECTION_EXIT_OK, outcome: { kind: 'history', text: renderCollectionHistory(entries) } };
+  }
+
+  if (args.command === 'match') {
+    // A READ, ON ONE SWITCH. It borrows the AUDIT runtime — whose target's create/add/remove/delete methods
+    // throw — so this command has no write path in its object graph whatever the other three switches say.
+    // Their state is REPORTED rather than required: an operator asking "what would be found?" must not have
+    // to turn writing on to get an answer, and a report that did not say which switches were open would be a
+    // report somebody could misread as having been taken under a closed installation.
+    const built = createCollectionAuditRuntime({
+      pool: deps.pool, authority: deps.authority, fetch: deps.fetch ?? unavailableFetch, env,
+    });
+    if (!built.ok) return refused(built.refusal, built.message);
+    const match = await matchCatalogToLibrary({
+      reader: deps.reader,
+      authority: deps.authority,
+      target: built.runtime.target,
+      requires: built.runtime.requires,
+      gates: describeCollectionWriteGates(env),
+    });
+    // DELIBERATELY NOT RECORDED IN THE DURABLE HISTORY. Every other entry in that table describes a DECISION
+    // about a collection — planned, queued, audited, repaired, reconciled, revoked. This command names no
+    // collection and authorises nothing, so a row for it would put a read with no subject into a ledger whose
+    // rows are read as intent. It also keeps the claim simple: this command writes nothing, anywhere.
+    return { exitCode: COLLECTION_EXIT_OK, outcome: { kind: 'match', match } };
   }
 
   if (args.command === 'preview') {
@@ -505,6 +537,12 @@ export function renderCollectionOutcome(outcome: CollectionCommandOutcome, json:
         ].join('\n');
     case 'status':
       return json ? JSON.stringify(outcome.status, null, 2) : renderCollectionStatus(outcome.status);
+    case 'match':
+      // The JSON is the SAME document the text is rendered from, and it already carries no title, no
+      // reference value and no media-server id — so there is nothing to redact out of it on the way past.
+      return json
+        ? JSON.stringify({ report: COLLECTION_COMMAND_REPORT, match: outcome.match }, null, 2)
+        : renderLibraryMatch(outcome.match);
     case 'audit':
       return json
         ? JSON.stringify({ report: COLLECTION_COMMAND_REPORT, drift: outcome.drift, repair: outcome.repair }, null, 2)

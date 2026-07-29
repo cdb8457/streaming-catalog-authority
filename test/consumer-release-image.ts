@@ -291,6 +291,7 @@ const sources: BundleSources = {
   setupPowerShell: read('deploy/local-runtime-setup.ps1'),
   arcaneCompose: read('docker-compose.arcane.yml'),
   arcaneSetupBash: read('deploy/arcane-setup.sh'),
+  custodyHelper: read('deploy/write-custody-secret.mjs'),
 };
 const options: BundleOptions = {
   image: { repository: RELEASE_IMAGE_REPOSITORY, tag: RELEASE_IMAGE_TAG },
@@ -308,9 +309,12 @@ test('the bundle contains what an ordinary user needs, and nothing that implies 
     // Phase 259 adds the worked catalog snapshot: the first thing an operator needs in order to DO anything
     // with the installation is the format of the file they have to write, and a documentation search is not
     // a substitute for a valid example sitting next to the README.
+    // Phase 284 adds the custody writer. BOTH setup scripts delegate the creation of the root wrapping key to
+    // it and REFUSE rather than continue if it is not beside them, so a bundle without it is a bundle whose
+    // setup stops on the first run — the same mistake as the missing Arcane pair above, one release later.
     ['README.md', 'docker-compose.yml', 'setup.sh', 'setup.ps1', 'docker-compose.arcane.yml',
-      'arcane-setup.sh', 'example-catalog-snapshot.json', '.env', '.env.example', 'VERSION',
-      BUNDLE_MANIFEST_FILENAME, BUNDLE_CHECKSUM_FILENAME].join(','),
+      'arcane-setup.sh', 'write-custody-secret.mjs', 'example-catalog-snapshot.json', '.env', '.env.example',
+      'VERSION', BUNDLE_MANIFEST_FILENAME, BUNDLE_CHECKSUM_FILENAME].join(','),
     'the bundle is exactly these files');
 
   for (const forbidden of ['package.json', 'package-lock.json', 'tsconfig.json', 'Dockerfile', 'Dockerfile.runtime']) {
@@ -335,6 +339,7 @@ test('every bundle file is LF-terminated even when assembled from a CRLF checkou
     setupPowerShell: crlf(sources.setupPowerShell),
     arcaneCompose: crlf(sources.arcaneCompose),
     arcaneSetupBash: crlf(sources.arcaneSetupBash),
+    custodyHelper: crlf(sources.custodyHelper),
   }, options);
   for (const file of bundle.files) {
     assert(!file.contents.includes('\r'), `${file.path} carries no carriage return — a CRLF .sh is not a script`);
@@ -527,6 +532,19 @@ for (const [label, script, resolve] of [
     const out = assembleBundle();
     try {
       const run = runScript(shell, join(out, script), { cwd: out });
+      // PHASE 284. THE SHIPPED BEHAVIOUR ON A HOST THAT CANNOT HOLD CUSTODY IS A REFUSAL, and this asserts
+      // that rather than arranging for it not to happen. The root wrapping key must end up owned by the
+      // sidecar's runtime user and readable by nobody else; a host with no file ownership model cannot
+      // produce that, and `write-custody-secret.mjs` creates nothing there. Weakening the helper so this
+      // assertion could stay `status === 0` would be shipping an unprotected root key to make a test green.
+      if (label === 'Bash' && process.platform === 'win32') {
+        assert(run.status !== 0, `setup.sh refuses where custody cannot be established — ${describeRun(run)}`);
+        assert((run.stderr ?? '').includes('NOTHING WAS CREATED'), `and says nothing was created — ${describeRun(run)}`);
+        assertEq(existsSync(join(out, 'secrets', 'custodian_root_key')), false,
+          'and no root wrapping key is left behind');
+        console.log('        (this host has no file ownership model: the refusal is what is asserted)');
+        return;
+      }
       assertEq(run.status, 0, `${script} exits cleanly — ${describeRun(run)}`);
       const stdout = run.stdout ?? '';
 

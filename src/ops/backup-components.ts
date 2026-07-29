@@ -1,3 +1,6 @@
+import { lstatSync } from 'node:fs';
+import { join } from 'node:path';
+import { KEK_RING_DIRNAME, KEK_RING_FILENAME } from '../core/crypto/kek-ring.js';
 import { parseMount, parseYaml, asMap, asList, type YamlMap, type YamlValue } from './minimal-yaml.js';
 
 // Phase 256 — what a complete backup of this installation actually is.
@@ -217,12 +220,74 @@ export const REQUIRED_SECRET_FILES: readonly string[] = [
   'admin_database_url',
   'completion_secret',
   'custodian_kek',
+  // PHASE 282. The ROOT WRAPPING KEY that seals the sidecar-managed KEK ring.
+  //
+  // IT IS ON THIS LIST FOR THE SAME REASON THE KEK IS, AND MORE SO. A backup holding the ring and not the
+  // root key is a backup of a sealed box with no key: the ring restores, nothing opens it, and every item
+  // reads as unreadable — which is indistinguishable from a correct erasure, so nothing reports it. It is
+  // required from the moment the stack declares it rather than from the moment an installation migrates,
+  // because a list that depended on which state an installation was in would be a list nobody could check.
+  'custodian_root_key',
   'database_url',
   'operator_ui_token',
   'postgres_password',
 ];
 
 export const OPTIONAL_SECRET_FILES: readonly string[] = ['app_password'];
+
+/** The one secret whose necessity depends on what the keystore in the same set actually holds. */
+export const ROOT_KEY_SECRET_NAME = 'custodian_root_key';
+
+/** Where each component lands inside a set. Here rather than in the writer, because the readers need it too. */
+export const COMPONENT_ARTIFACT_NAMES: Readonly<Record<BackupComponentId, string>> = Object.freeze({
+  database: 'catalog-backup.sql',
+  keystore: 'keystore-backup',
+  secrets: 'secrets-backup',
+  'promotion-records': 'promotion-records-backup',
+});
+
+/**
+ * Does the keystore in this set hold a KEK ring?
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHY THIS QUESTION DECIDES WHETHER A ROOT WRAPPING KEY IS REQUIRED.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * THE GAP THIS CLOSES, AND IT WAS A REAL ONE. `custodian_root_key` was on the required list from the moment
+ * the stack DECLARED the root key, not from the moment an installation migrated onto a ring — deliberately,
+ * so that the list did not depend on which state an installation was in. The consequence was not noticed
+ * until an upgrade was rehearsed end to end: a released v1.1.4 installation has no ring and no root key, so
+ * it could not take a complete backup AT ALL. The one population that most needs a rollback set — the one
+ * about to be upgraded — was the one the backup command refused, and the only way past it was to invent a
+ * file at that name, which is worse than the absence: a placeholder is not a key, and restoring one puts an
+ * unusable artifact where the most sensitive file in the installation belongs.
+ *
+ * So the requirement follows the EVIDENCE IN THE SET, and the rule has three parts:
+ *
+ *   * NO RING, AND THE STATIC CUSTODY IS THERE — the root key may be absent. Nothing in that set is sealed
+ *     under a root key, and `custodian_kek` (which stays required) is what opens it.
+ *   * A RING — a valid root wrapping key IS required. A set holding a ring and no root is a sealed box with
+ *     no key: it restores, nothing opens it, and every item reads as unreadable, which is indistinguishable
+ *     from a correct erasure.
+ *   * A ROOT KEY THAT IS PRESENT IS ALWAYS CARRIED AND ALWAYS CHECKED, ring or not. An installation that has
+ *     one before it migrates gets it backed up, and a file at that name that is not a key is refused rather
+ *     than counted.
+ *
+ * The probe is `lstat`, not a read: a link or a directory named `kek-ring.json` is not a ring, and this
+ * decides a requirement rather than opening anything.
+ */
+export function backupSetHasRing(setDir: string): boolean {
+  const ring = join(setDir, COMPONENT_ARTIFACT_NAMES.keystore, KEK_RING_DIRNAME, KEK_RING_FILENAME);
+  const stats = lstatSync(ring, { throwIfNoEntry: false });
+  return stats !== undefined && stats.isFile();
+}
+
+/** The secret files a set MUST hold, given whether its keystore carries a ring. */
+export function requiredSecretFilesFor(ringPresent: boolean): readonly string[] {
+  return ringPresent
+    ? REQUIRED_SECRET_FILES
+    : REQUIRED_SECRET_FILES.filter((name) => name !== ROOT_KEY_SECRET_NAME);
+}
 
 /**
  * Phase 257 — checking a backup before the day you need it.
@@ -295,6 +360,10 @@ const CONTAINER_PATH_COVERAGE: Readonly<Record<string, MountCoverage>> = {
   '/var/lib/catalog/promotion-records': { kind: 'component', component: 'promotion-records' },
   // Phase 259. Read-only, operator-owned, and not state this stack creates — see the exclusion text.
   '/var/lib/catalog/import': { kind: 'excluded', exclusion: 'operator-supplied-input' },
+  // Phase 282/284. The root wrapping key is bind-mounted rather than delivered as a Compose secret, because
+  // outside Swarm a `file:` secret IS a bind mount and `uid`/`gid`/`mode` are ignored — so the only way to
+  // give the sidecar an owner-only file is to mount one. It is the secrets component either way.
+  '/run/catalog-custody': { kind: 'component', component: 'secrets' },
   '/run/catalog-sidecar': { kind: 'excluded', exclusion: 'runtime-socket' },
   '/backups': { kind: 'excluded', exclusion: 'backup-destination' },
 };
@@ -312,6 +381,13 @@ export function coverageForTarget(target: string): MountCoverage | null {
     // Docker secrets, and the one stack that bind-mounts a secret file at its own host path. Anything under a
     // `secrets` directory is the secrets component; there is no other kind of thing kept there.
     if (candidate.startsWith('/run/secrets/') || /(?:^|\/)secrets(?:\/|$)/.test(candidate)) {
+      return { kind: 'component', component: 'secrets' };
+    }
+    // Phase 284. The custody directory holds the root wrapping key, bind-mounted rather than delivered as a
+    // Compose secret — outside Swarm a `file:` secret IS a bind mount and uid/gid/mode are ignored, so a
+    // bind is the only way to give the sidecar a file whose ownership it can rely on. It is the secrets
+    // component wherever it is mounted.
+    if (candidate === '/run/catalog-custody' || candidate.startsWith('/run/catalog-custody/')) {
       return { kind: 'component', component: 'secrets' };
     }
   }

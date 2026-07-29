@@ -36,10 +36,24 @@ test('runtime compose preserves sidecar service after production custody switch'
   assert(sidecar.includes('SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock'), 'socket env');
   assert(sidecar.includes('SIDECAR_STATE_DIR: /var/lib/catalog-sidecar/state'), 'state env');
   assert(sidecar.includes('SIDECAR_COMPLETION_SECRET_FILE: /run/secrets/completion_secret'), 'completion secret env');
-  assert(sidecar.includes('SIDECAR_KEK_FILE: /run/secrets/custodian_kek'), 'kek env');
+  // PHASE 289. THE STEADY STATE IS ROOT-ONLY, AND THE STATIC KEK IS IN THE TEMPORARY OVERLAY.
+  //
+  // This used to require the static KEK in the shipped runtime file, which is what every installation ran
+  // forever — with a comment telling the operator to hand-edit three lines after migrating and an upgrade
+  // silently putting them back. The property that matters is unchanged: an installation that has not
+  // migrated must still be able to get its static key, and that is what the overlay is for.
+  assert(sidecar.includes('SIDECAR_ROOT_KEY_FILE: /run/catalog-custody/custodian_root_key'), 'root key env');
+  assert(!sidecar.includes('SIDECAR_KEK_FILE'), 'and no static KEK in the steady state');
+  const overlay = read('docker-compose.unraid.bootstrap.yml');
+  assert(overlay.includes('SIDECAR_KEK_FILE: /run/secrets/custodian_kek'), 'the overlay wires the static KEK');
   assert(sidecar.includes('NPM_CONFIG_CACHE: /tmp/npm-cache'), 'npm cache stays on tmpfs');
   assert(sidecar.includes('command: ["ops:sidecar-daemon", "--", "--serve"]'), 'serve command');
-  assert(sidecar.includes('test -S /run/catalog-sidecar/catalog-sidecar.sock'), 'socket healthcheck');
+  // PHASE 284. NOT a socket-FILE test. A socket appears the instant `listen` is called and survives a crashed
+  // process, and a daemon that serves it while unable to read its keystore fails every request — which the app
+  // in front of it renders as an empty catalog with no error anywhere. The check is a handshake the daemon
+  // answers only after exercising its custodian.
+  assert(!sidecar.includes('test -S /run/catalog-sidecar/catalog-sidecar.sock'), 'no socket-file healthcheck');
+  assert(sidecar.includes('ops:sidecar-health'), 'the healthcheck is a real handshake');
   assert((compose.match(/CUSTODIAN_MODE: sidecar/g) ?? []).length >= 2, 'app and ops switched to sidecar by Phase 197');
   assert((compose.match(/CUSTODIAN_SIDECAR_SOCKET_PATH:/g) ?? []).length >= 2, 'app and ops sidecar socket configured by Phase 197');
 });

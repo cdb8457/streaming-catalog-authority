@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Catalog Authority — Phases 266-272 Jellyfin collection lifecycle acceptance orchestrator.
+# Catalog Authority — Phases 266-276 Jellyfin collection lifecycle acceptance orchestrator.
 #
 # WHAT THIS PROVES THAT NOTHING ELSE DOES. The unit suites drive the modules against injected transports and
 # an embedded database. This drives the SHIPPED PRODUCT: the release bundle, extracted; the production image;
@@ -15,26 +15,43 @@
 # IT IS AN ACCEPTANCE GATE, NOT A PUBLISH STEP. It builds an image with a local-only tag, never logs in to a
 # registry, never pushes, never tags, never uploads a release asset.
 #
-# WHAT IT ESTABLISHES, IN ORDER:
-#   1. DISABLED IS THE DEFAULT. The shipped stack, with no override, contacts nothing and says so.
-#   2. READ-ONLY DISCOVERY. With networking on, it counts and names no media item.
-#   3. ZERO-WRITE PREVIEW. A plan is computed and no row, event, ledger row or external request appears.
-#   4. WRITES STAY REFUSED until the separate switch is on, even with a correct digest.
-#   5. EXPLICIT QUEUE. With the switch on, the exact digest queues durable intents and sends nothing.
-#   6. DURABLE EXECUTION. A reconcile pass creates the collections on the fake server.
-#   7. AMBIGUOUS RECOVERY. A create whose response is LOST is adopted by token, with no duplicate.
-#   8. IDEMPOTENCY. A second reconcile does nothing at all.
-#   9. REVOKE. A forgotten record's external copy comes back.
-#  10. RESTART PERSISTENCE. The application and database survive a stop/start while the external fake
+# THE SNAPSHOT IS PRODUCED, NOT COPIED (Phase 274). The file this run imports does not exist in the
+# repository. It is emitted during the run by `ops:catalog-snapshot-produce` from an operator-supplied EXPORT
+# of an external system — a different, closed schema — and the SHIPPED IMAGE is then made to produce the same
+# bytes from the same input, so determinism is proved across two environments rather than asserted in one.
+#
+# WHAT IT ESTABLISHES, IN THE ORDER IT ESTABLISHES IT:
+#   1. THE SNAPSHOT IS PRODUCED OFFLINE from an external export, atomically, with no network, no acquisition
+#      and no media access — and the same export produces byte-identical output inside the shipped image.
+#   2. DISABLED IS THE DEFAULT. The shipped stack, with no override, contacts nothing and says so.
+#   3. EVERY WRITE GATE CLOSED, AND A REFUSAL THAT NAMES ONE. Proved BEFORE anything is written, because a
+#      later write that worked on an already-open gate would make the rest of this file prove nothing.
+#   4. READ-ONLY MATCHING: which imported records the library actually holds, on the read switch alone,
+#      writing nothing, and reporting UNKNOWN rather than absence when the library cannot be read.
+#   5. READ-ONLY DISCOVERY. With networking on, it counts and names no media item.
+#   6. ZERO-WRITE PREVIEW. A plan is computed and no row, event, ledger row or external request appears.
+#   7. WRITES STAY REFUSED until the separate switches are on, even with a correct digest.
+#   8. EXPLICIT QUEUE. With the switches on, the exact digest queues durable intents and sends nothing.
+#   9. DURABLE EXECUTION. A reconcile pass creates the collections on the fake server.
+#  10. AMBIGUOUS RECOVERY. A create whose response is LOST is adopted by token, with no duplicate.
+#  11. IDEMPOTENCY. A second reconcile does nothing at all.
+#  12. RESTART PERSISTENCE. The application and database survive a stop/start while the external fake
 #      Jellyfin remains running, just as a real media server would.
-#  11. PARTIAL ERASURE. Forgetting ONE member takes its library items out and leaves the collection standing.
-#  12. DRIFT AUDIT AND GATED REPAIR. A collection deleted on the server is detected, and the repair is
+#  13. MEMBERSHIP DRIFT injected behind the product's back through the fake server's TEST-ONLY admin surface,
+#      then audited (read-only), a listing failure reported as unknown and never repairable with a retry that
+#      judges it again, a stale and a wrong repair confirmation both refused, the repair confirmed, the
+#      ordinary reconcile run, and EXACT membership verified.
+#  14. PARTIAL ERASURE. Forgetting ONE member takes its library items out and leaves the collection standing.
+#  15. DRIFT AUDIT AND GATED REPAIR. A collection deleted on the server is detected, and the repair is
 #      digest-confirmed and writes durable state only.
-#  13. OPERATOR CLI PARITY. The same lifecycle, headless, through the same services and the same gates.
-#  14. BROWSER-DRIVEN REMOVAL, END TO END. The panel previews a whole-collection revoke, confirms it by its
+#  16. OPERATOR CLI PARITY. The same lifecycle, headless, through the same services and the same gates.
+#  17. BROWSER-DRIVEN REMOVAL, END TO END. The panel previews a whole-collection revoke, confirms it by its
 #      own digest, queues it, carries it out with its own Revoke control, and then reads the media server back
 #      through the product's own discovery surface to see it gone. This script does not revoke for it.
-#  15. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
+#  18. THE STACK IS LEFT AT ZERO Catalog-Authority-managed artifacts, and the collection this product never
+#      created is still there — a cleanup that took somebody else's collection would be far worse than one
+#      that left its own.
+#  19. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
 #
 # PREREQUISITES: a running Docker daemon, `node`, and the pinned acceptance harness in deploy/ci/acceptance/.
 # FAIL vs SKIP is explicit and identical to Phases 248 and 262:
@@ -56,7 +73,10 @@ STAGING_DIR="${JF_STAGING_DIR:-${REPO_ROOT}/dist/jellyfin-acceptance-staging}"
 BUNDLE_DIR="${REPO_ROOT}/dist/jellyfin-acceptance-bundle"
 ARCHIVE_DIR="${REPO_ROOT}/dist/jellyfin-acceptance-archive"
 BROWSER_DIR="${REPO_ROOT}/deploy/ci/acceptance"
-FIXTURE="${BROWSER_DIR}/fixtures/jellyfin-acceptance-snapshot.json"
+# Phase 274. The fixture is an EXPORT FROM AN EXTERNAL SYSTEM, not a ready-made canonical snapshot. The
+# snapshot this run imports is PRODUCED from it, by the product's own command, during the run.
+EXPORT_FIXTURE="${BROWSER_DIR}/fixtures/jellyfin-acceptance-export.json"
+SNAPSHOT_NAME="jellyfin-acceptance-snapshot.json"
 OVERRIDE="${BROWSER_DIR}/docker-compose.jellyfin-fake.yml"
 EXTRACTED=""
 RC_COMPOSE_ATTEMPTED=0
@@ -90,6 +110,21 @@ digits_or_die() {
     ''|*[!0-9]*) echo "FAIL: ${2} did not return a number — the measurement failed, so nothing may be concluded from it" >&2; exit 1 ;;
   esac
   printf '%s' "${1}"
+}
+
+# The same discipline as digits_or_die, for a DIGEST. Two unreadable digests compare EQUAL to each other,
+# so a broken measurement on both sides would turn "the shipped image produced the same bytes" into a
+# vacuous pass — which is precisely the shape of false proof this gate exists to refuse. A digest that is
+# not 64 hexadecimal characters is a failed measurement, and a failed measurement ends the run.
+hex64_or_die() {
+  case "${1}" in
+    *[!0-9a-f]*|"") echo "FAIL: ${2} is not a digest — the measurement failed, so nothing may be concluded from it" >&2; exit 1 ;;
+  esac
+  if [ "${#1}" -ne 64 ]; then
+    echo "FAIL: ${2} is not a 64-character digest — the measurement failed, so nothing may be concluded from it" >&2
+    exit 1
+  fi
+  printf %s "${1}"
 }
 
 skip() {
@@ -155,7 +190,11 @@ command -v node >/dev/null 2>&1 || skip "node is not installed"
 command -v docker >/dev/null 2>&1 || skip "the docker CLI is not installed"
 docker info >/dev/null 2>&1 || skip "the Docker daemon is not reachable"
 [ -f "${BROWSER_DIR}/jellyfin.spec.mjs" ] || fail "the Jellyfin acceptance spec is missing at ${BROWSER_DIR}"
-[ -f "${FIXTURE}" ] || fail "the acceptance snapshot fixture is missing at ${FIXTURE}"
+[ -f "${EXPORT_FIXTURE}" ] || fail "the external-export fixture is missing at ${EXPORT_FIXTURE}"
+# A ready-made canonical snapshot must NOT be sitting there to be copied: while one exists, this gate could
+# silently go back to copying it and the claim "the snapshot was produced during the run" becomes unfalsifiable.
+[ -e "${BROWSER_DIR}/fixtures/${SNAPSHOT_NAME}" ] \
+  && fail "a ready-made canonical snapshot exists in fixtures/ — this gate must PRODUCE its snapshot, not copy one"
 [ -f "${OVERRIDE}" ] || fail "the fake-Jellyfin compose override is missing at ${OVERRIDE}"
 [ -f "${BROWSER_DIR}/fake-jellyfin/server.mjs" ] || fail "the fake Jellyfin server is missing"
 if [ ! -d "${BROWSER_DIR}/node_modules/@playwright/test" ]; then
@@ -230,10 +269,48 @@ printf '%s\n' "${JELLYFIN_KEY}" > "${EXTRACTED}/secrets/jellyfin_api_key"
 chmod 644 "${EXTRACTED}/secrets/jellyfin_api_key"
 info "secrets generated; operator token and Jellyfin API key written to files and masked"
 
-step "place the offline snapshot in the shipped read-only import folder"
+# ---------------------------------------------------------------------------------------------------------
+# 3b. PHASE 274 — PRODUCE the snapshot, offline, from an operator-supplied export of an EXTERNAL system.
+#
+# Nothing is copied. The file the shipped runtime imports below is emitted HERE, during this run, by the
+# product's own `ops:catalog-snapshot-produce` from `fixtures/jellyfin-acceptance-export.json`. That fixture is
+# an EXPORT — a different, closed schema — so the canonical snapshot cannot have been sitting in the repository
+# ready to be used.
+# ---------------------------------------------------------------------------------------------------------
+step "PRODUCE the offline snapshot from an external export (no network, no acquisition, no media access)"
 mkdir -p "${EXTRACTED}/import"
-cp "${FIXTURE}" "${EXTRACTED}/import/jellyfin-acceptance-snapshot.json"
-info "snapshot (${RECORD_COUNT} records) placed in ./import/"
+[ -e "${EXTRACTED}/import/${SNAPSHOT_NAME}" ] && fail "a snapshot already exists in the import folder before it was produced"
+produce_json="$( node --import tsx src/ops/catalog-snapshot-produce-cli.ts \
+  --from "${EXPORT_FIXTURE}" --out "${EXTRACTED}/import/${SNAPSHOT_NAME}" --json )" \
+  || { printf '%s\n' "${produce_json}" >&2; fail "producing the snapshot from the external export failed"; }
+read_produced() {
+  local raw
+  raw="$( printf '%s' "${produce_json}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).$1))}catch(e){process.stdout.write('UNREADABLE')}})" )"
+  printf '%s' "${raw}"
+}
+produced_records="$(digits_or_die "$(read_produced records)" "the produced record count")"
+[ "${produced_records}" = "${RECORD_COUNT}" ] \
+  || fail "the producer emitted ${produced_records} records, expected ${RECORD_COUNT}"
+# THE REPORT SAYS THE INPUT WAS EXTERNAL, AND NOT WHICH SYSTEM IT CAME FROM. The label lives in the SNAPSHOT,
+# which is checked separately below; a support report that named the operator's external tool would be a
+# support report that travels further than the fact it is describing.
+for declared in "provenance:external-input" "network:none" "acquisition:external-input-only" "mediaAccess:none" "symlinksCreated:0"; do
+  field="${declared%%:*}"; want="${declared#*:}"
+  [ "$(read_produced "${field}")" = "${want}" ] || fail "the producer did not declare ${field}=${want}"
+done
+[ -s "${EXTRACTED}/import/${SNAPSHOT_NAME}" ] || fail "the producer wrote no snapshot"
+HOST_CONTENT_DIGEST="$(hex64_or_die "$(read_produced contentDigest)" "the produced content digest")"
+# THE SNAPSHOT KEEPS THE REAL PROVENANCE, and that is where it belongs: every derived record id is a function
+# of it. Checked on the FILE, because the report deliberately no longer carries it.
+grep -q '"source": "external.acceptance-external"' "${EXTRACTED}/import/${SNAPSHOT_NAME}" \
+  || fail "the produced snapshot does not carry external.<system> provenance in its own source field"
+# The producer's report is redaction-safe: no title, no reference value, and NOT the external system's label.
+for forbidden in "${SECRET_REF}" 'Acceptance Collection One' 'Unrelated Record' 'acceptance-external'; do
+  case "${produce_json}" in *"${forbidden}"*) fail "the producer's report echoed content it must not";; esac
+done
+# The EXPORT goes into the import folder too, so the SHIPPED IMAGE can produce from the same input below.
+cp "${EXPORT_FIXTURE}" "${EXTRACTED}/import/jellyfin-acceptance-export.json"
+info "produced ${produced_records} records from an external export; content digest ${HOST_CONTENT_DIGEST:0:16}"
 
 # ---------------------------------------------------------------------------------------------------------
 # 4. LEG ZERO — the SHIPPED stack, with no override at all. Nothing may be contacted.
@@ -251,6 +328,25 @@ wait_for_health() {
   if [ -z "${healthy}" ]; then
     echo "the stack never became healthy; diagnostics follow:" >&2
     ( cd "${EXTRACTED}" && docker compose ps && docker compose logs --tail 120 ) >&2 || true
+    fail "${1}"
+  fi
+}
+
+wait_for_fake() {
+  fake_ready=""
+  for _ in $(seq 1 60); do
+    if jf_compose exec -T jellyfin-fake node -e \
+      "const k=require('fs').readFileSync(process.env.JELLYFIN_FAKE_API_KEY_FILE,'utf8').trim();fetch('http://127.0.0.1:8096/System/Info',{headers:{'x-emby-token':k}}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" \
+      >/dev/null 2>&1; then
+      fake_ready=yes
+      break
+    fi
+    sleep 1
+  done
+  if [ -z "${fake_ready}" ]; then
+    echo "the fake Jellyfin listener never became ready; diagnostics follow:" >&2
+    jf_compose ps >&2 || true
+    jf_compose logs --tail 120 jellyfin-fake >&2 || true
     fail "${1}"
   fi
 }
@@ -275,20 +371,49 @@ info "a shipped installation with no configuration reports DISABLED and contacte
 # ---------------------------------------------------------------------------------------------------------
 # 5. Import the catalog, then bring the stack up WITH the fake server and the read-only switches.
 # ---------------------------------------------------------------------------------------------------------
-step "import the snapshot from the command line"
-import_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file jellyfin-acceptance-snapshot.json --apply )" \
+# The SHIPPED IMAGE carries the producer too, and produces the SAME BYTES from the same export. Run as a
+# PREVIEW, so it writes nothing at all — the import folder is read-only to the container, and a producer that
+# needed to write into it would be a workflow this product does not have.
+step "the shipped image produces the identical snapshot from the same export (determinism across environments)"
+image_produce="$( cd "${EXTRACTED}" && docker compose exec -T app npm run --silent ops:catalog-snapshot-produce -- \
+  --from jellyfin-acceptance-export.json --preview --json )" \
+  || { printf '%s\n' "${image_produce}" >&2; fail "the shipped image could not produce the snapshot"; }
+image_digest="$( printf '%s' "${image_produce}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).contentDigest))}catch(e){process.stdout.write('UNREADABLE')}})" )"
+image_digest="$(hex64_or_die "${image_digest}" "the in-image content digest")"
+[ "${image_digest}" = "${HOST_CONTENT_DIGEST}" ] \
+  || fail "the shipped image produced a different snapshot (${image_digest:0:16}) from the host (${HOST_CONTENT_DIGEST:0:16})"
+image_mode="$( printf '%s' "${image_produce}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).mode))}catch(e){process.stdout.write('UNREADABLE')}})" )"
+[ "${image_mode}" = "preview" ] || fail "the in-image production was not a preview"
+info "the shipped image produced byte-identical output from the same export"
+
+step "import the PRODUCED snapshot from the command line"
+import_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file "${SNAPSHOT_NAME}" --apply )" \
   || fail "the import exited non-zero"
 printf '%s\n' "${import_out}" | grep -qE "^ +create +${RECORD_COUNT}$" || fail "the import did not create ${RECORD_COUNT} records"
+printf '%s\n' "${import_out}" | grep -qE "^ +source +external\.acceptance-external$" \
+  || { printf '%s\n' "${import_out}" >&2; fail "the imported records do not carry the external-input provenance"; }
 if printf '%s\n' "${import_out}" | grep -qF "${SECRET_REF}"; then fail "the import report echoed a provider reference value"; fi
-info "imported ${RECORD_COUNT} records"
+info "imported ${RECORD_COUNT} produced records, all carrying external provenance"
 
-step "restart the stack WITH the local fake Jellyfin, networking on and writes OFF"
+step "the produced snapshot is IDEMPOTENT: importing it a second time changes nothing"
+repeat_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file "${SNAPSHOT_NAME}" --apply )" \
+  || fail "the repeat import exited non-zero"
+printf '%s\n' "${repeat_out}" | grep -qE '^ +create +0$' || fail "the repeat import planned creates; it is not idempotent"
+printf '%s\n' "${repeat_out}" | grep -qE "^ +already present +${RECORD_COUNT}$" \
+  || fail "the repeat import did not recognise every produced record as already present"
+info "re-applying the produced snapshot created nothing"
+
+step "restart the stack WITH the local fake Jellyfin, and EVERY WRITE GATE CLOSED"
 cp "${OVERRIDE}" "${EXTRACTED}/docker-compose.jellyfin-fake.yml"
 mkdir -p "${EXTRACTED}/fake-jellyfin"
 cp "${BROWSER_DIR}/fake-jellyfin/server.mjs" "${EXTRACTED}/fake-jellyfin/server.mjs"
 ( cd "${EXTRACTED}" && docker compose down >/dev/null 2>&1 ) || true
-JELLYFIN_ALLOW_COLLECTION_WRITES=false PUBLISH_EXTERNAL_IDENTITY=deny jf_compose up -d >/dev/null
+# Phase 276: all three WRITE gates closed. Only the READ switch is on, because discovery and matching are
+# reads and a read is the only thing this stage is allowed to do.
+JELLYFIN_ALLOW_COLLECTION_WRITES=false JELLYFIN_ALLOW_LIVE_PUBLISH=false PUBLISH_EXTERNAL_IDENTITY=deny \
+  jf_compose up -d >/dev/null
 wait_for_health "the stack did not become healthy with the fake Jellyfin attached"
+wait_for_fake "the fake Jellyfin listener did not accept an authenticated read within the bounded wait"
 info "the stack is up with a fake Jellyfin on the compose network and no host port"
 
 count_rows() {
@@ -316,6 +441,18 @@ fake_member_count() {
 fake_first_collection_id() {
   jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/state').then(r=>r.json()).then(s=>process.stdout.write(String((s.collections[0]||{}).id||'')))" | tr -d '[:space:]'
 }
+# The SORTED member ids of the first collection. Phase 276 verifies EXACT membership after a repair, and a
+# count alone cannot tell "the right two items" from "two items, one of them wrong".
+fake_first_collection_ids() {
+  jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/state').then(r=>r.json()).then(s=>process.stdout.write((((s.collections[0]||{}).ids)||[]).slice().sort().join(',')))" | tr -d '[:space:]'
+}
+# How many collections on the fake carry THIS product's correlation marker. The cleanup claim is about these
+# and not about the foreign collection the fixture also holds, which must survive untouched.
+fake_managed_count() {
+  local raw
+  raw="$( jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/state').then(r=>r.json()).then(s=>process.stdout.write(String(s.managed)))" | tr -d '[:space:]' )"
+  digits_or_die "${raw}" "the fake server managed collection count"
+}
 
 items_before="$(count_rows items)"
 events_before="$(count_rows events)"
@@ -323,6 +460,70 @@ ledger_before="$(count_rows publish_ledger)"
 [ "${ledger_before}" = "0" ] || fail "a fresh installation already has ${ledger_before} publish ledger rows"
 [ "$(fake_collection_count)" = "0" ] || fail "the fake media server already holds collections"
 info "baseline: ${items_before} items, ${events_before} events, 0 ledger rows, 0 external collections"
+
+# ---------------------------------------------------------------------------------------------------------
+# 5b. PHASE 276 — EVERY WRITE GATE CLOSED, AND A REFUSAL THAT NAMES THE ONE THAT IS SHUT.
+#
+# Placed FIRST, deliberately. If a later stage's write worked because a gate was already open, the whole
+# lifecycle below would prove nothing about gating at all. This is the moment that establishes the starting
+# state, from the environment the container is actually running with AND from the product's own refusal.
+# ---------------------------------------------------------------------------------------------------------
+step "with every write gate closed, a queue is REFUSED and names the gate"
+[ "$(api_field /api/collections/status 'r.writesEnabled')" = "false" ] || fail "the collection-write gate is not closed"
+closed_apply="$( jf_compose exec -T app npm run --silent ops:collections -- apply \
+  --name 'Acceptance picks' --search 'Acceptance Collection' --confirm-digest "$(printf '0%.0s' $(seq 64))" 2>&1 || true )"
+printf '%s' "${closed_apply}" | grep -q 'WRITES_DISABLED' \
+  || { printf '%s\n' "${closed_apply}" >&2; fail "a closed write gate did not refuse the queue, or did not name itself"; }
+[ "$(count_rows managed_collections)" = "0" ] || fail "a refused queue wrote a managed collection row"
+[ "$(fake_collection_count)" = "0" ] || fail "a refused queue reached the media server"
+info "the queue was refused with WRITES_DISABLED, wrote nothing, and contacted nothing"
+
+# ---------------------------------------------------------------------------------------------------------
+# 5c. PHASE 275 — READ-ONLY MATCHING, on the read switch alone, with every write gate still closed.
+# ---------------------------------------------------------------------------------------------------------
+step "match the imported catalog against the library, read-only, with every write gate still closed"
+match_before_items="$(count_rows items)"
+match_before_history="$(count_rows collection_control_history)"
+match_json="$( jf_compose exec -T app npm run --silent ops:collections -- match --json 2>&1 )" \
+  || { printf '%s\n' "${match_json}" >&2; fail "the read-only match could not run on the read switch alone"; }
+match_field() {
+  printf '%s' "${match_json}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).match.$1))}catch(e){process.stdout.write('UNREADABLE')}})"
+}
+[ "$(match_field 'wrote')" = "nothing" ] || fail "the match did not declare that it wrote nothing"
+[ "$(match_field 'gates.collectionWritesEnabled')" = "false" ] || fail "the match ran with the collection-write gate open"
+[ "$(match_field 'gates.livePublishEnabled')" = "false" ] || fail "the match ran with the live-publish gate open"
+[ "$(match_field 'gates.externalIdentityAllowed')" = "false" ] || fail "the match ran with publish consent granted"
+[ "$(match_field 'libraryRead')" = "true" ] || fail "the match never consulted the library at all"
+[ "$(match_field 'libraryComplete')" = "true" ] || fail "the match did not read the library completely"
+# Two records carry a reference the fake library holds; one carries a reference it does not; one carries none.
+[ "$(digits_or_die "$(match_field 'counts.matched')" "the matched count")" = "2" ] || fail "the match did not find the two records the fake library holds"
+[ "$(digits_or_die "$(match_field 'counts.unmatched')" "the unmatched count")" = "1" ] || fail "the match did not report the one record the library lacks"
+[ "$(digits_or_die "$(match_field 'counts.noReferences')" "the no-reference count")" = "1" ] || fail "the match did not distinguish a record with no reference"
+[ "$(digits_or_die "$(match_field 'counts.unknown')" "the unknown count")" = "0" ] || fail "the match could not judge a record it should have"
+# It wrote nothing, anywhere — including the plan history, which every OTHER command writes to.
+[ "$(count_rows items)" = "${match_before_items}" ] || fail "the match created a record"
+[ "$(count_rows collection_control_history)" = "${match_before_history}" ] || fail "the match wrote a plan history row"
+[ "$(count_rows managed_collections)" = "0" ] || fail "the match recorded a managed collection"
+[ "$(fake_collection_count)" = "0" ] || fail "the match changed the media server"
+for forbidden in "${SECRET_REF}" "${JELLYFIN_KEY}" 'jf-item-' 'jf-col-' 'Acceptance Collection One' 'jellyfin-fake'; do
+  case "${match_json}" in *"${forbidden}"*) fail "the match report disclosed something it must never print";; esac
+done
+info "the match found 2, missed 1, could not match 1, wrote nothing and disclosed nothing"
+
+step "a match that cannot read the whole library reports UNKNOWN rather than a library full of absences"
+jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/fail-next?read=items&times=3',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
+  || fail "could not arm a bounded read failure through the client's retry budget"
+degraded_json="$( jf_compose exec -T app npm run --silent ops:collections -- match --json 2>&1 )" \
+  || { printf '%s\n' "${degraded_json}" >&2; fail "the match did not survive a failed library read"; }
+degraded_field() {
+  printf '%s' "${degraded_json}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).match.$1))}catch(e){process.stdout.write('UNREADABLE')}})"
+}
+[ "$(degraded_field 'libraryComplete')" = "false" ] || fail "a failed library read was reported as a complete one"
+[ "$(digits_or_die "$(degraded_field 'counts.unmatched')" "the degraded unmatched count")" = "0" ] \
+  || fail "a failed library read produced ABSENCES — 'I could not see it' was read as 'it is not there'"
+[ "$(digits_or_die "$(degraded_field 'counts.unknown')" "the degraded unknown count")" -ge "1" ] \
+  || fail "a failed library read produced no unknown verdict at all"
+info "a failed library read produced unknown verdicts and NOT ONE inferred absence"
 
 # ---------------------------------------------------------------------------------------------------------
 # 6. The browser legs. Each is run the same way, so a new one cannot be wired differently by accident.
@@ -383,7 +584,7 @@ info "no row, event, ledger entry or external collection; ${plans_recorded} prev
 # 7. Turn the write switches on, and queue the exact plan from the browser.
 # ---------------------------------------------------------------------------------------------------------
 step "restart with the collection-write switch and publish consent ON"
-JELLYFIN_ALLOW_COLLECTION_WRITES=true PUBLISH_EXTERNAL_IDENTITY=allow jf_compose up -d >/dev/null
+JELLYFIN_ALLOW_COLLECTION_WRITES=true JELLYFIN_ALLOW_LIVE_PUBLISH=true PUBLISH_EXTERNAL_IDENTITY=allow jf_compose up -d >/dev/null
 wait_for_health "the stack did not become healthy with writes enabled"
 [ "$(api_field /api/collections/status 'r.writesEnabled')" = "true" ] || fail "writes are still refused after turning the switches on"
 info "all four switches are on for this run"
@@ -452,7 +653,7 @@ history_before_restart="$(count_rows collection_control_history)"
 # reset. Stop the application/database boundary only; leave jellyfin-fake running exactly as a real server
 # would remain running while this product restarts.
 jf_compose stop app postgres >/dev/null
-JELLYFIN_ALLOW_COLLECTION_WRITES=true PUBLISH_EXTERNAL_IDENTITY=allow jf_compose up -d >/dev/null
+JELLYFIN_ALLOW_COLLECTION_WRITES=true JELLYFIN_ALLOW_LIVE_PUBLISH=true PUBLISH_EXTERNAL_IDENTITY=allow jf_compose up -d >/dev/null
 wait_for_health "the stack did not come back healthy after a restart"
 [ "$(count_rows managed_collections)" = "${PLAN_COLLECTIONS}" ] || fail "the managed collection did not survive a restart"
 [ "$(count_rows managed_collection_members)" = "${PLAN_MEMBERS}" ] || fail "the membership did not survive a restart"
@@ -464,6 +665,108 @@ step "real-browser acceptance: the history is still there after the restart"
 run_leg "@jf-history" "history"
 history_status="${LEG_STATUS}"
 if [ "${history_status}" -ne 0 ]; then dump_stack_logs; fi
+
+# ---------------------------------------------------------------------------------------------------------
+# 9b. PHASE 276 — MEMBERSHIP DRIFT, injected BEHIND THE PRODUCT'S BACK, then audited and repaired.
+#
+# The injection goes through the fake server's own test-only admin surface rather than through a Jellyfin
+# route, because that is the point: this is somebody opening Jellyfin's web UI and editing the collection by
+# hand. A mutation the product itself performed would prove nothing about drift.
+# ---------------------------------------------------------------------------------------------------------
+step "inject membership drift in BOTH directions through the fake-admin surface"
+drift_id="$(fake_first_collection_id)"
+[ -n "${drift_id}" ] || fail "there is no external collection to drift"
+intended_ids="$(fake_first_collection_ids)"
+[ -n "${intended_ids}" ] || fail "the collection holds nothing, so drift would prove nothing"
+[ "$(fake_member_count)" = "${PLAN_MEMBERS}" ] || fail "the collection does not hold ${PLAN_MEMBERS} items before drift"
+# One intended item taken OUT and one library item that belongs to no plan put IN — drift in both directions,
+# which is the case a one-sided comparison would half-miss.
+jf_compose exec -T -e DRIFT_ID="${drift_id}" jellyfin-fake node -e \
+  "fetch('http://127.0.0.1:8096/_control/membership?id='+encodeURIComponent(process.env.DRIFT_ID)+'&add=jf-item-3&remove=jf-item-1',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
+  || fail "could not inject membership drift on the fake server"
+drifted_ids="$(fake_first_collection_ids)"
+[ "${drifted_ids}" != "${intended_ids}" ] || fail "the drift injection changed nothing, so everything below would be vacuous"
+info "the collection now holds the wrong items, and this product has not been told"
+
+step "the audit NOTICES drift in both directions, and is a READ"
+audit_before_collections="$(count_rows managed_collections)"
+audit_before_members="$(count_rows managed_collection_members)"
+drift_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
+printf '%s' "${drift_json}" | grep -q '"verdict":"membership-drift"' \
+  || { echo "${drift_json}" >&2; fail "the audit did not notice the injected membership drift"; }
+printf '%s' "${drift_json}" | grep -q '"missing":1' || { echo "${drift_json}" >&2; fail "the audit did not see the item that was taken out"; }
+printf '%s' "${drift_json}" | grep -q '"extra":1' || { echo "${drift_json}" >&2; fail "the audit did not see the item that was put in"; }
+printf '%s' "${drift_json}" | grep -q '"wrote":"nothing"' || fail "the audit did not say it wrote nothing"
+[ "$(count_rows managed_collections)" = "${audit_before_collections}" ] || fail "the audit wrote a managed collection row"
+[ "$(count_rows managed_collection_members)" = "${audit_before_members}" ] || fail "the audit wrote a membership row"
+[ "$(fake_first_collection_ids)" = "${drifted_ids}" ] || fail "the audit changed the media server — an audit is a read"
+info "the audit reported 1 missing and 1 extra, and changed nothing on either side"
+
+step "a member listing that FAILS is UNKNOWN and never repairable, and a retry judges it again"
+jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/fail-next?read=members&times=3',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
+  || fail "could not arm a bounded member-listing failure through the client's retry budget"
+unknown_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
+printf '%s' "${unknown_json}" | grep -q '"verdict":"unknown"' \
+  || { echo "${unknown_json}" >&2; fail "a failed member listing was not reported as unknown"; }
+printf '%s' "${unknown_json}" | grep -q '"repair":"none"' \
+  || { echo "${unknown_json}" >&2; fail "an unknown finding was offered as repairable"; }
+retry_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
+printf '%s' "${retry_json}" | grep -q '"verdict":"membership-drift"' \
+  || { echo "${retry_json}" >&2; fail "the retry after a bounded failure did not judge the collection again"; }
+info "a failed listing was unknown and unrepairable; the immediate retry judged it correctly"
+
+step "a STALE repair confirmation is refused, and so is a wrong digest"
+stale_confirmation="$(printf '%s' "${retry_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).confirmation)})')"
+stale_digest="$(printf '%s' "${retry_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).repair.planDigest)})')"
+[ -n "${stale_digest}" ] || fail "the audit issued no repair digest"
+# THE WORLD MOVES between the audit and the confirmation: the drift is undone by hand, so the repair the
+# operator read is no longer the repair that would be applied.
+jf_compose exec -T -e DRIFT_ID="${drift_id}" jellyfin-fake node -e \
+  "fetch('http://127.0.0.1:8096/_control/membership?id='+encodeURIComponent(process.env.DRIFT_ID)+'&add=jf-item-1&remove=jf-item-3',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
+  || fail "could not undo the injected drift"
+stale_result="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' \
+  -d "{\"confirmation\":\"${stale_confirmation}\",\"confirmDigest\":\"${stale_digest}\"}" "${BASE_URL}/api/collections/repair")"
+printf '%s' "${stale_result}" | grep -q 'STALE' \
+  || { echo "${stale_result}" >&2; fail "a repair whose world had moved was accepted"; }
+printf '%s' "${stale_result}" | grep -q '"wrote":"nothing"' || fail "a refused repair did not say it wrote nothing"
+info "the stale repair was refused and wrote nothing"
+
+step "re-drift, confirm the repair by ITS digest, reconcile, and verify EXACT membership"
+jf_compose exec -T -e DRIFT_ID="${drift_id}" jellyfin-fake node -e \
+  "fetch('http://127.0.0.1:8096/_control/membership?id='+encodeURIComponent(process.env.DRIFT_ID)+'&add=jf-item-3&remove=jf-item-1',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
+  || fail "could not re-inject the membership drift"
+fresh_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
+fresh_confirmation="$(printf '%s' "${fresh_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).confirmation)})')"
+fresh_digest="$(printf '%s' "${fresh_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).repair.planDigest)})')"
+wrong_repair="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' \
+  -d "{\"confirmation\":\"${fresh_confirmation}\",\"confirmDigest\":\"$(printf 'f%.0s' $(seq 64))\"}" "${BASE_URL}/api/collections/repair")"
+printf '%s' "${wrong_repair}" | grep -q 'DIGEST_MISMATCH' || { echo "${wrong_repair}" >&2; fail "a wrong repair digest was accepted"; }
+# A refused repair consumed the confirmation, so a fresh audit issues a fresh one — which is the design.
+sync_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
+sync_confirmation="$(printf '%s' "${sync_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).confirmation)})')"
+sync_digest="$(printf '%s' "${sync_json}" | node -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{process.stdout.write(JSON.parse(s).repair.planDigest)})')"
+sync_result="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' \
+  -d "{\"confirmation\":\"${sync_confirmation}\",\"confirmDigest\":\"${sync_digest}\"}" "${BASE_URL}/api/collections/repair")"
+printf '%s' "${sync_result}" | grep -q '"code":"OPERATOR_UI_COLLECTION_REPAIRED"' \
+  || { echo "${sync_result}" >&2; dump_stack_logs; fail "the membership repair did not apply"; }
+printf '%s' "${sync_result}" | grep -q '"wrote":"durable collection state only"' || fail "the repair did not say what it wrote"
+# The repair really SCHEDULED a membership comparison — without this, the reconcile below could be doing the
+# work on its own and the repair would be an unproven step in the middle of a passing gate.
+printf '%s' "${sync_result}" | grep -q '"scheduled":1' \
+  || { echo "${sync_result}" >&2; fail "the repair scheduled no membership comparison, so the reconcile below would prove nothing about it"; }
+printf '%s' "${sync_result}" | grep -q '"rearmed":0' \
+  || { echo "${sync_result}" >&2; fail "a membership repair re-armed a collection, which is a different repair entirely"; }
+[ "$(fake_first_collection_ids)" = "${drifted_ids}" ] || fail "the repair ITSELF changed the media server"
+sync_reconcile="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/reconcile")"
+printf '%s' "${sync_reconcile}" | grep -q '"code":"OPERATOR_UI_COLLECTION_RECONCILED"' \
+  || { echo "${sync_reconcile}" >&2; fail "the reconcile after the membership repair did not run"; }
+[ "$(fake_first_collection_ids)" = "${intended_ids}" ] \
+  || { echo "${sync_reconcile}" >&2; dump_stack_logs; fail "the collection does not hold EXACTLY the intended items after the repair"; }
+[ "$(fake_member_count)" = "${PLAN_MEMBERS}" ] || fail "the repaired collection holds the wrong number of items"
+final_audit="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
+printf '%s' "${final_audit}" | grep -q '"verdict":"ok"' \
+  || { echo "${final_audit}" >&2; fail "the audit still reports drift after the repair and the reconcile"; }
+info "the repaired collection holds exactly the intended items, and the audit agrees"
 
 # ---------------------------------------------------------------------------------------------------------
 # 10. REVOKE: an erasure reaches outside.
@@ -581,6 +884,30 @@ still_pending="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "
 [ "$(digits_or_die "${still_pending}" "the outstanding revoke count")" = "0" ] \
   || fail "an external copy is still queued for revocation after the browser reported it deleted"
 info "the browser previewed, confirmed, queued, carried out and verified the removal without this script's help"
+
+# ---------------------------------------------------------------------------------------------------------
+# 14b. PHASE 276 — THE DISPOSABLE STACK IS LEFT AT ZERO CATALOG-AUTHORITY-MANAGED ARTIFACTS.
+#
+# "The collection was deleted" and "this installation left nothing of its own behind" are different claims,
+# and only the second one is what an operator cares about after a revoke. It is asserted against the marker
+# THIS product embeds, so a foreign collection the fixture also holds must be untouched — a cleanup that took
+# somebody else's collection with it would be a far worse outcome than one that left its own.
+# ---------------------------------------------------------------------------------------------------------
+step "no Catalog-Authority-managed collection artifact remains, and the foreign collection is untouched"
+[ "$(fake_managed_count)" = "0" ] || fail "a collection carrying this product's marker is still on the media server"
+[ "$(fake_collection_count)" = "0" ] || fail "this product's collections are not all gone"
+remaining_pending="$( jf_compose exec -T postgres psql -U postgres -d catalog -tAc "SELECT count(*) FROM managed_collections WHERE status NOT IN ('revoked','failed')" | tr -d '[:space:]' )"
+[ "$(digits_or_die "${remaining_pending}" "the outstanding managed collection count")" = "0" ] \
+  || fail "${remaining_pending} managed collection(s) are still outstanding after the lifecycle finished"
+remaining_members="$(count_rows managed_collection_members)"
+[ "${remaining_members}" = "0" ] || fail "${remaining_members} membership row(s) survived a completed revoke"
+[ "$(count_rows publish_ledger)" = "0" ] || fail "a per-record publish intent was created somewhere in this lifecycle"
+# The foreign collection was never ours and must still be there. Read from the fake's own state, which counts
+# every collection it holds — the product's discovery surface would only ever report a count, never a name.
+foreign_left="$( jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/Items?Recursive=true&IncludeItemTypes=BoxSet&Fields=Name&StartIndex=0&Limit=500',{headers:{'X-Emby-Token':require('node:fs').readFileSync(process.env.JELLYFIN_FAKE_API_KEY_FILE,'utf8').trim()}}).then(r=>r.json()).then(b=>process.stdout.write(String((b.Items||[]).filter(i=>!String(i.Name||'').includes('[cat:')).length)))" | tr -d '[:space:]' )"
+[ "$(digits_or_die "${foreign_left}" "the foreign collection count")" = "1" ] \
+  || fail "the cleanup removed a collection this product did not create"
+info "zero managed artifacts, zero outstanding rows, and the collection this product never made is still there"
 
 # ---------------------------------------------------------------------------------------------------------
 # 15. BROWSER-ONLY VIEWING CHANGES NOTHING, in the database or on the media server.

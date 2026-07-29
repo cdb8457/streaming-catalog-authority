@@ -613,16 +613,61 @@ const checkArchitectureClaim: Check = (_evidence, workflow) => {
   return pass(id, title, 'the workflow publishes linux/amd64, the single verified architecture');
 };
 
+/**
+ * The npm scripts the CI `suites` job must run, named once.
+ *
+ * Phase 274-276 are here for the same reason Phase 262 is: each of them is the STATIC CONTRACT of a gate that
+ * only runs against a Docker daemon, so if the contract suite stops running, the thing it keeps honest stops
+ * being checked anywhere a release can see.
+ *
+ * EXPORTED BECAUSE THE MUTATION TEST CONSUMES IT. `test/release-readiness.ts` attacks this list one entry at
+ * a time — it removes each command from a copy of the workflow and requires the check to BLOCK. It used to
+ * hold a second hand-typed copy of the list under a comment claiming it was derived from this one, which is
+ * the exact shape of a guard that quietly stops covering what it says it covers: a suite added here and not
+ * there would be a suite whose removal nobody has ever watched block anything. One list, two readers.
+ */
+export const REQUIRED_SUITE_SCRIPTS: readonly string[] = Object.freeze([
+  'test:phase245-local',
+  'test:phase246-local',
+  'test:phase247-local',
+  'test:phase248-local',
+  'test:phase249-local',
+  'test:phase262-local',
+  'test:phase274-local',
+  'test:phase275-local',
+  'test:phase276-local',
+  // Phases 277-280 are here for the same reason: each is the deterministic contract of host-side automation
+  // that stops services, copies irrecoverable state and removes disposable projects. If its suite stops
+  // running, nothing else in a release can see that it broke.
+  'test:phase277-local',
+  'test:phase278-local',
+  'test:phase279-local',
+]);
+
+/**
+ * The typecheck, kept SEPARATE from the suite scripts rather than hidden among them.
+ *
+ * It is not a suite and it is not spelled like one: the job runs it as a bare `run:` step, so the string the
+ * check looks for is the whole command. A mutation test therefore has to remove it differently from a suite,
+ * and keeping the two apart here is what makes that obvious instead of a special case somebody has to notice.
+ */
+export const REQUIRED_SUITES_TYPECHECK_COMMAND = 'npm run typecheck';
+
+/** Everything the `suites` job must name, in the form the check looks for it. */
+export const REQUIRED_SUITES_JOB_COMMANDS: readonly string[] = Object.freeze([
+  ...REQUIRED_SUITE_SCRIPTS,
+  REQUIRED_SUITES_TYPECHECK_COMMAND,
+]);
+
 const checkSuitesRunAcceptances: Check = (_evidence, workflow) => {
   const id = 'suites-run-the-acceptances';
-  const title = 'The suites job runs the Phase 245-249 and Phase 262 acceptance suites';
+  const title = 'The suites job runs the Phase 245-249, 262 and 274-276 acceptance suites';
   if (workflow === null) return invalid(id, title, 'the workflow could not be parsed');
   const text = workflow.jobText('suites');
   if (text === '') return invalid(id, title, 'the workflow has no suites job');
-  const required = ['test:phase245-local', 'test:phase246-local', 'test:phase247-local', 'test:phase248-local', 'test:phase249-local', 'test:phase262-local', 'npm run typecheck'];
-  const missing = required.filter((need) => !text.includes(need));
+  const missing = REQUIRED_SUITES_JOB_COMMANDS.filter((need) => !text.includes(need));
   if (missing.length > 0) return block(id, title, `the suites job does not run: ${missing.join(', ')}`);
-  return pass(id, title, 'the suites job runs typecheck and the Phase 245-249 and Phase 262 acceptance suites');
+  return pass(id, title, 'the suites job runs typecheck and the Phase 245-249, 262 and 274-276 acceptance suites');
 };
 
 const checkDocsInstallUpgradeRollback: Check = (evidence) => {

@@ -158,12 +158,14 @@ test('unraid runtime compose ÃƒÆ’Ã‚Â¢ÃƒÂ¢Ã¢â‚¬Å¡Ã‚Â¬�
     unraidRuntimeCompose.includes('${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token:${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token'),
     'runtime ops can manage the operator token file without exposing a UI write path',
   );
+  // PHASE 289. `custodian_kek` MOVED TO THE BOOTSTRAP OVERLAY and is asserted there instead: the steady
+  // state has no path to the static key at all, which is what stops an upgrade reverting a migrated
+  // installation to static custody. Every other secret is still declared here.
   for (const secret of [
     'postgres_password',
     'admin_database_url',
     'database_url',
     'completion_secret',
-    'custodian_kek',
     'operator_ui_token',
   ]) assert(
     unraidRuntimeCompose.includes(`file: \${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/${secret}`),
@@ -8486,8 +8488,8 @@ test('Phase 149 Unraid UI launcher commands operate existing runtime services on
     'ui-logs',
     'ui-token-status',
     'ui-token-rotate',
-    'compose up -d postgres app',
-    'compose up -d --force-recreate app',
+    'compose up -d $NO_FETCH --no-build postgres app',
+    'compose up -d $NO_FETCH --no-build --force-recreate app',
     'compose logs --tail',
     'ops:operator-ui-token -- --status --json',
     'ops:operator-ui-token -- --rotate --confirm --json',
@@ -8572,7 +8574,7 @@ test('Phase 151 operator UI live evidence saves clean redaction-safe JSON', () =
     '/mnt/user/appdata/catalog/backups/evidence',
     'operator-ui-live-check-',
     'run_ops_silent ops:operator-ui-live-check',
-    'compose run -T --interactive=false --rm ops --silent',
+    'compose run -T --interactive=false --rm $NO_FETCH ops --silent',
     '.tmp-$$',
     'chmod 600',
     'redaction-safe',
@@ -9612,10 +9614,14 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
     'SIDECAR_SOCKET_PATH: /run/catalog-sidecar/catalog-sidecar.sock',
     'SIDECAR_STATE_DIR: /var/lib/catalog-sidecar/state',
     'SIDECAR_COMPLETION_SECRET_FILE: /run/secrets/completion_secret',
-    'SIDECAR_KEK_FILE: /run/secrets/custodian_kek',
+    // PHASE 289. The steady state wires the ROOT key; the static KEK is wired by the bootstrap overlay,
+    // which is asserted immediately after this block.
+    'SIDECAR_ROOT_KEY_FILE: /run/catalog-custody/custodian_root_key',
     'NPM_CONFIG_CACHE: /tmp/npm-cache',
     'command: ["ops:sidecar-daemon", "--", "--serve"]',
-    'test -S /run/catalog-sidecar/catalog-sidecar.sock',
+    // Phase 284: a health HANDSHAKE, not a test that the socket file exists (which passes for a crashed
+    // daemon and for one that cannot read its own keystore).
+    'ops:sidecar-health',
     '${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar',
     '${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/state:/var/lib/catalog-sidecar/state',
     'read_only: true',
@@ -10766,7 +10772,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
 test('Phase 223 release evidence remains intact while package metadata tracks the current release', () => {
   assert(exists('docs/PHASE_223_RELEASE_CUT.md'), 'Phase 223 release cut doc exists');
   assert(exists('test/versioned-release-cut.ts'), 'Phase 223 release cut test exists');
-  assert(pkg.version === '1.1.4', 'package version is the current v1.1.4 release');
+  assert(pkg.version === '1.2.0', 'package version is the current v1.2.0 release');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
   assert(
     (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),

@@ -3,6 +3,7 @@ import { Client } from 'pg';
 import { loadDbConfig, resolveAppEnv } from '../config/env.js';
 import { CatalogAuthority } from '../core/catalog/authority.js';
 import { loadCustodianConfig, createCustodian, requireAppHeldCompletionSecret } from '../core/crypto/custodian-factory.js';
+import { probeSidecarHealth } from '../core/crypto/local-sidecar-runtime.js';
 import { getPool, closePool } from '../db/pool.js';
 import {
   OPERATOR_UI_LOCAL_AUTH_HEADER,
@@ -1108,6 +1109,15 @@ export async function buildOperatorUiServiceStatus(
         custodianMode: custodianConfig.mode,
         appEnv: resolveAppEnv(),
         keystoreDir: custodianConfig.mode === 'file' ? custodianConfig.keystoreDir : undefined,
+        // PHASE 292. THE STATUS PANEL REPORTS CUSTODY TOO, FROM THE SAME ONE HANDSHAKE THE CLI USES.
+        //
+        // It reported neither before: this call supplied no custody probe at all, so the operator UI's
+        // doctor block silently omitted every custody check — including the one that says a key-encryption
+        // key is past its rotation limit. An operator watching the panel would have seen a healthy
+        // installation and no custody row whatsoever.
+        sidecarCustody: custodianConfig.mode === 'sidecar'
+          ? { attempted: true, health: await probeSidecarHealth(custodianConfig.socketPath) }
+          : undefined,
       });
     } finally {
       await admin.end();

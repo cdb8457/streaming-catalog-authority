@@ -55,8 +55,15 @@ async function main(): Promise<void> {
     assertEq(state(r, 'keystore'), 'pass', 'keystore ok');
     assertEq(state(r, 'production-gate-o4-external-custodian'), 'warn', 'file custodian leaves O4 open');
     assert(detail(r, 'production-gate-o4-external-custodian').includes('FileCustodian is a hardened reference harness'), 'O4 detail names reference harness boundary');
-    assertEq(state(r, 'production-gate-o5-managed-kek'), 'warn', 'managed KEK custody/scheduling leaves O5 open');
-    assert(detail(r, 'production-gate-o5-managed-kek').includes('ops:rewrap-kek -- --plan'), 'O5 detail points at preflight path');
+    // PHASE 292. THE O5 GATE STILL APPEARS OUTSIDE SIDECAR MODE, AND IT NO LONGER SAYS THE MECHANISM DOES
+    // NOT EXIST. It said "managed age KEK custody/scheduling is not built" unconditionally in production —
+    // on a build where it is built, migrated onto, rotated and retired from — so every deployment running
+    // the thing was told it did not exist, forever.
+    assertEq(state(r, 'production-gate-o5-managed-kek'), 'warn', 'a non-sidecar deployment leaves O5 open');
+    assert(!detail(r, 'production-gate-o5-managed-kek').includes('not built'),
+      'and the detail no longer claims the mechanism does not exist');
+    assert(detail(r, 'production-gate-o5-managed-kek').includes('does not run the custodian sidecar'),
+      'it says the true thing instead: this deployment is not using it');
   });
 
   // 2. completion-secret mismatch -> fail, redaction-safe ---------------------
@@ -84,17 +91,22 @@ async function main(): Promise<void> {
     const r = await runDoctor({ admin, pool, custodian: new InMemoryCustodian(secret), completionSecret: secret, custodianMode: 'memory', appEnv: 'production' });
     assertEq(state(r, 'custodian-durability'), 'fail', 'memory-in-prod fail');
     assertEq(state(r, 'production-gate-o4-external-custodian'), 'absent', 'file-specific O4 warning is not emitted for memory mode');
-    assertEq(state(r, 'production-gate-o5-managed-kek'), 'warn', 'O5 visibility still emitted in production');
+    assertEq(state(r, 'production-gate-o5-managed-kek'), 'warn', 'O5 visibility still emitted for memory mode');
     assert(!r.ok, 'overall fail');
   });
 
   await test('doctor - sidecar mode delegates completion secret out of app/ops', async () => {
     const r = await runDoctor({ admin, pool, custodian: new InMemoryCustodian(secret), custodianMode: 'sidecar', appEnv: 'production' });
-    assert(r.ok, `doctor ok in sidecar mode (states: ${r.checks.map((c) => `${c.name}=${c.state}`).join(', ')})`);
+    // NOT `ok`: a sidecar-mode report with no custody probe fails closed, which is the point of Phase 292.
+    assert(!r.ok, 'a sidecar-mode report with no custody probe is not ok');
     assertEq(state(r, 'completion-secret'), 'pass', 'secret delegation passes');
     assert(detail(r, 'completion-secret').includes('delegated to the sidecar custodian'), 'delegation detail');
     assertEq(state(r, 'production-gate-o4-external-custodian'), 'absent', 'file-specific O4 warning is absent after sidecar cutover');
-    assertEq(state(r, 'production-gate-o5-managed-kek'), 'warn', 'O5 remains visible');
+    // PHASE 292. IN SIDECAR MODE THE GATE WARNING IS REPLACED BY WHAT IS ACTUALLY RUNNING. A gate status is
+    // a statement about evidence; these are statements about this installation, and they are monitorable.
+    assertEq(state(r, 'production-gate-o5-managed-kek'), 'absent', 'the stale gate warning is gone in sidecar mode');
+    assertEq(state(r, 'custody-sidecar-health'), 'fail', 'and with no health probe supplied, custody fails closed');
+    assertEq(state(r, 'kek-rotation-age'), 'fail', 'and the age check appears rather than disappearing');
   });
 
   // 5. doctor is READ-ONLY -----------------------------------------------------
@@ -144,7 +156,11 @@ async function main(): Promise<void> {
     assert(Array.isArray(parsed.checks) && parsed.checks.length > 0, 'checks array');
     for (const c of parsed.checks) assert(typeof c.name === 'string' && ['pass', 'warn', 'fail'].includes(c.state) && typeof c.detail === 'string', 'each check well-formed');
     assert(parsed.checks.some((c) => c.name === 'production-gate-o4-external-custodian' && c.state === 'warn' && c.detail.includes('O4 open')), 'JSON includes O4 production gate warning');
-    assert(parsed.checks.some((c) => c.name === 'production-gate-o5-managed-kek' && c.state === 'warn' && c.detail.includes('ops:rewrap-kek -- --plan')), 'JSON includes O5 production gate warning');
+    // PHASE 292. The O5 gate is still in the JSON contract for a non-sidecar deployment; what changed is the
+    // sentence. It no longer says the mechanism "is not built", because it is.
+    assert(parsed.checks.some((c) => c.name === 'production-gate-o5-managed-kek' && c.state === 'warn'
+      && c.detail.includes('does not run the custodian sidecar')), 'JSON includes the O5 production gate warning');
+    assert(!formatDoctorJson(ok).includes('is not built'), 'and no check claims the mechanism does not exist');
     // redaction on a failing (mismatch) report
     const wrong = 'JSON-SECRET-SENTINEL';
     const bad = await runDoctor({ admin, pool, custodian: new FileCustodian(freshKeystore(), wrong, kek), completionSecret: wrong, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
@@ -158,7 +174,8 @@ async function main(): Promise<void> {
     const r = await runDoctor({ admin, pool, custodian: new FileCustodian(dir, secret, kek), completionSecret: secret, custodianMode: 'file', appEnv: 'production', keystoreDir: dir });
     const text = formatDoctorReport(r);
     assert(text.includes('WARN  production-gate-o4-external-custodian: O4 open'), 'text includes O4 warning');
-    assert(text.includes('WARN  production-gate-o5-managed-kek: O5 open'), 'text includes O5 warning');
+    assert(text.includes('WARN  production-gate-o5-managed-kek: O5 open for this deployment'),
+      'text includes the corrected O5 warning');
     assert(text.includes('doctor: OK'), 'warnings do not fail doctor');
     assert(!text.includes(secret) && !text.includes(kek.toString('base64')) && !text.includes(dir), 'text does not leak secret values or keystore path');
   });

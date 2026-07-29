@@ -103,6 +103,31 @@ docker compose exec app npm run ops:catalog-import -- --file my-library.json    
 docker compose exec app npm run ops:catalog-import -- --file my-library.json --apply  # commit it
 ```
 
+**If another system already knows your catalog, export from it instead of typing one out.** Put that export in
+the same `./import/` folder and turn it into a snapshot:
+
+```bash
+docker compose exec app npm run ops:catalog-snapshot-produce -- --from my-export.json --preview        # writes nothing
+npm run ops:catalog-snapshot-produce -- --from ./import/my-export.json --out ./import/my-library.json  # produce it
+```
+
+The export format is `catalog-authority.external-export` v1 — `system`, then `entries` of `entryId`, `title`,
+optional `year`, `references` (`imdb`/`tmdb`/`tvdb`/`tvmaze`/`anidb`/`infohash`, either spelling) and flat
+string `attributes`. The produced records carry `external.<system>` as their source, so an export can never
+collide with a snapshot you wrote by hand.
+
+This command **contacts nothing** — not the system the export came from, not a provider, not a media server,
+not a download client. It downloads nothing, plays nothing, scans no media folder and creates no symbolic
+link. An export carrying **acquisition data** — a download URL, an NZB or torrent identifier, a tracker, a
+magnet link, an absolute media path or a UNC share — is **refused whole**, by key namespace and by value
+shape, rather than quietly filtered — and a refusal names the *position* in your file, never the key or value
+that caused it, so it is safe to paste into an issue. Without `--overwrite` the output name is taken only if
+it is free, decided by the kernel rather than by a check a second copy of the command could run past. The
+write is atomic: the output name holds the previous file or the
+complete new one, never a prefix. Producing does not import; preview and apply are still separate, deliberate
+steps. Details, bounds and every rejection:
+[docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md](docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md).
+
 Then use the **Catalog** panel to search, sort, filter and page through what you imported, open a record, and
 **export** the whole thing back out as a snapshot file. An export is deterministic and re-importable, and it
 never contains a provider reference value — it says how many it left out instead.
@@ -147,10 +172,20 @@ chose, with the selected catalog records resolved to matching library items. Re-
 the same managed collection. Deselecting or forgetting a record queues its membership for removal, and
 removing the last member queues the collection itself for revocation.
 
+**Before you plan anything, you can just ask.** `npm run ops:collections -- match` compares the records you
+imported with what your library actually holds. It needs only the first switch — the read one — writes nothing
+anywhere, and sends no provider reference to your server: matching happens here, on a listing it fetched. It
+answers `matched`, `unmatched`, `no-references` (the record has nothing to match *by*), `unreadable` (the
+record was forgotten) and **`unknown`**. If the library listing fails or hits its bound, every record it would
+have judged is `unknown` and the report says the library was not read completely — because "I could not see
+it" is not "it is not there", and a report you would act on must not blur the two. It prints opaque record
+ids, verdicts and counts: no title, no reference value, no media-server id, no address.
+
 Everything is recorded in durable, identity-minimized history that survives restarts. The boundaries,
 guarantees and limits are in
-[docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md](docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md) and
-[docs/PHASE_269_272_COLLECTION_LIFECYCLE.md](docs/PHASE_269_272_COLLECTION_LIFECYCLE.md).
+[docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md](docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md),
+[docs/PHASE_269_272_COLLECTION_LIFECYCLE.md](docs/PHASE_269_272_COLLECTION_LIFECYCLE.md) and
+[docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md](docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md).
 
 The format, its bounds and every design decision:
 [docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md](docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md).
@@ -159,14 +194,74 @@ The browser: [docs/PHASE_260_CATALOG_BROWSER.md](docs/PHASE_260_CATALOG_BROWSER.
 - Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
 - Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
 
-**Published releases.** `v1.0.0` through `v1.1.3` are published to
+**Published releases.** `v1.0.0` through `v1.1.4` are published to
 `ghcr.io/cdb8457/catalog-authority-ops` and are immutable — nothing here re-tags or overwrites them, which is
-what makes rollback real. `v1.1.4` is the active release candidate these files pin to; until its release
+what makes rollback real. `v1.2.0` is the active release candidate these files pin to; until its release
 workflow runs, that tag does not exist. Build it from this checkout with the maintainer override:
 
 ```bash
 docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
 ```
+
+## Back it up, watch it, and rehearse the upgrade
+
+These three run on the **host**, beside your Compose project — not inside it, because stopping the app is the
+one thing a container cannot do to itself. None of them contacts a network, reads a media path, opens a secret
+file, or accepts a credential on a command line.
+
+```bash
+# One complete backup: the database, the keystore, the secret files and your promotion records — taken while
+# nothing is writing, published atomically, and verified before it reports success.
+npm run ops:complete-backup -- --project /path/to/project --set set-2026-07-29 --custodian inline
+
+# On the Unraid launcher stack the custodian is a sidecar, and you say where its state is. It is never guessed.
+npm run ops:complete-backup -- --project /path/to/project --set set-2026-07-29 \
+    --custodian sidecar --sidecar-state sidecar-state
+
+# What it would do, without stopping anything:
+npm run ops:complete-backup -- --project /path/to/project --set s --custodian inline --plan
+```
+
+An existing set name is **refused**; a run that fails leaves no set and starts your stack again through a
+`finally` that runs on every path out. Backup directories are `0700` and the files in them are `0600`.
+
+```bash
+# On a schedule: runs the shipped read-only doctor and records one redacted state file.
+npm run ops:doctor-monitor -- --project /path/to/project --state monitor
+```
+
+It **sends no alert** — it exits `0` healthy, `3` WARN, `1` FAIL, `4` the doctor could not be read, and your
+scheduler alerts from that. It never softens the doctor: a WARN is a WARN on the fiftieth consecutive run.
+`deploy/unraid-catalog-maintenance.sh` is a worked User Scripts/cron example with overlap locking, a bounded
+timeout, and retention that only ever prints a **plan**.
+
+```bash
+# Rehearse an upgrade, and the rollback that makes it reversible, in a throwaway project:
+npm run ops:upgrade-rehearsal -- --production /path/to/project --production-project catalogauthority-local \
+    --disposable /path/to/scratch --label r1 --compose-file rehearsal-compose.yml \
+    --backup-set /path/to/project/backups/set-2026-07-29 --import-snapshot /path/to/a-snapshot.json \
+    --current-image catalog-authority-ops:v1.1.4 --candidate-image catalog-authority-ops:v1.2.0 \
+    --expect-current-version 1.1.4 --expect-candidate-version 1.2.0 \
+    --expect-current-schema 9 --expect-candidate-schema 9 --plan
+```
+
+`--plan` prints what it would do and a digest; running it requires that digest back. It refuses a moving tag
+like `latest`, refuses a disposable root that is — or is inside, or contains — your real project, never pulls,
+and needs a backup set that verifies *now*. Because there are no down-migrations, **putting the old image back
+is not a rollback**: the rollback leg destroys the upgraded state, restores the same pre-upgrade set, and boots
+the previous image. A step that does not hold keeps the disposable project for diagnosis and removes nothing.
+
+`--compose-file` is a **small definition you write for the rehearsal**, not your production stack file — and
+this is enforced rather than advised. Before anything is claimed or created, the command resolves your
+definition with `docker compose config` (which starts nothing) and refuses it if it declares a bind mount, a
+Docker secret, an external volume or network, a `container_name`, a host network, a privileged container, a
+device, a published port or **any `${…}` variable at all**. The shipped `docker-compose.unraid.runtime.yml`
+declares most of those and defaults its paths to your production appdata directory, so it is refused: a
+rehearsal that booted it would have written to the installation it exists to protect. The document below
+carries a definition you can copy.
+
+The boundaries, the guarantees and the limits:
+[docs/PHASES_277_280_MAINTENANCE_AUTOMATION.md](docs/PHASES_277_280_MAINTENANCE_AUTOMATION.md).
 
 ## Run the tests
 

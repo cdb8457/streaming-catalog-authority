@@ -17,25 +17,38 @@ import {
   UnixSocketSidecarTransport,
   type LocalSidecarRuntimeHandle,
 } from '../core/crypto/local-sidecar-runtime.js';
+import { SIDECAR_PROTOCOL_VERSION, type SidecarHealth } from '../core/crypto/sidecar-ipc.js';
+import { activeKek, loadKekRing, readRootWrappingKey } from '../core/crypto/kek-ring.js';
 
 export interface SidecarDaemonConfigInput {
   readonly socketPath?: string;
   readonly stateDir?: string;
   readonly completionSecretFile?: string;
   readonly kekFile?: string;
+  /** Phase 282. The root wrapping key file, when this installation has crossed to the ring. */
+  readonly rootKeyFile?: string;
 }
 
 export interface SidecarDaemonConfig {
   readonly socketPath: string;
   readonly stateDir: string;
   readonly completionSecretFile: string;
-  readonly kekFile: string;
+  /**
+   * The STATIC KEK file, on an installation that has not yet migrated.
+   *
+   * `null` once a ring exists: after the migration the static file is not read at all, and leaving it wired
+   * would mean the sidecar still had a path to key material the ring is meant to have taken custody of.
+   */
+  readonly kekFile: string | null;
+  /** Phase 282. Set once this installation is on the ring; the ONLY source of key material after that. */
+  readonly rootKeyFile: string | null;
 }
 
 export interface StartedSidecarDaemon {
   readonly socketPath: string;
   readonly stateDir: string;
-  readonly mode: 'local-filecustodian-reference-harness';
+  /** Which custody mechanism is actually serving. A closed word an operator can read back. */
+  readonly mode: 'local-filecustodian-reference-harness' | 'sidecar-managed-kek-ring';
   close(): Promise<void>;
 }
 
@@ -75,34 +88,76 @@ export function validateSidecarDaemonConfig(input: SidecarDaemonConfigInput): Si
   const socketPath = valueOrEnv(input.socketPath, 'SIDECAR_SOCKET_PATH');
   const stateDir = valueOrEnv(input.stateDir, 'SIDECAR_STATE_DIR');
   const completionSecretFile = valueOrEnv(input.completionSecretFile, 'SIDECAR_COMPLETION_SECRET_FILE');
-  const kekFile = valueOrEnv(input.kekFile, 'SIDECAR_KEK_FILE');
-  if (!socketPath || !stateDir || !completionSecretFile || !kekFile) throw new SidecarDaemonConfigError();
+  const kekFile = valueOrEnv(input.kekFile, 'SIDECAR_KEK_FILE') ?? null;
+  const rootKeyFile = valueOrEnv(input.rootKeyFile, 'SIDECAR_ROOT_KEY_FILE') ?? null;
+  // ONE SOURCE OF KEY MATERIAL, NEVER TWO. A daemon wired to both a static KEK and a ring root has two
+  // answers to "what wraps a DEK", and the one it would use is whichever branch ran first. That is exactly
+  // the ambiguity a migration exists to end, so it is refused rather than resolved.
+  if (!socketPath || !stateDir || !completionSecretFile) throw new SidecarDaemonConfigError();
+  if ((kekFile === null) === (rootKeyFile === null)) throw new SidecarDaemonConfigError();
   try {
     assertLocalSocketPath(socketPath);
   } catch {
     throw new SidecarDaemonConfigError();
   }
-  if (looksLikeNetworkEndpoint(stateDir) || looksLikeNetworkEndpoint(completionSecretFile) || looksLikeNetworkEndpoint(kekFile)) {
-    throw new SidecarDaemonConfigError();
+  for (const value of [stateDir, completionSecretFile, kekFile, rootKeyFile]) {
+    if (value !== null && looksLikeNetworkEndpoint(value)) throw new SidecarDaemonConfigError();
   }
-  return { socketPath, stateDir, completionSecretFile, kekFile };
+  return { socketPath, stateDir, completionSecretFile, kekFile, rootKeyFile };
 }
 
 export async function startSidecarDaemon(config: SidecarDaemonConfig): Promise<StartedSidecarDaemon> {
   mkdirOwnerOnly(config.stateDir);
   if (process.platform !== 'win32') mkdirOwnerOnly(dirname(config.socketPath));
 
+  // ---- WHERE THE KEK COMES FROM -------------------------------------------------------------------------
+  //
+  // Phase 282. On a ring installation the root wrapping key is read here, ONCE, from a private file — and the
+  // KEK it opens never leaves this process: the app's only reachable surface is the socket below, whose
+  // contract carries per-item DEKs and nothing else. On an installation that has not migrated, the static
+  // file is read exactly as before, so nothing about this change is a silent cutover.
+  const onRing = config.rootKeyFile !== null;
+  const ring = onRing ? loadKekRing(config.stateDir, readRootWrappingKey(config.rootKeyFile!)) : null;
+  const kek = ring === null ? readKek(config.kekFile!) : activeKek(ring);
+  const ringGeneration = ring === null ? null : ring.active;
+  // The active generation's age, as a number the app may know. Nothing else about the ring crosses.
+  const ringActiveCreatedAt = ring === null
+    ? null
+    : (ring.generations.find((entry) => entry.generation === ring.active)?.createdAt ?? null);
+  // EVERY RETAINED GENERATION, FOR UNWRAPPING ONLY. A rotation rewraps the key files before it moves the
+  // ring's active pointer, so a daemon that restarted in that window and held only the active KEK would fail
+  // to open anything. New wraps still use the active generation alone.
+  const retained = ring === null
+    ? []
+    : ring.generations.filter((entry) => entry.generation !== ring.active)
+      .map((entry) => Buffer.from(entry.keyHex, 'hex'));
+
   const custodian = new FileCustodian(
-    config.stateDir,
-    readSecret(config.completionSecretFile),
-    readKek(config.kekFile),
-  );
-  const runtime = await startLocalSidecarRuntime({ socketPath: config.socketPath, custodian });
+    config.stateDir, readSecret(config.completionSecretFile), kek, () => Date.now(), retained);
+  const runtime = await startLocalSidecarRuntime({
+    socketPath: config.socketPath,
+    custodian,
+    // THE HEALTH ANSWER IS EARNED. It exercises the custodian — a real listing over the real state directory —
+    // rather than reporting that a server object exists. A daemon whose keystore has become unreadable throws
+    // out of this probe, which the runtime turns into the closed `SIDECAR_NOT_READY` refusal, and the app's
+    // startup gate refuses to come up in front of it.
+    health: async (): Promise<SidecarHealth> => {
+      await custodian.listStaleProvisioning();
+      return {
+        op: 'health',
+        protocol: SIDECAR_PROTOCOL_VERSION,
+        ready: true,
+        custodian: onRing ? 'sidecar-managed-ring' : 'file-reference-harness',
+        ringGeneration,
+        ringActiveCreatedAt,
+      };
+    },
+  });
   chmodSocketBestEffort(runtime);
   return {
     socketPath: runtime.socketPath,
     stateDir: config.stateDir,
-    mode: 'local-filecustodian-reference-harness',
+    mode: onRing ? 'sidecar-managed-kek-ring' : 'local-filecustodian-reference-harness',
     close: () => runtime.close(),
   };
 }

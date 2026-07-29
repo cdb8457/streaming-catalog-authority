@@ -125,6 +125,13 @@ export const CATALOG_IMPORT_STEPS = catalogImportSteps();
 
 export function catalogImportCommands(): readonly CatalogImportCommandPair[] {
   return [
+    // Phase 274. Offered FIRST because it is the step before the other two for an operator whose other system
+    // already knows their catalog — and offered as a PREVIEW, because the import folder is mounted read-only
+    // to this container and a command that appeared to write into it would be a command that always fails.
+    {
+      label: 'Turn an export from another system into a snapshot (preview; writes nothing)',
+      command: 'docker compose exec app npm run ops:catalog-snapshot-produce -- --from your-export.json --preview',
+    },
     { label: 'Preview (writes nothing)', command: 'docker compose exec app npm run ops:catalog-import -- --file your-snapshot.json' },
     { label: 'Apply', command: 'docker compose exec app npm run ops:catalog-import -- --file your-snapshot.json --apply' },
   ];

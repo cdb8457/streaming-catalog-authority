@@ -97,7 +97,7 @@ services:
   # THE LONG-RUNNING APP IS UNCHANGED: still `user: "node"`, still `read_only: true`, still `cap_drop: ALL`,
   # still `no-new-privileges`. Elevated authority lives here, for a few milliseconds, and nowhere else.
   keystore-prepare:
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.4}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.2.0}
     init: true
     restart: "no"
     environment:
@@ -145,7 +145,7 @@ services:
   # its self-check, plus the completion secret it provisions. It does NOT mount the promotion records folder:
   # a migration has no business reading anyone's evidence.
   migrate:
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.4}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.2.0}
     init: true
     restart: "no"
     depends_on:
@@ -200,7 +200,7 @@ services:
     #
     # Maintainers building from source use the documented override instead — see
     # docker-compose.runtime.build.yml — which replaces this image with a locally built one.
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.4}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.2.0}
     # PID 1 is a real init that reaps orphans; the app process still receives SIGTERM directly.
     init: true
     restart: unless-stopped
@@ -303,5 +303,10 @@ secrets:
     file: ./secrets/completion_secret
   custodian_kek:
     file: ./secrets/custodian_kek
+  # PHASE 282. The ROOT WRAPPING KEY that seals the sidecar-managed KEK ring. Read ONLY by the custodian
+  # sidecar, only from this file, and never from an environment variable, a command line or any evidence
+  # surface. Keep it the way you keep the KEK: every key in the installation can be reached from it.
+  custodian_root_key:
+    file: ./secrets/custodian_root_key
   operator_ui_token:
     file: ./secrets/operator_ui_token

@@ -407,6 +407,19 @@ await test('re-running the Arcane setup keeps every secret, the token, and the d
     // a supported input: the variable really does name a path on the Unraid host.
     const argument = toShellPath(project);
     const first = runScript(shell, join(root, 'deploy', 'arcane-setup.sh'), { cwd: workspace, args: [argument] });
+    // PHASE 284. THE SHIPPED BEHAVIOUR WHERE CUSTODY CANNOT BE ESTABLISHED IS A REFUSAL. The root wrapping
+    // key must end up owned by a named account and readable by nobody else; a host with no file ownership
+    // model cannot produce that, and `write-custody-secret.mjs` creates nothing there. Asserting the refusal
+    // is the honest test — weakening the helper so this could stay `status === 0` would be shipping an
+    // unprotected root key to keep a Windows run green.
+    if (process.platform === 'win32') {
+      assert(first.status !== 0, `the setup refuses where custody cannot be established — ${describeRun(first)}`);
+      assert((first.stderr ?? '').includes('NOTHING WAS CREATED'), 'and says nothing was created');
+      assertEq(existsSync(join(project, 'secrets', 'custodian_root_key')), false,
+        'and leaves no root wrapping key behind');
+      console.log('        (this host has no file ownership model: the refusal is what is asserted)');
+      return;
+    }
     assertEq(first.status, 0, `the setup script exits cleanly — ${describeRun(first)}`);
 
     const before = new Map<string, string>();

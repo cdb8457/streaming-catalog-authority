@@ -1,0 +1,64 @@
+# Catalog Authority — TEMPORARY custody bootstrap/migration overlay for the Unraid runtime stack.
+#
+#   docker compose -f docker-compose.unraid.runtime.yml -f docker-compose.unraid.bootstrap.yml up -d
+#
+# WHAT THIS IS FOR, AND WHY IT IS A SEPARATE FILE.
+#
+# The runtime file is the canonical STEADY STATE: the sidecar opens its KEK ring with the root wrapping key
+# and there is no static KEK anywhere in the stack. An installation created before the ring existed has every
+# wrapped key under the STATIC KEK instead, so its sidecar cannot open a ring it does not have — it must run
+# on the static key until `ops:kek-ring migrate` adopts that key as generation 1.
+#
+# That is a TEMPORARY state with a defined end, so it is a temporary overlay with a defined end. Selecting it
+# is a documented command that writes a marker (`ops:custody-cutover`/`deploy/unraid-custody-mode.sh`), not an
+# edit to a shipped YAML file — the previous version of this stack asked an operator to delete an environment
+# variable and a secret entry by hand and to remember to redo it after every upgrade, which is a migration
+# most installations would never finish and none would survive an upgrade of.
+#
+# WHAT IT ADDS, AND NOTHING ELSE:
+#
+#   * the static KEK, to the SIDECAR only, replacing the root key wiring;
+#   * the static KEK, to the one-shot `custody-maintenance` service that adopts it — the service itself is
+#     declared in the runtime file, and this overlay adds only the mount a migration needs.
+#
+# WHAT IT DOES NOT ADD. No Docker socket, no privileged mode, no host network, no published port, no
+# capability, and no path to key material for `app`, `migrate` or `ops` — none of which is changed by this
+# file at all.
+
+name: catalogauthority
+
+services:
+  sidecar:
+    environment:
+      # ---- THE STATIC KEK, AND THE ROOT KEY EXPLICITLY UNSET ------------------------------------------
+      #
+      # The daemon refuses to start wired to BOTH a static KEK and a ring root, and refuses to start wired to
+      # NEITHER. That check is what makes these two files the only two valid wirings — but it also means this
+      # overlay cannot simply ADD the static key: it must take the root key wiring away, or the daemon
+      # refuses and the operator sees a config error instead of a bootstrap.
+      #
+      # An empty value is how Compose expresses "unset" for a key an earlier file set: the daemon reads an
+      # empty environment variable as absent, exactly as it reads a missing one.
+      SIDECAR_ROOT_KEY_FILE: ""
+      SIDECAR_KEK_FILE: /run/secrets/custodian_kek
+    secrets:
+      - completion_secret
+      - custodian_kek
+
+  # ---- THE STATIC KEK, ADDED TO THE ONE-SHOT SERVICE THAT ADOPTS IT ---------------------------------
+  #
+  # The service itself is declared in the runtime file with the state directory, the root key and the backup
+  # sets. This overlay adds the ONE mount that only a migration needs — the key being adopted — so that after
+  # the cutover there is nothing in the stack that can read that file at all.
+  custody-maintenance:
+    volumes:
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/state:/var/lib/catalog-sidecar/state
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_root_key:/run/catalog-custody/custodian_root_key:ro
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/backups:/backups:ro
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_kek:/run/catalog-custody/custodian_kek:ro
+
+secrets:
+  # DECLARED HERE AND ONLY HERE. The runtime file has no `custodian_kek` secret at all, so an installation in
+  # the steady state cannot mount it even by mistake.
+  custodian_kek:
+    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_kek

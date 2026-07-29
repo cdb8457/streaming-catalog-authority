@@ -487,8 +487,19 @@ async function main(): Promise<void> {
     assertEq(parsed.items.length, 2, 'the worked example is not the document it claims to be');
     assert(CATALOG_IMPORT_BOUNDS.includes('8 MiB'), 'the bounds note does not state the byte limit');
     assert(catalogImportFieldTable().some((row) => row.field === 'items[].title' && row.required), 'the field table is wrong');
-    assert(CATALOG_IMPORT_COMMANDS.every((pair) => pair.command.startsWith('docker compose exec app npm run ops:catalog-import')),
-      'the documented commands are not the shipped command');
+    // Every documented command is one of the SHIPPED ones, run the shipped way. Phase 274 added a third —
+    // producing a snapshot from an export of another system — and it is offered only as a `--preview`,
+    // because the import folder is mounted read-only to this container and a command that appeared to write
+    // into it would be a command that always fails.
+    for (const pair of CATALOG_IMPORT_COMMANDS) {
+      assert(pair.command.startsWith('docker compose exec app npm run ops:catalog-import')
+        || pair.command.startsWith('docker compose exec app npm run ops:catalog-snapshot-produce'),
+      `the documented command is not a shipped command: ${pair.command}`);
+      if (pair.command.includes('ops:catalog-snapshot-produce')) {
+        assert(pair.command.includes('--preview'), 'the producer is documented as a preview, never as a write into a read-only mount');
+        assert(!pair.command.includes('--out'), 'and it is never documented writing into the import folder');
+      }
+    }
     assert(CATALOG_IMPORT_COMMANDS.some((pair) => !pair.command.includes('--apply')), 'no preview command is documented');
     assert(CATALOG_IMPORT_COMMANDS.some((pair) => pair.command.includes('--apply')), 'no apply command is documented');
   });

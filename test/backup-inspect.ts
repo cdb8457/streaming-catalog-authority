@@ -21,7 +21,12 @@ import {
   scanForSchemaVersion,
   SchemaVersionScanner,
 } from '../src/ops/backup-inspect.js';
-import { BACKUP_INSPECT_COMMANDS, OPTIONAL_SECRET_FILES, REQUIRED_SECRET_FILES } from '../src/ops/backup-components.js';
+import {
+  BACKUP_INSPECT_COMMANDS,
+  OPTIONAL_SECRET_FILES,
+  REQUIRED_SECRET_FILES,
+  requiredSecretFilesFor,
+} from '../src/ops/backup-components.js';
 import { removeQuietly } from '../src/ops/usable-shell.js';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 
@@ -104,6 +109,14 @@ interface BackupShape {
   readonly partialSecrets?: boolean;
   readonly emptySecret?: boolean;
   readonly records?: number;
+  /** A KEK ring inside the keystore copy, which is what makes the root wrapping key REQUIRED. */
+  readonly ring?: boolean;
+  /** Leave the root wrapping key out of the secrets copy. Correct without a ring; fatal with one. */
+  readonly withoutRoot?: boolean;
+  /** A DIRECTORY at the root key name. Not a key, ring or no ring. */
+  readonly rootAsDirectory?: boolean;
+  /** An empty file at the root key name, which restores as no key at all. */
+  readonly emptyRoot?: boolean;
 }
 
 function makeBackup(shape: BackupShape): string {
@@ -113,6 +126,10 @@ function makeBackup(shape: BackupShape): string {
     const root = join(dir, 'keystore-backup');
     for (const sub of ['keys', 'tombstones', 'ops', 'journal']) mkdirSync(join(root, sub), { recursive: true });
     if (shape.keystore === true) writeFileSync(join(root, 'keys', 'key_abc.json'), '{"keyId":"key_abc"}');
+    if (shape.ring === true) {
+      mkdirSync(join(root, 'ring'), { recursive: true });
+      writeFileSync(join(root, 'ring', 'kek-ring.json'), '{"document":"catalog-authority.kek-ring"}');
+    }
   }
   if (shape.secrets === true || shape.partialSecrets === true) {
     const root = join(dir, 'secrets-backup');
@@ -120,10 +137,15 @@ function makeBackup(shape: BackupShape): string {
     // Two of the six, which is what an incomplete copy looks like — and what used to be accepted as complete.
     const names = shape.partialSecrets === true
       ? ['custodian_kek', 'operator_ui_token']
-      : [...REQUIRED_SECRET_FILES];
+      : [...REQUIRED_SECRET_FILES].filter((name) => shape.withoutRoot !== true || name !== 'custodian_root_key');
     for (const secret of names) {
+      if (secret === 'custodian_root_key' && shape.rootAsDirectory === true) {
+        mkdirSync(join(root, secret), { recursive: true });
+        continue;
+      }
       // A distinctive value per file, so a test can prove the inspector never reads one.
-      const empty = shape.emptySecret === true && secret === 'operator_ui_token';
+      const empty = (shape.emptySecret === true && secret === 'operator_ui_token')
+        || (shape.emptyRoot === true && secret === 'custodian_root_key');
       writeFileSync(join(root, secret), empty ? '' : `NEVER-READ-THIS-${secret.toUpperCase()}\n`);
     }
   }
@@ -290,8 +312,64 @@ await test('a complete secrets copy says so, and counts', () => {
   const result = inspectBackupDirectory(makeBackup({ ...COMPLETE, dump: plainDump(MIGRATION_VERSION) }));
   const secrets = result.artifacts.find((entry) => entry.component === 'secrets')!;
   assertEq(secrets.kind, 'SECRETS_COPY', 'it is a secrets copy');
-  assert(secrets.detail.includes(String(REQUIRED_SECRET_FILES.length)), 'and says how many a restore needs');
+  // A SET WITH NO RING NEEDS ONE FEWER: nothing in it is sealed under a root wrapping key. See
+  // `requiredSecretFilesFor` — the count in the message follows the rule rather than a constant.
+  assert(secrets.detail.includes(String(requiredSecretFilesFor(false).length)),
+    'and says how many a restore of THIS set needs');
   assert(/complete secrets copy/i.test(secrets.detail), 'in as many words');
+});
+
+await test('the root wrapping key is required by what the SET holds, not by what the stack declares', () => {
+  // A STATIC-CUSTODY SET FROM BEFORE THE RING. Nothing in it is sealed under a root key, and demanding one
+  // would report every pre-migration rollback set as incomplete — which is exactly what it used to do.
+  const legacy = inspectBackupDirectory(makeBackup({
+    ...COMPLETE, withoutRoot: true, dump: plainDump(MIGRATION_VERSION),
+  }));
+  assertEq(legacy.verdict, 'CURRENT', 'a legacy set with no ring and no root key is complete');
+  assertEq(legacy.present.includes('secrets'), true, 'and its secrets component counts');
+
+  // THE SAME SET, WITH A RING IN THE KEYSTORE. Now the root key is what opens everything, and a set without
+  // it restores as a sealed box with no key.
+  const sealed = inspectBackupDirectory(makeBackup({
+    ...COMPLETE, ring: true, withoutRoot: true, dump: plainDump(MIGRATION_VERSION),
+  }));
+  assertEq(sealed.present.includes('secrets'), false, 'a ring without its root key is NOT a secrets component');
+  assertEq(sealed.verdict, 'INCOMPLETE', 'so the set is incomplete');
+  const secrets = sealed.artifacts.find((entry) => entry.kind === 'SECRETS_COPY')!;
+  assert(secrets.detail.includes('custodian_root_key'), 'and the inspector names what is missing');
+
+  // AND WITH THE ROOT KEY, THE MIGRATED SET IS COMPLETE.
+  const migrated = inspectBackupDirectory(makeBackup({ ...COMPLETE, ring: true, dump: plainDump(MIGRATION_VERSION) }));
+  assertEq(migrated.verdict, 'CURRENT', 'a migrated set carrying its root key is complete');
+  assert(migrated.artifacts.find((entry) => entry.component === 'secrets')!.detail
+    .includes(String(REQUIRED_SECRET_FILES.length)), 'and it needs every one of the required files');
+});
+
+await test('a root key that is PRESENT is judged even where it is not required', () => {
+  // THE DEFECT THIS CLOSES. The optional root's state was computed and then left out of the list that decides,
+  // so a no-ring set holding a DIRECTORY or an EMPTY FILE at that name was reported complete — the comment
+  // promised a check nothing performed. Absence is still not a fault; being there and not being a file is.
+  const asDirectory = inspectBackupDirectory(makeBackup({
+    ...COMPLETE, rootAsDirectory: true, dump: plainDump(MIGRATION_VERSION),
+  }));
+  assertEq(asDirectory.present.includes('secrets'), false, 'a directory at the root key name is not a secret');
+  assertEq(asDirectory.verdict, 'INCOMPLETE', 'so the set is incomplete');
+  const directoryDetail = asDirectory.artifacts.find((entry) => entry.kind === 'SECRETS_COPY')!.detail;
+  assert(directoryDetail.includes('NOT A REGULAR FILE'), 'and it is named as what it is');
+  assert(directoryDetail.includes('custodian_root_key'), 'by name');
+
+  const asEmpty = inspectBackupDirectory(makeBackup({
+    ...COMPLETE, emptyRoot: true, dump: plainDump(MIGRATION_VERSION),
+  }));
+  assertEq(asEmpty.present.includes('secrets'), false, 'an empty file restores as no key at all');
+  const emptyDetail = asEmpty.artifacts.find((entry) => entry.kind === 'SECRETS_COPY')!.detail;
+  assert(emptyDetail.includes('EMPTY') && emptyDetail.includes('custodian_root_key'), 'and it says so');
+
+  // AND ABSENCE IS STILL NOT A FAULT, which is the whole point of the conditional rule.
+  const absent = inspectBackupDirectory(makeBackup({
+    ...COMPLETE, withoutRoot: true, dump: plainDump(MIGRATION_VERSION),
+  }));
+  assertEq(absent.verdict, 'CURRENT', 'a no-ring set with no root key at all is complete');
 });
 
 await test('the optional runtime credential is not required, and its presence changes nothing', () => {

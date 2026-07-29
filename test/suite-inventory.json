@@ -1335,6 +1335,98 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "external-snapshot-produce.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "jellyfin-library-match.ts",
+      "group": "db",
+      "args": [
+        "5466"
+      ],
+      "requires": []
+    },
+    {
+      "file": "disposable-collection-lifecycle.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "complete-backup.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "doctor-monitor.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "upgrade-rehearsal.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "sidecar-ipc-hardening.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "kek-ring.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "kek-rotation.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "o4-o5-runtime-acceptance.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "kek-correction-gates.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "custodian-storage-ipc-gates.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "custody-cutover.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "custody-transition.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "managed-custody-lifecycle.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }

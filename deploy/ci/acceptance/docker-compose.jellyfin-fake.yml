@@ -24,6 +24,11 @@ services:
     environment:
       JELLYFIN_FAKE_PORT: "8096"
       JELLYFIN_FAKE_API_KEY_FILE: /run/secrets/jellyfin_api_key
+      # Phase 276. The fake-admin mutation surface — drift injection and one-shot read failures — exists ONLY
+      # for this disposable stack, and only because it is turned on HERE. It is not in `src/`, not in the
+      # production image and not in the release bundle; `test/disposable-collection-lifecycle.ts` asserts all
+      # three. Without exactly this string every `/_control/` path answers 404.
+      JELLYFIN_FAKE_ADMIN: "enabled"
     entrypoint: ["/bin/sh", "-c"]
     # The key is read from the mounted file and handed to the fake as an environment variable INSIDE the
     # container, so it never appears in this file, in `docker inspect` of the app, or in the repository.
@@ -54,9 +59,12 @@ services:
       # policy admits — and it resolves only inside this stack.
       JELLYFIN_BASE_URL: http://jellyfin-fake:8096
       JELLYFIN_API_KEY_FILE: /run/secrets/jellyfin_api_key
-      # The four switches, all four turned on for this run and all four off in the shipped stack.
+      # The four switches. The READ switch is on for the whole run, because discovery and the Phase 275 match
+      # are reads and that is the only switch a read needs. Every WRITE switch is a PARAMETER with a
+      # fail-closed default, so the run starts with all three closed and the orchestrator opens them
+      # deliberately, for one stage, inside this disposable stack. The shipped stack has all four off.
       JELLYFIN_ENABLE_NETWORK: "true"
-      JELLYFIN_ALLOW_LIVE_PUBLISH: "true"
+      JELLYFIN_ALLOW_LIVE_PUBLISH: "${JELLYFIN_ALLOW_LIVE_PUBLISH:-false}"
       JELLYFIN_ALLOW_COLLECTION_WRITES: "${JELLYFIN_ALLOW_COLLECTION_WRITES:-false}"
       PUBLISH_EXTERNAL_IDENTITY: "${PUBLISH_EXTERNAL_IDENTITY:-deny}"
       JELLYFIN_TIMEOUT_MS: "5000"

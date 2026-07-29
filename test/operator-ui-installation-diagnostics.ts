@@ -800,6 +800,7 @@ function bundleSources(): BundleSources {
     setupPowerShell: read('deploy/local-runtime-setup.ps1'),
     arcaneCompose: read('docker-compose.arcane.yml'),
     arcaneSetupBash: read('deploy/arcane-setup.sh'),
+    custodyHelper: read('deploy/write-custody-secret.mjs'),
   };
 }
 
@@ -1152,7 +1153,10 @@ await test('the bundle still ships no source, no toolchain and no secret, with t
   // v1.1.2 adds the Arcane pair; the Phase 246 point of this assertion is that the set is CLOSED and carries
   // no source, no toolchain and no secret, not that it can never grow for a real consumer need.
   // Phase 259 adds the worked catalog snapshot — a real consumer need, and still not source or a toolchain.
-  assertEq(paths.join(','), '.env,.env.example,README.md,SHA256SUMS,VERSION,arcane-setup.sh,bundle-manifest.json,docker-compose.arcane.yml,docker-compose.yml,example-catalog-snapshot.json,setup.ps1,setup.sh',
+  // Phase 284 adds the custody writer: both setup scripts delegate the ROOT WRAPPING KEY to it and refuse
+  // rather than continue without it, so a bundle without it is one whose setup stops on the first run. It is
+  // a script the setup runs, not source the user builds, and it carries no secret.
+  assertEq(paths.join(','), '.env,.env.example,README.md,SHA256SUMS,VERSION,arcane-setup.sh,bundle-manifest.json,docker-compose.arcane.yml,docker-compose.yml,example-catalog-snapshot.json,setup.ps1,setup.sh,write-custody-secret.mjs',
     'the bundle file set is exactly what an ordinary user and a launcher user need');
   for (const file of bundle.files) {
     assert(!file.contents.includes('\r'), `${file.path} is still LF-only`);

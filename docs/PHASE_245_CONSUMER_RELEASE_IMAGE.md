@@ -87,7 +87,7 @@ text.
 The published repository is `ghcr.io/cdb8457/catalog-authority-ops`, and the ACTIVE (not yet released) pin is:
 
 ```
-ghcr.io/cdb8457/catalog-authority-ops:v1.1.4
+ghcr.io/cdb8457/catalog-authority-ops:v1.2.0
 ```
 
 Earlier releases stay exactly where they are. `v1.0.0` through `v1.1.3` are published and immutable; nothing
@@ -105,9 +105,9 @@ offline catalog import and browsing, automatic repair of legacy keystore ownersh
 managed Jellyfin collection lifecycle. See `RELEASE.md`,
 `docs/LIFECYCLE_MIGRATION_BACKUP_UPGRADE_ROLLBACK.md`, and the Phase 255–272 documents.
 
-`v1.1.4` is a deployment-portability hotfix. It keeps the v1.1.3 schema and application behavior, while
-explicitly bounding the Go helper used by `tsx`/esbuild so the one-shot keystore preparation service starts
-reliably on high-core Docker hosts without widening its 64-PID limit.
+`v1.2.0` keeps schema version 9 and adds the reviewed offline snapshot, read-only Jellyfin, disposable
+collection/recovery, and managed-custody lifecycles. The published v1.1.4 image remains immutable and is the
+upgrade source and rollback image.
 
 **This was wrong when the phase first shipped, and the correction is the point of the remediation.** The
 first version published to `ghcr.io/catalog-authority/…`. Earlier phases wrote the convention with a

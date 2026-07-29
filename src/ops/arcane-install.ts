@@ -54,6 +54,8 @@ export const ARCANE_REQUIRED_SUBDIRECTORIES: readonly string[] = ['secrets', 'pr
 /** The secret files the stack mounts. Names only; contents are never read by anything here. */
 export const ARCANE_REQUIRED_SECRET_FILES: readonly string[] = [
   'postgres_password', 'admin_database_url', 'database_url', 'completion_secret', 'custodian_kek',
+  // Phase 282. The root wrapping key that seals the sidecar-managed KEK ring.
+  'custodian_root_key',
   'operator_ui_token',
 ];
 

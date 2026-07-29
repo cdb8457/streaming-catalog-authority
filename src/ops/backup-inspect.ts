@@ -2,7 +2,14 @@ import { closeSync, constants as fsConstants, lstatSync, openSync, readSync, rea
 import { basename, join } from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
-import { BACKUP_COMPONENT_IDS, REQUIRED_SECRET_FILES, type BackupComponentId } from './backup-components.js';
+import {
+  BACKUP_COMPONENT_IDS,
+  REQUIRED_SECRET_FILES,
+  ROOT_KEY_SECRET_NAME,
+  backupSetHasRing,
+  requiredSecretFilesFor,
+  type BackupComponentId,
+} from './backup-components.js';
 
 // Phase 257 — is the backup you have still a rollback point?
 //
@@ -165,7 +172,11 @@ export function inspectBackupDirectory(dir: string): BackupInspection {
     throw new BackupInspectError('the backup directory could not be read');
   }
 
-  const artifacts = entries.map((name) => inspectEntry(dir, name));
+  // WHAT THIS SET MUST HOLD DEPENDS ON WHAT IT HOLDS. A keystore carrying a KEK ring needs the root wrapping
+  // key that seals it; a static-custody set from before the ring existed does not, and demanding one would
+  // report every pre-migration rollback set as incomplete. See `backupSetHasRing`.
+  const ringPresent = backupSetHasRing(dir);
+  const artifacts = entries.map((name) => inspectEntry(dir, name, ringPresent));
   const present = BACKUP_COMPONENT_IDS.filter((id) => artifacts.some((a) => a.component === id));
   const missing = REQUIRED_COMPONENTS.filter((id) => !present.includes(id));
 
@@ -238,7 +249,7 @@ function limitsFor(artifacts: readonly InspectedArtifact[], present: readonly Ba
 // One entry
 // -----------------------------------------------------------------------------------------------------------
 
-function inspectEntry(dir: string, name: string): InspectedArtifact {
+function inspectEntry(dir: string, name: string, ringPresent: boolean): InspectedArtifact {
   const path = join(dir, name);
   let stat: ReturnType<typeof lstatSync>;
   try {
@@ -252,14 +263,14 @@ function inspectEntry(dir: string, name: string): InspectedArtifact {
       'A symbolic link. It was not followed, and what it points at is not counted as present.');
   }
 
-  if (stat.isDirectory()) return inspectDirectoryEntry(path, name);
+  if (stat.isDirectory()) return inspectDirectoryEntry(path, name, ringPresent);
   if (!stat.isFile()) {
     return artifact(name, 'UNRECOGNISED', null, null, 'Not a regular file or directory. Counted as nothing.');
   }
   return inspectFileEntry(path, name, stat.size);
 }
 
-function inspectDirectoryEntry(path: string, name: string): InspectedArtifact {
+function inspectDirectoryEntry(path: string, name: string, ringPresent: boolean): InspectedArtifact {
   let children: readonly string[];
   try {
     children = readdirSync(path);
@@ -309,16 +320,30 @@ function inspectDirectoryEntry(path: string, name: string): InspectedArtifact {
   // `lstat`, NOT `stat`, deliberately: a symbolic link named like a secret is not the secret, even when it
   // points at a real one. Following it would let a link outside the backup decide whether the backup counts,
   // which is the same boundary every other entry here is held to.
-  const secretStates = REQUIRED_SECRET_FILES.map((secret) => [secret, requiredSecretState(join(path, secret))] as const);
+  const required = requiredSecretFilesFor(ringPresent);
+  const secretStates = required.map((secret) => [secret, requiredSecretState(join(path, secret))] as const);
+  // A ROOT KEY THAT IS PRESENT IS STILL CHECKED WHEN IT IS NOT REQUIRED. It restores to the path the whole
+  // ring is sealed under, so a directory or an empty file at that name is a fault in the set either way.
+  //
+  // ABSENCE IS NOT A FAULT HERE AND ANYTHING ELSE IS. Only a root key that is actually THERE joins the
+  // evaluated states, so a no-ring set without one stays complete — while a directory, a link or an empty
+  // file at that name is a fault in the set, because it restores to the path the whole ring is sealed under.
+  const optionalRoot: (readonly [string, RequiredSecretState])[] =
+    !ringPresent && requiredSecretState(join(path, ROOT_KEY_SECRET_NAME)) !== 'MISSING'
+      ? [[ROOT_KEY_SECRET_NAME, requiredSecretState(join(path, ROOT_KEY_SECRET_NAME))]]
+      : [];
+  // ONE LIST DECIDES, AND IT IS THE ONE THAT INCLUDES THE OPTIONAL ROOT. Computing the optional state and
+  // then judging only the required ones is a comment that promises a check nobody performs.
+  const evaluated = [...secretStates, ...optionalRoot];
   if (secretStates.some(([, state]) => state !== 'MISSING')) {
     const named = (want: RequiredSecretState): readonly string[] =>
-      secretStates.filter(([, state]) => state === want).map(([secret]) => secret);
+      evaluated.filter(([, state]) => state === want).map(([secret]) => secret);
     const missing = named('MISSING');
     const notFile = named('NOT_A_FILE');
     const empty = named('EMPTY');
     if (missing.length === 0 && notFile.length === 0 && empty.length === 0) {
       return artifact(name, 'SECRETS_COPY', 'secrets', null,
-        `A complete secrets copy: all ${REQUIRED_SECRET_FILES.length} files a restore needs are present, are `
+        `A complete secrets copy: all ${required.length} files a restore needs are present, are `
         + 'regular files, and are not empty. None of them was opened.');
     }
     const faults = [
@@ -328,7 +353,7 @@ function inspectDirectoryEntry(path: string, name: string): InspectedArtifact {
     ].join('; ');
     return artifact(name, 'SECRETS_COPY', null, null,
       `An INCOMPLETE secrets copy — ${faults}. A restore needs every one of the `
-      + `${REQUIRED_SECRET_FILES.length} required files as a real, non-empty file: a directory or a link with `
+      + `${required.length} required files as a real, non-empty file: a directory or a link with `
       + 'one of those names is not the secret, and an empty file restores as no secret at all. This does NOT '
       + 'count as the secrets component. None of them was opened.');
   }

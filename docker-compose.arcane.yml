@@ -114,7 +114,7 @@ services:
   # a refusal stops the stack rather than producing a half-working UI. A correct keystore writes nothing at
   # all, so this is free on every `up` after the first.
   keystore-prepare:
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.4}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.2.0}
     init: true
     restart: "no"
     environment:
@@ -153,7 +153,7 @@ services:
   # the completion secret, and proves the least-privileged runtime connection works. The app will not start
   # unless this exits zero.
   migrate:
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.4}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.2.0}
     init: true
     restart: "no"
     depends_on:
@@ -197,7 +197,7 @@ services:
       options: { max-size: "10m", max-file: "3" }
 
   app:
-    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.1.4}
+    image: ${CATALOG_AUTHORITY_IMAGE:-ghcr.io/cdb8457/catalog-authority-ops:v1.2.0}
     init: true
     restart: unless-stopped
     depends_on:
@@ -280,5 +280,10 @@ secrets:
     file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/completion_secret
   custodian_kek:
     file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/custodian_kek
+  # PHASE 282. The ROOT WRAPPING KEY that seals the sidecar-managed KEK ring. Read ONLY by the custodian
+  # sidecar, only from this file, and never from an environment variable, a command line or any evidence
+  # surface. Keep it the way you keep the KEK: every key in the installation can be reached from it.
+  custodian_root_key:
+    file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/custodian_root_key
   operator_ui_token:
     file: ${CATALOG_AUTHORITY_PROJECT_DIR:?set CATALOG_AUTHORITY_PROJECT_DIR — see the header of this file}/secrets/operator_ui_token

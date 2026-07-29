@@ -86,10 +86,18 @@ Against the real shipped assets, under the real CSP:
 
 ## The fixture
 
-`deploy/ci/acceptance/fixtures/catalog-acceptance-snapshot.json` — 28 records, checked in, deterministic, and
-**validated by the product's own `parseCatalogSnapshot` in `npm run test:phase262-local`**. A fixture the
-product would reject proves nothing about the product, and finding that out inside a Docker job most
-contributors cannot run is the wrong place to find it out.
+`deploy/ci/acceptance/fixtures/catalog-acceptance-export.json` — 28 entries, checked in, deterministic.
+
+**Phase 274 changed what is checked in.** What this repository holds is an EXPORT of an external system
+(`catalog-authority.external-export` v1), and the canonical snapshot the gate imports is **produced from it
+during the run** by `ops:catalog-snapshot-produce`; the shipped image is then made to produce byte-identical
+output from the same input. The ready-made canonical snapshot was deleted, and both the orchestrator and
+`npm run test:phase262-local` fail if one reappears — while one exists, the gate could quietly go back to
+copying it and "the snapshot was produced during the run" becomes a claim nothing can falsify.
+
+The produced document is still **validated by the product's own `parseCatalogSnapshot` in
+`npm run test:phase262-local`**. A fixture the product would reject proves nothing about the product, and
+finding that out inside a Docker job most contributors cannot run is the wrong place to find it out.
 
 It contains no URL, no host, no live-service name: one imdb reference whose value is the disclosure sentinel,
 one hostile title, one undated record, and 25 ordinary ones — one full default page, so the 26th forces a

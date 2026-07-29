@@ -150,8 +150,19 @@ test('the launcher stack routes its sidecar state to the keystore component, not
 // quietly approving backups that do not contain it.
 test('the required secret files are exactly what every shipped stack declares', () => {
   for (const stack of SHIPPED_STACKS) {
-    const declared = Object.keys(asMap(parseYaml(read(stack)).secrets ?? null, `${stack} secrets`)).sort();
-    assertEq(declared.join(','), [...REQUIRED_SECRET_FILES].sort().join(','),
+    // PHASE 289. THE UNRAID RUNTIME STACK IS TWO FILES NOW, AND THE STATIC KEK LIVES IN THE TEMPORARY ONE.
+    //
+    // The steady state has no path to the static KEK at all — that is the point of the split — so a
+    // migrated installation's stack declares six secrets and an unmigrated one declares seven. What a
+    // restore is checked against is still the whole set the shipped stack can require, which is the union of
+    // the selectable files, and that is what this compares. Reading only the steady-state file here would
+    // make this assert that a secret every unmigrated installation still needs is not required at all.
+    const declared = Object.keys(asMap(parseYaml(read(stack)).secrets ?? null, `${stack} secrets`));
+    if (stack === 'docker-compose.unraid.runtime.yml') {
+      declared.push(...Object.keys(asMap(
+        parseYaml(read('docker-compose.unraid.bootstrap.yml')).secrets ?? null, 'bootstrap overlay secrets')));
+    }
+    assertEq([...new Set(declared)].sort().join(','), [...REQUIRED_SECRET_FILES].sort().join(','),
       `${stack} declares exactly the secrets a restore is checked for`);
   }
   assertEq(new Set(REQUIRED_SECRET_FILES).size, REQUIRED_SECRET_FILES.length, 'no name appears twice');
