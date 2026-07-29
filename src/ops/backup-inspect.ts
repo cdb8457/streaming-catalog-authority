@@ -324,13 +324,20 @@ function inspectDirectoryEntry(path: string, name: string, ringPresent: boolean)
   const secretStates = required.map((secret) => [secret, requiredSecretState(join(path, secret))] as const);
   // A ROOT KEY THAT IS PRESENT IS STILL CHECKED WHEN IT IS NOT REQUIRED. It restores to the path the whole
   // ring is sealed under, so a directory or an empty file at that name is a fault in the set either way.
+  //
+  // ABSENCE IS NOT A FAULT HERE AND ANYTHING ELSE IS. Only a root key that is actually THERE joins the
+  // evaluated states, so a no-ring set without one stays complete — while a directory, a link or an empty
+  // file at that name is a fault in the set, because it restores to the path the whole ring is sealed under.
   const optionalRoot: (readonly [string, RequiredSecretState])[] =
     !ringPresent && requiredSecretState(join(path, ROOT_KEY_SECRET_NAME)) !== 'MISSING'
       ? [[ROOT_KEY_SECRET_NAME, requiredSecretState(join(path, ROOT_KEY_SECRET_NAME))]]
       : [];
+  // ONE LIST DECIDES, AND IT IS THE ONE THAT INCLUDES THE OPTIONAL ROOT. Computing the optional state and
+  // then judging only the required ones is a comment that promises a check nobody performs.
+  const evaluated = [...secretStates, ...optionalRoot];
   if (secretStates.some(([, state]) => state !== 'MISSING')) {
     const named = (want: RequiredSecretState): readonly string[] =>
-      secretStates.filter(([, state]) => state === want).map(([secret]) => secret);
+      evaluated.filter(([, state]) => state === want).map(([secret]) => secret);
     const missing = named('MISSING');
     const notFile = named('NOT_A_FILE');
     const empty = named('EMPTY');

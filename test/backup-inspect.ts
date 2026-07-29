@@ -113,6 +113,10 @@ interface BackupShape {
   readonly ring?: boolean;
   /** Leave the root wrapping key out of the secrets copy. Correct without a ring; fatal with one. */
   readonly withoutRoot?: boolean;
+  /** A DIRECTORY at the root key name. Not a key, ring or no ring. */
+  readonly rootAsDirectory?: boolean;
+  /** An empty file at the root key name, which restores as no key at all. */
+  readonly emptyRoot?: boolean;
 }
 
 function makeBackup(shape: BackupShape): string {
@@ -135,8 +139,13 @@ function makeBackup(shape: BackupShape): string {
       ? ['custodian_kek', 'operator_ui_token']
       : [...REQUIRED_SECRET_FILES].filter((name) => shape.withoutRoot !== true || name !== 'custodian_root_key');
     for (const secret of names) {
+      if (secret === 'custodian_root_key' && shape.rootAsDirectory === true) {
+        mkdirSync(join(root, secret), { recursive: true });
+        continue;
+      }
       // A distinctive value per file, so a test can prove the inspector never reads one.
-      const empty = shape.emptySecret === true && secret === 'operator_ui_token';
+      const empty = (shape.emptySecret === true && secret === 'operator_ui_token')
+        || (shape.emptyRoot === true && secret === 'custodian_root_key');
       writeFileSync(join(root, secret), empty ? '' : `NEVER-READ-THIS-${secret.toUpperCase()}\n`);
     }
   }
@@ -334,6 +343,33 @@ await test('the root wrapping key is required by what the SET holds, not by what
   assertEq(migrated.verdict, 'CURRENT', 'a migrated set carrying its root key is complete');
   assert(migrated.artifacts.find((entry) => entry.component === 'secrets')!.detail
     .includes(String(REQUIRED_SECRET_FILES.length)), 'and it needs every one of the required files');
+});
+
+await test('a root key that is PRESENT is judged even where it is not required', () => {
+  // THE DEFECT THIS CLOSES. The optional root's state was computed and then left out of the list that decides,
+  // so a no-ring set holding a DIRECTORY or an EMPTY FILE at that name was reported complete — the comment
+  // promised a check nothing performed. Absence is still not a fault; being there and not being a file is.
+  const asDirectory = inspectBackupDirectory(makeBackup({
+    ...COMPLETE, rootAsDirectory: true, dump: plainDump(MIGRATION_VERSION),
+  }));
+  assertEq(asDirectory.present.includes('secrets'), false, 'a directory at the root key name is not a secret');
+  assertEq(asDirectory.verdict, 'INCOMPLETE', 'so the set is incomplete');
+  const directoryDetail = asDirectory.artifacts.find((entry) => entry.kind === 'SECRETS_COPY')!.detail;
+  assert(directoryDetail.includes('NOT A REGULAR FILE'), 'and it is named as what it is');
+  assert(directoryDetail.includes('custodian_root_key'), 'by name');
+
+  const asEmpty = inspectBackupDirectory(makeBackup({
+    ...COMPLETE, emptyRoot: true, dump: plainDump(MIGRATION_VERSION),
+  }));
+  assertEq(asEmpty.present.includes('secrets'), false, 'an empty file restores as no key at all');
+  const emptyDetail = asEmpty.artifacts.find((entry) => entry.kind === 'SECRETS_COPY')!.detail;
+  assert(emptyDetail.includes('EMPTY') && emptyDetail.includes('custodian_root_key'), 'and it says so');
+
+  // AND ABSENCE IS STILL NOT A FAULT, which is the whole point of the conditional rule.
+  const absent = inspectBackupDirectory(makeBackup({
+    ...COMPLETE, withoutRoot: true, dump: plainDump(MIGRATION_VERSION),
+  }));
+  assertEq(absent.verdict, 'CURRENT', 'a no-ring set with no root key at all is complete');
 });
 
 await test('the optional runtime credential is not required, and its presence changes nothing', () => {
