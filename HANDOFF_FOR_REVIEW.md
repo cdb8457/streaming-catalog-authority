@@ -10,7 +10,9 @@ Branch `cdb8457/v1-2-6-sidecar-rehearsal-hardening`, based on the published v1.2
   limit on high-core hosts.
 - Make the disposable upgrade/rollback rehearsal select the restored managed-ring root key and leave the
   restored legacy static KEK unselected, matching the shipped root-only runtime.
-- Assert both corrections in the focused deployment and rehearsal suites.
+- Align the final browser reconcile assertion with the terminal state established by the preceding recovery
+  and idempotency passes.
+- Assert the runtime and custody corrections in the focused deployment and rehearsal suites.
 - Retain every v1.2.0 offline, Jellyfin, collection lifecycle, recovery, O4 sidecar, and O5 managed-custody
   boundary unchanged.
 

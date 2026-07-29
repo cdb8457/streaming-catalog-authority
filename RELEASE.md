@@ -16,6 +16,9 @@ Fixed:
   override previously selected the restored legacy static KEK even when the runtime selected the restored
   root key, so the fail-closed sidecar saw both custody sources and refused startup. The static file is still
   restored as part of the complete recovery set, but only the managed-ring root key is selected.
+- **The release browser gate now agrees with its own pre-settled lifecycle.** Its shell steps already recover
+  the deliberately lost create response and prove a third reconcile is a no-op. The following browser click
+  now requires the correct terminal `Nothing is outstanding` verdict instead of stale `Created` wording.
 - **Both corrections came from real Tower acceptance.** Production remained healthy and untouched while
   each failed disposable rehearsal retained only its marker-scoped project for diagnosis and exact cleanup.
 

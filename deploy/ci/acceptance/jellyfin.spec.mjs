@@ -132,16 +132,18 @@ test.describe('Jellyfin control plane', () => {
     await expect(page.locator('#colOutstanding')).not.toHaveText('0');
   });
 
-  test('@jf-reconcile a reconcile pass carries the queued work out, and a second one does nothing', async ({ page }) => {
+  test('@jf-reconcile the panel reports no work after the shell recovery and idempotency passes', async ({ page }) => {
     await signIn(page);
     await page.click('#colReconcile');
-    await expect(page.locator('#colRunStatus')).toContainText('Created', { timeout: 60_000 });
+    // This leg runs AFTER the shell has recovered the deliberately lost create response and proved a third
+    // reconcile is a no-op. The first browser click therefore starts from the terminal state; demanding
+    // "Created" here contradicts the state the preceding acceptance steps deliberately established.
+    await expect(page.locator('#colRunStatus')).toContainText('Nothing is outstanding', { timeout: 60_000 });
     await expect(page.locator('#colOutstanding')).toHaveText('0', { timeout: 30_000 });
     await expect(page.locator('#colPublished')).not.toHaveText('0');
 
     await page.click('#colReconcile');
-    // With no durable intent left, the execution preflight now returns the stronger no-work verdict instead
-    // of entering a zero-effect run. This is the same terminal state the removal leg already asserts below.
+    // Repeating the browser action remains a no-op too.
     await expect(page.locator('#colRunStatus')).toContainText('Nothing is outstanding', { timeout: 60_000 });
   });
 
