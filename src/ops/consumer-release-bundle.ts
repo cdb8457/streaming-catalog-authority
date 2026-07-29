@@ -28,13 +28,13 @@ export class ConsumerReleaseBundleError extends Error {}
  */
 export const RELEASE_IMAGE_REPOSITORY = CANONICAL_IMAGE_REPOSITORY;
 /**
- * The ACTIVE, NOT-YET-RELEASED tag. v1.2.0 adds offline snapshot production, read-only Jellyfin matching,
- * disposable collection and recovery lifecycles, and hardened sidecar/managed-KEK custody.
+ * The ACTIVE, NOT-YET-RELEASED tag. v1.2.1 makes the disposable upgrade rehearsal compatible with the
+ * fully resolved KEY=value environment arrays emitted by Docker Compose 2.40.
  *
- * v1.0.0 through v1.1.4 are published, immutable and untouched: this constant selects what a NEW bundle
+ * v1.0.0 through v1.2.0 are published, immutable and untouched: this constant selects what a NEW bundle
  * pins, and nothing in this repository rewrites, re-tags or overwrites an existing release.
  */
-export const RELEASE_IMAGE_TAG = 'v1.2.0';
+export const RELEASE_IMAGE_TAG = 'v1.2.1';
 export const RELEASE_IMAGE_REF = `${RELEASE_IMAGE_REPOSITORY}:${RELEASE_IMAGE_TAG}`;
 
 /** The bundle root: the folder a user extracts and runs `docker compose up -d` in. */

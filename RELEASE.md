@@ -3,9 +3,26 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
-## v1.2.0 - Offline authority, managed collections, and managed custody
+## v1.2.1 - Docker Compose 2.40 rehearsal compatibility
 
 Release candidate; not yet published. Schema remains version 9.
+
+Fixed:
+
+- **The host-side upgrade/rollback rehearsal now accepts Docker Compose 2.40's fully resolved
+  `KEY=value` environment arrays.** It still refuses bare pass-through names, non-string entries, duplicate
+  assignments, invalid names, null mapping values, and oversized environments. Values are split only at the
+  first equals sign.
+- **The correction came from a real Tower rehearsal refusal.** The v1.2.0 command safely stopped before
+  starting a disposable container, left its marker-scoped evidence for diagnosis, did not address
+  production, and did not change the verified backup set.
+
+All v1.2.0 boundaries and schema remain unchanged. Catalog Authority still never downloads, scrapes, plays,
+or acquires media and never creates media symlinks.
+
+## v1.2.0 - Offline authority, managed collections, and managed custody
+
+Published `2026-07-29`, immutable. Schema remains version 9.
 
 Added:
 
