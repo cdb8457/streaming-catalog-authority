@@ -20,35 +20,38 @@
 # of an external system — a different, closed schema — and the SHIPPED IMAGE is then made to produce the same
 # bytes from the same input, so determinism is proved across two environments rather than asserted in one.
 #
-# WHAT IT ESTABLISHES, IN ORDER:
-#   0. THE SNAPSHOT IS PRODUCED OFFLINE from an external export, atomically, with no network, no acquisition
+# WHAT IT ESTABLISHES, IN THE ORDER IT ESTABLISHES IT:
+#   1. THE SNAPSHOT IS PRODUCED OFFLINE from an external export, atomically, with no network, no acquisition
 #      and no media access — and the same export produces byte-identical output inside the shipped image.
-#   1. DISABLED IS THE DEFAULT. The shipped stack, with no override, contacts nothing and says so.
-#   2. READ-ONLY DISCOVERY. With networking on, it counts and names no media item.
-#   2b. EVERY WRITE GATE CLOSED, AND A REFUSAL THAT NAMES ONE (Phase 276), before anything else is attempted.
-#   2c. READ-ONLY MATCHING (Phase 275): which imported records the library actually holds, on the read switch
-#      alone, writing nothing, and reporting UNKNOWN rather than absence when the library cannot be read.
-#   9b. MEMBERSHIP DRIFT injected behind the product's back through the fake server's TEST-ONLY admin surface,
-#      then audited (read-only), a stale and a wrong repair confirmation both refused, the repair confirmed,
-#      reconciled, and EXACT membership verified (Phase 276).
-#  14b. THE STACK IS LEFT AT ZERO Catalog-Authority-managed artifacts, with the foreign collection untouched.
-#   3. ZERO-WRITE PREVIEW. A plan is computed and no row, event, ledger row or external request appears.
-#   4. WRITES STAY REFUSED until the separate switch is on, even with a correct digest.
-#   5. EXPLICIT QUEUE. With the switch on, the exact digest queues durable intents and sends nothing.
-#   6. DURABLE EXECUTION. A reconcile pass creates the collections on the fake server.
-#   7. AMBIGUOUS RECOVERY. A create whose response is LOST is adopted by token, with no duplicate.
-#   8. IDEMPOTENCY. A second reconcile does nothing at all.
-#   9. REVOKE. A forgotten record's external copy comes back.
-#  10. RESTART PERSISTENCE. The application and database survive a stop/start while the external fake
+#   2. DISABLED IS THE DEFAULT. The shipped stack, with no override, contacts nothing and says so.
+#   3. EVERY WRITE GATE CLOSED, AND A REFUSAL THAT NAMES ONE. Proved BEFORE anything is written, because a
+#      later write that worked on an already-open gate would make the rest of this file prove nothing.
+#   4. READ-ONLY MATCHING: which imported records the library actually holds, on the read switch alone,
+#      writing nothing, and reporting UNKNOWN rather than absence when the library cannot be read.
+#   5. READ-ONLY DISCOVERY. With networking on, it counts and names no media item.
+#   6. ZERO-WRITE PREVIEW. A plan is computed and no row, event, ledger row or external request appears.
+#   7. WRITES STAY REFUSED until the separate switches are on, even with a correct digest.
+#   8. EXPLICIT QUEUE. With the switches on, the exact digest queues durable intents and sends nothing.
+#   9. DURABLE EXECUTION. A reconcile pass creates the collections on the fake server.
+#  10. AMBIGUOUS RECOVERY. A create whose response is LOST is adopted by token, with no duplicate.
+#  11. IDEMPOTENCY. A second reconcile does nothing at all.
+#  12. RESTART PERSISTENCE. The application and database survive a stop/start while the external fake
 #      Jellyfin remains running, just as a real media server would.
-#  11. PARTIAL ERASURE. Forgetting ONE member takes its library items out and leaves the collection standing.
-#  12. DRIFT AUDIT AND GATED REPAIR. A collection deleted on the server is detected, and the repair is
+#  13. MEMBERSHIP DRIFT injected behind the product's back through the fake server's TEST-ONLY admin surface,
+#      then audited (read-only), a listing failure reported as unknown and never repairable with a retry that
+#      judges it again, a stale and a wrong repair confirmation both refused, the repair confirmed, the
+#      ordinary reconcile run, and EXACT membership verified.
+#  14. PARTIAL ERASURE. Forgetting ONE member takes its library items out and leaves the collection standing.
+#  15. DRIFT AUDIT AND GATED REPAIR. A collection deleted on the server is detected, and the repair is
 #      digest-confirmed and writes durable state only.
-#  13. OPERATOR CLI PARITY. The same lifecycle, headless, through the same services and the same gates.
-#  14. BROWSER-DRIVEN REMOVAL, END TO END. The panel previews a whole-collection revoke, confirms it by its
+#  16. OPERATOR CLI PARITY. The same lifecycle, headless, through the same services and the same gates.
+#  17. BROWSER-DRIVEN REMOVAL, END TO END. The panel previews a whole-collection revoke, confirms it by its
 #      own digest, queues it, carries it out with its own Revoke control, and then reads the media server back
 #      through the product's own discovery surface to see it gone. This script does not revoke for it.
-#  15. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
+#  18. THE STACK IS LEFT AT ZERO Catalog-Authority-managed artifacts, and the collection this product never
+#      created is still there — a cleanup that took somebody else's collection would be far worse than one
+#      that left its own.
+#  19. BROWSER-ONLY VIEWING WRITES NOTHING, in the database or on the media server.
 #
 # PREREQUISITES: a running Docker daemon, `node`, and the pinned acceptance harness in deploy/ci/acceptance/.
 # FAIL vs SKIP is explicit and identical to Phases 248 and 262:
@@ -555,7 +558,7 @@ info "no row, event, ledger entry or external collection; ${plans_recorded} prev
 # 7. Turn the write switches on, and queue the exact plan from the browser.
 # ---------------------------------------------------------------------------------------------------------
 step "restart with the collection-write switch and publish consent ON"
-JELLYFIN_ALLOW_COLLECTION_WRITES=true JELLYFIN_ALLOW_LIVE_PUBLISH=true PUBLISH_EXTERNAL_IDENTITY=allow \n  jf_compose up -d >/dev/null
+JELLYFIN_ALLOW_COLLECTION_WRITES=true JELLYFIN_ALLOW_LIVE_PUBLISH=true PUBLISH_EXTERNAL_IDENTITY=allow jf_compose up -d >/dev/null
 wait_for_health "the stack did not become healthy with writes enabled"
 [ "$(api_field /api/collections/status 'r.writesEnabled')" = "true" ] || fail "writes are still refused after turning the switches on"
 info "all four switches are on for this run"
@@ -624,7 +627,7 @@ history_before_restart="$(count_rows collection_control_history)"
 # reset. Stop the application/database boundary only; leave jellyfin-fake running exactly as a real server
 # would remain running while this product restarts.
 jf_compose stop app postgres >/dev/null
-JELLYFIN_ALLOW_COLLECTION_WRITES=true JELLYFIN_ALLOW_LIVE_PUBLISH=true PUBLISH_EXTERNAL_IDENTITY=allow \n  jf_compose up -d >/dev/null
+JELLYFIN_ALLOW_COLLECTION_WRITES=true JELLYFIN_ALLOW_LIVE_PUBLISH=true PUBLISH_EXTERNAL_IDENTITY=allow jf_compose up -d >/dev/null
 wait_for_health "the stack did not come back healthy after a restart"
 [ "$(count_rows managed_collections)" = "${PLAN_COLLECTIONS}" ] || fail "the managed collection did not survive a restart"
 [ "$(count_rows managed_collection_members)" = "${PLAN_MEMBERS}" ] || fail "the membership did not survive a restart"

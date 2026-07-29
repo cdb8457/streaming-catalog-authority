@@ -347,6 +347,23 @@ async function main(): Promise<void> {
       'and so does the in-image content digest, which is the other half of the comparison');
   });
 
+  await test('no line in either gate carries a literal backslash-n where a newline was meant', () => {
+    // A DEFECT THIS PHASE ACTUALLY INTRODUCED AND THIS CHECK CAUGHT. An edit wrote
+    // `... PUBLISH_EXTERNAL_IDENTITY=allow \n  jf_compose up -d` — two characters, not a line continuation.
+    // Bash reads `\n` as an escaped `n`, so the line runs a command NAMED `n` and the compose invocation
+    // silently becomes its argument. `bash -n` accepts it happily: it is valid syntax for a command that does
+    // not exist, and the failure only appears on a runner with a Docker daemon. Lines that legitimately spell
+    // a newline — printf, echo, node -e, grep, sed, awk — are exempt.
+    for (const rel of [ORCHESTRATOR, 'deploy/ci/catalog-acceptance.sh']) {
+      read(rel).split('\n').forEach((line, index) => {
+        if (line.trimStart().startsWith('#')) return;
+        if (/printf|echo |node -e|grep|sed|awk/.test(line)) return;
+        assert(!line.includes('\\n'),
+          `${rel} line ${index + 1} carries a literal backslash-n: ${line.trim().slice(0, 90)}`);
+      });
+    }
+  });
+
   await test('the orchestrator never reaches a real service, a media path or a registry', () => {
     // COMMENT LINES ARE EXCLUDED, deliberately. The header says in words that this gate contacts no Unraid
     // host and no media path, and a scan that refused the word would be a scan that forbids the file from
