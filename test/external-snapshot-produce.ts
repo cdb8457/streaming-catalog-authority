@@ -30,8 +30,10 @@ import {
   SnapshotProducePathError,
   produceSnapshotFile,
   publishTemporary,
+  realModeSurface,
   renderSnapshotProduction,
   resolveProducedSnapshotPath,
+  writeAtomically,
 } from '../src/ops/catalog-snapshot-produce.js';
 import { parseProduceArgs, SnapshotProduceUsageError } from '../src/ops/catalog-snapshot-produce-cli.js';
 import { INBOX_NAME_RE, listImportInbox } from '../src/ops/catalog-import-inbox.js';
@@ -160,8 +162,9 @@ test('the writing module creates no SYMBOLIC link, no media link and no director
   assert(source.includes('fsyncSync(fd)'), 'and flushed before the publish');
   assert(source.includes('renameSync(temporary, destination)'), 'and the OVERWRITE path is a rename, which replaces');
   assert(source.includes('lstatSync(output.path)'), 'and the destination is examined with lstat, not stat');
-  assert(source.includes('fchmodSync(fd, 0o644)'),
+  assert(source.includes('fchmod: (fd, mode) => fchmodSync(fd, mode)'),
     'and the published file is made readable on the DESCRIPTOR, so a container running as another uid can import it');
+  assert(source.includes('PUBLISHED_FILE_MODE = 0o644'), 'at the one mode a published snapshot carries');
 });
 
 test('no production caller passes the publish-window test seam', () => {
@@ -172,8 +175,11 @@ test('no production caller passes the publish-window test seam', () => {
     assert(!readRepo(rel).includes('beforePublish'), `${rel} must not use the test seam`);
   }
   const module = readRepo('src/ops/catalog-snapshot-produce.ts');
-  assert(module.includes('if (beforePublish !== undefined) beforePublish();'),
+  assertEq([...module.matchAll(/seams\.beforePublish\(\)/g)].length, 1,
     'and the seam is called in exactly one place, immediately before the publish');
+  // ...and that call sits INSIDE a cleanup, so a hook that throws cannot leave the completed temporary behind.
+  const around = /seams\.beforePublish\(\);\s*\}\s*catch \(err\) \{\s*try \{ unlinkSync\(temporary\); \}/.exec(module);
+  assert(around !== null, 'and a hook that throws removes the temporary before rethrowing');
 });
 
 test('the CLI reads one file and writes one file, and imports nothing that could open a third', () => {
@@ -482,6 +488,124 @@ test('the no-replace claim is made only on the path that actually keeps it', () 
     'and an --overwrite write does NOT claim a property belonging to the other path');
   assert(replaced.notes.some((n) => n.includes('was replaced')), 'it says what it did instead');
   rmSync(output.path);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// MAKING THE SNAPSHOT READABLE IS PART OF PUBLISHING IT, AND IT FAILS CLOSED.
+//
+// Both branches are driven through an injected surface rather than through whatever platform this suite
+// happens to be running on, because a test that could only exercise its own host's branch would leave the
+// other one covered by nothing but a reading of the code — which is precisely how the first version came to
+// swallow every `fchmod` error under a comment about Windows.
+// ---------------------------------------------------------------------------------------------------------
+
+/** A surface that records what it was asked to do and can be told to fail. */
+function modeSurface(platform: NodeJS.Platform, fail?: NodeJS.ErrnoException) {
+  const calls: string[] = [];
+  const surface = {
+    platform,
+    fchmod(fd: number, mode: number): void {
+      calls.push(`fchmod:${mode.toString(8)}`);
+      if (fail !== undefined) throw fail;
+    },
+    fsync(_fd: number): void { calls.push('fsync'); },
+  };
+  return { surface, calls };
+}
+
+function errno(code: string): NodeJS.ErrnoException {
+  const err: NodeJS.ErrnoException = new Error(`${code}: operation not permitted, fchmod`);
+  err.code = code;
+  return err;
+}
+
+test('on POSIX, a mode change that FAILS publishes nothing and leaves no temporary behind', () => {
+  for (const platform of ['linux', 'darwin', 'freebsd'] as NodeJS.Platform[]) {
+    for (const code of ['EPERM', 'EROFS', 'EIO']) {
+      const output = resolveProducedSnapshotPath(join(OUT, 'unreadable.json'), {});
+      const { surface, calls } = modeSurface(platform, errno(code));
+      let refused = '';
+      try {
+        writeAtomically(output, '{"produced":"bytes"}\n', false, { mode: surface });
+      } catch (err) {
+        refused = err instanceof SnapshotProducePathError ? err.message : `unexpected: ${(err as Error).message}`;
+      }
+      assertEq(calls.join(','), 'fchmod:644', `${platform}/${code}: the mode change was attempted and not skipped`);
+      assert(refused.includes('could not be made readable'), `${platform}/${code}: it refuses; got ${refused || 'no refusal'}`);
+      assert(refused.includes(code), `${platform}/${code}: and names the errno, which is a rule and not a path`);
+      // FAIL CLOSED, ON BOTH NAMES.
+      assertEq(existsSync(output.path), false, `${platform}/${code}: nothing was published`);
+      assertEq(readdirSync(OUT).filter((n) => n.startsWith('.')).length, 0, `${platform}/${code}: and no temporary survived`);
+      // ...and the refusal is redaction-safe: it carries no directory and no absolute path.
+      for (const forbidden of [OUT, WORK, output.path]) {
+        assert(!refused.includes(forbidden), `${platform}/${code}: the refusal leaked a path`);
+      }
+    }
+  }
+});
+
+test('on POSIX, a mode change that succeeds is FLUSHED before anything is published', () => {
+  const output = resolveProducedSnapshotPath(join(OUT, 'flushed.json'), {});
+  const { surface, calls } = modeSurface('linux');
+  writeAtomically(output, '{"produced":"bytes"}\n', false, { mode: surface });
+  assertEq(calls.join(','), 'fchmod:644,fsync', 'the mode is set and then flushed, in that order');
+  assertEq(readFileSync(output.path, 'utf8'), '{"produced":"bytes"}\n', 'and the snapshot published');
+  rmSync(output.path);
+});
+
+test('on Windows the mode change is SKIPPED by asking the platform, not by catching a failure', () => {
+  const output = resolveProducedSnapshotPath(join(OUT, 'windows.json'), {});
+  // The surface would THROW if it were called. On win32 it must not be called at all — a bypass that worked
+  // by swallowing the error is exactly the bug this replaced.
+  const { surface, calls } = modeSurface('win32', errno('EPERM'));
+  writeAtomically(output, '{"produced":"bytes"}\n', false, { mode: surface });
+  assertEq(calls.length, 0, 'neither the mode change nor its flush was attempted');
+  assertEq(readFileSync(output.path, 'utf8'), '{"produced":"bytes"}\n', 'and the snapshot still published');
+  rmSync(output.path);
+});
+
+test('a flush of the mode change that fails also publishes nothing', () => {
+  const output = resolveProducedSnapshotPath(join(OUT, 'unflushed.json'), {});
+  const surface = {
+    platform: 'linux' as NodeJS.Platform,
+    fchmod: (): void => undefined,
+    fsync: (): void => { throw errno('EIO'); },
+  };
+  let refused = '';
+  try { writeAtomically(output, '{"produced":"bytes"}\n', false, { mode: surface }); }
+  catch (err) { refused = err instanceof SnapshotProducePathError ? err.message : `unexpected: ${(err as Error).message}`; }
+  assert(refused.includes('could not be flushed'), `it refuses; got ${refused || 'no refusal'}`);
+  assertEq(existsSync(output.path), false, 'nothing was published');
+  assertEq(readdirSync(OUT).filter((n) => n.startsWith('.')).length, 0, 'and no temporary survived');
+});
+
+test('the real surface is the real platform and the real calls', () => {
+  assertEq(realModeSurface.platform, process.platform, 'the shipped surface asks the actual platform');
+  const source = readRepo('src/ops/catalog-snapshot-produce.ts');
+  // The production path must go through `makePublishable`, not around it, and must not re-acquire a
+  // swallow-everything shape.
+  assert(source.includes('makePublishable(fd, seams.mode ?? realModeSurface)'),
+    'the writer makes the file publishable through the one function that fails closed');
+  assert(!/catch\s*\{\s*\/\*[^}]*mode bits/.test(source), 'and no comment-shaped catch swallows a mode failure');
+  assertEq([...source.matchAll(/fchmodSync\(/g)].length, 1, 'there is exactly one fchmod call, inside that surface');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// THE PUBLISH-WINDOW SEAM CANNOT LEAK A COMPLETED SNAPSHOT EITHER.
+// ---------------------------------------------------------------------------------------------------------
+
+test('a publish-window hook that THROWS removes the temporary and publishes nothing', () => {
+  const output = resolveProducedSnapshotPath(join(OUT, 'hooked.json'), {});
+  const boom = new Error('the suite blew up inside the window');
+  let caught: unknown;
+  try {
+    produceSnapshotFile({ text: SAMPLE, output, beforePublish: () => { throw boom; } });
+  } catch (err) { caught = err; }
+  assertEq(caught, boom, 'the hook\'s own error propagates unchanged, so a suite can see what went wrong');
+  assertEq(existsSync(output.path), false, 'nothing was published');
+  // THE TEMPORARY IS COMPLETE BY THIS POINT, so leaking it would leave a whole snapshot in the operator's
+  // import folder under a name nothing ever collects.
+  assertEq(readdirSync(OUT).filter((n) => n.startsWith('.')).length, 0, 'and the completed temporary is gone');
 });
 
 test('a published snapshot is a plain regular file, not a link of any kind, and is readable', () => {

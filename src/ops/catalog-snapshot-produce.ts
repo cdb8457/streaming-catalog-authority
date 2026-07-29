@@ -75,6 +75,15 @@ import { INBOX_NAME_RE } from './catalog-import-inbox.js';
 // a container that runs as a DIFFERENT uid, so a snapshot produced on the host at 0600 is a snapshot the
 // product itself cannot read — which the acceptance gates would have discovered as a failed import.
 //
+// AND THAT `fchmod` FAILS CLOSED. The first version of it swallowed every error with a comment about Windows,
+// which is true of exactly one platform and false of the others: on POSIX an `EPERM` or an `EROFS` would have
+// published a 0600 snapshot and reported success, and the run that discovered it would be the import that
+// could not read the file. Windows has no POSIX mode bits, so the step is SKIPPED there — deliberately, by
+// asking the platform, not by catching whatever comes back. Everywhere else a failure removes the temporary,
+// publishes nothing, and says so, carrying the errno code (which names a rule, never a path). The mode change
+// is then `fsync`ed in its own right: it is metadata, and metadata that is not durable before the publish is
+// a permission that can be lost by the same power cut the data survived.
+//
 // NO DIRECTORY IS EVER CREATED. The destination directory must already exist; a producer that created
 // directories would be a producer that could be pointed at a path and made to build one.
 //
@@ -255,7 +264,8 @@ export function produceSnapshotFile(input: ProduceSnapshotInput): SnapshotProduc
     ]);
   }
   const overwrite = input.overwrite === true;
-  const replaced = writeAtomically(input.output, produced.text, overwrite, input.beforePublish);
+  const replaced = writeAtomically(input.output, produced.text, overwrite,
+    input.beforePublish === undefined ? {} : { beforePublish: input.beforePublish });
   // THE NO-REPLACE CLAIM IS MADE ONLY WHERE IT IS TRUE. `replaced` comes from the check BEFORE the write, so
   // on the `--overwrite` path it cannot see a file that appeared during it — which is fine, because that path
   // was asked to replace. Claiming "it could not have replaced anything" there would be claiming a property
@@ -307,6 +317,71 @@ function report(
 /** Said the same way by the early check and by the publish, so one refusal cannot read as two different ones. */
 export const SNAPSHOT_ALREADY_THERE_MESSAGE =
   'a file of that name is already there; pass --overwrite to replace it';
+
+/**
+ * The mode a PUBLISHED snapshot carries: readable by the account that imports it, writable by nobody else.
+ *
+ * The shipped stack bind-mounts the import folder into a container running as a different uid from whoever
+ * produced the file, so this is a functional requirement and not a preference.
+ */
+export const PUBLISHED_FILE_MODE = 0o644;
+
+/**
+ * The two calls that decide whether a completed temporary is publishable, and the platform question in front
+ * of them.
+ *
+ * INJECTABLE FOR ONE REASON: a suite has to be able to prove BOTH branches — that Windows skips the mode
+ * change, and that a POSIX failure publishes nothing — on whatever host it happens to be running on. A test
+ * that could only exercise the branch its own platform takes would leave the other one covered by nothing but
+ * a reading of the code, which is how `fchmod` came to swallow every error in the first place. Same reasoning
+ * as `catalog-import-inbox.ts`'s injectable syscall surface.
+ */
+export interface SnapshotModeSurface {
+  readonly platform: NodeJS.Platform;
+  fchmod(fd: number, mode: number): void;
+  fsync(fd: number): void;
+}
+
+export const realModeSurface: SnapshotModeSurface = {
+  platform: process.platform,
+  fchmod: (fd, mode) => fchmodSync(fd, mode),
+  fsync: (fd) => fsyncSync(fd),
+};
+
+/**
+ * Make a completed temporary readable by the account that will import it, durably — or refuse.
+ *
+ * Called with the descriptor still open, after the data has been flushed and before anything is published.
+ * Throws `SnapshotProducePathError` on POSIX when the mode cannot be set; the caller removes the temporary and
+ * publishes nothing, which is the only honest answer to "this file would not have been readable".
+ */
+export function makePublishable(fd: number, surface: SnapshotModeSurface = realModeSurface): void {
+  // WINDOWS IS ASKED FOR, NOT INFERRED FROM A FAILURE. It has no POSIX mode bits to set, so there is nothing
+  // to do and nothing to lose; every other platform must succeed or publish nothing.
+  if (surface.platform === 'win32') return;
+  try {
+    surface.fchmod(fd, PUBLISHED_FILE_MODE);
+  } catch (err) {
+    // THE ERRNO CODE AND NOTHING ELSE. `fchmod` acts on a descriptor, so the driver's own message carries no
+    // path — but taking only a bounded, upper-case code means that stays true however the runtime words it.
+    const code = (err as NodeJS.ErrnoException).code;
+    const named = typeof code === 'string' && /^[A-Z]{1,16}$/.test(code) ? ` (${code})` : '';
+    throw new SnapshotProducePathError(
+      `the snapshot could not be made readable by the account that imports it${named}, so nothing was published. `
+      + 'Produce into a folder this user owns on an ordinary local filesystem.');
+  }
+  // THE MODE CHANGE IS METADATA, AND IT IS FLUSHED IN ITS OWN RIGHT. The data was already `fsync`ed above;
+  // without this second flush a power cut between here and the publish could leave a durable file whose
+  // durable mode is still 0600, which is exactly the unreadable snapshot this step exists to prevent.
+  try {
+    surface.fsync(fd);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    const named = typeof code === 'string' && /^[A-Z]{1,16}$/.test(code) ? ` (${code})` : '';
+    throw new SnapshotProducePathError(
+      `the snapshot's permissions could not be flushed to stable storage${named}, so nothing was published.`);
+  }
+}
 
 /**
  * Publish a completed temporary file to its destination name.
@@ -364,11 +439,25 @@ export function publishTemporary(temporary: string, destination: string, overwri
  *
  * Returns whether an existing file was replaced.
  */
+/**
+ * The seams a SUITE may pass and production never does.
+ *
+ * Grouped into one object so they are obviously not part of the ordinary call: `writeAtomically(output, text,
+ * overwrite)` is the whole production surface, and anything in here is a test opening a window or standing in
+ * for a platform.
+ */
+export interface SnapshotWriteSeams {
+  /** Called after the temporary is complete and immediately before it is published. */
+  readonly beforePublish?: () => void;
+  /** Stands in for the platform and the two mode calls, so both branches can be proved on any host. */
+  readonly mode?: SnapshotModeSurface;
+}
+
 export function writeAtomically(
   output: ResolvedOutputPath,
   text: string,
   overwrite: boolean,
-  beforePublish?: () => void,
+  seams: SnapshotWriteSeams = {},
 ): boolean {
   // WHAT IS ALREADY THERE, ASKED WITH `lstat` SO A SYMLINK IS SEEN AS A SYMLINK rather than reported as
   // whatever it points at. This is a DIAGNOSTIC, not the guarantee: it is what tells an operator "that name is
@@ -423,8 +512,9 @@ export function writeAtomically(
     fsyncSync(fd);
     // READABLE ONLY NOW, AND ON THE DESCRIPTOR RATHER THAN THE NAME. The temp was created 0600 so a partial
     // document was never anyone else's to read; the published snapshot has to be readable by the container
-    // that imports it, which runs as a different uid from whoever produced the file on the host.
-    try { fchmodSync(fd, 0o644); } catch { /* Windows has no mode bits to speak of; the publish is unaffected */ }
+    // that imports it, which runs as a different uid from whoever produced the file on the host. This THROWS
+    // on POSIX when it cannot be done, and the catch below is what turns that into "nothing was published".
+    makePublishable(fd, seams.mode ?? realModeSurface);
   } catch (err) {
     closeSync(fd);
     try { unlinkSync(temporary); } catch { /* the write already failed; a leftover temp is not a second failure */ }
@@ -433,8 +523,22 @@ export function writeAtomically(
   }
   closeSync(fd);
 
-  // THE WINDOW, OPENED ON PURPOSE — only ever by a suite. See `ProduceSnapshotInput.beforePublish`.
-  if (beforePublish !== undefined) beforePublish();
+  // THE WINDOW, OPENED ON PURPOSE — only ever by a suite. See `SnapshotWriteSeams.beforePublish`.
+  //
+  // IT IS INSIDE THE CLEANUP, and that is not a formality: the temporary is COMPLETE by this point, so a hook
+  // that throws and left it behind would leave a full snapshot lying in the operator's import folder under a
+  // name nothing ever collects. Production never passes a hook and so can never reach this, which is exactly
+  // why it would have gone unnoticed.
+  if (seams.beforePublish !== undefined) {
+    try {
+      seams.beforePublish();
+    } catch (err) {
+      try { unlinkSync(temporary); } catch { /* the hook already failed; a leftover temp is not a second failure */ }
+      // Rethrown as it came: the error belongs to whoever passed the hook, and rewording a suite's own failure
+      // into this module's vocabulary would only hide what actually went wrong.
+      throw err;
+    }
+  }
 
   publishTemporary(temporary, output.path, overwrite);
 

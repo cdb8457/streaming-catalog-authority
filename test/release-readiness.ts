@@ -17,6 +17,9 @@ import {
   READINESS_CHECK_IDS,
   READINESS_EXIT_CODES,
   READINESS_TAG_CHECK_ID,
+  REQUIRED_SUITES_JOB_COMMANDS,
+  REQUIRED_SUITES_TYPECHECK_COMMAND,
+  REQUIRED_SUITE_SCRIPTS,
   ReleaseReadinessError,
   assertReadinessReportIsRedactionSafe,
   evaluateReleaseReadiness,
@@ -273,29 +276,40 @@ test('dropping a Phase suite from the suites job blocks the acceptance-suites ch
   assertBlocks({ workflowText: weakened }, 'suites-run-the-acceptances');
 });
 
-// EVERY required suite, attacked individually.
+// EVERY required suite, attacked individually, FROM THE CHECK'S OWN LIST.
 //
 // The check above proved the mechanism on ONE suite, which is exactly how a list grows a hole: a suite added
-// to the required set but never attacked is a suite whose removal nobody has watched block anything. The
-// table is derived from the check's own required list rather than retyped, so a suite added to
-// `checkSuitesRunAcceptances` and not here is a test failure rather than a silent gap.
+// to the required set but never attacked is a suite whose removal nobody has watched block anything. This
+// table used to be a second hand-typed copy under a comment claiming it was derived from the production one —
+// which is the same defect one level up. It now imports `REQUIRED_SUITE_SCRIPTS` and
+// `REQUIRED_SUITES_TYPECHECK_COMMAND` from the module under test, so a command added to the check and not
+// covered here is impossible rather than merely discouraged.
 test('removing ANY required suite from the suites job blocks the acceptance-suites check', () => {
-  const required = ['test:phase245-local', 'test:phase246-local', 'test:phase247-local', 'test:phase248-local',
-    'test:phase249-local', 'test:phase262-local', 'test:phase274-local', 'test:phase275-local',
-    'test:phase276-local'];
   // The suites job's own text is what the check reads, so the mutation has to change THAT text.
   const jobText = WORKFLOW.slice(WORKFLOW.indexOf('  suites:'), WORKFLOW.indexOf('\n  image:'));
   assert(jobText.length > 0, 'the workflow has a suites job to attack');
-  for (const suite of required) {
+  assert(REQUIRED_SUITE_SCRIPTS.length >= 9, `the required list is populated (${REQUIRED_SUITE_SCRIPTS.length})`);
+  // The Phase 249 mutation above and the Phase 274/275/276 ones are all inside this loop by construction.
+  for (const marker of ['test:phase249-local', 'test:phase274-local', 'test:phase275-local', 'test:phase276-local']) {
+    assert(REQUIRED_SUITE_SCRIPTS.includes(marker), `${marker} is one of the suites this loop attacks`);
+  }
+  for (const suite of REQUIRED_SUITE_SCRIPTS) {
     assert(jobText.includes(suite), `the suites job must actually run ${suite} for its removal to mean anything`);
     const weakened = WORKFLOW.replace(`npm run ${suite}\n`, '');
     assert(weakened !== WORKFLOW, `removing ${suite} actually changed the fixture`);
     assertBlocks({ workflowText: weakened }, 'suites-run-the-acceptances');
   }
-  // ...and typecheck, which is in the same required list and is not a phase suite.
-  const noTypecheck = WORKFLOW.replace('      - run: npm run typecheck\n', '');
-  assert(noTypecheck !== WORKFLOW, 'removing typecheck actually changed the fixture');
+  // ...and the typecheck, which the check requires in the same breath and which is not a phase suite: the job
+  // runs it as a bare step, so removing it is a different edit and the constant is kept separate to say so.
+  assert(jobText.includes(REQUIRED_SUITES_TYPECHECK_COMMAND), 'the suites job must actually run the typecheck');
+  const noTypecheck = WORKFLOW.replace(`      - run: ${REQUIRED_SUITES_TYPECHECK_COMMAND}\n`, '');
+  assert(noTypecheck !== WORKFLOW, 'removing the typecheck actually changed the fixture');
   assertBlocks({ workflowText: noTypecheck }, 'suites-run-the-acceptances');
+
+  // And the check reads EXACTLY these commands and no others — so the loop above is the whole list, not a
+  // prefix of it that happens to pass.
+  assertEq(REQUIRED_SUITES_JOB_COMMANDS.length, REQUIRED_SUITE_SCRIPTS.length + 1,
+    'the commands the check requires are the suites plus the typecheck, and nothing else');
 });
 
 test('the suites job name claims no phase range it does not cover', () => {

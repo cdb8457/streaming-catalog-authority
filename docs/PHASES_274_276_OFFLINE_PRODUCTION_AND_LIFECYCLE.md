@@ -74,9 +74,20 @@ refusal honest. A filesystem with no hard links gets a **refusal**, not a silent
 to clobber; the same discipline the import inbox applies to `O_NOFOLLOW`.
 
 **The published file is 0644 and the temporary one is 0600.** A partially written document is never readable
-by anyone else; the descriptor is `fchmod`ed after the last byte and before the publish. That is not cosmetic:
-the shipped stack bind-mounts the import folder into a container running as a **different uid**, so a snapshot
-produced on the host at 0600 is a snapshot the product itself cannot read.
+by anyone else; the descriptor is `fchmod`ed after the last byte and before the publish, and that mode change
+is `fsync`ed in its own right — it is metadata, and metadata that is not durable before the publish is a
+permission the same power cut can take away from data that survived. That is not cosmetic: the shipped stack
+bind-mounts the import folder into a container running as a **different uid**, so a snapshot produced on the
+host at 0600 is a snapshot the product itself cannot read.
+
+**And that step fails closed.** Its first version swallowed every error with a comment about Windows, which is
+true of exactly one platform and false of the others: on POSIX an `EPERM` or an `EROFS` would have published a
+0600 snapshot and reported success, and the run that discovered it would be the import that could not read the
+file. Windows is now *asked for* rather than inferred from a failure — it has no POSIX mode bits, so the step
+is skipped there — and everywhere else a failure removes the temporary, publishes nothing, and says so with
+the errno code (which names a rule, never a path). Both branches are proved on any host through an injected
+platform-and-syscall surface, because a test that could only exercise its own platform's branch is how the
+swallow got there in the first place.
 
 **Diagnostics name a position, never a key.** A key in somebody else's document is a value: an attribute key
 can be a URL, an absolute media path, an api token or a film title, and an "unknown key: `<key>`" message
@@ -231,7 +242,7 @@ operator who writes a snapshot by hand does not need the producer at all.
 | `npm run test:phase276-local` | `test/disposable-collection-lifecycle.ts` — the fake-admin surface is in no file under `src/`, in no `COPY` of the production image and in no release-bundle artifact; it is off unless the exact switch is set, proved by **running** the server with five near-miss values; drift injection and one-shot read failures really work; the Jellyfin surface still requires the api key; the override starts with every write switch closed; and the orchestrator opens them only after proving the refusal, stages every step of the lifecycle, and names no real service, media path or registry in anything it executes. |
 | `npm run test:phase262-local` | `test/catalog-browser-acceptance.ts` — updated: the gate PRODUCES its snapshot, the ready-made canonical fixture is gone, and the shipped image is made to produce byte-identical output. |
 | `npm run test:phase268-acceptance` | `test/jellyfin-control-acceptance.ts` — updated: the fake library and the **produced** snapshot agree. |
-| `npm run test:phase250-local` | `test/release-readiness.ts` — updated: removing **any** required suite from the CI suites job blocks `suites-run-the-acceptances`, one mutation per suite rather than one for the whole list, and the suites job's name may not state a phase range it cannot keep current. |
+| `npm run test:phase250-local` | `test/release-readiness.ts` — updated: removing **any** required suite from the CI suites job blocks `suites-run-the-acceptances`, one mutation per suite rather than one for the whole list, and the suites job's name may not state a phase range it cannot keep current. The mutation table is now driven by `REQUIRED_SUITE_SCRIPTS` and `REQUIRED_SUITES_TYPECHECK_COMMAND` **imported from the check itself**: it had been a second hand-typed copy under a comment claiming otherwise, which is the same silent-drift defect one level up. |
 | `deploy/ci/catalog-acceptance.sh`, `deploy/ci/jellyfin-control-acceptance.sh` | drive the shipped image, the migration, a real Chromium and a local fake Jellyfin through the whole thing. **NOT RUN for this change — see below.** |
 
 ## Verification status
