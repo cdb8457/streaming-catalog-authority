@@ -1210,6 +1210,16 @@ test('the resolved stack shows every restored component as the EFFECTIVE source,
         const target = `/run/catalog-rehearsal-secrets/${file}`;
         assertEq(sourceAt(consumer.service, target),
           join(workspace, COMPONENT_ARTIFACT_NAMES.secrets, file), `${consumer.service} reads the restored ${file}`);
+        if (consumer.env === null) {
+          // A CUSTODY SECRET THE STACK CHOOSES BETWEEN. Mounted so a restore that lost it fails, and
+          // deliberately NOT pointed at — the sidecar refuses to start wired to both key sources, so which
+          // one is used is the operator's migration state and not this command's to decide.
+          const environment = environmentOf(consumer.service);
+          for (const [name, value] of Object.entries(environment)) {
+            assert(value !== target, `nothing points at ${file}: ${name} does`);
+          }
+          continue;
+        }
         assertEq(environmentOf(consumer.service)[consumer.env], target, `and ${consumer.env} names it`);
       }
     }
@@ -1234,7 +1244,9 @@ test('every required secret file has a declared consumer, and every one is the s
   const shipped = readRepo('docker-compose.unraid.runtime.yml');
   for (const consumers of Object.values(REHEARSAL_SECRET_CONSUMERS)) {
     for (const consumer of consumers) {
-      assert(shipped.includes(`${consumer.env}:`), `the shipped stack reads ${consumer.env}`);
+      if (consumer.env !== null) {
+        assert(shipped.includes(`${consumer.env}:`), `the shipped stack reads ${consumer.env}`);
+      }
       assert(shipped.includes(`  ${consumer.service}:`), `and has a ${consumer.service} service`);
     }
   }

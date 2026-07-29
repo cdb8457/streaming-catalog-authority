@@ -111,6 +111,10 @@ Write-SecretIfAbsent -Name 'admin_database_url' -Value "postgresql://postgres:$P
 Write-SecretIfAbsent -Name 'database_url' -Value "postgresql://app:$AppPassword@postgres:5432/catalog"
 Write-SecretIfAbsent -Name 'completion_secret' -Value (New-RandomSecret)
 Write-SecretIfAbsent -Name 'custodian_kek' -Value (New-RandomSecret)
+# PHASE 282. The ROOT WRAPPING KEY for the sidecar-managed KEK ring. Generated here so a new install
+# has one from the start; an existing install adopts its static KEK with `ops:kek-ring migrate`. It is read
+# only by the custodian sidecar, only from this file, and never from an environment variable or a command line.
+Write-SecretIfAbsent -Name 'custodian_root_key' -Value (New-RandomSecret)
 Write-SecretIfAbsent -Name 'operator_ui_token' -Value (New-RandomSecret)
 
 if (-not (Test-Path -Path $RecordsDir -PathType Container)) { [void] (New-Item -ItemType Directory -Path $RecordsDir) }

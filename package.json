@@ -586,7 +586,17 @@
     "test:phase278-local": "tsx test/doctor-monitor.ts",
     "test:upgrade-rehearsal": "tsx test/upgrade-rehearsal.ts",
     "test:phase279-local": "tsx test/upgrade-rehearsal.ts",
-    "test:phase280-local": "tsx test/upgrade-rehearsal.ts"
+    "test:phase280-local": "tsx test/upgrade-rehearsal.ts",
+    "ops:kek-ring": "tsx src/ops/kek-ring-cli.ts",
+    "ops:sidecar-health": "tsx src/ops/sidecar-health-cli.ts",
+    "test:sidecar-ipc-hardening": "tsx test/sidecar-ipc-hardening.ts",
+    "test:kek-ring": "tsx test/kek-ring.ts",
+    "test:kek-rotation": "tsx test/kek-rotation.ts",
+    "test:o4-o5-runtime-acceptance": "tsx test/o4-o5-runtime-acceptance.ts",
+    "test:phase281-local": "tsx test/sidecar-ipc-hardening.ts",
+    "test:phase282-local": "tsx test/kek-ring.ts",
+    "test:phase283-local": "tsx test/kek-rotation.ts",
+    "test:phase284-local": "tsx test/o4-o5-runtime-acceptance.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

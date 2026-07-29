@@ -217,6 +217,14 @@ export const REQUIRED_SECRET_FILES: readonly string[] = [
   'admin_database_url',
   'completion_secret',
   'custodian_kek',
+  // PHASE 282. The ROOT WRAPPING KEY that seals the sidecar-managed KEK ring.
+  //
+  // IT IS ON THIS LIST FOR THE SAME REASON THE KEK IS, AND MORE SO. A backup holding the ring and not the
+  // root key is a backup of a sealed box with no key: the ring restores, nothing opens it, and every item
+  // reads as unreadable — which is indistinguishable from a correct erasure, so nothing reports it. It is
+  // required from the moment the stack declares it rather than from the moment an installation migrates,
+  // because a list that depended on which state an installation was in would be a list nobody could check.
+  'custodian_root_key',
   'database_url',
   'operator_ui_token',
   'postgres_password',

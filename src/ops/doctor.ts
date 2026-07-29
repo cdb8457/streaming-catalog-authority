@@ -3,6 +3,11 @@ import { existsSync, accessSync, constants as fsConstants } from 'node:fs';
 import type { KeyCustodian } from '../core/crypto/custodian.js';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
 import { inspectKeystore } from './keystore-repair.js';
+import {
+  KEK_ROTATION_DUE_DAYS,
+  KEK_ROTATION_OVERDUE_DAYS,
+  classifyKekRotationAge,
+} from './kek-rotation.js';
 
 /**
  * Phase 5 Stage 5.1 — production self-check ("ops doctor").
@@ -52,6 +57,15 @@ export interface DoctorDeps {
   custodianMode: 'memory' | 'file' | string;
   appEnv: 'production' | 'development' | 'test' | string;
   keystoreDir?: string;
+  /**
+   * When the active KEK generation was created, on an installation that has a ring.
+   *
+   * SUPPLIED, NEVER OPENED HERE. The doctor runs inside the APP, which by design cannot read the root
+   * wrapping key or the ring — so it takes a timestamp from whatever already had the ring open and reports on
+   * it. A doctor that opened a ring to check its age would be a doctor with a path to every key in the
+   * installation, which is the boundary this whole tranche exists to draw.
+   */
+  ringActiveCreatedAt?: number;
 }
 
 /** Run the read-only production self-check. Never throws for an expected failure. */
@@ -194,6 +208,29 @@ export async function runDoctor(deps: DoctorDeps): Promise<DoctorReport> {
       // mine? — and names the command that fixes it, instead of leaving an operator to work that out from an
       // EACCES in a log. It is skipped where uids are not a concept (Windows), rather than guessed at.
       addKeystoreOwnershipCheck(add, dir);
+    }
+  }
+
+  // Phase 283 — the ring's age, where there is a ring ------------------------------
+  //
+  // A ROTATION IS OVERDUE OR IT IS NOT, AND THAT IS A FACT ABOUT A TIMESTAMP. The check reports a closed word
+  // and the age in days, and it never opens the ring: `deps.ringActiveCreatedAt` is supplied by whatever
+  // already had the ring open (the sidecar's own status command), so the doctor — which the app runs — has no
+  // path to key material even in principle.
+  if (deps.ringActiveCreatedAt !== undefined) {
+    const age = classifyKekRotationAge(deps.ringActiveCreatedAt, Date.now());
+    const days = Math.floor((Date.now() - deps.ringActiveCreatedAt) / (24 * 60 * 60 * 1000));
+    if (age === 'overdue') {
+      add('kek-rotation-age', 'fail',
+        `the active key-encryption key is ${days} days old, past the ${KEK_ROTATION_OVERDUE_DAYS}-day limit. `
+        + 'Run ops:kek-ring rotate with a verified complete backup.');
+    } else if (age === 'due') {
+      add('kek-rotation-age', 'warn',
+        `the active key-encryption key is ${days} days old and a rotation is due at ${KEK_ROTATION_DUE_DAYS} days`);
+    } else if (age === 'unknown') {
+      add('kek-rotation-age', 'warn', 'the active key-encryption key carries no usable creation time');
+    } else {
+      add('kek-rotation-age', 'pass', `the active key-encryption key is ${days} days old`);
     }
   }
 

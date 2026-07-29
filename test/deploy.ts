@@ -9615,7 +9615,9 @@ test('Phase 194 sidecar service install adds socket-only idle service without cu
     'SIDECAR_KEK_FILE: /run/secrets/custodian_kek',
     'NPM_CONFIG_CACHE: /tmp/npm-cache',
     'command: ["ops:sidecar-daemon", "--", "--serve"]',
-    'test -S /run/catalog-sidecar/catalog-sidecar.sock',
+    // Phase 284: a health HANDSHAKE, not a test that the socket file exists (which passes for a crashed
+    // daemon and for one that cannot read its own keystore).
+    'ops:sidecar-health',
     '${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar',
     '${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/state:/var/lib/catalog-sidecar/state',
     'read_only: true',

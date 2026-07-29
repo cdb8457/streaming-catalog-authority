@@ -100,10 +100,33 @@ export class FileCustodian implements KeyCustodian {
   private readonly kek: Buffer;
   private readonly clock: () => number;
 
-  constructor(rootDir: string, completionSecret: string, kek: Buffer, clock: () => number = () => Date.now()) {
+  /**
+   * KEKs this custodian will UNWRAP under but never wrap under.
+   *
+   * PHASE 283, AND THE REASON A ROTATION IS SURVIVABLE. A rotation rewraps every key file onto a pending
+   * generation and only afterwards moves the ring's active pointer. Between those two moments the key files
+   * are under a generation the ring does not yet call active — so a sidecar that restarted there, holding only
+   * the active KEK, would fail to unwrap everything. Every item would read as unreadable, which is
+   * indistinguishable from a correct erasure, and nothing would say why.
+   *
+   * So the custodian is given every generation the ring retains and tries them in turn. GCM authentication
+   * makes each attempt decisive — a wrong KEK does not produce wrong plaintext, it produces a tag failure —
+   * so this is a lookup, not a guess. New wraps still use `kek` and only `kek`.
+   */
+  private readonly decryptOnlyKeks: readonly Buffer[];
+
+  constructor(
+    rootDir: string,
+    completionSecret: string,
+    kek: Buffer,
+    clock: () => number = () => Date.now(),
+    decryptOnlyKeks: readonly Buffer[] = [],
+  ) {
     if (!completionSecret) throw new Error('completionSecret is required');
     if (kek.length !== 32) throw new Error('KEK must be 32 bytes');
+    if (decryptOnlyKeks.some((extra) => extra.length !== 32)) throw new Error('every retained KEK must be 32 bytes');
     if (!rootDir) throw new Error('rootDir is required');
+    this.decryptOnlyKeks = decryptOnlyKeks.map((extra) => Buffer.from(extra));
     this.root = path.resolve(rootDir);
     this.keysDir = path.join(this.root, 'keys');
     this.tombDir = path.join(this.root, 'tombstones');
@@ -150,8 +173,26 @@ export class FileCustodian implements KeyCustodian {
   private fsyncDir(dir: string): void { fsyncDirBestEffort(dir); }
 
   // --- KEK wrap/unwrap (DEKs are never stored raw) --------------------------
+  /** New wraps use the ACTIVE key and only it. A retained generation is never written under. */
   private wrap(dek: Buffer, keyId: string): string { return wrapDek(this.kek, dek, keyId); }
-  private unwrap(wrappedHex: string, keyId: string): Buffer { return unwrapDek(this.kek, wrappedHex, keyId); }
+
+  /**
+   * Unwrap under the active KEK, or under a retained one.
+   *
+   * THE ACTIVE KEY IS TRIED FIRST, so the ordinary case costs one decrypt. A retained generation is tried
+   * only when that fails, and the failure of ALL of them is the same fail-closed error the single-key version
+   * produced — a key that no generation opens is not a key this custodian will pretend to have.
+   */
+  private unwrap(wrappedHex: string, keyId: string): Buffer {
+    try {
+      return unwrapDek(this.kek, wrappedHex, keyId);
+    } catch (err) {
+      for (const retained of this.decryptOnlyKeks) {
+        try { return unwrapDek(retained, wrappedHex, keyId); } catch { /* the next generation, or the throw below */ }
+      }
+      throw err;
+    }
+  }
 
   private attest(keyId: string, receiptId: string, destroyedAt: string): string {
     if (/\n/.test(keyId) || /\n/.test(receiptId) || /\n/.test(destroyedAt)) throw new Error('attestation field contains a separator');

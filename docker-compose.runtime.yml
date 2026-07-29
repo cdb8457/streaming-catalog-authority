@@ -303,5 +303,10 @@ secrets:
     file: ./secrets/completion_secret
   custodian_kek:
     file: ./secrets/custodian_kek
+  # PHASE 282. The ROOT WRAPPING KEY that seals the sidecar-managed KEK ring. Read ONLY by the custodian
+  # sidecar, only from this file, and never from an environment variable, a command line or any evidence
+  # surface. Keep it the way you keep the KEK: every key in the installation can be reached from it.
+  custodian_root_key:
+    file: ./secrets/custodian_root_key
   operator_ui_token:
     file: ./secrets/operator_ui_token

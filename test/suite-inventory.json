@@ -1373,6 +1373,30 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "sidecar-ipc-hardening.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "kek-ring.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "kek-rotation.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "o4-o5-runtime-acceptance.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }

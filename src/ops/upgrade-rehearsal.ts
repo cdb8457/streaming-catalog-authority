@@ -204,7 +204,18 @@ export const REHEARSAL_SIDECAR_STATE_MOUNT = '/var/lib/catalog-sidecar/state';
  * `docker-compose.unraid.runtime.yml`, so this cannot drift away from the thing it is modelling.
  */
 export const REHEARSAL_SECRET_CONSUMERS: Readonly<Record<string, readonly {
-  readonly service: string; readonly env: string;
+  readonly service: string;
+  /**
+   * The variable that must name the mounted path, or `null` where the rehearsal must NOT set one.
+   *
+   * `null` IS FOR THE CUSTODY SECRETS THE STACK CHOOSES BETWEEN. Phase 282 gives the sidecar two possible
+   * sources of key material — the static KEK and the ring's root wrapping key — and the daemon REFUSES to
+   * start wired to both, because a process with two answers to "what wraps a DEK" uses whichever branch ran
+   * first. Which one an installation uses is a fact about whether it has migrated, and that is the operator's
+   * stack's decision, not the rehearsal's. So the file is mounted (a restore that did not put it back is a
+   * restore this command must fail) and the choice is left to the definition being rehearsed.
+   */
+  readonly env: string | null;
 }[]>> = Object.freeze({
   postgres_password: [{ service: 'postgres', env: 'POSTGRES_PASSWORD_FILE' }],
   admin_database_url: [
@@ -218,6 +229,8 @@ export const REHEARSAL_SECRET_CONSUMERS: Readonly<Record<string, readonly {
   operator_ui_token: [{ service: 'app', env: 'OPERATOR_UI_TOKEN_FILE' }],
   completion_secret: [{ service: 'sidecar', env: 'SIDECAR_COMPLETION_SECRET_FILE' }],
   custodian_kek: [{ service: 'sidecar', env: 'SIDECAR_KEK_FILE' }],
+  // Phase 282. Mounted so a restore that lost it fails here, and NOT pointed at: see the `env` docs above.
+  custodian_root_key: [{ service: 'sidecar', env: null }],
 });
 
 /**

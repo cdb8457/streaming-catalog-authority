@@ -112,6 +112,10 @@ write_secret_if_absent admin_database_url "postgresql://postgres:${PG_PASSWORD}@
 write_secret_if_absent database_url "postgresql://app:${APP_PASSWORD}@postgres:5432/catalog" "${SECRET_MODE_APP}"
 write_secret_if_absent completion_secret "$(random_secret)" "${SECRET_MODE_APP}"
 write_secret_if_absent custodian_kek "$(random_secret)" "${SECRET_MODE_APP}"
+# PHASE 282. The ROOT WRAPPING KEY for the sidecar-managed KEK ring. Generated here so a new install
+# has one from the start; an existing install adopts its static KEK with `ops:kek-ring migrate`. It is read
+# only by the custodian sidecar, only from this file, and never from an environment variable or a command line.
+write_secret_if_absent custodian_root_key "$(random_secret)" "${SECRET_MODE_APP}"
 write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"
 
 mkdir -p "${RECORDS_DIR}"

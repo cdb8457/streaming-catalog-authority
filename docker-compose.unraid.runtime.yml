@@ -51,6 +51,10 @@ services:
     depends_on:
       postgres:
         condition: service_healthy
+      # Phase 284. The migration talks to the custodian, so it waits for a sidecar that has ANSWERED a health
+      # handshake — not for one whose socket file happens to be there.
+      sidecar:
+        condition: service_healthy
     environment:
       APP_ENV: production
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
@@ -107,11 +111,23 @@ services:
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/state:/var/lib/catalog-sidecar/state
     secrets:
       - completion_secret
+      # PHASE 282. BOTH, DELIBERATELY, AND ONLY UNTIL A MIGRATION HAS HAPPENED. An installation that has not
+      # yet run `ops:kek-ring migrate` has every wrapped key under the STATIC KEK, so removing it here would
+      # leave its sidecar unable to open its own keystore. The root custody key is declared beside it so the
+      # migration is possible at all. AFTER migrating, set SIDECAR_ROOT_KEY_FILE, remove SIDECAR_KEK_FILE and
+      # unmount custodian_kek: the daemon refuses to start wired to both, so the cutover cannot be half done.
       - custodian_kek
+      - custodian_root_key
     entrypoint: ["npm", "run"]
     command: ["ops:sidecar-daemon", "--", "--serve"]
     healthcheck:
-      test: ["CMD-SHELL", "test -S /run/catalog-sidecar/catalog-sidecar.sock"]
+      # PHASE 284. NOT a test that the socket FILE exists. A socket appears the instant `listen` is called —
+      # before the daemon has opened its state directory or established that its ring is intact — and it
+      # SURVIVES a crashed process. A sidecar that serves the socket and cannot read its keystore fails every
+      # request, and a fail-closed unreadable item is indistinguishable from a correctly erased one: the app
+      # in front of it comes up, reports itself healthy, and shows an empty catalog with no error anywhere.
+      # This is a handshake the daemon answers only after exercising its custodian against its real state.
+      test: ["CMD-SHELL", "npm run --silent ops:sidecar-health -- --socket /run/catalog-sidecar/catalog-sidecar.sock"]
       interval: 10s
       timeout: 5s
       retries: 6
@@ -135,6 +151,10 @@ services:
       # UI at all rather than one that reports itself healthy against a schema it cannot use.
       migrate:
         condition: service_completed_successfully
+      # Phase 284. Every catalog read goes through the custodian, so the UI must not exist in front of a
+      # sidecar that cannot serve one.
+      sidecar:
+        condition: service_healthy
     environment:
       APP_ENV: production
       ADMIN_DATABASE_URL_FILE: /run/secrets/admin_database_url
@@ -182,5 +202,10 @@ secrets:
     file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/completion_secret
   custodian_kek:
     file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_kek
+  # PHASE 282. The ROOT WRAPPING KEY. It seals the KEK ring and is read ONLY by the sidecar, only from this
+  # file, and never from an environment variable, a command line or any evidence surface. Keep it the way you
+  # keep the KEK: it is the one value from which every key in the installation can be reached.
+  custodian_root_key:
+    file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_root_key
   operator_ui_token:
     file: ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/operator_ui_token
