@@ -3,9 +3,46 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
+## v1.2.0 - Offline authority, managed collections, and managed custody
+
+Release candidate; not yet published. Schema remains version 9.
+
+Added:
+
+- **Real offline snapshot production and import acceptance.** An operator-supplied export is transformed
+  deterministically into the shipped import format, validated by the shipped importer, and published
+  atomically without overwrite. Acquisition and media-location namespaces are refused.
+- **Read-only Jellyfin discovery and matching.** Catalog records can be compared with a bounded Jellyfin
+  library scan while every write gate remains closed. Failure and truncation produce `unknown`, never a
+  fabricated absence, and the match writes neither Catalog Authority nor Jellyfin state.
+- **A disposable managed-collection lifecycle.** The release gate exercises plan, digest-confirmed
+  reconcile, drift audit, repair, revoke, and cleanup against a test-only fake server that cannot ship in
+  the production image.
+- **Automated recovery operations.** Complete four-component backups are taken from one quiesced moment and
+  verified before success; unattended doctor monitoring preserves the shipped doctor verdict; disposable
+  upgrade and restore-based rollback rehearsals prove both images and all four recovery components.
+- **O4 sidecar and O5 managed-KEK hardening.** Local IPC is bounded and non-networked; managed custody uses a
+  sealed KEK ring, explicit backup-gated rotation and retirement, resumable journals, legacy-safe cutover,
+  drift audit and repair, and a complete disposable custody lifecycle.
+
+Upgrade notes:
+
+- **Schema stays at 9**, but custody state changes are operationally significant. Take and verify a complete
+  backup before upgrading.
+- A released v1.1.4 installation starts in static-KEK legacy mode with no ring, root wrapping key, or custody
+  marker. The transition command classifies that state and refuses mutation until a valid root key and a
+  fresh backup carrying it are both present.
+- Catalog Authority still never downloads, scrapes, plays, or acquires media and never creates media
+  symlinks. External acquisition and symlink systems may provide inputs only.
+
+Release gates: typecheck and complete bounded suite inventory; production-image smoke; offline snapshot,
+read-only Jellyfin and disposable collection acceptance; complete backup and monitoring; real disposable
+upgrade/rollback; sidecar and KEK lifecycle gates; catalog and Jellyfin browser acceptance; release bundle,
+candidate acceptance, and final release rehearsal. Publishing remains a separate release-event action.
+
 ## v1.1.4 - High-core keystore startup hotfix
 
-Release candidate; not yet published. This focused hotfix keeps the v1.1.3 application, schema version 9,
+Published `2026-07-29`, immutable. This focused hotfix keeps the v1.1.3 application, schema version 9,
 security boundaries and operator workflows unchanged.
 
 Fixed:

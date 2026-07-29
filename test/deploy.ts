@@ -8488,8 +8488,8 @@ test('Phase 149 Unraid UI launcher commands operate existing runtime services on
     'ui-logs',
     'ui-token-status',
     'ui-token-rotate',
-    'compose up -d postgres app',
-    'compose up -d --force-recreate app',
+    'compose up -d $NO_FETCH --no-build postgres app',
+    'compose up -d $NO_FETCH --no-build --force-recreate app',
     'compose logs --tail',
     'ops:operator-ui-token -- --status --json',
     'ops:operator-ui-token -- --rotate --confirm --json',
@@ -8574,7 +8574,7 @@ test('Phase 151 operator UI live evidence saves clean redaction-safe JSON', () =
     '/mnt/user/appdata/catalog/backups/evidence',
     'operator-ui-live-check-',
     'run_ops_silent ops:operator-ui-live-check',
-    'compose run -T --interactive=false --rm ops --silent',
+    'compose run -T --interactive=false --rm $NO_FETCH ops --silent',
     '.tmp-$$',
     'chmod 600',
     'redaction-safe',
@@ -10772,7 +10772,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
 test('Phase 223 release evidence remains intact while package metadata tracks the current release', () => {
   assert(exists('docs/PHASE_223_RELEASE_CUT.md'), 'Phase 223 release cut doc exists');
   assert(exists('test/versioned-release-cut.ts'), 'Phase 223 release cut test exists');
-  assert(pkg.version === '1.1.4', 'package version is the current v1.1.4 release');
+  assert(pkg.version === '1.2.0', 'package version is the current v1.2.0 release');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
   assert(
     (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
