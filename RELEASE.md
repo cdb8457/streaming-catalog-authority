@@ -3,9 +3,27 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
-## v1.2.1 - Docker Compose 2.40 rehearsal compatibility
+## v1.2.2 - Release acceptance alignment
 
 Release candidate; not yet published. Schema remains version 9.
+
+Fixed:
+
+- **The release-only Jellyfin browser acceptance now recognizes the existing terminal no-work verdict.**
+  After the first reconcile drains every durable intent, the second click correctly reports
+  `Nothing is outstanding` without entering a zero-effect run. The previous assertion waited for the older
+  `Created 0 collection(s)` wording and blocked publication even though the API acceptance had already
+  proved idempotency and no duplicate.
+- **All v1.2.1 product behavior is unchanged.** This patch carries the Docker Compose 2.40 rehearsal parser
+  correction forward without changing schema, runtime behavior, custody, media boundaries, or write gates.
+
+Catalog Authority still never downloads, scrapes, plays, or acquires media and never creates media symlinks.
+
+## v1.2.1 - Docker Compose 2.40 rehearsal compatibility
+
+Tagged `2026-07-29`; its release workflow intentionally published no image or consumer asset because the
+release-only Jellyfin browser assertion described in v1.2.2 blocked the publication job. Schema remains
+version 9.
 
 Fixed:
 

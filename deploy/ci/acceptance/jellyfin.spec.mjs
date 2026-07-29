@@ -140,7 +140,9 @@ test.describe('Jellyfin control plane', () => {
     await expect(page.locator('#colPublished')).not.toHaveText('0');
 
     await page.click('#colReconcile');
-    await expect(page.locator('#colRunStatus')).toContainText('Created 0 collection(s)', { timeout: 60_000 });
+    // With no durable intent left, the execution preflight now returns the stronger no-work verdict instead
+    // of entering a zero-effect run. This is the same terminal state the removal leg already asserts below.
+    await expect(page.locator('#colRunStatus')).toContainText('Nothing is outstanding', { timeout: 60_000 });
   });
 
   test('@jf-history the durable history survived the restart, and still discloses nothing', async ({ page }) => {
