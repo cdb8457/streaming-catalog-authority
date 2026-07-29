@@ -89,15 +89,48 @@ case "${ACTION}" in
       echo "    --backup-set <set-name> --plan"
     fi
     ;;
-  bootstrap|root-only)
-    printf '%s\n' "${ACTION}" > "${MARKER}.tmp.$$"
-    mv -f "${MARKER}.tmp.$$" "${MARKER}"
-    if [ "${ACTION}" = "root-only" ]; then rm -f "${MARKER}"; fi
-    echo "custody mode: ${ACTION}"
+  bootstrap)
+    # ---- AN EXCLUSIVE, UNPREDICTABLE TEMP IN THE PROVED PROJECT DIRECTORY, THEN AN ATOMIC RENAME --------
+    #
+    # THE HOLE THIS CLOSES. This was `printf ... > "${MARKER}.tmp.$$"`. Two things were wrong with it, and the
+    # TypeScript writer beside it had already fixed both. The NAME WAS PREDICTABLE — a process id is four or
+    # five digits and this script's own name tells anybody the rest — and shell redirection FOLLOWS A SYMBOLIC
+    # LINK, so a link planted at that name turns this into a write wherever the link points, as whichever
+    # account runs this script. Root, on Unraid, in a web terminal.
+    #
+    # `mktemp` creates the file itself, with O_CREAT|O_EXCL and an unpredictable name, so it cannot be
+    # pre-planted and cannot be followed. `umask 077` makes it private from the instant it exists rather than
+    # a moment afterwards, and the trap removes it on any exit path — including the one where `mv` fails.
+    TEMP=""
+    cleanup() { [ -n "${TEMP}" ] && rm -f "${TEMP}"; }
+    trap cleanup EXIT INT TERM
+    TEMP="$(umask 077; mktemp "${PROJECT_DIR}/.custody-mode.XXXXXXXXXX")" || {
+      echo "refusing: a private temporary file could not be created in ${PROJECT_DIR}" >&2
+      exit 3
+    }
+    printf '%s\n' "bootstrap" > "${TEMP}"
+    chmod 0644 "${TEMP}"
+    mv -f "${TEMP}" "${MARKER}"
+    TEMP=""
+    echo "custody mode: bootstrap"
     echo
     echo "Nothing has been started or stopped. Apply it with:"
     print_command "${ACTION}"
-    if [ "${ACTION}" = "root-only" ] && [ ! -e "${PROJECT_DIR}/.ring-checked" ]; then
+    echo
+    echo "This is a TEMPORARY state. Finish it with a verified complete backup and:"
+    echo "  npm run ops:custody-cutover -- --project ${PROJECT_DIR} --project-name catalogauthority \\"
+    echo "    --backup-set <set-name> --plan"
+    ;;
+  root-only)
+    # THE STEADY STATE IS THE ABSENCE OF A MARKER, so returning to it REMOVES one and never writes one first.
+    # The previous version wrote `root-only` and then deleted it: two changes to reach a state defined by
+    # having had none, with a window in between where a reader saw a marker this script was about to remove.
+    rm -f "${MARKER}"
+    echo "custody mode: root-only"
+    echo
+    echo "Nothing has been started or stopped. Apply it with:"
+    print_command "${ACTION}"
+    if [ ! -e "${PROJECT_DIR}/.ring-checked" ]; then
       echo
       echo "A FRESH installation needs a ring before the sidecar can start in this mode. If this one has"
       echo "never held a key, create it once:"

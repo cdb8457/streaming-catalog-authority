@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, timingSafeEqual } from 'node:crypto';
 import { join } from 'node:path';
 import { FileCustodian } from '../core/crypto/file-custodian.js';
 import {
@@ -10,7 +10,12 @@ import {
 } from '../core/crypto/kek-ring.js';
 import { validateSidecarHealth } from '../core/crypto/sidecar-ipc.js';
 import type { SidecarHealth } from '../core/crypto/sidecar-ipc.js';
-import { keyLabel, keystoreSetDigest, planKekMigration } from './kek-rotation.js';
+import {
+  ROTATION_LOCK_DIRNAME,
+  keyLabel,
+  keystoreSetDigest,
+  planKekMigration,
+} from './kek-rotation.js';
 import { readKeyFileNoFollow } from './kek-ring-secret-io.js';
 import { verifyBackupSet } from './backup-set-verification.js';
 import {
@@ -31,6 +36,7 @@ import {
   type CommandRunner,
   type MaintenanceCommand,
 } from './maintenance-safety.js';
+import { CUSTODIAN_WRITER_LOCK, CustodianStateError, acquireStateLock } from '../core/crypto/custodian-state-io.js';
 
 // Phase 290 — moving a shipped installation from static bootstrap custody onto the ring, as a transaction.
 //
@@ -83,6 +89,19 @@ export const CONTAINER_ROOT_KEY_FILE = '/run/catalog-custody/custodian_root_key'
 export const CONTAINER_STATIC_KEY_FILE = '/run/catalog-custody/custodian_kek';
 export const CONTAINER_BACKUPS_DIR = '/backups';
 export const CONTAINER_SOCKET_PATH = '/run/catalog-sidecar/catalog-sidecar.sock';
+
+/**
+ * The flags that make a `compose run` incapable of fetching.
+ *
+ * THE HOLE THIS CLOSES. `docker compose run` applies the project's PULL POLICY by default, which for a
+ * missing image means it fetches one — before anything about the container it is going to start applies.
+ * That mattered here more than anywhere else in this file: the two commands it affects are the migration
+ * (planning AND execution) and the health probe, and the maintenance container's `network_mode: none` is a
+ * property of the CONTAINER, so it cannot prevent the runtime from pulling the image that container would
+ * have been. A command documented as offline that will silently fetch a missing image on a NAS is not
+ * offline; `--pull never` is what makes the documentation true, and a gate requires it on every `run`.
+ */
+export const NO_FETCH_RUN_FLAGS: readonly string[] = Object.freeze(['--pull', 'never']);
 
 /** The services this transaction quiesces, in the order it stops them. Started again in reverse. */
 export const CUTOVER_QUIESCED_SERVICES: readonly string[] = Object.freeze(['app', 'sidecar']);
@@ -310,9 +329,54 @@ function proveAdoptedRing(
   hostBackupsDir: string,
   backupSet: string,
 ): string {
-  const root = readRootWrappingKey(request.hostRootKeyFile);
-  const staticKek = readKeyFileNoFollow(request.hostStaticKeyFile, 'static KEK');
+  // ---- EVERY BUFFER THIS ALLOCATES IS WIPED ON EVERY PATH OUT OF HERE --------------------------------
+  //
+  // The first version zeroized on the way to a successful return, which is the one path where a wipe
+  // matters least: the interesting exits are the refusals — wrong shape, wrong key, keystore unreadable,
+  // backup gone — and every one of them left the root wrapping key and the static KEK live in the heap. A
+  // wipe that only runs when nothing went wrong is not a wipe, so the whole proof runs inside a `try` whose
+  // `finally` clears all four buffers however it leaves.
+  //
+  // WHAT THIS DOES NOT DO, said plainly rather than implied: the ring was parsed from JSON, so every
+  // generation's key also sits in an IMMUTABLE JavaScript STRING that nothing can overwrite. This narrows
+  // the window for the buffers this function owns; it is not a claim that no key byte remains in the
+  // process, and the only thing that would make that claim true is not holding the material here at all.
+  // BOTH READS ARE INSIDE THE TRY, and this is the correction to the correction. Reading the root key first
+  // and the static key second, above the `try`, meant that a refusal from the SECOND read — an unreadable
+  // static key file, a link where one should be, a file that is not 32 bytes — left the ROOT WRAPPING KEY
+  // live in the heap, under a comment claiming every path wipes it. A wipe with an exception is not a wipe,
+  // and a comment that says otherwise is worse than no comment.
+  let root: Buffer | null = null;
+  let staticKek: Buffer | null = null;
+  let ringKey: Buffer | null = null;
+  let active: Buffer | null = null;
+  try {
+    root = readRootWrappingKey(request.hostRootKeyFile);
+    staticKek = readKeyFileNoFollow(request.hostStaticKeyFile, 'static KEK');
+    return proveAdoptedRingUnderKeys(hostStateDir, hostBackupsDir, backupSet, root, staticKek,
+      (buffer) => { ringKey = buffer; }, (buffer) => { active = buffer; });
+  } finally {
+    for (const buffer of [root, staticKek, ringKey, active]) {
+      if (buffer !== null) (buffer as Buffer).fill(0);
+    }
+  }
+}
 
+/**
+ * The proof itself. Split out only so the wipe above can be a `finally` over every path through it.
+ *
+ * The two callbacks hand the caller each key buffer AS IT IS ALLOCATED, so a refusal thrown on the next line
+ * still leaves something that knows to clear it.
+ */
+function proveAdoptedRingUnderKeys(
+  hostStateDir: string,
+  hostBackupsDir: string,
+  backupSet: string,
+  root: Buffer,
+  staticKek: Buffer,
+  holdRingKey: (buffer: Buffer) => void,
+  holdActive: (buffer: Buffer) => void,
+): string {
   let ring;
   try {
     ring = loadKekRing(hostStateDir, root);
@@ -332,7 +396,14 @@ function proveAdoptedRing(
       + 'static KEK. Refused: whatever this ring is, finishing a cutover onto it is not what this command '
       + 'does. Check it with ops:kek-ring status.');
   }
-  if (first.keyHex !== staticKek.toString('hex')) {
+  // COMPARED IN CONSTANT TIME, AND AS BYTES. `first.keyHex !== staticKek.toString('hex')` compared two
+  // strings, which returns as soon as they differ — so how long the refusal took was a function of how much
+  // of the static KEK a supplied ring had guessed right. The window is small and this is a local command,
+  // but a key comparison that leaks a prefix oracle is not a thing to leave in a file about custody when the
+  // fix is one call this repository already uses everywhere else.
+  const ringKey = Buffer.from(first.keyHex, 'hex');
+  holdRingKey(ringKey);
+  if (ringKey.length !== staticKek.length || !timingSafeEqual(ringKey, staticKek)) {
     throw new MaintenanceRefused(
       'the KEK ring in this sidecar state directory does not hold this installation\'s static KEK as its '
       + 'generation 1. An adoption changes the custody MECHANISM and not the key, so a ring whose first '
@@ -340,6 +411,7 @@ function proveAdoptedRing(
   }
   // EVERY WRAPPED KEY OPENS UNDER IT — the same proof the migration makes before it writes a ring.
   const active = activeKek(ring);
+  holdActive(active);
   let opens: { readonly alreadyCurrent: number; readonly total: number };
   try {
     opens = FileCustodian.planRewrapKeystore(hostStateDir, { fromKek: active, toKek: active });
@@ -439,6 +511,30 @@ export function runCustodyCutover(
   const notes: string[] = [];
   const quiesced: string[] = [];
   let migrationPerformed = false;
+  // Held from the post-quiesce re-proof until immediately before anything is started again. See
+  // `acquireCustodyStateLocks`, and the note at the release for why it is released before the restart.
+  //
+  // THE TWO ARE HELD FOR DIFFERENT LENGTHS OF TIME, WHICH IS THE WHOLE OF THIS CORRECTION'S SECOND HALF.
+  // The writer lock comes off just before the sidecar starts, because the sidecar takes it itself to finish
+  // an interrupted destroy and a host still holding it would stop the process this command is starting. The
+  // ROTATION lock is held all the way through the sidecar's start AND its health proof — that is the window
+  // a rotation could otherwise move the ring in, and the health handshake only reports which MECHANISM is
+  // serving, so it would not notice.
+  let writerLock: { release(): void } | null = null;
+  let rotationLock: { release(): void } | null = null;
+  const releaseWriterLock = (): void => {
+    const held = writerLock;
+    writerLock = null;
+    held?.release();
+  };
+  const releaseRotationLock = (): void => {
+    const held = rotationLock;
+    rotationLock = null;
+    held?.release();
+  };
+  const releaseStateLocks = (): void => {
+    try { releaseWriterLock(); } finally { releaseRotationLock(); }
+  };
   try {
     // ---- RE-RESOLVED UNDER THE LOCK ------------------------------------------------------------------
     const resolved = planCustodyCutover(request, deps);
@@ -462,6 +558,25 @@ export function runCustodyCutover(
             + 'Nothing was changed.');
         }
         quiesced.push(service);
+      }
+
+      // ---- AND NOW THAT NOTHING IS SERVING, THE LOCKS THAT EXCLUDE THE OTHER KEY OPERATIONS ------------
+      //
+      // Taken AFTER the quiesce, because a running sidecar's own crash recovery takes the writer lock and a
+      // cutover that grabbed it first would be refusing the thing it is about to stop. Re-proving under
+      // them is the point: everything established before this moment was established while a rotation, a
+      // retirement or a custodian write could still land.
+      if (resolved.stage === 'switch-only') {
+        const locks = acquireCustodyStateLocks(resolved.hostStateDir);
+        rotationLock = locks.rotation;
+        writerLock = locks.writers;
+        const underLocks = planCustodyCutover(request, deps);
+        if (underLocks.planDigest !== first.planDigest) {
+          throw new MaintenanceRefused(
+            'the ring, the keystore or the backup changed after this cutover was proved and before it could '
+            + 'be applied. Nothing was changed: the runtime selection is untouched and the services are '
+            + 'started again below. Re-run with --plan against what is actually there.');
+        }
       }
 
       // ---- THE MIGRATION ITSELF, IN THE ONE-SHOT CONTAINER --------------------------------------------
@@ -491,17 +606,31 @@ export function runCustodyCutover(
       // — one compose file, root-only custody, no static key mounted anywhere.
       clearCustodyRuntimeMode(resolved.projectRoot);
 
-      // ---- START AGAIN, INTO ROOT-ONLY CUSTODY --------------------------------------------------------
-      startQuiesced(resolved, deps, 'root-only');
-      quiesced.length = 0;
+      // ---- THE WRITER LOCK COMES OFF, AND ONLY BECAUSE THE SIDECAR NEEDS IT --------------------------
+      //
+      // A sidecar starting with a destroy journal to finish takes `CUSTODIAN_WRITER_LOCK` for its own crash
+      // recovery. A host still holding it would stop the very process this command is starting and turn a
+      // rare interrupted destroy into a failed cutover. The ROTATION lock stays held.
+      releaseWriterLock();
 
-      // ---- AND PROVE IT ------------------------------------------------------------------------------
+      // ---- START THE SIDECAR, PROVE IT, AND ONLY THEN START THE APP -----------------------------------
+      //
+      // IN THAT ORDER, AND HOLDING THE ROTATION LOCK ACROSS BOTH. Starting both at once and proving
+      // afterwards left a window in which a rotation could move the ring between the switch and the proof —
+      // and the handshake reports which MECHANISM is serving, not which ring, so it would have passed. The
+      // app is not started in front of a custodian nothing has proved.
+      startService(resolved, deps, 'root-only', 'sidecar');
       const health = probeCutoverHealth(resolved, deps, 'root-only');
       if (health === null || health.custodian !== expectedCustodianFor('root-only')) {
         throw new CutoverHealthRefused(health === null
           ? 'the sidecar did not answer a health handshake after the cutover'
           : 'the sidecar answered, and it is not running the managed ring this cutover was for');
       }
+      startService(resolved, deps, 'root-only', 'app');
+      quiesced.length = 0;
+      // AND NOW THE ROTATION LOCK CAN GO: the ring the sidecar is serving is the one that was proved, and
+      // the stack is up in front of it.
+      releaseRotationLock();
       notes.push(
         resolved.stage === 'switch-only'
           ? 'A ring was ALREADY in this state directory when this ran, so this command finished an interrupted '
@@ -527,9 +656,17 @@ export function runCustodyCutover(
       };
     } catch (err) {
       // ---- RUNTIME ROLLBACK, AND AN HONEST ACCOUNT OF WHAT IT DID AND DID NOT UNDO --------------------
+      //
+      // BOTH LOCKS COME OFF FIRST. The rollback starts the sidecar on the bootstrap selection, and that
+      // sidecar's own crash recovery takes the writer lock; a rollback that could not put the runtime back
+      // because this command was still holding a lock would be the worst failure in this file.
+      releaseStateLocks();
       throw rollbackRuntime(resolved, deps, err, migrationPerformed);
     }
   } finally {
+    // IDEMPOTENT, AND LAST. Every path above either released these or threw before taking them; this is the
+    // one that catches a path nobody thought of.
+    releaseStateLocks();
     lock.release();
   }
 }
@@ -582,6 +719,50 @@ export class CustodyCutoverFailed extends MaintenanceRefused {
   }
 }
 
+/**
+ * The two locks that actually exclude the things that can move a ring or a keystore.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHY THE CUTOVER'S OWN LOCK WAS NOT ENOUGH, AND WHY THIS IS ONLY ON THE RESUME PATH.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The cutover holds a lock of its own name, and a lock only excludes something that takes THE SAME lock.
+ * Nothing else in this product takes the cutover's: a rotation and a retirement take `ROTATION_LOCK_DIRNAME`
+ * and the custodian's own writers take `CUSTODIAN_WRITER_LOCK`. So on the switch-only path the ring could be
+ * rotated, or a key file written, between the moment the resume PROVED the state and the moment it removed
+ * the marker — and what the runtime was then switched onto was not what had been proved. The proof was
+ * real and the window after it was open.
+ *
+ * ONLY ON THE RESUME PATH, DELIBERATELY. The migrate-and-switch path runs `runKekMigration` INSIDE the
+ * maintenance container, and that function takes both of these locks itself — against the same directories,
+ * because the state directory is a bind mount. A host holding them around that command would be a host
+ * making the container's own transaction impossible.
+ *
+ * TAKEN IN THE REPOSITORY'S ORDER AND RELEASED IN THE REVERSE OF IT: rotation lock, then the custodian
+ * writer lock, exactly as `runKekMigration` takes them, so two commands can never each hold half.
+ */
+function acquireCustodyStateLocks(stateDir: string): {
+  readonly rotation: { release(): void };
+  readonly writers: { release(): void };
+} {
+  const rotation = acquireLockDirectory(join(stateDir, ROTATION_LOCK_DIRNAME),
+    'a key operation is already running against this sidecar state, or one was interrupted and left its lock '
+    + 'behind. A cutover cannot prove what it is switching onto while something else is changing it.');
+  let writers;
+  try {
+    writers = acquireStateLock(stateDir, CUSTODIAN_WRITER_LOCK);
+  } catch (err) {
+    rotation.release();
+    throw new MaintenanceRefused(err instanceof CustodianStateError
+      ? `${err.message} A cutover cannot prove what it is switching onto while something else is writing it.`
+      : 'the custodian writer lock could not be taken, so nothing was changed.');
+  }
+  // HANDED BACK SEPARATELY, because they are released at different moments: the writer lock before the
+  // sidecar starts, the rotation lock after its health has been proved. Released in the reverse of the order
+  // they were taken, which the caller's helpers do.
+  return { rotation, writers };
+}
+
 /** Put the bootstrap selection back, start the stack on it, and prove the sidecar answers. Never throws. */
 function rollbackRuntime(
   resolved: ResolvedCustodyCutover,
@@ -614,11 +795,21 @@ function startQuiesced(
   mode: CustodyRuntimeMode,
 ): void {
   for (const service of [...CUTOVER_QUIESCED_SERVICES].reverse()) {
-    const start = runGuarded(deps.runner, deps.ledger, composeCommand(resolved.projectRoot, resolved.projectName,
-      mode, ['up', '-d', '--no-build', '--pull', 'never', service], `start ${service} on the ${mode} selection`));
-    if (start.status !== 0) {
-      throw new MaintenanceRefused(`the ${service} service did not start on the ${mode} selection`);
-    }
+    startService(resolved, deps, mode, service);
+  }
+}
+
+/** One service, on one selection, without pulling or building. */
+function startService(
+  resolved: ResolvedCustodyCutover,
+  deps: CustodyCutoverDeps,
+  mode: CustodyRuntimeMode,
+  service: string,
+): void {
+  const start = runGuarded(deps.runner, deps.ledger, composeCommand(resolved.projectRoot, resolved.projectName,
+    mode, ['up', '-d', '--no-build', ...NO_FETCH_RUN_FLAGS, service], `start ${service} on the ${mode} selection`));
+  if (start.status !== 0) {
+    throw new MaintenanceRefused(`the ${service} service did not start on the ${mode} selection`);
   }
 }
 
@@ -641,7 +832,8 @@ function probeCutoverHealth(
   mode: CustodyRuntimeMode,
 ): SidecarHealth | null {
   const outcome = runGuarded(deps.runner, deps.ledger, composeCommand(resolved.projectRoot, resolved.projectName,
-    mode, ['run', '--rm', '--no-deps', 'ops', 'ops:sidecar-health', '--', '--socket', CONTAINER_SOCKET_PATH, '--json'],
+    mode, ['run', '--rm', '--no-deps', ...NO_FETCH_RUN_FLAGS, 'ops', 'ops:sidecar-health', '--',
+      '--socket', CONTAINER_SOCKET_PATH, '--json'],
     'ask the sidecar for a health handshake'));
   if (outcome.status !== 0) return null;
   let parsed: unknown;
@@ -679,7 +871,8 @@ function migrationCommand(
   purpose: string,
 ): MaintenanceCommand {
   return composeCommand(projectRoot, projectName, 'bootstrap', [
-    'run', '--rm', '--no-deps', 'custody-maintenance',
+    // `--pull never` ON A `run`, FOR THE SAME REASON IT IS ON THE `up`. See `NO_FETCH_RUN_FLAGS`.
+    'run', '--rm', '--no-deps', ...NO_FETCH_RUN_FLAGS, 'custody-maintenance',
     'ops:kek-ring', '--', 'migrate',
     '--state', CONTAINER_STATE_DIR,
     '--root-file', CONTAINER_ROOT_KEY_FILE,

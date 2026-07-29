@@ -158,10 +158,20 @@ function stackRunner(options: {
   failMigrate?: boolean;
   health?: (mode: 'bootstrap' | 'root-only') => unknown | null;
   failService?: (command: MaintenanceCommand) => boolean;
+  /** Runs after a command whose joined arguments contain this text. The interference seam. */
+  after?: { readonly when: string; readonly run: () => void };
 } ) {
   const ledger = new CommandLedger();
   const runner = (command: MaintenanceCommand) => {
     const args = command.args.join(' ');
+    const outcome = respond(command, args);
+    // THE INTERFERENCE SEAM. It fires AFTER the command it names has been answered, which is how a test puts
+    // a rotation or a custodian write into the exact window between one step of this transaction and the
+    // next. Waiting for that window to happen by chance would make the test a coin toss.
+    if (options.after !== undefined && args.includes(options.after.when)) options.after.run();
+    return outcome;
+  };
+  const respond = (command: MaintenanceCommand, args: string) => {
     const mode: 'bootstrap' | 'root-only' = args.includes(BOOTSTRAP_COMPOSE_FILE) ? 'bootstrap' : 'root-only';
     if (options.failService?.(command) === true) return { status: 1, stdout: '', stderr: '' };
     if (args.includes('config')) return { status: 0, stdout: `name: catalogauthority\nmode: ${mode}\n`, stderr: '' };
@@ -630,6 +640,110 @@ await test('the custody mode marker is written through the atomic no-follow writ
   const source = readRepo('src/ops/custody-runtime-mode.ts');
   assert(source.includes('writeStateFileBytes('), 'the marker is written with the state writer');
   assert(!source.includes('writeFileSync('), 'and not with a raw writeFileSync');
+});
+
+await test('state that moves while the stack is quiesced is refused BEFORE the marker or the root-only start', async () => {
+  // THE HOLE THIS CLOSES. The resume proved the ring and then held only the CUTOVER'S OWN lock, which
+  // excludes nothing else in this product: a rotation and a retirement take the ROTATION lock and the
+  // custodian's own writers take the CUSTODIAN WRITER lock. So between the proof and the marker removal the
+  // ring could be rotated or a key file written, and the runtime would then be switched onto a state nobody
+  // had proved. The proof was real; the window after it was open.
+  //
+  // Both interferences are injected at the moment the stack is quiesced — after everything the old code had
+  // established, and before the switch — which is exactly the window that was unguarded.
+  for (const [what, interfere] of [
+    ['the ring is rotated', (world: Awaited<ReturnType<typeof installation>>) => {
+      beginPendingGeneration(world.stateDir, world.root, () => 1_800_000_002_000);
+    }],
+    ['a key file is written', (world: Awaited<ReturnType<typeof installation>>) => {
+      const custodian = new FileCustodian(world.stateDir, SECRET, world.staticKek);
+      void custodian.provision(`op-race-${randomUUID().slice(0, 8)}`, randomUUID(), 0);
+    }],
+  ] as const) {
+    const world = await installation(`quiesce-race-${what.split(' ')[1]}`);
+    adoptStaticKekAsRing(world.stateDir, world.root, world.staticKek, () => 1_800_000_000_000);
+    let fired = false;
+    const tools = stackRunner({
+      planDigest: 'not-reached',
+      after: {
+        when: 'stop sidecar',
+        run: () => { if (!fired) { fired = true; interfere(world); } },
+      },
+    });
+    const planned = planCustodyCutover(world.request, tools);
+    let caught: unknown = null;
+    try {
+      runCustodyCutover({ ...world.request, confirmDigest: planned.planDigest }, tools);
+    } catch (err) { caught = err; }
+
+    assertEq(fired, true, `${what}: the interference really happened during the quiesce`);
+    assert(caught instanceof CustodyCutoverFailed, `${what}: the cutover is refused: ${String(caught)}`);
+    const failure = caught as CustodyCutoverFailed;
+    assertEq(failure.migrationPerformed, false, `${what}: and nothing was migrated`);
+
+    // REFUSED BEFORE THE SWITCH. The marker is untouched and nothing was ever started on the steady state.
+    assertEq(readCustodyRuntimeMode(world.projectRoot).mode, 'bootstrap', `${what}: the marker is untouched`);
+    const commands = tools.ledger.all().map((entry) => entry.args.join(' '));
+    for (const command of commands.filter((entry) => entry.includes('up -d'))) {
+      assert(command.includes(BOOTSTRAP_COMPOSE_FILE),
+        `${what}: nothing was ever started on the root-only selection: ${command}`);
+    }
+    // AND THE SERVICES ARE BACK, proved by a handshake on the selection they were on.
+    assertEq(failure.runtimeRestored, true, `${what}: the runtime was put back`);
+    assert(commands[commands.length - 1]!.includes('ops:sidecar-health'),
+      `${what}: and the last thing it did was prove that selection answers`);
+  }
+});
+
+await test('no compose run can fetch an image, and the mode marker is never written by a predictable temp', async () => {
+  // ---- `docker compose run` PULLS BY DEFAULT ----------------------------------------------------------
+  //
+  // THE HOLE THIS CLOSES. `--pull never` was on the `up` and on nothing else, and `compose run` applies the
+  // project's pull policy — which for a missing image means it FETCHES one. That mattered most exactly where
+  // it was missing: the migration (planning and execution) and the health probe. The maintenance container's
+  // `network_mode: none` cannot help, because the pull happens before there is a container to confine.
+  const world = await installation('no-fetch');
+  const digest = await migrationDigestFor(world);
+  const tools = stackRunner({
+    planDigest: digest,
+    onMigrate: () => { adoptStaticKekAsRing(world.stateDir, world.root, world.staticKek, () => 1_800_000_000_000); },
+  });
+  const planned = planCustodyCutover(world.request, tools);
+  runCustodyCutover({ ...world.request, confirmDigest: planned.planDigest }, tools);
+  const commands = tools.ledger.all().map((entry) => entry.args.join(' '));
+  const runs = commands.filter((command) => / run /.test(command));
+  assert(runs.length >= 3, `every leg of this uses compose run (${runs.length})`);
+  for (const command of runs) {
+    assert(command.includes('--pull never'), `a compose run that could fetch: ${command}`);
+  }
+  for (const command of commands.filter((entry) => entry.includes('up -d'))) {
+    assert(command.includes('--pull never') && command.includes('--no-build'), `an up that could fetch: ${command}`);
+  }
+
+  // ---- AND THE HOST SCRIPT WRITES THE MARKER THE WAY THE TYPESCRIPT WRITER DOES -----------------------
+  //
+  // It wrote `printf ... > "${MARKER}.tmp.$$"`: a name anybody can predict, through a redirection that
+  // FOLLOWS A SYMBOLIC LINK — so a link planted at that name is a write wherever it points, as whichever
+  // account runs the script. On Unraid that is root, in a web terminal.
+  const script = readRepo('deploy/unraid-custody-mode.sh');
+  // THE WRITE, NOT THE WORD. The file still NAMES the old defect in a comment, which is where a reader
+  // learns why this is the way it is; what must be gone is a redirection into a predictable name.
+  const code = script.replace(/^\s*#.*$/gm, '');
+  assert(!/>\s*"\$\{MARKER\}\.tmp/.test(code), 'nothing is written through a predictable temporary name');
+  assert(!/\$\$/.test(code), 'and no process id names a file');
+  assert(/mktemp .*XXXXXXXXXX/.test(script), 'it creates an unpredictable temp with mktemp');
+  assert(script.includes('umask 077'), 'private from the instant it exists');
+  assert(/trap cleanup EXIT/.test(script), 'and removed on every exit path');
+  assert(/mv -f "\$\{TEMP\}" "\$\{MARKER\}"/.test(script), 'and published by an atomic rename');
+  // ROOT-ONLY REMOVES THE MARKER AND NEVER WRITES ONE FIRST: the steady state is defined by its absence.
+  // ANCHORED ON THE CASE LABEL ITSELF — a bare `root-only)` also appears inside the command printer, and a
+  // slice that started there would swallow the bootstrap case and prove nothing.
+  const caseLabel = `${'\n'}  root-only)${'\n'}`;
+  const defaultLabel = `${'\n'}  *)${'\n'}`;
+  const rootOnlyBlock = script.slice(script.indexOf(caseLabel), script.indexOf(defaultLabel));
+  assert(rootOnlyBlock.includes('rm -f "${MARKER}"'), 'root-only removes the marker');
+  assert(!rootOnlyBlock.includes('mktemp') && !rootOnlyBlock.includes('printf'),
+    'and writes nothing on the way there');
 });
 
 // ---------------------------------------------------------------------------------------------------------
