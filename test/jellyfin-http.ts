@@ -158,6 +158,7 @@ async function main(): Promise<void> {
     assertEq(add.query?.ids, 'item-1', 'add uses lowercase ids');
     assertEq(remove.query?.ids, 'item-1', 'remove uses lowercase ids');
     assertEq(read.query?.parentId, 'collection-1', 'read uses OpenAPI parentId');
+    assertEq(read.query?.Recursive, 'true', 'collection membership read includes recursive descendants');
     assertEq(read.query?.fields, 'ProviderIds', 'read uses lowercase fields');
     assertEq(itemCollections.path, '/Items/item-1/Collections', 'item collection read uses OpenAPI path');
     assertEq(itemCollections.query?.fields, 'ProviderIds', 'item collection read uses lowercase fields');

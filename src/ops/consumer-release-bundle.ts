@@ -28,13 +28,13 @@ export class ConsumerReleaseBundleError extends Error {}
  */
 export const RELEASE_IMAGE_REPOSITORY = CANONICAL_IMAGE_REPOSITORY;
 /**
- * The ACTIVE, NOT-YET-RELEASED tag. v1.2.4 makes legacy production dumps portable into the disposable
- * rehearsal by preparing their one product-managed ACL target without a credential.
+ * The ACTIVE, NOT-YET-RELEASED tag. v1.2.5 makes collection membership reads explicit about recursive
+ * descendants for Jellyfin 10.11 compatibility.
  *
  * v1.0.0 through v1.2.0 are published, immutable and untouched: this constant selects what a NEW bundle
  * pins, and nothing in this repository rewrites, re-tags or overwrites an existing release.
  */
-export const RELEASE_IMAGE_TAG = 'v1.2.4';
+export const RELEASE_IMAGE_TAG = 'v1.2.5';
 export const RELEASE_IMAGE_REF = `${RELEASE_IMAGE_REPOSITORY}:${RELEASE_IMAGE_TAG}`;
 
 /** The bundle root: the folder a user extracts and runs `docker compose up -d` in. */

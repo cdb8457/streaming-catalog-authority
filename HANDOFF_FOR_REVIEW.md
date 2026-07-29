@@ -1,13 +1,13 @@
-# Handoff for review — v1.2.4
+# Handoff for review — v1.2.5
 
-Branch `cdb8457/v1-2-4-restore-role`, based on the published v1.2.3 merge
-`44857889fab8f608160a4cb4ad63b82d8c534a64`. Earlier releases remain published and immutable.
+Branch `cdb8457/v1-2-5-jellyfin-recursive`, based on the published v1.2.4 merge
+`ff8c2174579d113c32825bec9a025baa735e4d0e`. Earlier releases remain published and immutable.
 
 ## Release scope
 
 - Carry all prior release corrections forward unchanged.
-- Prepare the one product-managed PostgreSQL ACL target without authentication or a credential before each
-  SQL replay; normal bootstrap still owns enabling the role from the restored secret.
+- Include `Recursive=true` when reading a collection's members so Jellyfin 10.11 returns descendants.
+- Assert the live-discovered request requirement in the focused Jellyfin HTTP contract.
 - Retain every v1.2.0 offline, Jellyfin, collection lifecycle, recovery, O4 sidecar, and O5 managed-custody
   boundary unchanged.
 
@@ -20,9 +20,9 @@ explicit local test boundaries.
 
 ## Release identity and rollback
 
-- `package.json` and the lockfile report `1.2.4`.
-- The consumer bundle coordinate and shipped Compose defaults select `v1.2.4`.
-- v1.2.4 remains schema version 9.
+- `package.json` and the lockfile report `1.2.5`.
+- The consumer bundle coordinate and shipped Compose defaults select `v1.2.5`.
+- v1.2.5 remains schema version 9.
 - The released v1.1.4 installation is the upgrade source and rollback target. Before upgrade, take and verify
   a complete set containing database, keystore, secrets, and promotion records.
 - A rollback after custody or database state changes restores the complete pre-upgrade set; changing only the

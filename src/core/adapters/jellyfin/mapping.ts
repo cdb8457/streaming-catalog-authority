@@ -63,7 +63,7 @@ export function buildRemoveCollectionItemsRequest(collectionId: string, itemIds:
 
 /** Read one page of a collection's member items. */
 export function buildCollectionItemsRequest(collectionId: string, startIndex = 0, limit = 500): HttpRequestSpec {
-  return { method: 'GET', path: '/Items', query: { parentId: collectionId, fields: 'ProviderIds', startIndex: String(startIndex), limit: String(limit) } };
+  return { method: 'GET', path: '/Items', query: { parentId: collectionId, Recursive: 'true', fields: 'ProviderIds', startIndex: String(startIndex), limit: String(limit) } };
 }
 
 /** Read one page of collections containing a library item. */

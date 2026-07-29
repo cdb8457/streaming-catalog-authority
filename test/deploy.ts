@@ -10772,7 +10772,7 @@ test('Phase 222 Jellyfin integration decision proves read-only and blocks writes
 test('Phase 223 release evidence remains intact while package metadata tracks the current release', () => {
   assert(exists('docs/PHASE_223_RELEASE_CUT.md'), 'Phase 223 release cut doc exists');
   assert(exists('test/versioned-release-cut.ts'), 'Phase 223 release cut test exists');
-  assert(pkg.version === '1.2.4', 'package version is the current v1.2.4 release');
+  assert(pkg.version === '1.2.5', 'package version is the current v1.2.5 release');
   assert(pkg.scripts['test:versioned-release-cut'] === 'tsx test/versioned-release-cut.ts', 'Phase 223 test script present');
   assert(
     (AGGREGATE_SUITE_COMMAND ?? '').includes('test/jellyfin-integration-decision.ts && tsx test/versioned-release-cut.ts && tsx test/working-foundation-plan.ts && tsx test/import-state-machine.ts && tsx test/jellyfin-test-library-preflight.ts && tsx test/real-library-promotion-boundary.ts && tsx test/real-library-promotion.ts && tsx test/deploy.ts'),
