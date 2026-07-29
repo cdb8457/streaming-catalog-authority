@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { request } from 'node:http';
 import { createServer } from 'node:net';
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -551,6 +551,11 @@ function stageSetupWorkspace(scriptName: string): string {
   const ws = mkdtempSync(join(tmpdir(), 'phase244-bootstrap-'));
   mkdirSync(join(ws, 'deploy'));
   writeFileSync(join(ws, 'deploy', scriptName), readFileSync(`${root}/deploy/${scriptName}`));
+  // PHASE 284. The Bash script delegates the ROOT WRAPPING KEY to a descriptor-based helper beside it and
+  // REFUSES rather than continuing without one, so a workspace staged without it is not the layout an
+  // operator has. Staging it is what makes this a test of the script rather than of a missing file.
+  writeFileSync(join(ws, 'deploy', 'write-custody-secret.mjs'),
+    readFileSync(`${root}/deploy/write-custody-secret.mjs`));
   return ws;
 }
 
@@ -646,11 +651,30 @@ for (const [label, scriptName, resolve] of [
     const before = repoSecretsFingerprint();
     const ws = stageSetupWorkspace(scriptName);
     try {
+      // PHASE 284. THE SHIPPED BEHAVIOUR WHERE CUSTODY CANNOT BE ESTABLISHED IS A REFUSAL. The root wrapping
+      // key must end up owned by a named account and readable by nobody else; a host with no file ownership
+      // model cannot produce that, and the helper creates nothing there. This asserts that outcome rather
+      // than weakening the helper so the rest of the bootstrap could be exercised here.
+      if (scriptName.endsWith('.sh') && process.platform === 'win32') {
+        const attempt = runScript(shell, join(ws, 'deploy', scriptName), { cwd: ws });
+        assert(attempt.status !== 0, `${scriptName} refuses where custody cannot be established — ${describeRun(attempt)}`);
+        assert((attempt.stderr ?? '').includes('NOTHING WAS CREATED'), 'and says nothing was created');
+        assertEq(existsSync(join(ws, 'secrets', 'custodian_root_key')), false, 'and leaves no root wrapping key');
+        console.log('        (this host has no file ownership model: the refusal is what is asserted)');
+        return;
+      }
       const first = assertBootstrapped(label, ws, runSetup(shell, ws, scriptName));
 
       // Re-running is the dangerous case: a regenerated token locks an operator out of a running stack.
       // Sentinels prove preservation rather than mere byte-equality of two identical generations.
-      for (const name of RUNTIME_SECRETS) writeFileSync(join(ws, 'secrets', name), `kept-${name}\n`);
+      for (const name of RUNTIME_SECRETS) {
+        writeFileSync(join(ws, 'secrets', name), `kept-${name}\n`);
+        // THE CUSTODY SECRET IS VERIFIED ON A RE-RUN, NOT RE-MODED. A sentinel written at the default mode
+        // is one the helper would refuse — correctly, because a root key that has been readable beyond its
+        // owner is not something a setup script may quietly repair. So the sentinel is written the way the
+        // helper writes one, and what is under test is that the VALUE survives.
+        if (name === 'custodian_root_key') chmodSync(join(ws, 'secrets', name), 0o400);
+      }
       const second = runSetup(shell, ws, scriptName);
       for (const name of RUNTIME_SECRETS) {
         assertEq(readFileSync(join(ws, 'secrets', name), 'utf8'), `kept-${name}\n`, `${label}: ${name} survives a re-run untouched`);

@@ -303,6 +303,10 @@ const CONTAINER_PATH_COVERAGE: Readonly<Record<string, MountCoverage>> = {
   '/var/lib/catalog/promotion-records': { kind: 'component', component: 'promotion-records' },
   // Phase 259. Read-only, operator-owned, and not state this stack creates — see the exclusion text.
   '/var/lib/catalog/import': { kind: 'excluded', exclusion: 'operator-supplied-input' },
+  // Phase 282/284. The root wrapping key is bind-mounted rather than delivered as a Compose secret, because
+  // outside Swarm a `file:` secret IS a bind mount and `uid`/`gid`/`mode` are ignored — so the only way to
+  // give the sidecar an owner-only file is to mount one. It is the secrets component either way.
+  '/run/catalog-custody': { kind: 'component', component: 'secrets' },
   '/run/catalog-sidecar': { kind: 'excluded', exclusion: 'runtime-socket' },
   '/backups': { kind: 'excluded', exclusion: 'backup-destination' },
 };
@@ -320,6 +324,13 @@ export function coverageForTarget(target: string): MountCoverage | null {
     // Docker secrets, and the one stack that bind-mounts a secret file at its own host path. Anything under a
     // `secrets` directory is the secrets component; there is no other kind of thing kept there.
     if (candidate.startsWith('/run/secrets/') || /(?:^|\/)secrets(?:\/|$)/.test(candidate)) {
+      return { kind: 'component', component: 'secrets' };
+    }
+    // Phase 284. The custody directory holds the root wrapping key, bind-mounted rather than delivered as a
+    // Compose secret — outside Swarm a `file:` secret IS a bind mount and uid/gid/mode are ignored, so a
+    // bind is the only way to give the sidecar a file whose ownership it can rely on. It is the secrets
+    // component wherever it is mounted.
+    if (candidate === '/run/catalog-custody' || candidate.startsWith('/run/catalog-custody/')) {
       return { kind: 'component', component: 'secrets' };
     }
   }

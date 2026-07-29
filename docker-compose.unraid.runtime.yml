@@ -109,6 +109,22 @@ services:
     volumes:
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/run:/run/catalog-sidecar
       - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/sidecar/state:/var/lib/catalog-sidecar/state
+      # ---- THE ROOT WRAPPING KEY, AND WHY IT IS A BIND AND NOT A COMPOSE SECRET ------------------------
+      #
+      # A PREVIOUS VERSION OF THIS FILE DECLARED IT AS A LONG-SYNTAX SECRET WITH `uid`, `gid` AND `mode`.
+      # That was wrong and the comment beside it was worse, because it explained a mechanism that does not
+      # exist here: OUTSIDE SWARM, Compose implements a `file:` secret as a BIND MOUNT of the source file and
+      # IGNORES uid/gid/mode entirely. The container therefore saw whatever the host file's own ownership and
+      # mode were, and the stack shipped with a confident comment describing a guarantee nothing enforced.
+      #
+      # A bind mount is what that mechanism actually is, so it is written as one. The host file's ownership
+      # and mode carry through unchanged, which is exactly what the reader needs: the setup script creates it
+      # owned by the runtime user and mode 0400, and REFUSES rather than continuing if it cannot. Nothing
+      # here re-modes anything, because nothing here can.
+      #
+      # AND IT IS MOUNTED INTO THIS SERVICE ONLY. `app`, `migrate` and `ops` have no mount for it and no
+      # secret entry for it, so they cannot read it however their own user is resolved.
+      - ${CATALOG_AUTHORITY_APPDATA_DIR:-/mnt/user/appdata/catalog}/secrets/custodian_root_key:/run/catalog-custody/custodian_root_key:ro
     secrets:
       - completion_secret
       # PHASE 282. BOTH, DELIBERATELY, AND ONLY UNTIL A MIGRATION HAS HAPPENED. An installation that has not
@@ -117,16 +133,7 @@ services:
       # migration is possible at all. AFTER migrating, set SIDECAR_ROOT_KEY_FILE, remove SIDECAR_KEK_FILE and
       # unmount custodian_kek: the daemon refuses to start wired to both, so the cutover cannot be half done.
       - custodian_kek
-      # LONG SYNTAX, AND IT IS LOAD-BEARING. Compose's short syntax mounts a secret 0444 owned by root, and
-      # the root key reader refuses ANY group or other bit — every KEK in the installation is reachable from
-      # this file, so a mode that lets another account in the container read it makes the whole ring readable
-      # by that account. Short syntax would therefore have shipped a sidecar that could not start. `uid`/`gid`
-      # 1000 is the non-root `node` user the runtime image declares with `USER`, and 0400 is owner-read only.
-      - source: custodian_root_key
-        target: custodian_root_key
-        uid: "1000"
-        gid: "1000"
-        mode: 0400
+      # THE ROOT KEY IS NOT HERE, AND THAT IS THE POINT. See the bind mount in `volumes:` above.
     entrypoint: ["npm", "run"]
     command: ["ops:sidecar-daemon", "--", "--serve"]
     healthcheck:

@@ -81,6 +81,7 @@ function main(): number {
       setupPowerShell: read('deploy/local-runtime-setup.ps1'),
       arcaneCompose: read('docker-compose.arcane.yml'),
       arcaneSetupBash: read('deploy/arcane-setup.sh'),
+      custodyHelper: read('deploy/write-custody-secret.mjs'),
     }, {
       image,
       revision: valueAfter(args, '--revision') ?? currentRevision(root),

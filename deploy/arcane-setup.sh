@@ -82,6 +82,57 @@ SECRET_MODE_APP=644
 SECRET_MODE_ROOT=600
 SECRET_MODE_CUSTODY=600 # owner rw only — every KEK in the installation is reachable from the root key
 
+# ---- THE CUSTODY SECRET, AND WHY IT IS NOT A SHELL FUNCTION ----------------------------------------------
+#
+# THE ROOT WRAPPING KEY IS THE ONE FILE FROM WHICH EVERY KEY IN THE INSTALLATION IS REACHABLE, and outside
+# Swarm Compose delivers it by BIND MOUNTING it — so its ownership and mode ON THIS HOST are the whole of the
+# guarantee. A shell version of this checked the path, then redirected into the path, then chmod'ed and
+# chown'ed the path: every step resolves the NAME again, and between any two of them the name can become a
+# symlink to somewhere else. Running as root during setup, that would re-mode, re-own and overwrite whatever
+# it now points at. Checking harder does not close it — the gap is between the check and the use.
+#
+# So it is done on a DESCRIPTOR, once, by `write-custody-secret.mjs`: O_CREAT|O_EXCL|O_NOFOLLOW to create,
+# O_NOFOLLOW to inspect an existing one, and fchmod/fchown/fstat thereafter. An existing file is VERIFIED and
+# never repaired, because silently re-owning a key that has been readable by another account is a decision
+# this script must not make on an operator's behalf.
+#
+# THE HELPER IS RESOLVED FROM WHERE THIS FILE IS, not from the working directory: it ships beside this script
+# in the release bundle and under deploy/ in a checkout, and both are `${SCRIPT_DIR}`. Its absence is a
+# refusal rather than a fallback — a fallback here is a root wrapping key written without the guarantee.
+CUSTODY_HELPER="${SCRIPT_DIR}/write-custody-secret.mjs"
+# THE OWNER THE SIDECAR RUNS AS, AND WHY THE DEFAULT DEPENDS ON WHO IS RUNNING THIS. See the long note in
+# deploy/local-runtime-setup.sh: giving a file away is privileged, so as root the key goes to the container's
+# runtime user (1000:1000) and otherwise it goes to whoever ran this — owner-only either way, and a refusal
+# rather than a key this script cannot place.
+if [ "$(id -u 2>/dev/null || echo 1)" = "0" ]; then
+  CUSTODY_RUNTIME_UID="${CATALOG_AUTHORITY_RUNTIME_UID:-1000}"
+  CUSTODY_RUNTIME_GID="${CATALOG_AUTHORITY_RUNTIME_GID:-1000}"
+else
+  CUSTODY_RUNTIME_UID="${CATALOG_AUTHORITY_RUNTIME_UID:-$(id -u)}"
+  CUSTODY_RUNTIME_GID="${CATALOG_AUTHORITY_RUNTIME_GID:-$(id -g)}"
+fi
+
+write_custody_secret() {
+  name="$1"; value="$2"; outcome=""
+  if [ ! -f "${CUSTODY_HELPER}" ]; then
+    printf 'the custody writer is not beside this script, so the root wrapping key cannot be created with the ownership it requires; refusing.\n' >&2
+    exit 1
+  fi
+  if ! command -v node >/dev/null 2>&1; then
+    printf 'node is needed to create the root wrapping key on a descriptor rather than through a path; refusing.\n' >&2
+    exit 1
+  fi
+  outcome="$(node "${CUSTODY_HELPER}" "${SECRETS_DIR}/${name}" "${value}" \
+    "${CUSTODY_RUNTIME_UID}" "${CUSTODY_RUNTIME_GID}")" || {
+    printf 'FAILED to establish %s as an owner-only file for the sidecar runtime user; refusing.\n' "${name}" >&2
+    exit 1
+  }
+  case "${outcome}" in
+    created*) echo "  created   secrets/${name}" ;;
+    *)        echo "  kept      secrets/${name} (already exists)" ;;
+  esac
+}
+
 write_secret_if_absent() {
   name="$1"; value="$2"; mode="${3:-${SECRET_MODE_APP}}"
   if [ -f "${SECRETS_DIR}/${name}" ]; then
@@ -119,7 +170,14 @@ write_secret_if_absent custodian_kek "$(random_secret)" "${SECRET_MODE_APP}"
 # PHASE 282. The ROOT WRAPPING KEY for the sidecar-managed KEK ring. Generated here so a new install
 # has one from the start; an existing install adopts its static KEK with `ops:kek-ring migrate`. It is read
 # only by the custodian sidecar, only from this file, and never from an environment variable or a command line.
-write_secret_if_absent custodian_root_key "$(random_secret)" "${SECRET_MODE_CUSTODY}"
+# PHASE 284. THE ROOT WRAPPING KEY IS NOT A COMPOSE SECRET AND IS NOT BEST-EFFORT.
+#
+# Outside Swarm, Compose implements a `file:` secret as a BIND MOUNT and IGNORES uid/gid/mode — so the only
+# thing that decides whether the sidecar can read this file, and whether anything else can, is the OWNERSHIP
+# AND MODE OF THIS FILE ON THE HOST. It is therefore created owned by the container's runtime user and
+# readable by nobody else, and this script REFUSES rather than continuing if it cannot establish that. A
+# best-effort chown here would produce a root key readable by every account on the box, silently.
+write_custody_secret custodian_root_key "$(random_secret)"
 write_secret_if_absent operator_ui_token "$(random_secret)" "${SECRET_MODE_APP}"
 
 echo "  ready     promotion-records/ (mounted read-only into the container)"

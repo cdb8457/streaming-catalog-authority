@@ -63,6 +63,18 @@ export interface BundleSources {
   readonly arcaneCompose: string;
   /** deploy/arcane-setup.sh, verbatim. */
   readonly arcaneSetupBash: string;
+  /**
+   * deploy/write-custody-secret.mjs, verbatim.
+   *
+   * PHASE 284, AND THE SAME CLASS OF MISTAKE AS `arcaneCompose` ABOVE. Both setup scripts in this bundle
+   * DELEGATE the creation of the root wrapping key to this file — it is what establishes the file on a
+   * descriptor, owned by the runtime user and readable by nobody else, and both scripts REFUSE rather than
+   * continue if it is not beside them. A bundle that shipped the scripts and not the helper would therefore
+   * be a bundle whose setup could not complete: not a subtle degradation, a hard stop on the first run, in
+   * the archive an ordinary user downloads. It is required rather than optional for exactly that reason —
+   * an optional field with a fallback would let the bundle be assembled without it again.
+   */
+  readonly custodyHelper: string;
 }
 
 export interface BundleImagePin {
@@ -523,6 +535,9 @@ export function buildConsumerReleaseBundle(sources: BundleSources, options: Bund
     // project's documentation finds the file the documentation names, in the archive they downloaded.
     toFile('docker-compose.arcane.yml', sources.arcaneCompose),
     toFile('arcane-setup.sh', sources.arcaneSetupBash),
+    // BESIDE THE SCRIPTS THAT REFUSE WITHOUT IT. Both resolve it from their own directory, which in this
+    // archive is the bundle root.
+    toFile('write-custody-secret.mjs', sources.custodyHelper),
     // Phase 259. A complete, valid snapshot to copy into ./import/, so the first thing an operator needs
     // when they want to fill the catalog is in the archive rather than in a documentation search.
     toFile('example-catalog-snapshot.json', exampleCatalogSnapshot()),

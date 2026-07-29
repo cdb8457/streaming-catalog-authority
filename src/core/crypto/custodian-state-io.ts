@@ -1,7 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto';
 import {
-  closeSync, constants as fsConstants, fstatSync, fsyncSync, mkdirSync, openSync, readSync, renameSync,
-  rmdirSync, unlinkSync, writeSync,
+  closeSync, constants as fsConstants, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync, readSync,
+  renameSync, rmdirSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { dirname, join } from 'node:path';
 
@@ -98,21 +98,19 @@ function digestOf(text: string): string {
 }
 
 /**
- * Read a state document, or refuse.
+ * The EXACT bytes of one state file, bounded, through a no-follow descriptor.
  *
- * `null` ONLY FOR "IT IS NOT THERE". Every other outcome — a link, a special file, an over-long file, bytes
- * that are not JSON, an envelope that does not describe its own contents — is a refusal. A custodian that
- * treated a corrupt key file as an absent one would answer `not_found` for a key that exists, which for a
- * fail-closed reader is indistinguishable from a correct erasure.
+ * WHY RAW BYTES ARE THEIR OWN OPERATION. A rollback has to put back what was there — not a re-encoding of what
+ * a parse thought was there. `JSON.parse` followed by `JSON.stringify` is not the identity over a file: key
+ * order, whitespace and any number that does not round-trip all change, and the one file this matters for is
+ * the sealed KEK ring, whose envelope is AEAD-authenticated over its own contents. So capture and restore work
+ * on bytes, and the parse is somebody else's problem.
+ *
+ * Every rule of the parsed reader still applies: the name is opened without following a link, the object is
+ * proved to be a regular file ON THE DESCRIPTOR, and the size is bounded before a byte is allocated.
  */
-export function readStateDocument<T>(path: string, maxBytes = MAX_STATE_BYTES): T | null {
-  let fd: number;
-  try {
-    fd = openStateFile(path);
-  } catch (err) {
-    if (err instanceof CustodianStateError && err.message.endsWith('is not there')) return null;
-    throw err;
-  }
+export function readStateFileBytes(path: string, maxBytes = MAX_STATE_BYTES): Buffer {
+  const fd = openStateFile(path);
   try {
     const stats = fstatSync(fd);
     if (!stats.isFile()) throw new CustodianStateError('the state path is not a regular file');
@@ -124,30 +122,73 @@ export function readStateDocument<T>(path: string, maxBytes = MAX_STATE_BYTES): 
       if (read <= 0) break;
       total += read;
     }
-    if (total !== stats.size) {
-      throw new CustodianStateError('the state file changed size while it was being read');
-    }
-    let envelope: StateEnvelope;
-    try {
-      envelope = JSON.parse(buffer.subarray(0, total).toString('utf8')) as StateEnvelope;
-    } catch {
-      throw new CustodianStateError('the state file is not a document this custodian wrote');
-    }
-    if (envelope === null || typeof envelope !== 'object' || typeof envelope.bytes !== 'number'
-      || typeof envelope.digest !== 'string' || !('doc' in envelope)) {
-      throw new CustodianStateError('the state file is not a document this custodian wrote');
-    }
-    // THE DOCUMENT DESCRIBES ITSELF, so a truncated or altered one is caught before anything reads a field.
-    const encoded = canonical(envelope.doc);
-    if (Buffer.byteLength(encoded, 'utf8') !== envelope.bytes || digestOf(encoded) !== envelope.digest) {
-      throw new CustodianStateError(
-        'a custodian state file does not match its own recorded length and digest, so it was written partially '
-        + 'or changed underneath. Refused: a half-written key file read as a whole one is worse than none.');
-    }
-    return envelope.doc as T;
+    // A SHORT READ IS NOT A SHORTER FILE. Believing one would make a truncated capture the thing a rollback
+    // restores, which is the failure the capture exists to prevent.
+    if (total !== stats.size) throw new CustodianStateError('the state file changed size while it was being read');
+    return buffer;
   } finally {
     try { closeSync(fd); } catch { /* the read is done either way */ }
   }
+}
+
+/** Whether a state file is THERE, without reading or parsing it. A file that exists but will not parse exists. */
+export function stateFileExists(path: string): boolean {
+  try {
+    const fd = openStateFile(path);
+    try { closeSync(fd); } catch { /* it was open, which is the whole answer */ }
+    return true;
+  } catch (err) {
+    // ONLY "IT IS NOT THERE" IS `false`. A link, a special file, a permission refusal — every one of those is
+    // something at that name, and answering `false` would let a caller create over it.
+    return !(err instanceof CustodianStateError && err.message.endsWith('is not there'));
+  }
+}
+
+/**
+ * Read a state document, or refuse.
+ *
+ * `null` ONLY FOR "IT IS NOT THERE". Every other outcome — a link, a special file, an over-long file, bytes
+ * that are not JSON, an envelope that does not describe its own contents — is a refusal. A custodian that
+ * treated a corrupt key file as an absent one would answer `not_found` for a key that exists, which for a
+ * fail-closed reader is indistinguishable from a correct erasure.
+ */
+export function readStateDocument<T>(path: string, maxBytes = MAX_STATE_BYTES): T | null {
+  let bytes: Buffer;
+  try {
+    bytes = readStateFileBytes(path, maxBytes);
+  } catch (err) {
+    if (err instanceof CustodianStateError && err.message.endsWith('is not there')) return null;
+    throw err;
+  }
+  let envelope: StateEnvelope;
+  try {
+    envelope = JSON.parse(bytes.toString('utf8')) as StateEnvelope;
+  } catch {
+    throw new CustodianStateError('the state file is not a document this custodian wrote');
+  }
+  // THE ENVELOPE'S OWN SHAPE, BEFORE ITS CONTENTS ARE BELIEVED. Closed and exact: these three fields and no
+  // others, an integer length that is a length, and a digest that is a digest. A document carrying a fourth
+  // field was written by something that does not know this contract, and reading its `doc` anyway would be
+  // this custodian deciding which half of a foreign file to trust.
+  if (envelope === null || typeof envelope !== 'object' || Array.isArray(envelope)) {
+    throw new CustodianStateError('the state file is not a document this custodian wrote');
+  }
+  const keys = Object.keys(envelope as unknown as Record<string, unknown>).sort();
+  if (keys.length !== 3 || keys[0] !== 'bytes' || keys[1] !== 'digest' || keys[2] !== 'doc') {
+    throw new CustodianStateError('the state file is not a document this custodian wrote');
+  }
+  if (!Number.isInteger(envelope.bytes) || envelope.bytes < 0 || envelope.bytes > maxBytes
+    || typeof envelope.digest !== 'string' || !/^[0-9a-f]{64}$/.test(envelope.digest)) {
+    throw new CustodianStateError('the state file is not a document this custodian wrote');
+  }
+  // THE DOCUMENT DESCRIBES ITSELF, so a truncated or altered one is caught before anything reads a field.
+  const encoded = canonical(envelope.doc);
+  if (Buffer.byteLength(encoded, 'utf8') !== envelope.bytes || digestOf(encoded) !== envelope.digest) {
+    throw new CustodianStateError(
+      'a custodian state file does not match its own recorded length and digest, so it was written partially '
+      + 'or changed underneath. Refused: a half-written key file read as a whole one is worse than none.');
+  }
+  return envelope.doc as T;
 }
 
 /**
@@ -163,7 +204,17 @@ export function writeStateDocument(path: string, doc: unknown): void {
     bytes: Buffer.byteLength(encoded, 'utf8'),
     digest: digestOf(encoded),
   };
-  const body = JSON.stringify(envelope);
+  writeStateFileBytes(path, Buffer.from(JSON.stringify(envelope), 'utf8'));
+}
+
+/**
+ * Put EXACT bytes at a name, atomically and privately. The other half of `readStateFileBytes`.
+ *
+ * The envelope is the document writer's business, not this one's: a restore puts back bytes that already
+ * carried their own length and digest when they were captured, and re-deriving either from a parse would make
+ * the restored file a re-encoding rather than the file.
+ */
+export function writeStateFileBytes(path: string, body: Buffer): void {
   const temp = `${path}.${randomUUID()}.tmp`;
   let fd: number;
   try {
@@ -176,7 +227,7 @@ export function writeStateDocument(path: string, doc: unknown): void {
     // given — on a pipe, a full filesystem, or a signal — and the previous version ignored what it returned.
     // A state file truncated that way would then fail its own digest on the next read, which is safe but is
     // the wrong failure: the write is what should complete.
-    const bytes = Buffer.from(body, 'utf8');
+    const bytes = body;
     let written = 0;
     while (written < bytes.byteLength) {
       const chunk = writeSync(fd, bytes, written, bytes.byteLength - written, written);
@@ -217,8 +268,135 @@ export function fsyncDirectoryBestEffort(directory: string): void {
   finally { try { closeSync(fd); } catch { /* as above */ } }
 }
 
+/**
+ * Create a custodian state directory, and PROVE what was created is the directory this custodian may use.
+ *
+ * THE HOLE THIS CLOSES. `mkdirSync(p, { recursive: true, mode })` on its own establishes nothing about a name
+ * that already exists. If `<state>/ring` is a symbolic link to somebody else's directory, `mkdir` returns
+ * EEXIST and the previous version treated that as success — every subsequent write went through the link. And
+ * a directory that exists at 0755 (a restore that used `cp -r`, an operator who made it by hand, a bind mount
+ * from a share with a permissive default) held the sealed ring where any account on the host could read it,
+ * with nothing anywhere saying so.
+ *
+ * So the directory is opened AFTER the create, without following a link, and interrogated on the DESCRIPTOR:
+ * it is a directory, it belongs to this user, and it carries no group or other bit. A failure is a refusal —
+ * this function is called immediately before every ring write, so refusing here is refusing before the write.
+ */
 export function createStateDirectory(path: string): void {
   mkdirSync(path, { recursive: true, mode: STATE_DIR_MODE });
+  assertPrivateStateDirectory(path);
+}
+
+const O_DIRECTORY = typeof fsConstants.O_DIRECTORY === 'number' ? fsConstants.O_DIRECTORY : 0;
+
+/**
+ * WHICH directory a name refers to, established WITHOUT following a link.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHAT THIS IS FOR, AND THE HOLE IT CLOSES.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * Every per-file read in this module refuses a link at the open. That protects the FILES and says nothing
+ * about the DIRECTORY they were listed from: `readdirSync('<state>/keys')` follows a `keys` that is a symlink,
+ * so a proof that walks "every wrapped key in this keystore" could be walking somebody else's directory with
+ * every individual entry check passing. The no-follow boundary escaped through the parent.
+ *
+ * So a listing is bracketed by this: the name is opened (or `lstat`ed) without following a link, proved to be
+ * a directory, and identified by its device and inode. Asking again afterwards and comparing turns "it was not
+ * a link when I looked" into "it was the same directory throughout" — which is what a set digest has to be
+ * able to say. A caller that only wants the refusal can ignore the identity.
+ *
+ * PLATFORM, PLAINLY. On POSIX the answer comes from a descriptor opened with `O_NOFOLLOW | O_DIRECTORY`, so
+ * there is no window between deciding what the name is and holding what it named. Windows cannot open a
+ * directory for reading, so the answer comes from `lstat` — which also does not follow a link, and so still
+ * refuses a symlinked keystore, but is a check on a name rather than on an object being held. The shipped
+ * deployment is Linux and takes the first path.
+ */
+export interface StateDirectoryIdentity {
+  readonly dev: number;
+  readonly ino: number;
+}
+
+export function stateDirectoryIdentity(path: string): StateDirectoryIdentity {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | NO_FOLLOW | O_DIRECTORY);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP' || code === 'EMLINK') {
+      throw new CustodianStateError(
+        'a custodian state directory is a symbolic link, and this custodian will not follow one. Everything '
+        + 'listed from it would be whatever the link points at.');
+    }
+    if (code === 'ENOENT') throw new CustodianStateError('the state directory is not there');
+    if (code === 'ENOTDIR') throw new CustodianStateError('a custodian state path is not a directory');
+    fd = null;
+  }
+  if (fd === null) {
+    // NO DESCRIPTOR HERE — `lstat`, which still does not follow the link.
+    const stats = lstatSync(path, { throwIfNoEntry: false });
+    if (stats === undefined) throw new CustodianStateError('the state directory is not there');
+    if (stats.isSymbolicLink()) {
+      throw new CustodianStateError(
+        'a custodian state directory is a symbolic link, and this custodian will not follow one. Everything '
+        + 'listed from it would be whatever the link points at.');
+    }
+    if (!stats.isDirectory()) throw new CustodianStateError('a custodian state path is not a directory');
+    return { dev: stats.dev, ino: stats.ino };
+  }
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isDirectory()) throw new CustodianStateError('a custodian state path is not a directory');
+    return { dev: stats.dev, ino: stats.ino };
+  } finally {
+    try { closeSync(fd); } catch { /* the interrogation is done either way */ }
+  }
+}
+
+/**
+ * A directory this custodian is willing to keep key material in.
+ *
+ * OWNERSHIP AND MODE ARE POSIX FACTS. Windows has neither a uid this maps to nor mode bits `fstat` reports
+ * meaningfully, so the check there is the one the platform can actually support — that the object opened is a
+ * directory and not a link — and this says so rather than reporting a guarantee it did not establish. The
+ * shipped deployment is Linux.
+ */
+export function assertPrivateStateDirectory(path: string): void {
+  let fd: number;
+  try {
+    fd = openSync(path, fsConstants.O_RDONLY | NO_FOLLOW | O_DIRECTORY);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'ELOOP' || code === 'EMLINK') {
+      throw new CustodianStateError(
+        'a custodian state directory is a symbolic link, and this custodian will not follow one. Every write '
+        + 'into it would land wherever the link points, which is not a directory this custodian created.');
+    }
+    if (code === 'ENOTDIR') throw new CustodianStateError('a custodian state path is not a directory');
+    if (code === 'ENOENT') throw new CustodianStateError('a custodian state directory is not there');
+    // Windows cannot open a directory for reading at all. The create above succeeded, so there IS a directory
+    // there; what cannot be established here is the ownership rule, and that is stated rather than implied.
+    if (process.platform === 'win32') return;
+    throw new CustodianStateError('a custodian state directory could not be opened');
+  }
+  try {
+    const stats = fstatSync(fd);
+    if (!stats.isDirectory()) throw new CustodianStateError('a custodian state path is not a directory');
+    if (process.platform === 'win32') return;
+    const getuid = (process as NodeJS.Process & { getuid?: () => number }).getuid;
+    const uid = typeof getuid === 'function' ? getuid.call(process) : null;
+    if (uid !== null && stats.uid !== uid) {
+      throw new CustodianStateError('a custodian state directory belongs to another user');
+    }
+    if ((stats.mode & 0o077) !== 0) {
+      throw new CustodianStateError(
+        'a custodian state directory is readable or writable by somebody other than its owner. The sealed KEK '
+        + 'ring and every wrapped key live in it, so a mode that lets another account in makes all of them '
+        + 'that account\'s too. Refused before anything was written.');
+    }
+  } finally {
+    try { closeSync(fd); } catch { /* the interrogation is done either way */ }
+  }
 }
 
 export interface StateLock {
@@ -236,7 +414,16 @@ export interface StateLock {
  * A STALE LOCK IS NOT BROKEN AUTOMATICALLY. Guessing whether another process is alive and guessing wrong
  * means two writers, which is the thing being prevented.
  */
-export function acquireStateLock(stateDir: string, name = '.custodian-writer.lock'): StateLock {
+/**
+ * The one lock every writer of a custodian state directory takes.
+ *
+ * NAMED HERE RATHER THAN SPELLED IN TWO PLACES, because "the same lock" is the entire claim: the custodian's
+ * own writers and the key operations that reason about the SET of wrapped keys have to be excluding each
+ * other, and two string literals that happen to match is not a guarantee anybody can check.
+ */
+export const CUSTODIAN_WRITER_LOCK = '.custodian-writer.lock';
+
+export function acquireStateLock(stateDir: string, name = CUSTODIAN_WRITER_LOCK): StateLock {
   const path = join(stateDir, name);
   try {
     mkdirSync(path, { mode: STATE_DIR_MODE });

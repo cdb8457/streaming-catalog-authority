@@ -1,10 +1,6 @@
-import { createHash } from 'node:crypto';
-import { join } from 'node:path';
-import { FileCustodian } from '../core/crypto/file-custodian.js';
 import {
   CommandLedger,
   MaintenanceRefused,
-  acquireLockDirectory,
   resolveMaintenanceRoot,
 } from './maintenance-safety.js';
 import {
@@ -14,28 +10,24 @@ import {
   reportRefusal,
 } from './maintenance-cli-shared.js';
 import {
-  adoptStaticKekAsRing,
   initializeKekRing,
-  kekRingExists,
   loadKekRing,
   readRootWrappingKey,
   summarizeKekRing,
 } from '../core/crypto/kek-ring.js';
-import { readKeyFileNoFollow } from './kek-ring-secret-io.js';
 import {
   classifyKekRotationAge,
   countKeystoreEntries,
-  kekRotationPlanDigest,
-  ROTATION_LOCK_DIRNAME,
+  planKekMigration,
   planKekRetirement,
   planKekRotation,
   planRootKeyRotation,
   readRotationJournal,
   retireKekGeneration,
+  runKekMigration,
   runKekRotation,
   runRootKeyRotation,
 } from './kek-rotation.js';
-import { verifyBackupSet } from './backup-set-verification.js';
 import { isDirectRun } from './direct-run.js';
 
 // Phases 282/283 — `npm run ops:kek-ring`.
@@ -163,24 +155,6 @@ export function parseKekRingArgs(argv: readonly string[]): ParsedKekRingArgs {
   };
 }
 
-/**
- * The digest an operator confirms before a migration.
- *
- * Over the state directory, the root that will seal the ring and the static key being adopted — all three as
- * non-reversible labels. A migration confirmed for one static key cannot be spent on another, which matters
- * because adopting the WRONG static key produces a ring that opens nothing and looks perfectly well-formed.
- */
-export function kekMigrationPlanDigest(parts: {
-  readonly stateDir: string; readonly rootKeyId: string; readonly staticKeyId: string;
-}): string {
-  return createHash('sha256').update(JSON.stringify([
-    'phase-282-kek-ring-migration',
-    createHash('sha256').update(parts.stateDir, 'utf8').digest('hex'),
-    parts.rootKeyId,
-    parts.staticKeyId,
-  ]), 'utf8').digest('hex');
-}
-
 export function main(argv: readonly string[] = process.argv.slice(2)): number {
   if (argv.includes('--help') || argv.includes('-h') || argv.length === 0) { console.log(usage()); return KEK_RING_EXIT_OK; }
   let args: ParsedKekRingArgs;
@@ -206,68 +180,48 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
         return KEK_RING_EXIT_OK;
       }
       case 'migrate': {
-        if (kekRingExists(stateDir)) throw new MaintenanceRefused('a KEK ring is already there; migration has happened');
-        const staticKek = readKeyFileNoFollow(args.staticFile!, 'static KEK');
-        const digest = kekMigrationPlanDigest({
-          stateDir,
-          rootKeyId: labelOf(root),
-          staticKeyId: labelOf(staticKek),
-        });
+        // THE WHOLE MIGRATION IS A PLAN AND A CONFIRMATION, and both live in `kek-rotation.ts` beside the
+        // other two irreversible custody operations. It used to be assembled here: the digest covered three
+        // labels, the backup was verified only on the confirmed path, and the static key was proved against a
+        // keystore nothing bound. A plan is now a pure function of what is on disk, it carries the backup's
+        // own digest and a digest of the exact key set the static key was proved against, and the confirmed
+        // run recomputes all of it under the lock.
+        if (args.backupSet === null) {
+          throw new MaintenanceRefused(
+            '--backup-set is required for a migration, including for --plan: a migration writes a ring beside '
+            + 'a keystore that cannot be regenerated, and the plan is what proves there is a way back.');
+        }
+        const migration = {
+          stateDir: args.stateDir,
+          rootKeyFile: args.rootFile,
+          staticKeyFile: args.staticFile!,
+          backupSet: args.backupSet,
+        };
+        const planned = planKekMigration(migration);
         if (args.plan) {
           console.log('This would ADOPT the static KEK this installation already uses as generation 1 of a new');
           console.log('ring, sealed under the root wrapping key file you named. It rewrites no key file and');
           console.log('changes no key material: every wrapped DEK stays exactly as it is. What changes is that');
           console.log('the sidecar stops reading a static file and starts reading a ring it can rotate.');
           console.log('');
+          console.log(`  root wrapping key  ${planned.rootKeyId} (reference label, not the key)`);
+          console.log(`  static KEK         ${planned.staticKeyId} (reference label, not the key)`);
+          console.log(`  wrapped keys proved to open under it  ${planned.keysProved}`);
+          console.log('');
+          console.log('NOTHING HAS BEEN CHANGED BY PRINTING THIS.');
+          console.log('');
           console.log('AFTER THIS, ROTATE. Until you do, the key protecting this installation is still the one');
           console.log('that was in a file — the migration alone does not change that, and this command will not');
           console.log('let a report say otherwise.');
           console.log('');
-          console.log(`plan digest: ${digest}`);
+          console.log(`plan digest: ${planned.planDigest}`);
           return KEK_RING_EXIT_OK;
         }
-        if (args.confirmDigest !== digest) {
-          throw new MaintenanceRefused('the digest you confirmed is not this migration\'s. Nothing was changed.');
-        }
-        if (args.backupSet === null) throw new MaintenanceRefused('--backup-set is required for a migration');
-        const backupSet = resolveMaintenanceRoot(args.backupSet, 'backup set directory');
-        const verification = verifyBackupSet(backupSet);
-        if (!verification.ok) {
-          throw new MaintenanceRefused(
-            'the complete backup you named does not verify. A migration writes a new ring beside a keystore '
-            + 'that cannot be regenerated; without a set that verifies NOW there is nothing to go back to.');
-        }
-        // ---- THE PROOF THAT MAKES THE ADOPTION MEAN ANYTHING -------------------------------------------
-        //
-        // ADOPTING THE WRONG STATIC KEK PRODUCES A PERFECTLY WELL-FORMED RING THAT OPENS NOTHING. The
-        // migration would report success, the sidecar would start, and every item in the catalog would read
-        // as unreadable — which is indistinguishable from a correct erasure, so nothing would say why. So the
-        // key is proved against the LIVE keystore before a ring is written: every wrapped key must open under
-        // it. A keystore with no keys yet is fine and is said so; a keystore with keys none of which open is
-        // the wrong key and is refused.
-        assertStaticKekOpensKeystore(stateDir, staticKek);
-        // RE-RESOLVED AND RE-VERIFIED UNDER THE LOCK, because everything above happened before it.
-        const migrationLock = acquireLockDirectory(join(stateDir, ROTATION_LOCK_DIRNAME),
-          'another key operation is already running against this sidecar state');
-        let ring;
-        try {
-          if (kekRingExists(stateDir)) {
-            throw new MaintenanceRefused('a KEK ring appeared while this migration was starting; nothing was changed');
-          }
-          const afterLock = verifyBackupSet(backupSet);
-          if (!afterLock.ok || afterLock.setDigest !== verification.setDigest) {
-            throw new MaintenanceRefused(
-              'the complete backup changed between verifying it and taking the lock — a set at that path '
-              + 'verifies and it is a different set. Nothing was changed.');
-          }
-          assertStaticKekOpensKeystore(stateDir, staticKek);
-          ring = adoptStaticKekAsRing(stateDir, root, staticKek);
-        } finally {
-          migrationLock.release();
-        }
-        console.log(render('The static KEK is now generation 1 of a sidecar-managed ring.', summarizeKekRing(ring, root), args.json));
-        console.log('Nothing was re-wrapped and no key material changed. Run `rotate` to move this installation');
-        console.log('onto a key this sidecar generated, then unmount the static KEK file from the stack.');
+        const outcome = runKekMigration({ ...migration, confirmDigest: args.confirmDigest });
+        console.log(render('The static KEK is now generation 1 of a sidecar-managed ring.', outcome.ring, args.json));
+        for (const note of outcome.notes) console.log(`note: ${note}`);
+        console.log('Run `rotate` to move this installation onto a key this sidecar generated, then unmount the');
+        console.log('static KEK file from the stack.');
         return KEK_RING_EXIT_OK;
       }
       case 'status': {
@@ -412,34 +366,6 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     console.error(reportRefusal(err));
     return KEK_RING_EXIT_REFUSED;
   }
-}
-
-/**
- * Every live wrapped key must open under the static KEK being adopted, or the adoption is refused.
- *
- * A keystore with NO keys is a legitimate state (a fresh installation that has not stored anything), and it is
- * distinguished from "keys that do not open" rather than folded into it — the first is nothing to prove, the
- * second is the wrong key.
- */
-function assertStaticKekOpensKeystore(stateDir: string, staticKek: Buffer): void {
-  let plan;
-  try {
-    plan = FileCustodian.planRewrapKeystore(stateDir, { fromKek: staticKek, toKek: staticKek });
-  } catch {
-    throw new MaintenanceRefused(
-      'the static KEK you named does not open the wrapped keys already in this keystore. Adopting it would '
-      + 'produce a ring that opens NOTHING — and an item nothing can open is indistinguishable from a '
-      + 'correctly erased one, so an installation would look empty rather than broken. Nothing was changed.');
-  }
-  if (plan.total > 0 && plan.alreadyCurrent !== plan.total) {
-    throw new MaintenanceRefused(
-      'some wrapped keys in this keystore do not open under the static KEK you named. Nothing was changed.');
-  }
-}
-
-/** A non-reversible label for a key, used only to bind a plan digest. Never printed beside its key. */
-function labelOf(key: Buffer): string {
-  return createHash('sha256').update('phase-282-key-label').update(key).digest('hex').slice(0, 32);
 }
 
 function render(heading: string, summary: ReturnType<typeof summarizeKekRing>, json: boolean): string {

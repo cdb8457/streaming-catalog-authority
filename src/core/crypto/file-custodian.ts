@@ -3,6 +3,7 @@ import {
   closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeSync,
 } from 'node:fs';
 import path from 'node:path';
+import { CUSTODIAN_WRITER_LOCK, acquireStateLock } from './custodian-state-io.js';
 import type { DestructionReceipt, KeyCustodian, KeyStatus, ProvisionResult, StaleProvisioning } from './custodian.js';
 
 /**
@@ -139,6 +140,53 @@ export class FileCustodian implements KeyCustodian {
     this.recover(); // finish any destroy interrupted by a crash
   }
 
+  // --- the writer lock ------------------------------------------------------
+  /**
+   * ONE WRITER AT A TIME OVER ONE KEYSTORE — AND THE SAME LOCK THE KEY OPERATIONS TAKE.
+   *
+   * -----------------------------------------------------------------------------------------------------
+   * WHY THIS HAD TO EXIST HERE AND NOT ONLY IN `kek-rotation.ts`.
+   * -----------------------------------------------------------------------------------------------------
+   *
+   * The migration and the rotation both reason about the SET of wrapped keys: "every key in this keystore
+   * opens under the key being adopted", "every key was rewrapped onto the new generation". Both took a lock
+   * of their own and neither excluded THIS class, which is what actually writes key files. So a provision or
+   * a destroy landing during either one changed the set the proof had been computed over, and the proof went
+   * on describing a keystore that no longer existed. Recomputing the set afterwards narrows that window and
+   * cannot close it: there is always a moment after the last check.
+   *
+   * The only thing that closes it is the writers taking the same lock, so they do. Every mutating entry point
+   * on this class acquires `CUSTODIAN_WRITER_LOCK` in the state directory, and every key operation that
+   * reasons about the set holds it for the whole of its transaction. A second writer is REFUSED, not
+   * interleaved — two writers over one keystore is how a provision is silently discarded.
+   *
+   * NO NESTING, AND THEREFORE NO DEADLOCK. Each public mutator takes the lock and calls an unlocked core; the
+   * cores call other cores and never a public mutator. The read-only entry points (`get`, `status`,
+   * `listStaleProvisioning`, `planRewrapKeystore`) take nothing — `planRewrapKeystore` deliberately so,
+   * because it is run against BACKUP SETS, and creating a lock directory inside a verified set would change
+   * the very bytes its manifest is a digest of.
+   *
+   * These bodies are synchronous from end to end even where the method is declared `async`, so the lock is
+   * held across no `await` and concurrent callers in one process serialise rather than collide.
+   */
+  private withWriteLock<T>(fn: () => T): T {
+    const lock = acquireStateLock(this.root, CUSTODIAN_WRITER_LOCK);
+    try {
+      return fn();
+    } finally {
+      lock.release();
+    }
+  }
+
+  private static withWriteLock<T>(rootDir: string, fn: () => T): T {
+    const lock = acquireStateLock(path.resolve(rootDir), CUSTODIAN_WRITER_LOCK);
+    try {
+      return fn();
+    } finally {
+      lock.release();
+    }
+  }
+
   // --- path safety ----------------------------------------------------------
   private safe(dir: string, id: string): string {
     const name = `${createHash('sha256').update(id).digest('hex')}.json`; // hashed -> no traversal
@@ -203,13 +251,21 @@ export class FileCustodian implements KeyCustodian {
   }
 
   // crash recovery: complete any destroy that journaled but didn't finish
+  //
+  // THE LOCK IS TAKEN ONLY WHERE THERE IS SOMETHING TO RECOVER. Construction is not a write, and a custodian
+  // that took a writer lock merely to be constructed would refuse to exist while any key operation was
+  // running. When there IS a journal entry, finishing it rewrites a key file and writes a tombstone — that is
+  // a write, and it takes the lock like every other one.
   private recover(): void {
-    for (const f of readdirSync(this.journalDir)) {
-      if (!f.endsWith('.json')) continue;
-      const j = this.read<Journal>(path.join(this.journalDir, f));
-      if (!j) { rmSync(path.join(this.journalDir, f), { force: true }); continue; }
-      this.finishDestroy(j);
-    }
+    const journals = readdirSync(this.journalDir).filter((f) => f.endsWith('.json'));
+    if (journals.length === 0) return;
+    this.withWriteLock(() => {
+      for (const f of journals) {
+        const j = this.read<Journal>(path.join(this.journalDir, f));
+        if (!j) { rmSync(path.join(this.journalDir, f), { force: true }); continue; }
+        this.finishDestroy(j);
+      }
+    });
   }
   private finishDestroy(j: Journal): void {
     const kp = this.keyPath(j.keyId);
@@ -232,6 +288,10 @@ export class FileCustodian implements KeyCustodian {
 
   // --- contract -------------------------------------------------------------
   async provision(operationId: string, itemId: string, epoch: number): Promise<ProvisionResult> {
+    return this.withWriteLock(() => this.provisionUnlocked(operationId, itemId, epoch));
+  }
+
+  private provisionUnlocked(operationId: string, itemId: string, epoch: number): ProvisionResult {
     const prior = this.read<OpFile>(this.opPath(operationId));
     if (prior) {
       if (prior.kind !== 'provision' || prior.itemId !== itemId || prior.epoch !== epoch) throw new Error('operation_id reused with different inputs');
@@ -251,6 +311,10 @@ export class FileCustodian implements KeyCustodian {
   }
 
   async commitProvision(operationId: string): Promise<void> {
+    this.withWriteLock(() => this.commitProvisionUnlocked(operationId));
+  }
+
+  private commitProvisionUnlocked(operationId: string): void {
     const op = this.read<OpFile>(this.opPath(operationId));
     if (!op || op.kind !== 'provision') throw new Error('unknown provision operation');
     if (existsSync(this.tombPath(op.keyId))) throw new Error('destroyed is terminal; cannot reactivate');
@@ -269,6 +333,10 @@ export class FileCustodian implements KeyCustodian {
   }
 
   async destroy(operationId: string, keyId: string): Promise<DestructionReceipt> {
+    return this.withWriteLock(() => this.destroyUnlocked(operationId, keyId));
+  }
+
+  private destroyUnlocked(operationId: string, keyId: string): DestructionReceipt {
     const prior = this.read<OpFile>(this.opPath(operationId));
     if (prior) {
       if (prior.kind !== 'destroy' || prior.keyId !== keyId) throw new Error('operation_id reused with different inputs');
@@ -328,7 +396,13 @@ export class FileCustodian implements KeyCustodian {
   static rewrapKeystore(rootDir: string, opts: { fromKek: Buffer; toKek: Buffer }): { rewrapped: number; skipped: number; total: number } {
     if (opts.fromKek.length !== 32 || opts.toKek.length !== 32) throw new Error('rewrap KEKs must be 32 bytes');
     const keysDir = path.join(path.resolve(rootDir), 'keys');
+    // NO KEYSTORE, NOTHING TO SERIALISE. The lock lives in the state directory, and taking one over a
+    // directory that holds no keystore would be creating state in order to report there is none.
     if (!existsSync(keysDir)) return { rewrapped: 0, skipped: 0, total: 0 };
+    return FileCustodian.withWriteLock(rootDir, () => FileCustodian.rewrapKeystoreUnlocked(keysDir, opts));
+  }
+
+  private static rewrapKeystoreUnlocked(keysDir: string, opts: { fromKek: Buffer; toKek: Buffer }): { rewrapped: number; skipped: number; total: number } {
     let rewrapped = 0, skipped = 0, total = 0;
     for (const f of readdirSync(keysDir)) {
       if (!f.endsWith('.json')) continue;

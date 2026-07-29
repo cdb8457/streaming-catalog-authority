@@ -7,18 +7,35 @@ import {
   KekRingError,
   activatePendingGeneration,
   activeKek,
+  adoptStaticKekAsRing,
   beginPendingGeneration,
   decodeKey,
   kekForGeneration,
+  kekRingExists,
+  kekRingPath,
   loadKekRing,
   readRootWrappingKey,
   retireGeneration,
   rootKeyId,
   rotateRootWrappingKey,
   summarizeKekRing,
+  wholeRingDigest,
+  type KekRing,
   type KekRingSummary,
+  type RootReSealFaults,
 } from '../core/crypto/kek-ring.js';
-import { readStateDocument, writeStateDocument } from '../core/crypto/custodian-state-io.js';
+import {
+  CUSTODIAN_WRITER_LOCK,
+  CustodianStateError,
+  acquireStateLock,
+  readStateDocument,
+  readStateFileBytes,
+  stateDirectoryIdentity,
+  writeStateDocument,
+  type StateDirectoryIdentity,
+  type StateLock,
+} from '../core/crypto/custodian-state-io.js';
+import { readKeyFileNoFollow } from './kek-ring-secret-io.js';
 import { verifyBackupSet } from './backup-set-verification.js';
 import {
   CommandLedger,
@@ -179,6 +196,10 @@ export function planKekRotation(request: KekRotationRequest): ResolvedKekRotatio
       + 'and then removed the record of. Refused: this build will not guess which keys are under which '
       + 'generation.');
   }
+  // A JOURNAL IS READ BEFORE IT IS BELIEVED, AND THE PLAN IS WHERE IT IS FIRST BELIEVED — `fromGeneration`
+  // below is taken from it. A journal that does not describe a rotation this ring could be in the middle of
+  // is refused here, so no digest is ever printed for one.
+  if (journal !== null) assertRotationJournalAgreesWithRing(journal, ring);
   const resolved = {
     stateDir,
     rootKeyFile: request.rootKeyFile,
@@ -279,7 +300,12 @@ function reconcileJournalStage(
 function everyKeyOpensUnder(stateDir: string, kek: Buffer): boolean {
   try {
     const plan = FileCustodian.planRewrapKeystore(stateDir, { fromKek: kek, toKek: kek });
-    return plan.total > 0 && plan.alreadyCurrent === plan.total;
+    // AN EMPTY KEYSTORE IS A COMPLETE PROOF, NOT A FAILED ONE. "Every key opens" over nothing is vacuously
+    // true, and that is the correct answer: an installation that has stored no item yet is a legitimate
+    // state, and `total > 0` turned it into a permanent refusal — a rotation that could never resume and a
+    // retirement that could never proceed, on exactly the installation with the least to lose. Every other
+    // suite here drives a populated keystore, so the proof is not vacuous in practice.
+    return plan.alreadyCurrent === plan.total;
   } catch {
     return false;
   }
@@ -308,6 +334,88 @@ export function readRotationJournal(stateDir: string): RotationJournal | null {
     throw new KekRingError('the rotation journal is not one this build wrote');
   }
   return journal;
+}
+
+/**
+ * A journal must describe a rotation THIS RING COULD BE IN THE MIDDLE OF.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE DEFECT THIS CLOSES, AND IT REPORTED SUCCESS.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * `readRotationJournal` checked the journal's SHAPE: closed field set, a digest that looks like a digest,
+ * generations that are positive integers, a stage from the closed list. Every one of those passed for this
+ * file:
+ *
+ *     { fromGeneration: 1, toGeneration: 1, stage: 'verified', ... }
+ *
+ * Dropped into the state directory of an installation on generation 1, it made `planKekRotation` take
+ * `fromGeneration` from the journal (1, the same as the ring's), so the plan digest matched. The stage
+ * reconciliation then found generation 1 in the ring, found `ring.active === 1`, found every key already
+ * opening under it, and concluded `activated`. Every stage was skipped, the ring never moved, no key was
+ * rewrapped — and the command printed `KEK rotation — COMPLETE`, `reached stage activated`, `every key
+ * verified true`. An operator rotating in response to a suspected key disclosure was told the rotation had
+ * happened. The one check that would have caught it is that a rotation FROM a generation TO the same
+ * generation is not a rotation.
+ *
+ * So the journal's three claims are checked against the ring RELATIONALLY, not merely for well-formedness:
+ *
+ *   * `from` is a generation this ring actually holds;
+ *   * `from` and `to` are different — no rotation moves a generation onto itself;
+ *   * where the ring has a PENDING generation, `to` is that generation and `from` is the ring's active one:
+ *     a journal naming some other successor describes a different rotation from the one in progress;
+ *   * where the ring has no pending generation and DOES hold `to`, the activation has happened — so `to` is
+ *     the active generation and `from` is retained beside it;
+ *   * otherwise nothing was created yet, so the ring must still be active on `from`.
+ *
+ * This is not a stage check. A journal may UNDERSTATE where the rotation got to (every step is idempotent, so
+ * a resume repeats work harmlessly) and it may OVERSTATE it (the reconciliation demotes it against the ring
+ * and the keystore). What it may not do is describe a rotation between generations this ring is not between.
+ */
+export function assertRotationJournalAgreesWithRing(journal: RotationJournal, ring: KekRing): void {
+  const holds = (generation: number): boolean => ring.generations.some((entry) => entry.generation === generation);
+  const refuse = (why: string): never => {
+    throw new KekRingError(
+      `${why} Refused: this build will not resume a rotation whose journal does not describe the ring it is `
+      + 'beside. Nothing was changed.');
+  };
+  if (!holds(journal.fromGeneration)) {
+    refuse('the rotation journal names a generation to rotate away from that is not in this ring.');
+  }
+  if (journal.toGeneration !== null && journal.toGeneration === journal.fromGeneration) {
+    refuse('the rotation journal names the SAME generation as both the one being rotated away from and the '
+      + 'one being rotated onto. That is not a rotation, and a run resuming it would report a completed '
+      + 'rotation having moved nothing.');
+  }
+  if (ring.pending !== null) {
+    if (journal.toGeneration !== ring.pending) {
+      refuse('this ring has a pending generation and the rotation journal names a different one.');
+    }
+    if (ring.active !== journal.fromGeneration) {
+      refuse('the rotation journal names a generation to rotate away from that is not the one this ring is '
+        + 'active on.');
+    }
+    return;
+  }
+  if (journal.toGeneration !== null && holds(journal.toGeneration)) {
+    // No pending pointer and the successor is in the ring: the activation already happened, or this journal
+    // is about some other pair of generations entirely.
+    if (ring.active !== journal.toGeneration) {
+      refuse('the rotation journal names a generation to rotate onto that this ring holds but is not active '
+        + 'on, and no rotation is pending.');
+    }
+    const outgoing = ring.generations.find((entry) => entry.generation === journal.fromGeneration)!;
+    if (outgoing.state !== 'retired') {
+      refuse('the rotation journal describes a completed activation, but the generation it names as outgoing '
+        + 'is not retained beside the active one.');
+    }
+    return;
+  }
+  // Nothing was created, so nothing can have moved.
+  if (ring.active !== journal.fromGeneration) {
+    refuse('the rotation journal describes a rotation from a generation this ring is not active on, and the '
+      + 'generation it names as the successor was never created.');
+  }
 }
 
 /**
@@ -389,6 +497,15 @@ export function runKekRotation(
         + 'deliberately; this command will not run a second rotation across a half-moved keystore.');
     }
     if (journal !== null) {
+      // RE-CHECKED AGAINST THE RING UNDER THE LOCK, and against the plan this run is executing. A journal
+      // swapped between the plan and the lock would otherwise decide `fromGeneration` for a rotation whose
+      // digest was computed from a different one.
+      assertRotationJournalAgreesWithRing(journal, loadKekRing(resolved.stateDir, root));
+      if (journal.fromGeneration !== resolved.fromGeneration) {
+        throw new MaintenanceRefused(
+          'the rotation journal in this state directory names a different generation to rotate away from than '
+          + 'the plan this run is executing. Nothing was changed and nothing was stopped.');
+      }
       notes.push('A rotation journal was found, so this run RESUMED an interrupted rotation rather than '
         + 'starting one. Every step below is idempotent, so a resumed run repeats only what did not finish.');
       // A JOURNAL STAGE IS A CLAIM, NOT A FACT. It is reconciled against the ring and the keystore below,
@@ -628,57 +745,95 @@ function assertBackupProvesPostRotationState(
   request: RetirementRequest,
   activeGeneration: number,
 ): void {
+  const proof = proveBackupRestoresCustody(backupSet,
+    'Retiring a generation on that evidence would remove a key nothing else holds. Take a complete backup '
+    + 'now, verify it, and retire against that one.');
+  if (proof.activeGeneration !== activeGeneration) {
+    throw new MaintenanceRefused(
+      'the backup you named was taken while a DIFFERENT generation was active, so it is not evidence about the '
+      + 'rotation you have just performed. Take a complete backup now, verify it, and retire against that one.');
+  }
+  if (proof.activeGeneration === request.generation) {
+    throw new MaintenanceRefused('the backup you named is still on the generation you are trying to retire');
+  }
+}
+
+/**
+ * What a backup set must independently prove before it counts as somewhere to go back to.
+ *
+ * A VERIFICATION IS NOT A RESTORABILITY PROOF. `verifyBackupSet` establishes that a set is internally
+ * consistent — every artifact present, every digest matching its manifest. A set can pass all of that and
+ * still be unable to restore this installation: it can hold no keystore at all, hold a keystore with no ring,
+ * or hold a root wrapping key that is not the one its own ring is sealed under (which is what a set taken
+ * from a project whose secrets copy drifted looks like — it verifies perfectly and opens nothing).
+ *
+ * So the set is opened on its own terms, using only what is inside it:
+ *
+ *   1. THE KEYSTORE COMPONENT IS THERE. A set without one cannot restore a custodian at all.
+ *   2. THE ROOT WRAPPING KEY IS THERE AND IS 32 BYTES.
+ *   3. THAT ROOT OPENS THE RING BESIDE IT, and the ring passes every structural rule this build enforces.
+ *   4. EVERY WRAPPED KEY IN THE SET OPENS UNDER THAT RING'S OWN ACTIVE GENERATION. An empty keystore is a
+ *      complete proof over zero keys, for the same reason it is everywhere else in this file.
+ *
+ * The digests it returns bind a plan to THIS set's custody state, so a set replaced at the same path between
+ * a plan and its confirmation changes the digest rather than passing the same checks as a different set.
+ */
+export interface BackupCustodyProof {
+  /** A non-reversible label for the root wrapping key inside the set. Never the key. */
+  readonly rootKeyId: string;
+  /** A digest over the whole ring inside the set. Never any part of it. */
+  readonly ringDigest: string;
+  readonly activeGeneration: number;
+  readonly generations: readonly number[];
+}
+
+export function proveBackupRestoresCustody(backupSet: string, consequence: string): BackupCustodyProof {
   const stagedKeystore = join(backupSet, 'keystore-backup');
   if (!existsSync(stagedKeystore)) {
     throw new MaintenanceRefused(
-      'the backup you named holds no keystore component, so it cannot show that this installation is past the '
-      + 'rotation — and a set without a keystore cannot restore a custodian at all. Retiring a generation on '
-      + 'that evidence would remove a key nothing else holds. Take a complete backup now, verify it, and '
-      + 'retire against that one.');
+      `the backup you named holds no keystore component, so it cannot restore a custodian at all. ${consequence}`);
   }
-  const stagedSecrets = join(backupSet, 'secrets-backup');
-  const stagedRootKeyFile = join(stagedSecrets, 'custodian_root_key');
+  const stagedRootKeyFile = join(backupSet, 'secrets-backup', 'custodian_root_key');
   if (!existsSync(stagedRootKeyFile)) {
     throw new MaintenanceRefused(
-      'the backup you named holds no root wrapping key, so its ring could never be opened from it. Nothing was '
-      + 'changed.');
+      `the backup you named holds no root wrapping key, so its ring could never be opened from it. ${consequence}`);
   }
   let backedUpRoot: Buffer;
   try {
     backedUpRoot = readKeyFileFromBackup(stagedRootKeyFile);
   } catch {
-    throw new MaintenanceRefused('the root wrapping key inside the backup you named could not be read');
+    throw new MaintenanceRefused(
+      `the root wrapping key inside the backup you named could not be read. ${consequence}`);
   }
-  let backedUpRing;
+  let backedUpRing: KekRing;
   try {
     backedUpRing = loadKekRing(stagedKeystore, backedUpRoot);
   } catch {
     throw new MaintenanceRefused(
       'the root wrapping key inside the backup you named does not open the ring inside it. That set cannot '
-      + 'restore this installation, so it is not evidence that a generation is safe to remove.');
-  }
-  if (backedUpRing.active !== activeGeneration) {
-    throw new MaintenanceRefused(
-      'the backup you named was taken while a DIFFERENT generation was active, so it is not evidence about the '
-      + 'rotation you have just performed. Take a complete backup now, verify it, and retire against that one.');
-  }
-  if (backedUpRing.generations.some((entry) => entry.generation === request.generation)
-    && backedUpRing.active === request.generation) {
-    throw new MaintenanceRefused('the backup you named is still on the generation you are trying to retire');
+      + `restore this installation. ${consequence}`);
   }
   const backedUpActive = activeKek(backedUpRing);
   let allOpen = false;
   try {
     const plan = FileCustodian.planRewrapKeystore(stagedKeystore, { fromKek: backedUpActive, toKek: backedUpActive });
-    allOpen = plan.total > 0 && plan.alreadyCurrent === plan.total;
+    // Empty is complete, for the same reason as `everyKeyOpensUnder`: a backup of an installation that has
+    // stored nothing yet is a set every one of whose (zero) keys opens.
+    allOpen = plan.alreadyCurrent === plan.total;
   } catch {
     allOpen = false;
   }
   if (!allOpen) {
     throw new MaintenanceRefused(
       'not every wrapped key inside the backup you named opens under that backup\'s own active generation, so '
-      + 'it is not a set this installation could restore from. Nothing was changed.');
+      + `it is not a set this installation could restore from. ${consequence}`);
   }
+  return {
+    rootKeyId: rootKeyId(backedUpRoot),
+    ringDigest: wholeRingDigest(backedUpRing),
+    activeGeneration: backedUpRing.active,
+    generations: backedUpRing.generations.map((entry) => entry.generation).sort((a, b) => a - b),
+  };
 }
 
 /** A 32-byte key read out of a backup set. No ownership rule: a copied secret file is not the live one. */
@@ -756,6 +911,17 @@ export interface ResolvedRootRotation extends RootRotationRequest {
   readonly activeGeneration: number;
   /** The verified set's own digest. Binds the plan to the BYTES of the backup, not to a path. */
   readonly backupSetDigest: string;
+  /**
+   * A digest over the WHOLE ring as it is before this runs — the state the rollback would put back.
+   *
+   * It is what makes "the ring came back unchanged" checkable against something decided BEFORE the write
+   * rather than against a value read after it.
+   */
+  readonly preStateDigest: string;
+  /** The custody state the named backup independently proves it can restore. Labels and digests only. */
+  readonly backupRootKeyId: string;
+  readonly backupRingDigest: string;
+  readonly backupActiveGeneration: number;
 }
 
 /**
@@ -786,6 +952,17 @@ export function planRootKeyRotation(request: RootRotationRequest): ResolvedRootR
       + 'nothing. Without a complete backup that verifies NOW there is nothing to go back to. Nothing was '
       + 'changed.');
   }
+  // ---- AND THE SET MUST BE ABLE TO RESTORE CUSTODY, NOT MERELY VERIFY ------------------------------------
+  //
+  // THE HOLE THIS CLOSES. The gate was `verifyBackupSet(...).ok` and nothing else — a set that is internally
+  // consistent. A set can be perfectly consistent and hold no keystore, or a keystore with no ring, or a root
+  // wrapping key that does not open its own ring. Every one of those passed, and this is the ONE operation
+  // after which the previous root key opens nothing: the fallback the whole gate exists to guarantee was
+  // never checked for being a fallback. So the set is opened on its own terms and proved to hold a usable
+  // root key, a complete ring, and a keystore every wrapped key of which reads under that ring.
+  const backup = proveBackupRestoresCustody(backupSet,
+    'After a re-seal the PREVIOUS root wrapping key opens nothing, so a set that cannot restore this '
+    + 'installation is not somewhere to go back to. Nothing was changed.');
   const resolved = {
     ...request,
     stateDir,
@@ -794,11 +971,17 @@ export function planRootKeyRotation(request: RootRotationRequest): ResolvedRootR
     toRootKeyId: rootKeyId(toRoot),
     activeGeneration: ring.active,
     backupSetDigest: verification.setDigest,
+    preStateDigest: wholeRingDigest(ring),
+    backupRootKeyId: backup.rootKeyId,
+    backupRingDigest: backup.ringDigest,
+    backupActiveGeneration: backup.activeGeneration,
   };
-  return { ...resolved, planDigest: rootRotationPlanDigest(resolved) };
+  // FROZEN. A plan is a decision an operator confirmed; a caller that could edit one between the print and
+  // the run would be editing the thing the digest is supposed to bind.
+  return Object.freeze({ ...resolved, planDigest: rootRotationPlanDigest(resolved) });
 }
 
-/** Over which state, which root now, which root next, which generation, and which exact backup. */
+/** Over which state, which root now, which root next, which ring exactly, and which exact backup. */
 export function rootRotationPlanDigest(plan: Omit<ResolvedRootRotation, 'planDigest'>): string {
   return createHash('sha256').update(JSON.stringify({
     report: ROOT_ROTATION_REPORT,
@@ -807,7 +990,12 @@ export function rootRotationPlanDigest(plan: Omit<ResolvedRootRotation, 'planDig
     fromRootKeyId: plan.fromRootKeyId,
     toRootKeyId: plan.toRootKeyId,
     activeGeneration: plan.activeGeneration,
+    // THE WHOLE RING, NOT JUST WHICH GENERATION IS ACTIVE. A retirement or a begun rotation between the plan
+    // and the run leaves `active` unchanged while changing what a rollback would have to put back.
+    preStateDigest: plan.preStateDigest,
     backupSetDigest: plan.backupSetDigest,
+    backupRootKeyId: plan.backupRootKeyId,
+    backupRingDigest: plan.backupRingDigest,
   }), 'utf8').digest('hex');
 }
 
@@ -833,6 +1021,7 @@ export interface RootRotationReport {
  */
 export function runRootKeyRotation(
   request: RootRotationRequest & { readonly confirmDigest: string | null },
+  faults: RootReSealFaults = {},
 ): RootRotationReport {
   const first = planRootKeyRotation(request);
   if (request.confirmDigest !== first.planDigest) {
@@ -854,18 +1043,26 @@ export function runRootKeyRotation(
     }
     const fromRoot = readRootWrappingKey(request.rootKeyFile);
     const toRoot = readRootWrappingKey(request.newRootKeyFile);
-    const before = ringContentsDigest(loadKekRing(resolved.stateDir, fromRoot));
 
-    rotateRootWrappingKey(resolved.stateDir, fromRoot, toRoot);
+    // THE WRITE, THE PROOF AND THE ROLLBACK ARE ONE OPERATION, UNDER ONE LOCK.
+    //
+    // They used to be three statements here: re-seal, then re-read under the new root, then refuse if the
+    // contents differed. Two things were wrong with that. The refusal LEFT THE NEW FILE IN PLACE — an
+    // installation whose ring the old root no longer opens and the new one has just been shown not to open
+    // either, reported as a refusal about a check. And the ring's writer lock was released between the write
+    // and the proof, so the thing being proved was not necessarily the thing that had been written.
+    //
+    // `rotateRootWrappingKey` now captures the exact previous bytes, writes, proves, and on failure restores
+    // those bytes and verifies the restore — all inside the lock — and throws one error carrying the primary
+    // failure and the state the installation was left in.
+    const reseal = rotateRootWrappingKey(resolved.stateDir, fromRoot, toRoot, faults);
 
-    // THE NEW ROOT MUST OPEN THE EXACT RING, not merely a ring. A re-seal that produced a well-formed ring
-    // with different contents would be a silent loss of every generation it dropped.
-    const after = ringContentsDigest(loadKekRing(resolved.stateDir, toRoot));
-    const ringUnchanged = after === before;
-    if (!ringUnchanged) {
+    // AND THE RING IT PROVED IDENTICAL IS THE ONE THE PLAN WAS COMPUTED OVER. The re-seal's own proof is
+    // "what came back is what went in"; this is "what went in is what the operator confirmed".
+    if (reseal.ringDigest !== resolved.preStateDigest) {
       throw new MaintenanceRefused(
-        'the ring that came back under the new root wrapping key is not the ring that went in. Do not remove '
-        + 'the previous root key file: restore the sidecar state from the verified backup this rotation was '
+        'the ring that was re-sealed is not the ring this plan was computed against. Do not remove the '
+        + 'previous root key file: restore the sidecar state from the verified backup this rotation was '
         + 'gated on.');
     }
     return {
@@ -875,7 +1072,7 @@ export function runRootKeyRotation(
       fromRootKeyId: resolved.fromRootKeyId,
       toRootKeyId: resolved.toRootKeyId,
       activeGeneration: resolved.activeGeneration,
-      ringUnchanged,
+      ringUnchanged: true,
       network: 'none',
       notes: [
         'No key file was touched and nothing was re-wrapped: what changed is which 32 bytes open the ring. '
@@ -889,21 +1086,431 @@ export function runRootKeyRotation(
   }
 }
 
+// -----------------------------------------------------------------------------------------------------------
+// Adopting the static KEK as a ring, as a plan and a confirmation
+// -----------------------------------------------------------------------------------------------------------
+
+export const KEK_MIGRATION_REPORT = 'phase-282-kek-ring-migration';
+
+export interface KekMigrationRequest {
+  readonly stateDir: string;
+  readonly rootKeyFile: string;
+  /** The existing STATIC KEK file. A path, never a value — the same rule as every other key input here. */
+  readonly staticKeyFile: string;
+  readonly backupSet: string;
+}
+
+export interface ResolvedKekMigration extends KekMigrationRequest {
+  readonly planDigest: string;
+  readonly rootKeyId: string;
+  /** A non-reversible label for the static KEK being adopted. Binds the plan to WHICH key, never to the key. */
+  readonly staticKeyId: string;
+  readonly backupSetDigest: string;
+  /** A digest over the exact set of wrapped key files the static KEK was proved against. */
+  readonly keystoreSetDigest: string;
+  readonly keysProved: number;
+}
+
 /**
- * A digest over what a ring CONTAINS, independent of which root sealed it.
+ * Resolve a static-KEK migration, prove everything it rests on, and CHANGE NOTHING.
  *
- * Used to prove a re-seal preserved the ring exactly. It is computed inside this process from an already
- * decrypted ring and never leaves it — the report carries the verdict, not this value.
+ * -----------------------------------------------------------------------------------------------------
+ * WHAT THE PLAN HAD TO START CARRYING, AND WHY.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The migration's digest used to cover three things: the state directory, the root key's label and the static
+ * key's label. Everything else it depended on was checked at some point and never bound — so the digest an
+ * operator confirmed was compatible with a state directory whose keystore had changed since they read it, and
+ * with a backup set that had been replaced at the same path by a retention schedule. Both matter here:
+ *
+ *   * THE KEYSTORE IS WHAT THE STATIC KEY IS PROVED AGAINST. "Every wrapped key opens under this key" is a
+ *     statement about a SET of files. A key file added between the proof and the adoption was never covered
+ *     by it, and a ring adopted on that evidence is a ring that opens all but one item — which reads as one
+ *     correctly erased item, so nothing reports it.
+ *   * THE BACKUP IS THE ONLY WAY BACK. A migration writes a ring beside a keystore nothing can regenerate.
+ *
+ * So both are digested INTO the plan, the plan is frozen, and the confirmed run recomputes the whole thing
+ * under the lock and refuses on any difference.
+ *
+ * AN EMPTY KEYSTORE IS A VALID MIGRATION. An installation that has stored no item yet has nothing for the
+ * static key to be proved against, and "every key opens" over zero keys is true. The plan records how many
+ * keys the proof actually covered, so a report cannot present a vacuous proof as an exhaustive one.
  */
-function ringContentsDigest(ring: { readonly generations: readonly { readonly generation: number; readonly state: string; readonly keyHex: string; readonly createdAt: number; readonly origin: string }[]; readonly active: number; readonly pending: number | null }): string {
-  return createHash('sha256').update(JSON.stringify([
-    ring.active,
-    ring.pending,
-    [...ring.generations]
-      .slice()
-      .sort((a, b) => a.generation - b.generation)
-      .map((entry) => [entry.generation, entry.state, entry.keyHex, entry.createdAt, entry.origin]),
-  ]), 'utf8').digest('hex');
+export function planKekMigration(request: KekMigrationRequest): ResolvedKekMigration {
+  const stateDir = resolveMaintenanceRoot(request.stateDir, 'sidecar state directory');
+  const backupSet = resolveMaintenanceRoot(request.backupSet, 'backup set directory');
+  if (kekRingExists(stateDir)) {
+    throw new MaintenanceRefused(
+      'a KEK ring is already in this sidecar state directory, so this installation has already migrated. This '
+      + 'command creates a ring and never replaces one.');
+  }
+  const root = readRootWrappingKey(request.rootKeyFile);
+  const staticKek = readKeyFileNoFollow(request.staticKeyFile, 'static KEK');
+  const verification = verifyBackupSet(backupSet);
+  if (!verification.ok || verification.setDigest === '') {
+    throw new MaintenanceRefused(
+      'the complete backup you named does not verify. A migration writes a new ring beside a keystore that '
+      + 'cannot be regenerated; without a set that verifies NOW there is nothing to go back to. Nothing was '
+      + 'changed.');
+  }
+  // THE SET IS ESTABLISHED BEFORE ANY KEY FILE IS OPENED BY NAME. `keystoreSetDigest` refuses an entry that
+  // is not a wrapped key file this custodian wrote, is not a regular file, or will not read through the
+  // bounded no-follow reader — so the unwrap proof below runs over a set that has already been stated.
+  const setDigest = keystoreSetDigest(stateDir);
+  const keys = assertStaticKekOpensKeystore(stateDir, staticKek);
+  const resolved = {
+    ...request,
+    stateDir,
+    backupSet,
+    rootKeyId: rootKeyId(root),
+    staticKeyId: keyLabel(staticKek),
+    backupSetDigest: verification.setDigest,
+    keystoreSetDigest: setDigest,
+    keysProved: keys,
+  };
+  // FROZEN, AND SAID SO. A plan is what an operator confirmed; a caller able to edit one between the print
+  // and the run would be editing the thing the digest binds.
+  return Object.freeze({ ...resolved, planDigest: kekMigrationPlanDigest(resolved) });
+}
+
+/** Over where, which root, which static key, which exact keystore and which exact backup. */
+export function kekMigrationPlanDigest(plan: Omit<ResolvedKekMigration, 'planDigest'>): string {
+  return createHash('sha256').update(JSON.stringify({
+    report: KEK_MIGRATION_REPORT,
+    version: KEK_ROTATION_VERSION,
+    stateDir: createHash('sha256').update(plan.stateDir, 'utf8').digest('hex'),
+    rootKeyId: plan.rootKeyId,
+    staticKeyId: plan.staticKeyId,
+    backupSetDigest: plan.backupSetDigest,
+    keystoreSetDigest: plan.keystoreSetDigest,
+    keysProved: plan.keysProved,
+  }), 'utf8').digest('hex');
+}
+
+export interface KekMigrationReport {
+  readonly report: typeof KEK_MIGRATION_REPORT;
+  readonly ok: boolean;
+  readonly planDigest: string;
+  readonly ring: KekRingSummary;
+  readonly keysProved: number;
+  readonly network: 'none';
+  readonly notes: readonly string[];
+}
+
+/**
+ * The seam that makes the concurrent-writer detection testable rather than merely written down.
+ *
+ * NOT PASSED ANYWHERE IN PRODUCTION. It stands for an ordinary custodian write landing while the adoption is
+ * in flight — which is a thing that can happen, for the reason set out on `runKekMigration`.
+ */
+export interface KekMigrationFaults {
+  readonly afterAdopt?: () => void;
+}
+
+/**
+ * Adopt the static KEK, under the lock, having re-established everything the plan claimed.
+ *
+ * EVERY INPUT IS READ AGAIN INSIDE THE LOCK. The plan was computed against a moment that has passed: the
+ * static key file can have been replaced, a key file can have been added to the keystore, the backup set can
+ * have been rewritten at the same path, and a ring can have appeared. Recomputing the whole plan here and
+ * comparing digests is what makes the operator's confirmation a statement about what is actually on disk.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * TWO LOCKS, AND WHY NEITHER ALONE IS THE TRANSACTION.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * `ROTATION_LOCK_DIRNAME` serialises the KEY OPERATIONS in this module — a rotation, a retirement, a root
+ * re-seal, this migration. On its own it does NOT serialise the custodian: `FileCustodian.provision`,
+ * `destroy` and `rewrapKeystore` write into `keys/` and knew nothing about it. An earlier version of this
+ * command held only that lock and recomputed the key set afterwards, which narrows the window in which a
+ * concurrent write invalidates the proof and CANNOT CLOSE IT — there is always a moment after the last check.
+ *
+ * So this also holds `CUSTODIAN_WRITER_LOCK`, which is the lock those writers now take, for the whole of the
+ * re-read → prove → adopt sequence. While it is held, a provision, a destroy and a rewrap are REFUSED rather
+ * than interleaved, and the set the adoption was justified by is the set that is still there when it
+ * finishes. The post-adoption recheck below is KEPT as defence in depth — against a writer that predates this
+ * lock, or one that does not go through the class at all — but it is no longer what the claim rests on.
+ *
+ * NO NESTING. Nothing inside takes either lock again: `adoptStaticKekAsRing` takes the RING writer lock,
+ * which is a different directory, and the proofs read key files without locking.
+ */
+export function runKekMigration(
+  request: KekMigrationRequest & { readonly confirmDigest: string | null },
+  faults: KekMigrationFaults = {},
+): KekMigrationReport {
+  const first = planKekMigration(request);
+  if (request.confirmDigest !== first.planDigest) {
+    throw new MaintenanceRefused(
+      'the digest you confirmed is not the digest of the migration this command just computed. Nothing was '
+      + 'changed. Run with --plan, read it, and copy the digest from the plan you actually read.');
+  }
+  const lock = acquireLockDirectory(join(first.stateDir, ROTATION_LOCK_DIRNAME),
+    'another key operation is already running against this sidecar state, or one was interrupted and left its '
+    + 'lock behind.');
+  // AND THE KEYSTORE'S OWN WRITER LOCK, which is what actually holds off a provision or a destroy. Taken
+  // second and released first, in one order everywhere, so two commands cannot each hold half.
+  let writers: StateLock;
+  try {
+    writers = acquireStateLock(first.stateDir, CUSTODIAN_WRITER_LOCK);
+  } catch (err) {
+    lock.release();
+    throw new MaintenanceRefused(err instanceof CustodianStateError
+      ? `${err.message} A migration cannot prove which wrapped keys it adopted a key for while something else `
+        + 'is writing them. Nothing was changed.'
+      : 'the keystore writer lock could not be taken, so nothing was changed.');
+  }
+  try {
+    // ---- EVERY INPUT RE-READ INSIDE THE LOCK, INCLUDING THE KEY SET ---------------------------------------
+    //
+    // This is the whole reason the plan is a pure function: it can be recomputed. The absence of a ring, the
+    // static key's bytes, the backup's own digest and the DIGEST OF THE EXACT SET OF WRAPPED KEY FILES are
+    // all established again here, with BOTH locks held and without releasing either before the adoption. A
+    // digest computed before the locks proves nothing on its own; a digest recomputed under them, compared
+    // with the one the operator confirmed, is what makes their confirmation a statement about what is on
+    // disk — and what keeps it true for the rest of this function.
+    const resolved = planKekMigration(request);
+    if (resolved.planDigest !== first.planDigest) {
+      throw new MaintenanceRefused(
+        'the static KEK, the keystore, the root key or the backup set changed between reading this plan and '
+        + 'running it. Nothing was changed. Re-run with --plan against what is actually there.');
+    }
+    const root = readRootWrappingKey(request.rootKeyFile);
+    const staticKek = readKeyFileNoFollow(request.staticKeyFile, 'static KEK');
+    const ring = adoptStaticKekAsRing(resolved.stateDir, root, staticKek);
+    faults.afterAdopt?.();
+    // ---- AND THE SET IS STILL THE SET THE ADOPTION WAS JUSTIFIED BY ---------------------------------------
+    assertKeySetUnmovedOrRollBack(resolved);
+    return {
+      report: KEK_MIGRATION_REPORT,
+      ok: true,
+      planDigest: resolved.planDigest,
+      ring: summarizeKekRing(ring, root),
+      keysProved: resolved.keysProved,
+      network: 'none',
+      notes: [
+        'Nothing was re-wrapped and no key material changed: every wrapped DEK is under exactly the key it was '
+        + 'under before. What changed is that the sidecar now reads a ring it can rotate instead of a static '
+        + 'file it cannot.',
+        'AFTER THIS, ROTATE. Until you do, the key protecting this installation is still the one that was in a '
+        + 'file, and this command will not let a report say otherwise.',
+        resolved.keysProved === 0
+          ? 'This keystore held no wrapped keys, so the proof that the adopted key opens them covered nothing. '
+            + 'That is a complete proof over an empty set and it is recorded as such rather than presented as '
+            + 'an exhaustive one.'
+          : `Every one of the ${resolved.keysProved} wrapped keys in this keystore was proved to open under the `
+            + 'adopted key before the ring was written.',
+      ],
+    };
+  } finally {
+    // RELEASED IN THE REVERSE ORDER THEY WERE TAKEN.
+    writers.release();
+    lock.release();
+  }
+}
+
+/**
+ * After the ring is written: was it justified by the keystore that is actually there?
+ *
+ * DEFENCE IN DEPTH, NOT THE GUARANTEE. What holds a concurrent write off is the custodian writer lock this
+ * command holds across the whole transaction. This check catches what a lock cannot: something writing into
+ * `keys/` without going through `FileCustodian` at all. If the set moved anyway, the ring on disk is one whose
+ * "every key opens under generation 1" proof covered a set that no longer exists — which is not a state to
+ * leave behind and report success for, and not one to leave behind and report a refusal for either.
+ *
+ * SO THE ADOPTION IS UNDONE. The ring file is removed: this command proved under the lock that there was no
+ * ring before it ran, so removing the one it wrote restores exactly the state it found. NOTHING IS LOST BY
+ * DOING SO — generation 1 of that ring is the static KEK, which is still in the file it was read from, and no
+ * key file was touched by the adoption. If the removal itself fails, BOTH facts go into the refusal, because
+ * a ring left behind that nothing has re-proved is the more urgent of the two.
+ */
+function assertKeySetUnmovedOrRollBack(resolved: ResolvedKekMigration): void {
+  let now: string;
+  try {
+    now = keystoreSetDigest(resolved.stateDir);
+  } catch {
+    now = '';
+  }
+  if (now === resolved.keystoreSetDigest) return;
+  let removed = false;
+  try {
+    rmSync(kekRingPath(resolved.stateDir), { force: true });
+    removed = !kekRingExists(resolved.stateDir);
+  } catch {
+    removed = false;
+  }
+  throw new MaintenanceRefused(removed
+    ? 'a wrapped key in this keystore changed while the ring was being adopted, so the proof that every key '
+      + 'opens under the adopted key covered a set that is no longer there. THE ADOPTION WAS UNDONE: there is '
+      + 'no ring in this state directory and no key file was touched, which is exactly the state this command '
+      + 'found. Quiesce the app and the sidecar, then run the migration again.'
+    : 'a wrapped key in this keystore changed while the ring was being adopted, AND THE RING THAT WAS WRITTEN '
+      + 'COULD NOT BE REMOVED AGAIN. There is now a ring in this state directory whose proof covered a set '
+      + 'that is no longer there. Do not start the stack: check with `status` and, if the ring is not one you '
+      + 'want, remove it and migrate again with the app and the sidecar stopped.');
+}
+
+/**
+ * Every live wrapped key must open under the static KEK being adopted, or the adoption is refused.
+ *
+ * ADOPTING THE WRONG STATIC KEK PRODUCES A PERFECTLY WELL-FORMED RING THAT OPENS NOTHING. The migration would
+ * report success, the sidecar would start, and every item in the catalog would read as unreadable — which is
+ * indistinguishable from a correct erasure, so nothing would say why.
+ *
+ * Returns how many keys the proof covered, so a caller can record an empty keystore as the vacuous proof it
+ * is rather than presenting it as an exhaustive one.
+ */
+export function assertStaticKekOpensKeystore(stateDir: string, staticKek: Buffer): number {
+  let plan;
+  try {
+    plan = FileCustodian.planRewrapKeystore(stateDir, { fromKek: staticKek, toKek: staticKek });
+  } catch {
+    throw new MaintenanceRefused(
+      'the static KEK you named does not open the wrapped keys already in this keystore. Adopting it would '
+      + 'produce a ring that opens NOTHING — and an item nothing can open is indistinguishable from a '
+      + 'correctly erased one, so an installation would look empty rather than broken. Nothing was changed.');
+  }
+  if (plan.alreadyCurrent !== plan.total) {
+    throw new MaintenanceRefused(
+      'some wrapped keys in this keystore do not open under the static KEK you named. Nothing was changed.');
+  }
+  return plan.total;
+}
+
+/** The only shape a wrapped key file's name has: the custodian hashes every id into one. */
+const KEYSTORE_FILE_NAME = /^[0-9a-f]{64}\.json$/;
+
+/** How many wrapped keys this proof will walk. A bound, so a directory somebody grew is a refusal. */
+export const MAX_KEYSTORE_ENTRIES = 100_000;
+
+/**
+ * A digest over the exact SET of wrapped key files, and over their contents.
+ *
+ * WHAT IT IS FOR. A plan says "every wrapped key in this keystore opens under the key you are adopting". That
+ * is a statement about a SET of files, and it stops being true the moment the set changes. This digest is what
+ * binds it: an added file, a removed file and a changed file each move the value, so a plan read at one moment
+ * cannot be spent on a keystore that has moved since. None of the underlying bytes — which are wrapped DEKs —
+ * is anywhere in the result.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * AND IT READS THE KEYSTORE THE WAY THE REST OF THIS PRODUCT DOES, WHICH THE FIRST VERSION DID NOT.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * That version was `readdirSync(...).filter(endsWith('.json')).map(readFileSync(join(...)))`. Four things
+ * were wrong with it, and this is a PROOF path — the one place where being wrong is being wrong about which
+ * files an adoption was justified by:
+ *
+ *   1. `readFileSync` FOLLOWS A LINK. A `keys/<hash>.json` replaced by a symlink to a file elsewhere was
+ *      digested as though it were a key file, so the proof covered a file the keystore does not contain.
+ *   2. A NAME ENDING IN `.json` IS NOT A KEY FILE. A directory, a fifo or a device with that suffix was
+ *      passed to `readFileSync` as if it were one.
+ *   3. NOTHING WAS BOUNDED. A file somebody grew was this process deciding to allocate whatever was on disk.
+ *   4. ANYTHING NOT ENDING IN `.json` WAS SILENTLY IGNORED — including a `.tmp` left by a write that was
+ *      interrupted, which is precisely the state in which the set is not settled.
+ *
+ * So every entry must be a name this custodian writes, must not be a kind of object that is not a regular
+ * file, and is read through the bounded no-follow descriptor reader. An unexpected entry is a refusal rather
+ * than something skipped: a keystore holding one is a keystore whose set nobody can state.
+ *
+ * IT RUNS BEFORE THE UNWRAP PROOF, DELIBERATELY. `FileCustodian.planRewrapKeystore` still reads key files by
+ * path (hardening the custodian itself is its own change, with its own blast radius). Running this first means
+ * the structural rejection happens before anything opens a key file by name.
+ */
+export function keystoreSetDigest(stateDir: string): string {
+  const keysDir = join(stateDir, 'keys');
+  // ---- THE DIRECTORY ITSELF, BEFORE ANYTHING IS LISTED FROM IT --------------------------------------------
+  //
+  // THE HOLE THIS CLOSES. Every per-entry check below is a no-follow check on a FILE. None of them says
+  // anything about the directory the names came from: `readdirSync('<state>/keys')` follows a `keys` that is
+  // a symlink, so this proof could have walked somebody else's directory with every individual entry passing.
+  // The no-follow boundary escaped through the parent. The identity is taken again after the walk, so a
+  // directory swapped underneath it is a refusal rather than a set digest over two different directories.
+  let identity: StateDirectoryIdentity;
+  try {
+    identity = stateDirectoryIdentity(keysDir);
+  } catch (err) {
+    // A KEYSTORE DIRECTORY THAT HAS NEVER BEEN WRITTEN IS AN EMPTY SET, NOT A REFUSAL. Anything else about
+    // that name — a link, a file, a permission problem — is a refusal, because it is not a keystore.
+    if (err instanceof CustodianStateError && err.message.endsWith('is not there')) return keystoreDigestOf([]);
+    throw new MaintenanceRefused(
+      `the keystore in this sidecar state directory is not one this build will read (${err instanceof
+        CustodianStateError ? err.message : 'it could not be opened'}), so the set of wrapped keys this `
+      + 'operation would be justified by cannot be stated. Nothing was changed.');
+  }
+  let entries: readonly { readonly name: string; isFile(): boolean; isDirectory(): boolean;
+    isSymbolicLink(): boolean; isFIFO(): boolean; isSocket(): boolean;
+    isBlockDevice(): boolean; isCharacterDevice(): boolean }[];
+  try {
+    entries = readdirSync(keysDir, { withFileTypes: true });
+  } catch {
+    throw new MaintenanceRefused(
+      'the keystore in this sidecar state directory could not be listed, so the set of wrapped keys this '
+      + 'operation would be justified by cannot be stated. Nothing was changed.');
+  }
+  if (entries.length > MAX_KEYSTORE_ENTRIES) {
+    throw new MaintenanceRefused('this keystore holds more entries than this build will walk. Nothing was changed.');
+  }
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (!KEYSTORE_FILE_NAME.test(entry.name)) {
+      throw new MaintenanceRefused(
+        'this keystore holds an entry that is not a wrapped key file this custodian wrote — a leftover from an '
+        + 'interrupted write, or something put there by hand. The set of keys an adoption would be justified '
+        + 'by cannot be stated while it is there. Nothing was changed.');
+    }
+    // KNOWN-BAD KINDS ARE REFUSED HERE; the descriptor below refuses the rest. A filesystem that reports no
+    // kind at all (some network mounts do) is not refused on that basis alone — it is refused, or not, by
+    // what `fstat` says about the object actually opened, which is the answer that cannot be raced.
+    if (entry.isDirectory() || entry.isSymbolicLink() || entry.isFIFO() || entry.isSocket()
+      || entry.isBlockDevice() || entry.isCharacterDevice()) {
+      throw new MaintenanceRefused(
+        'this keystore holds an entry with a wrapped key file\'s name that is not a regular file. Nothing was '
+        + 'changed.');
+    }
+    names.push(entry.name);
+  }
+  names.sort();
+  const digested: Array<readonly [string, string]> = [];
+  for (const name of names) {
+    let bytes: Buffer;
+    try {
+      // BOUNDED, NO-FOLLOW, AND PROVED A REGULAR FILE ON THE DESCRIPTOR — the same reader every other piece
+      // of custodian state goes through.
+      bytes = readStateFileBytes(join(keysDir, name));
+    } catch (err) {
+      throw new MaintenanceRefused(
+        `a wrapped key file in this keystore could not be read as one (${err instanceof CustodianStateError
+          ? err.message : 'it could not be opened'}). Nothing was changed.`);
+    }
+    digested.push([name, createHash('sha256').update(bytes).digest('hex')]);
+  }
+  // ...AND IT WAS THE SAME DIRECTORY THROUGHOUT. Without this, "no link when I looked" is all the walk could
+  // claim; with it, a `keys` swapped for another directory part-way is a refusal rather than a digest over
+  // entries from two places.
+  let after: StateDirectoryIdentity;
+  try {
+    after = stateDirectoryIdentity(keysDir);
+  } catch {
+    throw new MaintenanceRefused(
+      'the keystore in this sidecar state directory stopped being readable while its key set was being read. '
+      + 'Nothing was changed.');
+  }
+  if (after.dev !== identity.dev || after.ino !== identity.ino) {
+    throw new MaintenanceRefused(
+      'the keystore directory was replaced while its key set was being read, so the set this operation would '
+      + 'be justified by is not the set that was walked. Nothing was changed.');
+  }
+  return keystoreDigestOf(digested);
+}
+
+function keystoreDigestOf(entries: readonly (readonly [string, string])[]): string {
+  return createHash('sha256')
+    .update(JSON.stringify(['phase-282-keystore-set', entries]), 'utf8')
+    .digest('hex');
+}
+
+/** A non-reversible label for a key, used only to bind a plan digest. Never printed beside its key. */
+function keyLabel(key: Buffer): string {
+  return createHash('sha256').update('phase-282-key-label').update(key).digest('hex').slice(0, 32);
 }
 
 /** How old an active generation may be before the doctor says so. A policy, stated once. */

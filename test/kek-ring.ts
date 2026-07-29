@@ -317,7 +317,7 @@ test('rotating the ROOT re-seals the ring and rewraps nothing', () => {
   const before = loadKekRing(w.stateDir, w.root);
   const nextRoot = randomBytes(32);
 
-  const moved = rotateRootWrappingKey(w.stateDir, w.root, nextRoot, () => 9_000);
+  const moved = rotateRootWrappingKey(w.stateDir, w.root, nextRoot);
   assertEq(moved.from, rootKeyId(w.root), 'the label of the root it came from');
   assertEq(moved.to, rootKeyId(nextRoot), 'and of the one it is under now');
 

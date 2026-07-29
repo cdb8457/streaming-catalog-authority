@@ -6,7 +6,10 @@ import {
   acquireStateLock,
   createStateDirectory,
   readStateDocument,
+  readStateFileBytes,
+  stateFileExists,
   writeStateDocument,
+  writeStateFileBytes,
 } from './custodian-state-io.js';
 
 // Phase 282 — the sidecar-managed KEK ring, and what "managed" is allowed to mean here.
@@ -243,25 +246,41 @@ function seal(root: Buffer, ring: KekRing): SealedRing {
   };
 }
 
-function unseal(root: Buffer, sealed: SealedRing): KekRing {
+function unseal(root: Buffer, sealedDoc: unknown): KekRing {
   const label = rootKeyId(root);
   // THE ENVELOPE'S OWN HEADER, BEFORE ANY KEY IS APPLIED TO IT. A version this build does not know describes
   // a layout it cannot reason about, and the AAD binds the version it DOES know — so an envelope claiming a
   // future one would otherwise decrypt (the AAD is computed from this build's constant) and be read under
   // rules that were never written for it.
+  //
+  // AND IT IS AN OBJECT BEFORE IT IS ANYTHING ELSE. A `null`, an array or a string reaching the field checks
+  // below would have been read through `String(...)` coercions that answer for values that are not there — so
+  // the shape is established first, once, rather than inferred from six regular expressions that each happen
+  // to reject `undefined`.
+  if (sealedDoc === null || typeof sealedDoc !== 'object' || Array.isArray(sealedDoc)) {
+    throw new KekRingError('the KEK ring envelope is not the shape this build writes');
+  }
+  const envelope = sealedDoc as Record<string, unknown>;
   const envelopeKeys = ['document', 'version', 'rootKeyId', 'nonceHex', 'ciphertextHex', 'tagHex'];
-  const envelope = sealed as unknown as Record<string, unknown>;
   for (const key of Object.keys(envelope)) {
     if (!envelopeKeys.includes(key)) throw new KekRingError('the KEK ring envelope carries a field this build does not know');
   }
+  // EVERY DECLARED FIELD PRESENT, AND A STRING WHERE A STRING IS WRITTEN. Absence is its own answer here: an
+  // envelope missing a nonce is not an envelope with a short nonce.
+  for (const key of ['document', 'rootKeyId', 'nonceHex', 'ciphertextHex', 'tagHex']) {
+    if (typeof envelope[key] !== 'string') {
+      throw new KekRingError('the KEK ring envelope is not the shape this build writes');
+    }
+  }
   // SIZES, NOT MERELY TYPES. A 12-byte nonce and a 16-byte tag are what AES-GCM was given; anything else is a
   // document written by something that is not this build, and reading it would be guessing.
-  if (!/^[0-9a-f]{24}$/.test(String(envelope.nonceHex)) || !/^[0-9a-f]{32}$/.test(String(envelope.tagHex))
-    || !/^[0-9a-f]{2,}$/.test(String(envelope.ciphertextHex))
-    || String(envelope.ciphertextHex).length % 2 !== 0
-    || !/^[0-9a-f]{32}$/.test(String(envelope.rootKeyId))) {
+  if (!/^[0-9a-f]{24}$/.test(envelope.nonceHex as string) || !/^[0-9a-f]{32}$/.test(envelope.tagHex as string)
+    || !/^[0-9a-f]{2,}$/.test(envelope.ciphertextHex as string)
+    || (envelope.ciphertextHex as string).length % 2 !== 0
+    || !/^[0-9a-f]{32}$/.test(envelope.rootKeyId as string)) {
     throw new KekRingError('the KEK ring envelope is not the shape this build writes');
   }
+  const sealed = sealedDoc as SealedRing;
   if (sealed.document !== KEK_RING_DOCUMENT || sealed.version !== KEK_RING_VERSION) {
     throw new KekRingError(
       'the KEK ring envelope was written by a version of this product that this build does not understand, or '
@@ -368,12 +387,47 @@ function assertRing(parsed: unknown): KekRing {
   }
   const active = doc.generations.find((entry) => entry.generation === doc.active)!;
   if (active.state !== 'active') throw new KekRingError('the KEK ring names an active generation that is not active');
+  // PRESENT, ALWAYS. `undefined` and `null` are not the same fact: one says "there is no pending generation"
+  // and the other says "this document does not record whether there is". Only the first is a ring this build
+  // will act on, because the second leaves a reader to choose.
+  // PRESENT, AND EXACTLY `null` OR A POSITIVE GENERATION. Nothing else, including `undefined`.
+  //
+  // THE HOLE THIS CLOSES. The check used to read `!== null && !== undefined`, which SKIPPED the whole branch
+  // for an explicitly present `pending: undefined` and then normalised it to `null` on the way out — so a
+  // document that recorded nothing about a pending generation was silently read as one that recorded "there
+  // is none". `undefined` and `null` are not the same fact: one says the rotation state is unknown, the
+  // other says there is no rotation, and only the second is something to act on.
+  const pendingField = (doc as Record<string, unknown>).pending;
+  if (!('pending' in (doc as Record<string, unknown>))) {
+    throw new KekRingError('the KEK ring does not record whether it has a pending generation');
+  }
+  if (pendingField !== null && (typeof pendingField !== 'number' || !Number.isInteger(pendingField) || pendingField < 1)) {
+    throw new KekRingError('the KEK ring records a pending generation that is neither null nor a generation number');
+  }
   if (doc.pending !== null && doc.pending !== undefined) {
     if (!Number.isInteger(doc.pending) || !seen.has(doc.pending)) {
       throw new KekRingError('the KEK ring names a pending generation that is not in it');
     }
     const pending = doc.generations.find((entry) => entry.generation === doc.pending)!;
     if (pending.state !== 'pending') throw new KekRingError('the KEK ring names a pending generation that is not pending');
+  } else if (pendings !== 0) {
+    // THE OTHER DIRECTION, WHICH THE POINTER CHECK ALONE CANNOT SEE. A `null` pointer beside an entry whose
+    // state is `pending` is a ring that disagrees with itself about whether a rotation is in progress — and
+    // which half a reader believes decides whether the next `beginPendingGeneration` is refused.
+    throw new KekRingError('the KEK ring holds a pending generation it does not point at');
+  }
+  // COHERENT TIMES. A ring cannot have been updated before it existed, and a generation cannot predate the
+  // ring that holds it. Both are cheap, and both are what a hand-edited document gets wrong.
+  const created = assertTimestamp(doc.createdAt, 'created');
+  const updated = assertTimestamp(doc.updatedAt, 'updated');
+  if (updated < created) throw new KekRingError('the KEK ring records an update from before it was created');
+  for (const entry of doc.generations) {
+    // BOUNDED ON BOTH SIDES. A generation cannot predate the ring that holds it, and it cannot be dated
+    // AFTER the ring's own last update — a ring that recorded a generation from the future would be one
+    // whose `updatedAt` did not describe its own contents, which is what the rotation-age check reads.
+    if (entry.createdAt < created || entry.createdAt > updated) {
+      throw new KekRingError('the KEK ring holds a generation dated outside the ring\'s own lifetime');
+    }
   }
   return {
     document: KEK_RING_DOCUMENT,
@@ -404,26 +458,28 @@ export function kekRingPath(stateDir: string): string {
 }
 
 export function kekRingExists(stateDir: string): boolean {
-  try {
-    return readStateDocument<SealedRing>(kekRingPath(stateDir)) !== null;
-  } catch {
-    // A ring that is there and unreadable IS there. Answering `false` would let an initialisation write over
-    // a ring somebody needs, which is the one irreversible mistake in this file.
-    return true;
-  }
+  // EXISTENCE IS A QUESTION ABOUT THE NAME, NOT ABOUT THE CONTENTS. This used to ask the parsed reader, which
+  // answers `null` both for "there is no file" and for a file whose envelope holds a literal `null` document —
+  // and the second is a file. A `false` there is an initialisation writing over a ring somebody needs, which
+  // is the one irreversible mistake in this module.
+  return stateFileExists(kekRingPath(stateDir));
 }
 
 /** Load and unseal the ring, or refuse. The only way a KEK is obtained anywhere in this product. */
 export function loadKekRing(stateDir: string, root: Buffer): KekRing {
-  let sealed: SealedRing | null;
+  let sealed: unknown;
   try {
-    sealed = readStateDocument<SealedRing>(kekRingPath(stateDir));
+    sealed = readStateDocument<unknown>(kekRingPath(stateDir));
   } catch (err) {
     throw new KekRingError(err instanceof CustodianStateError
       ? err.message
       : 'the KEK ring could not be read');
   }
   if (sealed === null) {
+    // "NOT THERE" AND "THERE, HOLDING NOTHING" ARE DIFFERENT FACTS, and only the first is an installation that
+    // has not been initialised. The second is a file at the ring's name whose document is a literal `null`,
+    // which is not a ring and must not read as an absent one.
+    if (kekRingExists(stateDir)) throw new KekRingError('the KEK ring envelope is not the shape this build writes');
     throw new KekRingError(
       'this sidecar state directory holds no KEK ring. A ring is created once, deliberately, by an explicit '
       + 'initialisation or an explicit migration from the static KEK — never as a side effect of starting.');
@@ -431,20 +487,62 @@ export function loadKekRing(stateDir: string, root: Buffer): KekRing {
   return unseal(root, sealed);
 }
 
+export const KEK_RING_WRITER_LOCK = '.kek-ring-writer.lock';
+
 /**
- * Write the ring, under the writer lock.
+ * Write the ring. THE CALLER HOLDS THE LOCK.
  *
- * THE LOCK IS TAKEN HERE RATHER THAN CLAIMED ELSEWHERE. `acquireStateLock` existed and nothing called it, so
- * "single-writer" was a property of a helper nobody used. Every mutation of the ring goes through this
- * function, so taking it here is what makes the claim true — two processes adding a pending generation at
- * once now have one of them refused instead of one of them silently discarded.
+ * THE DEFECT THIS SPLIT CLOSES. The lock used to be taken inside the store, which serialises the WRITE and
+ * nothing else. Every mutation here is a READ-MODIFY-WRITE: load the ring, decide the next one from it, store
+ * that. Two processes could each load the same ring, each decide, and each store — with the second silently
+ * discarding the first. Two well-formed writes, no corruption a digest can catch, and one generation gone.
+ * The lock has to span the whole sequence, which is what `mutateRing` does; this half stays unlocked so that
+ * holding it around a load and a store cannot deadlock against itself.
  */
-function storeRing(stateDir: string, root: Buffer, ring: KekRing): void {
+function storeRingUnlocked(stateDir: string, root: Buffer, ring: KekRing): void {
+  createStateDirectory(join(stateDir, KEK_RING_DIRNAME));
+  writeStateDocument(kekRingPath(stateDir), seal(root, ring));
+}
+
+/**
+ * Load, decide and store — under ONE writer lock.
+ *
+ * `decide` receives the ring as it is INSIDE the lock, so what it read is what it writes over. Every mutating
+ * operation on the ring goes through this or through `createRing`.
+ */
+function mutateRing<T>(
+  stateDir: string,
+  root: Buffer,
+  decide: (current: KekRing) => { readonly next: KekRing; readonly result: T },
+): T {
   const ringDir = join(stateDir, KEK_RING_DIRNAME);
   createStateDirectory(ringDir);
-  const lock = acquireStateLock(ringDir, '.kek-ring-writer.lock');
+  const lock = acquireStateLock(ringDir, KEK_RING_WRITER_LOCK);
   try {
-    writeStateDocument(kekRingPath(stateDir), seal(root, ring));
+    const { next, result } = decide(loadKekRing(stateDir, root));
+    storeRingUnlocked(stateDir, root, next);
+    return result;
+  } finally {
+    lock.release();
+  }
+}
+
+/** Create a ring where there is none, re-checking INSIDE the lock that there still is none. */
+function createRing(stateDir: string, root: Buffer, build: () => KekRing): KekRing {
+  const ringDir = join(stateDir, KEK_RING_DIRNAME);
+  createStateDirectory(ringDir);
+  const lock = acquireStateLock(ringDir, KEK_RING_WRITER_LOCK);
+  try {
+    // RE-CHECKED INSIDE THE LOCK. The caller's check was about a moment that has passed, and what is being
+    // prevented is writing over a ring — which is every key in the catalog.
+    if (kekRingExists(stateDir)) {
+      throw new KekRingError(
+        'a KEK ring is already in this sidecar state directory. This command creates one and never replaces '
+        + 'one: a replaced ring is every key in the catalog gone, with nothing to say so.');
+    }
+    const ring = build();
+    storeRingUnlocked(stateDir, root, ring);
+    return ring;
   } finally {
     lock.release();
   }
@@ -467,26 +565,26 @@ export function initializeKekRing(
       'a KEK ring is already in this sidecar state directory. This command creates one and never replaces one: '
       + 'a replaced ring is every key in the catalog gone, with nothing to say so.');
   }
-  const at = now();
-  const ring: KekRing = {
-    document: KEK_RING_DOCUMENT,
-    version: KEK_RING_VERSION,
-    generations: [{
-      generation: 1,
-      state: 'active',
-      // GENERATED HERE. Not read from a file, not supplied by a caller, not derived from anything an operator
-      // typed — which is the whole difference between this and the static KEK it replaces.
-      keyHex: randomBytes(KEY_BYTES).toString('hex'),
+  return createRing(stateDir, root, () => {
+    const at = now();
+    return {
+      document: KEK_RING_DOCUMENT,
+      version: KEK_RING_VERSION,
+      generations: [{
+        generation: 1,
+        state: 'active',
+        // GENERATED HERE. Not read from a file, not supplied by a caller, not derived from anything an
+        // operator typed — the whole difference between this and the static KEK it replaces.
+        keyHex: randomBytes(KEY_BYTES).toString('hex'),
+        createdAt: at,
+        origin: 'generated-in-sidecar',
+      }],
+      active: 1,
+      pending: null,
       createdAt: at,
-      origin: 'generated-in-sidecar',
-    }],
-    active: 1,
-    pending: null,
-    createdAt: at,
-    updatedAt: at,
-  };
-  storeRing(stateDir, root, ring);
-  return ring;
+      updatedAt: at,
+    };
+  });
 }
 
 /**
@@ -509,24 +607,24 @@ export function adoptStaticKekAsRing(
   if (kekRingExists(stateDir)) {
     throw new KekRingError('a KEK ring is already in this sidecar state directory; migration has already happened');
   }
-  const at = now();
-  const ring: KekRing = {
-    document: KEK_RING_DOCUMENT,
-    version: KEK_RING_VERSION,
-    generations: [{
-      generation: 1,
-      state: 'active',
-      keyHex: staticKek.toString('hex'),
+  return createRing(stateDir, root, () => {
+    const at = now();
+    return {
+      document: KEK_RING_DOCUMENT,
+      version: KEK_RING_VERSION,
+      generations: [{
+        generation: 1,
+        state: 'active',
+        keyHex: staticKek.toString('hex'),
+        createdAt: at,
+        origin: 'adopted-from-static-kek',
+      }],
+      active: 1,
+      pending: null,
       createdAt: at,
-      origin: 'adopted-from-static-kek',
-    }],
-    active: 1,
-    pending: null,
-    createdAt: at,
-    updatedAt: at,
-  };
-  storeRing(stateDir, root, ring);
-  return ring;
+      updatedAt: at,
+    };
+  });
 }
 
 /** The KEK new wraps use. The only function that hands a caller key bytes, and it never leaves the sidecar. */
@@ -555,28 +653,28 @@ export function beginPendingGeneration(
   root: Buffer,
   now: () => number = () => Date.now(),
 ): { readonly ring: KekRing; readonly generation: number } {
-  const current = loadKekRing(stateDir, root);
-  if (current.pending !== null) {
-    throw new KekRingError(
-      'this ring already has a pending generation from an unfinished rotation. Resume that rotation or abandon '
-      + 'it deliberately; starting a second one would leave keys spread across three generations.');
-  }
-  const generation = Math.max(...current.generations.map((entry) => entry.generation)) + 1;
-  const at = now();
-  const next: KekRing = {
-    ...current,
-    generations: [...current.generations, {
-      generation,
-      state: 'pending',
-      keyHex: randomBytes(KEY_BYTES).toString('hex'),
-      createdAt: at,
-      origin: 'generated-in-sidecar',
-    }],
-    pending: generation,
-    updatedAt: at,
-  };
-  storeRing(stateDir, root, next);
-  return { ring: next, generation };
+  return mutateRing(stateDir, root, (current) => {
+    if (current.pending !== null) {
+      throw new KekRingError(
+        'this ring already has a pending generation from an unfinished rotation. Resume that rotation or '
+        + 'abandon it deliberately; starting a second one would leave keys spread across three generations.');
+    }
+    const generation = Math.max(...current.generations.map((entry) => entry.generation)) + 1;
+    const at = now();
+    const next: KekRing = {
+      ...current,
+      generations: [...current.generations, {
+        generation,
+        state: 'pending',
+        keyHex: randomBytes(KEY_BYTES).toString('hex'),
+        createdAt: at,
+        origin: 'generated-in-sidecar',
+      }],
+      pending: generation,
+      updatedAt: at,
+    };
+    return { next, result: { ring: next, generation } };
+  });
 }
 
 /**
@@ -592,23 +690,22 @@ export function activatePendingGeneration(
   root: Buffer,
   now: () => number = () => Date.now(),
 ): KekRing {
-  const current = loadKekRing(stateDir, root);
-  if (current.pending === null) throw new KekRingError('this ring has no pending generation to activate');
-  const at = now();
-  const next: KekRing = {
-    ...current,
-    generations: current.generations.map((entry) => {
-      if (entry.generation === current.pending) return { ...entry, state: 'active' as const };
-      // The outgoing one stays in the ring and stays usable; it simply stops being what new wraps use.
-      if (entry.generation === current.active) return { ...entry, state: 'retired' as const };
-      return entry;
-    }),
-    active: current.pending,
-    pending: null,
-    updatedAt: at,
-  };
-  storeRing(stateDir, root, next);
-  return next;
+  return mutateRing(stateDir, root, (current) => {
+    if (current.pending === null) throw new KekRingError('this ring has no pending generation to activate');
+    const next: KekRing = {
+      ...current,
+      generations: current.generations.map((entry) => {
+        if (entry.generation === current.pending) return { ...entry, state: 'active' as const };
+        // The outgoing one stays in the ring and stays usable; it simply stops being what new wraps use.
+        if (entry.generation === current.active) return { ...entry, state: 'retired' as const };
+        return entry;
+      }),
+      active: current.pending,
+      pending: null,
+      updatedAt: now(),
+    };
+    return { next, result: next };
+  });
 }
 
 /**
@@ -624,18 +721,19 @@ export function retireGeneration(
   generation: number,
   now: () => number = () => Date.now(),
 ): KekRing {
-  const current = loadKekRing(stateDir, root);
-  if (generation === current.active) throw new KekRingError('the ACTIVE generation cannot be retired');
-  if (generation === current.pending) throw new KekRingError('a PENDING generation cannot be retired');
-  const found = current.generations.find((entry) => entry.generation === generation);
-  if (found === undefined) throw new KekRingError('the KEK ring holds no such generation');
-  const next: KekRing = {
-    ...current,
-    generations: current.generations.filter((entry) => entry.generation !== generation),
-    updatedAt: now(),
-  };
-  storeRing(stateDir, root, next);
-  return next;
+  return mutateRing(stateDir, root, (current) => {
+    if (generation === current.active) throw new KekRingError('the ACTIVE generation cannot be retired');
+    if (generation === current.pending) throw new KekRingError('a PENDING generation cannot be retired');
+    if (!current.generations.some((entry) => entry.generation === generation)) {
+      throw new KekRingError('the KEK ring holds no such generation');
+    }
+    const next: KekRing = {
+      ...current,
+      generations: current.generations.filter((entry) => entry.generation !== generation),
+      updatedAt: now(),
+    };
+    return { next, result: next };
+  });
 }
 
 /**
@@ -654,15 +752,154 @@ export function rotateRootWrappingKey(
   stateDir: string,
   fromRoot: Buffer,
   toRoot: Buffer,
-  now: () => number = () => Date.now(),
-): { readonly from: string; readonly to: string } {
+  faults: RootReSealFaults = {},
+): RootReSeal {
   if (toRoot.length !== KEY_BYTES) throw new KekRingError('the new root wrapping key is not 32 bytes');
   if (fromRoot.length === toRoot.length && timingSafeEqual(fromRoot, toRoot)) {
     throw new KekRingError('the new root wrapping key is the current one, so there is nothing to re-seal');
   }
-  const ring = loadKekRing(stateDir, fromRoot);
-  storeRing(stateDir, toRoot, { ...ring, updatedAt: now() });
-  return { from: rootKeyId(fromRoot), to: rootKeyId(toRoot) };
+  const ringDir = join(stateDir, KEK_RING_DIRNAME);
+  createStateDirectory(ringDir);
+  const path = kekRingPath(stateDir);
+  const lock = acquireStateLock(ringDir, KEK_RING_WRITER_LOCK);
+  try {
+    // ---- CAPTURE, AS BYTES --------------------------------------------------------------------------------
+    //
+    // The EXACT file, read through a bounded no-follow descriptor. Not `readStateDocument` and then a
+    // re-encode: a parse followed by `JSON.stringify` is not the identity over a file, and the file being
+    // replaced here is an AEAD envelope whose tag authenticates its own contents. What goes back has to be
+    // what was there, byte for byte, or "the ring was restored" is a claim about a document that resembles it.
+    const captured = readStateFileBytes(path);
+
+    // THE WHOLE DOCUMENT, UNCHANGED — INCLUDING `updatedAt`.
+    //
+    // It used to stamp `updatedAt: now()`, which made "nothing about the ring changed" false in a small way
+    // the caller's own check could not see, because that check deliberately ignored the timestamps. A re-seal
+    // changes WHICH BYTES OPEN the ring and nothing else; saying so and then quietly editing a field is what
+    // makes a larger claim unverifiable. Nothing here writes a timestamp, so the comparison below covers the
+    // whole document and therefore means everything.
+    const before = loadKekRing(stateDir, fromRoot);
+    const beforeDigest = wholeRingDigest(before);
+
+    storeRingUnlocked(stateDir, toRoot, before);
+    // The one seam a suite uses to make the proof below fail on demand. It stands for anything that could
+    // leave the new file unopenable — a filesystem that reordered, a share that truncated, another writer.
+    faults.afterWrite?.();
+
+    // ---- PROVE, BEFORE ANYTHING IS CALLED DONE ------------------------------------------------------------
+    let problem: string | null = null;
+    try {
+      const after = loadKekRing(stateDir, toRoot);
+      if (wholeRingDigest(after) !== beforeDigest) {
+        problem = 'the ring that came back under the new root wrapping key is not the ring that went in';
+      }
+    } catch {
+      problem = 'the ring does not open under the new root wrapping key that was just written';
+    }
+    if (problem === null) {
+      return { from: rootKeyId(fromRoot), to: rootKeyId(toRoot), ringDigest: beforeDigest, rolledBack: false };
+    }
+
+    // ---- PUT IT BACK, AND PROVE THAT TOO ------------------------------------------------------------------
+    //
+    // WHY LEAVING IT WOULD BE WORSE THAN THE FAILURE. What is on disk at this moment is a file nothing has
+    // been proved to open. The old root no longer opens it and the new one has just been shown not to either;
+    // an installation left there has lost every key in its catalog, and the command that did it would have
+    // reported a refusal about a check, not an outage. So the captured bytes go back, and the restore is
+    // verified two ways: the file is those bytes, and the OLD root opens the WHOLE logical ring again.
+    const restore = faults.restore ?? writeStateFileBytes;
+    let rollbackProblem: string | null = null;
+    try {
+      restore(path, captured);
+    } catch {
+      rollbackProblem = 'the previous ring could not be written back';
+    }
+    if (rollbackProblem === null) {
+      let putBack: Buffer | null = null;
+      try { putBack = readStateFileBytes(path); } catch { putBack = null; }
+      if (putBack === null || !putBack.equals(captured)) {
+        rollbackProblem = 'the ring on disk is not the bytes that were captured before the re-seal';
+      }
+    }
+    if (rollbackProblem === null) {
+      try {
+        const restored = loadKekRing(stateDir, fromRoot);
+        if (wholeRingDigest(restored) !== beforeDigest) {
+          rollbackProblem = 'the restored ring is not the ring that was captured';
+        }
+      } catch {
+        rollbackProblem = 'the restored ring does not open under the previous root wrapping key';
+      }
+    }
+    throw new RootReSealFailed(problem, rollbackProblem);
+  } finally {
+    lock.release();
+  }
+}
+
+/** What a completed re-seal is. The digest is over the ring proved identical on both sides of the write. */
+export interface RootReSeal {
+  readonly from: string;
+  readonly to: string;
+  readonly ringDigest: string;
+  readonly rolledBack: boolean;
+}
+
+/**
+ * The two seams that make the rollback testable without waiting for a filesystem to misbehave.
+ *
+ * NEITHER IS PASSED ANYWHERE IN PRODUCTION — the CLI calls `rotateRootWrappingKey` with three arguments. They
+ * exist because a rollback nobody has ever seen run is a rollback nobody knows works, and the alternative
+ * (asserting the source contains a restore call) proves the code was typed, not that it puts the ring back.
+ */
+export interface RootReSealFaults {
+  /** Runs after the new bytes are on disk and before the proof, so the proof can be made to fail. */
+  readonly afterWrite?: () => void;
+  /** Puts the captured bytes back. Defaults to the real atomic write; a suite overrides it to fail. */
+  readonly restore?: (path: string, bytes: Buffer) => void;
+}
+
+/**
+ * A re-seal that did not verify, carrying BOTH facts.
+ *
+ * THE RULE THIS FOLLOWS. The primary failure is why the re-seal was refused; the second is what state the
+ * installation is in now, and the second is the urgent one. A message that gave only the first would send an
+ * operator to look at a root key file while their ring was unopenable.
+ */
+export class RootReSealFailed extends KekRingError {
+  readonly primary: string;
+  readonly rolledBack: boolean;
+  readonly rollbackProblem: string | null;
+
+  constructor(primary: string, rollbackProblem: string | null) {
+    super(rollbackProblem === null
+      ? `${primary}. THE RING WAS PUT BACK exactly as it was: the file is byte for byte what it was before `
+        + 'this ran, the previous root wrapping key opens it, and every generation it held is still in it. '
+        + 'Nothing was lost. Keep using the previous root key file and do not remove it.'
+      : `${primary} AND THE ROLLBACK DID NOT COMPLETE (${rollbackProblem}). THE KEK RING ON DISK MAY OPEN `
+        + 'UNDER NEITHER ROOT WRAPPING KEY. Do not start the stack and do not remove either root key file: '
+        + 'restore the sidecar state from the verified complete backup this rotation was gated on. That is '
+        + 'the more urgent of these two problems by a wide margin.');
+    this.name = 'RootReSealFailed';
+    this.primary = primary;
+    this.rolledBack = rollbackProblem === null;
+    this.rollbackProblem = rollbackProblem;
+  }
+}
+
+/**
+ * A digest over the WHOLE ring document — every generation, both pointers, and both timestamps.
+ *
+ * A narrower one would make "the ring came back unchanged" a claim about most of the ring. Since the re-seal
+ * no longer writes a timestamp, this can cover everything — and a claim that covers everything is the only
+ * kind worth making about the file that opens an installation.
+ */
+export function wholeRingDigest(ring: KekRing): string {
+  return createHash('sha256').update(JSON.stringify([
+    ring.document, ring.version, ring.active, ring.pending, ring.createdAt, ring.updatedAt,
+    [...ring.generations].slice().sort((a, b) => a.generation - b.generation)
+      .map((entry) => [entry.generation, entry.state, entry.keyHex, entry.createdAt, entry.origin]),
+  ]), 'utf8').digest('hex');
 }
 
 /** What a report may say. Numbers, closed words and a non-reversible root label. Never a key. */

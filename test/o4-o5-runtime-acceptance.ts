@@ -251,7 +251,11 @@ await test('the stack declares the root custody secret beside the static KEK, no
   const sidecar = asMap(asMap(doc.services ?? null, 'services').sidecar ?? null, 'sidecar');
   const wired = JSON.stringify(sidecar.secrets);
   assert(wired.includes('custodian_kek'), 'the sidecar is still given the static KEK until a migration');
-  assert(wired.includes('custodian_root_key'), 'and is given the root key so a migration is possible at all');
+  // THE ROOT KEY IS NOT A COMPOSE SECRET. Outside Swarm a `file:` secret is a bind mount and uid/gid/mode
+  // are ignored, so the only way to give the sidecar a file whose ownership it can rely on is to mount one.
+  assert(!wired.includes('custodian_root_key'), 'the root key does NOT come through the secret mechanism');
+  assert(JSON.stringify(sidecar.volumes ?? []).includes('/run/catalog-custody/custodian_root_key:ro'),
+    'it is a read-only bind whose host ownership and mode carry through');
   // THE APP IS GIVEN NEITHER.
   const app = asMap(asMap(doc.services ?? null, 'services').app ?? null, 'app');
   const appSecrets = JSON.stringify(app.secrets ?? []);

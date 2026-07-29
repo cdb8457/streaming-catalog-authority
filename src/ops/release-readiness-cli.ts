@@ -77,6 +77,7 @@ function gatherBundleSources(): BundleSources {
     setupPowerShell: repoFile('deploy/local-runtime-setup.ps1'),
     arcaneCompose: repoFile('docker-compose.arcane.yml'),
     arcaneSetupBash: repoFile('deploy/arcane-setup.sh'),
+    custodyHelper: repoFile('deploy/write-custody-secret.mjs'),
   };
 }
 
