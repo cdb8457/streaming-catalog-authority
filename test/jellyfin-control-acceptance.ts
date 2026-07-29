@@ -77,6 +77,10 @@ test('the orchestrator keeps the skip/fail discipline, and never publishes anyth
   assert(armIndex !== -1 && upIndex !== -1 && armIndex < upIndex, 'teardown is armed before the first `up`');
   assert(script.includes('trap cleanup EXIT'), 'and teardown always runs');
   assert(script.includes('down -v --remove-orphans'), 'and it removes volumes');
+  assert(script.includes('wait_for_fake "the fake Jellyfin listener did not accept an authenticated read within the bounded wait"'),
+    'the fake listener itself must be ready before any baseline measurement can be trusted');
+  assert(script.includes('jf_compose logs --tail 120 jellyfin-fake'),
+    'a fake-listener readiness failure carries bounded service diagnostics');
 
   // It is a GATE, not a release step.
   for (const forbidden of ['docker push', 'docker login', 'gh release', 'git tag', 'git push', 'npm publish',

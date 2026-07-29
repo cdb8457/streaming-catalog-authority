@@ -331,6 +331,25 @@ wait_for_health() {
     fail "${1}"
   fi
 }
+
+wait_for_fake() {
+  fake_ready=""
+  for _ in $(seq 1 60); do
+    if jf_compose exec -T jellyfin-fake node -e \
+      "const k=require('fs').readFileSync(process.env.JELLYFIN_FAKE_API_KEY_FILE,'utf8').trim();fetch('http://127.0.0.1:8096/System/Info',{headers:{'x-emby-token':k}}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" \
+      >/dev/null 2>&1; then
+      fake_ready=yes
+      break
+    fi
+    sleep 1
+  done
+  if [ -z "${fake_ready}" ]; then
+    echo "the fake Jellyfin listener never became ready; diagnostics follow:" >&2
+    jf_compose ps >&2 || true
+    jf_compose logs --tail 120 jellyfin-fake >&2 || true
+    fail "${1}"
+  fi
+}
 wait_for_health "/healthz never returned 200 within the bounded wait"
 info "/healthz is 200 — the migration one-shot completed and the app started behind it"
 
@@ -394,6 +413,7 @@ cp "${BROWSER_DIR}/fake-jellyfin/server.mjs" "${EXTRACTED}/fake-jellyfin/server.
 JELLYFIN_ALLOW_COLLECTION_WRITES=false JELLYFIN_ALLOW_LIVE_PUBLISH=false PUBLISH_EXTERNAL_IDENTITY=deny \
   jf_compose up -d >/dev/null
 wait_for_health "the stack did not become healthy with the fake Jellyfin attached"
+wait_for_fake "the fake Jellyfin listener did not accept an authenticated read within the bounded wait"
 info "the stack is up with a fake Jellyfin on the compose network and no host port"
 
 count_rows() {
