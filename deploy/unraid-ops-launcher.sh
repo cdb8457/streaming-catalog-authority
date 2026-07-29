@@ -27,36 +27,54 @@ cd "$REPO_DIR"
 # The marker is therefore read on every command, and read the way the rest of this product reads it: one of
 # two words, and anything else — a link, a directory, a word this build does not define — is a REFUSAL rather
 # than a guess, because guessing wrong starts an installation on custody it cannot serve.
-compose_files() {
-  if [ ! -e "$MARKER_FILE" ]; then
-    printf '%s\n' "-f|$COMPOSE_FILE"
+CUSTODY_MODE_HELPER="${CATALOG_AUTHORITY_CUSTODY_MODE_HELPER:-$REPO_DIR/deploy/read-custody-mode.mjs}"
+
+# The mode, resolved ONCE per invocation into a variable — never into a string of arguments.
+#
+# WHAT THE FIRST VERSION DID AND WHY ALL OF IT WAS WRONG. It emitted `-f|path|-f|path`, set `IFS='|'` and
+# word-split a command substitution back into arguments. Three defects in four lines: `IFS='|'` does not
+# include newline, so the newline `printf` added stayed attached to the LAST compose filename; an unquoted
+# command substitution is GLOB-EXPANDED, so a path containing `*` or `?` became whatever matched it; and a
+# path containing the delimiter, or a space where the old code split on spaces, was silently torn in half.
+#
+# There is no string here now. The branches below pass `-f` and each path as separate quoted arguments, which
+# is the only way a path with a space in it survives.
+resolve_custody_mode() {
+  if [ ! -e "$MARKER_FILE" ] && [ ! -L "$MARKER_FILE" ]; then
+    CUSTODY_MODE="root-only"
     return
   fi
-  if [ -L "$MARKER_FILE" ] || [ ! -f "$MARKER_FILE" ]; then
-    echo "refusing: the custody runtime mode marker is not a regular file" >&2
+  # A MARKER THAT EXISTS IS READ ON A DESCRIPTOR, WITHOUT FOLLOWING A LINK, by the same rule the product's
+  # own reader uses. `[ -L ]` followed by a redirect is a check on a name and then a read of that name, and
+  # the redirect follows a link the check refused. Refusing to guess is what this does instead.
+  if ! command -v node >/dev/null 2>&1; then
+    echo "refusing: this project declares a custody runtime mode and node is not available to read it" >&2
+    echo "the marker decides which key material the sidecar is wired to; this will not guess at it" >&2
     exit 3
   fi
-  mode="$(tr -d '[:space:]' < "$MARKER_FILE")"
-  case "$mode" in
-    root-only) printf '%s\n' "-f|$COMPOSE_FILE" ;;
-    bootstrap) printf '%s\n' "-f|$COMPOSE_FILE|-f|$BOOTSTRAP_FILE" ;;
-    *)
-      echo "refusing: the custody runtime mode marker does not name a mode this build defines" >&2
-      echo "run: npm run ops:custody-transition -- --project $REPO_DIR --plan" >&2
-      exit 3
-      ;;
-  esac
+  if [ ! -f "$CUSTODY_MODE_HELPER" ]; then
+    echo "refusing: the custody mode reader is not beside this launcher" >&2
+    exit 3
+  fi
+  CUSTODY_MODE="$(node "$CUSTODY_MODE_HELPER" "$MARKER_FILE")" || {
+    status=$?
+    if [ "$status" = "4" ]; then
+      CUSTODY_MODE="root-only"
+      return
+    fi
+    echo "refusing: the custody runtime mode marker is not one this build will read" >&2
+    echo "run: npm run ops:custody-transition -- --project $REPO_DIR --plan" >&2
+    exit 3
+  }
 }
 
 compose() {
-  # The delimiter is why this helper does not just echo spaces: a path with a space in it must survive, and
-  # `-f a -f b` must arrive as four arguments rather than one.
-  old_ifs="$IFS"
-  IFS='|'
-  # shellcheck disable=SC2046
-  set -- $(compose_files) "$@"
-  IFS="$old_ifs"
-  docker compose "$@"
+  resolve_custody_mode
+  if [ "$CUSTODY_MODE" = "bootstrap" ]; then
+    docker compose -f "$COMPOSE_FILE" -f "$BOOTSTRAP_FILE" "$@"
+  else
+    docker compose -f "$COMPOSE_FILE" "$@"
+  fi
 }
 
 # ---- NOTHING THIS LAUNCHER RUNS MAY FETCH OR BUILD -----------------------------------------------------

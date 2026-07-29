@@ -1,5 +1,5 @@
 import { createHash, timingSafeEqual } from 'node:crypto';
-import { constants as fsConstants, closeSync, fstatSync, openSync } from 'node:fs';
+import { constants as fsConstants, closeSync, fstatSync, lstatSync, openSync } from 'node:fs';
 import { join } from 'node:path';
 import { FileCustodian } from '../core/crypto/file-custodian.js';
 import {
@@ -15,6 +15,7 @@ import { stateDirectoryIdentity } from '../core/crypto/custodian-state-io.js';
 import { readKeyFileNoFollow } from './kek-ring-secret-io.js';
 import { verifyBackupSet } from './backup-set-verification.js';
 import { keyLabel, keystoreSetDigest } from './kek-rotation.js';
+import { assertUsableName, resolveInsideRoot } from './maintenance-safety.js';
 import {
   clearCustodyRuntimeMode,
   composeFileArgs,
@@ -190,14 +191,82 @@ export function classifyCustodyState(request: CustodyTransitionRequest): Custody
  * classifying an installation would be a command doing something its name does not say.
  */
 function rootKeyIsReady(path: string): { readonly ready: boolean; readonly rootKeyId: string | null } {
+  // ---- ABSENT IS A PREREQUISITE. EVERYTHING ELSE IS A REFUSAL. ----------------------------------------
+  //
+  // THE DEFECT THIS CLOSES. This caught EVERY `readRootWrappingKey` failure and called it "not ready", which
+  // collapsed two completely different situations into one word. A v1.1.4 installation has no root key file
+  // and that is expected — it is the prerequisite this command exists to name. A root key that IS there and
+  // is a symbolic link, a directory, owned by another user, readable by another account, the wrong length or
+  // unreadable is not a prerequisite: it is a custody failure sitting where the most sensitive file in the
+  // installation should be, and reporting it as "you have not created one yet" would send an operator to
+  // create a second one beside it.
+  //
+  // `lstat` is what tells them apart, and it does not follow a link: nothing there at all is the only
+  // `ready: false`.
+  if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return { ready: false, rootKeyId: null };
   let root: Buffer | null = null;
   try {
     root = readRootWrappingKey(path);
     return { ready: true, rootKeyId: rootKeyId(root) };
-  } catch {
-    return { ready: false, rootKeyId: null };
+  } catch (err) {
+    throw new MaintenanceRefused(
+      'there is something at this installation\'s root wrapping key path and it is not a root wrapping key '
+      + `this build will use (${err instanceof Error ? err.message : 'it could not be read'}). That is not a `
+      + 'missing prerequisite — it is a custody failure where the most sensitive file in the installation '
+      + 'should be. Refused: nothing was changed and no runtime was selected.');
   } finally {
     root?.fill(0);
+  }
+}
+
+/**
+ * The set a bootstrap selection rests on, resolved as ONE NAME INSIDE the backups directory.
+ *
+ * THE HOLE THIS CLOSES. The name was `join`ed straight onto the backups directory, so `../..`, an absolute
+ * path and a nested `a/b` all resolved to somewhere the caller chose rather than to a set inside the
+ * directory this installation backs up to. `assertUsableName` is the repository's own rule for what a
+ * maintenance name may be, and `resolveInsideRoot` is what proves the result is still inside the root.
+ */
+function resolveBackupSet(hostBackupsDir: string, backupSetName: string): string {
+  const backups = resolveMaintenanceRoot(hostBackupsDir, 'backups directory');
+  assertUsableName(backupSetName, 'backup set name');
+  return resolveInsideRoot(backups, backupSetName, 'backup set');
+}
+
+/**
+ * The backup a legacy selection rests on must contain THIS installation's root wrapping key.
+ *
+ * WHY A PRE-ROOT BACKUP CANNOT AUTHORIZE THIS. The cutover a bootstrap selection points at is a custody
+ * CHANGE, and the set it is gated on is the way back from it. A set taken before the root wrapping key
+ * existed — which is every set a v1.1.4 installation already has — restores an installation that cannot open
+ * the ring the cutover is about to write. It is a perfectly good backup of the old world and no evidence at
+ * all about the new one, and accepting it would mean the gate passed while the way back did not exist.
+ *
+ * So the set's own copy of the root key is read and compared, in constant time, against the live one.
+ */
+function assertBackupCarriesRootKey(backupSet: string, root: Buffer): string {
+  const staged = join(backupSet, 'secrets-backup', 'custodian_root_key');
+  let backedUp: Buffer;
+  try {
+    backedUp = readKeyFileNoFollow(staged, 'root wrapping key inside the backup');
+  } catch {
+    throw new MaintenanceRefused(
+      'the complete backup you named does not carry this installation\'s root wrapping key, so it was taken '
+      + 'before that key existed. It is a good backup of the custody this installation is LEAVING and no way '
+      + 'back from the custody it is about to enter. Take a fresh complete backup now that the root key is in '
+      + 'place, verify it, and run this again. Nothing was changed.');
+  }
+  try {
+    const same = backedUp.length === root.length && timingSafeEqual(backedUp, root);
+    if (!same) {
+      throw new MaintenanceRefused(
+        'the root wrapping key inside the complete backup you named is not the one this installation is '
+        + 'wired to, so restoring that set would not restore this installation\'s custody. Take a fresh '
+        + 'complete backup and verify it. Nothing was changed.');
+    }
+    return rootKeyId(backedUp);
+  } finally {
+    backedUp.fill(0);
   }
 }
 
@@ -223,6 +292,22 @@ function classifyLegacy(
   // AND THERE IS A WAY BACK BEFORE ANYTHING MOVES.
   const backupSetDigest = requireVerifiedBackup(request, 'this installation is on legacy static custody');
   const rootKey = rootKeyIsReady(request.hostRootKeyFile);
+  // ---- AND IF THERE IS A ROOT KEY, THE BACKUP MUST CARRY IT ------------------------------------------
+  //
+  // A set taken before the root key existed cannot authorize a selection that points at a custody change.
+  // Where the root key is still absent this is not reached: that installation cannot be CONFIRMED at all
+  // (see `runCustodyTransition`), and the plan's job there is to name the prerequisite.
+  let backupRootKeyId: string | null = null;
+  if (rootKey.ready) {
+    let root: Buffer | null = null;
+    try {
+      root = readRootWrappingKey(request.hostRootKeyFile);
+      backupRootKeyId = assertBackupCarriesRootKey(
+        resolveBackupSet(request.hostBackupsDir, request.backupSetName), root);
+    } finally {
+      root?.fill(0);
+    }
+  }
   return {
     verdict: 'legacy-static',
     selectedMode: 'bootstrap',
@@ -235,6 +320,8 @@ function classifyLegacy(
       // evidence, and an operator who created one in that window should re-read the plan.
       rootKeyReady: rootKey.ready,
       rootKeyId: rootKey.rootKeyId,
+      // BOUND, so a set swapped for a pre-root one between the plan and the confirmation changes the digest.
+      backupRootKeyId,
       staticKeyId: keyLabel(staticKek),
       keysProved: opens.total,
       keystoreSetDigest: keystoreSetDigest(stateDir),
@@ -260,14 +347,13 @@ function classifyLegacy(
  * perfectly healthy installation whose backups have simply rotated.
  */
 function requireVerifiedBackup(request: CustodyTransitionRequest, why: string): string {
-  const backups = resolveMaintenanceRoot(request.hostBackupsDir, 'backups directory');
   if (request.backupSetName.trim() === '') {
     throw new MaintenanceRefused(
       `${why} and no backup set was named. The cutover this selection points at is gated on a complete `
       + 'backup that verifies, so this refuses here rather than leaving an operator to discover it there. '
       + 'Nothing was changed.');
   }
-  const backup = verifyBackupSet(join(backups, request.backupSetName));
+  const backup = verifyBackupSet(resolveBackupSet(request.hostBackupsDir, request.backupSetName));
   if (!backup.ok || backup.setDigest === '') {
     throw new MaintenanceRefused(
       `${why} and the complete backup you named does not verify. The cutover this selection points at is `
@@ -595,6 +681,27 @@ export function runCustodyTransition(
       throw new MaintenanceRefused(
         'the ring, the keystore, the key files or the stack changed between reading this plan and running '
         + 'it. Nothing was changed. Re-run with --plan against what is actually there.');
+    }
+    // ---- A LEGACY SELECTION IS NOT WRITTEN WHILE THE ROOT KEY IS MISSING -----------------------------
+    //
+    // THE DEFECT THIS CLOSES, AND IT WOULD HAVE PRODUCED AN UNRUNNABLE STACK. The base compose file mounts
+    // the root wrapping key as a BIND, and the bootstrap overlay does not take that mount away — so the
+    // stack this selection points at cannot start without the file, and Docker, asked to bind a source that
+    // is not there, may CREATE A DIRECTORY at the path where the installation's most sensitive file belongs.
+    // Reporting success and writing the marker in that state would hand an operator a runtime selection that
+    // is worse than the one they had.
+    //
+    // The plan still classifies and reports the prerequisite, because that is the diagnosis an operator
+    // needs. The confirmation is where it becomes a requirement.
+    if (resolved.evidence.verdict === 'legacy-static' && !resolved.evidence.rootKeyReady) {
+      throw new MaintenanceRefused(
+        'this installation is on legacy static custody and has no root wrapping key, so the runtime this '
+        + 'would select cannot start: the stack binds that file, and Docker asked to bind a source that is '
+        + 'not there may create a directory where the key belongs. Nothing was changed. Do these two things '
+        + 'and run this again: create the key with deploy/write-custody-secret.mjs --generate, which '
+        + 'generates it inside its own process and never prints it or takes it as an argument; then take a '
+        + 'FRESH complete backup and verify it, because the set you have now was taken before that key '
+        + 'existed and is not a way back from the custody change this selection points at.');
     }
     if (!resolved.changes) {
       return report(resolved, false, [

@@ -28,6 +28,7 @@ import {
   runCustodyTransition,
   type CustodyTransitionRequest,
 } from '../src/ops/custody-transition.js';
+import { spawnSync } from 'node:child_process';
 import { CommandLedger, type MaintenanceCommand } from '../src/ops/maintenance-safety.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
 
@@ -113,13 +114,6 @@ async function installation(name: string, options: { keys?: number; withRootKey?
     writeFileSync(join(appdata, 'secrets', 'custodian_root_key'), `${root.toString('hex')}\n`,
       { encoding: 'utf8', mode: 0o600 });
     if (POSIX) chmodSync(join(appdata, 'secrets', 'custodian_root_key'), 0o600);
-  } else {
-    // A RELEASED v1.1.4 INSTALLATION HAS NO SUCH FILE. The backup component model requires the name, so the
-    // set below carries the placeholder every other required secret carries; what matters here is that the
-    // classifier is not handed a usable root key.
-    rmSync(join(appdata, 'secrets', 'custodian_root_key'), { force: true });
-    writeFileSync(join(appdata, 'secrets', 'custodian_root_key'), 'not-a-key-this-installation-ever-had\n',
-      { encoding: 'utf8', mode: 0o600 });
   }
   const tools = fakeToolchain({ dumpText: fakeDumpText(schemaVersion()) });
   const outcome = runVerifiedCompleteBackup({
@@ -127,6 +121,13 @@ async function installation(name: string, options: { keys?: number; withRootKey?
     sidecarState: 'sidecar-state', secrets: 'secrets', promotionRecords: 'promotion-records',
   }, { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
   assert(outcome.ok, `the backup verifies: ${JSON.stringify(outcome.failures)}`);
+  if (options.withRootKey !== true) {
+    // A RELEASED v1.1.4 INSTALLATION HAS NO ROOT KEY FILE AT ALL. The backup component model requires the
+    // NAME, so the set was taken with the placeholder every other required secret carries; removing it now
+    // leaves exactly what such an installation is — a genuine absence at that path, and a backup that
+    // predates any root key.
+    rmSync(join(appdata, 'secrets', 'custodian_root_key'), { force: true });
+  }
 
   return {
     projectRoot,
@@ -181,14 +182,96 @@ await test('a released no-root legacy installation is classified from its static
   assertEq(planned.currentModeDeclared, false, 'which is a default rather than a declaration');
   assertEq(planned.changes, true, 'so this installation really does need the selection written');
 
-  const report = runCustodyTransition({ ...world.request, confirmDigest: planned.planDigest }, tools);
-  assertEq(report.changed, true, 'the transition changed the selection');
+  // ---- BUT CONFIRMING IT WRITES NOTHING WHILE THE ROOT KEY IS MISSING -------------------------------
+  //
+  // The base compose file BINDS the root wrapping key, and the bootstrap overlay does not take that mount
+  // away — so the runtime this would select cannot start, and Docker asked to bind a source that is not
+  // there may create a DIRECTORY where the installation's most sensitive file belongs. A marker written in
+  // that state hands an operator something worse than what they had.
+  refuses(() => runCustodyTransition({ ...world.request, confirmDigest: planned.planDigest }, tools),
+    'cannot start', 'a confirmed legacy transition with no root wrapping key');
+  assert(!existsSync(join(world.projectRoot, CUSTODY_MODE_FILENAME)), 'and no marker was written');
+  assertEq(readCustodyRuntimeMode(world.projectRoot).declared, false, 'the selection is untouched');
+});
+
+await test('a legacy transition succeeds only after a valid root key AND a fresh backup that carries it', async () => {
+  const world = await installation('legacy-then-root');
+  const tools = composeRunner();
+
+  // 1. THE ROOT KEY APPEARS, and the backup this installation already has was taken before it existed.
+  //    That set restores an installation that cannot open the ring the cutover is about to write, so it is
+  //    a good backup of the custody being LEFT and no way back from the custody being entered.
+  writeFileSync(world.request.hostRootKeyFile, `${world.root.toString('hex')}\n`,
+    { encoding: 'utf8', mode: 0o600 });
+  if (POSIX) chmodSync(world.request.hostRootKeyFile, 0o600);
+  refuses(() => classifyCustodyState(world.request), 'taken before that key existed',
+    'a pre-root backup cannot authorize a custody-changing selection');
+  assert(!existsSync(join(world.projectRoot, CUSTODY_MODE_FILENAME)), 'and no marker was written');
+
+  // 2. A FRESH COMPLETE BACKUP, taken now that the root key is in place, is what authorizes it.
+  const fresh = fakeToolchain({ dumpText: fakeDumpText(schemaVersion()) });
+  const outcome = runVerifiedCompleteBackup({
+    projectRoot: world.appdata, destination: 'backups', setName: 'set-2', custodian: 'sidecar',
+    sidecarState: 'sidecar-state', secrets: 'secrets', promotionRecords: 'promotion-records',
+  }, { runner: fresh.runner, fileRunner: fresh.fileRunner, ledger: fresh.ledger });
+  assert(outcome.ok, 'the fresh backup verifies');
+  const request = { ...world.request, backupSetName: 'set-2' };
+  const evidence = classifyCustodyState(request);
+  assertEq(evidence.rootKeyReady, true, 'the root key is in place');
+  assertEq(evidence.verdict, 'legacy-static', 'and the installation is still legacy static custody');
+
+  const planned = planCustodyTransition(request, tools);
+  const report = runCustodyTransition({ ...request, confirmDigest: planned.planDigest }, tools);
+  assertEq(report.changed, true, 'only now does the transition write a selection');
   assertEq(report.toMode, 'bootstrap', 'to the temporary bootstrap wiring');
   assertEq(readCustodyRuntimeMode(world.projectRoot).mode, 'bootstrap', 'and the marker says so');
-  // AND THE PREREQUISITE IS NAMED, with the command that creates a root key without ever printing one.
-  assert(report.notes.some((note) => note.includes('write-custody-secret.mjs --generate')),
-    'the report names how a root wrapping key is created');
-  assert(report.notes.some((note) => note.includes('predates the ring')), 'and why this one has none');
+});
+
+await test('anything AT the root key path that is not a root key is a refusal, not a missing prerequisite', async () => {
+  // THE DEFECT THIS CLOSES. Every `readRootWrappingKey` failure was reported as "not ready", which told an
+  // operator to CREATE a root key when what they had was a custody failure sitting where one belongs.
+  const world = await installation('root-key-invalid');
+  writeFileSync(world.request.hostRootKeyFile, 'this is not a key\n', { encoding: 'utf8', mode: 0o600 });
+  refuses(() => classifyCustodyState(world.request), 'not a missing prerequisite',
+    'an invalid file at the root key path');
+
+  const asDirectory = await installation('root-key-directory');
+  rmSync(asDirectory.request.hostRootKeyFile, { force: true });
+  mkdirSync(asDirectory.request.hostRootKeyFile, { recursive: true });
+  refuses(() => classifyCustodyState(asDirectory.request), 'not a missing prerequisite',
+    'a directory at the root key path');
+
+  if (POSIX) {
+    const linked = await installation('root-key-symlink');
+    const elsewhere = join(WORK, 'root-key-elsewhere');
+    writeFileSync(elsewhere, `${linked.root.toString('hex')}\n`, { encoding: 'utf8', mode: 0o600 });
+    rmSync(linked.request.hostRootKeyFile, { force: true });
+    symlinkSync(elsewhere, linked.request.hostRootKeyFile);
+    refuses(() => classifyCustodyState(linked.request), 'not a missing prerequisite',
+      'a symbolic link at the root key path');
+  }
+
+  // AND A GENUINE ABSENCE IS STILL THE PREREQUISITE IT IS, which is the whole distinction.
+  const absent = await installation('root-key-absent');
+  assertEq(classifyCustodyState(absent.request).rootKeyReady, false, 'nothing there at all is not a refusal');
+});
+
+await test('a backup set name is one contained name, not a path', async () => {
+  const world = await installation('set-name');
+  for (const [what, name] of [
+    ['a traversal', '../set-1'],
+    ['a deeper traversal', '../../etc'],
+    ['an absolute path', POSIX ? '/etc' : 'C:/Windows'],
+    ['a nested path', 'nested/set-1'],
+  ] as const) {
+    // The repository's own rule for a maintenance name is what refuses these, and it says so in its own
+    // words: one name, no folder part.
+    refuses(() => classifyCustodyState({ ...world.request, backupSetName: name }), 'no folder part',
+      `${what} is not a backup set name`);
+  }
+  // A BLANK NAME IS ITS OWN REFUSAL, in the words the gate uses: there is no set to verify at all.
+  refuses(() => classifyCustodyState({ ...world.request, backupSetName: '   ' }), 'no backup set was named',
+    'a blank name');
 });
 
 await test('the launcher starts a legacy installation on the overlay, and a migrated one on the steady state', async () => {
@@ -200,21 +283,125 @@ await test('the launcher starts a legacy installation on the overlay, and a migr
     `-f ${RUNTIME_COMPOSE_FILE} -f ${BOOTSTRAP_COMPOSE_FILE}`,
     'and with the marker declared it adds the overlay');
 
-  // THE SHIPPED LAUNCHER READS IT TOO. An upgrade command that ignored the selection would start the wrong
-  // stack — on an unmigrated installation, one with no static KEK in it at all.
-  const launcher = readRepo('deploy/unraid-ops-launcher.sh');
-  assert(launcher.includes('compose_files()'), 'the launcher resolves its compose files');
-  assert(launcher.includes('MARKER_FILE'), 'from the custody mode marker');
-  assert(launcher.includes('BOOTSTRAP_FILE'), 'and can add the overlay');
-  assert(/case "\$mode" in/.test(launcher), 'reading it as a closed set of words');
-  // AND NOTHING IT RUNS MAY FETCH OR BUILD.
-  // THE CODE, NOT THE COMMENT THAT EXPLAINS IT. The file NAMES the pull policy in prose, which is where a
-  // reader learns why these flags are here.
-  const launcherCode = launcher.split('\n').filter((entry) => !/^\s*#/.test(entry));
-  for (const line of launcherCode.filter((entry) => /^\s*compose (run|up)/.test(entry))) {
-    assert(line.includes('$NO_FETCH'), `every compose run/up refuses to fetch: ${line.trim()}`);
+});
+
+/**
+ * RUN the shipped launcher with a FAKE `docker` on PATH and return the argv it was handed.
+ *
+ * EXECUTED, NOT READ. A source-string assertion cannot see a `$(...)` that word-splits, a path that gets
+ * glob-expanded, or a newline left on the end of a filename — which is exactly the class of defect the first
+ * version of this launcher had. The only way to know what `docker compose` receives is to be `docker` and
+ * write down what arrived.
+ */
+function runLauncher(projectDir: string, verb: string): {
+  readonly status: number; readonly argv: readonly string[]; readonly stderr: string;
+} {
+  const binDir = join(WORK, `bin-${randomUUID().slice(0, 8)}`);
+  mkdirSync(binDir, { recursive: true });
+  const record = join(binDir, 'argv.txt');
+  // One argument per line, so a path containing a space is still one line and a stray newline inside an
+  // argument would be visible as an extra one.
+  writeFileSync(join(binDir, 'docker'),
+    `#!/bin/sh
+for a in "$@"; do printf '%s\n' "$a" >> '${record.split('\\').join('/')}'; done
+exit 0
+`,
+    { encoding: 'utf8', mode: 0o755 });
+  const outcome = spawnSync('sh', [join(repoRoot, 'deploy', 'unraid-ops-launcher.sh'), verb], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PATH: `${binDir}:${process.env.PATH ?? ''}`,
+      CATALOG_AUTHORITY_REPO_DIR: projectDir,
+      CATALOG_AUTHORITY_COMPOSE_FILE: join(projectDir, RUNTIME_COMPOSE_FILE),
+      CATALOG_AUTHORITY_BOOTSTRAP_COMPOSE_FILE: join(projectDir, BOOTSTRAP_COMPOSE_FILE),
+      CATALOG_AUTHORITY_CUSTODY_MODE_FILE: join(projectDir, CUSTODY_MODE_FILENAME),
+      CATALOG_AUTHORITY_CUSTODY_MODE_HELPER: join(repoRoot, 'deploy', 'read-custody-mode.mjs'),
+    },
+  });
+  const argv = existsSync(record)
+    ? readFileSync(record, 'utf8').split('\n').filter((line) => line !== '')
+    : [];
+  return { status: outcome.status ?? -1, argv, stderr: outcome.stderr ?? '' };
+}
+
+await test('the shipped launcher, EXECUTED against a fake docker, hands over exactly the right arguments', () => {
+  // RUN IT WHEREVER THERE IS A POSIX SHELL, which on a Windows development host means the one Git ships. The
+  // launcher is a `sh` script and the fake `docker` is one too; if no shell can run them this says so and
+  // skips rather than asserting something it did not observe.
+  if (spawnSync('sh', ['-c', 'exit 0']).status !== 0) {
+    console.log('        (no POSIX shell on this host: the executed launcher test is skipped, not assumed)');
+    return;
   }
-  assert(readRepo('deploy/unraid-ops-launcher.sh').includes('--pull never'), 'and that is what it means');
+  // A PROJECT DIRECTORY WITH A SPACE IN IT, deliberately. The first version word-split a string of
+  // arguments, so a path like this arrived as two arguments and Docker was handed a file that does not
+  // exist. Nothing here can tear it in half, because nothing here builds a string.
+  const project = join(WORK, 'launcher project with spaces');
+  mkdirSync(project, { recursive: true });
+  for (const file of [RUNTIME_COMPOSE_FILE, BOOTSTRAP_COMPOSE_FILE]) writeFileSync(join(project, file), 'x');
+  const runtimeFile = join(project, RUNTIME_COMPOSE_FILE);
+  const bootstrapFile = join(project, BOOTSTRAP_COMPOSE_FILE);
+
+  // 1. NO MARKER — the steady state, and the file arrives whole.
+  const absent = runLauncher(project, 'status');
+  assertEq(absent.status, 0, `a project with no marker runs: ${absent.stderr}`);
+  assertEq(absent.argv.join('|'), `compose|-f|${runtimeFile}|ps|-a`, 'one compose file, unsplit');
+
+  // 2. root-only DECLARED — the same, and no overlay.
+  writeCustodyRuntimeMode(project, 'root-only');
+  const rootOnly = runLauncher(project, 'status');
+  assertEq(rootOnly.status, 0, `a root-only marker runs: ${rootOnly.stderr}`);
+  assertEq(rootOnly.argv.join('|'), `compose|-f|${runtimeFile}|ps|-a`, 'still one compose file');
+
+  // 3. bootstrap DECLARED — the overlay is added, as four separate arguments.
+  writeCustodyRuntimeMode(project, 'bootstrap');
+  const bootstrap = runLauncher(project, 'status');
+  assertEq(bootstrap.status, 0, `a bootstrap marker runs: ${bootstrap.stderr}`);
+  assertEq(bootstrap.argv.join('|'), `compose|-f|${runtimeFile}|-f|${bootstrapFile}|ps|-a`,
+    'both compose files, each one argument');
+
+  // 4. EVERY run AND up REFUSES TO FETCH, and every up refuses to build — proved from what docker received.
+  for (const verb of ['start-postgres', 'start-ui', 'restart-ui']) {
+    const started = runLauncher(project, verb);
+    assertEq(started.status, 0, `${verb} runs`);
+    assert(started.argv.includes('up'), `${verb} brings something up`);
+    assert(started.argv.includes('--pull') && started.argv.includes('never'), `${verb} passes --pull never`);
+    assert(started.argv.includes('--no-build'), `${verb} passes --no-build`);
+  }
+  const opsRun = runLauncher(project, 'doctor');
+  assert(opsRun.argv.includes('run'), 'doctor runs a one-shot container');
+  assert(opsRun.argv.includes('--pull') && opsRun.argv.includes('never'), 'and it too refuses to fetch');
+
+  // 5. A MARKER THIS BUILD WILL NOT READ IS A REFUSAL, AND DOCKER IS NEVER CALLED.
+  for (const [what, write] of [
+    ['a word this build does not define', () => writeFileSync(join(project, CUSTODY_MODE_FILENAME), 'half\n')],
+    ['whitespace hiding an invalid word', () => writeFileSync(join(project, CUSTODY_MODE_FILENAME), 'boot strap\n')],
+    ['a directory', () => {
+      rmSync(join(project, CUSTODY_MODE_FILENAME), { force: true });
+      mkdirSync(join(project, CUSTODY_MODE_FILENAME), { recursive: true });
+    }],
+  ] as const) {
+    write();
+    const refused = runLauncher(project, 'status');
+    assertEq(refused.status, 3, `${what} is refused`);
+    assertEq(refused.argv.length, 0, `${what}: docker was never called`);
+  }
+  rmSync(join(project, CUSTODY_MODE_FILENAME), { recursive: true, force: true });
+
+  // A SYMBOLIC LINK AT THE MARKER IS THE SHARPEST CASE OF ALL — the old reader checked for one and then read
+  // through a redirect that follows one — and CREATING a link needs a privilege Windows does not hand a test
+  // process. So it runs where links can be made, and is skipped rather than assumed where they cannot.
+  if (POSIX) {
+    const elsewhere = join(WORK, 'marker-elsewhere');
+    writeFileSync(elsewhere, 'bootstrap\n');
+    symlinkSync(elsewhere, join(project, CUSTODY_MODE_FILENAME));
+    const linked = runLauncher(project, 'status');
+    assertEq(linked.status, 3, 'a symlinked marker is refused');
+    assertEq(linked.argv.length, 0, 'and docker was never called');
+    rmSync(join(project, CUSTODY_MODE_FILENAME), { force: true });
+  } else {
+    console.log('        (the symlinked-marker case needs a platform that lets a test create one)');
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------
