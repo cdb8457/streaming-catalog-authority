@@ -1,4 +1,6 @@
 import { closeSync, constants as fsConstants, fstatSync, openSync, readSync } from 'node:fs';
+import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // Catalog Authority — read the custody runtime mode marker, on a descriptor, without following a link.
 //
@@ -52,13 +54,22 @@ export function readCustodyModeMarker(path) {
     const stats = fstatSync(fd);
     if (!stats.isFile()) return { state: 'refused' };
     if (stats.size > MAX_BYTES) return { state: 'refused' };
-    const buffer = Buffer.allocUnsafe(stats.size);
+    // ---- READ TO EOF UNDER A BOUND, NOT "EXACTLY WHAT FSTAT SAID" --------------------------------------
+    //
+    // THE HOLE THIS CLOSES. Allocating `stats.size` and reading that many bytes silently accepts a PREFIX of
+    // a file that grew between the `fstat` and the read — and a prefix is the one thing that can turn an
+    // invalid marker into a valid one: `bootstrapX` truncated to nine bytes is `bootstrap`, which is a mode
+    // this build defines. So the read goes to EOF with one byte of headroom above the bound: anything longer
+    // than the bound is a refusal, and anything that does not match what `fstat` promised is a file that
+    // moved underneath the read, which is a refusal too.
+    const buffer = Buffer.allocUnsafe(MAX_BYTES + 1);
     let total = 0;
     while (total < buffer.byteLength) {
       const read = readSync(fd, buffer, total, buffer.byteLength - total, total);
       if (read <= 0) break;
       total += read;
     }
+    if (total > MAX_BYTES) return { state: 'refused' };
     if (total !== stats.size) return { state: 'refused' };
     // TRIMMED, NOT STRIPPED. Surrounding whitespace is what a text editor adds; whitespace in the MIDDLE is
     // part of a word this build does not define, and deleting it would invent a valid answer.
@@ -71,7 +82,23 @@ export function readCustodyModeMarker(path) {
   }
 }
 
-if (process.argv[1] !== undefined && import.meta.url.endsWith(process.argv[1].split(/[\\/]/).pop() ?? '')) {
+// ---- "AM I THE PROGRAM, OR AM I AN IMPORT" IS A PATH QUESTION, NOT A NAME QUESTION ---------------------
+//
+// The previous test compared the END of this module's URL against the BASENAME of argv[1], so ANY entry
+// point that happened to be called `read-custody-mode.mjs` — a copy somewhere else on the disk, a test
+// fixture, a script in another checkout — made this module run its CLI while merely being imported, exiting
+// the host process with 3 or 4 mid-import. Compare the two paths themselves: this file's own path, resolved
+// from its URL, against the resolved entry point. Nothing else is this program.
+const invokedDirectly = (() => {
+  if (typeof process.argv[1] !== 'string' || process.argv[1] === '') return false;
+  try {
+    return fileURLToPath(import.meta.url) === resolve(process.argv[1]);
+  } catch {
+    return false;
+  }
+})();
+
+if (invokedDirectly) {
   const path = process.argv[2];
   if (typeof path !== 'string' || path === '') {
     process.stderr.write('usage: read-custody-mode.mjs <marker-path>\n');

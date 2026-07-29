@@ -4,7 +4,7 @@ import {
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
 import {
   adoptStaticKekAsRing,
@@ -603,6 +603,76 @@ await test('this tranche reaches no network, media server or acquisition system'
       assert(!source.includes(forbidden), `${file} must not name ${forbidden}`);
     }
   }
+});
+
+await test('a root key path that cannot be EXAMINED is refused, not reported as absent', async () => {
+  // `lstat(path, { throwIfNoEntry: false })` answers `undefined` for ENOENT and THROWS for everything else.
+  // Absence is the prerequisite this command exists to name; a path that cannot be examined at all is not
+  // absence, and letting the raw filesystem error escape would put an unclassified failure in the middle of
+  // the classifier — an operator would see a stack, not a decision.
+  const world = await installation('root-key-unexaminable');
+  // A path the operating system will not accept AT ALL stands in for the field cases on every host:
+  // it throws from `lstat` with something that is not ENOENT, which is precisely the branch under test.
+  const unexaminable = {
+    ...world.request,
+    hostRootKeyFile: `${world.request.hostRootKeyFile}${String.fromCharCode(0)}x`,
+  };
+  refuses(() => classifyCustodyState(unexaminable), 'could not be examined at all',
+    'a root key path the operating system will not answer for');
+
+  if (POSIX && typeof process.getuid === 'function' && process.getuid() !== 0) {
+    // AND THE CASE THAT ACTUALLY HAPPENS IN THE FIELD: a secrets directory this process cannot search.
+    const blocked = await installation('root-key-unsearchable');
+    const secrets = join(blocked.appdata, 'secrets');
+    chmodSync(secrets, 0o000);
+    try {
+      refuses(() => classifyCustodyState(blocked.request), 'could not be examined at all',
+        'a secrets directory this process cannot search');
+    } finally {
+      chmodSync(secrets, 0o700);
+    }
+  } else {
+    console.log('        (skipped: an unsearchable directory needs POSIX permissions this host does not apply)');
+  }
+});
+
+await test('the marker reader reads to END OF FILE under its own bound, and a prefix is not a word', () => {
+  // THE DEFECT THIS CLOSES. The reader allocated exactly what `fstat` reported and read exactly that many
+  // bytes, so a marker that GREW between the two was accepted as its own first N bytes — and the prefix of
+  // an invalid word can be a valid one: `bootstrapX` cut to nine bytes is `bootstrap`. The read now goes to
+  // EOF with a byte of headroom above the bound, and anything that does not match what `fstat` promised is a
+  // file that moved underneath the read.
+  const helper = join(repoRoot, 'deploy', 'read-custody-mode.mjs');
+  const read = (contents: string | null): { status: number; stdout: string } => {
+    const path = join(WORK, `marker-${randomUUID()}`);
+    if (contents !== null) writeFileSync(path, contents, 'utf8');
+    const run = spawnSync(process.execPath, [helper, path], { encoding: 'utf8' });
+    return { status: run.status ?? -1, stdout: run.stdout.trim() };
+  };
+
+  assertEq(read('bootstrap\n').status, 0, 'a mode this build defines is answered');
+  assertEq(read('bootstrap\n').stdout, 'bootstrap', 'and it is the word itself');
+  assertEq(read('bootstrapX\n').status, 3, 'a longer word is NOT its own valid prefix');
+  assertEq(read(`bootstrap${' '.repeat(64)}`).status, 3, 'and neither is one padded past the bound');
+  assertEq(read(null).status, 4, 'nothing there at all is the steady state, not a refusal');
+});
+
+await test('the marker reader runs its command line only when it IS the program', () => {
+  // THE DEFECT THIS CLOSES. Direct-run detection compared this module's URL against the BASENAME of the
+  // entry point, so ANY program named `read-custody-mode.mjs` made the module run its CLI while merely being
+  // imported — exiting the host process mid-import with 3 or 4. It is a path question now.
+  const imposter = join(WORK, `imposter-${randomUUID()}`);
+  mkdirSync(imposter, { recursive: true });
+  const marker = join(WORK, `marker-${randomUUID()}`);
+  writeFileSync(marker, 'bootstrap\n', 'utf8');
+  const real = pathToFileURL(join(repoRoot, 'deploy', 'read-custody-mode.mjs')).href;
+  writeFileSync(join(imposter, 'read-custody-mode.mjs'),
+    `import { readCustodyModeMarker } from ${JSON.stringify(real)};\n`
+    + 'process.stdout.write("imposter:" + readCustodyModeMarker(process.argv[2]).state);\n', 'utf8');
+
+  const run = spawnSync(process.execPath, [join(imposter, 'read-custody-mode.mjs'), marker], { encoding: 'utf8' });
+  assertEq(run.status, 0, 'importing the reader does not exit the importing program');
+  assertEq(run.stdout.trim(), 'imposter:mode', 'and the importer, not the import, produced the output');
 });
 
 rmSync(WORK, { recursive: true, force: true });

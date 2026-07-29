@@ -203,7 +203,22 @@ function rootKeyIsReady(path: string): { readonly ready: boolean; readonly rootK
   //
   // `lstat` is what tells them apart, and it does not follow a link: nothing there at all is the only
   // `ready: false`.
-  if (lstatSync(path, { throwIfNoEntry: false }) === undefined) return { ready: false, rootKeyId: null };
+  // AND THE `lstat` ITSELF CAN FAIL FOR REASONS THAT ARE NOT ABSENCE. `throwIfNoEntry: false` turns ENOENT
+  // into `undefined`, and leaves every other error THROWING: a directory component that is not searchable
+  // (EACCES), a path component that is not a directory (ENOTDIR), a name too long, a loop above this file.
+  // Letting one of those escape would hand a caller a raw filesystem error instead of a refusal, and — worse
+  // — it would be an unclassified failure in the one function whose whole job is to classify.
+  let present;
+  try {
+    present = lstatSync(path, { throwIfNoEntry: false });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return { ready: false, rootKeyId: null };
+    throw new MaintenanceRefused(
+      'this installation\'s root wrapping key path could not be examined at all, so whether it holds a key '
+      + 'cannot be established. That is not a missing prerequisite: it is a path this command cannot reason '
+      + 'about. Refused, and nothing was changed.');
+  }
+  if (present === undefined) return { ready: false, rootKeyId: null };
   let root: Buffer | null = null;
   try {
     root = readRootWrappingKey(path);
