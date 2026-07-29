@@ -27,7 +27,7 @@
 // editing a collection in Jellyfin's own web UI would do:
 //
 //   POST /_control/lose-next-create      the next create succeeds server-side and drops its response
-//   POST /_control/fail-next?read=...    the next `items`, `boxsets` or `members` read answers 500
+//   POST /_control/fail-next?read=...    the next N `items`, `boxsets` or `members` reads answer 500
 //   POST /_control/membership?id=&add=&remove=   MUTATE a collection's membership directly (drift injection)
 //   GET  /_control/state                 what this server holds
 //
@@ -86,8 +86,8 @@ const foreignCollections = [
 const collections = new Map();
 let counter = 0;
 let loseNextCreateResponse = false;
-/** One-shot read failures, armed by the fake-admin surface. `items` | `boxsets` | `members`. */
-const failNextRead = new Set();
+/** Bounded read failures, armed by the fake-admin surface. `items` | `boxsets` | `members`. */
+const failNextRead = new Map();
 
 const send = (res, status, value) => {
   const body = JSON.stringify(value);
@@ -97,10 +97,12 @@ const send = (res, status, value) => {
   res.end(body);
 };
 
-/** Consume a one-shot armed failure for this read, if there is one. */
+/** Consume one bounded armed failure for this read, if there is one. */
 const shouldFail = (kind) => {
-  if (!failNextRead.has(kind)) return false;
-  failNextRead.delete(kind);
+  const remaining = failNextRead.get(kind) ?? 0;
+  if (remaining < 1) return false;
+  if (remaining === 1) failNextRead.delete(kind);
+  else failNextRead.set(kind, remaining - 1);
   return true;
 };
 
@@ -122,8 +124,13 @@ const server = createServer((req, res) => {
     if (url.pathname === '/_control/fail-next' && req.method === 'POST') {
       const read = url.searchParams.get('read') ?? '';
       if (!['items', 'boxsets', 'members'].includes(read)) { send(res, 400, { error: 'unknown read' }); return; }
-      failNextRead.add(read);
-      send(res, 200, { ok: true, armed: read });
+      const times = Number(url.searchParams.get('times') ?? '1');
+      if (!Number.isSafeInteger(times) || times < 1 || times > 10) {
+        send(res, 400, { error: 'times must be an integer from 1 through 10' });
+        return;
+      }
+      failNextRead.set(read, times);
+      send(res, 200, { ok: true, armed: read, times });
       return;
     }
     // MEMBERSHIP DRIFT, injected behind the product's back — the same thing an operator does when they open

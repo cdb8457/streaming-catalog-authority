@@ -491,8 +491,8 @@ done
 info "the match found 2, missed 1, could not match 1, wrote nothing and disclosed nothing"
 
 step "a match that cannot read the whole library reports UNKNOWN rather than a library full of absences"
-jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/fail-next?read=items',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
-  || fail "could not arm a one-shot read failure on the fake server"
+jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/fail-next?read=items&times=3',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
+  || fail "could not arm a bounded read failure through the client's retry budget"
 degraded_json="$( jf_compose exec -T app npm run --silent ops:collections -- match --json 2>&1 )" \
   || { printf '%s\n' "${degraded_json}" >&2; fail "the match did not survive a failed library read"; }
 degraded_field() {
@@ -683,8 +683,8 @@ printf '%s' "${drift_json}" | grep -q '"wrote":"nothing"' || fail "the audit did
 info "the audit reported 1 missing and 1 extra, and changed nothing on either side"
 
 step "a member listing that FAILS is UNKNOWN and never repairable, and a retry judges it again"
-jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/fail-next?read=members',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
-  || fail "could not arm a one-shot member-listing failure"
+jf_compose exec -T jellyfin-fake node -e "fetch('http://127.0.0.1:8096/_control/fail-next?read=members&times=3',{method:'POST'}).then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))" >/dev/null \
+  || fail "could not arm a bounded member-listing failure through the client's retry budget"
 unknown_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
 printf '%s' "${unknown_json}" | grep -q '"verdict":"unknown"' \
   || { echo "${unknown_json}" >&2; fail "a failed member listing was not reported as unknown"; }
@@ -692,7 +692,7 @@ printf '%s' "${unknown_json}" | grep -q '"repair":"none"' \
   || { echo "${unknown_json}" >&2; fail "an unknown finding was offered as repairable"; }
 retry_json="$(curl -sS -X POST -H "x-operator-ui-secret: ${TOKEN}" -H 'content-type: application/json' -d '{}' "${BASE_URL}/api/collections/audit")"
 printf '%s' "${retry_json}" | grep -q '"verdict":"membership-drift"' \
-  || { echo "${retry_json}" >&2; fail "the retry after a one-shot failure did not judge the collection again"; }
+  || { echo "${retry_json}" >&2; fail "the retry after a bounded failure did not judge the collection again"; }
 info "a failed listing was unknown and unrepairable; the immediate retry judged it correctly"
 
 step "a STALE repair confirmation is refused, and so is a wrong digest"

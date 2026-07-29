@@ -668,12 +668,16 @@ for (const [label, scriptName, resolve] of [
       // Re-running is the dangerous case: a regenerated token locks an operator out of a running stack.
       // Sentinels prove preservation rather than mere byte-equality of two identical generations.
       for (const name of RUNTIME_SECRETS) {
-        writeFileSync(join(ws, 'secrets', name), `kept-${name}\n`);
+        const secretPath = join(ws, 'secrets', name);
         // THE CUSTODY SECRET IS VERIFIED ON A RE-RUN, NOT RE-MODED. A sentinel written at the default mode
         // is one the helper would refuse — correctly, because a root key that has been readable beyond its
         // owner is not something a setup script may quietly repair. So the sentinel is written the way the
         // helper writes one, and what is under test is that the VALUE survives.
-        if (name === 'custodian_root_key') chmodSync(join(ws, 'secrets', name), 0o400);
+        // On POSIX the first run correctly leaves this file 0400, so the disposable fixture must make its
+        // owner-writable BEFORE replacing its value, then restore the exact custody mode before the re-run.
+        if (name === 'custodian_root_key') chmodSync(secretPath, 0o600);
+        writeFileSync(secretPath, `kept-${name}\n`);
+        if (name === 'custodian_root_key') chmodSync(secretPath, 0o400);
       }
       const second = runSetup(shell, ws, scriptName);
       for (const name of RUNTIME_SECRETS) {

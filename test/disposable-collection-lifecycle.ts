@@ -223,9 +223,22 @@ async function main(): Promise<void> {
       const recovered = await fetch(`http://127.0.0.1:${fake.port}/Items?parentId=${encodeURIComponent(created.Id)}`, { headers: key });
       assertEq(recovered.status, 200, 'and the one after it succeeds — the failure was one-shot');
 
+      // The real client retries an idempotent GET twice. The acceptance can therefore arm exactly three
+      // failures to prove the product reports UNKNOWN only after the bounded retry budget is exhausted.
+      assertEq((await fetch(`http://127.0.0.1:${fake.port}/_control/fail-next?read=items&times=3`, { method: 'POST' })).status,
+        200, 'a bounded run of read failures can be armed');
+      for (let attempt = 1; attempt <= 3; attempt++) {
+        const failed = await fetch(`http://127.0.0.1:${fake.port}/Items?IncludeItemTypes=Movie,Series`, { headers: key });
+        assertEq(failed.status, 500, `candidate listing failure ${attempt} of 3 is injected`);
+      }
+      const itemsRecovered = await fetch(`http://127.0.0.1:${fake.port}/Items?IncludeItemTypes=Movie,Series`, { headers: key });
+      assertEq(itemsRecovered.status, 200, 'and the candidate listing recovers after the bounded failures');
+
       // An unknown read kind is refused rather than silently armed.
       assertEq((await fetch(`http://127.0.0.1:${fake.port}/_control/fail-next?read=everything`, { method: 'POST' })).status,
         400, 'an unknown read kind is refused');
+      assertEq((await fetch(`http://127.0.0.1:${fake.port}/_control/fail-next?read=items&times=11`, { method: 'POST' })).status,
+        400, 'an unbounded failure count is refused');
       // Drift on a collection that is not there is a 404, not a silent success.
       assertEq((await fetch(`http://127.0.0.1:${fake.port}/_control/membership?id=nope&add=jf-item-1`, { method: 'POST' })).status,
         404, 'drift on a collection that does not exist is refused');
@@ -313,6 +326,7 @@ async function main(): Promise<void> {
       'the match wrote a plan history row',
       'the match report disclosed something it must never print',
       "a failed library read produced ABSENCES",
+      'read=items&times=3',
       // Phase 276 — drift, audit, repair, exact membership.
       'the drift injection changed nothing, so everything below would be vacuous',
       'the audit did not notice the injected membership drift',
@@ -321,7 +335,8 @@ async function main(): Promise<void> {
       'the audit changed the media server — an audit is a read',
       'a failed member listing was not reported as unknown',
       'an unknown finding was offered as repairable',
-      'the retry after a one-shot failure did not judge the collection again',
+      'read=members&times=3',
+      'the retry after a bounded failure did not judge the collection again',
       'a repair whose world had moved was accepted',
       'a wrong repair digest was accepted',
       'the repair ITSELF changed the media server',
