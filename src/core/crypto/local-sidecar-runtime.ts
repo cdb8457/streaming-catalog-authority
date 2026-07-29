@@ -23,10 +23,14 @@ import {
   assertLocalSocketPath,
   assertSocketIsOwnerOnly,
   parseSidecarRequest,
+  parseSidecarResponse,
+  parseSidecarWireResponse,
   prepareSocketDirectory,
   reclaimStaleSocket,
+  validateSidecarHealth,
   type SidecarErrorCode,
   type SidecarHealth,
+  type SidecarResponse,
 } from './sidecar-ipc.js';
 
 // Phase 281 — the custodian sidecar's runtime, hardened.
@@ -46,7 +50,7 @@ import {
 //   custodian that answers nothing and a custodian that answers "destroyed" are indistinguishable to a
 //   fail-closed reader.
 
-export { assertLocalSocketPath, SidecarSocketError } from './sidecar-ipc.js';
+export { assertLocalSocketPath, SidecarSocketError, validateSidecarHealth } from './sidecar-ipc.js';
 
 export interface LocalSidecarRuntimeOptions {
   readonly socketPath: string;
@@ -178,8 +182,17 @@ export class UnixSocketSidecarTransport implements LocalSidecarCustodianTranspor
     assertLocalSocketPath(socketPath);
   }
 
+  /**
+   * ANSWERED, AND THE ANSWER IS ABOUT THE QUESTION.
+   *
+   * This used to be a cast: `dispatchOnce(...).then((r) => r as LocalSidecarCustodianResponse)`. Whatever the
+   * peer put inside a frame that said `ok: true` became the return value of a custodian call, and the only
+   * things standing between that and the app were the field checks the client happened to make afterwards.
+   * The answer is now validated against the SCHEMA FOR THE OPERATION THAT WAS SENT before it leaves here, and
+   * a frame that fails becomes the same closed transport error as a socket that never answered.
+   */
   dispatch(request: LocalSidecarCustodianRequest): Promise<LocalSidecarCustodianResponse> {
-    return dispatchOnce(this.socketPath, request, this.timeoutMs)
+    return dispatchOnce(this.socketPath, request.op, request, this.timeoutMs)
       .then((response) => response as LocalSidecarCustodianResponse)
       .catch(() => { throw new CustodianTransportError(request.op); });
   }
@@ -194,9 +207,10 @@ export class UnixSocketSidecarTransport implements LocalSidecarCustodianTranspor
  */
 function dispatchOnce(
   socketPath: string,
+  op: string,
   request: unknown,
   timeoutMs: number,
-): Promise<LocalSidecarCustodianResponse | SidecarHealth> {
+): Promise<SidecarResponse> {
   return new Promise((resolve, reject) => {
     const socket = createConnection(socketPath);
     let buffered = '';
@@ -209,29 +223,35 @@ function dispatchOnce(
       socket.destroy();
       fn();
     };
-    const fail = () => finish(() => reject(new SidecarSocketError('the sidecar did not answer this request')));
-    const timer = setTimeout(fail, timeoutMs);
+    // THE REASON IS A CLOSED WORD OR NOTHING. A code this build defines names the RULE the peer invoked; a
+    // peer's own text is never repeated, because a process that is not this product's sidecar would answer
+    // with whatever it liked — a path, a stack trace, a fragment of somebody's key.
+    const fail = (code?: SidecarErrorCode) => finish(() => reject(new SidecarSocketError(
+      code === undefined
+        ? 'the sidecar did not answer this request'
+        : `the sidecar refused this request (${code})`)));
+    const timer = setTimeout(() => fail('SIDECAR_TIMEOUT'), timeoutMs);
     timer.unref?.();
 
     socket.setEncoding('utf8');
-    socket.once('error', fail);
+    socket.once('error', () => fail());
     socket.once('connect', () => { socket.write(`${JSON.stringify(request)}\n`); });
     socket.on('data', (chunk: string) => {
       buffered += chunk;
-      if (Buffer.byteLength(buffered, 'utf8') > SIDECAR_MAX_RESPONSE_BYTES) { fail(); return; }
+      if (Buffer.byteLength(buffered, 'utf8') > SIDECAR_MAX_RESPONSE_BYTES) { fail('SIDECAR_RESPONSE_TOO_LARGE'); return; }
       const newline = buffered.indexOf('\n');
       if (newline === -1) return;
-      let parsed: WireResponse;
-      try {
-        parsed = JSON.parse(buffered.slice(0, newline)) as WireResponse;
-      } catch {
-        fail();
-        return;
-      }
-      if (parsed === null || typeof parsed !== 'object' || parsed.ok !== true) { fail(); return; }
-      finish(() => resolve(parsed.response));
+      // ONE ANSWER PER CONNECTION, ON THIS SIDE TOO. The contract is one line and then a close; anything
+      // AFTER that newline is a peer that has misunderstood it, and the right response to a peer whose
+      // framing this build does not recognise is to take none of it rather than the first message of it.
+      if (buffered.length > newline + 1) { fail('SIDECAR_PROTOCOL_MALFORMED'); return; }
+      const wire = parseSidecarWireResponse(buffered.slice(0, newline));
+      if (!wire.ok) { fail(wire.code); return; }
+      const response = parseSidecarResponse(op, wire.response);
+      if (response === null) { fail('SIDECAR_PROTOCOL_MALFORMED'); return; }
+      finish(() => resolve(response));
     });
-    socket.once('end', fail);
+    socket.once('end', () => fail());
   });
 }
 
@@ -251,43 +271,14 @@ export async function probeSidecarHealth(
 ): Promise<SidecarHealth | null> {
   try {
     assertLocalSocketPath(socketPath);
-    const answer = await dispatchOnce(socketPath, { op: 'health' }, timeoutMs);
-    // STRICTLY, FIELD BY FIELD, WITH NO EXTRAS. This value decides whether the app starts, so a peer that is
-    // not this product's sidecar — or a version of it this build does not understand — must fail closed rather
-    // than have its answer read as far as the fields that happen to match.
-    return validateSidecarHealth(answer);
+    // STRICTLY, FIELD BY FIELD, WITH NO EXTRAS — inside `dispatchOnce`, against the `health` schema. This
+    // value decides whether the app starts, so a peer that is not this product's sidecar — or a version of it
+    // this build does not understand — must fail closed rather than have its answer read as far as the fields
+    // that happen to match.
+    return validateSidecarHealth(await dispatchOnce(socketPath, 'health', { op: 'health' }, timeoutMs));
   } catch {
     return null;
   }
-}
-
-/**
- * A health answer this build will act on, or `null`.
- *
- * EVERY FIELD, AND NO FIELD THIS BUILD DOES NOT DECLARE. `ringGeneration` and `ringActiveCreatedAt` are
- * either both absent (a deployment with no ring) or both present and positive; a zero timestamp is refused
- * rather than read as "the epoch", which the age check would call overdue by five decades.
- */
-export function validateSidecarHealth(answer: unknown): SidecarHealth | null {
-  if (answer === null || typeof answer !== 'object' || Array.isArray(answer)) return null;
-  const doc = answer as Record<string, unknown>;
-  const declared = ['op', 'protocol', 'ready', 'custodian', 'ringGeneration', 'ringActiveCreatedAt'];
-  for (const key of Object.keys(doc)) if (!declared.includes(key)) return null;
-  for (const key of declared) if (!(key in doc)) return null;
-  if (doc.op !== 'health' || doc.protocol !== SIDECAR_PROTOCOL_VERSION || doc.ready !== true) return null;
-  if (doc.custodian !== 'file-reference-harness' && doc.custodian !== 'sidecar-managed-ring') return null;
-  const generation = doc.ringGeneration;
-  const createdAt = doc.ringActiveCreatedAt;
-  const hasRing = generation !== null;
-  if (hasRing) {
-    if (!Number.isInteger(generation) || (generation as number) < 1) return null;
-    if (!Number.isInteger(createdAt) || (createdAt as number) < 1) return null;
-  } else if (createdAt !== null) {
-    // A deployment with no ring has no active generation to date. A timestamp beside a null generation is a
-    // contradiction, and a contradiction is not something to pick the agreeable half of.
-    return null;
-  }
-  return doc as unknown as SidecarHealth;
 }
 
 /** Is something SERVING on this socket right now? Used only to refuse taking a live daemon's name. */
@@ -332,6 +323,13 @@ async function handleLine(options: LocalSidecarRuntimeOptions, line: string, soc
         ringActiveCreatedAt: null,
       };
       const health = options.health === undefined ? unproved : await options.health();
+      // A HEALTH PROBE IS INJECTED, SO ITS ANSWER IS CHECKED. The daemon supplies it; nothing else guarantees
+      // it is the shape a client will accept, and a claim of readiness in a shape the client fails closed on
+      // is an outage that reads as a protocol error.
+      if (validateSidecarHealth(health) === null && health.ready) {
+        writeResponse(socket, { ok: false, op: 'health', code: 'SIDECAR_NOT_READY' });
+        return;
+      }
       writeResponse(socket, { ok: true, response: health });
     } catch {
       writeResponse(socket, { ok: false, op: 'health', code: 'SIDECAR_NOT_READY' });
@@ -340,6 +338,14 @@ async function handleLine(options: LocalSidecarRuntimeOptions, line: string, soc
   }
   try {
     const response = await dispatchLocalSidecarCustodianRequest(options.custodian, parsed.request);
+    // ANSWERED IN THE SHAPE THIS BOUNDARY DECLARES, OR NOT ANSWERED. The custodian behind this socket is an
+    // interface, not necessarily this repository's class, and what it returns reaches the app. A receipt
+    // whose attestation is not an attestation, an id carrying a newline, a stale list longer than the
+    // contract carries: each becomes a closed refusal here rather than something the client has to survive.
+    if (parseSidecarResponse(parsed.request.op, response) === null) {
+      writeResponse(socket, { ok: false, op: parsed.request.op, code: 'SIDECAR_REQUEST_FAILED' });
+      return;
+    }
     writeResponse(socket, { ok: true, response });
   } catch {
     // THE CODE, NEVER THE REASON. A custodian's error routinely names a path or a state; a peer on this socket

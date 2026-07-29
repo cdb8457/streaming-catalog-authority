@@ -1,9 +1,29 @@
 import { createCipheriv, createDecipheriv, createHash, createHmac, randomBytes, randomUUID } from 'node:crypto';
-import {
-  closeSync, existsSync, fsyncSync, mkdirSync, openSync, readFileSync, readdirSync, renameSync, rmSync, writeSync,
-} from 'node:fs';
+import { mkdirSync, readdirSync, rmSync, type Dirent } from 'node:fs';
 import path from 'node:path';
-import { CUSTODIAN_WRITER_LOCK, acquireStateLock } from './custodian-state-io.js';
+import {
+  CUSTODIAN_WRITER_LOCK,
+  CustodianStateError,
+  STATE_DIR_MODE,
+  acquireStateLock,
+  fsyncDirectoryBestEffort,
+  stateDirectoryIdentity,
+  type StateDirectoryIdentity,
+} from './custodian-state-io.js';
+import {
+  CustodianRecordError,
+  JOURNAL_SCHEMA,
+  KEY_RECORD_SCHEMA,
+  OP_RECORD_SCHEMA,
+  TOMBSTONE_SCHEMA,
+  custodianRecordExists,
+  readCustodianRecord,
+  writeCustodianRecord,
+  type JournalRecord,
+  type KeyRecord,
+  type OpRecord,
+  type TombstoneRecord,
+} from './custodian-records.js';
 import type { DestructionReceipt, KeyCustodian, KeyStatus, ProvisionResult, StaleProvisioning } from './custodian.js';
 
 /**
@@ -31,19 +51,16 @@ import type { DestructionReceipt, KeyCustodian, KeyStatus, ProvisionResult, Stal
  * managed-KMS implementation of this same KeyCustodian interface, not this class.
  */
 
-interface KeyFile {
-  keyId: string;
-  itemId: string;
-  epoch: number;
-  operationId: string;
-  state: 'provisional' | 'active';
-  wrappedHex: string; // DEK encrypted under the KEK (never the raw DEK)
-  createdAt: number;
-  kekVersion?: number; // which KEK generation wrapped this DEK; absent = legacy = 0 (Phase 4)
-}
-interface Tombstone { keyId: string; receiptId: string; destroyedAt: string; }
-interface OpFile { operationId: string; kind: 'provision' | 'destroy'; keyId: string; itemId?: string; epoch?: number; }
-interface Journal { keyId: string; receiptId: string; destroyedAt: string; }
+// THE FOUR RECORD SHAPES LIVE IN `custodian-records.ts` NOW, WITH THEIR SCHEMAS.
+//
+// They used to be four bare interfaces here and four `JSON.parse(...) as T` casts below — which is a type
+// that describes what the code hopes a file holds, not a check on what it does. The shapes and the rules that
+// enforce them are one thing, so they are in one place, and every read on this class goes through them.
+type KeyFile = KeyRecord;
+type Tombstone = TombstoneRecord;
+type OpFile = OpRecord;
+type Journal = JournalRecord;
+
 export interface RewrapPlan {
   needsRewrap: number;
   alreadyCurrent: number;
@@ -68,27 +85,119 @@ function unwrapDek(kek: Buffer, wrappedHex: string, keyId: string): Buffer {
   d.setAuthTag(tag);
   return Buffer.concat([d.update(ct), d.final()]);
 }
-function fsyncDirBestEffort(dir: string): void {
-  let dfd: number;
-  try { dfd = openSync(dir, 'r'); }
-  catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code === 'EISDIR' || code === 'EPERM' || code === 'EACCES' || code === 'ENOTSUP') return;
-    throw err;
-  }
-  try { fsyncSync(dfd); }
-  catch (err) {
-    const code = (err as NodeJS.ErrnoException).code;
-    if (code !== 'EISDIR' && code !== 'EPERM' && code !== 'EINVAL' && code !== 'ENOTSUP') throw err;
-  } finally { closeSync(dfd); }
+/**
+ * The one shape a wrapped key file's name has. The custodian hashes every id into exactly this.
+ *
+ * IT IS A RULE, NOT A FILTER. The walks below used to accept anything ending in `.json` and silently ignore
+ * everything else — including a `.tmp` left by an interrupted write, which is precisely the state in which the
+ * set of keys is not settled and a rewrap must not claim to have covered it.
+ */
+const KEYSTORE_FILE_NAME = /^[0-9a-f]{64}\.json$/;
+
+/** How many key files a single rewrap or preflight will walk before refusing. */
+const MAX_KEYSTORE_FILES = 500_000;
+
+/**
+ * A key file, written whole or not at all.
+ *
+ * THE DEFECT THIS CLOSES. This was `writeSync(fd, JSON.stringify(value))` and nothing else. `write(2)` may
+ * write FEWER bytes than it was given — on a full filesystem, on a signal, on a share — and the return value
+ * saying so was discarded. What landed was a truncated key file whose next read was a JSON parse error: safe,
+ * but the wrong failure, because the write is what should have completed. `writeCustodianRecord` loops until
+ * the whole body is written, fsyncs, renames and fsyncs the directory, so a key file is the complete new
+ * document or the complete previous one.
+ */
+function writeKeyFile(p: string, record: KeyFile): void {
+  writeCustodianRecord(p, KEY_RECORD_SCHEMA, record);
 }
-function writeJsonAtomic(p: string, value: unknown): void {
-  const tmp = `${p}.${randomUUID()}.tmp`;
-  const fd = openSync(tmp, 'w', 0o600);
-  try { writeSync(fd, JSON.stringify(value)); fsyncSync(fd); }
-  finally { closeSync(fd); }
-  renameSync(tmp, p);
-  fsyncDirBestEffort(path.dirname(p)); // make the rename (directory entry) itself durable
+
+/**
+ * Is there a keystore directory here at all?
+ *
+ * `existsSync` FOLLOWED A LINK AND ANSWERED `false` FOR A DIRECTORY IT COULD NOT REACH. The first made a
+ * symlinked `keys` look like a keystore; the second made an unreadable one look like an installation that has
+ * never stored anything, which is the answer a rewrap would have reported as "0 files, nothing to do".
+ */
+function keystoreDirectoryExists(keysDir: string, what: string): boolean {
+  try {
+    stateDirectoryIdentity(keysDir);
+    return true;
+  } catch (err) {
+    // GENUINELY ABSENT IS THE ONLY `false`. A link, a file, a permission refusal at that name is a keystore
+    // this build will not walk — refused in the SAME words the walk itself uses, so an operator does not get
+    // one sentence for a directory that cannot be identified before the lock and a different one after it.
+    if (err instanceof CustodianStateError && err.message.endsWith('is not there')) return false;
+    throw new Error(`${what}: keystore could not be read`);
+  }
+}
+
+/** WHICH directory the walk is over, established on a descriptor without following a link. */
+function keystoreIdentity(keysDir: string, what: string): StateDirectoryIdentity {
+  try {
+    return stateDirectoryIdentity(keysDir);
+  } catch {
+    throw new Error(`${what}: keystore could not be read`);
+  }
+}
+
+/** The same directory the walk started in, or a refusal. A count over two directories is not a count. */
+function assertKeystoreUnmoved(keysDir: string, before: StateDirectoryIdentity, what: string): void {
+  const after = keystoreIdentity(keysDir, what);
+  if (after.dev !== before.dev || after.ino !== before.ino) {
+    throw new Error(`${what}: the keystore directory was replaced while it was being read`);
+  }
+}
+
+/**
+ * Every wrapped key file in a keystore, as a STATED set.
+ *
+ * AN UNEXPECTED ENTRY IS A REFUSAL, NOT SOMETHING SKIPPED. The walks used to be `readdirSync(...)` filtered
+ * to names ending in `.json`, which quietly ignored everything else — including the `.tmp` a crashed write
+ * leaves behind, which is exactly the state in which the set is not settled. It also passed a DIRECTORY or a
+ * device named `<hash>.json` straight to a reader as though it were a key file. Both are closed here: the
+ * name must be one this custodian writes and the entry must be a regular file, and anything else stops the
+ * walk rather than shortening it.
+ */
+function listKeystoreFiles(keysDir: string, what = 'keystore'): string[] {
+  let entries: Dirent[];
+  try {
+    entries = readdirSync(keysDir, { withFileTypes: true });
+  } catch {
+    throw new Error(`${what}: keystore could not be read`);
+  }
+  if (entries.length > MAX_KEYSTORE_FILES) {
+    throw new Error(`${what}: this keystore holds more entries than this build will walk`);
+  }
+  const names: string[] = [];
+  for (const entry of entries) {
+    if (!KEYSTORE_FILE_NAME.test(entry.name)) {
+      throw new Error(`${what}: this keystore holds an entry that is not a wrapped key file this custodian `
+        + 'wrote — a leftover from an interrupted write, or something put there by hand. The set of keys this '
+        + 'operation covers cannot be stated while it is there.');
+    }
+    if (!entry.isFile()) {
+      throw new Error(`${what}: this keystore holds an entry that is not a regular file`);
+    }
+    names.push(entry.name);
+  }
+  return names;
+}
+
+/** One key file, through the bounded no-follow boundary and its closed schema. */
+function readKeystoreFile(p: string, what: string): KeyFile {
+  let record: KeyFile | null;
+  try {
+    record = readCustodianRecord(p, KEY_RECORD_SCHEMA);
+  } catch (err) {
+    // THE RULE, NEVER THE PATH. The record reader's refusals name what was wrong with the record and nothing
+    // about where it lives; this keeps the operation's own prefix so an operator knows which command refused.
+    throw new Error(`${what}: a key file could not be read (${err instanceof CustodianRecordError
+      ? err.message : 'it is not a record this build wrote'})`);
+  }
+  // LISTED AND THEN GONE IS NOT AN EMPTY KEY FILE. Something removed it between the listing and this read,
+  // which means the set this operation is covering is moving underneath it.
+  if (record === null) throw new Error(`${what}: a key file was removed while the keystore was being read`);
+  return record;
 }
 
 export class FileCustodian implements KeyCustodian {
@@ -133,7 +242,13 @@ export class FileCustodian implements KeyCustodian {
     this.tombDir = path.join(this.root, 'tombstones');
     this.opsDir = path.join(this.root, 'ops');
     this.journalDir = path.join(this.root, 'journal');
-    for (const d of [this.keysDir, this.tombDir, this.opsDir, this.journalDir]) mkdirSync(d, { recursive: true });
+    // OWNER-ONLY WHERE THIS CREATES THEM. A directory that already exists is NOT re-moded here: changing the
+    // permissions of an installation's keystore is `ops:keystore-repair`'s job, which reports what it found
+    // and refuses anything it cannot account for. What this can promise is that a directory it creates is
+    // never the one that was left readable by everybody, and it says only that.
+    for (const d of [this.keysDir, this.tombDir, this.opsDir, this.journalDir]) {
+      mkdirSync(d, { recursive: true, mode: STATE_DIR_MODE });
+    }
     this.completionSecret = completionSecret;
     this.kek = kek;
     this.clock = clock;
@@ -199,12 +314,44 @@ export class FileCustodian implements KeyCustodian {
   private opPath(op: string): string { return this.safe(this.opsDir, op); }
   private journalPath(keyId: string): string { return this.safe(this.journalDir, keyId); }
 
-  // --- atomic IO ------------------------------------------------------------
-  private read<T>(p: string): T | null {
-    if (!existsSync(p)) return null;
-    return JSON.parse(readFileSync(p, 'utf8')) as T;
+  // --- record IO ------------------------------------------------------------
+  //
+  // ONE READER PER RECORD KIND, EACH WITH ITS OWN CLOSED SCHEMA. What was here was
+  // `if (!existsSync(p)) return null; return JSON.parse(readFileSync(p,'utf8')) as T` — a follow-the-link
+  // existence check, an unbounded follow-the-link read, and a cast. Every one of the four kinds is now read
+  // through the same bounded, no-follow, regular-file boundary the KEK ring uses, and `null` comes back only
+  // for a name that is genuinely not there.
+  private readKeyFile(keyId: string): KeyFile | null {
+    return readCustodianRecord(this.keyPath(keyId), KEY_RECORD_SCHEMA);
   }
-  private writeAtomic(p: string, value: unknown): void { writeJsonAtomic(p, value); }
+  private readOp(operationId: string): OpFile | null {
+    return readCustodianRecord(this.opPath(operationId), OP_RECORD_SCHEMA);
+  }
+  private readTombstone(keyId: string): Tombstone | null {
+    return readCustodianRecord(this.tombPath(keyId), TOMBSTONE_SCHEMA);
+  }
+
+  /**
+   * Is there a tombstone for this key?
+   *
+   * A REFUSAL IS NOT A `false`. A tombstone that is a link, a special file, or a document this build did not
+   * write is not evidence that the key is live — it is a keystore nobody can state, and answering "no
+   * tombstone" for one would resurrect a destroyed key. `readTombstone` throws on all of those; only a name
+   * that is not there answers `null`.
+   */
+  private isDestroyed(keyId: string): boolean {
+    return this.readTombstone(keyId) !== null;
+  }
+
+  private writeKeyRecord(keyId: string, record: KeyFile): void {
+    writeCustodianRecord(this.keyPath(keyId), KEY_RECORD_SCHEMA, record);
+  }
+  private writeOp(record: OpFile): void {
+    writeCustodianRecord(this.opPath(record.operationId), OP_RECORD_SCHEMA, record);
+  }
+  private writeTombstone(record: Tombstone): void {
+    writeCustodianRecord(this.tombPath(record.keyId), TOMBSTONE_SCHEMA, record);
+  }
 
   /**
    * fsync the containing directory so the rename — not just the file contents — survives a
@@ -218,7 +365,7 @@ export class FileCustodian implements KeyCustodian {
    * other error surface. Durable rename ordering is one more reason the production target (O4)
    * is a managed KMS, which does not depend on host filesystem directory-fsync semantics.
    */
-  private fsyncDir(dir: string): void { fsyncDirBestEffort(dir); }
+  private fsyncDir(dir: string): void { fsyncDirectoryBestEffort(dir); }
 
   // --- KEK wrap/unwrap (DEKs are never stored raw) --------------------------
   /** New wraps use the ACTIVE key and only it. A retained generation is never written under. */
@@ -261,27 +408,37 @@ export class FileCustodian implements KeyCustodian {
     if (journals.length === 0) return;
     this.withWriteLock(() => {
       for (const f of journals) {
-        const j = this.read<Journal>(path.join(this.journalDir, f));
-        if (!j) { rmSync(path.join(this.journalDir, f), { force: true }); continue; }
-        this.finishDestroy(j);
+        // A JOURNAL ENTRY THAT CANNOT BE READ IS NOT AN ENTRY TO DELETE, AND NOT ONE TO IGNORE.
+        //
+        // THE DEFECT THIS CLOSES, WHICH WAS TWO DEFECTS. The old reader answered `null` for a file that was
+        // not there AND for one that would not parse, and this loop removed whatever answered `null` — so an
+        // unreadable destroy intent was silently thrown away, and the key it named stayed live with nothing
+        // recording that it should not have. Worse, a file that DID parse but held the wrong shape (`{}` was
+        // enough) reached `finishDestroy`, which hashed `undefined` into a filename and threw a TypeError
+        // from inside the CONSTRUCTOR: one bad file and the custodian could not be built at all.
+        //
+        // Now the strict reader draws the line: genuinely absent is skipped (something removed it between the
+        // listing and here), and anything else throws a refusal that names the record kind. A destroy intent
+        // this build cannot read is a state for a human to look at, not one to guess at.
+        const entry = readCustodianRecord(path.join(this.journalDir, f), JOURNAL_SCHEMA);
+        if (entry === null) continue;
+        this.finishDestroy(entry);
       }
     });
   }
   private finishDestroy(j: Journal): void {
-    const kp = this.keyPath(j.keyId);
-    if (existsSync(kp)) {
-      const kf = this.read<KeyFile>(kp)!;
-      // Replace the live wrapped-DEK with a zeroized blob, then unlink. NOTE: writeAtomic swaps
-      // in a NEW inode via rename — it does not scrub the original inode's blocks in place, so
-      // this is best-effort, not a guaranteed physical overwrite (see the class doc). The real
-      // guarantee is wrapped-only storage + keystore/KEK exclusion from backups.
-      kf.wrappedHex = '0'.repeat(kf.wrappedHex.length);
-      this.writeAtomic(kp, kf);
-      rmSync(kp, { force: true });
+    const kf = this.readKeyFile(j.keyId);
+    if (kf !== null) {
+      // Replace the live wrapped-DEK with a zeroized blob, then unlink. NOTE: the write swaps in a NEW inode
+      // via rename — it does not scrub the original inode's blocks in place, so this is best-effort, not a
+      // guaranteed physical overwrite (see the class doc). The real guarantee is wrapped-only storage +
+      // keystore/KEK exclusion from backups.
+      this.writeKeyRecord(j.keyId, { ...kf, wrappedHex: '0'.repeat(kf.wrappedHex.length) });
+      rmSync(this.keyPath(j.keyId), { force: true });
       this.fsyncDir(this.keysDir); // make the unlink durable too
     }
-    if (!existsSync(this.tombPath(j.keyId))) {
-      this.writeAtomic(this.tombPath(j.keyId), { keyId: j.keyId, receiptId: j.receiptId, destroyedAt: j.destroyedAt } satisfies Tombstone);
+    if (!this.isDestroyed(j.keyId)) {
+      this.writeTombstone({ keyId: j.keyId, receiptId: j.receiptId, destroyedAt: j.destroyedAt });
     }
     rmSync(this.journalPath(j.keyId), { force: true });
   }
@@ -292,21 +449,25 @@ export class FileCustodian implements KeyCustodian {
   }
 
   private provisionUnlocked(operationId: string, itemId: string, epoch: number): ProvisionResult {
-    const prior = this.read<OpFile>(this.opPath(operationId));
+    const prior = this.readOp(operationId);
     if (prior) {
       if (prior.kind !== 'provision' || prior.itemId !== itemId || prior.epoch !== epoch) throw new Error('operation_id reused with different inputs');
-      if (existsSync(this.tombPath(prior.keyId))) throw new Error('key is destroyed');
-      const kf = this.read<KeyFile>(this.keyPath(prior.keyId));
+      if (this.isDestroyed(prior.keyId)) throw new Error('key is destroyed');
+      const kf = this.readKeyFile(prior.keyId);
       if (!kf) throw new Error('key is destroyed');
       return { keyId: kf.keyId, dek: this.unwrap(kf.wrappedHex, kf.keyId) };
     }
     let keyId: string;
-    do { keyId = `key_${randomUUID()}`; } while (existsSync(this.keyPath(keyId)) || existsSync(this.tombPath(keyId)));
+    // THE UNIQUENESS CHECK IS A FAIL-CLOSED ONE. `custodianRecordExists` answers `false` only for a name that
+    // is not there, so a key file this process cannot read is never mistaken for a free name to write over.
+    do {
+      keyId = `key_${randomUUID()}`;
+    } while (custodianRecordExists(this.keyPath(keyId)) || custodianRecordExists(this.tombPath(keyId)));
     const dek = randomBytes(32);
-    this.writeAtomic(this.keyPath(keyId), {
+    this.writeKeyRecord(keyId, {
       keyId, itemId, epoch, operationId, state: 'provisional', wrappedHex: this.wrap(dek, keyId), createdAt: this.clock(), kekVersion: 0,
-    } satisfies KeyFile);
-    this.writeAtomic(this.opPath(operationId), { operationId, kind: 'provision', keyId, itemId, epoch } satisfies OpFile);
+    });
+    this.writeOp({ operationId, kind: 'provision', keyId, itemId, epoch });
     return { keyId, dek };
   }
 
@@ -315,17 +476,17 @@ export class FileCustodian implements KeyCustodian {
   }
 
   private commitProvisionUnlocked(operationId: string): void {
-    const op = this.read<OpFile>(this.opPath(operationId));
+    const op = this.readOp(operationId);
     if (!op || op.kind !== 'provision') throw new Error('unknown provision operation');
-    if (existsSync(this.tombPath(op.keyId))) throw new Error('destroyed is terminal; cannot reactivate');
-    const kf = this.read<KeyFile>(this.keyPath(op.keyId));
+    if (this.isDestroyed(op.keyId)) throw new Error('destroyed is terminal; cannot reactivate');
+    const kf = this.readKeyFile(op.keyId);
     if (!kf) throw new Error('destroyed is terminal; cannot reactivate');
-    if (kf.state !== 'active') { kf.state = 'active'; this.writeAtomic(this.keyPath(op.keyId), kf); }
+    if (kf.state !== 'active') this.writeKeyRecord(op.keyId, { ...kf, state: 'active' });
   }
 
   async get(keyId: string, epoch: number): Promise<Buffer> {
-    if (existsSync(this.tombPath(keyId))) throw new Error('key not active (destroyed)');
-    const kf = this.read<KeyFile>(this.keyPath(keyId));
+    if (this.isDestroyed(keyId)) throw new Error('key not active (destroyed)');
+    const kf = this.readKeyFile(keyId);
     if (!kf) throw new Error('not_found');
     if (kf.state !== 'active') throw new Error(`key not active (${kf.state})`);
     if (kf.epoch !== epoch) throw new Error('epoch mismatch');
@@ -337,29 +498,39 @@ export class FileCustodian implements KeyCustodian {
   }
 
   private destroyUnlocked(operationId: string, keyId: string): DestructionReceipt {
-    const prior = this.read<OpFile>(this.opPath(operationId));
+    const prior = this.readOp(operationId);
     if (prior) {
       if (prior.kind !== 'destroy' || prior.keyId !== keyId) throw new Error('operation_id reused with different inputs');
-      return this.receiptFor(this.read<Tombstone>(this.tombPath(keyId))!);
+      // A REPLAYED DESTROY MUST FIND ITS TOMBSTONE. The `!` here used to be the whole check: an operation
+      // record naming a destroy whose tombstone had gone produced a receipt over `undefined` fields.
+      const recorded = this.readTombstone(keyId);
+      if (recorded === null) {
+        throw new Error('this destroy operation was recorded but its tombstone is not in this keystore');
+      }
+      return this.receiptFor(recorded);
     }
-    const existingTomb = this.read<Tombstone>(this.tombPath(keyId));
+    const existingTomb = this.readTombstone(keyId);
     if (existingTomb) {
-      this.writeAtomic(this.opPath(operationId), { operationId, kind: 'destroy', keyId } satisfies OpFile);
+      this.writeOp({ operationId, kind: 'destroy', keyId });
       return this.receiptFor(existingTomb);
     }
     // REFUSE to fabricate a tombstone for a key we have no evidence ever existed
-    if (!existsSync(this.keyPath(keyId))) throw new Error('not_found');
+    if (!custodianRecordExists(this.keyPath(keyId))) throw new Error('not_found');
 
-    const j: Journal = { keyId, receiptId: `rcpt_${randomUUID()}`, destroyedAt: new Date(this.clock()).toISOString() };
-    this.writeAtomic(this.journalPath(keyId), j); // crash fence: intent recorded first
+    const j: Journal = {
+      keyId,
+      receiptId: `rcpt_${randomUUID()}`,
+      destroyedAt: new Date(this.clock()).toISOString(),
+    };
+    writeCustodianRecord(this.journalPath(keyId), JOURNAL_SCHEMA, j); // crash fence: intent recorded first
     this.finishDestroy(j);                          // zeroize-replace+unlink key, write tombstone, clear journal
-    this.writeAtomic(this.opPath(operationId), { operationId, kind: 'destroy', keyId } satisfies OpFile);
+    this.writeOp({ operationId, kind: 'destroy', keyId });
     return this.receiptFor({ keyId, receiptId: j.receiptId, destroyedAt: j.destroyedAt });
   }
 
   async status(keyId: string): Promise<KeyStatus> {
-    if (existsSync(this.tombPath(keyId))) return 'destroyed';
-    const kf = this.read<KeyFile>(this.keyPath(keyId));
+    if (this.isDestroyed(keyId)) return 'destroyed';
+    const kf = this.readKeyFile(keyId);
     if (!kf) return 'not_found';
     return kf.state;
   }
@@ -367,9 +538,12 @@ export class FileCustodian implements KeyCustodian {
   async listStaleProvisioning(): Promise<StaleProvisioning[]> {
     const now = this.clock();
     const out: StaleProvisioning[] = [];
-    for (const f of readdirSync(this.keysDir)) {
-      if (!f.endsWith('.json')) continue;
-      const kf = this.read<KeyFile>(path.join(this.keysDir, f));
+    // THE SET IS STATED, NOT FILTERED. An entry that is not a wrapped key file this custodian wrote is a
+    // refusal here for the same reason it is one in the rewrap: a keystore holding one is a keystore whose
+    // contents nobody can enumerate, and a sweep that silently skipped it would report a shorter list as if
+    // it were the whole one.
+    for (const entry of listKeystoreFiles(this.keysDir)) {
+      const kf = readCustodianRecord(path.join(this.keysDir, entry), KEY_RECORD_SCHEMA);
       if (kf && kf.state === 'provisional') out.push({ operationId: kf.operationId, itemId: kf.itemId, keyId: kf.keyId, ageMs: now - kf.createdAt });
     }
     return out;
@@ -398,17 +572,25 @@ export class FileCustodian implements KeyCustodian {
     const keysDir = path.join(path.resolve(rootDir), 'keys');
     // NO KEYSTORE, NOTHING TO SERIALISE. The lock lives in the state directory, and taking one over a
     // directory that holds no keystore would be creating state in order to report there is none.
-    if (!existsSync(keysDir)) return { rewrapped: 0, skipped: 0, total: 0 };
+    if (!keystoreDirectoryExists(keysDir, 'KEK rewrap')) return { rewrapped: 0, skipped: 0, total: 0 };
     return FileCustodian.withWriteLock(rootDir, () => FileCustodian.rewrapKeystoreUnlocked(keysDir, opts));
   }
 
   private static rewrapKeystoreUnlocked(keysDir: string, opts: { fromKek: Buffer; toKek: Buffer }): { rewrapped: number; skipped: number; total: number } {
     let rewrapped = 0, skipped = 0, total = 0;
-    for (const f of readdirSync(keysDir)) {
-      if (!f.endsWith('.json')) continue;
+    // ---- THE DIRECTORY THE SET CAME FROM, BOUND ON BOTH SIDES OF THE WALK ------------------------------
+    //
+    // THE HOLE THIS CLOSES. Every per-file check here is a no-follow check on a FILE, and none of them says
+    // anything about the DIRECTORY the names were listed from: `readdirSync('<root>/keys')` follows a `keys`
+    // that is a symbolic link, so a rewrap could have rewritten somebody else's directory with every
+    // individual file check passing. The no-follow boundary escaped through the parent. The identity is taken
+    // again at the end, so a directory swapped underneath a long walk is a refusal rather than one rewrap
+    // spread over two keystores.
+    const identity = keystoreIdentity(keysDir, 'KEK rewrap');
+    for (const f of listKeystoreFiles(keysDir, 'KEK rewrap')) {
       total++;
       const p = path.join(keysDir, f);
-      const kf = JSON.parse(readFileSync(p, 'utf8')) as KeyFile;
+      const kf = readKeystoreFile(p, 'KEK rewrap');
       // already on the new KEK? (idempotent / resumable) — GCM auth makes this decisive.
       try { unwrapDek(opts.toKek, kf.wrappedHex, kf.keyId).fill(0); skipped++; continue; } catch { /* not yet rewrapped */ }
       let dek: Buffer;
@@ -419,12 +601,13 @@ export class FileCustodian implements KeyCustodian {
       }
       try {
         const next: KeyFile = { ...kf, wrappedHex: wrapDek(opts.toKek, dek, kf.keyId), kekVersion: (kf.kekVersion ?? 0) + 1 };
-        writeJsonAtomic(p, next);
+        writeKeyFile(p, next);
         rewrapped++;
       } finally {
         dek.fill(0);
       }
     }
+    assertKeystoreUnmoved(keysDir, identity, 'KEK rewrap');
     return { rewrapped, skipped, total };
   }
 
@@ -436,23 +619,19 @@ export class FileCustodian implements KeyCustodian {
   static planRewrapKeystore(rootDir: string, opts: { fromKek: Buffer; toKek: Buffer }): RewrapPlan {
     if (opts.fromKek.length !== 32 || opts.toKek.length !== 32) throw new Error('rewrap KEKs must be 32 bytes');
     const keysDir = path.join(path.resolve(rootDir), 'keys');
-    if (!existsSync(keysDir)) return { needsRewrap: 0, alreadyCurrent: 0, total: 0 };
+    if (!keystoreDirectoryExists(keysDir, 'KEK rewrap preflight')) return { needsRewrap: 0, alreadyCurrent: 0, total: 0 };
     let needsRewrap = 0, alreadyCurrent = 0, total = 0;
-    let files: string[];
-    try {
-      files = readdirSync(keysDir);
-    } catch {
-      throw new Error('KEK rewrap preflight: keystore could not be read');
-    }
-    for (const f of files) {
-      if (!f.endsWith('.json')) continue;
+    // NO LOCK, DELIBERATELY, AND THE IDENTITY INSTEAD. This runs against BACKUP SETS — a verified set whose
+    // manifest is a digest of its own bytes — and creating a lock directory inside one would change the very
+    // thing that was verified. What a lock would have given it is obtained the only other way available to a
+    // reader: the directory is identified before the walk and again after it, so a preflight cannot report a
+    // count spread over two directories. What it still cannot promise is that no file changed mid-walk, and
+    // the CALLERS that need that (`runKekMigration`) hold the custodian writer lock across their whole
+    // transaction and re-check the set digest afterwards.
+    const identity = keystoreIdentity(keysDir, 'KEK rewrap preflight');
+    for (const f of listKeystoreFiles(keysDir, 'KEK rewrap preflight')) {
       total++;
-      let kf: KeyFile;
-      try {
-        kf = JSON.parse(readFileSync(path.join(keysDir, f), 'utf8')) as KeyFile;
-      } catch {
-        throw new Error('KEK rewrap preflight: a key file could not be read');
-      }
+      const kf = readKeystoreFile(path.join(keysDir, f), 'KEK rewrap preflight');
       try { unwrapDek(opts.toKek, kf.wrappedHex, kf.keyId).fill(0); alreadyCurrent++; continue; } catch { /* not yet rewrapped */ }
       let dek: Buffer;
       try {
@@ -463,6 +642,7 @@ export class FileCustodian implements KeyCustodian {
       dek.fill(0);
       needsRewrap++;
     }
+    assertKeystoreUnmoved(keysDir, identity, 'KEK rewrap preflight');
     return { needsRewrap, alreadyCurrent, total };
   }
 

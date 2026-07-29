@@ -1,6 +1,9 @@
 import { closeSync, constants as fsConstants, fstatSync, lstatSync, mkdirSync, openSync, statSync } from 'node:fs';
 import { dirname } from 'node:path';
-import type { LocalSidecarCustodianRequest } from './local-sidecar-custodian.js';
+import type {
+  LocalSidecarCustodianRequest,
+  LocalSidecarCustodianResponse,
+} from './local-sidecar-custodian.js';
 
 // Phase 281 — the custodian sidecar's IPC boundary, made a boundary.
 //
@@ -145,7 +148,16 @@ export function parseSidecarRequest(line: string): SidecarParse {
     return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
   }
   const doc = parsed as Record<string, unknown>;
-  const shape = REQUEST_SHAPES[String(doc.op)];
+  // THE OPERATION IS A STRING, CHECKED BEFORE IT IS LOOKED UP.
+  //
+  // THE DEFECT THIS CLOSES. The lookup was `REQUEST_SHAPES[String(doc.op)]`, and `String(['get'])` is `'get'`.
+  // So `{"op":["get"],"keyId":"k","epoch":0}` found the `get` shape, passed every field check, and was
+  // returned as a request whose `op` was an ARRAY. The dispatcher's `switch` then matched no case and fell
+  // out returning `undefined`, which was written to the wire as a SUCCESS with no response — and the client,
+  // seeing `ok: true`, resolved `undefined` and threw a raw TypeError inside the app. One coercion, and a
+  // hostile line turned into an unhandled error on the other side of the boundary.
+  if (typeof doc.op !== 'string') return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+  const shape = REQUEST_SHAPES[doc.op];
   if (shape === undefined) return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
   // NO KEY THIS SHAPE DOES NOT DECLARE. An unexpected field is a request built by something that does not
   // know this contract, and this refuses one rather than serving the part it recognises.
@@ -172,12 +184,230 @@ const REQUEST_SHAPES: Readonly<Record<string, readonly string[]>> = Object.freez
   health: [],
 });
 
+/** Every operation this boundary carries, and NOTHING ELSE. Read and write key custody; no administration. */
+export const SIDECAR_OPERATIONS: readonly string[] = Object.freeze(Object.keys(REQUEST_SHAPES).sort());
+
 export function isIdentifier(value: unknown): value is string {
   return typeof value === 'string' && SIDECAR_ID_PATTERN.test(value);
 }
 
 export function isEpoch(value: unknown): value is number {
   return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= SIDECAR_MAX_EPOCH;
+}
+
+// -----------------------------------------------------------------------------------------------------------
+// The RESPONSE contract — the half of this boundary that was never parsed
+// -----------------------------------------------------------------------------------------------------------
+//
+// WHAT WAS MISSING, AND WHY IT IS THE SAME PROBLEM IN THE OTHER DIRECTION. Requests were checked field by
+// field; answers were `JSON.parse(...) as WireResponse` followed by `if (parsed.ok !== true) fail` and then
+// `resolve(parsed.response)` — an unvalidated object handed to the app. The per-operation client methods
+// checked the fields they used and no more, so:
+//
+//   * A SUCCESS AND AN ERROR COULD BE THE SAME MESSAGE. `{"ok":true,"code":"SIDECAR_BUSY","response":{...}}`
+//     read as a success by the client and as a refusal by anything reading the code. A frame that is both is
+//     a frame whose meaning depends on which field the reader looks at first.
+//   * AN ANSWER DID NOT HAVE TO BE ABOUT THE QUESTION beyond its `op` field, and could carry any number of
+//     fields nothing declared.
+//   * A SECOND MESSAGE COULD FOLLOW THE FIRST on a connection whose whole contract is one answer.
+//
+// A peer on this socket is not trusted in either direction — the app must survive a hostile or malfunctioning
+// custodian exactly as the custodian survives a hostile app — so the answer is parsed with the same closed,
+// operation-specific schemas the requests get, and a frame that fails any of them is a refusal carrying a
+// CODE and never a fragment of what the peer sent.
+
+/** Every way this boundary can say no, as a closed set a reader can check a peer's word against. */
+export const SIDECAR_ERROR_CODES: readonly SidecarErrorCode[] = Object.freeze([
+  'SIDECAR_PROTOCOL_MALFORMED',
+  'SIDECAR_REQUEST_TOO_LARGE',
+  'SIDECAR_RESPONSE_TOO_LARGE',
+  'SIDECAR_REQUEST_FAILED',
+  'SIDECAR_BUSY',
+  'SIDECAR_TIMEOUT',
+  'SIDECAR_NOT_READY',
+]);
+
+export function isSidecarErrorCode(value: unknown): value is SidecarErrorCode {
+  return typeof value === 'string' && (SIDECAR_ERROR_CODES as readonly string[]).includes(value);
+}
+
+/** How many stale-provisioning entries one answer may carry. A bound, not a page size. */
+export const SIDECAR_MAX_STALE_ENTRIES = 10_000;
+
+/** How long any free-text field in an answer may be. Ids, receipt ids and timestamps are all far shorter. */
+export const SIDECAR_MAX_TEXT_LENGTH = 512;
+
+export type SidecarWireParse =
+  | { readonly ok: true; readonly response: Record<string, unknown> }
+  | { readonly ok: false; readonly code: SidecarErrorCode };
+
+/**
+ * The ENVELOPE of one answer: a success carrying a response, or a refusal carrying a code. Never both.
+ *
+ * The keys are exact in each case, so a frame cannot be a success by one field and a refusal by another, and
+ * a peer cannot smuggle anything past this by adding fields to a shape that is otherwise valid.
+ */
+export function parseSidecarWireResponse(line: string): SidecarWireParse {
+  if (Buffer.byteLength(line, 'utf8') > SIDECAR_MAX_RESPONSE_BYTES) {
+    return { ok: false, code: 'SIDECAR_RESPONSE_TOO_LARGE' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+  }
+  const doc = parsed as Record<string, unknown>;
+  const keys = Object.keys(doc).sort();
+  if (doc.ok === true) {
+    if (keys.length !== 2 || keys[0] !== 'ok' || keys[1] !== 'response') {
+      return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+    }
+    const response = doc.response;
+    if (response === null || typeof response !== 'object' || Array.isArray(response)) {
+      return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+    }
+    return { ok: true, response: response as Record<string, unknown> };
+  }
+  if (doc.ok !== false) return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+  if (keys.length !== 3 || keys[0] !== 'code' || keys[1] !== 'ok' || keys[2] !== 'op') {
+    return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+  }
+  // THE OPERATION IT REFUSED IS A CLOSED WORD TOO. `unknown` is the one the daemon uses before it has parsed
+  // a request; anything outside that set is a peer describing an operation this boundary does not carry.
+  if (typeof doc.op !== 'string' || (doc.op !== 'unknown' && !SIDECAR_OPERATIONS.includes(doc.op))) {
+    return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+  }
+  // AND A CODE THIS BUILD DEFINES. A peer's own invented code is not a code — it is text, and text from a
+  // peer never becomes this process's diagnostic.
+  if (!isSidecarErrorCode(doc.code)) return { ok: false, code: 'SIDECAR_PROTOCOL_MALFORMED' };
+  return { ok: false, code: doc.code };
+}
+
+/**
+ * The PAYLOAD of one answer, checked against the operation that was asked.
+ *
+ * Returns the response or `null`. `null` is the only failure: nothing from the peer is carried out of here,
+ * because everything in this object came from the other side of the boundary — including, in the worst case,
+ * a path or a stack trace from a process that is not this product's sidecar at all.
+ */
+export function parseSidecarResponse(op: string, value: unknown): SidecarResponse | null {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) return null;
+  const doc = value as Record<string, unknown>;
+  if (doc.op !== op) return null;
+  switch (op) {
+    case 'provision':
+      if (!exactly(doc, ['op', 'keyId', 'dekBase64'])) return null;
+      if (!isIdentifier(doc.keyId) || !isWrappedDekBase64(doc.dekBase64)) return null;
+      return doc as unknown as SidecarResponse;
+    case 'commitProvision':
+      if (!exactly(doc, ['op', 'ok'])) return null;
+      if (doc.ok !== true) return null;
+      return doc as unknown as SidecarResponse;
+    case 'get':
+      if (!exactly(doc, ['op', 'dekBase64'])) return null;
+      if (!isWrappedDekBase64(doc.dekBase64)) return null;
+      return doc as unknown as SidecarResponse;
+    case 'destroy': {
+      if (!exactly(doc, ['op', 'receipt'])) return null;
+      const receipt = doc.receipt;
+      if (receipt === null || typeof receipt !== 'object' || Array.isArray(receipt)) return null;
+      const fields = receipt as Record<string, unknown>;
+      if (!exactly(fields, ['keyId', 'receiptId', 'destroyedAt', 'attestation'])) return null;
+      if (!isIdentifier(fields.keyId) || !isIdentifier(fields.receiptId)) return null;
+      if (!isWireText(fields.destroyedAt) || !isAttestation(fields.attestation)) return null;
+      return doc as unknown as SidecarResponse;
+    }
+    case 'status':
+      if (!exactly(doc, ['op', 'status'])) return null;
+      if (doc.status !== 'provisional' && doc.status !== 'active'
+        && doc.status !== 'destroyed' && doc.status !== 'not_found') return null;
+      return doc as unknown as SidecarResponse;
+    case 'listStaleProvisioning': {
+      if (!exactly(doc, ['op', 'stale'])) return null;
+      const stale = doc.stale;
+      if (!Array.isArray(stale) || stale.length > SIDECAR_MAX_STALE_ENTRIES) return null;
+      for (const entry of stale) {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return null;
+        const fields = entry as Record<string, unknown>;
+        if (!exactly(fields, ['operationId', 'itemId', 'keyId', 'ageMs'])) return null;
+        // THE KEY ID IS THIS CUSTODIAN'S OWN MINTED SHAPE; the operation and item ids came from the app and
+        // are held to the wider rule the keystore itself enforces — text with no control character in it.
+        // Narrowing those here would make an answer about a legitimately-named item into a refusal, which is
+        // a different bug from the one this check exists to prevent.
+        if (!isIdentifier(fields.keyId) || !isWireText(fields.operationId) || !isWireText(fields.itemId)) return null;
+        if (typeof fields.ageMs !== 'number' || !Number.isFinite(fields.ageMs) || fields.ageMs < 0) return null;
+      }
+      return doc as unknown as SidecarResponse;
+    }
+    case 'health':
+      return validateSidecarHealth(doc);
+    default:
+      return null;
+  }
+}
+
+/** What a validated answer is: a custodian response, or the health handshake. */
+export type SidecarResponse = LocalSidecarCustodianResponse | SidecarHealth;
+
+/**
+ * A health answer this build will act on, or `null`.
+ *
+ * EVERY FIELD, AND NO FIELD THIS BUILD DOES NOT DECLARE. `ringGeneration` and `ringActiveCreatedAt` are
+ * either both absent (a deployment with no ring) or both present and positive; a zero timestamp is refused
+ * rather than read as "the epoch", which the age check would call overdue by five decades.
+ */
+export function validateSidecarHealth(answer: unknown): SidecarHealth | null {
+  if (answer === null || typeof answer !== 'object' || Array.isArray(answer)) return null;
+  const doc = answer as Record<string, unknown>;
+  if (!exactly(doc, ['op', 'protocol', 'ready', 'custodian', 'ringGeneration', 'ringActiveCreatedAt'])) return null;
+  if (doc.op !== 'health' || doc.protocol !== SIDECAR_PROTOCOL_VERSION || doc.ready !== true) return null;
+  if (doc.custodian !== 'file-reference-harness' && doc.custodian !== 'sidecar-managed-ring') return null;
+  const generation = doc.ringGeneration;
+  const createdAt = doc.ringActiveCreatedAt;
+  const hasRing = generation !== null;
+  if (hasRing) {
+    if (!Number.isInteger(generation) || (generation as number) < 1) return null;
+    if (!Number.isInteger(createdAt) || (createdAt as number) < 1) return null;
+  } else if (createdAt !== null) {
+    // A deployment with no ring has no active generation to date. A timestamp beside a null generation is a
+    // contradiction, and a contradiction is not something to pick the agreeable half of.
+    return null;
+  }
+  return doc as unknown as SidecarHealth;
+}
+
+/** These keys, all of them, and nothing else. */
+function exactly(doc: Record<string, unknown>, fields: readonly string[]): boolean {
+  const keys = Object.keys(doc);
+  if (keys.length !== fields.length) return false;
+  for (const field of fields) if (!Object.prototype.hasOwnProperty.call(doc, field)) return false;
+  return true;
+}
+
+/** A 32-byte DEK, base64, in the one encoding of it that round-trips. Never logged, never reflected. */
+function isWrappedDekBase64(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length !== 44) return false;
+  const decoded = Buffer.from(value, 'base64');
+  return decoded.length === 32 && decoded.toString('base64') === value;
+}
+
+/** Text this boundary will carry: bounded, and with no control character to smuggle into a line-based record. */
+function isWireText(value: unknown): value is string {
+  if (typeof value !== 'string' || value.length === 0 || value.length > SIDECAR_MAX_TEXT_LENGTH) return false;
+  for (let index = 0; index < value.length; index += 1) {
+    const code = value.charCodeAt(index);
+    if (code < 0x20 || code === 0x7f) return false;
+  }
+  return true;
+}
+
+/** An attestation is an HMAC-SHA256, hex. Exactly that shape, so a peer cannot answer with prose. */
+function isAttestation(value: unknown): value is string {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
 }
 
 // -----------------------------------------------------------------------------------------------------------

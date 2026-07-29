@@ -597,7 +597,8 @@
     "test:phase282-local": "tsx test/kek-ring.ts",
     "test:phase283-local": "tsx test/kek-rotation.ts",
     "test:phase284-local": "tsx test/o4-o5-runtime-acceptance.ts",
-    "test:kek-correction-gates": "tsx test/kek-correction-gates.ts"
+    "test:kek-correction-gates": "tsx test/kek-correction-gates.ts",
+    "test:custodian-storage-ipc-gates": "tsx test/custodian-storage-ipc-gates.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",
