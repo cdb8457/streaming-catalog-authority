@@ -19,7 +19,11 @@ import { MaintenanceRefused } from './maintenance-safety.js';
 //   * A DOCKER SECRET NAMES A HOST FILE. `secrets: custodian_kek: file: …/secrets/custodian_kek` reads the
 //     real key material into the disposable stack. The shipped Unraid file does this six times.
 //   * AN EXTERNAL VOLUME OR NETWORK IS SOMEBODY ELSE'S. `external: true` means "one that already exists", and
-//     `down -v` on a project that mounts one is how a rehearsal deletes production state.
+//     `down -v` on a project that mounts one is how a rehearsal deletes production state. AND `external:
+//     false` DOES NOT MEAN THE OPPOSITE: a top-level `name:` puts a volume in the GLOBAL namespace where an
+//     installation's real volumes live, and `driver_opts: {type: none, o: bind, device: /…}` makes a "local"
+//     volume a host bind mount that no service's mount list ever calls a bind. Both are checked by the
+//     EFFECTIVE resolved name and mechanism, not by the flag. See `ResolvedTopLevelResource`.
 //   * `container_name` TAKES A NAME GLOBALLY. Two projects cannot both have it, so a disposable stack
 //     declaring one either fails or replaces the running container of that name.
 //   * `network_mode: host`, `privileged`, `devices:` AND A DOCKER SOCKET MOUNT each hand the disposable stack
@@ -88,12 +92,46 @@ export interface ResolvedService {
   readonly keys: readonly string[];
 }
 
+/**
+ * A top-level volume or network, as Compose actually resolved it.
+ *
+ * THE DEFECT THIS SHAPE EXISTS FOR. The first version of this file kept only the definition's KEY and the
+ * `external` flag, and treated `external: false` as proof that the resource belonged to this project. It is
+ * not, in two separate ways, and both survive `down -v` in the wrong direction:
+ *
+ *   * AN EXPLICIT `name:` IS A GLOBAL NAME. Compose derives `<project>_<key>` for a resource a project owns,
+ *     but a definition may say `name: catalog-pgdata` instead — and that names a volume outside every
+ *     project's namespace, one that already exists or is created stable and shared. `external` stays `false`
+ *     the whole time. A rehearsal mounting it reads the installation's data, and its `down -v` REMOVES IT.
+ *   * A LOCAL VOLUME CAN BE A BIND MOUNT WEARING A VOLUME'S CLOTHES. `driver: local` with
+ *     `driver_opts: {type: none, o: bind, device: /mnt/user/appdata/catalog}` is a host directory. It is not
+ *     external, it is not a `type: bind` mount in any service, and every check that looked at mounts alone
+ *     walked straight past it.
+ *
+ * So the effective NAME and the MECHANISM are both kept, and every key the entry carries is kept too — an
+ * unrecognised one is refused rather than ignored, because a mechanism this build has never heard of is a
+ * mechanism it cannot prove is contained.
+ */
+export interface ResolvedTopLevelResource {
+  /** The key in the definition. This is what a service mount's `source` usually names. */
+  readonly key: string;
+  /** The EFFECTIVE name Docker would use. `<project>_<key>` unless the definition overrode it. */
+  readonly name: string;
+  readonly external: boolean;
+  /** The mechanism, or `null` where the definition named none and Compose's default applies. */
+  readonly driver: string | null;
+  /** The mechanism's options. Non-empty on a volume is the bind/device disguise above. */
+  readonly driverOptions: Readonly<Record<string, string>>;
+  /** Every key the resolved entry carries, so an unrecognised mechanism is a refusal. */
+  readonly keys: readonly string[];
+}
+
 export interface ResolvedComposeModel {
   readonly projectName: string;
   readonly services: readonly ResolvedService[];
-  /** Top-level named volumes, and whether each is `external`. */
-  readonly volumes: readonly { readonly name: string; readonly external: boolean }[];
-  readonly networks: readonly { readonly name: string; readonly external: boolean }[];
+  /** Top-level named volumes, as resolved: effective name and mechanism, not merely the key. */
+  readonly volumes: readonly ResolvedTopLevelResource[];
+  readonly networks: readonly ResolvedTopLevelResource[];
   readonly secrets: readonly string[];
   readonly configs: readonly string[];
 }
@@ -200,11 +238,30 @@ function asRecord(value: unknown, what: string): Record<string, unknown> {
   return value as Record<string, unknown>;
 }
 
-function readTopLevel(value: unknown, what: string): readonly { name: string; external: boolean }[] {
+function readTopLevel(value: unknown, what: string): readonly ResolvedTopLevelResource[] {
   const map = asRecord(value, what);
-  return Object.entries(map).map(([name, body]) => {
+  return Object.entries(map).map(([key, body]) => {
     const entry = body === null || body === undefined ? {} : asRecord(body, `${what} entry`);
-    return { name, external: entry.external === true };
+    // THE EFFECTIVE NAME, AND A REFUSAL WHERE THERE ISN'T ONE. A resolved configuration always carries the
+    // name Docker would use; a document that does not is not Compose's own answer, and guessing the default
+    // derivation on its behalf would be inventing the very fact this check rests on.
+    if (typeof entry.name !== 'string' || entry.name.trim() === '') {
+      throw new MaintenanceRefused(
+        `the ${what} entry carries no effective name, so this command cannot prove which volume or network `
+        + 'Docker would actually use. That is not a fully resolved configuration. Refused.');
+    }
+    const driverOptions: Record<string, string> = {};
+    for (const [option, optionValue] of Object.entries(asRecord(entry.driver_opts, `${what} driver options`))) {
+      driverOptions[option] = optionValue === null || optionValue === undefined ? '' : String(optionValue);
+    }
+    return {
+      key,
+      name: entry.name,
+      external: entry.external === true,
+      driver: typeof entry.driver === 'string' ? entry.driver : null,
+      driverOptions,
+      keys: Object.keys(entry),
+    };
   });
 }
 
@@ -271,8 +328,21 @@ function referenceNames(value: unknown, what: string): readonly string[] {
  *
  * This is what binds "the stack that was validated" to "the stack that booted": it is recorded in the
  * evidence, and a definition edited between the validation and the boot produces a different one.
+ *
+ * IT COVERS EVERY VALUE A REFUSAL RESTS ON. It used to hash a top-level resource's KEY and `external` flag —
+ * exactly the two fields that turned out not to decide anything. A volume that gained an explicit global
+ * name, a `device:` driver option or a different driver produced a byte-identical digest, so the one value
+ * that is supposed to say "this is the stack that was checked" could not have told the difference.
  */
 export function resolvedComposeDigest(model: ResolvedComposeModel): string {
+  const resource = (entry: ResolvedTopLevelResource): unknown => [
+    entry.key,
+    entry.name,
+    entry.external,
+    entry.driver,
+    Object.entries(entry.driverOptions).slice().sort((a, b) => (a[0] < b[0] ? -1 : 1)),
+    [...entry.keys].sort(),
+  ];
   const canonical = JSON.stringify([
     model.projectName,
     model.services.map((service) => [
@@ -284,8 +354,8 @@ export function resolvedComposeDigest(model: ResolvedComposeModel): string {
       [...service.configs].sort(),
       [...service.keys].sort(),
     ]),
-    model.volumes.map((entry) => [entry.name, entry.external]),
-    model.networks.map((entry) => [entry.name, entry.external]),
+    model.volumes.map(resource),
+    model.networks.map(resource),
     [...model.secrets].sort(),
     [...model.configs].sort(),
   ]);
@@ -389,18 +459,13 @@ export function validateResolvedCompose(model: ResolvedComposeModel, expect: Com
       + 'volume and network Compose creates is labelled with that name, and the cleanup removes by exactly it.');
   }
 
-  // ---- NOTHING EXTERNAL, ANYWHERE -----------------------------------------------------------------------
+  // ---- EVERY VOLUME AND NETWORK IS THIS PROJECT'S OWN, AND IS WHAT IT SAYS IT IS -------------------------
   //
-  // An external volume or network already exists and belongs to whoever made it. `down -v` on a project that
-  // mounts one is how a rehearsal deletes an installation's data.
+  // `external: false` PROVES NOTHING ON ITS OWN, which is what the first version of this file got wrong. See
+  // `ResolvedTopLevelResource` for the two ways a non-external resource still reaches out.
   for (const [kind, entries] of [['volume', model.volumes], ['network', model.networks]] as const) {
     for (const entry of entries) {
-      if (entry.external) {
-        throw new MaintenanceRefused(
-          `the resolved disposable stack uses an EXTERNAL ${kind}, which is one that already exists and belongs `
-          + 'to something else. This rehearsal destroys its own project\'s volumes, so it will not run against '
-          + 'a resource it did not create.');
-      }
+      assertProjectOwnedResource(kind, entry, expect.projectName);
     }
   }
   if (model.secrets.length > 0 || model.configs.length > 0) {
@@ -462,8 +527,13 @@ export function validateResolvedCompose(model: ResolvedComposeModel, expect: Com
         continue; // tmpfs is memory: it is gone on stop and names nothing on the host.
       }
       if (mount.type === 'volume') {
-        const declared = model.volumes.find((entry) => entry.name === mount.source);
         if (mount.source === '') continue; // an anonymous volume is created and destroyed with the project
+        // MATCHED AGAINST BOTH SPELLINGS. Compose writes a mount's `source` as the definition's KEY in some
+        // versions and as the EFFECTIVE NAME in others, and a check that knew only one of them would either
+        // refuse every real stack or accept a mount naming a volume nobody declared. Every declared entry has
+        // already been proved to carry the derived name, so the two cannot collide.
+        const declared = model.volumes.find(
+          (entry) => entry.key === mount.source || entry.name === mount.source);
         if (declared === undefined) {
           throw new MaintenanceRefused(
             'the resolved disposable stack mounts a named volume the definition does not declare, so this '
@@ -550,6 +620,82 @@ export function validateResolvedCompose(model: ResolvedComposeModel, expect: Com
         }
       }
     }
+  }
+}
+
+/**
+ * Keys a top-level volume or network may carry at all.
+ *
+ * AN ALLOWLIST HERE, unlike the service-key rule next door, and for the opposite reason: a service legitimately
+ * carries dozens of keys and only a short list reaches outside the project, whereas a volume or network this
+ * rehearsal needs is described entirely by its name — everything else it can say is a MECHANISM, and a
+ * mechanism this build has not read is one it cannot prove is contained. `driver` and `driver_opts` are on the
+ * list so that they can be refused SPECIFICALLY, with the reason, rather than as "an unrecognised key".
+ */
+export const PERMITTED_RESOURCE_KEYS: readonly string[] = Object.freeze([
+  'name', 'external', 'labels', 'driver', 'driver_opts',
+]);
+
+/**
+ * The one mechanism each kind may use: the default that creates something inside the project and nothing else.
+ *
+ * A `local` volume with no options is a directory Docker manages, labelled with the project and removed by its
+ * `down -v`. A `bridge` network is the project's own. Every other driver — and `local` WITH options — either
+ * reaches a host path, a remote filesystem or the host's own networking.
+ */
+export const PERMITTED_RESOURCE_DRIVERS: Readonly<Record<'volume' | 'network', string>> = Object.freeze({
+  volume: 'local',
+  network: 'bridge',
+});
+
+/**
+ * Prove a top-level resource belongs to this project and is what it claims to be, or refuse.
+ *
+ * THE NAME IS THE OWNERSHIP PROOF. Compose derives `<project>_<key>` for a resource a project owns; anything
+ * else is a name in the global namespace, which is where an installation's real volumes live. Requiring the
+ * derived name exactly refuses an explicit `name:` without having to guess whether the operator meant to
+ * reference something that already exists — because the two are indistinguishable at this point and the
+ * consequence of guessing wrong is `down -v` on production data.
+ */
+export function assertProjectOwnedResource(
+  kind: 'volume' | 'network',
+  entry: ResolvedTopLevelResource,
+  projectName: string,
+): void {
+  if (entry.external) {
+    throw new MaintenanceRefused(
+      `the resolved disposable stack uses an EXTERNAL ${kind}, which is one that already exists and belongs `
+      + 'to something else. This rehearsal destroys its own project\'s volumes, so it will not run against '
+      + 'a resource it did not create.');
+  }
+  const derived = `${projectName}_${entry.key}`;
+  if (entry.name !== derived) {
+    throw new MaintenanceRefused(
+      `the resolved disposable stack gives a ${kind} an explicit name instead of this project's own. Compose `
+      + `names a ${kind} a project OWNS "<project>_<key>"; any other name is in the global namespace, where an `
+      + `installation's real ${kind}s live — and it stays that way whether or not "external" is set. This `
+      + `rehearsal runs "down -v", so a ${kind} it does not provably own is one it must not touch.`);
+  }
+  for (const key of entry.keys) {
+    if (!PERMITTED_RESOURCE_KEYS.includes(key)) {
+      throw new MaintenanceRefused(
+        `the resolved disposable stack describes a ${kind} with "${key}", which is a mechanism this command `
+        + `cannot prove is contained. A ${kind} a rehearsal needs is described by its name and nothing else.`);
+    }
+  }
+  if (Object.keys(entry.driverOptions).length > 0) {
+    throw new MaintenanceRefused(
+      `the resolved disposable stack gives a ${kind} driver options. On a volume those are how a HOST PATH is `
+      + 'mounted while looking like a volume — "type: none, o: bind, device: /some/host/path" is a bind mount '
+      + 'wearing a volume\'s clothes, it is not external, and no mount in any service says "bind". This command '
+      + 'refuses the mechanism rather than trying to tell the safe options from the dangerous ones.');
+  }
+  const permitted = PERMITTED_RESOURCE_DRIVERS[kind];
+  if (entry.driver !== null && entry.driver !== permitted) {
+    throw new MaintenanceRefused(
+      `the resolved disposable stack gives a ${kind} a "${entry.driver}" driver. A rehearsal needs only the `
+      + `default "${permitted}" one, which creates something inside this project and reaches nothing else; every `
+      + 'other driver is a host path, a remote filesystem or the host\'s own networking.');
   }
 }
 

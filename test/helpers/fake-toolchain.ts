@@ -373,11 +373,28 @@ export function fakeComposeConfigJson(stack: ResolvedFakeStack): string {
   return JSON.stringify({
     name: stack.name,
     services,
-    volumes: asRecord.volumes ?? {},
-    networks: asRecord.networks ?? { default: {} },
+    volumes: resolvedResources(asRecord.volumes, stack.name),
+    networks: resolvedResources(asRecord.networks ?? { default: {} }, stack.name),
     secrets: asRecord.secrets ?? {},
     configs: asRecord.configs ?? {},
   });
+}
+
+/**
+ * Top-level volumes and networks, as `config` actually resolves them: with an EFFECTIVE NAME.
+ *
+ * COMPOSE DERIVES `<project>_<key>` — and a definition's own `name:` OVERRIDES that, which is why the spread
+ * is in this order. That single line is the whole of the "explicit name escapes the project namespace"
+ * defect: a fake that always emitted the derived name could not have produced the case, and the check would
+ * have been asserted against a world in which it could never fail.
+ */
+function resolvedResources(value: unknown, projectName: string): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  for (const [key, body] of Object.entries((value ?? {}) as YamlMap)) {
+    const entry = body === null || body === undefined ? {} : (body as YamlMap);
+    out[key] = { name: `${projectName}_${key}`, ...entry };
+  }
+  return out;
 }
 
 /**

@@ -37,6 +37,7 @@ import {
 import {
   REHEARSAL_SERVICES,
   parseResolvedComposeModel,
+  resolvedComposeDigest,
   validateResolvedCompose,
 } from '../src/ops/rehearsal-compose-model.js';
 import { assertPermittedCommand } from '../src/ops/maintenance-safety.js';
@@ -816,6 +817,27 @@ test('a definition that would reach PRODUCTION is refused before a marker, a vol
     'Docker secrets or configs'],
     ['an external volume', DISPOSABLE_COMPOSE.replace('  pgdata: {}', '  pgdata:\n    external: true'),
       'EXTERNAL volume'],
+    // `external: false` PROVES NOTHING. These four are all non-external and every one of them reaches out.
+    ['a volume with an explicit global name',
+      DISPOSABLE_COMPOSE.replace('  pgdata: {}', '  pgdata:\n    name: catalog-authority-pgdata'),
+      'explicit name instead of this project\'s own'],
+    ['a network with an explicit global name',
+      `${DISPOSABLE_COMPOSE}networks:\n  default:\n    name: catalogauthority_default\n`,
+      'explicit name instead of this project\'s own'],
+    ['a local volume that is really a host bind',
+      DISPOSABLE_COMPOSE.replace('  pgdata: {}',
+        '  pgdata:\n    driver: local\n    driver_opts:\n      type: none\n      o: bind\n'
+        + '      device: /mnt/user/appdata/catalog/pgdata'),
+      'driver options'],
+    ['a volume on a storage driver nobody can audit',
+      DISPOSABLE_COMPOSE.replace('  pgdata: {}', '  pgdata:\n    driver: a-storage-plugin'),
+      'a "a-storage-plugin" driver'],
+    ['a network on the host\'s own networking',
+      `${DISPOSABLE_COMPOSE}networks:\n  default:\n    driver: host\n`,
+      'a "host" driver'],
+    ['a volume describing a mechanism this build has not read',
+      DISPOSABLE_COMPOSE.replace('  pgdata: {}', '  pgdata:\n    some_future_mechanism: whatever'),
+      'cannot prove is contained'],
     ['a container name', withService('app', ['    image: catalog-authority-ops:v0.0.0-placeholder',
       '    container_name: catalog-app']), 'container_name'],
     ['the host network', withService('app', ['    image: catalog-authority-ops:v0.0.0-placeholder',
@@ -857,6 +879,144 @@ test('a definition that would reach PRODUCTION is refused before a marker, a vol
     assertEq(readdirSync(world.disposable).join(','), COMPOSE_FILE, `${what}: the root is as it was`);
     assertEq(report.composeModel.base, null, `${what}: no resolved model was accepted`);
     assertEq(report.cleanup.performed, false, `${what}: nothing was cleaned up`);
+  }
+});
+
+test('a top-level volume or network is proved OWNED, by its effective name and its mechanism', () => {
+  // THE DEFECT: the model kept a top-level entry's KEY and its `external` flag, and treated `external: false`
+  // as proof of ownership. It is not. An explicit `name:` puts the volume in the GLOBAL namespace where an
+  // installation's real volumes live — and this command runs `down -v` on what it believes it owns. A `local`
+  // volume with `driver_opts: {type: none, o: bind, device: /…}` is a host directory that no service's mount
+  // list ever calls a bind, so every check that looked at mounts alone walked past it.
+  const world = makeWorld('owned-resources');
+  const resolved = resolveRehearsal(req(world));
+  const project = resolved.projectName;
+  const model = (volumes: Record<string, unknown>, networks: Record<string, unknown>) =>
+    parseResolvedComposeModel(JSON.stringify({
+      name: project,
+      services: {
+        postgres: { image: 'postgres:16', environment: {},
+          volumes: [{ type: 'volume', source: 'pgdata', target: '/var/lib/postgresql/data' }] },
+        migrate: { image: CURRENT, environment: {}, volumes: [] },
+        app: { image: CURRENT, environment: {}, volumes: [] },
+        sidecar: { image: CURRENT, environment: {}, volumes: [] },
+      },
+      volumes, networks, secrets: {}, configs: {},
+    }), 'resolved disposable stack');
+  const check = (volumes: Record<string, unknown>, networks: Record<string, unknown> = {}) =>
+    validateResolvedCompose(model(volumes, networks), {
+      projectName: project,
+      disposableRoot: resolved.disposableRoot,
+      workspace: null,
+      pinnedImages: null,
+      wiring: requiredRehearsalWiring(),
+    });
+
+  // A PROJECT-SCOPED NAMED VOLUME IS FINE, and is what the disposable stack is supposed to use. Asserted
+  // first, so every refusal below is a refusal of something specific rather than of the whole shape.
+  check({ pgdata: { name: `${project}_pgdata` } }, { default: { name: `${project}_default` } });
+  check({ pgdata: { name: `${project}_pgdata`, driver: 'local', labels: { a: 'b' } } },
+    { default: { name: `${project}_default`, driver: 'bridge' } });
+
+  for (const [what, volumes, networks, needle] of [
+    ['an explicit global volume name', { pgdata: { name: 'catalog-authority-pgdata' } }, {},
+      'explicit name instead of this project\'s own'],
+    ['a name that merely CONTAINS the project name', { pgdata: { name: `x-${project}_pgdata` } }, {},
+      'explicit name instead of this project\'s own'],
+    ['an explicit global network name', { pgdata: { name: `${project}_pgdata` } },
+      { default: { name: 'catalogauthority_default' } }, 'explicit name instead of this project\'s own'],
+    ['a host-bind driver option', {
+      pgdata: {
+        name: `${project}_pgdata`, driver: 'local',
+        driver_opts: { type: 'none', o: 'bind', device: '/mnt/user/appdata/catalog/pgdata' },
+      },
+    }, {}, 'driver options'],
+    ['a driver option of any kind at all', {
+      pgdata: { name: `${project}_pgdata`, driver_opts: { anything: 'at-all' } },
+    }, {}, 'driver options'],
+    ['a custom volume driver', { pgdata: { name: `${project}_pgdata`, driver: 'a-storage-plugin' } }, {},
+      'a "a-storage-plugin" driver'],
+    ['a custom network driver', { pgdata: { name: `${project}_pgdata` } },
+      { default: { name: `${project}_default`, driver: 'macvlan' } }, 'a "macvlan" driver'],
+    ['a mechanism this build has not read', {
+      pgdata: { name: `${project}_pgdata`, some_future_mechanism: { whatever: true } },
+    }, {}, 'cannot prove is contained'],
+    ['an external volume, still', { pgdata: { name: `${project}_pgdata`, external: true } }, {},
+      'EXTERNAL volume'],
+  ] as Array<[string, Record<string, unknown>, Record<string, unknown>, string]>) {
+    refuses(() => check(volumes, networks), needle, what);
+  }
+
+  // A RESOLVED CONFIGURATION ALWAYS CARRIES THE EFFECTIVE NAME. One that does not is not Compose's own
+  // answer, and deriving the default on its behalf would be inventing the fact the whole check rests on.
+  refuses(() => model({ pgdata: {} }, {}), 'carries no effective name', 'an entry with no resolved name');
+
+  // AND THE MOUNT STILL RESOLVES, by whichever spelling Compose used for the source.
+  const byEffectiveName = parseResolvedComposeModel(JSON.stringify({
+    name: project,
+    services: {
+      postgres: { image: 'postgres:16', environment: {},
+        volumes: [{ type: 'volume', source: `${project}_pgdata`, target: '/var/lib/postgresql/data' }] },
+      migrate: { image: CURRENT, environment: {}, volumes: [] },
+      app: { image: CURRENT, environment: {}, volumes: [] },
+      sidecar: { image: CURRENT, environment: {}, volumes: [] },
+    },
+    volumes: { pgdata: { name: `${project}_pgdata` } }, networks: {}, secrets: {}, configs: {},
+  }), 'resolved disposable stack');
+  validateResolvedCompose(byEffectiveName, {
+    projectName: project,
+    disposableRoot: resolved.disposableRoot,
+    workspace: null,
+    pinnedImages: null,
+    wiring: requiredRehearsalWiring(),
+  });
+  refuses(() => validateResolvedCompose(parseResolvedComposeModel(JSON.stringify({
+    name: project,
+    services: {
+      postgres: { image: 'postgres:16', environment: {},
+        volumes: [{ type: 'volume', source: 'a-volume-nobody-declared', target: '/var/lib/postgresql/data' }] },
+      migrate: { image: CURRENT, environment: {}, volumes: [] },
+      app: { image: CURRENT, environment: {}, volumes: [] },
+      sidecar: { image: CURRENT, environment: {}, volumes: [] },
+    },
+    volumes: { pgdata: { name: `${project}_pgdata` } }, networks: {}, secrets: {}, configs: {},
+  }), 'resolved disposable stack'), {
+    projectName: project,
+    disposableRoot: resolved.disposableRoot,
+    workspace: null,
+    pinnedImages: null,
+    wiring: requiredRehearsalWiring(),
+  }), 'the definition does not declare', 'a mount naming a volume nobody declared');
+});
+
+test('the resolved-stack digest moves when any value a refusal rests on moves', () => {
+  // THE DEFECT: the digest hashed a top-level resource's KEY and `external` flag — exactly the two fields
+  // that turned out to decide nothing. A volume that gained a global name, a `device:` option or another
+  // driver produced a BYTE-IDENTICAL digest, so the value recorded as "this is the stack that was checked"
+  // could not have told the difference between the checked stack and one that reaches production.
+  const project = 'catalog-rehearsal-r1';
+  const stack = (volumes: Record<string, unknown>) => parseResolvedComposeModel(JSON.stringify({
+    name: project,
+    services: { app: { image: CURRENT, environment: {}, volumes: [] } },
+    volumes, networks: {}, secrets: {}, configs: {},
+  }), 'resolved disposable stack');
+  const safe = resolvedComposeDigest(stack({ pgdata: { name: `${project}_pgdata` } }));
+  assertEq(resolvedComposeDigest(stack({ pgdata: { name: `${project}_pgdata` } })), safe, 'it is stable');
+  for (const [what, volumes] of [
+    ['an explicit global name', { pgdata: { name: 'catalog-authority-pgdata' } }],
+    ['a driver', { pgdata: { name: `${project}_pgdata`, driver: 'local' } }],
+    ['a host-bind driver option', {
+      pgdata: {
+        name: `${project}_pgdata`, driver_opts: { type: 'none', o: 'bind', device: '/somewhere/on/the/host' },
+      },
+    }],
+    ['a different driver option value', {
+      pgdata: { name: `${project}_pgdata`, driver_opts: { device: '/somewhere/else' } },
+    }],
+    ['an external flag', { pgdata: { name: `${project}_pgdata`, external: true } }],
+    ['a key nobody has read', { pgdata: { name: `${project}_pgdata`, some_future_mechanism: 'x' } }],
+  ] as Array<[string, Record<string, unknown>]>) {
+    assert(resolvedComposeDigest(stack(volumes)) !== safe, `${what} is a different stack, so a different digest`);
   }
 });
 
