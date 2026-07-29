@@ -63,6 +63,17 @@ jobs:
         # tells you nothing. A timeout here fails loudly with a readable log instead of occupying a runner.
         timeout-minutes: 15
         run: npm run test:runner
+      - name: Phase 276, 275, 274 — offline snapshot production, read-only matching, disposable lifecycle
+        # Phase 274 is the offline producer: an operator-supplied export of an EXTERNAL system turned into the
+        # canonical import snapshot, deterministically and atomically, with no network, no acquisition data
+        # and no symlink creation. Phase 275 is the read-only match between imported records and a Jellyfin
+        # library, against a real embedded PostgreSQL and a fake media server over real HTTP. Phase 276 is the
+        # contract of the disposable lifecycle gate, including STARTING the acceptance fake server to prove
+        # its test-only mutation surface is off unless explicitly enabled and cannot ship.
+        run: |
+          npm run test:phase274-local
+          npm run test:phase275-local
+          npm run test:phase276-local
       - name: Phase 268, 267, 266 — the Jellyfin control plane
         # Phase 266 is the connection and the read-only discovery surface (an injected transport plus a fake
         # Jellyfin this suite starts on loopback — no network beyond 127.0.0.1). Phases 267 and 268 are the

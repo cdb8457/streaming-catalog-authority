@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseCatalogSnapshot } from '../src/core/catalog/import-snapshot.js';
+import { produceCatalogSnapshot } from '../src/core/catalog/external-export.js';
 import { checkJellyfinBaseUrl } from '../src/core/adapters/jellyfin/url-policy.js';
 import { asMap, parseYaml } from './helpers/compose-yaml.js';
 
@@ -46,14 +47,19 @@ const SPEC = 'deploy/ci/acceptance/jellyfin.spec.mjs';
 const CONFIG = 'deploy/ci/acceptance/jellyfin.playwright.config.mjs';
 const OVERRIDE = 'deploy/ci/acceptance/docker-compose.jellyfin-fake.yml';
 const FAKE = 'deploy/ci/acceptance/fake-jellyfin/server.mjs';
-const FIXTURE = 'deploy/ci/acceptance/fixtures/jellyfin-acceptance-snapshot.json';
+// Phase 274. What is CHECKED IN is an EXPORT of an external system; the canonical snapshot the gate imports
+// is PRODUCED from it during the run, by the product's own command.
+const EXPORT_FIXTURE = 'deploy/ci/acceptance/fixtures/jellyfin-acceptance-export.json';
 const DOC = 'docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md';
 const WORKFLOW = '.github/workflows/runtime-image.yml';
 
 test('every piece of the Jellyfin acceptance is present', () => {
-  for (const file of [ORCHESTRATOR, SPEC, CONFIG, OVERRIDE, FAKE, FIXTURE, DOC]) {
+  for (const file of [ORCHESTRATOR, SPEC, CONFIG, OVERRIDE, FAKE, EXPORT_FIXTURE, DOC]) {
     assert(exists(file), `${file} exists`);
   }
+  // And the ready-made canonical snapshot is GONE, so the gate cannot go back to copying one.
+  assert(!exists('deploy/ci/acceptance/fixtures/jellyfin-acceptance-snapshot.json'),
+    'no ready-made canonical snapshot may sit in fixtures/ for the gate to copy');
 });
 
 test('the orchestrator keeps the skip/fail discipline, and never publishes anything', () => {
@@ -117,10 +123,12 @@ test('the fake media server is local, dependency-free, authenticated, and implem
     'the fake server contacts nothing itself');
 });
 
-test('the fake server holds exactly the references the snapshot fixture carries', () => {
+test('the fake server holds exactly the references the PRODUCED snapshot carries', () => {
   // If these two drift, the leg that proves matching-by-provider-reference passes against a library that
-  // holds nothing, and proves nothing at all.
-  const snapshot = parseCatalogSnapshot(read(FIXTURE));
+  // holds nothing, and proves nothing at all. The snapshot is produced from the export exactly as the gate
+  // produces it, so this compares the fake library against what the run will really import.
+  const snapshot = parseCatalogSnapshot(produceCatalogSnapshot(read(EXPORT_FIXTURE)).text);
+  assertEq(snapshot.source, 'external.acceptance-external', 'the produced records declare external provenance');
   const fixtureRefs = snapshot.items.flatMap((item) => (item.providerRefs ?? []).map((ref) => ref.value));
   assert(fixtureRefs.length >= 2, 'the fixture carries references');
   const fake = read(FAKE);

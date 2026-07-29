@@ -1,0 +1,32 @@
+{
+  "format": "catalog-authority.external-export",
+  "version": 1,
+  "system": "acceptance-external",
+  "entries": [
+    {
+      "entryId": "jf-01",
+      "title": "Acceptance Collection One",
+      "year": 1994,
+      "references": [{ "kind": "imdb_id", "id": "tt-jellyfin-acceptance-ref-1" }],
+      "attributes": { "note": "matched by the local fake Jellyfin" }
+    },
+    {
+      "entryId": "jf-02",
+      "title": "Acceptance Collection Two",
+      "year": 2001,
+      "references": [{ "kind": "imdb", "id": "tt-jellyfin-acceptance-ref-2" }]
+    },
+    {
+      "entryId": "jf-03",
+      "title": "Acceptance Collection Three",
+      "year": 2011,
+      "attributes": { "note": "no provider reference, so a plan must report it as blocked" }
+    },
+    {
+      "entryId": "jf-04",
+      "title": "Unrelated Record",
+      "year": 1977,
+      "references": [{ "kind": "tmdb_id", "id": "tmdb-jellyfin-acceptance-unrelated" }]
+    }
+  ]
+}

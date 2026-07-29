@@ -1,0 +1,14 @@
+{
+  "format": "catalog-authority.external-export",
+  "version": 1,
+  "system": "acquisition-probe",
+  "entries": [
+    {
+      "entryId": "probe-01",
+      "title": "Acquisition Probe",
+      "attributes": {
+        "nzb.id": "abc123"
+      }
+    }
+  ]
+}

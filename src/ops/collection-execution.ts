@@ -124,6 +124,30 @@ function gate(refusal: CollectionExecutionRefusal): CollectionWriteGateResult {
   return { ok: false, refusal, message: COLLECTION_EXECUTION_REFUSAL_MESSAGES[refusal] };
 }
 
+/** The three WRITE switches, as booleans. The read switch is not one of them and is reported separately. */
+export interface CollectionWriteGateState {
+  readonly collectionWritesEnabled: boolean;
+  readonly livePublishEnabled: boolean;
+  readonly externalIdentityAllowed: boolean;
+}
+
+/**
+ * What the write switches are, WITHOUT requiring any of them.
+ *
+ * Phase 275's read-only match reports the gate state so a report cannot be mistaken for one taken on a closed
+ * installation. It lives HERE, beside `checkCollectionWriteGates`, rather than in the command module, so
+ * there is exactly one place in this product that knows how each switch is spelled and read — and so a
+ * read-only surface does not have to import the real-client factory or the consent loader to ask a question
+ * about a boolean.
+ */
+export function describeCollectionWriteGates(env: NodeJS.ProcessEnv = process.env): CollectionWriteGateState {
+  return {
+    collectionWritesEnabled: isJellyfinCollectionWriteEnabled(env),
+    livePublishEnabled: isJellyfinLivePublishAllowed(env),
+    externalIdentityAllowed: loadPublishConsent(env) === 'allow',
+  };
+}
+
 export interface CollectionQueueResult {
   /** The durable identity this execution addressed. */
   readonly collectionKey: string;

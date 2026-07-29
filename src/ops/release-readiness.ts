@@ -615,14 +615,19 @@ const checkArchitectureClaim: Check = (_evidence, workflow) => {
 
 const checkSuitesRunAcceptances: Check = (_evidence, workflow) => {
   const id = 'suites-run-the-acceptances';
-  const title = 'The suites job runs the Phase 245-249 and Phase 262 acceptance suites';
+  const title = 'The suites job runs the Phase 245-249, 262 and 274-276 acceptance suites';
   if (workflow === null) return invalid(id, title, 'the workflow could not be parsed');
   const text = workflow.jobText('suites');
   if (text === '') return invalid(id, title, 'the workflow has no suites job');
-  const required = ['test:phase245-local', 'test:phase246-local', 'test:phase247-local', 'test:phase248-local', 'test:phase249-local', 'test:phase262-local', 'npm run typecheck'];
+  // Phase 274-276 are here for the same reason Phase 262 is: each of them is the STATIC CONTRACT of a gate
+  // that only runs against a Docker daemon, so if the contract suite stops running, the thing it keeps honest
+  // stops being checked anywhere a release can see.
+  const required = ['test:phase245-local', 'test:phase246-local', 'test:phase247-local', 'test:phase248-local',
+    'test:phase249-local', 'test:phase262-local', 'test:phase274-local', 'test:phase275-local',
+    'test:phase276-local', 'npm run typecheck'];
   const missing = required.filter((need) => !text.includes(need));
   if (missing.length > 0) return block(id, title, `the suites job does not run: ${missing.join(', ')}`);
-  return pass(id, title, 'the suites job runs typecheck and the Phase 245-249 and Phase 262 acceptance suites');
+  return pass(id, title, 'the suites job runs typecheck and the Phase 245-249, 262 and 274-276 acceptance suites');
 };
 
 const checkDocsInstallUpgradeRollback: Check = (evidence) => {

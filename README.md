@@ -103,6 +103,28 @@ docker compose exec app npm run ops:catalog-import -- --file my-library.json    
 docker compose exec app npm run ops:catalog-import -- --file my-library.json --apply  # commit it
 ```
 
+**If another system already knows your catalog, export from it instead of typing one out.** Put that export in
+the same `./import/` folder and turn it into a snapshot:
+
+```bash
+docker compose exec app npm run ops:catalog-snapshot-produce -- --from my-export.json --preview        # writes nothing
+npm run ops:catalog-snapshot-produce -- --from ./import/my-export.json --out ./import/my-library.json  # produce it
+```
+
+The export format is `catalog-authority.external-export` v1 — `system`, then `entries` of `entryId`, `title`,
+optional `year`, `references` (`imdb`/`tmdb`/`tvdb`/`tvmaze`/`anidb`/`infohash`, either spelling) and flat
+string `attributes`. The produced records carry `external.<system>` as their source, so an export can never
+collide with a snapshot you wrote by hand.
+
+This command **contacts nothing** — not the system the export came from, not a provider, not a media server,
+not a download client. It downloads nothing, plays nothing, scans no media folder and creates no symbolic
+link. An export carrying **acquisition data** — a download URL, an NZB or torrent identifier, a tracker, a
+magnet link, an absolute media path or a UNC share — is **refused whole**, by key namespace and by value
+shape, rather than quietly filtered. The write is atomic: the output name holds the previous file or the
+complete new one, never a prefix. Producing does not import; preview and apply are still separate, deliberate
+steps. Details, bounds and every rejection:
+[docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md](docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md).
+
 Then use the **Catalog** panel to search, sort, filter and page through what you imported, open a record, and
 **export** the whole thing back out as a snapshot file. An export is deterministic and re-importable, and it
 never contains a provider reference value — it says how many it left out instead.
@@ -147,10 +169,20 @@ chose, with the selected catalog records resolved to matching library items. Re-
 the same managed collection. Deselecting or forgetting a record queues its membership for removal, and
 removing the last member queues the collection itself for revocation.
 
+**Before you plan anything, you can just ask.** `npm run ops:collections -- match` compares the records you
+imported with what your library actually holds. It needs only the first switch — the read one — writes nothing
+anywhere, and sends no provider reference to your server: matching happens here, on a listing it fetched. It
+answers `matched`, `unmatched`, `no-references` (the record has nothing to match *by*), `unreadable` (the
+record was forgotten) and **`unknown`**. If the library listing fails or hits its bound, every record it would
+have judged is `unknown` and the report says the library was not read completely — because "I could not see
+it" is not "it is not there", and a report you would act on must not blur the two. It prints opaque record
+ids, verdicts and counts: no title, no reference value, no media-server id, no address.
+
 Everything is recorded in durable, identity-minimized history that survives restarts. The boundaries,
 guarantees and limits are in
-[docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md](docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md) and
-[docs/PHASE_269_272_COLLECTION_LIFECYCLE.md](docs/PHASE_269_272_COLLECTION_LIFECYCLE.md).
+[docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md](docs/PHASE_266_268_JELLYFIN_CONTROL_PLANE.md),
+[docs/PHASE_269_272_COLLECTION_LIFECYCLE.md](docs/PHASE_269_272_COLLECTION_LIFECYCLE.md) and
+[docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md](docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md).
 
 The format, its bounds and every design decision:
 [docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md](docs/PHASE_259_OFFLINE_CATALOG_IMPORT.md).

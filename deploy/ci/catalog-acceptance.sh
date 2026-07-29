@@ -17,8 +17,11 @@
 # shares nothing with the Phase 248 stack and the two can run on one machine without colliding. Everything it
 # creates is removed on every exit path, including the volumes.
 #
-# FIXTURES ARE LOCAL AND DETERMINISTIC. The snapshot is a file in this repository. Nothing here contacts a
-# provider, a media server, a library or any network endpoint beyond 127.0.0.1.
+# FIXTURES ARE LOCAL AND DETERMINISTIC, AND THE SNAPSHOT IS PRODUCED RATHER THAN CHECKED IN (Phase 274). What
+# this repository holds is an EXPORT of an external system — a different, closed schema. The canonical snapshot
+# this run imports is emitted during the run by `ops:catalog-snapshot-produce`, and the shipped image is then
+# made to produce the same bytes from the same input. Nothing here contacts a provider, a media server, a
+# download client, a library or any network endpoint beyond 127.0.0.1.
 #
 # PREREQUISITES: a running Docker daemon, `node`, and the pinned acceptance harness in deploy/ci/acceptance/.
 # FAIL vs SKIP is explicit and identical to Phase 248:
@@ -44,7 +47,10 @@ STAGING_DIR="${CAT_STAGING_DIR:-${REPO_ROOT}/dist/catalog-acceptance-staging}"
 BUNDLE_DIR="${REPO_ROOT}/dist/catalog-acceptance-bundle"
 ARCHIVE_DIR="${REPO_ROOT}/dist/catalog-acceptance-archive"
 BROWSER_DIR="${REPO_ROOT}/deploy/ci/acceptance"
-FIXTURE="${BROWSER_DIR}/fixtures/catalog-acceptance-snapshot.json"
+# Phase 274. The fixture is an EXPORT FROM AN EXTERNAL SYSTEM, not a ready-made canonical snapshot. The
+# snapshot this run imports is PRODUCED from it, by the product's own command, during the run.
+EXPORT_FIXTURE="${BROWSER_DIR}/fixtures/catalog-acceptance-export.json"
+SNAPSHOT_NAME="acceptance-snapshot.json"
 EXTRACTED=""
 RC_COMPOSE_ATTEMPTED=0
 TOKEN=""
@@ -78,6 +84,21 @@ digits_or_die() {
     ''|*[!0-9]*) echo "FAIL: ${2} did not return a number — the measurement failed, so nothing may be concluded from it" >&2; exit 1 ;;
   esac
   printf '%s' "${1}"
+}
+
+# The same discipline as digits_or_die, for a DIGEST. Two unreadable digests compare EQUAL to each other,
+# so a broken measurement on both sides would turn "the shipped image produced the same bytes" into a
+# vacuous pass — which is precisely the shape of false proof this gate exists to refuse. A digest that is
+# not 64 hexadecimal characters is a failed measurement, and a failed measurement ends the run.
+hex64_or_die() {
+  case "${1}" in
+    *[!0-9a-f]*|"") echo "FAIL: ${2} is not a digest — the measurement failed, so nothing may be concluded from it" >&2; exit 1 ;;
+  esac
+  if [ "${#1}" -ne 64 ]; then
+    echo "FAIL: ${2} is not a 64-character digest — the measurement failed, so nothing may be concluded from it" >&2
+    exit 1
+  fi
+  printf %s "${1}"
 }
 
 skip() {
@@ -138,7 +159,11 @@ docker info >/dev/null 2>&1 || skip "the Docker daemon is not reachable"
 info "docker daemon reachable, node present"
 
 [ -f "${BROWSER_DIR}/catalog.spec.mjs" ] || fail "the catalog acceptance spec is missing at ${BROWSER_DIR}"
-[ -f "${FIXTURE}" ] || fail "the acceptance snapshot fixture is missing at ${FIXTURE}"
+[ -f "${EXPORT_FIXTURE}" ] || fail "the external-export fixture is missing at ${EXPORT_FIXTURE}"
+# A ready-made canonical snapshot must NOT be sitting there to be copied: while one exists, this gate could
+# silently go back to copying it and the claim "the snapshot was produced during the run" becomes unfalsifiable.
+[ -e "${BROWSER_DIR}/fixtures/catalog-acceptance-snapshot.json" ] \
+  && fail "a ready-made canonical snapshot exists in fixtures/ — this gate must PRODUCE its snapshot, not copy one"
 if [ ! -d "${BROWSER_DIR}/node_modules/@playwright/test" ]; then
   skip "the pinned browser harness is not installed (run: npm --prefix deploy/ci/acceptance ci && npx --prefix deploy/ci/acceptance playwright install --with-deps chromium)"
 fi
@@ -204,13 +229,41 @@ TOKEN="$(cat "${TOKEN_FILE}")"
 if [ -n "${GITHUB_ACTIONS:-}" ]; then echo "::add-mask::${TOKEN}"; fi
 info "secrets generated; operator token read from disk and masked"
 
-# ./import is the host side of the read-only mount the release documents (CATALOG_IMPORT_HOST_DIR). The
-# snapshot goes in exactly the way the README tells an operator to put one there — a file copy, nothing else.
-step "place the offline snapshot in the shipped read-only import folder"
+# ./import is the host side of the read-only mount the release documents (CATALOG_IMPORT_HOST_DIR).
+#
+# PHASE 274: THE SNAPSHOT IS PRODUCED HERE, NOT COPIED. Nothing in this repository is the canonical snapshot
+# this run imports; it is emitted by the product's own `ops:catalog-snapshot-produce` from an operator-supplied
+# EXPORT of an external system, which is a different, closed schema. That is what makes "an operator's other
+# system fed this one" a claim the gate actually establishes rather than one a checked-in file pretends to.
+step "PRODUCE the offline snapshot from an external export, into the shipped read-only import folder"
 mkdir -p "${EXTRACTED}/import"
-cp "${FIXTURE}" "${EXTRACTED}/import/acceptance-snapshot.json"
+[ -e "${EXTRACTED}/import/${SNAPSHOT_NAME}" ] && fail "a snapshot already exists in the import folder before it was produced"
+produce_json="$( node --import tsx src/ops/catalog-snapshot-produce-cli.ts \
+  --from "${EXPORT_FIXTURE}" --out "${EXTRACTED}/import/${SNAPSHOT_NAME}" --json )" \
+  || { printf '%s\n' "${produce_json}" >&2; fail "producing the snapshot from the external export failed"; }
+read_produced() {
+  printf '%s' "${produce_json}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).$1))}catch(e){process.stdout.write('UNREADABLE')}})"
+}
+produced_records="$(digits_or_die "$(read_produced records)" "the produced record count")"
+[ "${produced_records}" = "${RECORD_COUNT}" ] || fail "the producer emitted ${produced_records} records, expected ${RECORD_COUNT}"
+[ "$(read_produced source)" = "external.acceptance-external" ] \
+  || fail "the produced snapshot does not carry external provenance in its source"
+for declared in "network:none" "acquisition:external-input-only" "mediaAccess:none" "symlinksCreated:0"; do
+  field="${declared%%:*}"; want="${declared#*:}"
+  [ "$(read_produced "${field}")" = "${want}" ] || fail "the producer did not declare ${field}=${want}"
+done
+[ -s "${EXTRACTED}/import/${SNAPSHOT_NAME}" ] || fail "the producer wrote no snapshot"
+HOST_CONTENT_DIGEST="$(hex64_or_die "$(read_produced contentDigest)" "the produced content digest")"
+for forbidden in "${SECRET_REF}" 'Acceptance Fixture 01' 'Zulu Acceptance Fixture 26'; do
+  case "${produce_json}" in *"${forbidden}"*) fail "the producer's report echoed content it must not";; esac
+done
+# The EXPORT goes in too, so the SHIPPED IMAGE can be made to produce from the same input further down, and
+# so does the deliberately illegal ACQUISITION PROBE the refusal leg reads.
+cp "${EXPORT_FIXTURE}" "${EXTRACTED}/import/catalog-acceptance-export.json"
+[ -f "${BROWSER_DIR}/fixtures/acquisition-probe-export.json" ] || fail "the acquisition probe fixture is missing"
+cp "${BROWSER_DIR}/fixtures/acquisition-probe-export.json" "${EXTRACTED}/import/acquisition-probe-export.json"
 cp "${EXTRACTED}/example-catalog-snapshot.json" "${EXTRACTED}/import/example-catalog-snapshot.json"
-info "snapshot (${RECORD_COUNT} records) and the shipped example placed in ./import/"
+info "produced ${produced_records} records (digest ${HOST_CONTENT_DIGEST:0:16}); the export and the shipped example are in ./import/"
 
 # ---------------------------------------------------------------------------------------------------------
 # 4. Start the stack. The compose file's one-shot `migrate` service bootstraps the schema before the app
@@ -475,11 +528,42 @@ info "empty-state guidance and import discovery verified in a real browser"
 # ---------------------------------------------------------------------------------------------------------
 # 8. PREVIEW — twice, through both surfaces, and the proof that neither writes anything.
 # ---------------------------------------------------------------------------------------------------------
+# The SHIPPED IMAGE carries the producer too, and produces the SAME BYTES from the same export. It is run as
+# a PREVIEW so it writes nothing at all: the import folder is read-only to the container, and a producer that
+# needed to write into it would be a workflow this product does not have.
+step "the shipped image produces the identical snapshot from the same export (determinism across environments)"
+image_produce="$( cd "${EXTRACTED}" && docker compose exec -T app npm run --silent ops:catalog-snapshot-produce -- \
+  --from catalog-acceptance-export.json --preview --json )" \
+  || { printf '%s\n' "${image_produce}" >&2; fail "the shipped image could not produce the snapshot"; }
+image_digest="$( printf '%s' "${image_produce}" | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{try{process.stdout.write(String(JSON.parse(s).contentDigest))}catch(e){process.stdout.write('UNREADABLE')}})" )"
+image_digest="$(hex64_or_die "${image_digest}" "the in-image content digest")"
+[ "${image_digest}" = "${HOST_CONTENT_DIGEST}" ] \
+  || fail "the shipped image produced a different snapshot (${image_digest:0:16}) from the host (${HOST_CONTENT_DIGEST:0:16})"
+printf '%s' "${image_produce}" | grep -q '"mode":"preview"' || fail "the in-image production was not a preview"
+info "the shipped image produced byte-identical output from the same export"
+
+# An export from a download tool naturally knows things this product must never hold. The probe fixture is a
+# well-formed export whose ONLY fault is an attribute in an acquisition namespace, so the refusal that comes
+# back is unambiguously about that and not about some other malformation. It uses a KEY NAMESPACE rather than
+# a literal address deliberately: this orchestrator is itself checked by a suite that forbids a non-loopback
+# URL appearing anywhere in it, and a gate that had to name one to prove this rule would be weakening one
+# boundary to demonstrate another. It is read from the READ-ONLY import folder like every other input.
+step "an export carrying ACQUISITION data is refused whole, inside the shipped image"
+acq_refusal="$( cd "${EXTRACTED}" && docker compose exec -T app npm run --silent ops:catalog-snapshot-produce -- \
+  --from acquisition-probe-export.json --preview 2>&1 || true )"
+printf '%s' "${acq_refusal}" | grep -q 'acquisition or media-location data' \
+  || { printf '%s\n' "${acq_refusal}" >&2; fail "the shipped image accepted an export carrying acquisition data"; }
+printf '%s' "${acq_refusal}" | grep -q 'Nothing was written' \
+  || { printf '%s\n' "${acq_refusal}" >&2; fail "the refusal did not say that nothing was written"; }
+info "an export naming an acquisition identifier was refused by the shipped runtime, whole"
+
 step "preview the import from the COMMAND LINE (nothing may be written)"
-preview_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file acceptance-snapshot.json )" \
+preview_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file "${SNAPSHOT_NAME}" )" \
   || fail "the import preview exited non-zero"
 printf '%s\n' "${preview_out}" | grep -qF 'PREVIEW (nothing was written)' || fail "the preview did not announce itself as a preview"
 printf '%s\n' "${preview_out}" | grep -qE "^ +create +${RECORD_COUNT}$" || fail "the preview did not plan ${RECORD_COUNT} creates"
+printf '%s\n' "${preview_out}" | grep -qE "^ +source +external\.acceptance-external$" \
+  || { printf '%s\n' "${preview_out}" >&2; fail "the produced records do not carry the external-input provenance"; }
 # A report that echoed content would be a disclosure defect in itself.
 if printf '%s\n' "${preview_out}" | grep -qF "${SECRET_REF}"; then fail "the preview report echoed a provider reference value"; fi
 if printf '%s\n' "${preview_out}" | grep -qF 'Acceptance Fixture'; then fail "the preview report echoed a title"; fi
@@ -591,7 +675,7 @@ if [ "${reapply_status}" -ne 0 ]; then dump_stack_logs; fi
 info "re-applying from the browser created nothing, appended nothing, and was still recorded"
 
 step "re-apply the same snapshot from the COMMAND LINE (idempotency, and both surfaces agree)"
-repeat_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file acceptance-snapshot.json --apply )" \
+repeat_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file "${SNAPSHOT_NAME}" --apply )" \
   || fail "the repeat import exited non-zero"
 printf '%s\n' "${repeat_out}" | grep -qE '^ +create +0$' || fail "the repeat import planned creates; it is not idempotent"
 printf '%s\n' "${repeat_out}" | grep -qE "^ +already present +${RECORD_COUNT}$" || fail "the repeat import did not recognise every record as already present"

@@ -1335,6 +1335,26 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "external-snapshot-produce.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "jellyfin-library-match.ts",
+      "group": "db",
+      "args": [
+        "5466"
+      ],
+      "requires": []
+    },
+    {
+      "file": "disposable-collection-lifecycle.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }

@@ -8,6 +8,7 @@ import {
   acceptanceRun, classifyAcceptanceRun, describeAcceptanceRun, unreachableDocker, type AcceptanceRun,
 } from './helpers/docker-acceptance.js';
 import { parseCatalogSnapshot } from '../src/core/catalog/import-snapshot.js';
+import { produceCatalogSnapshot } from '../src/core/catalog/external-export.js';
 
 // Phase 262 — the CONTRACT of the catalog import-and-browse acceptance, checked the way a machine with no
 // Docker daemon and no browser can check it: statically, by parsing the shipped snapshot fixture with the
@@ -43,7 +44,10 @@ console.log('Running Phase 262 catalog import-and-browse acceptance contract sui
 const ORCHESTRATOR = 'deploy/ci/catalog-acceptance.sh';
 const SPEC = 'deploy/ci/acceptance/catalog.spec.mjs';
 const CONFIG = 'deploy/ci/acceptance/catalog.playwright.config.mjs';
-const FIXTURE = 'deploy/ci/acceptance/fixtures/catalog-acceptance-snapshot.json';
+// Phase 274. What is CHECKED IN is an EXPORT of an external system; the canonical snapshot the gate imports
+// is PRODUCED from it during the run. Everything this suite asserts about "the fixture" is therefore asserted
+// about the produced document, using the product's own producer and the product's own parser.
+const EXPORT_FIXTURE = 'deploy/ci/acceptance/fixtures/catalog-acceptance-export.json';
 const DOC = 'docs/PHASE_262_CATALOG_BROWSER_ACCEPTANCE.md';
 const RC_ORCHESTRATOR = 'deploy/ci/release-candidate-acceptance.sh';
 
@@ -55,9 +59,13 @@ const RECORD_COUNT = 28;
 // ---------------------------------------------------------------------------------------------------------
 
 test('every piece of the catalog acceptance is present', () => {
-  for (const file of [ORCHESTRATOR, SPEC, CONFIG, FIXTURE, DOC]) {
+  for (const file of [ORCHESTRATOR, SPEC, CONFIG, EXPORT_FIXTURE, DOC]) {
     assert(exists(file), `${file} exists`);
   }
+  // And the ready-made canonical snapshot is GONE. While one exists, this gate could quietly go back to
+  // copying it, and "the snapshot was produced during the run" becomes a claim nothing can falsify.
+  assert(!exists('deploy/ci/acceptance/fixtures/catalog-acceptance-snapshot.json'),
+    'no ready-made canonical snapshot may sit in fixtures/ for the gate to copy');
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -68,10 +76,12 @@ test('every piece of the catalog acceptance is present', () => {
 // CLI calls, moves that failure to a suite anyone can run in a second.
 // ---------------------------------------------------------------------------------------------------------
 
-test('the snapshot fixture is a valid snapshot, by the shipped parser, with the shape the spec assumes', () => {
-  const snapshot = parseCatalogSnapshot(read(FIXTURE));
-  assertEq(snapshot.items.length, RECORD_COUNT, 'the fixture holds the record count the spec asserts');
-  assertEq(snapshot.source, 'acceptance-fixture', 'a source of its own, so it can never collide with real data');
+test('the snapshot the gate PRODUCES is a valid snapshot, with the shape the spec assumes', () => {
+  const produced = produceCatalogSnapshot(read(EXPORT_FIXTURE));
+  const snapshot = parseCatalogSnapshot(produced.text);
+  assertEq(snapshot.items.length, RECORD_COUNT, 'the produced snapshot holds the record count the spec asserts');
+  assertEq(snapshot.source, 'external.acceptance-external',
+    'a source of its own that declares external provenance, so it can never collide with real data');
 
   // Exactly one record carries an imdb reference — the filter in the spec has exactly one answer.
   const imdb = snapshot.items.filter((item) => item.providerRefs.some((ref) => ref.type === 'imdb'));
@@ -92,15 +102,17 @@ test('the snapshot fixture is a valid snapshot, by the shipped parser, with the 
   // More than one default page (25), so paging is actually exercised.
   assert(snapshot.items.length > 25, 'the fixture spans more than one default page');
 
-  // Deterministic: parsing it twice produces the same digest and the same derived ids.
-  const again = parseCatalogSnapshot(read(FIXTURE));
-  assertEq(again.digest, snapshot.digest, 'the fixture parses to a stable digest');
-  assertEq(again.items.map((i) => i.itemId).join(','), snapshot.items.map((i) => i.itemId).join(','),
-    'and to stable derived record ids');
+  // Deterministic: producing it twice yields the same bytes, the same digest and the same derived ids.
+  const again = produceCatalogSnapshot(read(EXPORT_FIXTURE));
+  assertEq(again.text, produced.text, 'the export produces byte-identical output');
+  assertEq(again.contentDigest, produced.contentDigest, 'and a stable content digest');
+  assertEq(again.snapshot.digest, snapshot.digest, 'and a stable snapshot digest');
+  assertEq(again.snapshot.items.map((i) => i.itemId).join(','), snapshot.items.map((i) => i.itemId).join(','),
+    'and stable derived record ids');
 });
 
-test('the fixture names no live service, host or private coordinate', () => {
-  const lower = read(FIXTURE).toLowerCase();
+test('the export fixture names no live service, host or private coordinate', () => {
+  const lower = read(EXPORT_FIXTURE).toLowerCase();
   for (const forbidden of ['jellyfin', 'unraid', '/mnt/user', 'torbox', 'http://', 'https://', 'ghcr.io']) {
     assert(!lower.includes(forbidden), `the fixture never references ${forbidden}`);
   }
@@ -245,7 +257,20 @@ test('the orchestrator covers the whole consumer workflow, in order, with a proo
     [/exit 0 \(got|did not exit 0/, 'and that the one-shot exited zero'],
     [/import.*:ro|read-only|Destination "\/var\/lib\/catalog\/import"/, 'it checks the import mount is read-only'],
     [/touch \/var\/lib\/catalog\/import/, 'and proves it by trying to write into it from the container'],
-    [/cp "\$\{FIXTURE\}"/, 'it places the snapshot through the shipped host-side import folder'],
+    [/catalog-snapshot-produce-cli\.ts[\s\S]{0,200}--out "\$\{EXTRACTED\}\/import\/\$\{SNAPSHOT_NAME\}"/,
+      'it PRODUCES the snapshot into the shipped host-side import folder rather than copying a checked-in one'],
+    [/a snapshot already exists in the import folder before it was produced/,
+      'and refuses to run if a snapshot was already sitting there, which would make the production vacuous'],
+    [/the shipped image produced a different snapshot/,
+      'it proves the SHIPPED IMAGE produces byte-identical output from the same export'],
+    // Two unreadable digests compare EQUAL to each other, so that comparison would pass vacuously if either
+    // measurement failed. Both sides go through a guard that refuses anything that is not a digest.
+    [/hex64_or_die "\$\(read_produced contentDigest\)"/, 'and refuses a produced digest that is not a digest'],
+    [/hex64_or_die "\$\{image_digest\}"/, 'and refuses an in-image digest that is not a digest'],
+    [/acquisition or media-location data/,
+      'and that the shipped runtime refuses an export carrying acquisition data'],
+    [/external\\\.acceptance-external/,
+      'and that the imported records carry the external-input provenance'],
     [/example-catalog-snapshot\.json/, 'and checks the documented example ships with the bundle'],
     [/run_leg "@empty"/, 'it drives the browser against the EMPTY installation first'],
     [/ops:catalog-import -- --file [^\n]*\n/, 'it runs the documented import command'],
