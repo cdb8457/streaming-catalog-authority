@@ -298,7 +298,10 @@ async function main(): Promise<void> {
       'this gate must PRODUCE its snapshot, not copy one',
       'a snapshot already exists in the import folder before it was produced',
       'the shipped image produced a different snapshot',
-      'the produced snapshot does not carry external provenance in its source',
+      // The SNAPSHOT keeps `external.<system>`; the support REPORT deliberately does not, and the gate checks
+      // both halves of that — the file for the provenance, the report for its absence.
+      'the produced snapshot does not carry external.<system> provenance in its own source field',
+      "the producer's report echoed content it must not",
       'the repeat import planned creates; it is not idempotent',
       // Phase 276 — gates closed first, and a refusal that names one.
       'a closed write gate did not refuse the queue, or did not name itself',

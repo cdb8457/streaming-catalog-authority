@@ -246,15 +246,21 @@ read_produced() {
 }
 produced_records="$(digits_or_die "$(read_produced records)" "the produced record count")"
 [ "${produced_records}" = "${RECORD_COUNT}" ] || fail "the producer emitted ${produced_records} records, expected ${RECORD_COUNT}"
-[ "$(read_produced source)" = "external.acceptance-external" ] \
-  || fail "the produced snapshot does not carry external provenance in its source"
-for declared in "network:none" "acquisition:external-input-only" "mediaAccess:none" "symlinksCreated:0"; do
+# THE REPORT SAYS THE INPUT WAS EXTERNAL, AND NOT WHICH SYSTEM IT CAME FROM. The label lives in the SNAPSHOT,
+# which is checked separately below; a support report that named the operator's external tool would be a
+# support report that travels further than the fact it is describing.
+for declared in "provenance:external-input" "network:none" "acquisition:external-input-only" "mediaAccess:none" "symlinksCreated:0"; do
   field="${declared%%:*}"; want="${declared#*:}"
   [ "$(read_produced "${field}")" = "${want}" ] || fail "the producer did not declare ${field}=${want}"
 done
 [ -s "${EXTRACTED}/import/${SNAPSHOT_NAME}" ] || fail "the producer wrote no snapshot"
 HOST_CONTENT_DIGEST="$(hex64_or_die "$(read_produced contentDigest)" "the produced content digest")"
-for forbidden in "${SECRET_REF}" 'Acceptance Fixture 01' 'Zulu Acceptance Fixture 26'; do
+# THE SNAPSHOT KEEPS THE REAL PROVENANCE, and that is where it belongs: every derived record id is a function
+# of it. Checked on the FILE, because the report deliberately no longer carries it.
+grep -q '"source": "external.acceptance-external"' "${EXTRACTED}/import/${SNAPSHOT_NAME}" \
+  || fail "the produced snapshot does not carry external.<system> provenance in its own source field"
+# The producer's report is redaction-safe: no title, no reference value, and NOT the external system's label.
+for forbidden in "${SECRET_REF}" 'Acceptance Fixture 01' 'Zulu Acceptance Fixture 26' 'acceptance-external'; do
   case "${produce_json}" in *"${forbidden}"*) fail "the producer's report echoed content it must not";; esac
 done
 # The EXPORT goes in too, so the SHIPPED IMAGE can be made to produce from the same input further down, and
@@ -551,11 +557,16 @@ info "the shipped image produced byte-identical output from the same export"
 step "an export carrying ACQUISITION data is refused whole, inside the shipped image"
 acq_refusal="$( cd "${EXTRACTED}" && docker compose exec -T app npm run --silent ops:catalog-snapshot-produce -- \
   --from acquisition-probe-export.json --preview 2>&1 || true )"
-printf '%s' "${acq_refusal}" | grep -q 'acquisition or media-location data' \
+printf '%s' "${acq_refusal}" | grep -q 'acquisition or media-location namespace' \
   || { printf '%s\n' "${acq_refusal}" >&2; fail "the shipped image accepted an export carrying acquisition data"; }
 printf '%s' "${acq_refusal}" | grep -q 'Nothing was written' \
   || { printf '%s\n' "${acq_refusal}" >&2; fail "the refusal did not say that nothing was written"; }
-info "an export naming an acquisition identifier was refused by the shipped runtime, whole"
+# ...and the refusal names a POSITION rather than the key that caused it. A key in somebody else's document is
+# a value: it can be a URL, a path or a token, and this refusal goes to a terminal and into a CI log.
+printf '%s' "${acq_refusal}" | grep -q 'attributes\[0\]' \
+  || { printf '%s\n' "${acq_refusal}" >&2; fail "the refusal did not name the position an operator can fix"; }
+case "${acq_refusal}" in *'nzb.id'*) fail "the refusal echoed the hostile attribute key back to the terminal";; esac
+info "an export naming an acquisition identifier was refused by the shipped runtime, whole, without echoing the key"
 
 step "preview the import from the COMMAND LINE (nothing may be written)"
 preview_out="$( cd "${EXTRACTED}" && docker compose exec -T app npm run ops:catalog-import -- --file "${SNAPSHOT_NAME}" )" \

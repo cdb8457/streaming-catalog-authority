@@ -51,11 +51,39 @@ believed to be.
 
 **The write is atomic and symlink-safe.** The bytes go to a dot-prefixed temporary file in the same directory,
 created with `O_CREAT | O_EXCL` (which fails if the name exists at all, including as a dangling symlink — the
-check IS the creation, so there is no window), `fsync`ed, then `rename`d over the destination. A reader —
-including this product's own import inbox, watching that folder — sees the old file or the complete new one,
-never a prefix. A crash leaves the temporary file, whose leading dot the inbox's own name grammar refuses. The
-destination is `lstat`ed and refused if it is a symlink. **Nothing here ever creates a link, and nothing
-creates a directory.**
+check IS the creation, so there is no window), `fsync`ed, then published to the destination name in one step.
+A reader — including this product's own import inbox, watching that folder — sees the old file or the complete
+new one, never a prefix. A crash leaves the temporary file, whose leading dot the inbox's own name grammar
+refuses. The destination is `lstat`ed and refused if it is a symlink. **Nothing creates a directory.**
+
+**"No overwrite" is a guarantee, and `rename` could not have given it.** The first version of this module
+`lstat`ed the destination, refused if something was there, and then published with `renameSync`. Both halves
+are individually correct and the pair was still wrong: `rename` replaces its destination unconditionally, so
+two producers that both found the name free would both write a temp and both rename — and the second would
+silently destroy the first completed snapshot, under a flag whose entire documented meaning is that it will
+not do that. Without `--overwrite` the publish is now `link(temp, destination)`, the POSIX primitive that
+**fails when its destination exists**, atomically, with `EEXIST`, decided by the kernel rather than by
+something this process observed a moment earlier. The temporary name is then unlinked. With `--overwrite` it
+is still `rename`, because replacing is then what was asked for.
+
+That hard link is between two names of one snapshot file in one directory and lives for microseconds. It is
+not a symbolic link, it does not point into a media library, and the absolute invariant is untouched — the
+suite now asserts *that* (no symbolic-link call anywhere in the module; a published snapshot is not a symbolic
+link; exactly one link call, and it is the publish) instead of forbidding the one primitive that makes the
+refusal honest. A filesystem with no hard links gets a **refusal**, not a silent fallback to a `rename` known
+to clobber; the same discipline the import inbox applies to `O_NOFOLLOW`.
+
+**The published file is 0644 and the temporary one is 0600.** A partially written document is never readable
+by anyone else; the descriptor is `fchmod`ed after the last byte and before the publish. That is not cosmetic:
+the shipped stack bind-mounts the import folder into a container running as a **different uid**, so a snapshot
+produced on the host at 0600 is a snapshot the product itself cannot read.
+
+**Diagnostics name a position, never a key.** A key in somebody else's document is a value: an attribute key
+can be a URL, an absolute media path, an api token or a film title, and an "unknown key: `<key>`" message
+would print it to a terminal, a CI log and whatever gets pasted into an issue — while the check that produced
+it exists precisely because that key is the hostile part. Every rejection therefore names a position (`entry
+12`, `references[1]`, `attributes[3]`) and, where it helps, the closed set of names that *are* allowed, which
+is strictly more actionable than echoing the wrong one.
 
 **The produced name is one the import inbox will offer** (`INBOX_NAME_RE`), so produce → preview → apply has no
 hole in the middle of it. `CATALOG_SNAPSHOT_OUT_DIR`, when set, applies the same containment discipline to
@@ -64,6 +92,13 @@ writing that `CATALOG_IMPORT_DIR` applies to reading: a bare name only, resolved
 **The report is redaction-safe by construction:** counts, digests, closed-set words and a base name. No title,
 reference value, attribute value, directory or absolute path appears in it, and it declares `network: none`,
 `acquisition: external-input-only`, `mediaAccess: none` and `symlinksCreated: 0`.
+
+**And it does not say WHICH external system.** It carried `system: "torbox"` and `source: "external.torbox"`
+while calling itself redaction-safe — which is to say it told a support bundle which acquisition tool the
+operator runs, and its own test was named "no external system detail" while never checking that sentinel.
+Both fields are gone; the report says `provenance: external-input` and nothing more. The **snapshot** still
+carries `external.<system>`, because that is where provenance belongs and every derived record id is a
+function of it, and the suite now asserts both halves: the label is in the file, and it is not in the report.
 
 ## Phase 275 — which of my records does my library actually have?
 
@@ -191,11 +226,12 @@ operator who writes a snapshot by hand does not need the producer at all.
 
 | | |
 | --- | --- |
-| `npm run test:phase274-local` | `test/external-snapshot-produce.ts` — the transformation cannot perform I/O; the writing module creates no link and builds no directory; the closed schema in every direction; every acquisition namespace and every location-shaped value refused; input, entry-count and **produced-output** bounds; byte-identical determinism independent of export order; the output parsed by the shipped importer; structural provenance and the ids it derives; a preview writing nothing; an atomic write whose on-disk bytes equal the reported digest; no clobber without `--overwrite`; a symlink destination refused with its target untouched; the produced name offered by the real inbox listing; output-directory containment; a redaction scan of the report and the JSON; and the strict CLI parser. |
+| `npm run test:phase274-local` | `test/external-snapshot-produce.ts` — the transformation cannot perform I/O; the writing module creates no symbolic link, no media link and no directory, and its one link call is the publish; no production caller touches the publish-window seam; the closed schema in every direction; every acquisition namespace and every location-shaped value refused; input, entry-count and **produced-output** bounds; byte-identical determinism independent of export order; the output parsed by the shipped importer; structural provenance and the ids it derives; a preview writing nothing; an atomic write whose on-disk bytes equal the reported digest; **a destination that appears inside the publish window is not replaced and the rival's complete bytes survive**; **two no-overwrite publishers cannot both succeed**; a published snapshot is a plain regular file, readable by another uid and writable by no one else; a symlink destination refused with its target untouched; the produced name offered by the real inbox listing; output-directory containment; a redaction scan of the report and the JSON **including the external system's own label**; **hostile-key sentinels across root, entry, reference and every attribute branch, and on the CLI's own stderr**; and the strict CLI parser. |
 | `npm run test:phase275-local` | `test/jellyfin-library-match.ts` — against a real embedded PostgreSQL and a fake media server over real HTTP: the module reaches for no writer; the read-only target refuses every write; the read switch alone; every write gate closed and reported; all five outcomes; a whole session writing nothing in any table; determinism to the digest; a failed library read producing `unknown` and **not one** inferred absence; a forgotten record leaving the comparison entirely; the transport ledger showing only `GET /Items` and `GET /System/Info` and no write route; opening the write switches changing nothing; and a full disclosure scan of everything the command printed. |
 | `npm run test:phase276-local` | `test/disposable-collection-lifecycle.ts` — the fake-admin surface is in no file under `src/`, in no `COPY` of the production image and in no release-bundle artifact; it is off unless the exact switch is set, proved by **running** the server with five near-miss values; drift injection and one-shot read failures really work; the Jellyfin surface still requires the api key; the override starts with every write switch closed; and the orchestrator opens them only after proving the refusal, stages every step of the lifecycle, and names no real service, media path or registry in anything it executes. |
 | `npm run test:phase262-local` | `test/catalog-browser-acceptance.ts` — updated: the gate PRODUCES its snapshot, the ready-made canonical fixture is gone, and the shipped image is made to produce byte-identical output. |
 | `npm run test:phase268-acceptance` | `test/jellyfin-control-acceptance.ts` — updated: the fake library and the **produced** snapshot agree. |
+| `npm run test:phase250-local` | `test/release-readiness.ts` — updated: removing **any** required suite from the CI suites job blocks `suites-run-the-acceptances`, one mutation per suite rather than one for the whole list, and the suites job's name may not state a phase range it cannot keep current. |
 | `deploy/ci/catalog-acceptance.sh`, `deploy/ci/jellyfin-control-acceptance.sh` | drive the shipped image, the migration, a real Chromium and a local fake Jellyfin through the whole thing. **NOT RUN for this change — see below.** |
 
 ## Verification status

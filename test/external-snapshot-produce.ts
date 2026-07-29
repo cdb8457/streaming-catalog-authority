@@ -2,6 +2,7 @@ import {
   existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { createHash } from 'node:crypto';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -28,6 +29,7 @@ import {
   SNAPSHOT_PRODUCE_REPORT,
   SnapshotProducePathError,
   produceSnapshotFile,
+  publishTemporary,
   renderSnapshotProduction,
   resolveProducedSnapshotPath,
 } from '../src/ops/catalog-snapshot-produce.js';
@@ -86,11 +88,13 @@ mkdirSync(OUT, { recursive: true });
 const SECRET_TITLE = 'A Title That Must Never Appear In A Report';
 const SECRET_REF = 'tt-phase274-ref-value-must-never-be-disclosed';
 const SECRET_ATTR = 'a-note-that-must-never-appear-in-a-report';
+/** The external system's own label. The SNAPSHOT keeps it; the support report must not. */
+const SECRET_SYSTEM = 'torbox';
 
 const exportDoc = (entries: unknown[], overrides: Record<string, unknown> = {}): string => JSON.stringify({
   format: EXTERNAL_EXPORT_FORMAT,
   version: EXTERNAL_EXPORT_VERSION,
-  system: 'torbox',
+  system: SECRET_SYSTEM,
   entries,
   ...overrides,
 });
@@ -125,22 +129,51 @@ test('the transformation module cannot perform I/O of any kind', () => {
   assert(!/\bfetch\s*\(/.test(source), 'the transformation module must not call a transport');
 });
 
-test('the writing module creates no link and builds no directory', () => {
+test('the writing module creates no SYMBOLIC link, no media link and no directory', () => {
   const source = readRepo('src/ops/catalog-snapshot-produce.ts');
   for (const forbidden of ['symlinkSync', 'mkdirSync', 'rmSync', 'rmdirSync', 'node:http', 'node:net',
     'node:child_process', 'node:dns']) {
     assert(!source.includes(forbidden), `the writing module must not name ${forbidden}`);
   }
-  // `linkSync` on its own, and NOT the `unlinkSync` it is a substring of — the temporary file's cleanup is a
-  // legitimate unlink and the scan must not be satisfied by refusing it.
-  assert(!/(?<![A-Za-z])linkSync/.test(source), 'the writing module must not name linkSync');
-  assert(source.includes('unlinkSync'), 'while it does remove its own temporary file');
   assert(!/\bfetch\s*\(/.test(source), 'the writing module must not call a transport');
+
+  // THE INVARIANT IS "NO SYMBOLIC LINK AND NO MEDIA LINK", NOT "NO `linkSync`".
+  //
+  // An earlier version of this test forbade `linkSync` outright, and that was the wrong invariant stated in
+  // the wrong place: it forbade the ONE primitive that can publish a file to a name only if the name is free,
+  // which is what makes the default refusal a guarantee rather than a check a second producer runs past. A
+  // hard link between two names of one snapshot file in one directory is not a symbolic link, does not point
+  // into a media library, and lives for microseconds. So the scan now pins what actually matters, and pins
+  // the primitive's PURPOSE so it cannot quietly become something else.
+  assert(/(?<![A-Za-z])linkSync\(temporary, destination\)/.test(source),
+    'the no-overwrite publish is a hard link from the temporary name to the destination');
+  assert(source.includes('unlinkSync'), 'and the temporary name is removed afterwards');
+  const linkCalls = [...source.matchAll(/(?<![A-Za-z])linkSync\(/g)].length;
+  assertEq(linkCalls, 1, 'and there is exactly ONE link call in the module');
+  // No media path can be an argument to it: this module never names one at all.
+  for (const media of ['/mnt/', 'Movies', 'media/', '.mkv', '.mp4']) {
+    assert(!source.includes(media), `the writing module must not name ${media}`);
+  }
+
   // The atomic-write shape, asserted by the calls it must make rather than by the comment that describes it.
   assert(source.includes('O_EXCL'), 'the temporary file is created exclusively');
-  assert(source.includes('fsyncSync(fd)'), 'and flushed before the rename');
-  assert(source.includes('renameSync(temporary, output.path)'), 'and moved into place by a rename');
+  assert(source.includes('fsyncSync(fd)'), 'and flushed before the publish');
+  assert(source.includes('renameSync(temporary, destination)'), 'and the OVERWRITE path is a rename, which replaces');
   assert(source.includes('lstatSync(output.path)'), 'and the destination is examined with lstat, not stat');
+  assert(source.includes('fchmodSync(fd, 0o644)'),
+    'and the published file is made readable on the DESCRIPTOR, so a container running as another uid can import it');
+});
+
+test('no production caller passes the publish-window test seam', () => {
+  // `beforePublish` exists so a suite can open the exact window a second producer would race through. It is a
+  // seam, and a seam that production code started using would be a seam that could skip the publish.
+  for (const rel of ['src/ops/catalog-snapshot-produce-cli.ts', 'src/ops/catalog-import-service.ts',
+    'src/ops/catalog-import-cli.ts']) {
+    assert(!readRepo(rel).includes('beforePublish'), `${rel} must not use the test seam`);
+  }
+  const module = readRepo('src/ops/catalog-snapshot-produce.ts');
+  assert(module.includes('if (beforePublish !== undefined) beforePublish();'),
+    'and the seam is called in exactly one place, immediately before the publish');
 });
 
 test('the CLI reads one file and writes one file, and imports nothing that could open a third', () => {
@@ -174,7 +207,7 @@ test('the envelope is closed: unknown keys, wrong format, wrong version, bad sys
 });
 
 test('an entry is closed: unknown keys, missing id or title, a duplicate, a bad year', () => {
-  rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: 'b', extra: 1 }])), 'unknown key extra', 'an unknown entry key');
+  rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: 'b', extra: 1 }])), 'unknown key(s); only entryId', 'an unknown entry key');
   rejects(() => parseExternalExport(exportDoc([{ title: 'b' }])), 'entryId is required', 'a missing entryId');
   rejects(() => parseExternalExport(exportDoc([{ entryId: 'a' }])), 'title is required', 'a missing title');
   rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: '   ' }])), 'title is required', 'a blank title');
@@ -200,7 +233,7 @@ test('the reference vocabulary is closed, and an unknown kind is a rejection rat
   rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: 'b', references: [{ kind: 'plex', id: 'x' }] }])),
     'kind must be one of', 'an unknown reference kind');
   rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: 'b', references: [{ kind: 'imdb', id: 'x', extra: 1 }] }])),
-    'unknown key extra', 'an unknown reference key');
+    'unknown key(s); only kind, id', 'an unknown reference key');
   rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: 'b', references: [{ kind: 'imdb', id: 'x' }, { kind: 'imdb_id', id: 'y' }] }])),
     'already has', 'two spellings of one reference type');
   // Every declared spelling maps to a type the DATABASE's own closed set admits.
@@ -219,12 +252,12 @@ test('the reference vocabulary is closed, and an unknown kind is a rejection rat
 test('every acquisition and media-location namespace is refused', () => {
   for (const prefix of FORBIDDEN_ATTRIBUTE_PREFIXES) {
     rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: 'b', attributes: { [`${prefix}.value`]: 'x' } }])),
-      'acquisition or media-location data', `the ${prefix} namespace`);
+      'acquisition or media-location namespace', `the ${prefix} namespace`);
     rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: 'b', attributes: { [prefix]: 'x' } }])),
-      'acquisition or media-location data', `the bare ${prefix} key`);
+      'acquisition or media-location namespace', `the bare ${prefix} key`);
   }
   rejects(() => parseExternalExport(exportDoc([{ entryId: 'a', title: 'b', attributes: { 'external.system': 'forged' } }])),
-    'reserved by Catalog Authority', 'a forged provenance key');
+    'namespace, which Catalog Authority reserves', 'a forged provenance key');
 });
 
 test('a value that points somewhere is refused, wherever it appears', () => {
@@ -376,6 +409,98 @@ test('an existing file is not clobbered by accident, and the old one survives th
   assertEq(parseCatalogSnapshot(readFileSync(output.path, 'utf8')).items.length, 1, 'and the new document is there');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// THE NO-OVERWRITE GUARANTEE IS ABOUT A WINDOW, AND THE WINDOW IS OPENED ON PURPOSE.
+//
+// The refusal above is the EASY case: the file was already there when the producer looked. The case that
+// matters is the one a check cannot cover — the destination appearing BETWEEN the look and the publish, which
+// is what two producers started a moment apart actually do. These tests open exactly that window, with the
+// seam the module carries for the purpose, so the guarantee is proved rather than argued. Nothing here
+// depends on timing, on scheduling, or on a second process.
+// ---------------------------------------------------------------------------------------------------------
+
+test('a destination that appears IN THE PUBLISH WINDOW is not replaced, and the rival bytes survive', () => {
+  const output = resolveProducedSnapshotPath(join(OUT, 'raced.json'), {});
+  const rival = '{"a rival producer":"got there first"}\n';
+  let opened = 0;
+  let refused = '';
+  try {
+    produceSnapshotFile({
+      text: SAMPLE,
+      output,
+      // THE EXACT WINDOW: the temporary file is complete and fsynced, the destination was free when this
+      // producer looked, and now somebody else's completed snapshot is at the name.
+      beforePublish: () => { opened += 1; writeFileSync(output.path, rival, 'utf8'); },
+    });
+  } catch (err) {
+    refused = err instanceof SnapshotProducePathError ? err.message : `unexpected: ${(err as Error).message}`;
+  }
+  assertEq(opened, 1, 'the window really was opened, so this test is not vacuous');
+  assert(refused.includes('--overwrite'), `the racing publish must refuse, got: ${refused || 'no refusal at all'}`);
+  assertEq(readFileSync(output.path, 'utf8'), rival, 'and the rival\'s complete bytes are exactly what survived');
+  assertEq(readdirSync(OUT).filter((n) => n.startsWith('.')).length, 0, 'and the loser left no temporary file behind');
+  rmSync(output.path);
+});
+
+test('two no-overwrite publishers cannot both succeed, and the winner is complete', () => {
+  // The publish step driven directly with two independently completed temporaries — which is what two
+  // concurrent producers hold at the moment they both try to take the name. No interleaving is simulated:
+  // both files exist, both are complete, and the kernel decides.
+  const destination = join(OUT, 'contended.json');
+  const first = join(OUT, '.contended.json.tmp-a');
+  const second = join(OUT, '.contended.json.tmp-b');
+  writeFileSync(first, 'FIRST PRODUCER, COMPLETE\n', 'utf8');
+  writeFileSync(second, 'SECOND PRODUCER, COMPLETE\n', 'utf8');
+
+  publishTemporary(first, destination, false);
+  assertEq(readFileSync(destination, 'utf8'), 'FIRST PRODUCER, COMPLETE\n', 'the first publisher took the name');
+  assertEq(existsSync(first), false, 'and its temporary name is gone');
+
+  let refused = '';
+  try { publishTemporary(second, destination, false); }
+  catch (err) { refused = err instanceof SnapshotProducePathError ? err.message : `unexpected: ${(err as Error).message}`; }
+  assert(refused.includes('--overwrite'), `the second publisher must lose, got: ${refused || 'no refusal at all'}`);
+  assertEq(readFileSync(destination, 'utf8'), 'FIRST PRODUCER, COMPLETE\n', 'and the winner\'s bytes are untouched');
+  assertEq(existsSync(second), false, 'and the loser cleaned up its own temporary file');
+
+  // ...while the OVERWRITE path deliberately does replace, because that is what was asked for.
+  const third = join(OUT, '.contended.json.tmp-c');
+  writeFileSync(third, 'DELIBERATE REPLACEMENT\n', 'utf8');
+  publishTemporary(third, destination, true);
+  assertEq(readFileSync(destination, 'utf8'), 'DELIBERATE REPLACEMENT\n', 'an explicit overwrite replaces');
+  rmSync(destination);
+});
+
+test('the no-replace claim is made only on the path that actually keeps it', () => {
+  const output = resolveProducedSnapshotPath(join(OUT, 'claims.json'), {});
+  const fresh = produceSnapshotFile({ text: SAMPLE, output });
+  assert(fresh.notes.some((n) => n.includes('could not have replaced')),
+    'a no-overwrite write claims the property it has');
+
+  const replaced = produceSnapshotFile({ text: SAMPLE, output, overwrite: true });
+  assert(replaced.notes.every((n) => !n.includes('could not have replaced')),
+    'and an --overwrite write does NOT claim a property belonging to the other path');
+  assert(replaced.notes.some((n) => n.includes('was replaced')), 'it says what it did instead');
+  rmSync(output.path);
+});
+
+test('a published snapshot is a plain regular file, not a link of any kind, and is readable', () => {
+  const output = resolveProducedSnapshotPath(join(OUT, 'published.json'), {});
+  produceSnapshotFile({ text: SAMPLE, output });
+  const stats = lstatSync(output.path);
+  assertEq(stats.isSymbolicLink(), false, 'the published snapshot is not a symbolic link');
+  assertEq(stats.isFile(), true, 'it is a regular file');
+  // The link used to publish it left exactly ONE name: the temporary is gone.
+  assertEq(readdirSync(OUT).filter((n) => n.startsWith('.')).length, 0, 'and no second name for it survives');
+  if (process.platform !== 'win32') {
+    // The shipped stack bind-mounts the import folder into a container running as a DIFFERENT uid. A 0600
+    // snapshot is one the product itself cannot read, which is a failed import rather than a tidy secret.
+    assertEq(stats.mode & 0o004, 0o004, 'and it is readable by a process that is not its owner');
+    assertEq(stats.mode & 0o022, 0, 'while still not being writable by anyone else');
+  }
+  rmSync(output.path);
+});
+
 test('the destination is never written through a symbolic link', () => {
   const target = join(OUT, 'link-target.json');
   const link = join(OUT, 'a-link.json');
@@ -434,21 +559,169 @@ test('a configured output directory admits a bare name and refuses a path', () =
 // Redaction.
 // ---------------------------------------------------------------------------------------------------------
 
-test('nothing a report carries names any content, any path or any external system detail', () => {
+test('a report names no content, no path, and NOT WHICH external system the export came from', () => {
   const output = resolveProducedSnapshotPath(join(OUT, 'redaction.json'), {});
   const report = produceSnapshotFile({ text: SAMPLE, output });
   const rendered = renderSnapshotProduction(report);
   const serialised = JSON.stringify(report);
-  for (const forbidden of [SECRET_TITLE, SECRET_REF, SECRET_ATTR, 'Second', 'Third', OUT, WORK]) {
+  // SECRET_SYSTEM and its derived source are the sentinels this test used to be named after and never
+  // checked. The report carried `system: "torbox"` and `source: "external.torbox"` while calling itself
+  // redaction-safe — which is to say it told a support bundle which acquisition tool the operator runs.
+  for (const forbidden of [SECRET_TITLE, SECRET_REF, SECRET_ATTR, 'Second', 'Third', OUT, WORK,
+    SECRET_SYSTEM, `${EXTERNAL_SOURCE_PREFIX}${SECRET_SYSTEM}`]) {
     assert(!rendered.includes(forbidden), `the rendered report must not carry ${forbidden.slice(0, 24)}`);
     assert(!serialised.includes(forbidden), `and neither must the JSON: ${forbidden.slice(0, 24)}`);
   }
   assertEq(report.report, SNAPSHOT_PRODUCE_REPORT, 'the report names itself');
+  assertEq(report.provenance, 'external-input', 'it says the records came from an external system');
+  assert(!('system' in report), 'and it carries no `system` field at all');
+  assert(!('source' in report), 'and no `source` field at all');
   assertEq(report.network, 'none', 'and declares no network');
-  assertEq(report.acquisition, 'external-input-only', 'and declares the source as external input only');
+  assertEq(report.acquisition, 'external-input-only', 'and declares the input as external only');
   assertEq(report.mediaAccess, 'none', 'and declares no media access');
-  assertEq(report.symlinksCreated, 0, 'and no symlink creation');
+  assertEq(report.symlinksCreated, 0, 'and no symbolic link creation');
+
+  // ...WHILE THE SNAPSHOT ITSELF STILL CARRIES THE REAL PROVENANCE. Removing it from the report must not
+  // remove it from the document, because that is where every derived item id comes from.
+  const onDisk = parseCatalogSnapshot(readFileSync(output.path, 'utf8'));
+  assertEq(onDisk.source, `${EXTERNAL_SOURCE_PREFIX}${SECRET_SYSTEM}`, 'the produced snapshot keeps external.<system>');
   rmSync(output.path);
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// A KEY IN SOMEBODY ELSE'S DOCUMENT IS A VALUE.
+//
+// Every rejection below is triggered BY a key, so the key is the hostile part by construction. The sentinels
+// are the shapes a key could actually be — a URL, an absolute path, a token, a title — and none of them may
+// appear in the problem list, in the thrown message, or on the CLI's stderr.
+// ---------------------------------------------------------------------------------------------------------
+
+const HOSTILE_KEYS = [
+  'https://exfiltrate.invalid/a?token=hunter2',
+  '/mnt/user/media/Movies/Some Film (1994)/Some Film.mkv',
+  'sk-live-0123456789abcdef',
+  'A Film Title Nobody Should See',
+  'nzb.9f8e7d6c5b4a',
+];
+
+/**
+ * The subset of the above that an ATTRIBUTE key rule actually rejects.
+ *
+ * `sk-live-0123456789abcdef` is deliberately absent: it is a perfectly legal attribute key, so there is no
+ * diagnostic for it to appear in. A test that expected a rejection there would be asserting the wrong thing
+ * and would fail for a reason that has nothing to do with redaction.
+ */
+const HOSTILE_ATTRIBUTE_KEYS = HOSTILE_KEYS.filter((key) => key !== 'sk-live-0123456789abcdef');
+
+function problemsOf(text: string): string[] {
+  try { parseExternalExport(text); } catch (err) {
+    if (err instanceof CatalogExportError) return [...err.problems, err.message];
+    return [(err as Error).message];
+  }
+  throw new Error('the export should have been rejected');
+}
+
+test('an unknown ROOT key is refused without the key reaching the diagnostics', () => {
+  for (const hostile of HOSTILE_KEYS) {
+    const doc = JSON.stringify({
+      format: EXTERNAL_EXPORT_FORMAT, version: EXTERNAL_EXPORT_VERSION, system: SECRET_SYSTEM,
+      entries: [{ entryId: 'e-1', title: 'A' }], [hostile]: 'x',
+    });
+    const text = problemsOf(doc).join('\n');
+    assert(!text.includes(hostile), `a root diagnostic echoed ${hostile.slice(0, 32)}`);
+    assert(/unknown top-level key/.test(text), 'while still saying what is wrong');
+    assert(/format, version, system, entries/.test(text), 'and what IS allowed, which is the actionable part');
+  }
+});
+
+test('an unknown ENTRY key is refused without the key reaching the diagnostics', () => {
+  for (const hostile of HOSTILE_KEYS) {
+    const text = problemsOf(exportDoc([{ entryId: 'e-1', title: 'A' }, { entryId: 'e-2', title: 'B', [hostile]: 1 }])).join('\n');
+    assert(!text.includes(hostile), `an entry diagnostic echoed ${hostile.slice(0, 32)}`);
+    assert(text.includes('entry 1'), 'while naming the position an operator can find it at');
+    assert(/entryId, title, year, references, attributes/.test(text), 'and the keys that are allowed');
+  }
+});
+
+test('an unknown REFERENCE key is refused without the key reaching the diagnostics', () => {
+  for (const hostile of HOSTILE_KEYS) {
+    const text = problemsOf(exportDoc([
+      { entryId: 'e-1', title: 'A', references: [{ kind: 'imdb', id: 'tt1' }, { kind: 'tmdb', id: 't1', [hostile]: 1 }] },
+    ])).join('\n');
+    assert(!text.includes(hostile), `a reference diagnostic echoed ${hostile.slice(0, 32)}`);
+    assert(text.includes('references[1]'), 'while naming the reference position');
+    assert(/kind, id/.test(text), 'and the keys that are allowed');
+  }
+});
+
+test('every ATTRIBUTE rejection is addressed by position, never by the key that caused it', () => {
+  // One case per branch of the attribute loop: shape, reserved namespace, acquisition namespace, non-string
+  // value, over-long value, control characters, and a location-shaped value.
+  const cases: Array<[string, Record<string, unknown>, string]> = [
+    ['a key that is not a legal shape', { ok: 'v', 'NOT A KEY': 'v' }, 'attributes[1]'],
+    ['a reserved key', { ok: 'v', 'external.system': 'forged' }, 'attributes[1]'],
+    ['an acquisition key', { ok: 'v', 'nzb.id': 'abc' }, 'attributes[1]'],
+    ['a non-string value', { ok: 'v', shelf: 12 }, 'attributes[1]'],
+    ['an over-long value', { ok: 'v', shelf: 'x'.repeat(9999) }, 'attributes[1]'],
+    ['a control character', { ok: 'v', shelf: `a${String.fromCharCode(7)}b` }, 'attributes[1]'],
+    ['a location value', { ok: 'v', shelf: '/mnt/user/media/Movies/x.mkv' }, 'attributes[1]'],
+  ];
+  for (const [label, attributes, position] of cases) {
+    const text = problemsOf(exportDoc([{ entryId: 'e-1', title: 'A', attributes }])).join('\n');
+    assert(text.includes(position), `${label}: the diagnostic must name ${position}, got: ${text}`);
+    for (const forbidden of ['NOT A KEY', 'external.system', 'nzb.id', '/mnt/user', 'Movies', 'x.mkv']) {
+      assert(!text.includes(forbidden), `${label}: the diagnostic echoed ${forbidden}`);
+    }
+  }
+  // ...and a hostile key that is ALSO a location is caught by the key rules without being printed.
+  for (const hostile of HOSTILE_ATTRIBUTE_KEYS) {
+    const text = problemsOf(exportDoc([{ entryId: 'e-1', title: 'A', attributes: { [hostile]: 'v' } }])).join('\n');
+    assert(!text.includes(hostile), `an attribute-key diagnostic echoed ${hostile.slice(0, 32)}`);
+    assert(text.includes('attributes[0]'), 'while naming the position');
+  }
+  // A key the rules DO allow is not rejected at all — so there is no diagnostic, and the key is carried into
+  // the snapshot as the operator wrote it. Asserted so the loop above cannot pass by refusing everything.
+  const legal = produceCatalogSnapshot(exportDoc([{ entryId: 'e-1', title: 'A', attributes: { 'sk-live-0123456789abcdef': 'v' } }]));
+  assertEq(Object.keys(legal.snapshot.items[0]!.metadata).join(','), 'sk-live-0123456789abcdef',
+    'a legal attribute key is accepted and preserved');
+});
+
+test('no rejection anywhere echoes a title, a reference value, a system label or an entry id', () => {
+  const sentinels = ['a-title-sentinel-must-not-appear', 'tt-ref-sentinel-must-not-appear',
+    'system-sentinel-must-not-appear', 'entry-id-sentinel-must-not-appear'];
+  const doc = JSON.stringify({
+    format: EXTERNAL_EXPORT_FORMAT,
+    version: EXTERNAL_EXPORT_VERSION,
+    system: 'system-sentinel-must-not-appear-because-it-is-far-too-long-for-the-bound',
+    entries: [{
+      entryId: 'entry-id-sentinel-must-not-appear',
+      title: `a-title-sentinel-must-not-appear${'x'.repeat(600)}`,
+      references: [{ kind: 'imdb', id: `tt-ref-sentinel-must-not-appear${'y'.repeat(600)}` }],
+    }],
+  });
+  const text = problemsOf(doc).join('\n');
+  for (const sentinel of sentinels) {
+    assert(!text.includes(sentinel), `a diagnostic echoed the sentinel ${sentinel}`);
+  }
+  assert(text.length > 0, 'and something was still reported');
+});
+
+test('the CLI prints a refusal that carries no hostile key, on stderr', () => {
+  const probe = join(WORK, 'hostile-probe.json');
+  const hostile = 'https://exfiltrate.invalid/a?token=hunter2';
+  writeFileSync(probe, JSON.stringify({
+    format: EXTERNAL_EXPORT_FORMAT, version: EXTERNAL_EXPORT_VERSION, system: SECRET_SYSTEM,
+    entries: [{ entryId: 'e-1', title: 'A', attributes: { [hostile]: 'v' } }],
+  }), 'utf8');
+  const run = spawnSync(process.execPath, [
+    '--import', 'tsx', join(repoRoot, 'src/ops/catalog-snapshot-produce-cli.ts'), '--from', probe, '--preview',
+  ], { encoding: 'utf8', cwd: repoRoot });
+  const output = `${run.stdout ?? ''}\n${run.stderr ?? ''}`;
+  assertEq(run.status, 3, `the CLI refuses with the rejection exit code; it said: ${output.trim().slice(0, 300)}`);
+  assert(!output.includes(hostile), `the CLI echoed the hostile key: ${output.trim().slice(0, 300)}`);
+  assert(output.includes('attributes[0]'), 'while naming the position, so the operator can still fix it');
+  assert(output.includes('Nothing was written'), 'and saying nothing was written');
+  rmSync(probe);
 });
 
 // ---------------------------------------------------------------------------------------------------------

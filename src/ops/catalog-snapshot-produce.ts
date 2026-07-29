@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import {
-  closeSync, constants as fsConstants, fstatSync, fsyncSync, lstatSync, openSync, realpathSync, renameSync,
-  unlinkSync, writeSync,
+  closeSync, constants as fsConstants, fchmodSync, fstatSync, fsyncSync, linkSync, lstatSync, openSync,
+  realpathSync, renameSync, unlinkSync, writeSync,
 } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import {
@@ -23,27 +23,64 @@ import { INBOX_NAME_RE } from './catalog-import-inbox.js';
 // -----------------------------------------------------------------------------------------------------
 //
 // The bytes go to a temporary file in the SAME directory, are flushed to stable storage with `fsync`, and are
-// then `rename`d over the destination. Rename within a directory is atomic on every filesystem this product
-// runs on, so a reader — including this product's own import inbox, which is watching that folder — sees
-// either the old file or the complete new one, never a prefix. A crash between the two leaves the temporary
-// file behind and the destination untouched; the temporary name begins with a dot, which the inbox's own name
-// grammar refuses, so a leftover can never be offered as a snapshot.
+// then PUBLISHED to the destination name in one step. A reader — including this product's own import inbox,
+// which is watching that folder — sees either the old file or the complete new one, never a prefix. A crash
+// before the publish leaves the temporary file behind and the destination untouched; the temporary name
+// begins with a dot, which the inbox's own name grammar refuses, so a leftover can never be offered as a
+// snapshot.
+//
+// -----------------------------------------------------------------------------------------------------
+// "NO OVERWRITE" IS A GUARANTEE, NOT A CHECK — AND `rename` COULD NOT GIVE IT.
+// -----------------------------------------------------------------------------------------------------
+//
+// THE DEFECT THIS CLOSES. The first version of this module `lstat`ed the destination, refused if something
+// was there, and then published with `renameSync`. Both halves are individually correct and the pair is
+// still wrong: `rename` REPLACES its destination unconditionally, so two producers that both found the name
+// free would both write a temp and both rename — and the second would silently destroy the first completed
+// snapshot, under a flag whose whole documented meaning is that it will not do that. The window is small and
+// it is real: an import folder is a shared folder, and "I ran it twice by mistake" is the ordinary case.
+//
+// HOW IT IS CLOSED. When `--overwrite` was NOT given, the publish is `link(temp, destination)`. `link` is the
+// POSIX primitive that FAILS when its destination exists, atomically, with `EEXIST` — there is no window in
+// which the name was checked and then taken, because the check IS the creation of the name. The temporary
+// name is then unlinked, leaving exactly one name for an inode whose bytes were already `fsync`ed. When
+// `--overwrite` WAS given, the publish is `renameSync`, because replacing is then the thing that was asked
+// for and rename is the only primitive that does it atomically.
+//
+// THIS IS AN INTERNAL HARD LINK BETWEEN TWO NAMES OF ONE SNAPSHOT FILE IN ONE DIRECTORY. It is not a symbolic
+// link, it is not a media link, it does not point into a media library, and it exists for microseconds. The
+// absolute invariant this product keeps — it never creates a MEDIA symlink and never couples itself to an
+// acquisition pipeline — is untouched by it, and `test/external-snapshot-produce.ts` asserts the invariant
+// that actually matters (no symbolic-link call appears anywhere in this module, and a published snapshot is
+// not a symbolic link) rather than forbidding the one primitive that makes the refusal honest. That test
+// scans for the symbolic-link call by NAME, so this comment deliberately does not spell it.
+//
+// WHERE A FILESYSTEM CANNOT DO IT, THE ANSWER IS A REFUSAL. A filesystem with no hard links (FAT, some
+// network mounts) fails the `link` with `EPERM`/`ENOSYS`/`EOPNOTSUPP`. This module then REFUSES and says so,
+// rather than falling back to a `rename` it knows can clobber — the same discipline the import inbox applies
+// to `O_NOFOLLOW`. An operator who genuinely wants replacement can pass `--overwrite`, which is a decision
+// rather than an accident.
 //
 // THE TEMPORARY FILE CANNOT BE A SYMLINK, AND THE GUARANTEE IS THE OPEN'S, NOT A CHECK'S. It is created with
 // `O_CREAT | O_EXCL`, which fails if the name exists at all — including as a symbolic link, including a
-// dangling one. There is no window in which the name was checked and then followed, because the check IS the
-// creation. `O_NOFOLLOW` is added where the platform defines it; it is belt-and-braces here rather than the
-// guarantee, which is why this module — unlike the browser-facing inbox — still works on a platform that does
-// not define it. The destination is `lstat`ed and refused if it is a symlink, so a rename can never replace
-// the target of somebody else's link.
+// dangling one. `O_NOFOLLOW` is added where the platform defines it; it is belt-and-braces here rather than
+// the guarantee, which is why this module — unlike the browser-facing inbox — still works on a platform that
+// does not define it. The destination is ALSO `lstat`ed first, which is where a symlink or a non-regular file
+// at that name is diagnosed properly; that check is advisory for the race and authoritative for nothing, and
+// the publish above is what actually decides.
 //
-// NOTHING HERE EVER CREATES A LINK. There is no `symlink`, no `link` and no recursive directory creation in
-// this module. The destination directory must already exist; a producer that created directories would be a
-// producer that could be pointed at a path and made to build one.
+// THE PUBLISHED FILE IS GROUP- AND WORLD-READABLE, AND THE TEMPORARY ONE IS NOT. The temp is created 0600, so
+// a partially written document is never readable by anyone else; the descriptor is `fchmod`ed to 0644 after
+// the last byte and before the publish. That is not cosmetic: the shipped stack mounts the import folder into
+// a container that runs as a DIFFERENT uid, so a snapshot produced on the host at 0600 is a snapshot the
+// product itself cannot read — which the acceptance gates would have discovered as a failed import.
+//
+// NO DIRECTORY IS EVER CREATED. The destination directory must already exist; a producer that created
+// directories would be a producer that could be pointed at a path and made to build one.
 //
 // THE REPORT IS REDACTION-SAFE BY CONSTRUCTION. Counts, digests, closed-set words and a BASE NAME. No title,
-// no reference value, no attribute value, no directory and no absolute path appears in it — a produced-file
-// report is exactly the kind of thing that ends up in a support bundle.
+// no reference value, no attribute value, no external-system label, no directory and no absolute path appears
+// in it — a produced-file report is exactly the kind of thing that ends up in a support bundle.
 
 export const SNAPSHOT_PRODUCE_REPORT = 'phase-274-external-snapshot';
 export const SNAPSHOT_PRODUCE_VERSION = 1;
@@ -148,10 +185,17 @@ export interface SnapshotProductionReport {
   readonly version: typeof SNAPSHOT_PRODUCE_VERSION;
   readonly ok: boolean;
   readonly mode: SnapshotProduceMode;
-  /** The operator's label for the system the export came out of. */
-  readonly system: string;
-  /** The `source` every produced record carries, and which every derived item id is a function of. */
-  readonly source: string;
+  /**
+   * That the records came from an external system, and NOT WHICH ONE.
+   *
+   * The SNAPSHOT keeps the operator's real label — its `source` is `external.<system>` and every derived item
+   * id is a function of that, which is the whole provenance mechanism. This REPORT does not, because it is a
+   * different kind of document: it is printed to scrollback, to a CI log and into a support bundle somebody
+   * pastes into an issue, and "which acquisition or media tool this operator runs" is exactly the sort of
+   * thing that should not travel that way. A report that carried the label while calling itself
+   * redaction-safe would be making a claim it does not keep.
+   */
+  readonly provenance: 'external-input';
   readonly entries: number;
   readonly records: number;
   readonly references: number;
@@ -182,6 +226,19 @@ export interface ProduceSnapshotInput {
   readonly output?: ResolvedOutputPath;
   /** Replace an existing file at that name. Off by default: producing must not clobber by accident. */
   readonly overwrite?: boolean;
+  /**
+   * A TEST SEAM, called after the temporary file is complete and immediately before it is published.
+   *
+   * It exists for one reason: the no-overwrite guarantee is about a window — the moment between "the name was
+   * free" and "the name is mine" — and a suite that cannot open that window can only argue the window is
+   * closed. This lets a suite create the destination in EXACTLY that window, deterministically, so
+   * "two producers cannot both succeed" is proved rather than believed. It is the same reasoning that made
+   * `catalog-import-inbox.ts` take an injectable syscall surface.
+   *
+   * Production callers never pass it, and `test/external-snapshot-produce.ts` asserts that no `src/` caller
+   * does. Passing it cannot weaken anything: the publish below decides on its own, whatever this did.
+   */
+  readonly beforePublish?: () => void;
 }
 
 /**
@@ -197,11 +254,21 @@ export function produceSnapshotFile(input: ProduceSnapshotInput): SnapshotProduc
       'This was a preview. Nothing was written. Re-run with --out <name.json> to produce the file.',
     ]);
   }
-  const replaced = writeAtomically(input.output, produced.text, input.overwrite === true);
-  return report(produced, 'write', input.output.name, replaced, [
-    replaced
+  const overwrite = input.overwrite === true;
+  const replaced = writeAtomically(input.output, produced.text, overwrite, input.beforePublish);
+  // THE NO-REPLACE CLAIM IS MADE ONLY WHERE IT IS TRUE. `replaced` comes from the check BEFORE the write, so
+  // on the `--overwrite` path it cannot see a file that appeared during it — which is fine, because that path
+  // was asked to replace. Claiming "it could not have replaced anything" there would be claiming a property
+  // of the OTHER path.
+  const note = overwrite
+    ? (replaced
       ? 'An existing snapshot of that name was replaced, atomically: a reader saw either the old file or the new one.'
-      : 'The snapshot was written atomically: it appeared complete or not at all.',
+      : 'The snapshot was written atomically. --overwrite was given, so anything that had appeared at that name '
+        + 'would have been replaced.')
+    : 'The snapshot was written atomically: it appeared complete or not at all, and it could not have replaced '
+      + 'a file that appeared at that name while it was being written.';
+  return report(produced, 'write', input.output.name, replaced, [
+    note,
     'Nothing was imported. Preview it with ops:catalog-import, then apply it.',
   ]);
 }
@@ -218,8 +285,7 @@ function report(
     version: SNAPSHOT_PRODUCE_VERSION,
     ok: true,
     mode,
-    system: produced.system,
-    source: produced.source,
+    provenance: 'external-input',
     entries: produced.entries,
     records: produced.snapshot.items.length,
     references: produced.references,
@@ -238,15 +304,76 @@ function report(
   };
 }
 
+/** Said the same way by the early check and by the publish, so one refusal cannot read as two different ones. */
+export const SNAPSHOT_ALREADY_THERE_MESSAGE =
+  'a file of that name is already there; pass --overwrite to replace it';
+
+/**
+ * Publish a completed temporary file to its destination name.
+ *
+ * WITHOUT `--overwrite` THIS IS `link`, AND THAT IS THE WHOLE POINT. `link` fails when the destination exists
+ * — atomically, with `EEXIST`, decided by the kernel and not by anything this process observed a moment
+ * earlier. It is what makes "producing must not clobber by accident" a guarantee rather than a check that a
+ * second producer can run straight past. `rename` cannot give it: rename replaces, always.
+ *
+ * WITH `--overwrite` THIS IS `rename`, AND THAT IS ALSO THE POINT. Replacement was asked for, and rename is
+ * the primitive that replaces without the destination ever being briefly absent.
+ *
+ * Exported so a suite can drive it directly with two independently completed temporaries, which is exactly
+ * the shape of two concurrent producers.
+ */
+export function publishTemporary(temporary: string, destination: string, overwrite: boolean): void {
+  if (overwrite) {
+    try {
+      renameSync(temporary, destination);
+    } catch {
+      try { unlinkSync(temporary); } catch { /* the publish already failed; a leftover temp is not a second failure */ }
+      throw new SnapshotProducePathError('the snapshot could not be moved into place');
+    }
+    return;
+  }
+
+  try {
+    linkSync(temporary, destination);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EEXIST') {
+      // A SECOND PRODUCER GOT THERE FIRST, or the file was there all along and the early check raced it.
+      // Either way the destination is untouched and this run wrote nothing anybody can see.
+      throw new SnapshotProducePathError(SNAPSHOT_ALREADY_THERE_MESSAGE);
+    }
+    if (code === 'EPERM' || code === 'ENOSYS' || code === 'EOPNOTSUPP' || code === 'ENOTSUP' || code === 'EXDEV' || code === 'EMLINK') {
+      // NO SILENT FALLBACK TO `rename`. A filesystem that cannot link cannot give the no-replace guarantee,
+      // and quietly publishing anyway would mean the default refusal is a comment rather than a behaviour.
+      throw new SnapshotProducePathError(
+        'this filesystem cannot publish a snapshot without the risk of replacing one that appeared while it was '
+        + 'being written, so nothing was published. Produce into a folder on an ordinary local filesystem, or '
+        + 'pass --overwrite if replacing whatever is at that name is what you actually want.');
+    }
+    throw new SnapshotProducePathError('the snapshot could not be moved into place');
+  } finally {
+    // The temporary name goes either way. On success the inode now has the destination name and losing this
+    // one costs nothing; on failure it is residue. A temp that cannot be unlinked is dot-prefixed, so the
+    // import inbox will never offer it — it is untidy, and it is not a reason to fail a publish that worked.
+    try { unlinkSync(temporary); } catch { /* untidy, never unsafe */ }
+  }
+}
+
 /**
  * Write `text` to `output.path` so that the name is never observed holding a partial document.
  *
  * Returns whether an existing file was replaced.
  */
-export function writeAtomically(output: ResolvedOutputPath, text: string, overwrite: boolean): boolean {
+export function writeAtomically(
+  output: ResolvedOutputPath,
+  text: string,
+  overwrite: boolean,
+  beforePublish?: () => void,
+): boolean {
   // WHAT IS ALREADY THERE, ASKED WITH `lstat` SO A SYMLINK IS SEEN AS A SYMLINK rather than reported as
-  // whatever it points at. A rename over a symlink would replace the LINK, which is harmless; refusing anyway
-  // means a produced snapshot can never be involved in somebody else's link at all.
+  // whatever it points at. This is a DIAGNOSTIC, not the guarantee: it is what tells an operator "that name is
+  // a symbolic link" or "that name is a directory" instead of a bare EEXIST, and it saves producing a document
+  // that could not be published anyway. The publish below is what actually decides, and it decides atomically.
   let existed = false;
   try {
     const current = lstatSync(output.path);
@@ -258,7 +385,7 @@ export function writeAtomically(output: ResolvedOutputPath, text: string, overwr
       throw new SnapshotProducePathError('the output name is not a regular file');
     }
     if (!overwrite) {
-      throw new SnapshotProducePathError('a file of that name is already there; pass --overwrite to replace it');
+      throw new SnapshotProducePathError(SNAPSHOT_ALREADY_THERE_MESSAGE);
     }
   } catch (err) {
     if (err instanceof SnapshotProducePathError) throw err;
@@ -282,7 +409,7 @@ export function writeAtomically(output: ResolvedOutputPath, text: string, overwr
 
   try {
     // `fstat` on the descriptor we hold, not on the name: it is the file that was created, and nothing can
-    // substitute it afterwards because the name is never mentioned again until the rename.
+    // substitute it afterwards because the name is never mentioned again until the publish.
     if (!fstatSync(fd).isFile()) {
       throw new SnapshotProducePathError('the temporary output is not a regular file');
     }
@@ -290,10 +417,14 @@ export function writeAtomically(output: ResolvedOutputPath, text: string, overwr
     while (written < buffer.byteLength) {
       written += writeSync(fd, buffer, written, buffer.byteLength - written, null);
     }
-    // FLUSHED BEFORE THE RENAME. Without this the rename can be durable while the bytes are not, and a
+    // FLUSHED BEFORE THE PUBLISH. Without this the publish can be durable while the bytes are not, and a
     // machine that loses power leaves the destination name pointing at a zero-length file — which is the
     // exact "the snapshot appeared and was empty" failure the atomic write exists to prevent.
     fsyncSync(fd);
+    // READABLE ONLY NOW, AND ON THE DESCRIPTOR RATHER THAN THE NAME. The temp was created 0600 so a partial
+    // document was never anyone else's to read; the published snapshot has to be readable by the container
+    // that imports it, which runs as a different uid from whoever produced the file on the host.
+    try { fchmodSync(fd, 0o644); } catch { /* Windows has no mode bits to speak of; the publish is unaffected */ }
   } catch (err) {
     closeSync(fd);
     try { unlinkSync(temporary); } catch { /* the write already failed; a leftover temp is not a second failure */ }
@@ -302,14 +433,12 @@ export function writeAtomically(output: ResolvedOutputPath, text: string, overwr
   }
   closeSync(fd);
 
-  try {
-    renameSync(temporary, output.path);
-  } catch {
-    try { unlinkSync(temporary); } catch { /* as above */ }
-    throw new SnapshotProducePathError('the snapshot could not be moved into place');
-  }
+  // THE WINDOW, OPENED ON PURPOSE — only ever by a suite. See `ProduceSnapshotInput.beforePublish`.
+  if (beforePublish !== undefined) beforePublish();
 
-  // The DIRECTORY entry, flushed too, so the rename itself survives a power loss. Best-effort: opening a
+  publishTemporary(temporary, output.path, overwrite);
+
+  // The DIRECTORY entry, flushed too, so the publish itself survives a power loss. Best-effort: opening a
   // directory for fsync is not portable (Windows refuses it), and a produced file that is durable but whose
   // directory entry is not is still strictly better than no attempt at all.
   try {
@@ -324,8 +453,9 @@ export function writeAtomically(output: ResolvedOutputPath, text: string, overwr
 export function renderSnapshotProduction(result: SnapshotProductionReport): string {
   const lines: string[] = [];
   lines.push(`Snapshot production — ${result.mode === 'preview' ? 'PREVIEW (nothing was written)' : 'WRITTEN'}`);
-  lines.push(`  external system   ${result.system}`);
-  lines.push(`  record source     ${result.source}`);
+  // THE LABEL OF THE SYSTEM THE EXPORT CAME OUT OF IS DELIBERATELY ABSENT. The snapshot itself carries it, as
+  // `external.<system>`, and that is where provenance belongs; this line is what somebody pastes into an issue.
+  lines.push(`  provenance        ${result.provenance}`);
   lines.push(`  entries read      ${result.entries}`);
   lines.push(`  records produced  ${result.records}`);
   lines.push(`  provider refs     ${result.references}`);

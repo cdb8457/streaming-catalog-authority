@@ -120,7 +120,10 @@ This command **contacts nothing** — not the system the export came from, not a
 not a download client. It downloads nothing, plays nothing, scans no media folder and creates no symbolic
 link. An export carrying **acquisition data** — a download URL, an NZB or torrent identifier, a tracker, a
 magnet link, an absolute media path or a UNC share — is **refused whole**, by key namespace and by value
-shape, rather than quietly filtered. The write is atomic: the output name holds the previous file or the
+shape, rather than quietly filtered — and a refusal names the *position* in your file, never the key or value
+that caused it, so it is safe to paste into an issue. Without `--overwrite` the output name is taken only if
+it is free, decided by the kernel rather than by a check a second copy of the command could run past. The
+write is atomic: the output name holds the previous file or the
 complete new one, never a prefix. Producing does not import; preview and apply are still separate, deliberate
 steps. Details, bounds and every rejection:
 [docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md](docs/PHASES_274_276_OFFLINE_PRODUCTION_AND_LIFECYCLE.md).

@@ -41,7 +41,12 @@ env:
 
 jobs:
   suites:
-    name: Typecheck and Phase 242-257 suites
+    # The name deliberately names no phase RANGE. It said "Phase 242-257" while it also ran the Phase 258
+    # inventory audit, the Phase 266-272 control plane and the Phase 274-276 suites, which is the kind of
+    # drift nobody notices and everybody trusts: a reader who checks whether a phase is covered reads the job
+    # name, not the forty lines below it. Phase 250's `suites-run-the-acceptances` check is what pins the
+    # actual contents, per suite, with a mutation test for each.
+    name: Typecheck, the suite inventory, and every offline suite gate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4

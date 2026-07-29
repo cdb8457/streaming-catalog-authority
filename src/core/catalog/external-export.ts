@@ -61,8 +61,14 @@ import {
 // `parseCatalogSnapshot` before returning it. A snapshot this module emits is therefore known to be
 // importable by the shipped importer — not believed to be, because the shipped importer said so.
 //
-// PROBLEMS NAME FIELDS AND POSITIONS, NEVER VALUES. Same rule as the importer: "entry 12: title is longer
-// than 512 characters", never the title. So a rejection report is safe to paste into an issue.
+// PROBLEMS NAME FIELDS AND POSITIONS, NEVER VALUES — AND A KEY IS A VALUE. Same rule as the importer:
+// "entry 12: title is longer than 512 characters", never the title. This module holds itself to the stricter
+// reading of it, because an EXPORT's key names are supplied by somebody else's software: an attribute key can
+// be a URL, an absolute media path, an api token or a film title, and a message of the form "unknown key:
+// <key>" would print it to a terminal, a CI log and whatever gets pasted into an issue — while the check that
+// produced it exists precisely because that key is the hostile part. So every diagnostic here names a
+// POSITION (`entry 12`, `attributes[3]`, `references[1]`) and, where it helps, the closed set of names that
+// ARE allowed. Nothing the document supplied is ever echoed back.
 
 export const EXTERNAL_EXPORT_FORMAT = 'catalog-authority.external-export';
 export const EXTERNAL_EXPORT_VERSION = 1;
@@ -139,6 +145,18 @@ export const FORBIDDEN_ATTRIBUTE_PREFIXES: readonly string[] = Object.freeze([
 /** Reserved for this product's own use, so a future provenance key can never be forged by an export. */
 export const RESERVED_ATTRIBUTE_PREFIX = 'external.';
 
+/**
+ * The closed key sets, declared once and NAMED IN DIAGNOSTICS INSTEAD OF THE KEY THAT WAS FOUND.
+ *
+ * A key in somebody else's document is a value. It can be a URL, an absolute path, an api token or a film
+ * title, and an "unknown key: <key>" message puts it on a terminal, into a CI log and into whatever an
+ * operator pastes into an issue. Every diagnostic below therefore names a POSITION and the set of keys that
+ * ARE allowed — which is strictly more actionable than echoing the wrong one, and which cannot carry anything.
+ */
+const ROOT_KEYS: readonly string[] = ['format', 'version', 'system', 'entries'];
+const ENTRY_KEYS: readonly string[] = ['entryId', 'title', 'year', 'references', 'attributes'];
+const REFERENCE_KEYS: readonly string[] = ['kind', 'id'];
+
 export class CatalogExportError extends Error {
   readonly code = 'CATALOG_EXTERNAL_EXPORT_REJECTED';
   readonly problems: readonly string[];
@@ -211,10 +229,12 @@ export function parseExternalExport(text: string): NormalizedExport {
     throw new CatalogExportError(['the export must be a JSON object']);
   }
   const root = doc as Record<string, unknown>;
-  for (const key of Object.keys(root)) {
-    if (!['format', 'version', 'system', 'entries'].includes(key)) {
-      add(`the export has an unknown top-level key: ${key}`);
-    }
+  // THE COUNT AND THE ALLOWED SET, NEVER THE KEY. A key in somebody else's document is a value like any
+  // other: it can be a URL, a path, a token or a title, and it would go straight to a terminal and into a
+  // support bundle. Naming what IS allowed is at least as actionable and cannot carry anything.
+  const unknownRootKeys = Object.keys(root).filter((key) => !ROOT_KEYS.includes(key)).length;
+  if (unknownRootKeys > 0) {
+    add(`the export has ${unknownRootKeys} unknown top-level key(s); only ${ROOT_KEYS.join(', ')} are allowed`);
   }
   if (root.format !== EXTERNAL_EXPORT_FORMAT) add(`format must be "${EXTERNAL_EXPORT_FORMAT}"`);
   if (root.version !== EXTERNAL_EXPORT_VERSION) add(`version must be ${EXTERNAL_EXPORT_VERSION}`);
@@ -247,10 +267,9 @@ export function parseExternalExport(text: string): NormalizedExport {
     const at = `entry ${index}`;
     if (raw === null || typeof raw !== 'object' || Array.isArray(raw)) { add(`${at}: must be an object`); return; }
     const rec = raw as Record<string, unknown>;
-    for (const key of Object.keys(rec)) {
-      if (!['entryId', 'title', 'year', 'references', 'attributes'].includes(key)) {
-        add(`${at}: unknown key ${key}`);
-      }
+    const unknownEntryKeys = Object.keys(rec).filter((key) => !ENTRY_KEYS.includes(key)).length;
+    if (unknownEntryKeys > 0) {
+      add(`${at}: has ${unknownEntryKeys} unknown key(s); only ${ENTRY_KEYS.join(', ')} are allowed`);
     }
 
     const entryId = rec.entryId;
@@ -294,8 +313,10 @@ export function parseExternalExport(text: string): NormalizedExport {
         const where = `${at}: references[${refIndex}]`;
         if (rawRef === null || typeof rawRef !== 'object' || Array.isArray(rawRef)) { add(`${where} must be an object`); refProblem = true; break; }
         const ref = rawRef as Record<string, unknown>;
-        for (const key of Object.keys(ref)) {
-          if (key !== 'kind' && key !== 'id') { add(`${where} has an unknown key ${key}`); refProblem = true; }
+        const unknownRefKeys = Object.keys(ref).filter((key) => !REFERENCE_KEYS.includes(key)).length;
+        if (unknownRefKeys > 0) {
+          add(`${where} has ${unknownRefKeys} unknown key(s); only ${REFERENCE_KEYS.join(', ')} are allowed`);
+          refProblem = true;
         }
         if (refProblem) break;
         const kind = ref.kind;
@@ -327,25 +348,35 @@ export function parseExternalExport(text: string): NormalizedExport {
       const pairs = Object.entries(raw as Record<string, unknown>);
       if (pairs.length > EXPORT_MAX_ATTRIBUTES) { add(`${at}: attributes has more than ${EXPORT_MAX_ATTRIBUTES} keys`); return; }
       let problem = false;
-      for (const [key, value] of pairs) {
+      // AN ATTRIBUTE IS ADDRESSED BY ITS POSITION, NEVER BY ITS KEY. A key is document-supplied, so it is a
+      // value: it can be a URL, an absolute path, a token or a title, and the whole point of an attribute
+      // namespace check is that the key is the hostile part. `attributes[3]` is a position an operator can
+      // find in their own file and it carries nothing at all.
+      //
+      // The position is the order the keys are ENUMERATED in, which is the order they were written in for
+      // every key this format admits except a purely numeric one — JavaScript hoists those. An attribute key
+      // is an operator's own label (`shelf`, `note`), so that is a curiosity rather than a problem; it is
+      // written down here so nobody later reads a shifted index as a bug in the parser.
+      for (const [position, [key, value]] of pairs.entries()) {
+        const which = `${at}: attributes[${position}]`;
         if (key.length > EXPORT_MAX_ATTRIBUTE_KEY_LENGTH || !ATTRIBUTE_KEY_RE.test(key)) {
-          add(`${at}: attribute key ${JSON.stringify(key).slice(0, 24)} must be lower-case letters, digits, dot, dash or underscore`);
+          add(`${which} has a key that must be 1-${EXPORT_MAX_ATTRIBUTE_KEY_LENGTH} characters of lower-case letters, digits, dot, dash or underscore, starting with a letter or digit`);
           problem = true; break;
         }
         if (key.startsWith(RESERVED_ATTRIBUTE_PREFIX)) {
-          add(`${at}: attribute key ${key} is reserved by Catalog Authority and cannot come from an export`);
+          add(`${which} has a key in the "${RESERVED_ATTRIBUTE_PREFIX}" namespace, which Catalog Authority reserves and an export cannot supply`);
           problem = true; break;
         }
         const namespace = key.split(/[._-]/)[0]!;
         if (FORBIDDEN_ATTRIBUTE_PREFIXES.includes(namespace)) {
-          add(`${at}: attribute key ${key} is acquisition or media-location data, which this product does not hold`);
+          add(`${which} has a key in an acquisition or media-location namespace, which this product does not hold`);
           problem = true; break;
         }
-        if (typeof value !== 'string') { add(`${at}: attributes.${key} must be a string`); problem = true; break; }
-        if (value.length > EXPORT_MAX_ATTRIBUTE_VALUE_LENGTH) { add(`${at}: attributes.${key} is longer than ${EXPORT_MAX_ATTRIBUTE_VALUE_LENGTH} characters`); problem = true; break; }
-        if (CONTROL_CHARS.test(value)) { add(`${at}: attributes.${key} contains control characters`); problem = true; break; }
+        if (typeof value !== 'string') { add(`${which} must be a string`); problem = true; break; }
+        if (value.length > EXPORT_MAX_ATTRIBUTE_VALUE_LENGTH) { add(`${which} is longer than ${EXPORT_MAX_ATTRIBUTE_VALUE_LENGTH} characters`); problem = true; break; }
+        if (CONTROL_CHARS.test(value)) { add(`${which} contains control characters`); problem = true; break; }
         if (looksLikeLocation(value)) {
-          add(`${at}: attributes.${key} looks like a URL or a filesystem path, which is acquisition data and is refused`);
+          add(`${which} looks like a URL or a filesystem path, which is acquisition data and is refused`);
           problem = true; break;
         }
         attributes[key] = value;

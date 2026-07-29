@@ -291,16 +291,21 @@ read_produced() {
 produced_records="$(digits_or_die "$(read_produced records)" "the produced record count")"
 [ "${produced_records}" = "${RECORD_COUNT}" ] \
   || fail "the producer emitted ${produced_records} records, expected ${RECORD_COUNT}"
-[ "$(read_produced source)" = "external.acceptance-external" ] \
-  || fail "the produced snapshot does not carry external provenance in its source"
-for declared in "network:none" "acquisition:external-input-only" "mediaAccess:none" "symlinksCreated:0"; do
+# THE REPORT SAYS THE INPUT WAS EXTERNAL, AND NOT WHICH SYSTEM IT CAME FROM. The label lives in the SNAPSHOT,
+# which is checked separately below; a support report that named the operator's external tool would be a
+# support report that travels further than the fact it is describing.
+for declared in "provenance:external-input" "network:none" "acquisition:external-input-only" "mediaAccess:none" "symlinksCreated:0"; do
   field="${declared%%:*}"; want="${declared#*:}"
   [ "$(read_produced "${field}")" = "${want}" ] || fail "the producer did not declare ${field}=${want}"
 done
 [ -s "${EXTRACTED}/import/${SNAPSHOT_NAME}" ] || fail "the producer wrote no snapshot"
 HOST_CONTENT_DIGEST="$(hex64_or_die "$(read_produced contentDigest)" "the produced content digest")"
-# The producer's report is redaction-safe: it must not echo a title or a reference value.
-for forbidden in "${SECRET_REF}" 'Acceptance Collection One' 'Unrelated Record'; do
+# THE SNAPSHOT KEEPS THE REAL PROVENANCE, and that is where it belongs: every derived record id is a function
+# of it. Checked on the FILE, because the report deliberately no longer carries it.
+grep -q '"source": "external.acceptance-external"' "${EXTRACTED}/import/${SNAPSHOT_NAME}" \
+  || fail "the produced snapshot does not carry external.<system> provenance in its own source field"
+# The producer's report is redaction-safe: no title, no reference value, and NOT the external system's label.
+for forbidden in "${SECRET_REF}" 'Acceptance Collection One' 'Unrelated Record' 'acceptance-external'; do
   case "${produce_json}" in *"${forbidden}"*) fail "the producer's report echoed content it must not";; esac
 done
 # The EXPORT goes into the import folder too, so the SHIPPED IMAGE can produce from the same input below.

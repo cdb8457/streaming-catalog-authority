@@ -273,6 +273,43 @@ test('dropping a Phase suite from the suites job blocks the acceptance-suites ch
   assertBlocks({ workflowText: weakened }, 'suites-run-the-acceptances');
 });
 
+// EVERY required suite, attacked individually.
+//
+// The check above proved the mechanism on ONE suite, which is exactly how a list grows a hole: a suite added
+// to the required set but never attacked is a suite whose removal nobody has watched block anything. The
+// table is derived from the check's own required list rather than retyped, so a suite added to
+// `checkSuitesRunAcceptances` and not here is a test failure rather than a silent gap.
+test('removing ANY required suite from the suites job blocks the acceptance-suites check', () => {
+  const required = ['test:phase245-local', 'test:phase246-local', 'test:phase247-local', 'test:phase248-local',
+    'test:phase249-local', 'test:phase262-local', 'test:phase274-local', 'test:phase275-local',
+    'test:phase276-local'];
+  // The suites job's own text is what the check reads, so the mutation has to change THAT text.
+  const jobText = WORKFLOW.slice(WORKFLOW.indexOf('  suites:'), WORKFLOW.indexOf('\n  image:'));
+  assert(jobText.length > 0, 'the workflow has a suites job to attack');
+  for (const suite of required) {
+    assert(jobText.includes(suite), `the suites job must actually run ${suite} for its removal to mean anything`);
+    const weakened = WORKFLOW.replace(`npm run ${suite}\n`, '');
+    assert(weakened !== WORKFLOW, `removing ${suite} actually changed the fixture`);
+    assertBlocks({ workflowText: weakened }, 'suites-run-the-acceptances');
+  }
+  // ...and typecheck, which is in the same required list and is not a phase suite.
+  const noTypecheck = WORKFLOW.replace('      - run: npm run typecheck\n', '');
+  assert(noTypecheck !== WORKFLOW, 'removing typecheck actually changed the fixture');
+  assertBlocks({ workflowText: noTypecheck }, 'suites-run-the-acceptances');
+});
+
+test('the suites job name claims no phase range it does not cover', () => {
+  // It said "Phase 242-257" while also running the Phase 258 inventory audit, the Phase 266-272 control plane
+  // and the Phase 274-276 suites. A reader checking whether a phase is covered reads the job NAME.
+  const jobText = WORKFLOW.slice(WORKFLOW.indexOf('  suites:'), WORKFLOW.indexOf('\n  image:'));
+  const name = /^\s+name: (.+)$/m.exec(jobText)?.[1] ?? '';
+  assert(name.length > 0, 'the suites job is named');
+  assert(!/Phase \d+-\d+/.test(name), `the suites job name states a phase range it cannot keep current: ${name}`);
+  for (const suite of ['test:phase274-local', 'test:phase275-local', 'test:phase276-local', 'test:inventory']) {
+    assert(jobText.includes(suite), `the suites job runs ${suite}, which is why a narrow name would be a lie`);
+  }
+});
+
 test('publish depending on a gate job that does not exist is a dangling-dependency block', () => {
   // Rename the lifecycle job so `needs` points at a job that no longer exists.
   const weakened = WORKFLOW.replace('\n  lifecycle:\n', '\n  lifecycle-renamed:\n');
