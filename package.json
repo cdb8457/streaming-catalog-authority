@@ -602,7 +602,8 @@
     "test:kek-correction-gates": "tsx test/kek-correction-gates.ts",
     "test:custodian-storage-ipc-gates": "tsx test/custodian-storage-ipc-gates.ts",
     "test:custody-cutover": "tsx test/custody-cutover.ts",
-    "test:custody-transition": "tsx test/custody-transition.ts"
+    "test:custody-transition": "tsx test/custody-transition.ts",
+    "test:managed-custody-lifecycle": "tsx test/managed-custody-lifecycle.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",
