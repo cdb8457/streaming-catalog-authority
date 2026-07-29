@@ -75,10 +75,24 @@ The confirmed run re-resolves everything under a lock, stops `app` then `sidecar
 one-shot container, removes the marker, starts the stack on the steady-state file with `--pull never
 --no-build`, and requires a health handshake reporting `sidecar-managed-ring`.
 
-**Resumable.** A cutover interrupted after the ring was written leaves a bootstrap runtime with a ring beside
-it. `migrate` refuses to run twice, so the plan detects the ring and plans the **remaining half** — `stage:
-switch-only`, no migration digest, no migration command. The report says `resumed: true` and
-`migrationPerformed: false`, because those are different facts.
+**Resumable, and the resume proves what it is resuming.** A cutover interrupted after the ring was written
+leaves a bootstrap runtime with a ring beside it. `migrate` refuses to run twice, so the plan plans the
+**remaining half** — `stage: switch-only`, no migration digest, no migration command. The report says
+`resumed: true` and `migrationPerformed: false`, because those are different facts.
+
+Selecting that path on the *existence of a file* would have been the worst hole in this tranche: the last act
+of the resume is to switch the runtime to root-only custody, where the sidecar opens exactly that file. So a
+resume proves the ring is **this installation's own adopted ring** before it plans anything — the root key
+opens it; it is the exact post-adoption shape (one generation, active 1, no pending, origin
+`adopted-from-static-kek`); generation 1 **is** this installation's static KEK; every wrapped key in the
+keystore opens under it; and the backup still verifies and is bound by its own digest. All of it is digested
+into the plan, so the confirmed run re-proves it under the lock. A corrupt ring, one sealed under another
+root, one holding a different key, one an initialisation wrote, and one already rotated on are each refused.
+
+The backup gate on a resume is the **same** gate the migration passed — the set must verify and be the same
+bytes — and deliberately not the full custody-restorability proof used elsewhere: the set a cutover is gated
+on is taken *before* the migration, so its keystore holds no ring at all, and demanding that proof would
+refuse every legitimate resume.
 
 ### Rollback, and the two things that word means
 
@@ -136,10 +150,10 @@ peer.
 
 ## Verification status
 
-`npm run typecheck` clean. New suite `custody-cutover` (19 tests): both compose resolutions, marker refusals,
+`npm run typecheck` clean. New suite `custody-cutover` (22 tests): both compose resolutions, marker refusals,
 secret/mount isolation, no Docker socket or privilege escalation, read-only client mounts, plan purity,
 confirm mismatch and input swap, a successful cutover whose migration is the **real** `adoptStaticKekAsRing`
-over a real keystore, a resume, a failed-health runtime rollback, a failed migration, the command boundary,
+over a real keystore, a resume and five adversarial rings it must refuse, a failed-health runtime rollback, a failed migration, the command boundary,
 the CLI surface, and the doctor states.
 
 Fake command ledgers are used for the orchestration — stopping and starting containers on a NAS is not

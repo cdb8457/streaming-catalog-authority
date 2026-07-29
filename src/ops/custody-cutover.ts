@@ -1,9 +1,18 @@
 import { createHash } from 'node:crypto';
 import { join } from 'node:path';
-import { kekRingExists } from '../core/crypto/kek-ring.js';
+import { FileCustodian } from '../core/crypto/file-custodian.js';
+import {
+  activeKek,
+  kekRingExists,
+  loadKekRing,
+  readRootWrappingKey,
+  rootKeyId,
+} from '../core/crypto/kek-ring.js';
 import { validateSidecarHealth } from '../core/crypto/sidecar-ipc.js';
 import type { SidecarHealth } from '../core/crypto/sidecar-ipc.js';
-import { planKekMigration } from './kek-rotation.js';
+import { keyLabel, keystoreSetDigest, planKekMigration } from './kek-rotation.js';
+import { readKeyFileNoFollow } from './kek-ring-secret-io.js';
+import { verifyBackupSet } from './backup-set-verification.js';
 import {
   BOOTSTRAP_COMPOSE_FILE,
   RUNTIME_COMPOSE_FILE,
@@ -122,6 +131,13 @@ export interface ResolvedCustodyCutover extends CustodyCutoverRequest {
    * `null` on a resume: there is no migration left to confirm, because one already happened.
    */
   readonly migrationPlanDigest: string | null;
+  /**
+   * On a RESUME, a digest over the ring that was PROVED to be this installation's own adopted ring.
+   *
+   * `null` when there is nothing to resume. See `proveAdoptedRing`: a resume that trusted the FILENAME
+   * would be a resume anybody who can write the state directory could aim.
+   */
+  readonly resumeStateDigest: string | null;
   /** A digest of the resolved compose configuration, so a changed stack is a changed plan. */
   readonly composeConfigDigest: string;
   readonly composeFiles: readonly string[];
@@ -214,6 +230,13 @@ export function planCustodyCutover(
   // custody, proves the static key opens every wrapped key, and binds the exact key set. The container's
   // digest is what the confirmed run will echo back, and it is obtained with `--plan`.
   let migrationPlanDigest: string | null = null;
+  let resumeStateDigest: string | null = null;
+  if (stage === 'switch-only') {
+    // A RESUME PROVES WHAT IT IS RESUMING, rather than trusting the name of a file. See
+    // `proveAdoptedRing`: everything below this line ends in a switch to root-only custody.
+    resumeStateDigest = proveAdoptedRing(hostStateDir, request, hostBackupsDir,
+      join(hostBackupsDir, request.backupSetName));
+  }
   if (stage === 'migrate-and-switch') {
     planKekMigration({
       stateDir: hostStateDir,
@@ -236,12 +259,140 @@ export function planCustodyCutover(
     toMode: 'root-only' as const,
     stage,
     migrationPlanDigest,
+    resumeStateDigest,
     composeConfigDigest: createHash('sha256').update(composeConfig.stdout, 'utf8').digest('hex'),
     composeFiles: [RUNTIME_COMPOSE_FILE, BOOTSTRAP_COMPOSE_FILE] as readonly string[],
   };
   // FROZEN. A plan is a decision an operator confirmed; a caller able to edit one between the print and the
   // run would be editing the thing the digest binds.
   return Object.freeze({ ...resolved, planDigest: custodyCutoverPlanDigest(resolved) });
+}
+
+/**
+ * On a resume, prove the ring that is there is THIS INSTALLATION'S OWN ADOPTED RING.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE HOLE THIS CLOSES, WHICH WAS THE WHOLE OF THE RESUME PATH.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The resume was selected by `kekRingExists`, which asks whether there is a FILE at the ring's name — and it
+ * then skipped every proof the migrate-and-switch path performs. So ANYTHING at that name sent this command
+ * down a path with no root key check, no static key check, no keystore proof and no backup gate, whose last
+ * act is to switch the runtime to ROOT-ONLY custody — where the sidecar opens exactly that file. A corrupt
+ * ring, one sealed under a different root, one from another installation, one that had already been rotated
+ * away from the static key, or one an attacker with write access to the state directory put there: every one
+ * of them was a runtime switch this command would perform on request.
+ *
+ * A resume is legitimate only when the ring on disk is exactly what an interrupted `migrate` would have left,
+ * so that is what is proved, in the order that makes each step mean something:
+ *
+ *   1. THE ROOT KEY AND THE STATIC KEY ARE READ THE WAY THIS PRODUCT READS KEY FILES — owner-only, without
+ *      following a link, never from an environment variable and never from a command line.
+ *   2. THE ROOT KEY OPENS THE RING, and the ring passes every structural rule this build enforces. A ring
+ *      sealed under a different root, or a file that is not a ring, fails here.
+ *   3. IT IS THE EXACT POST-ADOPTION STATE: one generation, active generation 1, no pending generation, and
+ *      that generation's origin is `adopted-from-static-kek`. A ring that has been rotated is not one an
+ *      adoption left behind, and finishing a "cutover" onto it would be finishing something else.
+ *   4. GENERATION 1 IS THE STATIC KEK ITSELF. That is what adoption MEANS — the key on disk is unchanged and
+ *      the ring is a new way of holding it — so a ring whose generation 1 is another key is a ring this
+ *      installation's wrapped keys were never under.
+ *   5. EVERY WRAPPED KEY IN THE KEYSTORE OPENS UNDER IT, which is the same proof the migration itself makes
+ *      before it writes anything.
+ *   6. THE BACKUP IS STILL THERE, STILL VERIFIES AND STILL RESTORES CUSTODY. The way back is a precondition
+ *      of the whole operation, not only of its first half.
+ *
+ * All of it is digested into the plan, so the confirmed run re-proves every one of these under the lock and
+ * refuses on any difference.
+ */
+function proveAdoptedRing(
+  hostStateDir: string,
+  request: CustodyCutoverRequest,
+  hostBackupsDir: string,
+  backupSet: string,
+): string {
+  const root = readRootWrappingKey(request.hostRootKeyFile);
+  const staticKek = readKeyFileNoFollow(request.hostStaticKeyFile, 'static KEK');
+
+  let ring;
+  try {
+    ring = loadKekRing(hostStateDir, root);
+  } catch {
+    throw new MaintenanceRefused(
+      'there is a KEK ring in this sidecar state directory and the root wrapping key does not open it, so '
+      + 'this is not an interrupted cutover of this installation. Refused before anything was changed: '
+      + 'switching the runtime to root-only custody would hand the sidecar a ring nobody has proved.');
+  }
+  const generations = [...ring.generations];
+  const first = generations[0];
+  if (generations.length !== 1 || ring.active !== 1 || ring.pending !== null || first === undefined
+    || first.generation !== 1 || first.state !== 'active' || first.origin !== 'adopted-from-static-kek') {
+    throw new MaintenanceRefused(
+      'the KEK ring in this sidecar state directory is not the ring an interrupted migration would have left. '
+      + 'A migration writes exactly one generation, active, with no pending generation, adopted from the '
+      + 'static KEK. Refused: whatever this ring is, finishing a cutover onto it is not what this command '
+      + 'does. Check it with ops:kek-ring status.');
+  }
+  if (first.keyHex !== staticKek.toString('hex')) {
+    throw new MaintenanceRefused(
+      'the KEK ring in this sidecar state directory does not hold this installation\'s static KEK as its '
+      + 'generation 1. An adoption changes the custody MECHANISM and not the key, so a ring whose first '
+      + 'generation is a different key is a ring this keystore was never under. Refused.');
+  }
+  // EVERY WRAPPED KEY OPENS UNDER IT — the same proof the migration makes before it writes a ring.
+  const active = activeKek(ring);
+  let opens: { readonly alreadyCurrent: number; readonly total: number };
+  try {
+    opens = FileCustodian.planRewrapKeystore(hostStateDir, { fromKek: active, toKek: active });
+  } catch (err) {
+    throw new MaintenanceRefused(
+      'the wrapped keys in this keystore could not be proved to open under the ring that is already there ('
+      + `${err instanceof Error ? err.message : 'the keystore could not be read'}). Refused.`);
+  }
+  if (opens.alreadyCurrent !== opens.total) {
+    throw new MaintenanceRefused(
+      'not every wrapped key in this keystore opens under the ring that is already there, so this is not the '
+      + 'ring this installation\'s keys are under. Refused: switching to root-only custody would produce an '
+      + 'installation whose every item reads as unreadable, which is indistinguishable from a correct '
+      + 'erasure.');
+  }
+  // AND THE WAY BACK IS STILL THERE. A resume is still a custody operation, and the backup gate is a
+  // precondition of the whole one rather than of its first half.
+  const verification = verifyBackupSet(backupSet);
+  if (!verification.ok || verification.setDigest === '') {
+    throw new MaintenanceRefused(
+      'the complete backup this cutover is gated on does not verify, so there is nothing to go back to. '
+      + 'Nothing was changed.');
+  }
+  // ---- AND IT IS THE SAME GATE THE MIGRATION ITSELF PASSED, FOR A REASON WORTH WRITING DOWN -----------
+  //
+  // The full custody-restorability proof — the set's own root key opens the set's own ring — CANNOT apply
+  // here, and requiring it would refuse every legitimate resume. The backup a cutover is gated on is taken
+  // BEFORE the migration, so its keystore has no ring in it at all; that is exactly what a pre-migration
+  // backup of a static installation looks like. `planKekMigration` requires the set to VERIFY for the same
+  // reason, and a resume must be no weaker and no stricter than the operation it is finishing.
+  //
+  // What the resume binds is therefore the set's IDENTITY: it verified now, and it is the same bytes the
+  // plan was computed over. A set replaced at that path between the plan and the confirmation changes the
+  // digest and is refused.
+  const verifiedAgain = verifyBackupSet(backupSet);
+  if (!verifiedAgain.ok || verifiedAgain.setDigest !== verification.setDigest) {
+    throw new MaintenanceRefused(
+      'the backup set changed while this cutover was being planned: the set that verified and the set this '
+      + 'plan would name are not the same bytes. Nothing was changed.');
+  }
+
+  return createHash('sha256').update(JSON.stringify({
+    report: CUSTODY_CUTOVER_REPORT,
+    // LABELS AND DIGESTS ONLY. No key, no wrapped value, no host path.
+    rootKeyId: rootKeyId(root),
+    staticKeyId: keyLabel(staticKek),
+    activeGeneration: ring.active,
+    generations: generations.map((entry) => [entry.generation, entry.state, entry.origin]),
+    keysProved: opens.total,
+    keystoreSetDigest: keystoreSetDigest(hostStateDir),
+    backupSetDigest: verification.setDigest,
+    backupsDir: createHash('sha256').update(hostBackupsDir, 'utf8').digest('hex'),
+  }), 'utf8').digest('hex');
 }
 
 /** Over which project, which stack, which merged configuration and which exact migration. */
@@ -262,6 +413,9 @@ export function custodyCutoverPlanDigest(plan: Omit<ResolvedCustodyCutover, 'pla
     // and the static key's label. Binding it here binds all of that without recomputing any of it.
     stage: plan.stage,
     migrationPlanDigest: plan.migrationPlanDigest,
+    // THE PROVED RESUME STATE IS PART OF WHAT AN OPERATOR CONFIRMS, so the run re-proves all of it
+    // under the lock and refuses if the ring, the keystore or the backup moved in between.
+    resumeStateDigest: plan.resumeStateDigest,
     backupSetName: plan.backupSetName,
   }), 'utf8').digest('hex');
 }

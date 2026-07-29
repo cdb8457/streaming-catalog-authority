@@ -1,10 +1,18 @@
 import { randomBytes, randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import {
+  chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync,
+  writeFileSync,
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { FileCustodian } from '../src/core/crypto/file-custodian.js';
-import { adoptStaticKekAsRing } from '../src/core/crypto/kek-ring.js';
+import {
+  adoptStaticKekAsRing,
+  beginPendingGeneration,
+  initializeKekRing,
+  kekRingPath,
+} from '../src/core/crypto/kek-ring.js';
 import { SIDECAR_PROTOCOL_VERSION } from '../src/core/crypto/sidecar-ipc.js';
 import { runVerifiedCompleteBackup } from '../src/ops/complete-backup.js';
 import { REQUIRED_SECRET_FILES } from '../src/ops/backup-components.js';
@@ -535,6 +543,93 @@ await test('the cutover never runs a command that could fetch, build or reach a 
       assert(!line.includes(forbidden), `no command carries ${forbidden}: ${line}`);
     }
   }
+});
+
+await test('a resume PROVES the ring it is finishing onto, and refuses everything that is not one', async () => {
+  // THE HOLE THIS CLOSES, AND IT WAS THE WHOLE RESUME PATH. `switch-only` was selected by `kekRingExists`,
+  // which asks whether there is a FILE at the ring's name — and then skipped every proof: no root key check,
+  // no static key check, no keystore proof, no backup gate. The last act of that path is to switch the
+  // runtime to ROOT-ONLY custody, where the sidecar opens exactly that file. So anything anybody could write
+  // into the state directory was a runtime switch this command would perform on request.
+  const world = await installation('resume-adversarial');
+  const ringFile = kekRingPath(world.stateDir);
+  const tools = () => stackRunner({ planDigest: 'not-reached' });
+
+  // 1. A CORRUPT RING — bytes at the name that are not a ring this build wrote.
+  mkdirSync(join(world.stateDir, 'ring'), { recursive: true });
+  writeFileSync(ringFile, '{"not":"a ring"}');
+  refuses(() => planCustodyCutover(world.request, tools()), 'does not open it', 'a corrupt ring');
+
+  // 2. A RING SEALED UNDER A DIFFERENT ROOT — a real ring, from somewhere else.
+  rmSync(join(world.stateDir, 'ring'), { recursive: true, force: true });
+  adoptStaticKekAsRing(world.stateDir, randomBytes(32), world.staticKek, () => 1_800_000_000_000);
+  refuses(() => planCustodyCutover(world.request, tools()), 'does not open it', 'a ring under another root');
+
+  // 3. A RING WHOSE GENERATION 1 IS NOT THIS INSTALLATION'S STATIC KEK. Adoption changes the MECHANISM and
+  //    not the key, so this ring is one these wrapped keys were never under.
+  rmSync(join(world.stateDir, 'ring'), { recursive: true, force: true });
+  adoptStaticKekAsRing(world.stateDir, world.root, randomBytes(32), () => 1_800_000_000_000);
+  refuses(() => planCustodyCutover(world.request, tools()), 'static KEK as its', 'a ring holding another key');
+
+  // 4. A RING THAT IS NOT THE POST-ADOPTION SHAPE — generated rather than adopted.
+  rmSync(join(world.stateDir, 'ring'), { recursive: true, force: true });
+  initializeKekRing(world.stateDir, world.root, () => 1_800_000_000_000);
+  refuses(() => planCustodyCutover(world.request, tools()), 'interrupted migration would have left',
+    'a ring an initialisation wrote rather than an adoption');
+
+  // 5. A RING WITH AN EXTRA (PENDING) GENERATION — a rotation was already under way on it.
+  rmSync(join(world.stateDir, 'ring'), { recursive: true, force: true });
+  adoptStaticKekAsRing(world.stateDir, world.root, world.staticKek, () => 1_800_000_000_000);
+  beginPendingGeneration(world.stateDir, world.root, () => 1_800_000_001_000);
+  refuses(() => planCustodyCutover(world.request, tools()), 'interrupted migration would have left',
+    'a ring that has already been rotated on');
+
+  // AND THE REAL POST-ADOPTION RING IS ACCEPTED, so the proof is a gate and not a wall.
+  rmSync(join(world.stateDir, 'ring'), { recursive: true, force: true });
+  adoptStaticKekAsRing(world.stateDir, world.root, world.staticKek, () => 1_800_000_000_000);
+  const planned = planCustodyCutover(world.request, tools());
+  assertEq(planned.stage, 'switch-only', 'the genuine interrupted cutover resumes');
+  assert(planned.resumeStateDigest !== null, 'and carries a digest over the state it proved');
+});
+
+await test('a resume re-proves the keystore and the backup, and a change to either is a refusal', async () => {
+  const world = await installation('resume-bindings');
+  adoptStaticKekAsRing(world.stateDir, world.root, world.staticKek, () => 1_800_000_000_000);
+  const tools = () => stackRunner({ planDigest: 'not-reached' });
+  const planned = planCustodyCutover(world.request, tools());
+
+  // THE BACKUP IS STILL A PRECONDITION OF THE WHOLE OPERATION, not only of its first half. A resume that
+  // skipped it would be a custody switch with no way back.
+  const backupSet = join(world.appdata, 'backups', 'set-1');
+  const manifest = join(backupSet, 'catalog-backup-manifest.json');
+  const held = readFileSync(manifest);
+  writeFileSync(manifest, '{"tampered":true}');
+  refuses(() => planCustodyCutover(world.request, tools()), 'does not verify', 'a resume with a broken backup');
+  writeFileSync(manifest, held);
+
+  // AND A KEYSTORE THAT MOVED CHANGES THE PLAN, so a confirmation from before it moved cannot be spent.
+  const custodian = new FileCustodian(world.stateDir, SECRET, world.staticKek);
+  await custodian.provision('op-after-plan', randomUUID(), 0);
+  const after = planCustodyCutover(world.request, tools());
+  assert(after.planDigest !== planned.planDigest, 'the plan digest moves with the key set');
+  refuses(() => runCustodyCutover({ ...world.request, confirmDigest: planned.planDigest }, tools()),
+    'digest you confirmed', 'a stale confirmation over a moved keystore');
+});
+
+await test('the custody mode marker is written through the atomic no-follow writer', () => {
+  // A hand-rolled temp-and-rename was three rules short of the writer this product already has. The one that
+  // mattered: a file — or a symbolic link — already sitting at the temp name would have been written THROUGH.
+  const project = join(WORK, 'marker-writer');
+  mkdirSync(project, { recursive: true });
+  writeCustodyRuntimeMode(project, 'bootstrap');
+  assertEq(readCustodyRuntimeMode(project).mode, 'bootstrap', 'the marker round-trips');
+  // NO TEMPORARY FILE IS LEFT BEHIND, which is what a walk of the project directory would otherwise trip on.
+  const stray = readdirSync(project).filter((entry) => entry !== CUSTODY_MODE_FILENAME);
+  assertEq(stray.length, 0, `nothing else is left in the project directory: ${stray.join(',')}`);
+  // AND THE SOURCE USES THE ESTABLISHED WRITER RATHER THAN A RAW ONE.
+  const source = readRepo('src/ops/custody-runtime-mode.ts');
+  assert(source.includes('writeStateFileBytes('), 'the marker is written with the state writer');
+  assert(!source.includes('writeFileSync('), 'and not with a raw writeFileSync');
 });
 
 // ---------------------------------------------------------------------------------------------------------

@@ -1,6 +1,6 @@
-import { existsSync, renameSync, rmSync, writeFileSync } from 'node:fs';
-import { randomUUID } from 'node:crypto';
+import { existsSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
+import { CustodianStateError, writeStateFileBytes } from '../core/crypto/custodian-state-io.js';
 import { MaintenanceRefused, readFileNoFollow, resolveMaintenanceRoot } from './maintenance-safety.js';
 
 // Phase 289 — which custody the shipped stack is running, as a thing an operator SELECTS rather than edits.
@@ -123,15 +123,25 @@ export function writeCustodyRuntimeMode(projectRoot: string, mode: CustodyRuntim
   const root = resolveMaintenanceRoot(projectRoot, 'project directory');
   if (!isCustodyRuntimeMode(mode)) throw new MaintenanceRefused('that is not a custody runtime mode');
   const path = join(root, CUSTODY_MODE_FILENAME);
-  const temp = `${path}.${randomUUID()}.tmp`;
-  // EXCLUSIVE CREATE. `wx` is `O_CREAT | O_EXCL | O_WRONLY`: if anything is already at that name — including
-  // a symbolic link somebody planted — this fails instead of writing through it.
-  writeFileSync(temp, `${mode}\n`, { encoding: 'utf8', mode: 0o644, flag: 'wx' });
+  // ---- THE ESTABLISHED WRITER, NOT A RAW `writeFileSync` -------------------------------------------------
+  //
+  // WHAT A HAND-ROLLED TEMP-AND-RENAME LEFT OPEN. The first version created its own temp file and renamed
+  // it. That is three rules short of the writer this product already has: the temp was created without
+  // O_EXCL in the first cut (so a file — or a symbolic link — already sitting at the temp name would have
+  // been written THROUGH, putting a mode marker wherever the link pointed), the write was not looped (a
+  // short `write(2)` leaves a truncated marker, which reads as a word this build does not define), and
+  // nothing was fsync'd, so a crash could leave the rename durable and the bytes not.
+  //
+  // `writeStateFileBytes` is that writer, and it is the one the KEK ring and every custodian record use:
+  // O_EXCL temp at 0600, a loop that handles a short write, fsync, rename, fsync of the directory. The file
+  // that decides WHICH KEY MATERIAL the sidecar is wired to is now written exactly as carefully as the key
+  // material itself.
   try {
-    renameSync(temp, path);
-  } catch {
-    try { rmSync(temp, { force: true }); } catch { /* the refusal below is the outcome */ }
-    throw new MaintenanceRefused('the custody runtime mode marker could not be put into place');
+    writeStateFileBytes(path, Buffer.from(`${mode}\n`, 'utf8'));
+  } catch (err) {
+    throw new MaintenanceRefused(err instanceof CustodianStateError
+      ? `the custody runtime mode marker could not be put into place: ${err.message}`
+      : 'the custody runtime mode marker could not be put into place');
   }
 }
 

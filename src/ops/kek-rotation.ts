@@ -1620,7 +1620,7 @@ function keystoreDigestOf(entries: readonly (readonly [string, string])[]): stri
 }
 
 /** A non-reversible label for a key, used only to bind a plan digest. Never printed beside its key. */
-function keyLabel(key: Buffer): string {
+export function keyLabel(key: Buffer): string {
   return createHash('sha256').update('phase-282-key-label').update(key).digest('hex').slice(0, 32);
 }
 
