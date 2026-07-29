@@ -203,6 +203,54 @@ workflow runs, that tag does not exist. Build it from this checkout with the mai
 docker compose -f docker-compose.runtime.yml -f docker-compose.runtime.build.yml up -d --build
 ```
 
+## Back it up, watch it, and rehearse the upgrade
+
+These three run on the **host**, beside your Compose project — not inside it, because stopping the app is the
+one thing a container cannot do to itself. None of them contacts a network, reads a media path, opens a secret
+file, or accepts a credential on a command line.
+
+```bash
+# One complete backup: the database, the keystore, the secret files and your promotion records — taken while
+# nothing is writing, published atomically, and verified before it reports success.
+npm run ops:complete-backup -- --project /path/to/project --set set-2026-07-29 --custodian inline
+
+# On the Unraid launcher stack the custodian is a sidecar, and you say where its state is. It is never guessed.
+npm run ops:complete-backup -- --project /path/to/project --set set-2026-07-29 \
+    --custodian sidecar --sidecar-state sidecar-state
+
+# What it would do, without stopping anything:
+npm run ops:complete-backup -- --project /path/to/project --set s --custodian inline --plan
+```
+
+An existing set name is **refused**; a run that fails leaves no set and starts your stack again through a
+`finally` that runs on every path out. Backup directories are `0700` and the files in them are `0600`.
+
+```bash
+# On a schedule: runs the shipped read-only doctor and records one redacted state file.
+npm run ops:doctor-monitor -- --project /path/to/project --state monitor
+```
+
+It **sends no alert** — it exits `0` healthy, `3` WARN, `1` FAIL, `4` the doctor could not be read, and your
+scheduler alerts from that. It never softens the doctor: a WARN is a WARN on the fiftieth consecutive run.
+`deploy/unraid-catalog-maintenance.sh` is a worked User Scripts/cron example with overlap locking, a bounded
+timeout, and retention that only ever prints a **plan**.
+
+```bash
+# Rehearse an upgrade, and the rollback that makes it reversible, in a throwaway project:
+npm run ops:upgrade-rehearsal -- --production /path/to/project --production-project catalogauthority-local \
+    --disposable /path/to/scratch --label r1 --backup-set /path/to/project/backups/set-2026-07-29 \
+    --current-image catalog-authority-ops:v1.1.3 --candidate-image catalog-authority-ops:v1.1.4 --plan
+```
+
+`--plan` prints what it would do and a digest; running it requires that digest back. It refuses a moving tag
+like `latest`, refuses a disposable root that is — or is inside, or contains — your real project, never pulls,
+and needs a backup set that verifies *now*. Because there are no down-migrations, **putting the old image back
+is not a rollback**: the rollback leg destroys the upgraded state, restores the same pre-upgrade set, and boots
+the previous image. A step that does not hold keeps the disposable project for diagnosis and removes nothing.
+
+The boundaries, the guarantees and the limits:
+[docs/PHASES_277_280_MAINTENANCE_AUTOMATION.md](docs/PHASES_277_280_MAINTENANCE_AUTOMATION.md).
+
 ## Run the tests
 
 ```bash

@@ -636,6 +636,12 @@ export const REQUIRED_SUITE_SCRIPTS: readonly string[] = Object.freeze([
   'test:phase274-local',
   'test:phase275-local',
   'test:phase276-local',
+  // Phases 277-280 are here for the same reason: each is the deterministic contract of host-side automation
+  // that stops services, copies irrecoverable state and removes disposable projects. If its suite stops
+  // running, nothing else in a release can see that it broke.
+  'test:phase277-local',
+  'test:phase278-local',
+  'test:phase279-local',
 ]);
 
 /**

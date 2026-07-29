@@ -576,7 +576,17 @@
     "test:jellyfin-library-match": "tsx test/jellyfin-library-match.ts 5466",
     "test:phase275-local": "tsx test/jellyfin-library-match.ts 5466",
     "test:disposable-collection-lifecycle": "tsx test/disposable-collection-lifecycle.ts",
-    "test:phase276-local": "tsx test/disposable-collection-lifecycle.ts"
+    "test:phase276-local": "tsx test/disposable-collection-lifecycle.ts",
+    "ops:complete-backup": "tsx src/ops/complete-backup-cli.ts",
+    "ops:doctor-monitor": "tsx src/ops/doctor-monitor-cli.ts",
+    "ops:upgrade-rehearsal": "tsx src/ops/upgrade-rehearsal-cli.ts",
+    "test:complete-backup": "tsx test/complete-backup.ts",
+    "test:phase277-local": "tsx test/complete-backup.ts",
+    "test:doctor-monitor": "tsx test/doctor-monitor.ts",
+    "test:phase278-local": "tsx test/doctor-monitor.ts",
+    "test:upgrade-rehearsal": "tsx test/upgrade-rehearsal.ts",
+    "test:phase279-local": "tsx test/upgrade-rehearsal.ts",
+    "test:phase280-local": "tsx test/upgrade-rehearsal.ts"
   },
   "dependencies": {
     "pg": "^8.13.1",

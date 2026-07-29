@@ -435,11 +435,6 @@ export function publishTemporary(temporary: string, destination: string, overwri
 }
 
 /**
- * Write `text` to `output.path` so that the name is never observed holding a partial document.
- *
- * Returns whether an existing file was replaced.
- */
-/**
  * The seams a SUITE may pass and production never does.
  *
  * Grouped into one object so they are obviously not part of the ordinary call: `writeAtomically(output, text,
@@ -453,6 +448,11 @@ export interface SnapshotWriteSeams {
   readonly mode?: SnapshotModeSurface;
 }
 
+/**
+ * Write `text` to `output.path` so that the name is never observed holding a partial document.
+ *
+ * Returns whether an existing file was replaced.
+ */
 export function writeAtomically(
   output: ResolvedOutputPath,
   text: string,

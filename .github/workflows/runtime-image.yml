@@ -68,6 +68,16 @@ jobs:
         # tells you nothing. A timeout here fails loudly with a readable log instead of occupying a runner.
         timeout-minutes: 15
         run: npm run test:runner
+      - name: Phase 280, 279, 278, 277 — host-side maintenance automation
+        # Phase 277 is the complete backup: the four irrecoverable components taken from one quiesced moment.
+        # Phase 278 is the verification that follows every one of them, and the scheduled doctor monitor.
+        # Phases 279-280 are the disposable upgrade rehearsal and the rollback that makes an upgrade
+        # reversible. All three suites drive the real planners against a recording fake toolchain and a
+        # temporary project root: no Docker daemon, no images and no network are needed or used.
+        run: |
+          npm run test:phase277-local
+          npm run test:phase278-local
+          npm run test:phase279-local
       - name: Phase 276, 275, 274 — offline snapshot production, read-only matching, disposable lifecycle
         # Phase 274 is the offline producer: an operator-supplied export of an EXTERNAL system turned into the
         # canonical import snapshot, deterministically and atomically, with no network, no acquisition data

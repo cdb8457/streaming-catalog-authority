@@ -1355,6 +1355,24 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "complete-backup.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "doctor-monitor.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
+    },
+    {
+      "file": "upgrade-rehearsal.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }

@@ -837,11 +837,15 @@ test('the CLI prints a refusal that carries no hostile key, on stderr', () => {
     format: EXTERNAL_EXPORT_FORMAT, version: EXTERNAL_EXPORT_VERSION, system: SECRET_SYSTEM,
     entries: [{ entryId: 'e-1', title: 'A', attributes: { [hostile]: 'v' } }],
   }), 'utf8');
+  // BOUNDED, AND ITS OWN FAILURE IS DIAGNOSED. This starts a real child process through `tsx`, which is the
+  // slowest thing any suite here does; without a timeout a bad moment on a loaded machine is a hang, and
+  // without the stderr in the message a transient startup failure reads as "the CLI stopped refusing".
   const run = spawnSync(process.execPath, [
     '--import', 'tsx', join(repoRoot, 'src/ops/catalog-snapshot-produce-cli.ts'), '--from', probe, '--preview',
-  ], { encoding: 'utf8', cwd: repoRoot });
+  ], { encoding: 'utf8', cwd: repoRoot, timeout: 120_000, windowsHide: true });
   const output = `${run.stdout ?? ''}\n${run.stderr ?? ''}`;
-  assertEq(run.status, 3, `the CLI refuses with the rejection exit code; it said: ${output.trim().slice(0, 300)}`);
+  assert(run.error === undefined, `the CLI could not be started at all: ${String(run.error)}`);
+  assertEq(run.status, 3, `the CLI refuses with the rejection exit code; it said: ${output.trim().slice(0, 400)}`);
   assert(!output.includes(hostile), `the CLI echoed the hostile key: ${output.trim().slice(0, 300)}`);
   assert(output.includes('attributes[0]'), 'while naming the position, so the operator can still fix it');
   assert(output.includes('Nothing was written'), 'and saying nothing was written');
