@@ -54,7 +54,8 @@ and every custodian-backed panel (`ops:doctor`, `/api/status`, the whole Catalog
 runs as root; it has **no network, no secrets and one mount**, it changes ownership and nothing else, it
 never reads, writes or deletes key material, and it **refuses** — stopping the stack rather than guessing —
 on any ownership or content state it does not understand. On a correct keystore it changes no ownership at
-all, and it needs no backup first.
+all, and it needs no backup first. The helper also sets `GOMAXPROCS=2`, so the `tsx`/esbuild launcher stays
+inside its narrow PID budget even when Docker exposes a very high host CPU count.
 Check it yourself with `npm run ops:keystore-check`; the manual fallback, the rollback and every refusal code
 are in [docs/PHASE_263_KEYSTORE_REPAIR.md](docs/PHASE_263_KEYSTORE_REPAIR.md).
 
@@ -158,9 +159,9 @@ The browser: [docs/PHASE_260_CATALOG_BROWSER.md](docs/PHASE_260_CATALOG_BROWSER.
 - Setup, login, healthcheck and hardening: [docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md](docs/PHASE_244_PROMOTION_CHAIN_OPERATOR_UI.md)
 - Image, tag and digest policy, the release bundle, maintainer builds: [docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md](docs/PHASE_245_CONSUMER_RELEASE_IMAGE.md)
 
-**Published releases.** `v1.0.0` through `v1.1.2` are published to
+**Published releases.** `v1.0.0` through `v1.1.3` are published to
 `ghcr.io/cdb8457/catalog-authority-ops` and are immutable — nothing here re-tags or overwrites them, which is
-what makes rollback real. `v1.1.3` is the active release candidate these files pin to; until its release
+what makes rollback real. `v1.1.4` is the active release candidate these files pin to; until its release
 workflow runs, that tag does not exist. Build it from this checkout with the maintainer override:
 
 ```bash

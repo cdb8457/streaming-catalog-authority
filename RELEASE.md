@@ -3,9 +3,36 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
+## v1.1.4 - High-core keystore startup hotfix
+
+Release candidate; not yet published. This focused hotfix keeps the v1.1.3 application, schema version 9,
+security boundaries and operator workflows unchanged.
+
+Fixed:
+
+- **The fail-closed keystore preparation one-shot now starts on high-core Docker hosts.** `tsx` launches
+  esbuild's Go helper before Catalog Authority repair code runs. CPU quotas do not reduce the processor count
+  visible to that helper, so a host exposing 128 CPUs could make it exhaust the service's deliberate 64-PID
+  limit and fail before checking the keystore. Both shipped Compose stacks now set `GOMAXPROCS=2` for this
+  one-shot. The existing PID, CPU, memory, capability, mount, network and read-only boundaries remain intact.
+- **The constraint is regression-tested in both consumer stacks.** The keystore repair suite requires the
+  ordinary runtime and Arcane/Unraid Compose definitions to retain the bound.
+
+Upgrade notes:
+
+- There is no schema or stored-data change from v1.1.3. Upgrading or rolling back between v1.1.3 and v1.1.4
+  does not require restoring a database or keystore backup.
+- Existing release guarantees remain unchanged: the helper still has no network or secrets, mounts only the
+  keystore, changes only understood ownership/mode state, and blocks migration and app startup on refusal.
+
+External acceptance on a 128-CPU Unraid host reproduced the v1.1.3 failure under the published 64-PID limit,
+proved the bound in isolation, and then passed first run, restart/idempotency, schema 9, least-privileged
+doctor checks, authenticated version agreement, import preview/apply/replay protection, catalog browsing and
+durable import history.
+
 ## v1.1.3 - Catalog workspace and managed collections (Phases 255–272)
 
-Release candidate; not yet published. This release turns the installed operator surface into a usable
+Published `2026-07-28`, immutable. This release turns the installed operator surface into a usable
 catalog workspace, fixes the fresh-volume keystore defect found by the real-browser gate, and adds an
 explicitly gated lifecycle for one managed Jellyfin collection per accepted plan.
 

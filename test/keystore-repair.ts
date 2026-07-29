@@ -551,6 +551,8 @@ for (const file of REPAIRED_STACKS) {
     const env = asMap(prepare.environment!, 'environment');
     assertEq(String(env.CUSTODIAN_KEYSTORE_DIR), '/var/lib/catalog/keystore', 'it is told which directory');
     assertEq(String(env.CATALOG_KEYSTORE_OWNER), 'node', 'and which user the app runs as');
+    assertEq(String(env.GOMAXPROCS), '2',
+      'the esbuild helper stays below the one-shot PID limit even when the host exposes many CPUs');
     assertEq(env.DATABASE_URL_FILE, undefined, 'it is given no database credential');
     assertEq(env.ADMIN_DATABASE_URL_FILE, undefined, 'not even a read-only one');
   });

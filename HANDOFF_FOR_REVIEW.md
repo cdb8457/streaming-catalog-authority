@@ -1,76 +1,62 @@
-# Handoff for review — v1.1.3 release preparation
+# Handoff for review — v1.1.4 high-core keystore hotfix
 
-Branch `cdb8457/v1-1-3-release`, based on `origin/master` at `04e5130`. **Not tagged, not released, not merged
-and not deployed.**
+Branch `cdb8457/v1-1-4-keystore-pids`, based on the published v1.1.3 merge
+`88c9d1905f0d11a3d29c99be58a0aa263433f0a8`. v1.1.3 remains published and immutable.
 
-This change cuts the release metadata for the work already merged through Phases 255–272. It does not add a
-new feature implementation. The release candidate combines the operator catalog workspace, catalog snapshot
-import, support and backup tooling, bounded test inventory, keystore-volume repair, durable external-create
-recovery, and the explicitly gated managed Jellyfin collection lifecycle.
+## Defect and scope
 
-## Release identity
+The v1.1.3 consumer stacks deliberately limit the root-only `keystore-prepare` one-shot to 64 PIDs. On a
+Docker host exposing 128 CPUs, `tsx` starts esbuild's Go helper before Catalog Authority code runs, and Go
+attempts to create enough runtime threads to exhaust that limit. The one-shot exits before it can inspect or
+repair the volume, which safely blocks migration and app startup but prevents a valid installation.
 
-- `package.json` and the root lockfile package report `1.1.3`.
-- The consumer bundle coordinate and shipped Compose defaults select `v1.1.3`.
-- A regression test requires the package, lockfile and bundle release identity to agree.
-- `v1.0.0` through `v1.1.2` remain published and immutable.
+This hotfix adds `GOMAXPROCS=2` only to `keystore-prepare` in the ordinary runtime and Arcane/Unraid Compose
+stacks. It does not widen the PID budget or alter the image, application logic, schema, data, secrets,
+networking, capabilities, mounts, read-only filesystem or long-running container.
 
-The publish workflow remains responsible for building the production image, applying the `v1.1.3` OCI
-version label, resolving its digest, proving an anonymous consumer can pull that digest, and attaching the
-verified consumer bundle to the GitHub release.
+## Proof
 
-## Upgrade and rollback
+The failure was reproduced with the published v1.1.3 digest on a 128-CPU Unraid host:
 
-The release upgrades schema version 4 to schema version 9. There are no down-migrations. Before upgrading,
-the operator must back up the database, keystore, secret files and promotion records as one recovery set.
-Rolling back the image requires restoring the matching pre-upgrade database and keystore together.
+```
+runtime: failed to create new OS thread
+errno=11
+```
 
-Existing root-owned keystore volumes are handled by the shipped `keystore-prepare` one-shot. Its repair is
-narrow and fail-closed: it has no network or secrets, mounts only the keystore volume, and refuses an
-unexpected tree rather than guessing.
+Running the same image and Compose constraints with `GOMAXPROCS=2` returned `ALREADY_CORRECT`. With the bound
+in the installed Compose file, the full stack then passed:
 
-## Required release gates
+- keystore preparation and migration, followed by an idempotent restart;
+- schema version 9 and a fully passing `ops:doctor` report apart from the documented O4/O5 warnings;
+- least-privileged runtime database checks and authenticated v1.1.3 release agreement;
+- import inbox, write-free preview, three-record apply and confirmation replay refusal;
+- catalog list/detail and durable import history; and
+- a repeat preview/apply with zero catalog changes and an auditable no-op history entry.
 
-The release PR must pass:
+The complete pre-upgrade recovery set is stored on Tower at:
 
-- typecheck and the complete bounded test inventory;
-- production-image smoke and release-bundle checks;
-- fresh, restart, upgrade and rollback lifecycle acceptance;
-- catalog import/browser and Jellyfin control-plane acceptance against local test doubles;
-- release-candidate browser acceptance; and
-- final release rehearsal and verification-packet checks.
+```
+/mnt/user/projects/catalog-authority-v110-test/manual-backups/20260728T200100Z-v1.1.3-pre-upgrade
+```
 
-The feature head merged as PR #30 with its required GitHub checks green, including suites, image, catalog,
-Jellyfin, lifecycle, bundle and rehearsal jobs. Release-preparation validation is recorded on this PR rather
-than inferred from that earlier run.
+Its database dump, keystore, secrets, promotion records, Compose file, environment file, archive structure
+and checksums were verified before the upgrade.
 
-Local pre-PR validation completed cleanly:
+## Release identity and rollback
 
-- `npm run typecheck`;
-- release identity, delivery, readiness, verification, rehearsal, release-guard and consumer-readiness suites;
-- the 305-suite inventory audit and its runner's adversarial suite;
-- focused Phase 259–272 scripts, including their temporary-PostgreSQL integration sections; and
-- release-candidate and lifecycle acceptance contract suites.
+- `package.json` and the lockfile report `1.1.4`.
+- The consumer bundle coordinate and shipped Compose defaults select `v1.1.4`.
+- v1.1.4 remains schema version 9. Rolling between v1.1.3 and v1.1.4 requires no database or keystore
+  restore.
+- Publishing remains release-event-only. The workflow must build and label the image, resolve its digest,
+  prove an anonymous digest pull, and attach the verified consumer bundle.
 
-Windows cannot exercise Linux `O_NOFOLLOW`, POSIX symlink/mode assertions, or the daemon-backed browser and
-Compose acceptance runs. Those are not counted as local passes; the required Linux CI jobs remain the release
-evidence for them.
+## Required gates
 
-## External installation evidence
+The PR must pass typecheck, complete bounded suites, production-image smoke, release bundle/verification,
+fresh/restart/upgrade/rollback lifecycle, catalog and Jellyfin browser acceptance, release candidate
+acceptance, and final rehearsal. The focused keystore suite additionally asserts `GOMAXPROCS=2` in both
+consumer Compose stacks.
 
-The Tower test installation remains on the published v1.1.2 digest. It independently confirmed:
-
-- runtime release identity `v1.1.2`, provenance `RELEASE`, digest pinning and bundle agreement;
-- healthy app and PostgreSQL containers, schema version 4 and authenticated API enforcement;
-- reproduction and repair of the legacy root-owned keystore volume; and
-- a least-privileged runtime database identity after credential remediation.
-
-A pre-remediation recovery set is stored on Tower at
-`/mnt/user/projects/catalog-authority-v110-test/manual-backups/20260728T175817Z`. This release-preparation
-branch does not alter that installation.
-
-## Boundaries
-
-Nothing in this branch tags, publishes, releases, merges or deploys v1.1.3. No package visibility changes,
-Unraid media access, live Jellyfin request or provider call are part of this review. Publishing is a separate
-manual release-event action after merge and after every required gate is green.
+No live Jellyfin request, provider call, package visibility change or mutation of an earlier release is in
+scope.

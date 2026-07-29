@@ -208,6 +208,7 @@ took before I upgraded" is something you can check rather than something you rem
 | v1.1.1 | 4 | Adds an app-readable schema-version reader and an owner-only setter for the runtime role's password. **Rolling back from v1.1.1 to v1.1.0 or v1.0.0 requires restoring a pre-upgrade backup.** |
 | v1.1.2 | 4 | Consumer-readiness remediation; no schema change from v1.1.1. |
 | v1.1.3 | 9 | Adds recovery-proof fields, identity-free import and collection-control history, the active-intent invariant, and the managed-collection model. **Rolling back from v1.1.3 requires restoring a pre-upgrade database and keystore backup.** |
+| v1.1.4 | 9 | High-core-host keystore preparation hotfix; no schema or stored-data change from v1.1.3. Rolling back to v1.1.3 needs no restore. |
 
 ### Upgrading onto v1.1.3: the keystore is repaired for you, once
 
@@ -219,7 +220,9 @@ directory owned by `node`, which fixes new installs and cannot reach back into a
 `docker compose up -d` now runs a one-shot `keystore-prepare` before anything else. It is the **only** thing
 in the stack that runs as root, it has no network, no secrets and one mount, it changes **ownership and
 nothing else**, and it **refuses** — stopping the stack rather than guessing — on any ownership or content
-state it does not understand. On a keystore that is already correct it writes nothing at all.
+state it does not understand. On a keystore that is already correct it writes nothing at all. v1.1.4 also
+sets `GOMAXPROCS=2` for this one-shot so the Go-based esbuild helper cannot consume the service's 64-PID
+budget merely because Docker exposes a high host CPU count.
 
 **Nothing about it needs a backup first**, because it reads, writes, moves and deletes no key material. Check
 what it would do, without changing anything:
