@@ -1020,6 +1020,43 @@ test('the resolved-stack digest moves when any value a refusal rests on moves', 
   }
 });
 
+test('Compose 2.40 resolved KEY=value environment arrays are accepted, while unresolved forms are refused', () => {
+  const model = parseResolvedComposeModel(JSON.stringify({
+    name: 'catalog-rehearsal-r1',
+    services: {
+      app: {
+        image: CURRENT,
+        environment: [
+          'APP_ENV=production',
+          'DATABASE_URL_FILE=/run/catalog-rehearsal-secrets/database_url',
+          'VALUE_WITH_EQUALS=left=right',
+        ],
+        volumes: [],
+      },
+    },
+    volumes: {}, networks: {}, secrets: {}, configs: {},
+  }), 'Compose 2.40 resolved stack');
+  assertEq(model.services[0]!.environment.APP_ENV, 'production', 'an exact assignment is read');
+  assertEq(model.services[0]!.environment.DATABASE_URL_FILE,
+    '/run/catalog-rehearsal-secrets/database_url', 'a file-path assignment is read');
+  assertEq(model.services[0]!.environment.VALUE_WITH_EQUALS, 'left=right',
+    'only the first equals sign separates the name from the value');
+
+  const withEnvironment = (environment: unknown): string => JSON.stringify({
+    name: 'catalog-rehearsal-r1',
+    services: { app: { image: CURRENT, environment, volumes: [] } },
+    volumes: {}, networks: {}, secrets: {}, configs: {},
+  });
+  refuses(() => parseResolvedComposeModel(withEnvironment(['UNRESOLVED']), 'resolved stack'),
+    'unresolved environment', 'a bare pass-through name');
+  refuses(() => parseResolvedComposeModel(withEnvironment(['A=one', 'A=two']), 'resolved stack'),
+    'duplicate environment assignment', 'a duplicate assignment');
+  refuses(() => parseResolvedComposeModel(withEnvironment([{}]), 'resolved stack'),
+    'environment entry this build cannot read', 'a non-string array entry');
+  refuses(() => parseResolvedComposeModel(withEnvironment({ FROM_CALLER: null }), 'resolved stack'),
+    'unresolved environment', 'a null mapping value');
+});
+
 test('no ambient variable can reach a compose command, and an unresolved one is refused', () => {
   // THE ENVIRONMENT IS AN ALLOWLIST, AND IT IS THE SECOND HALF OF THE INTERPOLATION RULE. The definition may
   // name no variable; and even if one slipped through, none of the ones that decide where the shipped stacks

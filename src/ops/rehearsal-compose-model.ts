@@ -69,6 +69,7 @@ export const MAX_COMPOSE_MODEL_BYTES = 4 * 1024 * 1024;
 /** How many services, mounts and entries a disposable stack may declare. */
 export const MAX_COMPOSE_SERVICES = 16;
 export const MAX_COMPOSE_MOUNTS = 64;
+export const MAX_COMPOSE_ENVIRONMENT = 256;
 
 export type ComposeMountType = 'bind' | 'volume' | 'tmpfs' | 'unknown';
 
@@ -295,11 +296,42 @@ function readService(name: string, raw: Record<string, unknown>, what: string): 
   const environment: Record<string, string> = {};
   const rawEnvironment = raw.environment;
   if (Array.isArray(rawEnvironment)) {
-    // Compose normalises to a mapping; a list surviving here is the same "not resolved" finding as above.
-    throw new MaintenanceRefused(`the ${what} carries an unresolved environment, so it is not fully resolved`);
-  }
-  for (const [key, value] of Object.entries(asRecord(rawEnvironment, `${what} environment`))) {
-    environment[key] = value === null || value === undefined ? '' : String(value);
+    // Docker Compose 2.40 emits the fully resolved JSON model as `["KEY=value", ...]` when `config` is
+    // combined with `--no-interpolate`. That is not the short YAML list syntax surviving resolution: every
+    // entry has already become an exact assignment. A BARE `KEY`, however, still means "take it from the
+    // caller's environment" and is therefore unresolved. Accept only assignments, split at the first `=`
+    // (values may contain more), and refuse duplicates rather than inventing which one Compose would use.
+    if (rawEnvironment.length > MAX_COMPOSE_ENVIRONMENT) {
+      throw new MaintenanceRefused(`the ${what} carries more environment entries than this command will examine`);
+    }
+    for (const entry of rawEnvironment) {
+      if (typeof entry !== 'string') {
+        throw new MaintenanceRefused(`the ${what} carries an environment entry this build cannot read`);
+      }
+      const equals = entry.indexOf('=');
+      if (equals <= 0) {
+        throw new MaintenanceRefused(`the ${what} carries an unresolved environment, so it is not fully resolved`);
+      }
+      const key = entry.slice(0, equals);
+      if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(key)) {
+        throw new MaintenanceRefused(`the ${what} carries an environment name this build cannot read`);
+      }
+      if (Object.prototype.hasOwnProperty.call(environment, key)) {
+        throw new MaintenanceRefused(`the ${what} carries a duplicate environment assignment`);
+      }
+      environment[key] = entry.slice(equals + 1);
+    }
+  } else {
+    const entries = Object.entries(asRecord(rawEnvironment, `${what} environment`));
+    if (entries.length > MAX_COMPOSE_ENVIRONMENT) {
+      throw new MaintenanceRefused(`the ${what} carries more environment entries than this command will examine`);
+    }
+    for (const [key, value] of entries) {
+      if (value === null || value === undefined) {
+        throw new MaintenanceRefused(`the ${what} carries an unresolved environment, so it is not fully resolved`);
+      }
+      environment[key] = String(value);
+    }
   }
 
   return {
