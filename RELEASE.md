@@ -3,9 +3,25 @@
 Newest first. Every released version stays published and immutable; nothing here is ever re-tagged or
 overwritten, which is what makes rolling an image pin backwards a real operation.
 
-## v1.2.2 - Release acceptance alignment
+## v1.2.3 - Bounded disposable database readiness
 
 Release candidate; not yet published. Schema remains version 9.
+
+Fixed:
+
+- **Each fresh rehearsal database must declare a healthcheck and reach it before restore.** Both the upgrade
+  and restore-based rollback legs now run Compose with a bounded 60-second readiness wait. A definition
+  without a PostgreSQL healthcheck is refused during the read-only resolved-model preflight.
+- **The correction came from the real Tower rehearsal.** v1.2.2 passed isolation, pinning, and backup
+  verification, then raced PostgreSQL initialization and safely retained only the disposable project for
+  diagnosis. Production, the verified set, network state, and every media boundary remained untouched.
+
+All v1.2.2 product behavior is unchanged. Catalog Authority still never downloads, scrapes, plays, or
+acquires media and never creates media symlinks.
+
+## v1.2.2 - Release acceptance alignment
+
+Published `2026-07-29`, immutable. Schema remains version 9.
 
 Fixed:
 

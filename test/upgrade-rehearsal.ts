@@ -124,6 +124,11 @@ const DISPOSABLE_COMPOSE = [
   '    environment:',
   '      POSTGRES_DB: catalog',
   '      POSTGRES_USER: postgres',
+  '    healthcheck:',
+  '      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]',
+  '      interval: 1s',
+  '      timeout: 3s',
+  '      retries: 60',
   '    volumes:',
   '      - pgdata:/var/lib/postgresql/data',
   '  migrate:',
@@ -477,6 +482,41 @@ test('the plan and the run are ONE ordered list', () => {
   assertEq(report.steps.map((step) => step.id).join(','), planIds.join(','), 'and the steps are the plan\'s steps');
 });
 
+test('both fresh database starts wait for a declared healthcheck before either restore', () => {
+  const world = makeWorld('database-readiness');
+  const resolved = resolveRehearsal(req(world));
+  const commands = planRehearsalCommands(resolved);
+  const starts = commands.filter((command) =>
+    command.args.includes('up') && command.args[command.args.length - 1] === 'postgres');
+  assertEq(starts.length, 2, 'the upgrade and rollback each start one fresh database');
+  for (const command of starts) {
+    assert(command.args.includes('--wait'), 'a fresh database start waits for readiness');
+    const timeout = command.args.indexOf('--wait-timeout');
+    assert(timeout >= 0 && command.args[timeout + 1] === '60', 'and the readiness wait is bounded at 60 seconds');
+  }
+  const base = parseResolvedComposeModel(JSON.stringify({
+    name: resolved.projectName,
+    services: {
+      postgres: {
+        image: 'postgres:16',
+        environment: { POSTGRES_DB: 'catalog', POSTGRES_USER: 'postgres' },
+        volumes: [],
+      },
+      migrate: { image: CURRENT, environment: {}, volumes: [] },
+      app: { image: CURRENT, environment: {}, volumes: [] },
+      sidecar: { image: CURRENT, environment: {}, volumes: [] },
+    },
+  }), 'disposable Compose model');
+  refuses(() => validateResolvedCompose(base, {
+    projectName: resolved.projectName,
+    disposableRoot: resolved.disposableRoot,
+    pinnedImages: null,
+    workspace: null,
+    wiring: [],
+    requirePostgresHealthcheck: true,
+  }), 'no healthcheck', 'a definition that cannot prove database readiness');
+});
+
 test('an unmarked root holding somebody\'s files is never claimed, and never cleaned', () => {
   // THE DEFECT: a rehearsal wrote into, and offered to remove volumes from, any directory it was pointed at.
   const world = makeWorld('unowned');
@@ -811,6 +851,8 @@ test('a definition that would reach PRODUCTION is refused before a marker, a vol
   mkdirSync(productionPath, { recursive: true });
   const cases: Array<[string, string, string]> = [
     ['a production bind mount', withService('postgres', ['    image: postgres:16',
+      '    healthcheck:',
+      '      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]',
       '    volumes:', `      - ${productionPath}:/var/lib/postgresql/data`]), 'BIND MOUNT'],
     ['a Docker secret naming a host file', `${withService('sidecar', ['    image: catalog-authority-ops:v0.0.0-placeholder',
       '    secrets:', '      - custodian_kek'])}\nsecrets:\n  custodian_kek:\n    file: ${productionPath}/custodian_kek\n`,

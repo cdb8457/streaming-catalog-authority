@@ -196,7 +196,7 @@ The browser: [docs/PHASE_260_CATALOG_BROWSER.md](docs/PHASE_260_CATALOG_BROWSER.
 
 **Published releases.** `v1.0.0` through `v1.2.0` are published to
 `ghcr.io/cdb8457/catalog-authority-ops` and are immutable — nothing here re-tags or overwrites them, which is
-what makes rollback real. `v1.2.2` is the active patch release candidate these files pin to; until its release
+what makes rollback real. `v1.2.3` is the active patch release candidate these files pin to; until its release
 workflow runs, that tag does not exist. Build it from this checkout with the maintainer override:
 
 ```bash
@@ -240,8 +240,8 @@ timeout, and retention that only ever prints a **plan**.
 npm run ops:upgrade-rehearsal -- --production /path/to/project --production-project catalogauthority-local \
     --disposable /path/to/scratch --label r1 --compose-file rehearsal-compose.yml \
     --backup-set /path/to/project/backups/set-2026-07-29 --import-snapshot /path/to/a-snapshot.json \
-    --current-image catalog-authority-ops:v1.1.4 --candidate-image catalog-authority-ops:v1.2.2 \
-    --expect-current-version 1.1.4 --expect-candidate-version 1.2.2 \
+    --current-image catalog-authority-ops:v1.1.4 --candidate-image catalog-authority-ops:v1.2.3 \
+    --expect-current-version 1.1.4 --expect-candidate-version 1.2.3 \
     --expect-current-schema 9 --expect-candidate-schema 9 --plan
 ```
 
@@ -250,6 +250,8 @@ like `latest`, refuses a disposable root that is — or is inside, or contains �
 and needs a backup set that verifies *now*. Because there are no down-migrations, **putting the old image back
 is not a rollback**: the rollback leg destroys the upgraded state, restores the same pre-upgrade set, and boots
 the previous image. A step that does not hold keeps the disposable project for diagnosis and removes nothing.
+The disposable definition must give its `postgres` service a bounded `pg_isready` healthcheck; both fresh
+database starts wait up to 60 seconds for that declared readiness before replaying the verified dump.
 
 `--compose-file` is a **small definition you write for the rehearsal**, not your production stack file — and
 this is enforced rather than advised. Before anything is claimed or created, the command resolves your
