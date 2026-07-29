@@ -288,6 +288,33 @@ function readKeystoreFile(p: string, what: string, entry?: string): KeyFile {
   return record;
 }
 
+/**
+ * The two seams that make a raced recovery testable rather than merely written down.
+ *
+ * NEITHER IS PASSED ANYWHERE IN PRODUCTION — every construction of this class in this repository passes five
+ * arguments or fewer. They exist because a recovery that races a directory swap is not something a suite can
+ * arrange by waiting: the window is a few microseconds wide and hitting it by chance would make the test a
+ * coin toss. Putting the interference at the exact instant makes the refusal deterministic, which is the only
+ * way anybody can watch it happen.
+ *
+ * NOTHING HERE READS THE ENVIRONMENT. A seam that could be switched on by a variable is a production
+ * behaviour with a hidden switch, which is a different and much worse thing than a parameter a suite passes.
+ */
+export interface CustodianRecoveryFaults {
+  /**
+   * Runs inside the UNLOCKED probe, between its identity check and its listing.
+   *
+   * Its own seam rather than a shared one, because the probe's window and the snapshot's are two different
+   * windows with two different consequences: this is the one where an interference decides whether the
+   * recovery happens AT ALL, by making the listing itself come back empty.
+   */
+  readonly duringJournalProbe?: () => void;
+  /** Runs after the SNAPSHOT has listed the journal and before any of the listed entries are read. */
+  readonly afterJournalListing?: () => void;
+  /** Runs before each destruction, ahead of the directory checks that guard it. */
+  readonly beforeEachDestruction?: () => void;
+}
+
 export class FileCustodian implements KeyCustodian {
   private readonly root: string;
   private readonly keysDir: string;
@@ -302,13 +329,15 @@ export class FileCustodian implements KeyCustodian {
    * is the directory this custodian proved at construction, and it did not become another one part way
    * through the walk.
    *
-   * ONLY THE TWO THAT ARE WALKED ARE KEPT. All five names are proved at construction, but `ops/` and
-   * `tombstones/` are only ever reached by hashing an id into a name — there is no listing of them to bracket,
-   * so an identity held for them would be a field nothing compares, which reads as a guarantee that is not
-   * enforced. The per-file no-follow open is what protects those, and the address binding is what makes the
-   * file at the name the file for the name.
+   * THE THREE RECOVERY TOUCHES ARE KEPT. All five names are proved at construction; these three are the ones
+   * a recovery reads from and writes into — it enumerates `journal/`, rewrites and unlinks in `keys/`, and
+   * writes a tombstone into `tombstones/`. `ops/` is only ever reached by hashing an id into a name and is
+   * never part of a destruction, so an identity held for it would be a field nothing compares — which reads
+   * as a guarantee that is not enforced. What protects that one is the per-file no-follow open and the
+   * address binding that makes the file at a name the file for that name.
    */
   private readonly keysIdentity: StateDirectoryIdentity;
+  private readonly tombIdentity: StateDirectoryIdentity;
   private readonly journalIdentity: StateDirectoryIdentity;
   private readonly completionSecret: string;
   private readonly kek: Buffer;
@@ -329,12 +358,16 @@ export class FileCustodian implements KeyCustodian {
    */
   private readonly decryptOnlyKeks: readonly Buffer[];
 
+  /** See `CustodianRecoveryFaults`. Empty in production; a suite passes one to make a race deterministic. */
+  private readonly recoveryFaults: CustodianRecoveryFaults;
+
   constructor(
     rootDir: string,
     completionSecret: string,
     kek: Buffer,
     clock: () => number = () => Date.now(),
     decryptOnlyKeks: readonly Buffer[] = [],
+    recoveryFaults: CustodianRecoveryFaults = {},
   ) {
     if (!completionSecret) throw new Error('completionSecret is required');
     if (kek.length !== 32) throw new Error('KEK must be 32 bytes');
@@ -357,13 +390,14 @@ export class FileCustodian implements KeyCustodian {
     // Each name is now opened without following a link, proved to be a directory ON THE DESCRIPTOR, and its
     // identity remembered so the walks below can prove they are still reading the same directories.
     proveCustodianDirectory(this.root, 'state');
-    proveCustodianDirectory(this.tombDir, 'tombstone');
     proveCustodianDirectory(this.opsDir, 'operation');
+    this.tombIdentity = proveCustodianDirectory(this.tombDir, 'tombstone');
     this.keysIdentity = proveCustodianDirectory(this.keysDir, 'keystore');
     this.journalIdentity = proveCustodianDirectory(this.journalDir, 'destroy journal');
     this.completionSecret = completionSecret;
     this.kek = kek;
     this.clock = clock;
+    this.recoveryFaults = recoveryFaults;
     this.recover(); // finish any destroy interrupted by a crash
   }
 
@@ -548,39 +582,108 @@ export class FileCustodian implements KeyCustodian {
   // running. When there IS a journal entry, finishing it rewrites a key file and writes a tombstone — that is
   // a write, and it takes the lock like every other one.
   private recover(): void {
-    // THE JOURNAL IS A CLOSED, BOUNDED SET OF NAMES, NOT A FILTER. `readdirSync(...).filter(endsWith('.json'))`
-    // silently ignored everything else — a `.tmp` from an interrupted write, a directory, a device — so a
-    // journal directory nobody could state was recovered from anyway. And the walk is bracketed by the
-    // directory's identity, so a `journal` swapped for another directory mid-recovery is a refusal rather
-    // than a destruction carried out against whatever appeared.
+    // ---- THE PROBE THAT DECIDES WHETHER THIS IS A WRITE AT ALL --------------------------------------------
+    //
+    // It is deliberately outside the lock: construction is not a write, and a custodian that took the writer
+    // lock merely to be constructed would refuse to exist while any key operation was running. An empty
+    // journal is the overwhelmingly common case and this is the whole of it.
+    //
+    // AND IT IS BRACKETED, BECAUSE "NOTHING TO DO" IS A CONCLUSION LIKE ANY OTHER. Proving the directory
+    // before the listing and not after it left the one answer that ends the recovery — the empty one —
+    // resting on an unproved directory: a `journal` swapped for an EMPTY directory in that window returns
+    // clean, and the intents in the directory that was moved aside are never carried out. A destroy that was
+    // journalled and then silently not performed is the failure this whole function exists to prevent, so an
+    // empty listing is believed only when it came from the directory this custodian proved.
     this.assertDirectoryUnmoved(this.journalDir, this.journalIdentity, 'destroy journal');
-    const journals = listRecordFiles(this.journalDir, 'the destroy journal', 'destroy journal entry');
-    if (journals.length === 0) return;
+    this.recoveryFaults.duringJournalProbe?.();
+    const probe = listRecordFiles(this.journalDir, 'the destroy journal', 'destroy journal entry');
+    this.assertDirectoryUnmoved(this.journalDir, this.journalIdentity, 'destroy journal');
+    if (probe.length === 0) return;
     this.withWriteLock(() => {
-      for (const f of journals) {
-        // A JOURNAL ENTRY THAT CANNOT BE READ IS NOT AN ENTRY TO DELETE, AND NOT ONE TO IGNORE.
+      // ---- THE WHOLE SET, VALIDATED, BEFORE ANY OF IT IS ACTED ON -----------------------------------------
+      const snapshot = this.snapshotDestroyJournal();
+      if (snapshot.length === 0) return;
+      for (const entry of snapshot) {
+        // ---- AND THE DIRECTORIES ARE STILL THE ONES THE SNAPSHOT WAS PROVED AGAINST, BEFORE EACH ONE ------
         //
-        // THE DEFECT THIS CLOSES, WHICH WAS TWO DEFECTS. The old reader answered `null` for a file that was
-        // not there AND for one that would not parse, and this loop removed whatever answered `null` — so an
-        // unreadable destroy intent was silently thrown away, and the key it named stayed live with nothing
-        // recording that it should not have. Worse, a file that DID parse but held the wrong shape (`{}` was
-        // enough) reached `finishDestroy`, which hashed `undefined` into a filename and threw a TypeError
-        // from inside the CONSTRUCTOR: one bad file and the custodian could not be built at all.
-        //
-        // Now the strict reader draws the line: genuinely absent is skipped (something removed it between the
-        // listing and here), and anything else throws a refusal that names the record kind. A destroy intent
-        // this build cannot read is a state for a human to look at, not one to guess at.
-        const entry = readCustodianRecord(path.join(this.journalDir, f), JOURNAL_SCHEMA);
-        if (entry === null) continue;
-        // AND THE ENTRY IS FILED UNDER THE KEY IT NAMES. This is the readdressing case with the sharpest
-        // consequence in the whole class: recovery ACTS on the id inside the record, so an entry copied onto
-        // another key's journal name would have destroyed the key named inside it — a key nothing asked to
-        // destroy, on the strength of a filename somebody chose. Checked BEFORE `finishDestroy` touches
-        // anything, so a transplanted entry destroys neither key.
-        assertRecordAddress(custodianRecordName(entry.keyId), f, 'destroy journal entry');
+        // BEFORE, NOT AFTER. A check that runs only at the end of the loop reports a swap that has already
+        // been acted on — which for this loop means a key file rewritten and unlinked, and a tombstone
+        // written, somewhere nobody proved. The cost of asking again is one `fstat` per entry against a
+        // recovery that runs at most once per crash.
+        this.assertRecoveryDirectories();
         this.finishDestroy(entry);
       }
+      // AND AFTER THE LAST ONE, so a swap during the final destruction is not the one that goes unreported.
+      this.assertRecoveryDirectories();
     });
+  }
+
+  /**
+   * Every destroy intent in the journal, read and proved, BEFORE a single one of them is carried out.
+   *
+   * -----------------------------------------------------------------------------------------------------
+   * THE GAP THIS CLOSES, WHICH THE FIRST VERSION OF THIS CORRECTION LEFT OPEN.
+   * -----------------------------------------------------------------------------------------------------
+   *
+   * That version proved the directory's identity ONCE, before listing, and then read each entry inside the
+   * destruction loop — so entry two was read after entry one had already been destroyed. Two consequences,
+   * both of them the thing the bracketing was supposed to prevent:
+   *
+   *   * A DIRECTORY REPLACED AFTER THE ONE PRECHECK COULD SUPPLY ENTRIES THE RECOVERY ACTED ON. Every
+   *     individual file the loop read could pass its schema and its address check while coming from a
+   *     directory nobody had proved, because nothing asked again after the enumeration.
+   *   * A LISTED ENTRY THAT VANISHED WAS TREATED AS A SHORTER COMPLETE SET. `readCustodianRecord` answers
+   *     `null` for a name that is not there, and the loop CONTINUED on it — so a destroy intent removed
+   *     between the listing and the read was silently dropped, and the key it named stayed live with nothing
+   *     left recording that it should not have. That is the same silent data loss the phase before this one
+   *     removed from `recover()`, reintroduced one line further down.
+   *
+   * So the set is closed before anything is destroyed: list, read EVERY listed name through the strict
+   * no-follow reader, refuse one that has gone, prove each entry is filed under the key it names, and then
+   * re-establish the directory's identity. What comes back is a set this custodian can state in full and has
+   * proved came from one directory. Nothing outside this function decides what gets destroyed.
+   */
+  private snapshotDestroyJournal(): readonly Journal[] {
+    this.assertDirectoryUnmoved(this.journalDir, this.journalIdentity, 'destroy journal');
+    const names = listRecordFiles(this.journalDir, 'the destroy journal', 'destroy journal entry');
+    this.recoveryFaults.afterJournalListing?.();
+    const snapshot: Journal[] = [];
+    for (const name of names) {
+      // A JOURNAL ENTRY THAT CANNOT BE READ IS NOT AN ENTRY TO DELETE, AND NOT ONE TO IGNORE. The strict
+      // reader answers `null` only for a name that is genuinely not there, and a name that was in the listing
+      // a moment ago and is not there now means the set is MOVING — not that it was smaller than it looked.
+      const entry = readCustodianRecord(path.join(this.journalDir, name), JOURNAL_SCHEMA);
+      if (entry === null) {
+        throw new Error('a destroy journal entry was removed while the journal was being read. Refused: the '
+          + 'set of destructions this recovery would carry out cannot be stated while something else is '
+          + 'changing it, and an intent that disappears is not an intent that was completed.');
+      }
+      // AND THE ENTRY IS FILED UNDER THE KEY IT NAMES. This is the readdressing case with the sharpest
+      // consequence in the whole class: recovery ACTS on the id inside the record, so an entry copied onto
+      // another key's journal name would destroy the key named inside it — a key nothing asked to destroy,
+      // on the strength of a filename somebody chose. Checked here, before anything is carried out, so a
+      // transplanted entry destroys neither key.
+      assertRecordAddress(custodianRecordName(entry.keyId), name, 'destroy journal entry');
+      snapshot.push(entry);
+    }
+    // ---- AND EVERY ONE OF THEM CAME FROM THE DIRECTORY THIS CUSTODIAN PROVED ------------------------------
+    this.assertDirectoryUnmoved(this.journalDir, this.journalIdentity, 'destroy journal');
+    return snapshot;
+  }
+
+  /**
+   * The three directories a destruction reads from and writes into, still the ones that were proved.
+   *
+   * `finishDestroy` rewrites and unlinks in `keys/`, writes into `tombstones/`, and clears the entry in
+   * `journal/`. Each of those is a write, and a write into a directory this custodian did not prove is a
+   * write into somebody else's directory — including, for the tombstone, a durable claim that a key was
+   * destroyed placed somewhere the claim means nothing.
+   */
+  private assertRecoveryDirectories(): void {
+    this.recoveryFaults.beforeEachDestruction?.();
+    this.assertDirectoryUnmoved(this.journalDir, this.journalIdentity, 'destroy journal');
+    this.assertDirectoryUnmoved(this.keysDir, this.keysIdentity, 'keystore');
+    this.assertDirectoryUnmoved(this.tombDir, this.tombIdentity, 'tombstone');
   }
   private finishDestroy(j: Journal): void {
     const kf = this.readKeyFile(j.keyId);

@@ -1,7 +1,7 @@
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import {
-  appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync,
-  rmSync, statSync, symlinkSync, truncateSync, writeFileSync,
+  appendFileSync, chmodSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  renameSync, rmSync, statSync, symlinkSync, truncateSync, writeFileSync,
 } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -898,6 +898,259 @@ await test('the destroy journal is a closed set of names, and an entry nobody ca
   rmSync(wrongType, { recursive: true, force: true });
   assertEq(await new FileCustodian(world.root, SECRET, KEK).status(world.keyId), 'active',
     'and with the journal accountable again the custodian builds');
+});
+
+/**
+ * A world with two live keys and a journalled destroy intent for each, ready to be recovered.
+ *
+ * Both intents are written in the LEGACY shape, with no `version`, because that is what a build older than
+ * this one leaves behind after a crash and a recovery must still be able to read it.
+ */
+async function journalledDestroys(name: string): Promise<{
+  root: string; first: string; second: string; entryOf: (keyId: string) => string; custodian: FileCustodian;
+  receiptOf: (keyId: string) => string;
+}> {
+  const root = join(WORK, name);
+  const custodian = new FileCustodian(root, SECRET, KEK, () => 1_800_000_000_000);
+  const provisioned: string[] = [];
+  for (const op of ['op-a', 'op-b']) {
+    const { keyId } = await custodian.provision(op, randomUUID(), 0);
+    await custodian.commitProvision(op);
+    provisioned.push(keyId);
+  }
+  const entryOf = (keyId: string): string =>
+    join(root, 'journal', `${createHash('sha256').update(keyId).digest('hex')}.json`);
+  const receipts = new Map<string, string>();
+  for (const keyId of provisioned) {
+    const receiptId = `rcpt_${randomUUID()}`;
+    receipts.set(keyId, receiptId);
+    writeFileSync(entryOf(keyId), JSON.stringify({
+      keyId, receiptId, destroyedAt: new Date(1_800_000_000_000).toISOString(),
+    }));
+  }
+  return {
+    root, first: provisioned[0]!, second: provisioned[1]!, entryOf, custodian,
+    receiptOf: (keyId: string) => receipts.get(keyId)!,
+  };
+}
+
+await test('a journal entry that vanishes after the listing is a refusal, not a shorter set of destructions', async () => {
+  // THE GAP THIS CLOSES, AND IT WAS LEFT OPEN BY MY OWN FIRST CORRECTION. The recovery proved the journal
+  // directory once, before the listing, and then READ EACH ENTRY INSIDE THE DESTRUCTION LOOP — so entry two
+  // was read after entry one had already been destroyed. `readCustodianRecord` answers `null` for a name that
+  // is not there, and the loop CONTINUED on it: a destroy intent removed between the listing and the read was
+  // silently dropped and the key it named stayed live, which is the same silent loss the phase before had
+  // just removed from this function, reintroduced one line further down.
+  const world = await journalledDestroys('recovery-vanishing-entry');
+  const survivor = readFileSync(world.entryOf(world.second));
+
+  let caught: unknown = null;
+  try {
+    // eslint-disable-next-line no-new
+    new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000, [], {
+      // Something removes one of the LISTED entries in the window between the listing and the reads. The
+      // seam puts it exactly there; waiting for it to happen by chance would make this a coin toss.
+      afterJournalListing: () => { rmSync(world.entryOf(world.second), { force: true }); },
+    });
+  } catch (err) { caught = err; }
+  assert(caught !== null, 'the recovery is refused');
+  assert((caught as Error).message.includes('removed while the journal was being read'),
+    `and says what happened: ${(caught as Error).message}`);
+
+  // AND NOTHING WAS DESTROYED. Not the key whose intent vanished, and not the one whose intent was intact —
+  // the set could not be stated, so none of it was carried out.
+  writeFileSync(world.entryOf(world.second), survivor);
+  const restarted = new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000);
+  for (const keyId of [world.first, world.second]) {
+    assertEq(await restarted.status(keyId), 'destroyed', 'and with the set whole again both are recovered');
+  }
+});
+
+await test('a journal directory replaced during recovery cannot supply an entry that chooses a key to destroy', async () => {
+  // THE OTHER HALF OF THE SAME GAP. One precheck before the listing said nothing about where the entries
+  // READ afterwards came from: every individual file could pass its schema and its address check while
+  // coming from a directory nobody had proved. The replacement below is the sharpest form of it — the
+  // entries in it are perfectly valid and correctly addressed, so ONLY the directory's identity can tell
+  // them apart from the ones this custodian proved it would be reading.
+  const world = await journalledDestroys('recovery-directory-swap');
+  const journalDir = join(world.root, 'journal');
+  const aside = join(world.root, 'journal-aside');
+  const replacement = join(world.root, 'journal-replacement');
+  mkdirSync(replacement, { recursive: true, mode: 0o700 });
+  // A different directory holding a copy of EVERY entry: same names, same bytes, different inode. That is
+  // deliberate and it is what makes this test about the directory rather than about the files — each entry in
+  // it passes its schema and its address check, so nothing but the directory's identity can tell it apart
+  // from the set this custodian proved it would be reading. A replacement missing one of the names would be
+  // caught by the vanished-entry rule instead, which is a different rule with its own test above.
+  const forgedReceipt = `rcpt_${randomUUID()}`;
+  for (const keyId of [world.first, world.second]) {
+    // Correctly addressed and perfectly well formed — and carrying a RECEIPT ID the swapper chose. That is
+    // what a replacement can still decide once the address binding has taken forgery of the key id away: the
+    // attestation an operator keeps would be over an identifier that came from somebody else's directory.
+    writeFileSync(join(replacement, `${createHash('sha256').update(keyId).digest('hex')}.json`), JSON.stringify({
+      keyId, receiptId: forgedReceipt, destroyedAt: new Date(1_800_000_000_000).toISOString(),
+    }));
+  }
+
+  // THE SWAP TRACKS WHETHER IT ACTUALLY RAN, AND SO DOES THE UNDO.
+  //
+  // A seam guarded on `existsSync` can silently do nothing — and a scenario whose interference never happened
+  // is a scenario that proves nothing while reporting a pass or, worse, an unexplained failure two
+  // assertions later. `swapped` makes "the interference ran" a fact each case asserts before it draws any
+  // conclusion from what the custodian did.
+  let swapped = false;
+  let swaps = 0;
+  const swap = (): void => {
+    if (swapped) return;
+    renameSync(journalDir, aside);
+    renameSync(replacement, journalDir);
+    swapped = true;
+    swaps += 1;
+  };
+  const restore = (): void => {
+    if (!swapped) return;
+    renameSync(journalDir, replacement);
+    renameSync(aside, journalDir);
+    swapped = false;
+  };
+
+  // ---- REPLACED BETWEEN THE LISTING AND THE READS ------------------------------------------------------
+  let caught: unknown = null;
+  try {
+    // eslint-disable-next-line no-new
+    new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000, [], { afterJournalListing: swap });
+  } catch (err) { caught = err; }
+  restore();
+  assertEq(swaps, 1, 'the journal really was replaced during the listing-to-read window');
+  assert(caught !== null, 'a recovery over a replaced journal is refused');
+  assert((caught as Error).message.includes('replaced after this custodian was built'),
+    `naming the directory rule rather than the contents: ${(caught as Error).message}`);
+
+  // ---- AND REPLACED AFTER THE SET WAS PROVED, BEFORE THE FIRST DESTRUCTION -----------------------------
+  //
+  // This is the case a check placed only at the END of the loop would report only after acting on it.
+  caught = null;
+  try {
+    // eslint-disable-next-line no-new
+    new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000, [], { beforeEachDestruction: swap });
+  } catch (err) { caught = err; }
+  restore();
+  assertEq(swaps, 2, 'and really was replaced again, this time after the set had been proved');
+  assert(caught !== null, 'a recovery whose journal is replaced before the first destruction is refused');
+  assert((caught as Error).message.includes('replaced after this custodian was built'),
+    `naming the directory rule: ${(caught as Error).message}`);
+
+  // ---- AND SWAPPED IN FOR THE READ WINDOW ONLY, THEN PUT BACK ------------------------------------------
+  //
+  // THE CASE THAT ISOLATES THE SNAPSHOT'S OWN RE-ESTABLISHMENT. Here the directory is the original again by
+  // the time the first destruction is checked, so every per-destruction check passes: the ONLY thing standing
+  // between this recovery and a set of intents read out of somebody else's directory is the identity taken
+  // again at the END of the snapshot. Without it, the tombstones this writes would carry the receipt ids the
+  // swapper chose — and an operator's attestation would be over one of them.
+  caught = null;
+  try {
+    // eslint-disable-next-line no-new
+    new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000, [], {
+      afterJournalListing: swap,
+      beforeEachDestruction: restore,
+    });
+  } catch (err) { caught = err; }
+  restore();
+  assertEq(swaps, 3, 'the journal was replaced for the read window');
+  assert(caught !== null, 'a recovery whose journal was replaced only while it was being read is refused');
+  assert((caught as Error).message.includes('replaced after this custodian was built'),
+    `naming the directory rule: ${(caught as Error).message}`);
+
+  // NEITHER KEY WAS DESTROYED BY ANY ATTEMPT, and no tombstone was written on the strength of an entry
+  // that came from a directory nobody proved.
+  assertEq(readdirSync(join(world.root, 'tombstones')).length, 0, 'no tombstone was written');
+  const settled = new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000);
+  for (const keyId of [world.first, world.second]) {
+    assertEq(await settled.status(keyId), 'destroyed', 'and the real journal still recovers both keys');
+    // WITH THE RECEIPT THE REAL JOURNAL RECORDED, not the one the replacement offered.
+    const receipt = await settled.destroy(randomUUID(), keyId);
+    assertEq(receipt.receiptId, world.receiptOf(keyId), 'carrying the receipt id this installation journalled');
+    assert(receipt.receiptId !== forgedReceipt, 'and never the one that came from the replaced directory');
+  }
+});
+
+await test('a journal swapped for an EMPTY directory before the listing is not "nothing to recover"', async () => {
+  // THE LAST WAY OUT OF THE BRACKET, AND THE QUIETEST. The unlocked probe that decides whether a recovery
+  // happens at all proved the directory BEFORE its listing and not after it — so the one answer that ends the
+  // recovery, the empty one, rested on a directory nobody had proved. A `journal` swapped for an empty
+  // directory in that window returns clean: the custodian constructs, the app starts, and the destroy intents
+  // sitting in the directory that was moved aside are never carried out. A journalled destruction that is
+  // silently not performed is precisely the failure this function exists to prevent, and it would have left
+  // no trace at all — no refusal, no tombstone, and a key the operator was told was gone.
+  const world = await journalledDestroys('recovery-empty-swap');
+  const journalDir = join(world.root, 'journal');
+  const aside = join(world.root, 'journal-aside');
+  const empty = join(world.root, 'journal-empty');
+  mkdirSync(empty, { recursive: true, mode: 0o700 });
+
+  let swapped = false;
+  let caught: unknown = null;
+  try {
+    // eslint-disable-next-line no-new
+    new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000, [], {
+      duringJournalProbe: () => {
+        if (swapped) return;
+        renameSync(journalDir, aside);
+        renameSync(empty, journalDir);
+        swapped = true;
+      },
+    });
+  } catch (err) { caught = err; }
+  if (swapped) {
+    renameSync(journalDir, empty);
+    renameSync(aside, journalDir);
+  }
+  assertEq(swapped, true, 'the journal really was replaced in the probe window');
+  assert(caught !== null, 'an empty listing from a directory nobody proved is not "nothing to recover"');
+  assert((caught as Error).message.includes('replaced after this custodian was built'),
+    `naming the directory rule: ${(caught as Error).message}`);
+
+  // AND THE INTENTS ARE STILL THERE TO BE CARRIED OUT, which is the whole point of refusing.
+  assertEq(readdirSync(journalDir).length, 2, 'both destroy intents survived the refusal');
+  const settled = new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000);
+  for (const keyId of [world.first, world.second]) {
+    assertEq(await settled.status(keyId), 'destroyed', 'and a recovery over the real journal performs them');
+  }
+});
+
+await test('a keystore or tombstone directory replaced mid-recovery is caught BEFORE the next destruction', async () => {
+  // `finishDestroy` rewrites and unlinks in `keys/` and writes into `tombstones/`. A recovery that proved
+  // only the journal would carry those writes out against whatever was at the other two names.
+  for (const [what, dirName] of [['keystore', 'keys'], ['tombstone', 'tombstones']] as const) {
+    const world = await journalledDestroys(`recovery-swap-${dirName}`);
+    const live = join(world.root, dirName);
+    const aside = join(world.root, `${dirName}-aside`);
+    const replacement = join(world.root, `${dirName}-replacement`);
+    mkdirSync(replacement, { recursive: true, mode: 0o700 });
+    let caught: unknown = null;
+    let swapped = false;
+    try {
+      // eslint-disable-next-line no-new
+      new FileCustodian(world.root, SECRET, KEK, () => 1_800_000_000_000, [], {
+        beforeEachDestruction: () => {
+          if (swapped) return;
+          renameSync(live, aside);
+          renameSync(replacement, live);
+          swapped = true;
+        },
+      });
+    } catch (err) { caught = err; }
+    if (swapped) {
+      renameSync(live, replacement);
+      renameSync(aside, live);
+    }
+    assertEq(swapped, true, `the ${what} directory really was replaced mid-recovery`);
+    assert(caught !== null, `a recovery over a replaced ${what} directory is refused`);
+    assert((caught as Error).message.includes('replaced after this custodian was built'),
+      `naming the rule for ${what}: ${(caught as Error).message}`);
+    assertEq(readdirSync(join(world.root, 'tombstones')).length, 0, `and ${what}: nothing was written`);
+    assertEq(readdirSync(join(world.root, 'keys')).length, 2, `and ${what}: both key files are still there`);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------

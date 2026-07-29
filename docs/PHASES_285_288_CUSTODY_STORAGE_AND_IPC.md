@@ -128,7 +128,7 @@ boundary, no network path in these modules, and nothing here touches a media ser
 
 ## Phase 288 — the gates
 
-`test/custodian-storage-ipc-gates.ts`, 32 tests. Each adversarial one was **run against the previous code and
+`test/custodian-storage-ipc-gates.ts`, 36 tests. Each adversarial one was **run against the previous code and
 watched to fail**: reverting `file-custodian.ts` alone fails 8 of them; restoring `String(doc.op)` and the
 permissive response parse fails 2 more. The rest are the positive half that the strictness must not break —
 a journaled destroy still completes on restart and is still idempotent across two of them, a legacy versionless
@@ -194,6 +194,35 @@ then compared the bytes read against the size from before — trivially satisfie
 appending to the same inode during the read. A prefix that closes its own brace parses. The file is now
 re-interrogated on the descriptor after the last byte: growth and shrink are both refusals.
 
+**And the recovery's bracket was still not a bracket.** The correction above proved the journal directory
+once, before the listing, and then read each entry INSIDE the destruction loop — so entry two was read after
+entry one had already been destroyed. Three ways out of that, all closed now:
+
+* A listed entry that VANISHED was treated as a shorter complete set. `readCustodianRecord` answers `null`
+  for a name that is not there and the loop `continue`d on it, so a destroy intent removed between the
+  listing and the read was silently dropped and the key it named stayed live — the same silent loss the phase
+  before had just removed from this function, reintroduced one line further down.
+* A directory REPLACED after the single precheck could supply entries the recovery acted on: every file it
+  read could pass its schema and its address check while coming from a directory nobody had proved.
+* The unlocked probe that decides whether a recovery happens at all proved the directory BEFORE its listing
+  and not after, so the one answer that ENDS the recovery — the empty one — rested on an unproved directory.
+  A `journal` swapped for an empty directory in that window returned clean, and the intents in the directory
+  that had been moved aside were never carried out. That failure leaves no trace at all: no refusal, no
+  tombstone, and a key an operator was told was gone.
+
+Recovery now takes a closed snapshot before anything is destroyed: prove the directory, list, read EVERY
+listed name through the strict no-follow reader, refuse one that has gone, prove each entry is filed under
+the key it names, and re-establish the directory's identity. Only then does it act — and it re-proves the
+journal, the keystore and the tombstone directories BEFORE each destruction and after the last one, because
+a check that runs only at the end of the loop reports a swap that has already been acted on. The unlocked
+probe is bracketed the same way, so "nothing to recover" is believed only when it came from the directory
+this custodian proved.
+
+Each of those four guards was verified by neutralising it ALONE and watching the gate that covers it fail;
+one of them — the snapshot's own re-establishment — needed a test that swaps the directory in for the read
+window and puts it back before the first destruction, because with the per-destruction checks also in place
+nothing else could tell it apart.
+
 One further correction fell out of the first: `assertStaticKekOpensKeystore` reported EVERY preflight failure
 as "the static KEK you named does not open the wrapped keys", including structural refusals that have nothing
 to do with which key was named. An operator would have gone looking for a key file while their keystore held
@@ -204,7 +233,7 @@ something they needed to see. It now distinguishes the two.
 `npm run typecheck` clean. The focused suites (`custodian-contract` 64, `custodian-acceptance` 19,
 `local-sidecar-custodian` 18, `sidecar-daemon` 5, `sidecar-runtime-prototype` 5, `kek-rewrap` 12,
 `keystore-repair` 40, `kek-ring` 13, `kek-rotation` 12, `kek-correction-gates` 38, `o4-o5-runtime-acceptance`
-11, `sidecar-ipc-hardening` 17, and the new `custodian-storage-ipc-gates` 32) and the aggregate `offline`
+11, `sidecar-ipc-hardening` 17, and the new `custodian-storage-ipc-gates` 36) and the aggregate `offline`
 group — **283 of 283 suites** — were run and passed on this branch.
 
 The corrections' own gates were held to the same bar as the tranche's: **run against the committed code and
