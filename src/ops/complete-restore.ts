@@ -743,6 +743,18 @@ export interface RestoreJournal {
    * touched.
    */
   readonly safetySetPublishedName: string;
+  /**
+   * WHICH DIRECTION THIS OPERATION IS GOING, and it is exclusive.
+   *
+   * THE DEFECT THIS CLOSES. `--abandon` could partially unwind targets, remove the staging tree and write
+   * ordinary restore step states — and a `--resume` arriving afterwards read those step states and
+   * RECONSTRUCTED THE RESTORE ON TOP OF THE UNWIND, placing components back over directories an operator had
+   * just asked to have put back. Nothing anywhere recorded that a decision to abandon had been made.
+   *
+   * It is written BEFORE the first rename an abandon performs. Once it says `abandoning`, a run and a resume
+   * refuse with ZERO effects and only another abandon may continue.
+   */
+  readonly phase: RestorePhase;
   readonly safetySetPlanned: boolean;
   readonly safetySetTaken: boolean;
   /**
@@ -808,6 +820,9 @@ export interface JournalStep {
  * Each field is a fact a LATER report depends on and an EARLIER step produced, which is exactly the set of
  * things a resume cannot recompute — the step that produced them is complete and will not run again.
  */
+/** Which direction an operation is going. Recorded before the first effect of that direction. */
+export type RestorePhase = 'restoring' | 'abandoning';
+
 export interface RestoreEvidence {
   /** Whether the installation DEMONSTRATED that it can decrypt its own catalog. */
   readonly custodyProven: boolean;
@@ -872,6 +887,11 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
   if (typeof doc.destination !== 'string' || doc.destination.trim() === '') return refuse('it has no destination');
   if (doc.custodian !== 'inline' && doc.custodian !== 'sidecar') return refuse('its custody mode is not one of two');
   if (doc.targetState !== 'OCCUPIED' && doc.targetState !== 'UNKNOWN') return refuse('its target state is not one this build classifies');
+  if (doc.phase !== 'restoring' && doc.phase !== 'abandoning') return refuse('its phase is not one this build has');
+  if (typeof doc.safetySetPublishedName !== 'string'
+    || !MAINTENANCE_NAME_RE.test(doc.safetySetPublishedName)) {
+    return refuse('the name it records for its safety set is not a usable name');
+  }
   if (typeof doc.safetySetPlanned !== 'boolean' || typeof doc.safetySetTaken !== 'boolean') {
     return refuse('its safety-set fields are not booleans');
   }
@@ -1259,6 +1279,16 @@ export function runCompleteRestore(
   const suffix = existing?.suffix ?? (deps.suffix ?? (() => operationSuffix(plan.digest)))();
   const publishedSetName = existing?.safetySetPublishedName
     ?? safetySetPublishedName(resolved.safetySetName, suffix);
+  // A RESTORE MAY NOT PROCEED OVER AN ABANDON. The direction is a recorded decision, not an inference from
+  // step states an abandon happens to leave behind — which is exactly how a resume used to rebuild a restore
+  // on top of an unwind somebody had asked for.
+  if (existing !== null && existing.phase === 'abandoning') {
+    throw new MaintenanceRefused(
+      'this project is being ABANDONED, not restored: an operator asked for the interrupted restore to be put '
+      + 'back, and that unwind is not finished. Continuing the restore now would place components back over '
+      + 'directories somebody has just asked to have returned to what they were. Finish it with --abandon. '
+      + 'Nothing was changed.');
+  }
   if (!RESTORE_SUFFIX_RE.test(suffix)) {
     throw new MaintenanceRefused('this run produced a staging suffix that is not the shape this command creates');
   }
@@ -1360,6 +1390,7 @@ export function runCompleteRestore(
         targetState: resolved.targetState,
         safetySetName: resolved.safetySetName,
         suffix,
+        phase: 'restoring',
         safetySetPublishedName: publishedSetName,
         safetySetPlanned: safetySet,
         safetySetTaken,
@@ -2637,11 +2668,33 @@ function abandonUnderLock(projectRoot: string, journal: RestoreJournal, deps: Ab
   const notes: string[] = [];
   const swaps = journal.swaps.map((swap) => ({ ...swap }));
 
+  // ---- THE DIRECTION IS RECORDED BEFORE THE FIRST RENAME -------------------------------------------
+  //
+  // Everything below renames directories. If this process dies part way through, what is on disk is a
+  // half-unwound installation — and until this write lands, nothing in the project says an unwind was ever
+  // asked for, so the next `--resume` would read the restore's own step states and rebuild the restore on
+  // top of it. The phase is written first, and it is exclusive from that moment.
+  if (journal.phase !== 'abandoning') {
+    write(projectRoot, { ...journal, phase: 'abandoning' });
+  }
+  const abandoning: RestoreJournal = { ...journal, phase: 'abandoning' };
+
   for (const swap of swaps) {
     if (swap.undone) {
-      // ALREADY PUT BACK BY AN EARLIER ATTEMPT, and still named, because the copy it set aside holds
-      // secrets whether or not this invocation is the one that moved it.
-      if (swap.replaced === null) retained.push(abandonedName(swap, journal.suffix));
+      // ALREADY PUT BACK BY AN EARLIER ATTEMPT — and every copy it set aside is still named, because those
+      // hold secrets whether or not THIS invocation is the one that moved them.
+      //
+      // THE DEFECT THIS CLOSES. Only the `replaced === null` case was reported. A swap whose original target
+      // HAD existed leaves an `.abandoned-` copy too, and an earlier attempt that finished it left that copy
+      // on disk with nothing naming it — a directory of the installation's secrets that no report mentioned.
+      // Existence on disk is what decides, not which branch created it.
+      let dir: string | null = null;
+      try {
+        dir = resolveInsideRoot(projectRoot, swap.target, `${swap.component} target`);
+      } catch { dir = null; }
+      if (dir !== null && existsSync(join(join(dir, '..'), abandonedName(swap, journal.suffix)))) {
+        retained.push(abandonedName(swap, journal.suffix));
+      }
       continue;
     }
 
@@ -2734,9 +2787,16 @@ function abandonUnderLock(projectRoot: string, journal: RestoreJournal, deps: Ab
   }
 
   // ---- 3. THE STAGING TREE, WHICH HOLDS A COPY OF EVERY SECRET IN THE INSTALLATION --------------------
+  // AND IT IS NOT REMOVED WHILE ANYTHING IS STILL OUT OF PLACE. The staged components are the only verified
+  // copies this operation holds; a swap that could not be put back may yet need them, and a project that is
+  // still half-unwound is not one to be tidying up in.
   const stagingDir = join(projectRoot, stagingDirName(journal.suffix));
   let stagingUnresolved: string | null = null;
-  if (existsSync(stagingDir)) {
+  if (unresolved.length > 0 && existsSync(stagingDir)) {
+    stagingUnresolved = stagingDirName(journal.suffix);
+    notes.push('The staging directory was left in place because something this restore moved is still out '
+      + 'of place. It holds a copy of the set\'s secrets and keystore.');
+  } else if (existsSync(stagingDir)) {
     const removal = removeOwnedStaging(stagingDir, journal);
     if (removal !== null) {
       stagingUnresolved = stagingDirName(journal.suffix);
@@ -2753,7 +2813,7 @@ function abandonUnderLock(projectRoot: string, journal: RestoreJournal, deps: Ab
   } else {
     // A PARTIAL UNWIND MUST STAY VISIBLE. A project with an unresolved swap or an unremoved staging tree
     // keeps refusing a fresh restore: running one would take a "safety set" of a half-unwound installation.
-    write(projectRoot, { ...journal, swaps });
+    write(projectRoot, { ...abandoning, swaps });
     notes.push('THE JOURNAL WAS NOT CLEARED: something this restore moved, or the staging copy of your '
       + 'secrets, is still out of place. This project keeps refusing a fresh restore until it is not.');
   }

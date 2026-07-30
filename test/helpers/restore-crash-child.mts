@@ -127,7 +127,15 @@ function main(): number {
     // its `.abandoned-` name and before the previous contents are put back — the window in which the target
     // does not exist at all. `rename:2` dies after the second, before the journal records either.
     try {
-      abandonRestore(config.projectRoot, { rename });
+      abandonRestore(config.projectRoot, {
+        rename,
+        // `phase:abandoning` dies the instant the direction reaches disk and before the first rename — the
+        // window between "an operator asked to abandon" and "anything on disk says so".
+        journalWriter: (projectRoot, journal) => {
+          writeRestoreJournal(projectRoot, journal);
+          if (config.crashAt === 'phase:abandoning' && journal.phase === 'abandoning') die();
+        },
+      });
     } catch (err) {
       process.stderr.write(`${(err as Error).message}
 `);

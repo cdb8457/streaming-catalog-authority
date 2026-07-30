@@ -1282,7 +1282,8 @@ test('a journal carrying a malicious suffix, an unknown step, or an impossible o
     journal: 'catalog-authority.restore', version: RESTORE_JOURNAL_VERSION, planDigest: 'a'.repeat(64),
     setName: 'set-1',
     destination: 'backups', custodian: 'inline', targetState: 'OCCUPIED', safetySetName: 'pre-restore-set-1',
-    suffix: 'aaaaaaaaaaaa', safetySetPlanned: true, safetySetTaken: true,
+    suffix: 'aaaaaaaaaaaa', phase: 'restoring', safetySetPublishedName: PUBLISHED_SAFETY_SET,
+    safetySetPlanned: true, safetySetTaken: true,
     request: { secrets: 'secrets', promotionRecords: 'promotion-records', sidecarState: null },
     steps: [{ id: 'safety-set', state: 'complete', detail: null }], swaps: [],
     evidence: { custodyProven: false, safetySetTaken: true, safetySetVerified: true },
@@ -1325,6 +1326,10 @@ test('a journal carrying a malicious suffix, an unknown step, or an impossible o
   refuses(() => readRestoreJournal(root), 'not a boolean', 'evidence that is not a boolean is refused');
   write({ safetySetPlanned: false, evidence: { custodyProven: false, safetySetTaken: true, safetySetVerified: false } });
   refuses(() => readRestoreJournal(root), 'never planned', 'evidence of an unplanned safety set is refused');
+  write({ phase: 'sideways' });
+  refuses(() => readRestoreJournal(root), 'phase is not one this build has', 'an unknown direction is refused');
+  write({ safetySetPublishedName: '../elsewhere' });
+  refuses(() => readRestoreJournal(root), 'not a usable name', 'a safety-set name that is a path is refused');
   write({ custodian: 'sidecar' });
   refuses(() => readRestoreJournal(root), 'sidecar state directory disagree', 'a topology with no state directory is refused');
   write({ safetySetPlanned: false, safetySetTaken: true });
@@ -2995,6 +3000,150 @@ test('a marker that does not prove ownership NEVER authorises removal — includ
   assert(!('refusal' in readStagingMarker(staging, plan.digest, 'aaaaaaaaaaaa', resolved.manifest)),
     'the marker this command wrote is accepted');
   rmSync(staging, { recursive: true, force: true });
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// The direction of travel is persisted, and exclusive
+// ---------------------------------------------------------------------------------------------------------
+
+test('an abandon that stalls part way keeps the project ABANDONING: no resume may rebuild over it', () => {
+  // THE DEFECT THIS PINS. An abandon could unwind one target, fail on another, remove the staging tree and
+  // leave the restore's own step states behind — and a `--resume` arriving next read those step states and
+  // REBUILT THE RESTORE ON TOP OF THE UNWIND, placing components back over directories an operator had just
+  // asked to have returned. Nothing anywhere recorded that a decision to abandon had been made.
+  const root = makeProject('abandon-exclusive');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  writeFileSync(join(root, 'promotion-records', 'record-later.json'), '{"later":1}\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const journal = readRestoreJournal(root)!;
+  assertEq(journal.phase, 'restoring', 'the interrupted restore is a RESTORE');
+  assertEq(journal.swaps.length, 2, 'and it swapped two targets');
+
+  // THE SECOND SWAP CANNOT BE PUT BACK: something took what it had moved aside.
+  const records = journal.swaps.find((swap) => swap.component === 'promotion-records')!;
+  rmSync(join(root, records.replaced!), { recursive: true, force: true });
+
+  const first = abandonRestore(root);
+  assertEq(first.ok, false, 'the abandon could not finish');
+  assert(first.restored.includes('secrets'), 'it unwound the one it could');
+  assert(first.unresolved.includes('promotion-records'), 'and named the one it could not');
+
+  // THE PROJECT IS NOW EXPLICITLY ABANDONING.
+  const midway = readRestoreJournal(root)!;
+  assertEq(midway.phase, 'abandoning', 'THE DIRECTION IS RECORDED');
+  assert(existsSync(join(root, '.catalog-restore.staged-aaaaaaaaaaaa')),
+    'and the staging tree is still here, because a swap is still out of place');
+
+  // A RUN AND A RESUME BOTH REFUSE, WITH ZERO EFFECTS.
+  const watcher = restoreStack({
+    buildSchema: MIGRATION_VERSION, startDestroyed: true,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  let renames = 0;
+  const watching = {
+    ...depsFor(watcher),
+    rename: (from: string, to: string): void => { renames += 1; renameSync(from, to); },
+  };
+  const before = readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8');
+  refuses(() => runCompleteRestore(request(root, 'set-1'), watching, { kind: 'resume', confirm: plan.digest }),
+    'being ABANDONED, not restored', 'a resume refuses over an abandon');
+  refuses(() => runCompleteRestore(request(root, 'set-1'), watching,
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null }),
+  'part way through a restore', 'and so does a fresh run');
+  assertEq(renames, 0, 'NEITHER PERFORMED A SINGLE RENAME');
+  assertEq(watcher.ledger.all().length, 0, 'nor issued a single command');
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), before,
+    'and the unwound target is exactly as the abandon left it');
+
+  // ONLY ANOTHER ABANDON CONTINUES. Put back what was taken, and finish.
+  mkdirSync(join(root, records.replaced!), { recursive: true });
+  writeFileSync(join(root, records.replaced!, 'record-later.json'), '{"later":1}\n', 'utf8');
+  const second = abandonRestore(root);
+  assertEq(second.ok, true, 'the second abandon finished');
+  assert(existsSync(join(root, 'promotion-records', 'record-later.json')), 'the second target is back');
+
+  // EVERY ABANDONED COPY ON DISK IS NAMED.
+  const onDisk = readdirSync(root).filter((entry) => entry.includes('.abandoned-'));
+  assert(onDisk.length > 0, 'there are abandoned copies on disk');
+  for (const name of onDisk) {
+    assert(second.retained.includes(name), `${name} is named in the report`);
+  }
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and the journal clears only at the true end');
+});
+
+test('an already-undone swap whose original EXISTED still has its abandoned copy named', () => {
+  // THE DEFECT THIS PINS. Only the `replaced === null` branch reported a retained copy. A swap whose original
+  // target HAD existed leaves an `.abandoned-` copy too — and an earlier attempt that finished it left that
+  // copy on disk with nothing naming it: a directory of the installation's secrets no report mentioned.
+  const root = makeProject('retained-reporting');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  writeFileSync(join(root, 'promotion-records', 'record-later.json'), '{"later":1}\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const journal = readRestoreJournal(root)!;
+  const records = journal.swaps.find((swap) => swap.component === 'promotion-records')!;
+  assert(records.replaced !== null, 'the records target HAD existed, so something was kept aside');
+
+  // A first abandon finishes the secrets swap and stalls on the records one.
+  rmSync(join(root, records.replaced!), { recursive: true, force: true });
+  const first = abandonRestore(root);
+  assertEq(first.ok, false, 'it stalled');
+  const secretsCopy = first.retained.find((name) => name.includes('secrets'));
+  assert(secretsCopy !== undefined && existsSync(join(root, secretsCopy)),
+    'and the copy it set aside for the FINISHED swap is on disk and named');
+
+  // The second attempt must name it again — it is still there, and it still holds secrets.
+  mkdirSync(join(root, records.replaced!), { recursive: true });
+  writeFileSync(join(root, records.replaced!, 'r.json'), '{}\n', 'utf8');
+  const second = abandonRestore(root);
+  assertEq(second.ok, true, 'the second abandon finished');
+  assert(second.retained.includes(secretsCopy!),
+    'AND THE ALREADY-UNDONE SWAP\'S ABANDONED COPY IS STILL NAMED, because it is still on disk');
+  assert(second.notes.some((note) => note.includes('hold secret material')), 'and said what it holds');
+});
+
+test('CRASH at the abandon phase transition is recoverable by another abandon', () => {
+  // The window between "an operator asked to abandon" and "anything on disk says so". A process that dies
+  // here has performed no rename at all, and the next abandon simply starts.
+  const root = makeProject('abandon-phase-crash');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'phase:abandoning', operation: 'abandon' });
+  assertEq(readRestoreJournal(root)!.phase, 'abandoning', 'the direction reached disk before the death');
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), SECRET_VALUE,
+    'and no rename had happened yet');
+
+  // A RESUME IS ALREADY REFUSED, and another abandon finishes.
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest }),
+  'being ABANDONED, not restored', 'the recorded direction is already binding');
+  const report = abandonRestore(root);
+  assertEq(report.ok, true, 'another abandon finished it');
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), 'a-later-value\n',
+    'and the original contents are back');
 });
 
 // ---------------------------------------------------------------------------------------------------------
