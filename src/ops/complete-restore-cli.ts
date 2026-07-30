@@ -8,6 +8,7 @@ import {
   reportRefusal,
 } from './maintenance-cli-shared.js';
 import {
+  CompleteRestoreFailed,
   abandonRestore,
   planCompleteRestore,
   renderCompleteRestore,
@@ -213,6 +214,14 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     }
     return report.ok ? COMPLETE_RESTORE_EXIT_OK : COMPLETE_RESTORE_EXIT_FAILED;
   } catch (err) {
+    // A FAILURE THAT LEFT THE INSTALLATION STOPPED CARRIES ITS REPORT, and the report is where the safety
+    // set's name and the kept `.replaced-` directories are. Printing the refusal alone would lose both, at
+    // the one moment an operator needs them most.
+    if (err instanceof CompleteRestoreFailed) {
+      if (args.json) console.error(JSON.stringify(err.report, null, 2));
+      else console.error(renderCompleteRestore(err.report));
+      console.error('');
+    }
     console.error(reportRefusal(err));
     return COMPLETE_RESTORE_EXIT_REFUSED;
   }

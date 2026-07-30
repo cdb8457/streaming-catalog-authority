@@ -18,6 +18,7 @@ import {
   CommandLedger,
 } from '../src/ops/maintenance-safety.js';
 import {
+  CompleteRestoreFailed,
   RESTORE_JOURNAL_NAME,
   abandonRestore,
   classifyTarget,
@@ -818,6 +819,93 @@ test('--abandon puts the host directories back and says what a rename cannot bri
   assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'the journal is cleared');
   // AND THE RESTORED COPY IS KEPT, not deleted: an operator who changes their mind still holds both.
   assert(readdirSync(root).some((entry) => entry.includes('.abandoned-')), 'the restored copy is beside it');
+});
+
+test('a run that failed AT the safety set is resumable, because the DECISION is journaled, not the outcome', () => {
+  // THE DEFECT THIS PINS. `safetySetName` is null until a safety set has actually been taken, so inferring
+  // "was one planned" from it made a run that failed at that very step re-plan WITHOUT the step — a different
+  // digest, and a --resume refused for having been "planned for something else". The installation had been
+  // destroyed by nothing at that point and was entirely resumable.
+  const root = makeProject('resume-at-safety');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const failing = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'cp app:', status: 1 }],
+  });
+  const first = runCompleteRestore(request(root, 'set-1'), depsFor(failing),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  assertEq(first.steps[0]!.outcome, 'failed', 'the safety set failed');
+  assertEq(failing.teardowns(), 0, 'and nothing was destroyed');
+
+  const journal = readRestoreJournal(root)!;
+  assertEq(journal.safetySetPlanned, true, 'the journal records that a safety set was PLANNED');
+  assertEq(journal.safetySetName, null, 'and that one was never taken — two different facts');
+  assertEq(journal.completed.includes('safety-set'), false, 'the step did not complete');
+
+  // AND THE RESUME WORKS, from the same plan, with the safety set taken this time.
+  const second = worldFor(setDir);
+  const resumed = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+  assertEq(resumed.ok, true, `the resumed run held: ${resumed.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(resumed.safetySet, 'pre-restore-set-1', 'and it took the safety set the plan called for');
+});
+
+test('every proof runs, even after one of them fails — they are independent diagnoses', () => {
+  // THE DEFECT THIS PINS. Stopping at the first failed proof meant an operator whose VERSION check did not
+  // hold was never told whether their installation could DECRYPT, which is a different problem with a
+  // different answer and the one they most need. The proofs change nothing; withholding three because the
+  // first disagreed is a choice with no upside.
+  const root = makeProject('all-proofs');
+  const setDir = takeSet(root, 'set-1');
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION + 1,
+    initialSchema: MIGRATION_VERSION,
+    // The keystore is ALSO from another moment, so the decryption proof would fail too — and the point is
+    // that an operator gets to see both rather than only the first.
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: 'd'.repeat(64) }],
+  });
+  const { plan } = planFor(request(root, 'set-1'));
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(world),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  for (const id of PROOF_STEP_IDS) {
+    const step = report.steps.find((candidate) => candidate.id === id);
+    assert(step !== undefined, `${id} was attempted`);
+  }
+  assertEq(report.steps.find((step) => step.id === 'prove-version')!.outcome, 'failed', 'the version proof failed');
+  assertEq(report.steps.find((step) => step.id === 'prove-decrypt')!.outcome, 'failed',
+    'AND the decryption proof was still run, and also failed');
+  assertEq(report.steps.find((step) => step.id === 'prove-history')!.outcome, 'held',
+    'and the one that does hold is reported as holding');
+  assertEq(report.state, 'RESTORED_BUT_UNPROVEN', 'the state is decided by the first failure, which was a proof');
+  assertEq(report.ok, false, 'and it is not ok');
+});
+
+test('a failure that leaves the installation stopped carries its report, naming the safety set', () => {
+  // A thrown failure never RETURNS a report, and the report is where the safety set's name and the kept
+  // directories are — the two things an operator standing over a stopped installation needs.
+  const root = makeProject('stopped-report');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'up -d --pull never --wait --wait-timeout 60 postgres', status: 1 }],
+  });
+  let thrown: unknown = null;
+  try {
+    runCompleteRestore(request(root, 'set-1'), depsFor(world),
+      { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof CompleteRestoreFailed, 'a stopped installation is a thrown failure');
+  const carried = (thrown as CompleteRestoreFailed).report;
+  assertEq(carried.safetySet, 'pre-restore-set-1', 'and the report it carries names the safety set');
+  assertEq(carried.state, 'INCOMPLETE', 'and the state it reached');
+  assert(carried.steps.some((step) => step.id === 'database-up' && step.outcome === 'failed'),
+    'and the step that did not hold');
+  assertEq(JSON.stringify(carried).includes(SECRET_VALUE), false, 'and it still carries no secret value');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
 });
 
 test('a journal this build does not understand is a refusal, never an absence', () => {

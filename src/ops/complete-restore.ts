@@ -465,6 +465,17 @@ export interface RestoreJournal {
   readonly custodian: CustodianTopology;
   /** The swap suffix this run chose. `--abandon` finds the replaced directories by it. */
   readonly suffix: string;
+  /**
+   * Whether this run's PLAN included a safety set — recorded as a decision, not inferred from a name.
+   *
+   * THE DEFECT THIS CLOSES, AND IT IS ON THE PATH THAT MATTERS MOST. `safetySetName` is null until the safety
+   * set has actually been taken, so a run that failed AT the safety-set step left a journal saying "no safety
+   * set". A `--resume` would then re-derive a plan WITHOUT that step, produce a different digest, and be
+   * refused for "having been planned for something else" — sending an operator to `--abandon` over a run that
+   * had destroyed nothing and was resumable. The decision and the outcome are two different facts and are
+   * now two different fields.
+   */
+  readonly safetySetPlanned: boolean;
   readonly safetySetName: string | null;
   /** Step ids that completed, in order. A step that started and did not complete is simply not here. */
   readonly completed: readonly RestoreStepId[];
@@ -499,6 +510,7 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
   const doc = parsed as Partial<RestoreJournal>;
   if (doc.journal !== 'catalog-authority.restore' || doc.version !== RESTORE_JOURNAL_VERSION
     || typeof doc.planDigest !== 'string' || typeof doc.setName !== 'string' || typeof doc.suffix !== 'string'
+    || typeof doc.safetySetPlanned !== 'boolean'
     || !Array.isArray(doc.completed) || (doc.custodian !== 'inline' && doc.custodian !== 'sidecar')) {
     throw new MaintenanceRefused(
       'this project holds a restore journal this build does not understand. Nothing was changed.');
@@ -613,14 +625,25 @@ export interface CompleteRestoreReport {
 export class CompleteRestoreFailed extends MaintenanceRefused {
   readonly primary: string;
   readonly stateReached: RestoreStepId | null;
+  /**
+   * The report this run WOULD have returned.
+   *
+   * THE DEFECT THIS CLOSES IS THE SAME ONE PHASE 277 CLOSED, ONE LEVEL UP. A thrown failure never returns a
+   * report, and the report is where the safety set's name and the `.replaced-` directories are — which are
+   * exactly the two things an operator standing over a stopped installation needs. So the report travels ON
+   * the failure, and the CLI prints it before the refusal rather than after losing it.
+   */
+  readonly report: CompleteRestoreReport;
 
-  constructor(primary: string, stateReached: RestoreStepId | null) {
+  constructor(primary: string, stateReached: RestoreStepId | null, report: CompleteRestoreReport) {
     super(`${primary} THE INSTALLATION IS PART WAY THROUGH A RESTORE AND IS NOT RUNNING. A journal was left in `
       + 'the project: re-run with --resume to continue from this step, or --abandon to put the host directories '
-      + 'back and start again from the safety set.');
+      + 'back and start again from the safety set. The report above names the safety set and every directory '
+      + 'whose previous contents were kept.');
     this.name = 'CompleteRestoreFailed';
     this.primary = primary;
     this.stateReached = stateReached;
+    this.report = report;
   }
 }
 
@@ -648,7 +671,7 @@ export function runCompleteRestore(
   // the run that already happened; recomputing it from the target's CURRENT state would answer EMPTY on an
   // installation this run itself emptied, which would change the plan and therefore the digest.
   const safetySet = existing !== null
-    ? existing.safetySetName !== null
+    ? existing.safetySetPlanned
     : resolved.targetState === 'OCCUPIED' && mode.kind === 'run' && mode.acceptDataLoss === null;
   const plan = planCompleteRestore(resolved, { safetySet });
 
@@ -710,6 +733,7 @@ export function runCompleteRestore(
       setName: resolved.setName,
       custodian: resolved.custodian,
       suffix,
+      safetySetPlanned: safetySet,
       safetySetName,
       completed: [...completed],
       running: null,
@@ -720,7 +744,11 @@ export function runCompleteRestore(
         results.push({ id: step.id, proves: step.proves, outcome: 'skipped', detail: 'already completed by an earlier run' });
         continue;
       }
-      journalRunning(resolved.projectRoot, plan.digest, resolved, suffix, safetySetName, completed, step.id);
+      // A STEP AFTER A FAILED NON-PROOF STEP IS NOT ATTEMPTED. Once a placement or a boot has not held, every
+      // later one would be acting on state nobody can describe.
+      if (failedAt !== null && !PROOF_STEP_IDS.includes(failedAt)) break;
+
+      journalRunning(resolved.projectRoot, plan.digest, resolved, suffix, safetySet, safetySetName, completed, step.id);
 
       let detail: string | null;
       try {
@@ -737,13 +765,21 @@ export function runCompleteRestore(
 
       if (detail !== null) {
         results.push({ id: step.id, proves: step.proves, outcome: 'failed', detail });
-        failedAt = step.id;
-        failure = detail;
-        break;
+        // THE FIRST FAILURE IS THE ONE THAT GETS REPORTED AS THE CAUSE, and later ones are still recorded.
+        if (failedAt === null) { failedAt = step.id; failure = detail; }
+        // ---- BUT EVERY PROOF STILL RUNS ------------------------------------------------------------
+        //
+        // THE DEFECT THIS CLOSES. Stopping at the first failed proof meant an operator whose version check
+        // did not hold was never told whether their installation could DECRYPT — which is a different
+        // problem with a different answer, and the one they most need to know. The proofs change nothing,
+        // they are independent diagnoses, and there is no reason to withhold three of them because the
+        // first disagreed. So the loop continues while the failure is a proof, and stops otherwise.
+        if (!PROOF_STEP_IDS.includes(step.id)) break;
+        continue;
       }
       completed.add(step.id);
       results.push({ id: step.id, proves: step.proves, outcome: 'held', detail: null });
-      journalRunning(resolved.projectRoot, plan.digest, resolved, suffix, safetySetName, completed, null);
+      journalRunning(resolved.projectRoot, plan.digest, resolved, suffix, safetySet, safetySetName, completed, null);
     }
   } finally {
     lock.release();
@@ -807,7 +843,7 @@ export function runCompleteRestore(
   // nothing and is a plain refusal; a run that failed AFTER it has left services stopped, and an operator
   // must not have to read a report to discover that. The proofs are the exception — by then the stack is up.
   if (failure !== null && stopped && !restoredButUnproven) {
-    throw new CompleteRestoreFailed(failure, failedAt);
+    throw new CompleteRestoreFailed(failure, failedAt, report);
   }
   return report;
 }
@@ -818,6 +854,7 @@ function journalRunning(
   planDigest: string,
   resolved: ResolvedRestore,
   suffix: string,
+  safetySetPlanned: boolean,
   safetySetName: string | null,
   completed: ReadonlySet<RestoreStepId>,
   running: RestoreStepId | null,
@@ -829,6 +866,7 @@ function journalRunning(
     setName: resolved.setName,
     custodian: resolved.custodian,
     suffix,
+    safetySetPlanned,
     safetySetName,
     completed: [...completed],
     running,
