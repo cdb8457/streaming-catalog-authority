@@ -5,6 +5,7 @@ import {
   assertPermittedCommand,
   type CommandOutcome,
   type CommandRunner,
+  type FileInputRunner,
   type FileOutputRunner,
   type MaintenanceCommand,
 } from './maintenance-safety.js';
@@ -125,6 +126,61 @@ export function realFileOutputRunner(): FileOutputRunner {
       // The stdout of a file-output command is the file. Nothing is returned here, and a caller that expected
       // bytes would be a caller that had misunderstood which runner it asked for.
       stdout: '',
+      stderr: boundedStderr(run.stderr === null || run.stderr === undefined ? '' : String(run.stderr)),
+    };
+  };
+}
+
+/**
+ * The real BINARY-INPUT runner: the child's stdin is the file, byte for byte. Phase 301.
+ *
+ * The mirror of `realFileOutputRunner`, and the reason a restore never copies a dump into a container. The
+ * source is opened `O_RDONLY` **without following a symbolic link** and `fstat`ed on that descriptor, so the
+ * bytes that reach `psql` are the bytes of the object that was verified — a leaf swapped for a link between
+ * the verification and the replay is refused at the open rather than followed.
+ *
+ * Nothing is written by this function at all. It reads a file the caller resolved inside a verified set and
+ * hands the descriptor to a child; there is no shell, no `<`, and no destination.
+ */
+export function realFileInputRunner(): FileInputRunner {
+  return (command: MaintenanceCommand, source: string): CommandOutcome => {
+    const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
+    let fd: number;
+    try {
+      fd = openSync(source, fsConstants.O_RDONLY | noFollow);
+    } catch {
+      throw new MaintenanceRefused(
+        'the file this step replays could not be opened, or it is a symbolic link. Nothing was replayed.');
+    }
+    let run;
+    try {
+      // WINDOWS HAS NO `O_NOFOLLOW`, so the guarantee is re-established the way every other read in this
+      // family re-establishes it: ask the OPEN DESCRIPTOR what it is. A directory, a device or a named pipe
+      // at that path is refused here rather than streamed into a database.
+      if (!fstatSync(fd).isFile()) {
+        throw new MaintenanceRefused('the file this step replays is not a regular file. Nothing was replayed.');
+      }
+      run = spawnSync(command.program, [...command.args], {
+        cwd: command.cwd,
+        shell: false,
+        // The DESCRIPTOR for stdin, pipes for the rest. The bytes go from the file to the child without this
+        // process seeing them, so nothing is decoded and nothing is bounded by a buffer.
+        stdio: [fd, 'pipe', 'pipe'],
+        maxBuffer: MAINTENANCE_MAX_STDERR_BYTES,
+        timeout: MAINTENANCE_STEP_TIMEOUT_MS,
+        windowsHide: true,
+        env: narrowedEnvironment(),
+      });
+    } finally {
+      try { closeSync(fd); } catch { /* nothing rests on this close */ }
+    }
+
+    if (run.error !== undefined) throw run.error;
+    return {
+      status: run.status ?? -1,
+      // A replay's stdout is `psql`'s chatter. It is bounded and stripped the same way stderr is, because it
+      // can carry a table name and is never an artifact.
+      stdout: boundedStderr(run.stdout === null || run.stdout === undefined ? '' : String(run.stdout)),
       stderr: boundedStderr(run.stderr === null || run.stderr === undefined ? '' : String(run.stderr)),
     };
   };

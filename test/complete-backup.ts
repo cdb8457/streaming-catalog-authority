@@ -859,18 +859,27 @@ test('the CLI parser is strict, refuses a guessed topology, and takes no credent
 
 test('the maintenance modules build no shell command and reach for no shell', () => {
   for (const rel of ['src/ops/maintenance-safety.ts', 'src/ops/complete-backup.ts',
-    'src/ops/backup-set-verification.ts', 'src/ops/doctor-monitor.ts', 'src/ops/upgrade-rehearsal.ts']) {
+    'src/ops/backup-set-verification.ts', 'src/ops/doctor-monitor.ts', 'src/ops/upgrade-rehearsal.ts',
+    // Phases 297-304. The restore joins this list rather than getting its own exemption: it stops a stack and
+    // destroys volumes, so it is exactly the module that must not be able to reach a shell.
+    'src/ops/complete-restore.ts', 'src/ops/restore-model.ts']) {
     const source = readRepo(rel);
     for (const forbidden of ['execSync', 'spawnSync', 'child_process', 'shell: true', '`sh -c']) {
       assert(!source.includes(forbidden), `${rel} must not name ${forbidden}`);
     }
   }
-  // ONE module starts a process, and it is the one that says so in its name. It holds exactly two spawns —
-  // the runner that captures a child's output and the runner that binds a child's stdout to a file — and both
-  // must run with no shell. The count is asserted so a third one cannot appear unnoticed.
+  // ONE module starts a process, and it is the one that says so in its name. It holds exactly THREE spawns,
+  // and each is a descriptor discipline rather than a convenience:
+  //
+  //   * the runner that CAPTURES a child's output, for reports;
+  //   * the runner that binds a child's STDOUT to a file, so a `pg_dump` is byte-faithful and unbounded;
+  //   * Phase 301's runner that binds a file to a child's STDIN, so the same dump is REPLAYED byte-faithfully
+  //     without ever being copied into a container or decoded into a string.
+  //
+  // The count is asserted so a fourth cannot appear unnoticed, and every one must run with no shell.
   const runner = readRepo('src/ops/maintenance-cli-shared.ts');
   const spawns = [...runner.matchAll(/spawnSync\(/g)].length;
-  assertEq(spawns, 2, 'exactly two spawns exist in the tranche: the capturing runner and the to-file runner');
+  assertEq(spawns, 3, 'exactly three spawns exist in the tranche: capture, to-file and from-file');
   assert([...runner.matchAll(/shell: false/g)].length >= spawns, 'and every one of them runs with no shell');
 });
 

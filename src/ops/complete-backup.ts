@@ -175,6 +175,21 @@ export interface CompleteBackupDeps {
   readonly ledger: CommandLedger;
   /** Injected so a suite can produce a set with a fixed timestamp. Never used for a name or a decision. */
   readonly now?: () => Date;
+  /**
+   * The caller ALREADY HOLDS this project's maintenance lock, so do not take a second one. Phase 300.
+   *
+   * THERE IS EXACTLY ONE CALLER AND IT IS NAMED: `ops:complete-restore`, taking the safety set of the
+   * installation it is about to destroy. The alternative — taking that set before acquiring the restore's own
+   * lock — would leave a window in which another maintenance command could act between the safety set and the
+   * `down -v`, which is precisely the interleaving the lock exists to prevent, and the restore's digest
+   * re-proof would then be checking a moment that had already passed.
+   *
+   * IT IS NOT A BYPASS. The lock is still held for the whole of this backup — by the restore — so the
+   * exclusion property is unchanged; what is removed is a self-deadlock, because `mkdir` as a lock is not
+   * reentrant. A suite asserts that exactly one lock directory exists while a safety set is being taken, and
+   * that no other module under `src/` passes this flag.
+   */
+  readonly holdingLock?: true;
 }
 
 /**
@@ -361,7 +376,9 @@ export function takeCompleteBackupWithoutVerifying(
     createPrivateDirectory(resolved.destinationDir, 'backup destination');
   }
 
-  const lock = acquireMaintenanceLock(resolved.projectRoot);
+  // `null` ONLY when the caller already holds it. `mkdir` as a lock is not reentrant, and the one caller that
+  // legitimately arrives already holding this project's lock is the restore taking its safety set.
+  const lock = deps.holdingLock === true ? null : acquireMaintenanceLock(resolved.projectRoot);
   const stagingDir = join(resolved.destinationDir, `.${resolved.setName}.staging-${stagingSuffix()}`);
   const notes: string[] = [];
   /**
@@ -524,7 +541,9 @@ export function takeCompleteBackupWithoutVerifying(
     // exactly the same outage as one that failed while the dump was running.
     throw withOutage(err, stillStopped);
   } finally {
-    lock.release();
+    // A lock this call did not take is a lock this call does not release: releasing the restore's lock here
+    // would end its exclusive window in the middle of it.
+    lock?.release();
   }
 }
 
@@ -683,33 +702,50 @@ export function describeComponent(setDir: string, id: BackupComponentId): Backup
     const digested = digestFileNoFollow(path, `${id} component`);
     return { id, artifact, present: true, bytes: digested.size, entries: 1, digest: digested.digest };
   }
-  // A DIRECTORY IS DIGESTED OVER ITS CANONICAL LISTING PLUS EACH FILE'S OWN DIGEST. Names and digests, in a
-  // total order — never the bytes concatenated, which would make the digest depend on the walk order.
+  const digested = digestTreeAt(path, `${id} component`);
+  return { id, artifact, present: true, bytes: digested.bytes, entries: digested.entries, digest: digested.digest };
+}
+
+/**
+ * Digest a DIRECTORY over its canonical listing plus each file's own digest.
+ *
+ * Names and digests, in a total order — never the bytes concatenated, which would make the digest depend on
+ * the walk order. Every directory is opened without following a link before it is listed, and every leaf is
+ * read through one descriptor, so a tree that changed under the walk is refused rather than digested halfway.
+ *
+ * IT IS EXPORTED FOR ONE REASON, AND IT IS AN ANTI-DRIFT REASON. Phase 301's restore has to answer "does the
+ * directory already on disk hold exactly what this set would put there" before it swaps, so that a resumed
+ * run does not rename the RESTORED state aside and record it as the previous one. Answering that with a
+ * second digest algorithm would make two functions that must agree, and they would not.
+ */
+export function digestTreeAt(path: string, what: string): {
+  readonly digest: string; readonly entries: number; readonly bytes: number;
+} {
   const hash = createHash('sha256');
   let entries = 0;
   let bytes = 0;
   const walk = (current: string, prefix: string): void => {
-    assertDirectoryNoFollow(current, `${id} component directory`);
+    assertDirectoryNoFollow(current, `${what} directory`);
     for (const entry of readdirSync(current).slice().sort()) {
       const child = join(current, entry);
       const relative = prefix === '' ? entry : `${prefix}/${entry}`;
       const childStats = lstatSync(child);
       if (childStats.isSymbolicLink()) {
-        throw new MaintenanceRefused(`the ${id} component of this set holds a symbolic link, which a backup must never do`);
+        throw new MaintenanceRefused(`the ${what} holds a symbolic link, which a backup must never do`);
       }
       if (childStats.isDirectory()) { hash.update(`d ${relative}\n`); walk(child, relative); continue; }
       if (!childStats.isFile()) {
-        throw new MaintenanceRefused(`the ${id} component of this set holds a special file, which a backup must never do`);
+        throw new MaintenanceRefused(`the ${what} holds a special file, which a backup must never do`);
       }
       // Same discipline as the single-file branch: the digest is of the object that was opened.
-      const content = readFileNoFollow(child, `${id} component entry`).bytes;
+      const content = readFileNoFollow(child, `${what} entry`).bytes;
       entries += 1;
       bytes += content.byteLength;
       hash.update(`f ${relative} ${createHash('sha256').update(content).digest('hex')}\n`);
     }
   };
   walk(path, '');
-  return { id, artifact, present: true, bytes, entries, digest: hash.digest('hex') };
+  return { digest: hash.digest('hex'), entries, bytes };
 }
 
 /**

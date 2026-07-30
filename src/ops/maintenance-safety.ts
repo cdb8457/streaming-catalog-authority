@@ -94,6 +94,24 @@ export type CommandRunner = (command: MaintenanceCommand) => CommandOutcome;
  */
 export type FileOutputRunner = (command: MaintenanceCommand, destination: string) => CommandOutcome;
 
+/**
+ * A runner that binds the child's stdin DIRECTLY to a file this product opened. Phase 301.
+ *
+ * THE EXACT MIRROR OF `FileOutputRunner`, AND FOR THE SAME REASONS. Phase 277 binds `pg_dump`'s stdout to a
+ * descriptor so a dump is byte-faithful and unbounded; a restore replays those same bytes, and reading them
+ * into a string to hand to a child would reintroduce both defects at the other end — U+FFFD for every byte
+ * sequence that is not valid UTF-8, and a whole dump inside one buffer.
+ *
+ * IT IS ALSO WHY NOTHING IS COPIED INTO THE CONTAINER. `psql` reads its script from this descriptor, so there
+ * is no temporary copy of an operator's entire database written inside a container for somebody to forget to
+ * remove, and the file that is replayed is the one that was verified rather than a name that could have
+ * become a link in between.
+ *
+ * `source` is always a path the caller has already resolved inside a verified backup set. There is no shell,
+ * no `<` and no caller-supplied redirection: the only thing that can be read is the file this function opens.
+ */
+export type FileInputRunner = (command: MaintenanceCommand, source: string) => CommandOutcome;
+
 export interface LedgerEntry {
   readonly program: string;
   readonly args: readonly string[];
@@ -265,6 +283,30 @@ export function runGuardedToFile(
   let outcome: CommandOutcome;
   try {
     outcome = runner(command, destination);
+  } catch (err) {
+    ledger.record(command, -1);
+    throw new MaintenanceRefused(`a maintenance step could not be run: ${describeRunnerFailure(err)}`);
+  }
+  ledger.record(command, outcome.status);
+  return outcome;
+}
+
+/**
+ * Run one command with its stdin bound to a file, after the same guard, recording it either way. Phase 301.
+ *
+ * A refusal never reaches the runner, and a runner that threw is still in the ledger — the same contract
+ * `runGuarded` and `runGuardedToFile` have, because evidence that omits the step that failed is not evidence.
+ */
+export function runGuardedFromFile(
+  runner: FileInputRunner,
+  ledger: CommandLedger,
+  command: MaintenanceCommand,
+  source: string,
+): CommandOutcome {
+  assertPermittedCommand(command);
+  let outcome: CommandOutcome;
+  try {
+    outcome = runner(command, source);
   } catch (err) {
     ledger.record(command, -1);
     throw new MaintenanceRefused(`a maintenance step could not be run: ${describeRunnerFailure(err)}`);

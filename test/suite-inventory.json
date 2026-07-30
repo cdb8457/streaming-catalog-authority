@@ -1427,6 +1427,12 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "complete-restore.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }
