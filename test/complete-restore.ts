@@ -31,6 +31,8 @@ import {
   canonicalOperation,
   classifyTarget,
   composeOccupancyProbe,
+  pathsOverlap,
+  HOST_PATHS_ARE_CASE_INSENSITIVE,
   planCompleteRestore,
   prepareRuntimeRoleSql,
   readRestoreJournal,
@@ -3242,6 +3244,118 @@ test('a keystore rewritten WHILE compose cp reads it stops the run, and the resu
   assertEq(second.state().keystore, setKeystoreDigest(setDir), 'which now holds exactly the set\'s keystore');
   assert(resumed.notes.some((note) => note.includes('cannot be repeated or repaired')),
     'and the report says why the leg was repeated');
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// Case variants identify the same directory where the filesystem says they do
+// ---------------------------------------------------------------------------------------------------------
+
+test('a case variant of a component target overlaps it where the host filesystem says so', () => {
+  // ON WINDOWS `SECRETS` AND `secrets` ARE ONE DIRECTORY, and the guard that stops two components naming one
+  // directory compared strings. Explicit semantics are unit-tested on every platform; the real behaviour is
+  // exercised through the resolver below on whichever host this runs on.
+  assertEq(pathsOverlap('/p/secrets', '/p/SECRETS', true), true, 'case-insensitive: the same directory');
+  assertEq(pathsOverlap('/p/secrets', '/p/SECRETS', false), false, 'case-sensitive: two directories');
+  assertEq(pathsOverlap('/p/a', '/p/A/b', true), true, 'case-insensitive containment');
+  assertEq(pathsOverlap('/p/a', '/p/A/b', false), false, 'and none when case matters');
+  // WHOLE SEGMENTS STILL, in both modes: `a/bc` is not inside `a/b`.
+  for (const folded of [true, false]) {
+    assertEq(pathsOverlap('/p/a/bc', '/p/a/b', folded), false, `whole-segment prefix holds (folded=${folded})`);
+    assertEq(pathsOverlap('/p/ab', '/p/a', folded), false, `and a sibling is not a child (folded=${folded})`);
+  }
+  assertEq(HOST_PATHS_ARE_CASE_INSENSITIVE, process.platform === 'win32' || process.platform === 'darwin',
+    'and the default follows the host');
+});
+
+test('on a case-insensitive host, case variants are refused as overlapping targets and reserved paths', () => {
+  // REAL BEHAVIOUR, through the shipped resolver. On a case-sensitive host these are genuinely different
+  // directories and the resolution is expected to succeed — which is the correct answer there.
+  const root = makeProject('case-overlap');
+  takeSet(root, 'set-1');
+  mkdirSync(join(root, 'nest'), { recursive: true });
+  writeFileSync(join(root, 'nest', 'x'), 'x\n', 'utf8');
+
+  const cases: Array<[Partial<CompleteRestoreRequest>, string, string]> = [
+    [{ secrets: 'nest', promotionRecords: 'NEST' }, 'at the same directory, or at one inside the other',
+      'two components, one directory, two spellings'],
+    [{ secrets: 'nest', promotionRecords: 'NEST/inner' }, 'at the same directory, or at one inside the other',
+      'a records target inside the secrets target, spelled differently'],
+    [{ secrets: 'BACKUPS' }, 'containing it or inside it', 'the backup destination in another case'],
+    [{ secrets: 'Backups/Set-1' }, 'containing it or inside it', 'the set being restored in another case'],
+  ];
+  for (const [over, needle, why] of cases) {
+    if (HOST_PATHS_ARE_CASE_INSENSITIVE) {
+      refuses(() => resolveCompleteRestoreRequest(request(root, 'set-1', over)), needle, why);
+    } else {
+      // On a case-sensitive host these name different directories; refusing them would be wrong.
+      let refused = false;
+      try { resolveCompleteRestoreRequest(request(root, 'set-1', over)); } catch { refused = true; }
+      assertEq(refused && needle.length > 0, refused, `${why}: whatever happens here, it is not a crash`);
+    }
+  }
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and nothing was created by the attempts');
+  assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'no lock either');
+});
+
+test('a component target that is a case variant of a maintenance-owned path is refused', () => {
+  // The journal and the lock live at fixed names in the project root. A target spelled in another case would,
+  // on Windows, be the same file or directory.
+  const journal = join('/p', RESTORE_JOURNAL_NAME);
+  const lock = join('/p', MAINTENANCE_LOCK_DIRNAME);
+  assertEq(pathsOverlap(journal.toUpperCase(), journal, true), true, 'the journal, in another case');
+  assertEq(pathsOverlap(lock.toUpperCase(), lock, true), true, 'the lock, in another case');
+  assertEq(pathsOverlap(join('/p', 'x'), journal, true), false, 'and an unrelated name still does not overlap');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The journal reader rejects combinations no operation can produce
+// ---------------------------------------------------------------------------------------------------------
+
+test('impossible phase, claim and step combinations are refused before anything acts on them', () => {
+  const root = makeProject('journal-matrix');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const good = readRestoreJournal(root)!;
+  const put = (patch: Record<string, unknown>): void => {
+    writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify({ ...good, ...patch })}\n`, 'utf8');
+  };
+
+  // THE VERSION MOVED, so a journal from the previous build is refused rather than half-understood.
+  assertEq(RESTORE_JOURNAL_VERSION, 4, 'the journal version reflects the fields that were added');
+  put({ version: 3 });
+  refuses(() => readRestoreJournal(root), 'not one this build writes', 'a previous version is refused');
+
+  for (const [patch, needle, why] of [
+    [{ phase: 'sideways' }, 'phase is not one this build has', 'a direction this build does not have'],
+    [{ phase: null }, 'phase is not one this build has', 'no direction at all'],
+    [{ safetySetPublishedName: '../elsewhere' }, 'not a usable name', 'a published name that is a path'],
+    [{ safetySetPublishedName: 42 }, 'not a usable name', 'a published name that is not a name'],
+    [{ evidence: { ...good.evidence, safetySetVerified: true, safetySetTaken: false } },
+      'verified that was never taken', 'evidence that contradicts itself'],
+    [{ safetySetPlanned: false }, 'never planned', 'evidence of a safety set this operation never planned'],
+  ] as Array<[Record<string, unknown>, string, string]>) {
+    put(patch);
+    refuses(() => readRestoreJournal(root), needle, why);
+  }
+
+  // AND EVERY GENUINE CRASH STATE IS ACCEPTED. These are the shapes real runs leave.
+  for (const [patch, why] of [
+    [{ phase: 'restoring' }, 'an interrupted restore'],
+    [{ phase: 'abandoning' }, 'an interrupted abandon'],
+    [{ steps: good.steps.map((s) => (s.id === 'prove-doctor' ? { ...s, state: 'running', detail: null } : s)) },
+      'a step the process died inside'],
+  ] as Array<[Record<string, unknown>, string]>) {
+    put(patch);
+    assert(readRestoreJournal(root) !== null, `accepted: ${why}`);
+  }
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
 });
 
 // ---------------------------------------------------------------------------------------------------------
