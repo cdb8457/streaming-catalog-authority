@@ -107,6 +107,8 @@ export interface ParsedRestoreArgs {
   readonly confirm: string | null;
   readonly resume: string | null;
   readonly acceptDataLoss: string | null;
+  /** The value-free choice to plan, and then run, an operation that takes no safety set. */
+  readonly noSafetySet: boolean;
 }
 
 /**
@@ -123,8 +125,10 @@ export interface ParsedRestoreArgs {
  * prevent. Every mode now declares what it accepts, and anything else is a usage error naming the mode.
  */
 export const MODE_VALUE_FLAGS: Readonly<Record<RestoreCliMode, readonly string[]>> = Object.freeze({
+  // NO `--accept-data-loss` AT PLAN TIME. Planning without a safety set is a value-free CHOICE, because the
+  // digest such a plan would have to acknowledge does not exist until the plan has been made.
   plan: ['project', 'set', 'custodian', 'destination', 'secrets', 'promotion-records', 'sidecar-state',
-    'safety-set', 'accept-data-loss'],
+    'safety-set'],
   run: ['project', 'set', 'custodian', 'destination', 'secrets', 'promotion-records', 'sidecar-state',
     'safety-set', 'confirm', 'accept-data-loss'],
   // A RESUME IS BOUND TO THE JOURNAL. It re-derives the operation from what the interrupted run recorded, so
@@ -133,11 +137,40 @@ export const MODE_VALUE_FLAGS: Readonly<Record<RestoreCliMode, readonly string[]
   abandon: ['project'],
 });
 
+/**
+ * Which switches each mode may carry.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE CIRCULARITY THIS BREAKS.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * `--accept-data-loss` takes the digest of the plan it acknowledges, and that plan — the one WITHOUT a
+ * safety set — is a different operation with a different digest from the ordinary one. So to see that digest
+ * an operator had to run `--plan --accept-data-loss <something>`, and there was nothing correct to put
+ * there: the value was ignored at plan time, and any string at all produced the right plan. A flag whose
+ * value is discarded teaches an operator that their acknowledgement does not matter, on the one command
+ * where it matters most.
+ *
+ * The CHOICE and the ACKNOWLEDGEMENT are therefore two different things:
+ *
+ *   * `--no-safety-set` is a switch. It carries no value, it changes the plan, and `--plan` prints the
+ *     digest of the operation it produces — loudly, because that operation destroys volumes with nothing
+ *     behind them.
+ *   * `--accept-data-loss <digest>` is execution only, and the digest must be that plan's. At plan time it
+ *     is REFUSED rather than ignored.
+ */
+export const MODE_SWITCH_FLAGS: Readonly<Record<RestoreCliMode, readonly string[]>> = Object.freeze({
+  plan: ['plan', 'json', 'no-safety-set'],
+  run: ['json', 'no-safety-set'],
+  resume: ['json'],
+  abandon: ['abandon', 'json'],
+});
+
 export function parseCompleteRestoreArgs(argv: readonly string[]): ParsedRestoreArgs {
   const parsed = parseMaintenanceFlags(argv, {
     values: ['project', 'set', 'custodian', 'destination', 'secrets', 'promotion-records', 'sidecar-state',
       'safety-set', 'confirm', 'resume', 'accept-data-loss'],
-    switches: ['plan', 'json', 'abandon'],
+    switches: ['plan', 'json', 'abandon', 'no-safety-set'],
   });
   const project = parsed.values.project;
   if (project === undefined) throw new MaintenanceUsageError('--project is required');
@@ -163,6 +196,23 @@ export function parseCompleteRestoreArgs(argv: readonly string[]): ParsedRestore
   }
   const mode: RestoreCliMode = planFlag ? 'plan' : abandonFlag ? 'abandon' : resume !== null ? 'resume' : 'run';
 
+  const allowedSwitches = MODE_SWITCH_FLAGS[mode];
+  const givenSwitches = [...parsed.switches].filter((name) => !allowedSwitches.includes(name)).sort();
+  if (givenSwitches.length > 0) {
+    throw new MaintenanceUsageError(
+      `--${givenSwitches.join(', --')} ${givenSwitches.length === 1 ? 'is' : 'are'} not part of --${mode}. `
+      + `--${mode} takes the switches: --${allowedSwitches.join(', --')}.`);
+  }
+
+  if (mode === 'plan' && parsed.values['accept-data-loss'] !== undefined) {
+    // REFUSED, NOT IGNORED. This is the whole correction: a value that changes nothing must never be
+    // accepted, least of all the one that acknowledges destroying an installation.
+    throw new MaintenanceUsageError(
+      '--accept-data-loss is not part of --plan, and this command will not take a digest it would ignore. A '
+      + 'plan has no digest to acknowledge until it has been made. Use --no-safety-set to PLAN the operation '
+      + 'that takes none; --plan prints its digest, and that is what --accept-data-loss takes when you run it.');
+  }
+
   const allowed = MODE_VALUE_FLAGS[mode];
   const given = Object.keys(parsed.values).filter((name) => !allowed.includes(name)).sort();
   if (given.length > 0) {
@@ -174,7 +224,7 @@ export function parseCompleteRestoreArgs(argv: readonly string[]): ParsedRestore
 
   if (mode === 'abandon' || mode === 'resume') {
     return { mode, projectRoot: project, request: null, json: parsed.switches.has('json'), confirm, resume,
-      acceptDataLoss: null };
+      acceptDataLoss: null, noSafetySet: false };
   }
 
   const set = parsed.values.set;
@@ -182,6 +232,22 @@ export function parseCompleteRestoreArgs(argv: readonly string[]): ParsedRestore
   if (set === undefined) throw new MaintenanceUsageError('--set is required');
   if (custodian !== 'inline' && custodian !== 'sidecar') {
     throw new MaintenanceUsageError('--custodian must be exactly "inline" or "sidecar"; this command will not guess');
+  }
+
+  const noSafetySet = parsed.switches.has('no-safety-set');
+  const acceptDataLoss = parsed.values['accept-data-loss'] ?? null;
+  if (mode === 'run') {
+    if (noSafetySet && acceptDataLoss === null) {
+      throw new MaintenanceUsageError(
+        '--no-safety-set was given without --accept-data-loss. Planning that operation is a choice; RUNNING it '
+        + 'destroys this installation\'s volumes with nothing behind them, and that takes the digest --plan '
+        + 'printed for it.');
+    }
+    if (!noSafetySet && acceptDataLoss !== null) {
+      throw new MaintenanceUsageError(
+        '--accept-data-loss was given without --no-safety-set, so it acknowledges a loss this run would not '
+        + 'cause: this operation takes a safety set. Drop it, or ask for the operation it belongs to.');
+    }
   }
 
   const request: CompleteRestoreRequest = {
@@ -201,7 +267,8 @@ export function parseCompleteRestoreArgs(argv: readonly string[]): ParsedRestore
     json: parsed.switches.has('json'),
     confirm,
     resume,
-    acceptDataLoss: parsed.values['accept-data-loss'] ?? null,
+    acceptDataLoss,
+    noSafetySet,
   };
 }
 
@@ -246,9 +313,15 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
       const ledger = new CommandLedger();
       const resolved = resolveCompleteRestoreRequest(args.request!,
         composeOccupancyProbe(realCommandRunner(), ledger));
-      const acceptDataLoss = args.acceptDataLoss !== null;
-      const plan = planCompleteRestore(resolved, { safetySet: !acceptDataLoss, acceptDataLoss });
+      const plan = planCompleteRestore(resolved,
+        { safetySet: !args.noSafetySet, acceptDataLoss: args.noSafetySet });
       console.log(renderRestorePlan(resolved, plan));
+      if (args.noSafetySet) {
+        console.log('');
+        console.log('  !! THIS PLAN TAKES NO SAFETY SET. Running it destroys this installation\'s volumes with');
+        console.log('     nothing behind them, and this command CANNOT prove those volumes are empty. Running');
+        console.log('     it takes BOTH --no-safety-set and --accept-data-loss carrying the digest above.');
+      }
       return COMPLETE_RESTORE_EXIT_OK;
     }
 

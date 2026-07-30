@@ -2,7 +2,8 @@ import { renameSync } from 'node:fs';
 import { isDirectRun } from '../../src/ops/direct-run.js';
 import { MIGRATION_VERSION } from '../../src/db/schema-version.js';
 import {
-  runCompleteRestore, writeRestoreJournal, type CompleteRestoreRequest, type RestoreJournal,
+  abandonRestore, runCompleteRestore, writeRestoreJournal,
+  type CompleteRestoreRequest, type RestoreJournal,
 } from '../../src/ops/complete-restore.js';
 import { restoreStack, setDumpDigest, setKeystoreDigest } from './fake-restore-stack.js';
 
@@ -42,8 +43,11 @@ interface CrashConfig {
    *   `rename:<n>`    — after the nth rename a swap performs (1 = between the two halves).
    *   `command:<s>`   — after the command whose argv contains `<s>` has run.
    *   `replay`        — inside the database replay, after the dump has gone in.
-   *   `complete:<id>` — the instant before the journal records step `<id>` as complete. THE EXACT
-   *                     BOUNDARY: the step's effect has landed and nothing has recorded it.
+   *   `complete:<id>` — the instant BEFORE the journal records step `<id>` as complete: the step's effect
+   *                     has landed and nothing has recorded it.
+   *   `after:<id>`    — the instant AFTER that record reaches disk. For the LAST step this is the window in
+   *                     which the operation is complete, its journal says so, and the cleanup and the
+   *                     journal clear have not happened.
    */
   readonly crashAt: string;
   readonly buildSchema?: number;
@@ -51,6 +55,8 @@ interface CrashConfig {
   readonly custodian?: 'inline' | 'sidecar';
   readonly sidecarState?: string;
   readonly promotionRecords?: string | null;
+  /** `restore` (the default) or `abandon` — both halves of an abandon are crashable boundaries too. */
+  readonly operation?: 'restore' | 'abandon';
 }
 
 function main(): number {
@@ -92,6 +98,11 @@ function main(): number {
       if (step !== undefined && step.state === 'complete') die();
     }
     writeRestoreJournal(projectRoot, journal);
+    if (config.crashAt.startsWith('after:')) {
+      const id = config.crashAt.slice('after:'.length);
+      const step = journal.steps.find((entry) => entry.id === id);
+      if (step !== undefined && step.state === 'complete') die();
+    }
   };
 
   const fileRunner: typeof world.inputRunner = (command, source) => {
@@ -99,6 +110,20 @@ function main(): number {
     if (config.crashAt === 'replay') die();
     return outcome;
   };
+
+  if (config.operation === 'abandon') {
+    // BOTH HALVES OF AN ABANDON ARE BOUNDARIES. `rename:1` dies after the restored copy has been moved to
+    // its `.abandoned-` name and before the previous contents are put back — the window in which the target
+    // does not exist at all. `rename:2` dies after the second, before the journal records either.
+    try {
+      abandonRestore(config.projectRoot, { rename });
+    } catch (err) {
+      process.stderr.write(`${(err as Error).message}
+`);
+      return 1;
+    }
+    return 2;
+  }
 
   const request: CompleteRestoreRequest = {
     projectRoot: config.projectRoot,

@@ -231,6 +231,13 @@ npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 
 # then pass back the digest it printed:
 npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline \
     --confirm <the digest --plan printed>
+
+# On an installation with no host state to back up there is no safety set to take. That is a CHOICE you
+# plan explicitly — and the digest that plan prints is what you then acknowledge:
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline \
+    --plan --no-safety-set
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline \
+    --no-safety-set --confirm <that digest> --accept-data-loss <that same digest>
 ```
 
 **This is the rollback.** There are no down-migrations, so putting an older image back is not one — and a set
@@ -262,13 +269,21 @@ then placed by **rename**: the previous directory is kept beside the new one, ne
 deleted.
 
 **An interrupted run is a state with a name, including one interrupted by a process that stopped existing.**
-Each step is recorded before its effect and again after it, so a kill, a power loss or an OOM leaves exactly
-one step marked running — and each step declares how to recover from that: finish an interrupted rename,
-recognise a safety set that was published but never recorded, or rewind the whole database leg, which is the
-only honest answer to a replay killed halfway. What the operation has already established, including whether
-it proved it can decrypt its own catalog, is persisted with the step that established it, so resuming never
-un-proves something that was proved. A killed run also leaves the maintenance lock; the command tells you so
-by name rather than reporting generic contention, and still refuses to break it for you.
+Each step is recorded before its effect and again after it, so a process that stops existing between the two
+leaves exactly one step marked running — and each step declares how to recover from that: finish an
+interrupted rename, recognise a safety set that was published but never recorded, or rewind the whole
+database leg, which is the only honest answer to a replay killed halfway. What the operation has already
+established, including whether it proved it can decrypt its own catalog, is persisted with the step that
+established it, so resuming never un-proves something that was proved. A killed run also leaves the
+maintenance lock; the command tells you so by name rather than reporting generic contention, and still
+refuses to break it for you.
+
+**What that does and does not cover.** The recovery is proved against a process that is *killed* — the suite
+runs real restores in child processes and stops them at named boundaries. A **power loss** is a strictly
+harder failure: this command `fsync`s every file it writes and publishes by rename, but whether those
+reached the platter is the filesystem's and the disk's promise, not this product's, and nothing here has been
+tested against a real power cut. Treat the claim as: *if the journal and the directories survive, this
+command can always tell you where it got to and finish or unwind from there.*
 
 An interrupted run leaves a journal — a crash-consistent, path-bound state machine — and refuses a fresh
 restore until you `--resume` it or `--abandon` it; both take only `--project`, because the journal knows the

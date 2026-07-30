@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
-import { isAbsolute, join, relative as relativePath } from 'node:path';
+import { basename, isAbsolute, join, relative as relativePath } from 'node:path';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
 import { RUNTIME_ROLE_NAME } from './bootstrap.js';
 import {
@@ -271,18 +271,68 @@ export function resolveCompleteRestoreRequest(
     promotionRecords = resolveTarget(projectRoot, request.promotionRecords, 'promotion records directory');
   }
 
-  // ---- 4. EVERY TARGET IS DISTINCT -----------------------------------------------------------------
+  // ---- 4. NO DESTRUCTIVE PATH MAY OVERLAP ANOTHER ---------------------------------------------------
   //
-  // TWO COMPONENTS AT ONE PATH IS A RESTORE THAT DESTROYS ONE OF THEM. The second swap would rename the FIRST
-  // component's freshly restored directory aside and record it as "the previous contents".
-  const targets = [secrets, promotionRecords, sidecarState].filter((target): target is ResolvedTarget => target !== null);
-  for (let i = 0; i < targets.length; i += 1) {
-    for (let j = i + 1; j < targets.length; j += 1) {
-      if (targets[i]!.dir === targets[j]!.dir) {
+  // -----------------------------------------------------------------------------------------------------
+  // EQUALITY WAS NOT THE PROPERTY. CONTAINMENT IS.
+  // -----------------------------------------------------------------------------------------------------
+  //
+  // The first version compared the three target directories for EQUALITY, which catches
+  // `--secrets x --sidecar-state x` and nothing else. Every one of these is destructive and none of them is
+  // equality:
+  //
+  //   * NESTING. `--secrets a --promotion-records a/b`. The secrets swap renames `a` aside WHOLE, taking
+  //     `a/b` with it; the records swap then creates `a/b` fresh under a directory that no longer holds
+  //     what either component was restored from. One `.replaced-` name now covers two components, and
+  //     `--abandon` puts back a tree containing the wrong one.
+  //   * THE BACKUP DESTINATION. `--secrets backups`. The swap renames the destination aside — including
+  //     THE SET BEING RESTORED and the safety set taken minutes earlier — and the very next step reads from
+  //     a path that has just moved. The one directory this command must never touch is the one holding the
+  //     only copies of everything.
+  //   * THIS COMMAND'S OWN NAMESPACES. A target whose leaf collides with the journal, the lock, the staging
+  //     directory or a `.replaced-`/`.restoring-`/`.abandoned-` sibling would have this command's own
+  //     bookkeeping renamed by its own placement.
+  //
+  // ALL OF IT IS REFUSED HERE, before a command is built, before the lock is taken and before a journal
+  // exists — so a project pointed at itself costs nothing.
+  const claims: { readonly what: string; readonly path: string }[] = [
+    ...[secrets, promotionRecords, sidecarState]
+      .filter((target): target is ResolvedTarget => target !== null)
+      .map((target) => ({ what: `the ${target.relative} target`, path: target.dir })),
+  ];
+  for (let i = 0; i < claims.length; i += 1) {
+    for (let j = i + 1; j < claims.length; j += 1) {
+      if (pathsOverlap(claims[i]!.path, claims[j]!.path)) {
         throw new MaintenanceRefused(
-          'two components were pointed at the same directory. Restoring both would put one on top of the other '
-          + 'and record the first one as the previous contents of the second. Nothing was changed.');
+          'two components were pointed at the same directory, or at one inside the other. Restoring both would '
+          + 'rename one component\'s directory aside with the other still inside it, and leave a single kept '
+          + 'copy that an abandon would put back over the wrong one. Nothing was changed.');
       }
+    }
+  }
+  // THE PLACES THIS COMMAND READS FROM AND WRITES ITS OWN STATE INTO. A target may be none of them, and may
+  // neither contain nor sit inside any of them.
+  const reserved: readonly { readonly what: string; readonly path: string }[] = [
+    { what: 'the backup destination', path: destinationDir },
+    { what: 'the backup set being restored', path: setDir },
+    { what: 'this command\'s restore journal', path: journalPath(projectRoot) },
+    { what: 'this project\'s maintenance lock', path: join(projectRoot, MAINTENANCE_LOCK_DIRNAME) },
+  ];
+  for (const claim of claims) {
+    for (const guarded of reserved) {
+      if (pathsOverlap(claim.path, guarded.path)) {
+        throw new MaintenanceRefused(
+          `a component was pointed at ${guarded.what}, or at a directory containing it or inside it. This `
+          + 'command would then rename, replace or destroy the very thing it is reading from or recording '
+          + 'its own progress in. Nothing was changed.');
+      }
+    }
+    // THE NAMESPACES THIS COMMAND CREATES BESIDE A TARGET. A leaf that is one of them would have this
+    // command's own bookkeeping swapped by its own placement.
+    if (RESERVED_LEAF_RE.test(basename(claim.path))) {
+      throw new MaintenanceRefused(
+        'a component was pointed at a directory whose name is one this command creates for its own '
+        + 'bookkeeping — a staging, replaced, restoring or abandoned copy. Nothing was changed.');
     }
   }
 
@@ -297,11 +347,36 @@ export function resolveCompleteRestoreRequest(
     sidecarState,
     safetySetName,
     present,
-    targetState: classifyTarget(projectRoot, targets, probe),
+    targetState: classifyTarget(projectRoot,
+      [secrets, promotionRecords, sidecarState].filter((t): t is ResolvedTarget => t !== null), probe),
     verification,
     manifest,
   };
 }
+
+/**
+ * Do these two paths name the same place, or does either contain the other?
+ *
+ * Separators are normalised and a trailing one dropped, so two spellings of one path answer the same; the
+ * containment test then compares whole SEGMENTS, because `a/bc` is not inside `a/b` however the strings
+ * begin. Both paths have already been resolved, so no `..` survives to be reasoned about here.
+ */
+export function pathsOverlap(a: string, b: string): boolean {
+  const norm = (value: string): string => value.replace(/\\/g, '/').replace(/\/+$/, '');
+  const left = norm(a);
+  const right = norm(b);
+  if (left === right) return true;
+  return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+/**
+ * Leaf names this command creates beside a target for its own bookkeeping.
+ *
+ * A target with one of these names would have the command's own staging, kept or in-flight copy renamed by
+ * its own placement. `assertUsableName` already refuses a leading dot, so this is belt and braces for the
+ * one case where it would matter most — and it is checked rather than assumed.
+ */
+export const RESERVED_LEAF_RE = /^\.(catalog-restore|.*\.(replaced|restoring|abandoned)-)/;
 
 /** Resolve one operator-supplied relative directory into a proved target. */
 function resolveTarget(projectRoot: string, relative: string, what: string): ResolvedTarget {
@@ -991,6 +1066,13 @@ export interface CompleteRestoreReport {
    * matters most was actually established.
    */
   readonly custodyProven: boolean;
+  /**
+   * The private staging tree, when a completed restore could not prove ownership of it and remove it.
+   *
+   * It holds a copy of every secret in the installation. A run that leaves one keeps its journal, so the
+   * project keeps refusing a fresh restore rather than forgetting a second copy of everything exists.
+   */
+  readonly stagingUnresolved: string | null;
   readonly schemaVersion: number;
   readonly network: 'none';
   readonly mediaAccess: 'none';
@@ -1105,6 +1187,12 @@ export function runCompleteRestore(
   let stopped = state.get('stop-and-destroy')?.state === 'complete';
   let failedAt: RestoreStepId | null = null;
   let failure: string | null = null;
+  // BUILT INSIDE THE LOCK, read outside it. The throw below is the only thing that happens after the lock,
+  // and it performs no effect — it reports one.
+  let report: CompleteRestoreReport | null = null;
+  let restoredButUnproven = false;
+  /** The staging tree, when a completed restore could not prove it was ours and remove it. */
+  let stagingUnresolved: string | null = null;
 
   const stagingDir = join(resolved.projectRoot, stagingDirName(suffix));
 
@@ -1135,6 +1223,25 @@ export function runCompleteRestore(
     throw err;
   }
   try {
+    // ---- NOTHING READ BEFORE THE LOCK MAY DRIVE AN EFFECT --------------------------------------------
+    //
+    // THE DEFECT THIS CLOSES. The journal was read once, OUTSIDE the lock, and that snapshot then supplied
+    // the step states, the swap records and the evidence this run acted on. Between that read and the lock
+    // being taken, another process holding the lock could complete the operation, clear the journal, or
+    // unwind it with `--abandon` — and this run would proceed to place components and destroy volumes on
+    // the strength of a description that had stopped being true.
+    //
+    // The journal is therefore RE-READ under the lock and required to be exactly what was read before it.
+    // Anything else means somebody acted in between, and the honest answer is to stop and look again rather
+    // than to reconcile two views of a half-finished restore.
+    const underLock = readRestoreJournal(resolved.projectRoot);
+    if (JSON.stringify(underLock) !== JSON.stringify(existing)) {
+      throw new MaintenanceRefused(
+        'this project\'s restore journal changed between reading it and taking the lock, so another command '
+        + 'acted on this installation in between — it may have finished this restore, cleared it, or begun '
+        + 'unwinding it. Nothing was changed. Look at the project and start again.');
+    }
+
     // THE DIGEST IS RE-PROVED UNDER THE LOCK, over a FRESH verification of the set.
     const reResolved = resolveCompleteRestoreRequest(effective, probe);
     const rePlan = planCompleteRestore(reResolved, { safetySet, acceptDataLoss: plan.acceptDataLoss });
@@ -1145,8 +1252,9 @@ export function runCompleteRestore(
     }
 
     const write = deps.journalWriter ?? writeRestoreJournal;
-    const persist = (): void => {
-      write(resolved.projectRoot, {
+    const currentJournal = (running: RestoreStepId | null = null): RestoreJournal => {
+      void running;
+      return {
         journal: 'catalog-authority.restore',
         version: RESTORE_JOURNAL_VERSION,
         planDigest: plan.digest,
@@ -1166,8 +1274,9 @@ export function runCompleteRestore(
         steps: plan.steps.map((step) => state.get(step.id)!),
         swaps: swaps.map((swap) => ({ ...swap })),
         evidence: { custodyProven, safetySetTaken, safetySetVerified },
-      });
+      };
     };
+    const persist = (): void => { write(resolved.projectRoot, currentJournal()); };
     const mark = (id: RestoreStepId, next: JournalStepState, detail: string | null = null): void => {
       state.set(id, { id, state: next, detail });
       persist();
@@ -1245,78 +1354,99 @@ export function runCompleteRestore(
       // one thing a crash can never produce is a step recorded as done that did not happen.
       mark(step.id, 'complete');
     }
+
+    // process completed, and a step it never touched is still a step that held — so the verdict is read off
+    // the operation's own state rather than off what this loop happened to observe.
+    const finalState = plan.steps.map((step) => state.get(step.id)!);
+    const everyStepHeld = finalState.every((step) => step.state === 'complete');
+    const firstFailure = finalState.find((step) => step.state === 'failed') ?? null;
+    restoredButUnproven = firstFailure !== null
+      && finalState.every((step) => step.state === 'complete' || PROOF_STEP_IDS.includes(step.id));
+
+    if (everyStepHeld) {
+      // ---- THE STAGING TREE HOLDS A COPY OF EVERY SECRET IN THE INSTALLATION -------------------------
+      //
+      // It is removed on success — but ONLY when it can be proved to be this operation's, by the marker it
+      // carries. `removeOwnTreeNoFollow` refuses links and special files and would otherwise remove ANY
+      // plain directory sitting at a name derived from a suffix an operator can read in a journal.
+      //
+      // AND IF IT CANNOT BE REMOVED, THE JOURNAL STAYS. Clearing it while a second copy of every secret sits
+      // in the project would leave that copy named by nothing, in a project that has forgotten a restore
+      // ever ran. The name is reported and this operation stays open instead.
+      const removal = existsSync(stagingDir)
+        ? removeOwnedStaging(stagingDir, currentJournal())
+        : null;
+      if (removal === null) {
+        clearRestoreJournal(resolved.projectRoot);
+        notes.push('The journal has been cleared: this restore completed and this project is not part way '
+          + 'through one.');
+      } else {
+        stagingUnresolved = stagingDirName(suffix);
+        notes.push(`The private staging directory could not be removed: ${removal} It holds a copy of this `
+          + 'set\'s secrets and keystore. THE JOURNAL WAS NOT CLEARED, so this project keeps refusing a fresh '
+          + 'restore until that copy is dealt with — it would otherwise be a second copy of every secret that '
+          + 'nothing in this project names.');
+      }
+    } else {
+      notes.push('A restore journal was left in this project. Continue with --resume, or put the host directories '
+        + 'back with --abandon. This project refuses a fresh restore until one of those has run.');
+      notes.push('A private staging directory holding this set\'s verified components was left in place for the '
+        + 'resume. It holds secret material.');
+    }
+    if (safetySetTaken) {
+      notes.push('The safety set holds the installation as it was before this restore. Destroy it deliberately once '
+        + 'you have confirmed this restore is the one you wanted.');
+    } else {
+      notes.push('NO SAFETY SET WAS TAKEN. The installation this restore replaced is not recoverable from anything '
+        + 'this command produced.');
+    }
+    if (everyStepHeld && !custodyProven) {
+      notes.push('CUSTODY WAS NOT PROVEN. The restore ran and the installation is up, but it did not demonstrate '
+        + 'that it can decrypt its own catalog — see the custody proof\'s own reason. Do not treat this as a '
+        + 'proven restore.');
+    }
+
+    const replaced = swaps.filter((swap) => swap.replaced !== null && !swap.undone)
+      .map((swap) => swap.replaced as string);
+    if (replaced.length > 0) {
+      notes.push('The previous contents of the swapped directories are beside them under the names listed above. '
+        + 'They hold secret material: destroy them the way you would destroy a password, once you are done.');
+    }
+    notes.push('Nothing was fetched and no media path was read.');
+
+    report = {
+      report: COMPLETE_RESTORE_REPORT,
+      version: COMPLETE_RESTORE_VERSION,
+      ok: everyStepHeld && stagingUnresolved === null,
+      state: everyStepHeld ? 'RESTORED' : restoredButUnproven ? 'RESTORED_BUT_UNPROVEN' : 'INCOMPLETE',
+      setName: resolved.setName,
+      custodian: resolved.custodian,
+      targetState: resolved.targetState,
+      planDigest: plan.digest,
+      safetySet: safetySetTaken ? resolved.safetySetName : null,
+      safetySetVerified,
+      steps: results,
+      replaced,
+      custodyProven,
+      stagingUnresolved,
+      schemaVersion: MIGRATION_VERSION,
+      network: 'none',
+      mediaAccess: 'none',
+      notes,
+    };
+
   } finally {
+    // THE LOCK IS RELEASED ONLY WHEN THE OPERATION IS OVER.
+    //
+    // THE DEFECT THIS CLOSES. The verdict, the staging cleanup and the journal clear all happened AFTER
+    // this `finally`. Between the last step committing and the journal being cleared, this project held a
+    // journal describing a COMPLETE operation and NO LOCK — so a resume could start against it, an abandon
+    // could begin unwinding a restore that had just succeeded, and either would race the cleanup still
+    // running here. The window was small, it was real, and every effect inside it is destructive.
     lock.release();
   }
 
-  // WHETHER THIS OPERATION HELD, not whether this PROCESS did. A resumed run skips the steps an earlier
-  // process completed, and a step it never touched is still a step that held — so the verdict is read off
-  // the operation's own state rather than off what this loop happened to observe.
-  const finalState = plan.steps.map((step) => state.get(step.id)!);
-  const everyStepHeld = finalState.every((step) => step.state === 'complete');
-  const firstFailure = finalState.find((step) => step.state === 'failed') ?? null;
-  const restoredButUnproven = firstFailure !== null
-    && finalState.every((step) => step.state === 'complete' || PROOF_STEP_IDS.includes(step.id));
-
-  if (everyStepHeld) {
-    // THE STAGING DIRECTORY HOLDS A COPY OF EVERY SECRET IN THE INSTALLATION. It is removed on success, by
-    // digest-checked ownership, so a completed restore does not leave a second copy of the keystore and the
-    // secret files lying in the project.
-    try {
-      if (existsSync(stagingDir)) removeOwnTreeNoFollow(stagingDir, 'restore staging directory');
-    } catch {
-      notes.push('The private staging directory could not be removed. It holds a copy of this set\'s secrets and '
-        + 'keystore: remove it yourself, the way you would remove a password.');
-    }
-    clearRestoreJournal(resolved.projectRoot);
-    notes.push('The journal has been cleared: this restore completed and this project is not part way through one.');
-  } else {
-    notes.push('A restore journal was left in this project. Continue with --resume, or put the host directories '
-      + 'back with --abandon. This project refuses a fresh restore until one of those has run.');
-    notes.push('A private staging directory holding this set\'s verified components was left in place for the '
-      + 'resume. It holds secret material.');
-  }
-  if (safetySetTaken) {
-    notes.push('The safety set holds the installation as it was before this restore. Destroy it deliberately once '
-      + 'you have confirmed this restore is the one you wanted.');
-  } else {
-    notes.push('NO SAFETY SET WAS TAKEN. The installation this restore replaced is not recoverable from anything '
-      + 'this command produced.');
-  }
-  if (everyStepHeld && !custodyProven) {
-    notes.push('CUSTODY WAS NOT PROVEN. The restore ran and the installation is up, but it did not demonstrate '
-      + 'that it can decrypt its own catalog — see the custody proof\'s own reason. Do not treat this as a '
-      + 'proven restore.');
-  }
-
-  const replaced = swaps.filter((swap) => swap.replaced !== null && !swap.undone)
-    .map((swap) => swap.replaced as string);
-  if (replaced.length > 0) {
-    notes.push('The previous contents of the swapped directories are beside them under the names listed above. '
-      + 'They hold secret material: destroy them the way you would destroy a password, once you are done.');
-  }
-  notes.push('Nothing was fetched and no media path was read.');
-
-  const report: CompleteRestoreReport = {
-    report: COMPLETE_RESTORE_REPORT,
-    version: COMPLETE_RESTORE_VERSION,
-    ok: everyStepHeld,
-    state: everyStepHeld ? 'RESTORED' : restoredButUnproven ? 'RESTORED_BUT_UNPROVEN' : 'INCOMPLETE',
-    setName: resolved.setName,
-    custodian: resolved.custodian,
-    targetState: resolved.targetState,
-    planDigest: plan.digest,
-    safetySet: safetySetTaken ? resolved.safetySetName : null,
-    safetySetVerified,
-    steps: results,
-    replaced,
-    custodyProven,
-    schemaVersion: MIGRATION_VERSION,
-    network: 'none',
-    mediaAccess: 'none',
-    notes,
-  };
-
+  if (report === null) throw new MaintenanceRefused('this restore produced no report, which cannot happen');
   if (failure !== null && stopped && !restoredButUnproven) {
     throw new CompleteRestoreFailed(failure, failedAt, report);
   }
@@ -1421,7 +1551,7 @@ export function recoverInterruptedStep(
           note: `A previous run stopped inside "${id}", which this operation does not place; it was skipped.`,
         };
       }
-      return repairSwap(target, stagingDir, componentForStep(id), suffix, deps, swaps);
+      return repairSwap(target, stagingDir, componentForStep(id), suffix, deps, swaps, resolved.manifest);
     }
 
     case 'rewind': {
@@ -1458,19 +1588,28 @@ function componentForStep(id: RestoreStepId): BackupComponentId {
 }
 
 /**
- * Finish, or undo, a swap that a crash caught between its two renames.
+ * Finish a swap that a crash caught part way through, or say why it cannot be finished.
  *
- * THE FOUR STATES A CRASH CAN LEAVE, and there are only four because the swap is exactly two renames after a
- * copy:
+ * -----------------------------------------------------------------------------------------------------
+ * THE SWAP IS THREE RENAMES NOW, AND THAT CHANGED WHAT A CRASH CAN LEAVE.
+ * -----------------------------------------------------------------------------------------------------
  *
- *   1. NOTHING MOVED — no `.replaced-`, no `.restoring-`. The step had not got that far. Run it again.
- *   2. THE COPY EXISTS AND NOTHING ELSE MOVED — a `.restoring-` beside an intact target. The copy is removed
- *      and the step runs again from the top; it is a copy of the staged component and holds nothing unique.
- *   3. THE TARGET IS MOVED ASIDE AND THE NEW ONE IS NOT IN PLACE — a `.replaced-` and a `.restoring-`, and no
- *      target. THIS IS THE DANGEROUS ONE: the installation has no secrets directory at all. The second
- *      rename is completed, which is what the interrupted step was about to do.
- *   4. THE SWAP LANDED AND WAS NOT RECORDED — a `.replaced-` and a target holding the staged bytes. The step
- *      is complete; the only thing lost was the record, and the record is reconstructed.
+ * The verified staged component is MOVED to `.restoring-`, the target is moved to `.replaced-`, and the
+ * in-flight copy is moved into place. Every intermediate state is distinguishable, and — critically — the
+ * `.restoring-` directory is now THE ONLY COPY of that component outside the backup set. The previous
+ * version DELETED it during recovery, which was safe while it was a second copy and would be destruction
+ * now.
+ *
+ *   1. NOTHING MOVED — the staged component is still in staging. Run the step again.
+ *   2. IN FLIGHT, TARGET INTACT — `.restoring-` exists and the target is untouched. Finish: move the target
+ *      aside and the in-flight copy into place.
+ *   3. IN FLIGHT, TARGET ALREADY ASIDE — `.restoring-` exists and the target is MISSING. The installation
+ *      has no directory at that name at all. Finish the last rename.
+ *   4. LANDED, UNRECORDED — the target holds the component and `.restoring-` is gone. Complete; the record
+ *      is reconstructed so `--abandon` can still undo it.
+ *
+ * WHAT IS ABOUT TO BE INSTALLED IS RE-VERIFIED FIRST. An in-flight copy has been sitting at a predictable
+ * name since another process died, for an unbounded time.
  */
 function repairSwap(
   target: ResolvedTarget,
@@ -1479,6 +1618,7 @@ function repairSwap(
   suffix: string,
   deps: CompleteRestoreDeps,
   swaps: readonly JournalSwap[],
+  manifest: BackupManifest,
 ): StepRecovery {
   const parent = join(target.dir, '..');
   const restoring = join(parent, swapStagingName(target.name, suffix));
@@ -1486,94 +1626,113 @@ function repairSwap(
   const replaced = join(parent, replacedName);
   const rename = deps.rename ?? renameSync;
   const already = swaps.some((swap) => swap.component === id);
+  const record = (moved: boolean): JournalSwap => ({
+    component: id, target: target.relative, name: target.name,
+    replaced: moved ? replacedName : null, undone: false,
+  });
 
-  if (!existsSync(replaced)) {
-    if (existsSync(restoring)) {
-      // State 2. The copy is this command's own and is reproducible from the staged component.
-      try {
-        removeOwnTreeNoFollow(restoring, 'interrupted swap copy');
-      } catch {
-        return {
-          kind: 'refuse', reset: [],
-          detail: `a previous run left a partial copy beside the ${target.name} directory and it could not be `
-            + 'removed. Look at it before running again. Nothing was changed.',
-          note: 'A partial swap copy could not be removed.',
-        };
-      }
+  // ---- 1 and 4: nothing is in flight --------------------------------------------------------------
+  if (!existsSync(restoring)) {
+    if (existsSync(replaced) && existsSync(target.dir)) {
+      return {
+        kind: 'complete',
+        reset: [],
+        ...(already ? {} : { swap: record(true) }),
+        note: `A previous run stopped after placing the ${target.name} directory but before recording it. `
+          + 'Every rename had landed, so the placement is complete and the previous contents are beside it.',
+      };
     }
-    // State 1.
-    return {
-      kind: 'retry', reset: [],
-      note: `A previous run stopped before the ${target.name} directory was moved, so nothing had changed and `
-        + 'the placement was performed normally.',
-    };
-  }
-
-  if (existsSync(target.dir)) {
-    // State 4: both halves landed. Nothing to do but say so, and make sure the record survives.
-    if (existsSync(restoring)) {
+    if (existsSync(replaced)) {
       return {
         kind: 'refuse', reset: [],
-        detail: `a previous run left BOTH a moved-aside and a staged ${target.name} directory beside an `
-          + 'existing one, which this command cannot have produced. Look at all three before running again. '
-          + 'Nothing was changed.',
+        detail: `a previous run left the ${target.name} directory missing, with its previous contents beside `
+          + 'it and nothing in flight to put in its place. This command cannot tell what became of the '
+          + 'replacement. Nothing was changed — the previous contents are under the dot-prefixed name.',
         note: 'An unrecognisable swap state was found.',
       };
     }
     return {
-      kind: 'complete',
-      reset: [],
-      // THE RECORD IS RECONSTRUCTED, because `--abandon` walks it. A swap that landed and was never
-      // journaled would otherwise be a directory nothing could put back.
-      ...(already ? {} : { swap: { component: id, target: target.relative, name: target.name, replaced: replacedName, undone: false } }),
-      note: `A previous run stopped after placing the ${target.name} directory but before recording it. Both `
-        + 'renames had landed, so the placement is complete and the previous contents are still beside it.',
+      kind: 'retry', reset: [],
+      note: `A previous run stopped before the ${target.name} directory was moved, so nothing had changed `
+        + 'and the placement was performed normally.',
     };
   }
 
-  // State 3 — THE ONE THAT MATTERS. The installation currently has no directory at that name.
-  if (!existsSync(restoring)) {
-    // The target is gone and the new contents never got copied: put the previous ones back, so the
-    // installation is at least where it started, and let the step run again.
+  // ---- THE IN-FLIGHT COPY IS THE ONLY ONE, so it is proved to be the verified component before it lands.
+  const problem = verifyStagedTree(restoring, id, manifest);
+  if (problem !== null) {
+    return {
+      kind: 'refuse', reset: [],
+      detail: `a previous run left an in-flight ${target.name} directory that is NOT the component this `
+        + `set's manifest declares: ${problem}. It changed after it was verified, and this command will `
+        + 'not install it. Nothing was changed.',
+      note: 'An in-flight component no longer matched the manifest.',
+    };
+  }
+
+  // ---- 2: in flight, target intact ----------------------------------------------------------------
+  let moved = false;
+  if (existsSync(target.dir)) {
+    if (existsSync(replaced)) {
+      return {
+        kind: 'refuse', reset: [],
+        detail: `a previous run left an in-flight, a kept-aside AND a current ${target.name} directory, `
+          + 'which this command cannot have produced. Look at all three before running again. Nothing was '
+          + 'changed.',
+        note: 'An unrecognisable swap state was found.',
+      };
+    }
     try {
-      rename(replaced, target.dir);
+      rename(target.dir, replaced);
     } catch {
       return {
         kind: 'refuse', reset: [],
-        detail: `a previous run moved the ${target.name} directory aside and this command could not put it `
-          + 'back. The previous contents are beside it under a dot-prefixed name. Nothing was changed.',
-        note: 'An interrupted swap could not be undone.',
+        detail: `a previous run left an in-flight ${target.name} directory and the current one could not be `
+          + 'moved aside. Nothing was changed.',
+        note: 'An interrupted swap could not be finished.',
       };
     }
-    return {
-      kind: 'retry', reset: [],
-      note: `A previous run stopped after moving the ${target.name} directory aside and before the replacement `
-        + 'was ready. The previous contents were put back and the placement was performed again.',
-    };
+    moved = true;
+  } else {
+    moved = existsSync(replaced);
   }
+
+  // ---- 3: the last rename -------------------------------------------------------------------------
   try {
     rename(restoring, target.dir);
   } catch {
     return {
       kind: 'refuse', reset: [],
-      detail: `a previous run left the ${target.name} directory missing, with its previous contents and its `
-        + 'replacement both beside it, and neither could be moved into place. Nothing was changed — the data '
-        + 'is all there under the dot-prefixed names.',
+      detail: `a previous run left the ${target.name} directory missing and its replacement could not be `
+        + 'moved into place. Nothing was changed — the data is all there under the dot-prefixed names.',
       note: 'An interrupted swap could not be finished.',
     };
   }
   return {
     kind: 'complete',
     reset: [],
-    // THE RECORD IS RECONSTRUCTED, because `--abandon` walks it. A swap that landed and was never
-    // journaled would otherwise be a directory nothing could put back.
-    ...(already ? {} : { swap: { component: id, target: target.relative, name: target.name, replaced: replacedName, undone: false } }),
-    note: `A previous run was killed between the two renames of the ${target.name} directory, leaving it `
-      + `MISSING. The interrupted rename was finished${already ? '' : ' and recorded'}, so the installation `
-      + 'holds the restored contents and the previous ones are beside them.',
+    ...(already ? {} : { swap: record(moved) }),
+    note: `A previous run was killed part way through placing the ${target.name} directory, leaving it `
+      + 'MISSING or half-moved. The interrupted renames were finished against the RE-VERIFIED component, '
+      + 'so the installation holds the restored contents and the previous ones are beside them.',
   };
 }
 
+/** Digest one directory and compare it to what the backup manifest declares for that component. */
+function verifyStagedTree(path: string, id: BackupComponentId, manifest: BackupManifest): string | null {
+  const declared = manifest.components.find((component) => component.id === id);
+  if (declared === undefined || !declared.present) return `the manifest declares no ${id} component`;
+  try {
+    const actual = digestTreeAt(path, `in-flight ${id} component`);
+    if (actual.digest !== declared.digest || actual.entries !== declared.entries
+      || actual.bytes !== declared.bytes) {
+      return 'its digest, entry count or size is not the one the manifest recorded';
+    }
+  } catch (err) {
+    return err instanceof MaintenanceRefused ? err.message : 'it could not be examined';
+  }
+  return null;
+}
 interface StepHooks {
   readonly onSafetySet: (verified: boolean) => void;
   readonly onSwap: (swap: JournalSwap) => void;
@@ -1636,7 +1795,7 @@ function performStep(
       return null;
     }
     case 'stage-components':
-      return stageComponents(resolved, stagingDir);
+      return stageComponents(resolved, stagingDir, plan, suffix);
     case 'stop-and-destroy': {
       hooks.onStopped();
       const outcome = runOne(step.commands[0]!);
@@ -1644,15 +1803,19 @@ function performStep(
     }
     case 'place-secrets':
       return swapComponent(resolved.secrets, stagingDir, 'secrets', suffix, 'secrets directory', hooks.onSwap,
-        deps.rename ?? renameSync);
+        deps.rename ?? renameSync, resolved.manifest);
     case 'place-promotion-records':
       return swapComponent(resolved.promotionRecords!, stagingDir, 'promotion-records', suffix,
-        'promotion records directory', hooks.onSwap, deps.rename ?? renameSync);
+        'promotion records directory', hooks.onSwap, deps.rename ?? renameSync, resolved.manifest);
     case 'place-sidecar-keystore':
       return swapComponent(resolved.sidecarState!, stagingDir, 'keystore', suffix,
-        'sidecar state directory', hooks.onSwap, deps.rename ?? renameSync);
+        'sidecar state directory', hooks.onSwap, deps.rename ?? renameSync, resolved.manifest);
     case 'replay-database': {
-      // THE STAGED, RE-VERIFIED DUMP — never the set's own file. What is replayed is what was verified.
+      // THE STAGED DUMP, RE-VERIFIED THE INSTANT BEFORE IT IS REPLAYED. Staging happened before the
+      // teardown, and on a resume it happened in another process, hours ago. A dump that changed in between
+      // is a dump nothing has approved, and this is the last moment anything can say so.
+      const stale = verifyStagedComponent(stagingDir, 'database', resolved.manifest);
+      if (stale !== null) return stale;
       const dump = join(stagingDir, COMPONENT_ARTIFACT_NAMES.database);
       const outcome = runGuardedFromFile(deps.fileRunner, deps.ledger, materialise(step.commands[0]!), dump);
       return outcome.status === 0 ? null : 'the verified dump did not replay into the fresh database';
@@ -1718,6 +1881,17 @@ function performStep(
         ? null
         : 'the custody proof reported success and the command did not succeed, which do not agree';
     }
+    case 'place-inline-keystore': {
+      // SAME RULE AS THE REPLAY: the container is about to read this tree, so it is proved to be the
+      // verified one first.
+      const stale = verifyStagedComponent(stagingDir, 'keystore', resolved.manifest);
+      if (stale !== null) return stale;
+      for (const command of step.commands) {
+        const outcome = runOne(command);
+        if (outcome.status !== 0) return failureSentence(id);
+      }
+      return null;
+    }
     default: {
       for (const command of step.commands) {
         const outcome = runOne(command);
@@ -1764,11 +1938,204 @@ export function failureSentence(id: RestoreStepId): string {
  * From here on, nothing reads the set again. The swaps copy from the staging directory and the replay binds
  * its descriptor to the staged dump.
  */
-export function stageComponents(resolved: ResolvedRestore, stagingDir: string): string | null {
+export const STAGING_MARKER_NAME = 'catalog-restore-staging.json';
+export const STAGING_MARKER_VERSION = 1;
+
+/**
+ * What a staging directory says it is.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * A PLAIN TREE AT THE EXPECTED NAME IS NOT OWNERSHIP.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The staging directory holds a copy of every secret in the installation, and its contents are what get
+ * placed and replayed. The first version proved ownership of it with `removeOwnTreeNoFollow`, which refuses
+ * links and special files — and would happily remove, or stage into, ANY plain directory sitting at the
+ * expected name. The name is derived from a suffix recorded in a journal an operator can read.
+ *
+ * So the directory carries a marker binding it to THIS operation: the journal version it was written under,
+ * the plan digest, the suffix, and what each staged component is supposed to be. Anything at that name
+ * without a marker this build wrote, for this operation, is refused rather than trusted, reused or removed.
+ */
+export interface StagingMarker {
+  readonly marker: 'catalog-authority.restore-staging';
+  readonly version: typeof STAGING_MARKER_VERSION;
+  readonly journalVersion: typeof RESTORE_JOURNAL_VERSION;
+  readonly planDigest: string;
+  readonly suffix: string;
+  readonly components: readonly {
+    readonly id: BackupComponentId;
+    readonly artifact: string;
+    readonly digest: string;
+    readonly entries: number;
+    readonly bytes: number;
+  }[];
+}
+
+export function stagingMarkerPath(stagingDir: string): string {
+  return join(stagingDir, STAGING_MARKER_NAME);
+}
+
+/**
+ * Read the marker of a staging directory and prove it is this operation's.
+ *
+ * Answers the marker, or a closed sentence saying why this directory is not ours. It opens the marker the
+ * way every other file in this family is opened — without following a link, bounded — because a link at that
+ * name is exactly how something would try to look like our staging directory.
+ */
+export function readStagingMarker(
+  stagingDir: string,
+  planDigest: string,
+  suffix: string,
+): { readonly marker: StagingMarker } | { readonly refusal: string } {
+  const path = stagingMarkerPath(stagingDir);
+  if (lstatSync(path, { throwIfNoEntry: false }) === undefined) {
+    return { refusal: 'there is a directory at this run\'s staging name that carries no ownership marker, so '
+      + 'it is not one this command created. It was left alone.' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileNoFollow(path, 'staging marker', 1024 * 1024).bytes.toString('utf8'));
+  } catch {
+    return { refusal: 'the ownership marker of this run\'s staging directory is not readable, so the directory '
+      + 'cannot be proved to be this command\'s. It was left alone.' };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { refusal: 'the ownership marker of this run\'s staging directory is not one this build wrote.' };
+  }
+  const doc = parsed as Partial<StagingMarker>;
+  if (doc.marker !== 'catalog-authority.restore-staging' || doc.version !== STAGING_MARKER_VERSION
+    || doc.journalVersion !== RESTORE_JOURNAL_VERSION) {
+    return { refusal: 'the ownership marker of this run\'s staging directory is not one this build wrote.' };
+  }
+  if (doc.planDigest !== planDigest || doc.suffix !== suffix) {
+    // A MARKER FOR ANOTHER OPERATION. Removing it would destroy another restore's staged secrets.
+    return { refusal: 'the directory at this run\'s staging name belongs to a DIFFERENT restore operation — '
+      + 'its marker names another plan. It was left alone.' };
+  }
+  if (!Array.isArray(doc.components)) {
+    return { refusal: 'the ownership marker of this run\'s staging directory declares no components.' };
+  }
+  for (const entry of doc.components) {
+    if (entry === null || typeof entry !== 'object') {
+      return { refusal: 'the ownership marker of this run\'s staging directory is malformed.' };
+    }
+    const component = entry as Record<string, unknown>;
+    if (typeof component.id !== 'string' || !(BACKUP_COMPONENT_IDS as readonly string[]).includes(component.id)
+      || typeof component.digest !== 'string' || typeof component.entries !== 'number'
+      || typeof component.bytes !== 'number' || typeof component.artifact !== 'string') {
+      return { refusal: 'the ownership marker of this run\'s staging directory is malformed.' };
+    }
+  }
+  return { marker: doc as StagingMarker };
+}
+
+/**
+ * Prove one staged component is still exactly what the backup manifest declared.
+ *
+ * CALLED IMMEDIATELY BEFORE THE COMPONENT IS CONSUMED, every time, on every invocation. Staging happens once
+ * and the components are consumed later — across steps, and after a resume, across processes and hours. A
+ * verification that ran only at staging time would leave every window after it uncovered, and the artifact
+ * sitting in those windows is the one that becomes the installation.
+ */
+export function verifyStagedComponent(
+  stagingDir: string,
+  id: BackupComponentId,
+  manifest: BackupManifest,
+): string | null {
+  const declared = manifest.components.find((component) => component.id === id);
+  if (declared === undefined || !declared.present) {
+    return `the manifest of this set declares no ${id} component, so there is nothing verified to place`;
+  }
+  const path = join(stagingDir, COMPONENT_ARTIFACT_NAMES[id]);
+  if (!existsSync(path)) return `the staged ${id} component is not there any more`;
+  try {
+    if (id === 'database') {
+      const staged = digestFileNoFollow(path, `staged ${id} component`);
+      if (staged.digest !== declared.digest || staged.size !== declared.bytes) {
+        return `the staged ${id} component is no longer the one this set's manifest declares. It changed after `
+          + 'it was staged and verified, and nothing this command holds is safe to place';
+      }
+      return null;
+    }
+    const staged = digestTreeAt(path, `staged ${id} component`);
+    if (staged.digest !== declared.digest || staged.entries !== declared.entries
+      || staged.bytes !== declared.bytes) {
+      return `the staged ${id} component is no longer the one this set's manifest declares. It changed after `
+        + 'it was staged and verified, and nothing this command holds is safe to place';
+    }
+  } catch (err) {
+    return err instanceof MaintenanceRefused
+      ? err.message
+      : `the staged ${id} component could not be examined`;
+  }
+  return null;
+}
+
+/**
+ * Prove the whole staging directory is ours and unchanged, for the components still expected in it.
+ *
+ * A component whose placement step has COMPLETED has been consumed and is legitimately gone; everything else
+ * must still be exactly what the manifest declares.
+ */
+export function verifyOwnedStaging(
+  stagingDir: string,
+  plan: RestorePlan,
+  suffix: string,
+  manifest: BackupManifest,
+  expected: readonly BackupComponentId[],
+): string | null {
+  const owned = readStagingMarker(stagingDir, plan.digest, suffix);
+  if ('refusal' in owned) return owned.refusal;
+  for (const id of expected) {
+    const problem = verifyStagedComponent(stagingDir, id, manifest);
+    if (problem !== null) return problem;
+  }
+  return null;
+}
+
+/**
+ * Remove a staging tree, and ONLY one proved to be this operation's.
+ *
+ * The tree holds a copy of every secret in the installation, so leaving it is a real cost — and removing a
+ * directory that is not ours is a worse one. A refusal answers a sentence; a removal answers `null`.
+ */
+export function removeOwnedStaging(stagingDir: string, journal: RestoreJournal): string | null {
+  const owned = readStagingMarker(stagingDir, journal.planDigest, journal.suffix);
+  if ('refusal' in owned) return owned.refusal;
+  try {
+    removeOwnTreeNoFollow(stagingDir, 'restore staging directory');
+  } catch (err) {
+    return err instanceof MaintenanceRefused ? err.message : 'it could not be removed.';
+  }
+  return null;
+}
+
+/**
+ * Copy every component out of the set and RE-VERIFY the copy against the manifest.
+ *
+ * `verifyBackupSet` runs once, at resolution. Every placement afterwards would otherwise re-open the set BY
+ * PATH, and a set that changed in between — an operator tidying up, a second process, a scheduled sync —
+ * would supply bytes no verification had ever approved. Each component is staged once through the same
+ * descriptor-safe reads every other copy in this family uses, and the STAGED object is re-digested against
+ * the manifest's own recorded digest, entry count and byte count, BEFORE the teardown.
+ *
+ * The directory it produces carries an OWNERSHIP MARKER binding it to this operation, so nothing later
+ * trusts, reuses or removes a plain tree merely because it sits at the expected name.
+ */
+export function stageComponents(
+  resolved: ResolvedRestore,
+  stagingDir: string,
+  plan: RestorePlan,
+  suffix: string,
+): string | null {
   if (existsSync(stagingDir)) {
     // A RESUME REACHES THIS ONLY IF THE STEP DID NOT COMPLETE, so a directory here is a partial stage from a
-    // killed run. It is removed and rebuilt rather than trusted: a half-staged component that verified would
-    // be the exact defect this step exists to prevent.
+    // killed run — IF it is ours. One that is not ours is refused rather than removed: the name is derived
+    // from a suffix an operator can read in a journal, and destroying somebody else's directory because it
+    // sat at a predictable path is exactly the mistake this marker exists to prevent.
+    const owned = readStagingMarker(stagingDir, plan.digest, suffix);
+    if ('refusal' in owned) return `${owned.refusal} Nothing was destroyed.`;
     try {
       removeOwnTreeNoFollow(stagingDir, 'restore staging directory');
     } catch {
@@ -1778,6 +2145,7 @@ export function stageComponents(resolved: ResolvedRestore, stagingDir: string): 
   }
   createPrivateDirectory(stagingDir, 'restore staging directory');
 
+  const staged: StagingMarker['components'][number][] = [];
   for (const id of BACKUP_COMPONENT_IDS) {
     const declared = resolved.manifest.components.find((component) => component.id === id);
     if (declared === undefined || !declared.present) continue;
@@ -1785,39 +2153,46 @@ export function stageComponents(resolved: ResolvedRestore, stagingDir: string): 
     const source = join(resolved.setDir, artifact);
     const destination = join(stagingDir, artifact);
 
-    if (id === 'database') {
-      // STREAMED THROUGH A DESCRIPTOR, unbounded in file size and bounded in memory, and refusing to follow
-      // a link at the open.
-      let copied: number;
-      try {
-        copied = copyFileNoFollow(source, destination, `${id} component`);
-      } catch (err) {
-        return err instanceof MaintenanceRefused
-          ? `${err.message} Nothing was destroyed.`
-          : `the ${id} component could not be staged. Nothing was destroyed.`;
-      }
-      const staged = digestFileNoFollow(destination, `staged ${id} component`);
-      if (staged.digest !== declared.digest || copied !== declared.bytes || staged.size !== declared.bytes) {
-        return `the ${id} component of this set is not the one the verification approved: what was copied out `
-          + 'just now does not match the digest and size the manifest recorded. The set changed after it was '
-          + 'verified. Nothing was destroyed.';
-      }
-      continue;
-    }
-
     try {
-      copyTree(source, destination, `${id} component`);
+      if (id === 'database') {
+        // STREAMED THROUGH A DESCRIPTOR, unbounded in file size and bounded in memory, refusing to follow a
+        // link at the open.
+        copyFileNoFollow(source, destination, `${id} component`);
+      } else {
+        copyTree(source, destination, `${id} component`);
+      }
     } catch (err) {
       return err instanceof MaintenanceRefused
         ? `${err.message} Nothing was destroyed.`
         : `the ${id} component could not be staged. Nothing was destroyed.`;
     }
-    const staged = digestTreeAt(destination, `staged ${id} component`);
-    if (staged.digest !== declared.digest || staged.entries !== declared.entries || staged.bytes !== declared.bytes) {
-      return `the ${id} component of this set is not the one the verification approved: what was copied out just `
-        + 'now does not match the digest, entry count and size the manifest recorded. The set changed after it '
-        + 'was verified. Nothing was destroyed.';
+    const problem = verifyStagedComponent(stagingDir, id, resolved.manifest);
+    if (problem !== null) {
+      return `the ${id} component of this set is not the one the verification approved: what was copied out `
+        + 'just now does not match what the manifest recorded. The set changed after it was verified. '
+        + 'Nothing was destroyed.';
     }
+    staged.push({
+      id, artifact, digest: declared.digest, entries: declared.entries, bytes: declared.bytes,
+    });
+  }
+
+  // THE MARKER IS WRITTEN LAST, so a directory carrying one is a directory whose every component was staged
+  // and verified. A kill part way through leaves an unmarked tree, which the next run refuses to trust and
+  // — being unmarked — also refuses to remove, naming it instead.
+  const marker: StagingMarker = {
+    marker: 'catalog-authority.restore-staging',
+    version: STAGING_MARKER_VERSION,
+    journalVersion: RESTORE_JOURNAL_VERSION,
+    planDigest: plan.digest,
+    suffix,
+    components: staged,
+  };
+  try {
+    writePrivateFile(stagingMarkerPath(stagingDir), `${JSON.stringify(marker, null, 2)}\n`, 'staging marker');
+  } catch {
+    return 'the staging directory\'s ownership marker could not be written, so nothing later could prove the '
+      + 'staged components are this command\'s. Nothing was destroyed.';
   }
   return null;
 }
@@ -1845,11 +2220,16 @@ function swapComponent(
   what: string,
   onSwap: (swap: JournalSwap) => void,
   rename: Renamer,
+  manifest: BackupManifest,
 ): string | null {
   const source = join(stagingDir, COMPONENT_ARTIFACT_NAMES[id]);
   if (!existsSync(source)) {
     return `the staged ${what} is not there, so this step has nothing verified to place. Re-run the staging step.`;
   }
+  // VERIFIED THE INSTANT BEFORE IT IS CONSUMED. Between staging and here lies a teardown, several commands
+  // and — on a resume — another process and an unbounded amount of time.
+  const stale = verifyStagedComponent(stagingDir, id, manifest);
+  if (stale !== null) return stale;
   const expected = digestTreeAt(source, `staged ${what}`);
 
   if (existsSync(target.dir)) {
@@ -1864,11 +2244,20 @@ function swapComponent(
   const replacedName = swapReplacedName(target.name, suffix);
   const replaced = join(parent, replacedName);
   if (existsSync(staging) || existsSync(replaced)) {
-    return `a previous attempt left a staging or replaced ${what} beside this one. Look at them before running `
-      + 'again: this command will not write into a name it did not just create.';
+    return `a previous attempt left an in-flight or kept-aside ${what} beside this one. Look at them before `
+      + 'running again: this command will not write into a name it did not just create.';
   }
 
-  copyTree(source, staging, what);
+  // ---- THE VERIFIED ARTIFACT IS MOVED, NOT COPIED AGAIN ---------------------------------------------
+  //
+  // THE DEFECT THIS CLOSES. This used to `copyTree` the staged component to the `.restoring-` name and
+  // install THAT — a second copy, made after the verification and never checked itself. Anything that
+  // touched it in the window between the copy and the rename would be installed unverified, and a partial
+  // copy interrupted by a kill would leave a plausible-looking tree at a name the recovery trusts.
+  //
+  // A RENAME MOVES THE EXACT OBJECT THAT WAS JUST VERIFIED. There is no second copy to diverge, nothing to
+  // re-check, and the staging directory legitimately no longer holds a component whose placement completed.
+  rename(source, staging);
   let moved = false;
   if (existsSync(target.dir)) {
     try {
@@ -1900,102 +2289,277 @@ export interface AbandonReport {
   readonly report: 'phase-303-restore-abandon';
   readonly ok: boolean;
   readonly setName: string;
+  /** Targets whose ORIGINAL state — present with its old contents, or absent — has been restored. */
   readonly restored: readonly string[];
   /** Swaps this run could not put back. The journal is NOT cleared while any of these remain. */
   readonly unresolved: readonly string[];
+  /**
+   * Every copy this abandon set aside and kept, by name.
+   *
+   * THE DEFECT THIS CLOSES. When the original target was ABSENT, the first version had nothing to rename
+   * back, marked the swap undone and left the RESTORED copy sitting at the target — so an abandon reported
+   * success having restored nothing, and left a directory of the set's secrets at a path the installation
+   * had never had. Absence is a state like any other and putting it back is part of the job; the restored
+   * copy is moved to a deterministic `.abandoned-` name and that name is reported, because it holds secrets
+   * and nothing else would ever mention it.
+   */
+  readonly retained: readonly string[];
   readonly journalCleared: boolean;
+  /** The staging directory, when it could not be proved ours and removed. Named because it holds secrets. */
+  readonly stagingUnresolved: string | null;
   readonly notes: readonly string[];
 }
 
 /**
- * Put the swapped host directories back, and clear the journal only if every one of them is back.
+ * Put the host state back the way this operation found it, and clear the journal only when all of it is.
  *
  * -----------------------------------------------------------------------------------------------------
- * IT TAKES THE PROJECT ROOT AND NOTHING ELSE, AND THAT IS THE CORRECTION.
+ * IT TAKES THE PROJECT ROOT AND NOTHING ELSE.
  * -----------------------------------------------------------------------------------------------------
  *
- * The first cut re-derived the targets from the CLI's `--secrets` / `--promotion-records` / `--sidecar-state`
- * flags. Those can differ from the ones the interrupted run actually swapped — by a typo, by a different
- * habit, or by a second operator — and the consequence was silent: an abandon would find no `.replaced-`
- * directory at the path it was told about, report `ok` with nothing put back, and CLEAR THE JOURNAL, leaving
- * the real swapped directories orphaned and the project accepting a fresh restore over them.
+ * An earlier version re-derived the targets from the CLI's own path flags, which can differ from the ones
+ * the interrupted run actually swapped; it would then find no `.replaced-` directory, report success with
+ * nothing put back, and CLEAR THE JOURNAL — orphaning the real directories. The journal carries the
+ * operation's own targets and they are what this walks.
  *
- * The journal now carries the operation's own targets, and they are what this walks. It also refuses to
- * clear itself while any recorded swap is still unresolved: a partial unwind is a state that must stay
- * visible, not one that gets forgotten because the command returned.
+ * EVERY SWAP IS CROSS-VALIDATED BEFORE IT IS ACTED ON. A journal is a file in a directory an operator owns,
+ * and this function renames directories on the strength of it. So each recorded swap must agree with the
+ * rest of the journal in every way it can: the component must be one this operation's TOPOLOGY places on the
+ * host, its placement step must be one of this operation's steps, the target must be the relative path the
+ * journal's own request records for that component, the leaf must be that path's last segment, and both the
+ * `.replaced-` and `.abandoned-` names must be the ones this suffix derives. A swap that fails any of them
+ * cannot redirect this command at another directory in the project.
+ *
+ * IT RUNS UNDER THE PROJECT'S MAINTENANCE LOCK. Abandon renames directories, removes a staging tree and
+ * clears the journal; doing any of that while a resume is running against the same journal is the same race
+ * the restore itself takes the lock to prevent.
  */
-export function abandonRestore(projectRootRequested: string): AbandonReport {
+export function abandonRestore(projectRootRequested: string, deps: AbandonDeps = {}): AbandonReport {
   const projectRoot = resolveMaintenanceRoot(projectRootRequested, 'project root');
-  const journal = readRestoreJournal(projectRoot);
-  if (journal === null) {
+  const preLock = readRestoreJournal(projectRoot);
+  if (preLock === null) {
     throw new MaintenanceRefused('there is no restore to abandon in this project: no journal is here.');
   }
 
+  let lock;
+  try {
+    lock = acquireMaintenanceLock(projectRoot);
+  } catch {
+    throw new MaintenanceRefused(
+      'this project holds BOTH an interrupted restore journal and a maintenance lock. If nothing is running '
+      + 'now, the run that left that journal died while holding the lock — it never reached the code that '
+      + `releases it. Make sure no maintenance command is running, remove the ${MAINTENANCE_LOCK_DIRNAME} `
+      + 'directory in the project root, and abandon again. This command will not remove it for you. Nothing '
+      + 'was changed.');
+  }
+
+  try {
+    // NOTHING READ BEFORE THE LOCK MAY DRIVE AN EFFECT. Same rule as the restore's own: a journal that
+    // changed in between means somebody acted, and acting on the older view would undo their work.
+    const journal = readRestoreJournal(projectRoot);
+    if (JSON.stringify(journal) !== JSON.stringify(preLock)) {
+      throw new MaintenanceRefused(
+        'this project\'s restore journal changed between reading it and taking the lock, so another command '
+        + 'acted on this installation in between. Nothing was changed.');
+    }
+    if (journal === null) {
+      throw new MaintenanceRefused('there is no restore to abandon in this project: no journal is here.');
+    }
+    return abandonUnderLock(projectRoot, journal, deps);
+  } finally {
+    lock.release();
+  }
+}
+
+export interface AbandonDeps {
+  readonly rename?: Renamer;
+  readonly journalWriter?: JournalWriter;
+}
+
+function abandonUnderLock(projectRoot: string, journal: RestoreJournal, deps: AbandonDeps): AbandonReport {
+  const rename = deps.rename ?? renameSync;
+  const write = deps.journalWriter ?? writeRestoreJournal;
   const restored: string[] = [];
   const unresolved: string[] = [];
+  const retained: string[] = [];
   const notes: string[] = [];
   const swaps = journal.swaps.map((swap) => ({ ...swap }));
 
   for (const swap of swaps) {
-    if (swap.undone) continue;
-    if (swap.replaced === null) {
-      // NOTHING WAS MOVED ASIDE — the target did not exist before this operation. There is nothing to put
-      // back, and the restored copy is left where it is: removing it would destroy the only copy of a
-      // component this command was asked to place.
-      swap.undone = true;
+    if (swap.undone) {
+      // ALREADY PUT BACK BY AN EARLIER ATTEMPT, and still named, because the copy it set aside holds
+      // secrets whether or not this invocation is the one that moved it.
+      if (swap.replaced === null) retained.push(abandonedName(swap, journal.suffix));
       continue;
     }
-    // THE TARGET COMES FROM THE JOURNAL, resolved against this project root and proved the same way every
-    // other path is.
+
+    // ---- THE SWAP MUST AGREE WITH THE REST OF THE JOURNAL BEFORE IT MOVES ANYTHING -------------------
+    const complaint = swapDisagreement(swap, journal);
+    if (complaint !== null) {
+      unresolved.push(swap.name);
+      notes.push(`A recorded swap of the ${swap.component} component does not agree with this operation: `
+        + `${complaint}. It was left alone.`);
+      continue;
+    }
+
     let dir: string;
     try {
       dir = resolveInsideRoot(projectRoot, swap.target, `${swap.component} target`);
     } catch {
-      unresolved.push(swap.replaced);
+      unresolved.push(swap.name);
       continue;
     }
     const parent = join(dir, '..');
-    const replaced = join(parent, swap.replaced);
-    if (!existsSync(replaced)) { unresolved.push(swap.replaced); continue; }
-    if (lstatSync(replaced).isSymbolicLink() || !statSync(replaced).isDirectory()) {
-      unresolved.push(swap.replaced);
+    const abandoned = join(parent, abandonedName(swap, journal.suffix));
+    const replacedPath = swap.replaced === null ? null : join(parent, swap.replaced);
+
+    // ---- 0. DID AN EARLIER ATTEMPT ALREADY FINISH THIS ONE? -------------------------------------------
+    //
+    // A CRASH BETWEEN THE LAST RENAME AND THE JOURNAL WRITE leaves a swap that is fully unwound and recorded
+    // as not. Re-running it blindly would move the RESTORED-TO-ORIGINAL directory aside a second time and
+    // fail on an abandoned name that already exists — turning a finished unwind into an unresolved one.
+    const finishedAlready = replacedPath === null
+      ? !existsSync(dir) && existsSync(abandoned)
+      : existsSync(dir) && existsSync(abandoned) && !existsSync(replacedPath);
+    if (finishedAlready) {
+      swap.undone = true;
+      restored.push(swap.name);
+      retained.push(abandonedName(swap, journal.suffix));
       continue;
     }
-    // THE RESTORED COPY IS MOVED ASIDE, NOT DELETED. Same rule as the swap: this command does not destroy the
-    // only copy of anything, and an operator who abandons and then changes their mind still holds both.
+
+    // ---- 1. MOVE THE RESTORED COPY ASIDE -------------------------------------------------------------
+    //
+    // NOT DELETED. This command does not destroy the only copy of anything, and an operator who abandons and
+    // then changes their mind still holds both. A crash between this rename and the next is recoverable
+    // because the state it leaves is distinguishable: the target is absent and the abandoned name exists.
     if (existsSync(dir)) {
-      const aside = join(parent, `.${swap.name}.abandoned-${journal.suffix}`);
-      if (existsSync(aside)) { unresolved.push(swap.replaced); continue; }
-      try { renameSync(dir, aside); } catch { unresolved.push(swap.replaced); continue; }
+      if (existsSync(abandoned)) {
+        unresolved.push(swap.name);
+        notes.push(`Both a restored and an abandoned ${swap.name} directory are here, which this command `
+          + 'cannot have produced. It was left alone.');
+        continue;
+      }
+      try {
+        rename(dir, abandoned);
+      } catch {
+        unresolved.push(swap.name);
+        continue;
+      }
     }
-    try { renameSync(replaced, dir); } catch { unresolved.push(swap.replaced); continue; }
+    if (existsSync(abandoned)) retained.push(abandonedName(swap, journal.suffix));
+
+    // ---- 2. PUT THE ORIGINAL STATE BACK ---------------------------------------------------------------
+    if (swap.replaced === null) {
+      // THE TARGET DID NOT EXIST BEFORE THIS OPERATION, so putting it back means leaving it ABSENT. The
+      // first version marked this undone and left the restored copy in place, which restored nothing.
+      if (existsSync(dir)) { unresolved.push(swap.name); continue; }
+      swap.undone = true;
+      restored.push(swap.name);
+      continue;
+    }
+    const replaced = join(parent, swap.replaced);
+    if (!existsSync(replaced)) {
+      // A CRASH AFTER `replaced` WAS RENAMED BACK looks exactly like this, and is told apart by the target:
+      // if the target is there and the abandoned copy is too, the previous attempt finished this swap.
+      if (existsSync(dir) && existsSync(abandoned)) { swap.undone = true; restored.push(swap.name); continue; }
+      unresolved.push(swap.name);
+      continue;
+    }
+    if (lstatSync(replaced).isSymbolicLink() || !statSync(replaced).isDirectory()) {
+      unresolved.push(swap.name);
+      notes.push(`What this restore moved aside for ${swap.name} is no longer a plain directory. It was left alone.`);
+      continue;
+    }
+    try {
+      rename(replaced, dir);
+    } catch {
+      unresolved.push(swap.name);
+      continue;
+    }
     swap.undone = true;
     restored.push(swap.name);
   }
 
-  const journalCleared = unresolved.length === 0;
+  // ---- 3. THE STAGING TREE, WHICH HOLDS A COPY OF EVERY SECRET IN THE INSTALLATION --------------------
+  const stagingDir = join(projectRoot, stagingDirName(journal.suffix));
+  let stagingUnresolved: string | null = null;
+  if (existsSync(stagingDir)) {
+    const removal = removeOwnedStaging(stagingDir, journal);
+    if (removal !== null) {
+      stagingUnresolved = stagingDirName(journal.suffix);
+      notes.push(`The staging directory could not be removed: ${removal} It holds a copy of this set's `
+        + 'secrets and keystore.');
+    }
+  }
+
+  // ---- 4. THE JOURNAL GOES ONLY WHEN EVERYTHING IS BACK ----------------------------------------------
+  const journalCleared = unresolved.length === 0 && stagingUnresolved === null;
   if (journalCleared) {
     clearRestoreJournal(projectRoot);
     notes.push('The journal has been cleared, so this project accepts a restore again.');
   } else {
-    // THE JOURNAL STAYS, AND IT RECORDS WHAT IS STILL OUT OF PLACE. A project with an unresolved swap must
-    // keep refusing a fresh restore: running one would take a "safety set" of a half-unwound installation.
-    writeRestoreJournal(projectRoot, { ...journal, swaps });
-    notes.push('THE JOURNAL WAS NOT CLEARED: at least one directory this restore moved aside could not be put '
-      + 'back. This project keeps refusing a fresh restore until it is. Look at the names above.');
+    // A PARTIAL UNWIND MUST STAY VISIBLE. A project with an unresolved swap or an unremoved staging tree
+    // keeps refusing a fresh restore: running one would take a "safety set" of a half-unwound installation.
+    write(projectRoot, { ...journal, swaps });
+    notes.push('THE JOURNAL WAS NOT CLEARED: something this restore moved, or the staging copy of your '
+      + 'secrets, is still out of place. This project keeps refusing a fresh restore until it is not.');
   }
-  notes.push('The host directories this restore swapped are back where they were. THE DATABASE AND, IN INLINE '
-    + 'CUSTODY, THE KEYSTORE WERE DESTROYED BY THE TEARDOWN AND ARE NOT COMING BACK FROM A RENAME. Restore the '
-    + 'safety set to get them.');
+  if (retained.length > 0) {
+    notes.push('The copies this abandon set aside are listed above. They hold secret material: destroy them '
+      + 'the way you would destroy a password, once you are done.');
+  }
+  notes.push('The host directories this restore swapped are back the way it found them. THE DATABASE AND, IN '
+    + 'INLINE CUSTODY, THE KEYSTORE WERE DESTROYED BY THE TEARDOWN AND ARE NOT COMING BACK FROM A RENAME. '
+    + 'Restore the safety set to get them.');
   return {
     report: 'phase-303-restore-abandon',
     ok: journalCleared,
     setName: journal.setName,
     restored,
     unresolved,
+    retained,
     journalCleared,
+    stagingUnresolved,
     notes,
   };
+}
+
+/** The deterministic name the restored copy is set aside under. Derived, never taken from the journal. */
+export function abandonedName(swap: JournalSwap, suffix: string): string {
+  return `.${swap.name}.abandoned-${suffix}`;
+}
+
+/**
+ * Why this recorded swap cannot be acted on, or `null` when it agrees with the rest of the journal.
+ *
+ * A CORRUPT SWAP MUST NOT REDIRECT AN ABANDON AT ANOTHER DIRECTORY. Every field is checked against something
+ * else the journal already says, so a swap can only ever name the place this operation actually placed that
+ * component.
+ */
+export function swapDisagreement(swap: JournalSwap, journal: RestoreJournal): string | null {
+  const expectedTarget = swap.component === 'secrets' ? journal.request.secrets
+    : swap.component === 'promotion-records' ? journal.request.promotionRecords
+      : swap.component === 'keystore' ? journal.request.sidecarState
+        : null;
+  if (expectedTarget === null) {
+    return `this operation places no ${swap.component} component on the host`;
+  }
+  if (swap.target !== expectedTarget) return 'its target is not the one this operation was planned with';
+  if (swap.component === 'keystore' && journal.custodian !== 'sidecar') {
+    return 'a keystore is only placed on the host in sidecar custody, and this operation is not';
+  }
+  const step = swap.component === 'secrets' ? 'place-secrets'
+    : swap.component === 'promotion-records' ? 'place-promotion-records' : 'place-sidecar-keystore';
+  if (!journal.steps.some((entry) => entry.id === step)) {
+    return `this operation has no ${step} step`;
+  }
+  const leaf = expectedTarget.split(/[\\/]/).filter((part) => part !== '' && part !== '.').pop();
+  if (leaf !== swap.name) return 'its leaf name is not the last segment of its own target';
+  if (swap.replaced !== null && swap.replaced !== swapReplacedName(swap.name, journal.suffix)) {
+    return 'its kept-aside name is not one this run\'s suffix derives';
+  }
+  return null;
 }
 
 // -----------------------------------------------------------------------------------------------------------

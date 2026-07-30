@@ -115,6 +115,16 @@ occupancy: containers mean the project has been up and therefore has state, whil
 nothing at all, because `docker compose down` removes containers and keeps volumes. A probe that cannot
 answer counts as occupied — "I could not see it" is not "it is not there".
 
+### No destructive path may overlap another
+
+Equality was not the property. `--secrets a --promotion-records a/b` has the first swap rename `a` aside
+**whole**, taking `a/b` with it, so one kept copy covers two components and an abandon puts back the wrong
+one. `--secrets backups` renames the backup destination aside — **with the set being restored and the safety
+set inside it** — and the next step reads from a path that has just moved. Equality, containment in either
+direction, the destination, the set, the journal, the lock and this command's own `.replaced-`/`.restoring-`/
+`.abandoned-` namespaces are all refused, before a command is built, before the lock is taken and before a
+journal exists.
+
 ## Phase 299 — the plan, and the digest that has to come back
 
 `--plan` verifies the set, classifies the target, resolves every path, builds the ordered step list, and
@@ -177,6 +187,24 @@ The order is the guarantee, and it is the rehearsal's proven rollback leg pointe
    holding a handle on that directory — and the restore would place bytes no verification had ever
    approved, silently. Staging happens **before the teardown**, so a set that changed under this command
    costs nothing; and from here on nothing reads the set again.
+
+   **The staged tree is OWNED, and continuously re-verified.** It holds a copy of every secret in the
+   installation, its name is derived from a suffix an operator can read in a journal, and its contents are
+   what get placed and replayed. Proving ownership with a no-follow tree walk was not proof: that refuses
+   links and special files and would happily reuse — or remove — any plain directory sitting at the expected
+   name. It now carries a marker binding it to the journal version, the plan digest, the suffix and each
+   component's expected digest, entry count and byte count, written **last** so a tree carrying one is a tree
+   whose every component was staged and verified. A tree without a marker of ours is refused, never reused
+   and never removed. And every component is re-verified against the backup manifest **immediately before
+   each consumption** — before a placement, before the replay, before the container reads the keystore —
+   because staging happens once and the artifact is consumed later, across steps, across processes and across
+   hours.
+
+   **Placement moves the verified artifact rather than copying it again.** The swap used to `copyTree` the
+   staged component to its in-flight name and install *that* — a second copy, made after the verification and
+   never checked. A rename moves the exact object that was just verified, so there is no second copy to
+   diverge, and the in-flight directory is the only copy of that component outside the set (which is why the
+   recovery finishes it rather than deleting it).
 3. **`compose down -v`** — the stack stops and its volumes are destroyed. This is the irreversible step, and
    nothing before it has changed the installation. The database and, in inline custody, the keystore are
    gone; the secrets, the promotion records and the backups are host directories and are not.
@@ -299,7 +327,7 @@ outside those shapes was not written by a run of this program, and is refused ra
 ### The state a crash leaves
 
 The journal records a step as `running` **before** its effect and `complete` **after** it. A process that
-stops existing — a kill, a power loss, an OOM — therefore leaves exactly one step `running`, with its effect
+stops existing therefore leaves exactly one step `running`, with its effect
 landed, half-landed or not landed. The first cut had one answer for all of them, "run it again", which is
 right for most steps and catastrophic for three. Each step now DECLARES its recovery policy:
 
@@ -309,6 +337,14 @@ right for most steps and catastrophic for three. Each step now DECLARES its reco
 | `confirm-or-retry` | the safety set | `ops:complete-backup` **refuses an existing set name**, so a blind retry after a crash between publish and record would fail at the first step forever — and the operator's only way out would be to delete the very set protecting them. The recovery looks first: a set that is there **and verifies** is this operation's |
 | `repair-swap` | the three placements | A crash between the two renames leaves the target **missing**, the previous contents under `.replaced-` and the new ones under `.restoring-`. Re-running would refuse on a staging name that already exists, leaving the installation with no secrets directory and a command that will not move. The interrupted rename is finished instead |
 | `rewind` | the database replay | A `psql` replay killed halfway leaves a **partial schema**; nothing repairs that in place and replaying over it produces conflicts. The step names where to rewind to, and the whole database leg runs again |
+
+**What "crash" means here, exactly.** Every recovery below is proved against a process that is *killed*: the
+suite runs real restores in child processes and stops them at named boundaries with `process.exit`. That
+covers a kill, a crash of the runtime, and an operator's Ctrl-C. It does **not** cover a power loss, which is
+a strictly harder failure: this command `fsync`s what it writes and publishes by rename, but whether those
+bytes reached the platter is the filesystem's and the disk's promise, and no test here has cut power to a
+machine. The honest claim is that **if the journal and the directories survive, this command can always say
+where it got to, and finish or unwind from there.**
 
 A swap that landed and was never recorded has its journal entry **reconstructed**, because `--abandon` walks
 that record and a directory nothing names is a directory nothing can put back. A half-published safety set —
@@ -320,6 +356,25 @@ it. The lock is still never broken automatically — breaking one means guessing
 alive, and a restore is the worst command to be wrong about that in — but the refusal now names *both* facts
 together and tells the operator exactly what to do, instead of reporting generic contention beside an
 interrupted restore it does not mention.
+
+### The whole transaction is one locked window
+
+The verdict, the staging cleanup and the journal clear used to happen **after** the lock was released. In
+that window this project held a journal describing a *complete* operation and no lock — so a resume could
+start against it, an abandon could begin unwinding a restore that had just succeeded, and either would race
+the cleanup still running. Finalization is inside the lock now, the journal is **re-read under the lock** and
+required to be exactly what was read before it, and `--abandon` takes the same lock for every rename, the
+staging removal and the journal write.
+
+### The acknowledgement of data loss is no longer circular
+
+`--accept-data-loss` takes the digest of the plan it acknowledges — the one *without* a safety set, which is
+a different operation with a different digest. Seeing that digest therefore meant running
+`--plan --accept-data-loss <something>`, with nothing correct to put there: the value was ignored, which
+teaches an operator that their acknowledgement does not matter on the one command where it matters most. The
+choice and the acknowledgement are now two different things — `--no-safety-set` is a value-free switch that
+changes the plan and makes `--plan` print its digest loudly, and `--accept-data-loss <digest>` is execution
+only and is **refused at plan time rather than ignored**.
 
 ### Evidence outlives the process that produced it
 
@@ -347,6 +402,16 @@ is worth more than a stale one.
   directories orphaned and the project accepting a fresh restore over them. It now walks the journal's own
   swaps, and it **refuses to clear the journal while any recorded swap is still unresolved** — a partial
   unwind is a state that must stay visible.
+
+**Absence is a state, and putting it back is part of the job.** Where the original target did not exist, an
+abandon that marked the swap undone and left the *restored* copy at that path restored nothing — and left a
+directory of the set's secrets where the installation had never had one. The restored copy is moved to a
+deterministic `.abandoned-` name, the target is left **absent**, and that name is reported, because it holds
+secrets and nothing else would ever mention it. Every recorded swap is cross-validated against the rest of
+the journal first — the request, the topology, the placement step, the leaf and the names the suffix derives
+— so a corrupt record cannot redirect an abandon at another directory in the project. The journal is not
+cleared until every original target state is back, every retained copy is named, and the staging tree has
+been proved ours and removed.
 
 Abandon restores host state only, and says so plainly: the database and, in inline custody, the keystore were
 destroyed by `down -v`, and a rename cannot bring either back. The **safety set** is what does, through this

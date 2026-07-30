@@ -207,7 +207,7 @@ export const PROOF_STEP_IDS: readonly RestoreStepId[] = Object.freeze([
  * -----------------------------------------------------------------------------------------------------
  *
  * The journal records a step as running BEFORE its effect and complete AFTER it. A process that dies in
- * between — a kill, a power loss, an OOM — leaves exactly one step running, and the effect either landed,
+ * between — a kill, a runtime crash, an interrupt — leaves exactly one step running, and the effect either landed,
  * landed partly, or did not land. What a resume may safely do about that depends entirely on which step it
  * is, and the first cut of this tranche had one answer for all of them ("run it again"), which is right for
  * most and catastrophic for two.

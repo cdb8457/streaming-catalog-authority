@@ -30,10 +30,13 @@ import {
   planCompleteRestore,
   prepareRuntimeRoleSql,
   readRestoreJournal,
+  writeRestoreJournal,
   renderCompleteRestore,
   renderRestorePlan,
   resolveCompleteRestoreRequest,
   runCompleteRestore,
+  type CompleteRestoreReport,
+  type RestoreJournal,
   type CompleteRestoreRequest,
   type OccupancyProbe,
 } from '../src/ops/complete-restore.js';
@@ -1490,7 +1493,7 @@ test('--abandon does NOT clear the journal while a swap it recorded is still out
   const report = abandonRestore(root);
   assertEq(report.ok, false, 'the abandon did not succeed');
   assertEq(report.journalCleared, false, 'AND THE JOURNAL WAS NOT CLEARED');
-  assert(report.unresolved.includes(secretsSwap.replaced!), 'it names what is still out of place');
+  assert(report.unresolved.includes('secrets'), 'it names the target that is still out of place');
   assert(report.restored.includes('promotion-records'), 'while still putting back the one it could');
   assert(existsSync(join(root, RESTORE_JOURNAL_NAME)), 'and the journal is still there');
   // SO THE PROJECT STILL REFUSES A FRESH RESTORE.
@@ -1766,9 +1769,10 @@ test('a flag that a mode would ignore is refused, not accepted', () => {
   assertEq(resume.mode, 'resume', 'a resume parses');
   assertEq(resume.request, null, 'and takes its operation from the journal');
   const run = parseCompleteRestoreArgs(['--project', 'p', '--set', 's', '--custodian', 'inline',
-    '--confirm', 'd', '--accept-data-loss', 'd']);
+    '--confirm', 'd', '--no-safety-set', '--accept-data-loss', 'd']);
   assertEq(run.mode, 'run', 'a run parses');
-  assertEq(run.acceptDataLoss, 'd', 'with its acknowledgement, which IS relevant here');
+  assertEq(run.noSafetySet, true, 'with the choice it is acknowledging');
+  assertEq(run.acceptDataLoss, 'd', 'and the acknowledgement, which IS relevant here');
 });
 
 test('the usage text and the abandon behaviour agree about what abandon needs', () => {
@@ -1832,7 +1836,7 @@ function crashAtKeepingLock(config: Record<string, unknown>): void {
   }
 }
 const CRASH_CHILD = fileURLToPath(new URL('./helpers/restore-crash-child.mts', import.meta.url));
-test('CRASH between the two renames of a swap: the target is MISSING, and a resume finishes the rename', () => {
+test('CRASH with the target moved aside and the replacement not yet in place: a resume finishes it', () => {
   // THE STATE THIS PRODUCES IS THE WORST ONE IN THE WHOLE COMMAND. Between the two renames the installation
   // has NO secrets directory at all: the previous contents are under `.replaced-`, the new ones under
   // `.restoring-`, and the name everything reads is empty. The first cut's resume would have found no target,
@@ -1843,7 +1847,7 @@ test('CRASH between the two renames of a swap: the target is MISSING, and a resu
   writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
   const { plan } = planFor(request(root, 'set-1'));
   crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
-    crashAt: 'rename:1' });
+    crashAt: 'rename:2' });
 
   // THE ON-DISK STATE A CRASH THERE REALLY LEAVES.
   assertEq(existsSync(join(root, 'secrets')), false, 'the secrets directory is GONE — this is the dangerous state');
@@ -1867,7 +1871,7 @@ test('CRASH between the two renames of a swap: the target is MISSING, and a resu
     'and the previous contents are still named, so an abandon could still put them back');
 });
 
-test('CRASH after BOTH renames but before the record: the swap is recognised, not performed twice', () => {
+test('CRASH after every rename but before the record: the swap is recognised, not performed twice', () => {
   // A crash here leaves a correct installation and a journal that does not know it. Re-running the swap
   // would rename the RESTORED directory aside and record it as "the previous contents" — losing the real
   // previous contents behind a second `.replaced-` name and corrupting what `--abandon` would put back.
@@ -1877,7 +1881,7 @@ test('CRASH after BOTH renames but before the record: the swap is recognised, no
   const { plan } = planFor(request(root, 'set-1'));
 
   crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
-    crashAt: 'rename:2' });
+    crashAt: 'rename:3' });
 
   assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), SECRET_VALUE, 'the swap did land');
   const before = readdirSync(root).filter((entry) => entry.includes('.replaced-'));
@@ -2016,6 +2020,530 @@ test('a half-published safety set is refused rather than trusted or replaced', (
   // AND THE JOURNAL STILL SAYS RUNNING, so the next attempt sees the same state rather than one the refusal invented.
   assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'safety-set')!.state, 'running',
     'the refusal changed nothing, including the journal');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// The boundaries the previous commit named and did not cover
+// ---------------------------------------------------------------------------------------------------------
+
+test('CRASH after staging is verified, before its completion record: the tree is unmarked and refused, not reused', () => {
+  // A KILL INSIDE `stage-components` LEAVES A PLAUSIBLE-LOOKING TREE at a name derived from a suffix an
+  // operator can read in a journal. The marker is written LAST, so a tree without one is a tree whose
+  // components were never all staged and verified — and it is neither trusted nor removed, because a plain
+  // directory at an expected name is not proof of anything.
+  const root = makeProject('crash-mid-staging');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'complete:stage-components' });
+
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+  assert(existsSync(staging), 'the staged tree is on disk');
+  assert(existsSync(join(staging, 'catalog-restore-staging.json')), 'and it carries its ownership marker');
+  assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'stage-components')!.state, 'running',
+    'and the journal says the process was inside that step');
+
+  // THE RESUME RE-STAGES, because the step never completed — and it may, because the tree is provably ours.
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(existsSync(staging), false, 'and the staging tree is gone once the restore completed');
+});
+
+test('a staging tree that is NOT ours is refused, never reused and never removed', () => {
+  // THE NAME IS PREDICTABLE. `removeOwnTreeNoFollow` refuses links and special files and would happily have
+  // removed — or staged into — any plain directory sitting here.
+  const root = makeProject('foreign-staging');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+  mkdirSync(staging, { recursive: true });
+  writeFileSync(join(staging, 'somebody-elses-file'), 'not ours\n', 'utf8');
+
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const staged = report.steps.find((step) => step.id === 'stage-components')!;
+  assertEq(staged.outcome, 'failed', 'staging refused to use it');
+  assert(staged.detail!.includes('no ownership marker'), 'because it carries no marker of ours');
+  assert(existsSync(join(staging, 'somebody-elses-file')), 'AND IT WAS NOT REMOVED');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+  rmSync(staging, { recursive: true, force: true });
+});
+
+test('a staged component modified after the interruption is never placed or replayed', () => {
+  // THE ARTIFACT SITS AT A PREDICTABLE NAME BETWEEN PROCESSES, for an unbounded time. It is re-verified
+  // against the backup manifest immediately before every single consumption, not once when it was staged.
+  const root = makeProject('staged-mutation');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'complete:stop-and-destroy' });
+
+  // Something rewrites the staged dump while the project sits interrupted.
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+  writeFileSync(join(staging, COMPONENT_ARTIFACT_NAMES.database), `${fakeDumpText(MIGRATION_VERSION)}-- tampered\n`, 'utf8');
+
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION, startDestroyed: true,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  let report: CompleteRestoreReport;
+  try {
+    report = runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'resume', confirm: plan.digest });
+  } catch (err) {
+    assert(err instanceof CompleteRestoreFailed, 'the volumes were already destroyed, so this is a step failure');
+    report = (err as CompleteRestoreFailed).report;
+  }
+  const replay = report.steps.find((step) => step.id === 'replay-database')!;
+  assertEq(replay.outcome, 'failed', 'the replay refused the changed dump');
+  assert(replay.detail!.includes('changed after it was staged'), 'naming what happened');
+  assertEq(world.replays().length, 0, 'AND THE TAMPERED BYTES NEVER REACHED A DATABASE');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('CRASH after the last step is recorded, before the journal is cleared: the completed run is not re-run', () => {
+  // THE WINDOW THIS PINS was open because the lock was released BEFORE the verdict, the staging cleanup and
+  // the journal clear. In it, this project held a journal describing a COMPLETE operation and no lock — so a
+  // resume could start against it and an abandon could begin unwinding a restore that had just succeeded.
+  const root = makeProject('crash-before-clear');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'after:prove-history' });
+
+  const journal = readRestoreJournal(root)!;
+  for (const step of journal.steps) {
+    assertEq(step.state, 'complete', `${step.id} is recorded complete`);
+  }
+  assertEq(journal.evidence.custodyProven, true, 'and the evidence survived with it');
+
+  // A RESUME OVER A COMPLETED OPERATION PERFORMS NOTHING and finishes the bookkeeping the crash interrupted.
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION, startDestroyed: true,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, 'the resume reports the operation as complete');
+  assertEq(report.custodyProven, true, 'with the custody the earlier process proved');
+  for (const step of report.steps) {
+    assertEq(step.outcome, 'skipped', `${step.id} was not performed again`);
+  }
+  assertEq(world.teardowns(), 0, 'NOTHING WAS DESTROYED A SECOND TIME');
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and the journal is cleared now');
+  assertEq(existsSync(join(root, '.catalog-restore.staged-aaaaaaaaaaaa')), false, 'as is the staging copy');
+});
+
+test('the finalization happens under the lock, so nothing can act on a completed operation in between', () => {
+  // The property, asserted against the source rather than inferred: the verdict, the staging cleanup and the
+  // journal clear are all INSIDE the try whose `finally` releases the lock.
+  const source = readRepo('src/ops/complete-restore.ts');
+  const body = source.slice(source.indexOf('lock = acquireMaintenanceLock(resolved.projectRoot);'));
+  const release = body.indexOf('    lock.release();');
+  for (const marker of ['clearRestoreJournal(resolved.projectRoot)', 'removeOwnedStaging(stagingDir',
+    'const everyStepHeld =', 'report = {']) {
+    const at = body.indexOf(marker);
+    assert(at > 0 && at < release, `${marker} happens before the lock is released`);
+  }
+  // AND ABANDON TAKES THE SAME LOCK.
+  const abandon = source.slice(source.indexOf('export function abandonRestore'));
+  assert(abandon.slice(0, 2000).includes('acquireMaintenanceLock(projectRoot)'),
+    'abandon serialises every effect it performs under the project lock');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Abandon: absence is a state, and both halves are crashable
+// ---------------------------------------------------------------------------------------------------------
+
+test('abandon restores ABSENCE when the target did not exist before the restore', () => {
+  // THE DEFECT THIS PINS. With `replaced: null` the first version marked the swap undone and left the
+  // RESTORED copy at the target — so abandon reported success having restored nothing, and left a directory
+  // of the set's secrets at a path the installation had never had.
+  const root = join(WORK, 'abandon-absence');
+  mkdirSync(join(root, 'secrets'), { recursive: true });
+  const source = makeProject('abandon-absence-source');
+  const setDir = takeSet(source, 'set-1');
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  copyDirectory(setDir, join(root, 'backups', 'set-1'));
+  // The records directory does not exist here at all: the restore will create it.
+  assertEq(existsSync(join(root, 'promotion-records')), false, 'the target is absent before the restore');
+
+  const req = request(root, 'set-1');
+  const { plan } = planFor(req, false);
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(req, depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: plan.digest });
+  assert(existsSync(join(root, 'promotion-records')), 'the restore created it');
+  const journal = readRestoreJournal(root)!;
+  assertEq(journal.swaps.find((swap) => swap.component === 'promotion-records')!.replaced, null,
+    'and recorded that there had been nothing to move aside');
+
+  const report = abandonRestore(root);
+  assertEq(existsSync(join(root, 'promotion-records')), false,
+    'ABSENCE IS RESTORED — the directory the installation never had is gone again');
+  assert(report.restored.includes('promotion-records'), 'and the abandon says it restored it');
+  const kept = report.retained.find((name) => name.includes('promotion-records'));
+  assert(kept !== undefined, 'the restored copy is RETAINED under a named .abandoned- copy');
+  assert(existsSync(join(root, kept!)), 'which is really on disk');
+  assert(report.notes.some((note) => note.includes('hold secret material')), 'and is named as holding secrets');
+  assertEq(report.journalCleared, true, 'and the journal is cleared, because every target state is back');
+});
+
+test('CRASH inside abandon after the restored copy is moved aside: retrying finishes it', () => {
+  // THE WINDOW WHERE THE TARGET DOES NOT EXIST AT ALL. A retry must finish the unwind rather than see an
+  // absent target and call it done.
+  const root = makeProject('abandon-crash-first');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'rename:1', operation: 'abandon' });
+  assertEq(existsSync(join(root, 'secrets')), false, 'the secrets directory is GONE mid-abandon');
+  assert(existsSync(join(root, '.secrets.abandoned-aaaaaaaaaaaa')), 'the restored copy is set aside');
+  assert(existsSync(join(root, '.secrets.replaced-aaaaaaaaaaaa')), 'and the original is still waiting');
+  assert(existsSync(join(root, RESTORE_JOURNAL_NAME)), 'and the journal is still there');
+
+  const report = abandonRestore(root);
+  assertEq(report.ok, true, 'the retry finished the abandon');
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), 'a-later-value\n',
+    'THE ORIGINAL CONTENTS ARE BACK');
+  assert(report.retained.some((name) => name.includes('secrets')), 'and the restored copy is named');
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and the journal is cleared');
+});
+
+test('CRASH inside abandon after the original is put back: retrying clears without undoing it again', () => {
+  const root = makeProject('abandon-crash-second');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  writeFileSync(join(root, 'promotion-records', 'record-later.json'), '{"later":1}\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  // Die after the SECOND rename: the first target is fully unwound and nothing has recorded it.
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'rename:2', operation: 'abandon' });
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), 'a-later-value\n',
+    'the first target is already back');
+  assert(existsSync(join(root, RESTORE_JOURNAL_NAME)), 'and the journal still records the operation');
+
+  const report = abandonRestore(root);
+  assertEq(report.ok, true, 'the retry completed');
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), 'a-later-value\n',
+    'the finished target was NOT undone a second time');
+  assert(existsSync(join(root, 'promotion-records', 'record-later.json')), 'and the other one was finished');
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and the journal is cleared');
+});
+
+test('a corrupt swap record cannot redirect abandon at another directory in the project', () => {
+  // ABANDON RENAMES DIRECTORIES ON THE STRENGTH OF THE JOURNAL. Every recorded swap is cross-validated
+  // against the rest of it — the request, the topology, the placement step, the leaf, and the names this
+  // run's suffix derives — so a swap can only ever name the place this operation actually placed.
+  const root = makeProject('abandon-corrupt-swap');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  mkdirSync(join(root, 'innocent'), { recursive: true });
+  writeFileSync(join(root, 'innocent', 'keep-me'), 'untouched\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  const journal = readRestoreJournal(root)!;
+  // The names stay internally consistent, so the journal READER accepts it: what catches this is the
+  // cross-validation of the swap against the operation's own request.
+  const redirected = journal.swaps.map((swap) => (swap.component === 'secrets'
+    ? { ...swap, target: 'innocent', name: 'innocent', replaced: '.innocent.replaced-aaaaaaaaaaaa' } : swap));
+  writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify({ ...journal, swaps: redirected })}\n`, 'utf8');
+
+  const report = abandonRestore(root);
+  assertEq(report.ok, false, 'the abandon did not succeed');
+  assert(report.unresolved.includes('innocent'), 'it names the swap it refused to act on');
+  assertEq(readFileSync(join(root, 'innocent', 'keep-me'), 'utf8'), 'untouched\n',
+    'AND THE DIRECTORY IT WAS POINTED AT IS UNTOUCHED');
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), true, 'and the journal is not cleared');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('abandon does not clear while the staging copy of every secret is still unresolved', () => {
+  const root = makeProject('abandon-staging');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  // The marker is destroyed, so the tree can no longer be proved ours — and must not be removed.
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+  rmSync(join(staging, 'catalog-restore-staging.json'));
+  const report = abandonRestore(root);
+  assertEq(report.ok, false, 'the abandon did not complete');
+  assertEq(report.stagingUnresolved, '.catalog-restore.staged-aaaaaaaaaaaa', 'it names the staging tree');
+  assert(existsSync(staging), 'AND DID NOT REMOVE A TREE IT COULD NOT PROVE WAS ITS OWN');
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), true, 'and kept the journal');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// Overlapping destructive paths
+// ---------------------------------------------------------------------------------------------------------
+
+test('overlapping component targets are refused before a command, a lock or a journal exists', () => {
+  // EQUALITY WAS NOT THE PROPERTY. A nested target has one component's directory renamed aside WHOLE with
+  // the other still inside it, leaving a single kept copy an abandon would put back over the wrong one.
+  const root = makeProject('overlap');
+  takeSet(root, 'set-1');
+  mkdirSync(join(root, 'nest', 'inner'), { recursive: true });
+  writeFileSync(join(root, 'nest', 'x'), 'x\n', 'utf8');
+
+  const cases: Array<[Partial<CompleteRestoreRequest>, string]> = [
+    [{ secrets: 'nest', promotionRecords: 'nest' }, 'equal targets'],
+    [{ secrets: 'nest', promotionRecords: 'nest/inner' }, 'a records target INSIDE the secrets target'],
+    [{ secrets: 'nest/inner', promotionRecords: 'nest' }, 'a secrets target inside the records target'],
+  ];
+  for (const [over, why] of cases) {
+    refuses(() => resolveCompleteRestoreRequest(request(root, 'set-1', over)),
+      'at the same directory, or at one inside the other', why);
+  }
+  // AND NOTHING WAS CREATED BY THE ATTEMPT.
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'no journal');
+  assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'no lock');
+});
+
+test('a target that is, contains, or sits inside the backups destination or the set is refused', () => {
+  // `--secrets backups` renames the destination aside WITH THE SET BEING RESTORED AND THE SAFETY SET IN IT,
+  // and the very next step reads from a path that has just moved.
+  for (const sidecar of [false, true]) {
+    const label = sidecar ? 'sidecar' : 'inline';
+    const root = makeProject(`overlap-dest-${label}`, { sidecar });
+    takeSet(root, 'set-1', { sidecar });
+    const over = sidecar ? { custodian: 'sidecar' as const, sidecarState: 'sidecar-state' } : {};
+    for (const [patch, why] of [
+      [{ secrets: 'backups' }, `${label}: the destination itself`],
+      [{ secrets: 'backups/set-1' }, `${label}: the set being restored`],
+      [{ promotionRecords: 'backups' }, `${label}: the destination as a records target`],
+    ] as Array<[Partial<CompleteRestoreRequest>, string]>) {
+      refuses(() => resolveCompleteRestoreRequest(request(root, 'set-1', { ...over, ...patch })),
+        'containing it or inside it', why);
+    }
+    if (sidecar) {
+      refuses(() => resolveCompleteRestoreRequest(request(root, 'set-1', { ...over, sidecarState: 'backups' })),
+        'containing it or inside it', 'sidecar: the destination as a keystore target');
+    }
+    assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, `${label}: no journal was created`);
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The data-loss CLI, de-circularised
+// ---------------------------------------------------------------------------------------------------------
+
+test('planning without a safety set is a value-free CHOICE, and its digest is what a run acknowledges', () => {
+  // THE CIRCULARITY THIS PINS. `--accept-data-loss` takes the digest of the no-safety plan, and seeing that
+  // digest meant running `--plan --accept-data-loss <something>` — with nothing correct to put there. The
+  // value was ignored, which teaches an operator that their acknowledgement does not matter.
+  const root = makeProject('cli-no-safety');
+  takeSet(root, 'set-1');
+
+  // 1. A PLACEHOLDER IS REFUSED, NOT IGNORED.
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--set', 's', '--custodian', 'inline',
+    '--plan', '--accept-data-loss', 'placeholder']),
+  'will not take a digest it would ignore', 'a placeholder at plan time is refused');
+
+  // 2. THE SAFE PLAN AND THE NO-SAFETY PLAN ARE DIFFERENT OPERATIONS WITH DIFFERENT DIGESTS.
+  const printed: string[] = [];
+  const realLog = console.log;
+  const capture = (): string => { const out = printed.join('\n'); printed.length = 0; return out; };
+  console.log = (...parts: unknown[]): void => { printed.push(parts.map(String).join(' ')); };
+  let safe: string;
+  let unsafe: string;
+  try {
+    assertEq(cliMain(['--project', root, '--set', 'set-1', '--custodian', 'inline',
+      '--promotion-records', 'promotion-records', '--plan']), 0, 'the safe plan exits zero');
+    safe = capture();
+    assertEq(cliMain(['--project', root, '--set', 'set-1', '--custodian', 'inline',
+      '--promotion-records', 'promotion-records', '--plan', '--no-safety-set']), 0,
+    'the no-safety plan exits zero');
+    unsafe = capture();
+  } finally {
+    console.log = realLog;
+  }
+  const digestOfPlan = (text: string): string => /plan digest: ([0-9a-f]{64})/.exec(text)![1]!;
+  assert(digestOfPlan(safe) !== digestOfPlan(unsafe), 'the two plans have different digests');
+  assert(safe.includes('a verified safety set would be taken first'), 'the safe plan says so');
+  assert(unsafe.includes('NO SAFETY SET WOULD BE TAKEN'), 'and the other one says so');
+  assert(unsafe.includes('!! THIS PLAN TAKES NO SAFETY SET'), 'loudly');
+  assert(unsafe.includes('BOTH --no-safety-set and --accept-data-loss'), 'and says exactly what running it takes');
+
+  // 3. THE RUN TAKES THAT SAME DIGEST, TWICE, AND THE CHOICE WITH IT.
+  const expected = planFor(request(root, 'set-1'), false).plan.digest;
+  assertEq(digestOfPlan(unsafe), expected, 'the printed digest is the one the run will require');
+  const parsed = parseCompleteRestoreArgs(['--project', root, '--set', 'set-1', '--custodian', 'inline',
+    '--no-safety-set', '--confirm', expected, '--accept-data-loss', expected]);
+  assertEq(parsed.mode, 'run', 'the run parses');
+  assertEq(parsed.noSafetySet, true, 'carrying the choice');
+  assertEq(parsed.acceptDataLoss, expected, 'and the acknowledgement');
+
+  // 4. HALF OF IT IS NOT ENOUGH, IN EITHER DIRECTION.
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--set', 's', '--custodian', 'inline',
+    '--no-safety-set', '--confirm', 'd']), 'without --accept-data-loss', 'the choice alone is refused');
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--set', 's', '--custodian', 'inline',
+    '--confirm', 'd', '--accept-data-loss', 'd']), 'without --no-safety-set',
+  'an acknowledgement of a loss this run would not cause is refused');
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--resume', 'd', '--no-safety-set']),
+    'not part of --resume', 'and the choice is irrelevant to a resume');
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--abandon', '--no-safety-set']),
+    'not part of --abandon', 'and to an abandon');
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// Concurrency: the whole transaction is one locked window
+// ---------------------------------------------------------------------------------------------------------
+
+test('a resume that arrives while a run holds the lock is refused, not admitted to the same journal', () => {
+  // TWO PROCESSES ACTING ON ONE HALF-FINISHED RESTORE is the interleaving the lock exists to prevent, and the
+  // window it had to be widened to cover is the finalization: the verdict, the staging cleanup and the
+  // journal clear used to happen AFTER the lock was released.
+  const root = makeProject('locked-window');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+
+  // The second command arrives at the instant the first is recording its LAST step — which is inside the
+  // finalization window, and used to be outside the lock.
+  let secondAttempt: unknown = null;
+  const deps = {
+    ...depsFor(world),
+    journalWriter: (projectRoot: string, journal: RestoreJournal) => {
+      writeRestoreJournal(projectRoot, journal);
+      const done = journal.steps.every((step) => step.state === 'complete');
+      if (done && secondAttempt === null) {
+        try {
+          runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+            { kind: 'resume', confirm: plan.digest });
+          secondAttempt = 'admitted';
+        } catch (err) { secondAttempt = (err as Error).message; }
+      }
+    },
+  };
+  const report = runCompleteRestore(request(root, 'set-1'), deps,
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  assertEq(report.ok, true, 'the first run completed');
+  assert(typeof secondAttempt === 'string' && secondAttempt !== 'admitted',
+    `the second command was refused rather than admitted, got: ${String(secondAttempt)}`);
+  assert((secondAttempt as string).includes('maintenance lock')
+    || (secondAttempt as string).includes('already running'),
+  `and it was refused BY THE LOCK, got: ${String(secondAttempt)}`);
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and the journal was cleared exactly once');
+});
+
+test('an abandon that arrives while a run holds the lock cannot begin unwinding a restore that succeeded', () => {
+  // THE SAME WINDOW, FROM THE OTHER SIDE. An abandon admitted between the last step committing and the
+  // journal being cleared would start putting back directories a successful restore had just placed.
+  const root = makeProject('abandon-races-run');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+
+  let raced: unknown = null;
+  const deps = {
+    ...depsFor(world),
+    journalWriter: (projectRoot: string, journal: RestoreJournal) => {
+      writeRestoreJournal(projectRoot, journal);
+      const done = journal.steps.every((step) => step.state === 'complete');
+      if (done && raced === null) {
+        try { abandonRestore(root); raced = 'admitted'; } catch (err) { raced = (err as Error).message; }
+      }
+    },
+  };
+  const report = runCompleteRestore(request(root, 'set-1'), deps,
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  assertEq(report.ok, true, 'the restore completed');
+  assert(typeof raced === 'string' && raced !== 'admitted',
+    `the abandon was refused rather than admitted, got: ${String(raced)}`);
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), SECRET_VALUE,
+    'AND THE RESTORED SECRETS WERE NOT PUT BACK by a racing abandon');
+});
+
+test('no stale pre-lock journal snapshot may drive an effect', () => {
+  // The journal must be read once BEFORE the lock — that is how a run knows which operation it is — and
+  // anything that acted in between makes that description stale. Acting on it would place components and
+  // destroy volumes against a view that had stopped being true. There is no injectable seam between the two
+  // reads (the seam IS the lock), so what is asserted is the guarantee itself: the re-read happens under the
+  // lock, BEFORE any step runs, and a difference is a refusal.
+  const source = readRepo('src/ops/complete-restore.ts');
+  const locked = source.slice(source.indexOf('lock = acquireMaintenanceLock(resolved.projectRoot);'));
+  const reread = locked.indexOf('const underLock = readRestoreJournal(resolved.projectRoot);');
+  const firstStep = locked.indexOf('for (const step of plan.steps)');
+  const firstPersist = locked.indexOf('persist();');
+  assert(reread > 0, 'the journal is re-read under the lock');
+  assert(reread < firstStep, 'before any step runs');
+  assert(reread < firstPersist, 'and before anything is written');
+  assert(locked.includes('changed between reading it and taking the lock'),
+    'and a journal that changed in between is refused rather than reconciled');
+
+  // ABANDON HOLDS THE SAME RULE, and it is a separate function that had to be given it separately.
+  const abandon = source.slice(source.indexOf('export function abandonRestore'));
+  const scope = abandon.slice(0, abandon.indexOf('function abandonUnderLock'));
+  assert(scope.includes('acquireMaintenanceLock(projectRoot)'), 'abandon takes the project lock');
+  assert(scope.indexOf('const journal = readRestoreJournal(projectRoot);') > scope.indexOf('acquireMaintenanceLock'),
+    'and re-reads the journal after taking it');
+  assert(scope.includes('changed between reading it and taking the lock'),
+    'refusing one that changed in between');
+});
+test('a completed operation left unresolved staging keeps its journal, so nothing forgets the second copy', () => {
+  // THE JOURNAL IS THE ONLY THING THAT NAMES THE STAGING TREE. Clearing it while a copy of every secret in
+  // the installation sits in the project would leave that copy named by nothing at all.
+  const root = makeProject('staging-unresolved');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+  const deps = {
+    ...depsFor(world),
+    journalWriter: (projectRoot: string, journal: RestoreJournal) => {
+      writeRestoreJournal(projectRoot, journal);
+      // Destroy the ownership marker just before the run would clean up: the tree can no longer be proved
+      // ours, so it must not be removed and the journal must not be cleared.
+      if (journal.steps.every((step) => step.state === 'complete')) {
+        const marker = join(root, '.catalog-restore.staged-aaaaaaaaaaaa', 'catalog-restore-staging.json');
+        if (existsSync(marker)) rmSync(marker);
+      }
+    },
+  };
+  const report = runCompleteRestore(request(root, 'set-1'), deps,
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  assertEq(report.stagingUnresolved, '.catalog-restore.staged-aaaaaaaaaaaa', 'the report names the tree');
+  assertEq(report.ok, false, 'and the run does not report success while a copy of every secret is loose');
+  assert(existsSync(join(root, '.catalog-restore.staged-aaaaaaaaaaaa')), 'the tree was NOT removed');
+  assert(existsSync(join(root, RESTORE_JOURNAL_NAME)), 'AND THE JOURNAL WAS KEPT, so something still names it');
+  assert(report.notes.some((note) => note.includes('second copy of every secret')), 'and says why');
   rmSync(join(root, RESTORE_JOURNAL_NAME));
 });
 
