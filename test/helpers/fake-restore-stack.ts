@@ -76,6 +76,14 @@ export interface RestoreStackOptions {
    * the swap actually put on disk rather than by a container copy that never happens.
    */
   readonly sidecarStateDir?: string;
+  /**
+   * Start with the volumes ALREADY DESTROYED, the way a resume finds them.
+   *
+   * A resumed run meets an installation a previous PROCESS tore down. Modelling that is what makes a
+   * crash-recovery check a test of the recovery rather than of a world that has forgotten what happened
+   * before it existed.
+   */
+  readonly startDestroyed?: boolean;
 }
 
 export interface RestoreStackState {
@@ -122,11 +130,11 @@ export function setDumpDigest(setDir: string): string {
 export function restoreStack(options: RestoreStackOptions): RestoreStack {
   const ledger = new CommandLedger();
   const liveKeystoreFiles = options.liveKeystoreFiles ?? { 'keys/.keep': 'k\n', 'tombstones/.keep': 't\n' };
-  let volumesDestroyed = false;
-  let databaseUp = true;
-  let stackUp = true;
-  let appContainerExists = true;
-  let schema: number | null = options.initialSchema ?? options.buildSchema;
+  let volumesDestroyed = options.startDestroyed === true;
+  let databaseUp = !volumesDestroyed;
+  let stackUp = !volumesDestroyed;
+  let appContainerExists = !volumesDestroyed;
+  let schema: number | null = volumesDestroyed ? null : (options.initialSchema ?? options.buildSchema);
   let loadedDump: string | null = null;
   let keystore: string | null = null;
   let teardowns = 0;

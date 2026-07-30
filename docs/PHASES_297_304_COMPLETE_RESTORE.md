@@ -26,7 +26,7 @@ something.
 | **300** | The safety set — a verified complete backup of what is about to be destroyed | The step that cannot be undone has something behind it |
 | **301** | Execution: `down -v`, place, replay, boot — the rehearsal's proven rollback leg, against a real project | The restore is the command |
 | **302** | `ops:custody-proof` — a shipped, read-only proof that actually **decrypts** through the catalog authority — and the four proofs that consume it | A restore that cannot decrypt is a failed restore, not a green one |
-| **303** | The journal as a validated, path-bound state machine; `--resume` and `--abandon` bound to it | An interrupted restore is a named state, and unwinding it cannot use the wrong paths |
+| **303** | The journal as a **crash-consistent** per-step state machine with declared recovery policies and persisted evidence; `--resume` and `--abandon` bound to it | An interrupted restore is a named state — including one interrupted by a process that stopped existing |
 | **304** | `ops:complete-restore`, the rendered operator surfaces, and the acceptance suite | The document and the command cannot disagree |
 
 ## What this command is, and what it is not
@@ -265,30 +265,76 @@ whose version check failed still needs to know whether their installation can de
 `ok` and `custodyProven` are separate fields, and the CLI exits non-zero unless **both** hold. A restore that
 came up without demonstrating custody has not earned a zero exit, because a scheduler reading zero would put
 it into service.
-## Phase 303 — an interrupted restore is a validated, path-bound state
+## Phase 303 — an interrupted restore is a crash-consistent, path-bound state
 
 The journal is a private file in the project root, staged and renamed on every update so a reader sees the
 previous complete journal or the new one and never a prefix of either. A project carrying one refuses a
 fresh restore: an installation half-way through a restore is not a starting point, and running the sequence
 again from the top would take a "safety set" of the wreckage.
 
-**Every field is validated, because every field is acted on.** This file decides which steps a resume skips,
-which directories an abandon renames, and what suffix goes into the names it builds — and it lives in a
-directory an operator owns. The first cut checked five types and a literal. It now refuses, before any
-mutation: a suffix that is not exactly the twelve hex characters `stagingSuffix()` produces (one carrying a
-separator or a traversal would build a sibling path nobody chose); a set or safety-set name that is not a
-usable name; a custody mode and sidecar path that disagree; a safety set recorded as taken but never planned;
-an unknown, duplicated or out-of-order step; a step recorded as both running and complete; a running step
-that is not the one this operation would have reached; a swap of a component this build does not have; and a
-`.replaced-` name this command would not have created.
+**It is per-step state, not a list of completed steps — and that is a correction.** The proofs are
+independent diagnoses and every one of them runs even after an earlier one fails. But progress was recorded
+as an ORDERED LIST OF COMPLETED STEPS validated as a PREFIX of the plan, and those two facts cannot both
+hold: a run whose `prove-version` failed and whose `prove-doctor` succeeded wrote a list with a hole in the
+middle, which its own reader then refused. The installation was left refusing a fresh restore (a journal is
+present) *and* a resume (the journal is illegal) — a dead end, not a diagnosis. Every step now carries the
+state it is in and, for a failure, the closed sentence for why.
 
-**`completed` must be a strict ordered prefix of the rederived plan.** A journal that records a later step as
-done and an earlier one as not is not an interrupted run — a run cannot finish a later step first — and
-resuming it would perform the missing step against state that is already past it.
+**Every field is validated, because every field is acted on.**
+This file decides which steps a resume skips, which directories an abandon renames, and what suffix goes
+into the names it builds — and it lives in a directory an operator owns. It refuses, before any mutation: a
+suffix that is not exactly the twelve hex characters `stagingSuffix()` produces; a set or safety-set name
+that is not a usable name; a custody mode and sidecar path that disagree; a safety set recorded as taken but
+never planned; an unknown, duplicated or unknown-state step; **more than one step recorded as running**,
+which one process cannot produce; a failure carrying no reason or a success carrying one; evidence that is
+not boolean or that records a safety set as verified without being taken; a swap of a component this build
+does not have; and a `.replaced-` name this command would not have written.
 
+**And the legality rules are the shape of the executor, written down.** It runs the steps in order; a
+non-proof failure stops it; a proof failure does not. So the non-proof steps are `complete`* then at most one
+`running`/`failed` then `pending`*; the proofs stay `pending` until every step before them is complete; and
+the proofs themselves are (`complete`|`failed`)* then at most one `running` then `pending`*. A journal
+outside those shapes was not written by a run of this program, and is refused rather than acted on.
+
+### The state a crash leaves
+
+The journal records a step as `running` **before** its effect and `complete` **after** it. A process that
+stops existing — a kill, a power loss, an OOM — therefore leaves exactly one step `running`, with its effect
+landed, half-landed or not landed. The first cut had one answer for all of them, "run it again", which is
+right for most steps and catastrophic for three. Each step now DECLARES its recovery policy:
+
+| Policy | Steps | Why it is not just a retry |
+| --- | --- | --- |
+| `retry` | the teardown, the staging, both `up`s, the role, the inline keystore copy, every proof | Repeating them is indistinguishable from running them once |
+| `confirm-or-retry` | the safety set | `ops:complete-backup` **refuses an existing set name**, so a blind retry after a crash between publish and record would fail at the first step forever — and the operator's only way out would be to delete the very set protecting them. The recovery looks first: a set that is there **and verifies** is this operation's |
+| `repair-swap` | the three placements | A crash between the two renames leaves the target **missing**, the previous contents under `.replaced-` and the new ones under `.restoring-`. Re-running would refuse on a staging name that already exists, leaving the installation with no secrets directory and a command that will not move. The interrupted rename is finished instead |
+| `rewind` | the database replay | A `psql` replay killed halfway leaves a **partial schema**; nothing repairs that in place and replaying over it produces conflicts. The step names where to rewind to, and the whole database leg runs again |
+
+A swap that landed and was never recorded has its journal entry **reconstructed**, because `--abandon` walks
+that record and a directory nothing names is a directory nothing can put back. A half-published safety set —
+present, and not verifying — is the one case a human has to look at: retaking is refused by the name and
+trusting it is refused by the verification, so the command says so and changes nothing, including the journal.
+
+**A killed run also leaves this project's maintenance lock**, because it never reached the code that releases
+it. The lock is still never broken automatically — breaking one means guessing whether another process is
+alive, and a restore is the worst command to be wrong about that in — but the refusal now names *both* facts
+together and tells the operator exactly what to do, instead of reporting generic contention beside an
+interrupted restore it does not mention.
+
+### Evidence outlives the process that produced it
+
+`custodyProven` lived only in the running process. A run that PROVED custody and then failed `prove-history`
+left a journal with `prove-decrypt` complete; the resume skipped that step, *because it was complete*, and so
+never set the flag — and reported a fully successful restore as **"custody proven: NO"**. The most important
+claim this command makes was being destroyed by the recovery path for an unrelated failure. Evidence that
+decides the final report is now persisted with the step that produced it and restored with it, so a resume
+answers what the **operation** established rather than what its last process happened to see.
+
+A previously failed proof is re-run on a resume rather than skipped: it is read-only, and a fresh diagnosis
+is worth more than a stale one.
 **The journal carries the operation, so resume and abandon are bound to it and not to a command line.**
 
-* **`--resume <digest>`** takes only `--project`. The set, the destination, the custody mode, the safety-set
+* **`--resume <digest>`** takes only `--project`, recovers the one step a crash left running according to that step's declared policy, and then continues. The set, the destination, the custody mode, the safety-set
   name and every target path come from what the interrupted run recorded; the plan is rederived from those
   and must produce the same digest. It continues from the first step the journal does not record as complete.
   The swaps are idempotent by digest: a target already holding the staged copy is recognised and skipped

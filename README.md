@@ -259,7 +259,18 @@ digest-bound `--accept-data-loss`.
 Every component is **staged out of the set and re-verified against the manifest** before anything is
 destroyed, so a set that changes after it verified cannot supply the bytes that get restored. Components are
 then placed by **rename**: the previous directory is kept beside the new one, never merged into and never
-deleted. An interrupted run leaves a journal — a validated, path-bound state machine — and refuses a fresh
+deleted.
+
+**An interrupted run is a state with a name, including one interrupted by a process that stopped existing.**
+Each step is recorded before its effect and again after it, so a kill, a power loss or an OOM leaves exactly
+one step marked running — and each step declares how to recover from that: finish an interrupted rename,
+recognise a safety set that was published but never recorded, or rewind the whole database leg, which is the
+only honest answer to a replay killed halfway. What the operation has already established, including whether
+it proved it can decrypt its own catalog, is persisted with the step that established it, so resuming never
+un-proves something that was proved. A killed run also leaves the maintenance lock; the command tells you so
+by name rather than reporting generic contention, and still refuses to break it for you.
+
+An interrupted run leaves a journal — a crash-consistent, path-bound state machine — and refuses a fresh
 restore until you `--resume` it or `--abandon` it; both take only `--project`, because the journal knows the
 operation.
 [docs/PHASES_297_304_COMPLETE_RESTORE.md](docs/PHASES_297_304_COMPLETE_RESTORE.md) has the ordering, the

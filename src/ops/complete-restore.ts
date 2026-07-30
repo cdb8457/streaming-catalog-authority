@@ -30,6 +30,8 @@ import {
   requiredPlacementIds,
   stagedPath,
   stagingDirName,
+  STEP_RECOVERY,
+  STEP_REWIND_TO,
   stepsFor,
   swapReplacedName,
   swapStagingName,
@@ -37,6 +39,7 @@ import {
   type RestoreStepId,
 } from './restore-model.js';
 import {
+  MAINTENANCE_LOCK_DIRNAME,
   MAINTENANCE_NAME_RE,
   MaintenanceRefused,
   acquireMaintenanceLock,
@@ -106,7 +109,7 @@ export const COMPLETE_RESTORE_VERSION = 2;
 
 /** The journal a run in progress leaves in the project root. Private, and refused by a second run. */
 export const RESTORE_JOURNAL_NAME = '.catalog-restore.journal.json';
-export const RESTORE_JOURNAL_VERSION = 2;
+export const RESTORE_JOURNAL_VERSION = 3;
 /** A journal is small by construction. A file at that name larger than this is not one of ours. */
 export const MAX_JOURNAL_BYTES = 64 * 1024;
 
@@ -614,10 +617,65 @@ export interface RestoreJournal {
     readonly promotionRecords: string | null;
     readonly sidecarState: string | null;
   };
-  /** Step ids that completed, in plan order. Validated as a prefix of the rederived plan. */
-  readonly completed: readonly RestoreStepId[];
-  readonly running: RestoreStepId | null;
+  /**
+   * Every step of this operation, with the state it is actually in.
+   *
+   * -----------------------------------------------------------------------------------------------------
+   * WHY THIS IS NOT A LIST OF COMPLETED STEPS ANY MORE.
+   * -----------------------------------------------------------------------------------------------------
+   *
+   * THE DEFECT THIS CLOSES, AND THE RUN THAT PRODUCED IT COULD NOT BE RESUMED AT ALL. The proofs are
+   * independent diagnoses and every one of them runs even after an earlier one fails — that was itself a
+   * correction, and it is right. But the journal recorded progress as an ORDERED LIST OF COMPLETED STEPS
+   * validated as a PREFIX of the plan, and those two facts cannot both hold: a run whose `prove-version`
+   * failed and whose `prove-doctor` succeeded wrote `[…, prove-doctor, prove-decrypt, prove-history]` with
+   * `prove-version` missing from the middle, which its own reader then refused as "not this operation's
+   * steps in this operation's order". The installation was left part way through a restore, refusing a
+   * fresh run because a journal was present and refusing a resume because the journal it had just written
+   * was illegal. That is not a diagnosis, it is a dead end.
+   *
+   * A LIST OF COMPLETED THINGS CANNOT EXPRESS A FAILURE THAT IS NOT FATAL. So progress is per step, each
+   * one carrying the state it is in and the closed sentence for why, and the legality rules say what
+   * combinations a real run can produce. Nothing has to be inferred from an absence.
+   */
+  readonly steps: readonly JournalStep[];
   readonly swaps: readonly JournalSwap[];
+  /**
+   * What this operation has ESTABLISHED so far, as opposed to what it has done.
+   *
+   * THE DEFECT THIS CLOSES. `custodyProven` lived only in the running process. A run that proved custody and
+   * then failed `prove-history` left a journal with `prove-decrypt` complete; the resume skipped that step,
+   * because it was complete, and therefore never set the flag — and reported a fully successful restore as
+   * `custody proven: NO`. The most important claim this command makes was being destroyed by the recovery
+   * path for an unrelated failure.
+   *
+   * Evidence that decides the final report is now persisted with the step that produced it, and restored
+   * with it. A resume answers what the OPERATION established, not what its last process happened to see.
+   */
+  readonly evidence: RestoreEvidence;
+}
+
+/** The state one step of an operation is in. `running` is the only state a crash can leave. */
+export type JournalStepState = 'pending' | 'running' | 'complete' | 'failed';
+
+export interface JournalStep {
+  readonly id: RestoreStepId;
+  readonly state: JournalStepState;
+  /** The closed sentence for a failure. Never interpolated with anything read at runtime. */
+  readonly detail: string | null;
+}
+
+/**
+ * What the operation has established, carried across processes.
+ *
+ * Each field is a fact a LATER report depends on and an EARLIER step produced, which is exactly the set of
+ * things a resume cannot recompute — the step that produced them is complete and will not run again.
+ */
+export interface RestoreEvidence {
+  /** Whether the installation DEMONSTRATED that it can decrypt its own catalog. */
+  readonly custodyProven: boolean;
+  readonly safetySetTaken: boolean;
+  readonly safetySetVerified: boolean;
 }
 
 export function journalPath(projectRoot: string): string {
@@ -693,21 +751,45 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
     return refuse('its custody mode and its sidecar state directory disagree');
   }
 
-  // ---- the step list --------------------------------------------------------------------------------
-  if (!Array.isArray(doc.completed)) return refuse('its completed list is not a list');
+  // ---- the steps ------------------------------------------------------------------------------------
+  if (!Array.isArray(doc.steps)) return refuse('its step list is not a list');
+  if (doc.steps.length === 0) return refuse('it records no steps at all');
   const seen = new Set<string>();
-  for (const entry of doc.completed) {
-    if (typeof entry !== 'string' || !(RESTORE_STEP_IDS as readonly string[]).includes(entry)) {
-      return refuse('its completed list names a step this build does not have');
+  let running = 0;
+  for (const entry of doc.steps) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return refuse('a step entry is not an object');
+    const step = entry as Record<string, unknown>;
+    if (typeof step.id !== 'string' || !(RESTORE_STEP_IDS as readonly string[]).includes(step.id)) {
+      return refuse('it names a step this build does not have');
     }
-    if (seen.has(entry)) return refuse('its completed list names one step twice');
-    seen.add(entry);
+    if (seen.has(step.id)) return refuse('it names one step twice');
+    seen.add(step.id);
+    if (step.state !== 'pending' && step.state !== 'running' && step.state !== 'complete' && step.state !== 'failed') {
+      return refuse('a step is in a state this build does not have');
+    }
+    if (step.state === 'running') running += 1;
+    if (step.detail !== null && typeof step.detail !== 'string') return refuse('a step detail is neither absent nor a sentence');
+    // ONLY A FAILURE CARRIES A REASON. A `complete` step with a detail is a record of two different things,
+    // and a `failed` step without one is a failure nobody can act on.
+    if (step.state === 'failed' && typeof step.detail !== 'string') return refuse('a failed step records no reason');
+    if (step.state !== 'failed' && step.detail !== null) return refuse('a step that did not fail carries a reason');
   }
-  if (doc.running !== null) {
-    if (typeof doc.running !== 'string' || !(RESTORE_STEP_IDS as readonly string[]).includes(doc.running)) {
-      return refuse('its running step is not one this build has');
-    }
-    if (seen.has(doc.running)) return refuse('it records a step as both running and complete');
+  // ONE PROCESS, ONE STEP. A journal recording two steps as running is not a crash — a crash leaves exactly
+  // the one the process was inside — so it is a file somebody edited or two runs that raced the lock.
+  if (running > 1) return refuse('it records more than one step as running, which one process cannot produce');
+
+  // ---- the evidence ---------------------------------------------------------------------------------
+  const evidence = doc.evidence;
+  if (evidence === null || typeof evidence !== 'object' || Array.isArray(evidence)) return refuse('it carries no evidence');
+  const ev = evidence as Record<string, unknown>;
+  for (const field of ['custodyProven', 'safetySetTaken', 'safetySetVerified'] as const) {
+    if (typeof ev[field] !== 'boolean') return refuse(`its ${field} evidence is not a boolean`);
+  }
+  if (ev.safetySetVerified === true && ev.safetySetTaken !== true) {
+    return refuse('it records a safety set as verified that was never taken');
+  }
+  if (ev.safetySetTaken === true && doc.safetySetPlanned !== true) {
+    return refuse('its evidence records a safety set that this operation never planned');
   }
 
   // ---- the swaps ------------------------------------------------------------------------------------
@@ -746,25 +828,52 @@ export function assertJournalAgreesWithPlan(journal: RestoreJournal, plan: Resto
       + 'just resolved — a different project, destination, set, target directory, custody mode, safety-set name '
       + 'or occupancy. Resuming it would apply half of one restore and half of another. Nothing was changed.');
   }
+  // ---- 1. THE SAME STEPS, IN THE SAME ORDER ---------------------------------------------------------
   const ids = plan.steps.map((step) => step.id);
-  for (const [index, id] of journal.completed.entries()) {
-    if (ids[index] !== id) {
-      throw new MaintenanceRefused(
-        'the restore journal in this project records completed steps that are not this operation\'s steps in this '
-        + 'operation\'s order. That is not an interrupted run: a run cannot finish a later step before an earlier '
-        + 'one. Nothing was changed.');
-    }
+  if (journal.steps.length !== ids.length || journal.steps.some((step, index) => step.id !== ids[index])) {
+    throw new MaintenanceRefused(
+      'the restore journal in this project does not describe this operation\'s steps, in this operation\'s '
+      + 'order. Resuming it would apply half of one restore and half of another. Nothing was changed.');
   }
-  if (journal.running !== null) {
-    const expected = ids[journal.completed.length];
-    if (journal.running !== expected) {
-      throw new MaintenanceRefused(
-        'the restore journal records a step as running that is not the one this operation would have reached. '
-        + 'Nothing was changed.');
+
+  // ---- 2. A STATE A REAL RUN COULD HAVE PRODUCED -----------------------------------------------------
+  //
+  // The rules are the shape of the executor, written down. It runs the steps in order; a NON-PROOF failure
+  // stops it; a PROOF failure does not, because the proofs are independent diagnoses. So:
+  //
+  //   * the non-proof steps are `complete`* then at most one `running`/`failed`, then `pending`*;
+  //   * the proofs are all `pending` until every non-proof step is complete;
+  //   * and once the proofs are reachable they are (`complete`|`failed`)* then at most one `running`, then
+  //     `pending`*, because they too are attempted in order.
+  //
+  // A journal outside those shapes was not written by a run of this program.
+  const refuse = (why: string): never => {
+    throw new MaintenanceRefused(
+      `the restore journal in this project records a state no run of this operation could have produced: ${why}. `
+      + 'Nothing was changed. Look at it before running anything.');
+  };
+  const proofs = journal.steps.filter((step) => PROOF_STEP_IDS.includes(step.id));
+  const others = journal.steps.filter((step) => !PROOF_STEP_IDS.includes(step.id));
+
+  const walk = (steps: readonly JournalStep[], settled: readonly JournalStepState[], what: string): void => {
+    let stopped = false;
+    for (const step of steps) {
+      if (stopped) {
+        if (step.state !== 'pending') refuse(`${what} record ${step.id} as ${step.state} after an earlier step stopped`);
+        continue;
+      }
+      if (settled.includes(step.state)) continue;
+      // `running` or `failed` (or `pending`) — whatever it is, nothing after it may have started.
+      stopped = true;
     }
-  }
-  if (journal.completed.length > ids.length) {
-    throw new MaintenanceRefused('the restore journal records more completed steps than this operation has');
+  };
+  // A non-proof step is settled only by completing: a failure there stops the run.
+  walk(others, ['complete'], 'the steps before the proofs');
+  // A proof is settled either way: a failed proof does not stop the ones after it.
+  walk(proofs, ['complete', 'failed'], 'the proofs');
+
+  if (others.some((step) => step.state !== 'complete') && proofs.some((step) => step.state !== 'pending')) {
+    refuse('a proof was reached before every step before it had completed');
   }
 }
 
@@ -814,7 +923,33 @@ export interface CompleteRestoreDeps {
   readonly ledger: CommandLedger;
   readonly suffix?: () => string;
   readonly now?: () => Date;
+  /**
+   * The rename this command performs, injected. Phase 303 (second correction).
+   *
+   * SAME IDIOM AS `CommandRunner`, AND FOR THE SAME REASON. A swap is two renames, and the states a crash
+   * can leave BETWEEN them are exactly the states the recovery exists for. Without a seam at the effect
+   * itself, "the process died after the first rename and before the second" is not something a suite can
+   * produce deterministically — and an untestable recovery path is one nobody can claim works. Production
+   * passes `renameSync`.
+   */
+  readonly rename?: Renamer;
+  /**
+   * The journal write itself, injected. Phase 303 (second correction).
+   *
+   * THE JOURNAL IS AN EFFECT THIS COMMAND PERFORMS, and it is the one whose ORDER relative to every other
+   * effect is the whole crash-consistency argument: intent before the effect, result after it. A seam here
+   * is what lets a suite stop the process at the exact instant an effect has landed and its record has not
+   * — which is the state, and the only state, the recovery exists for. Production passes
+   * `writeRestoreJournal`.
+   */
+  readonly journalWriter?: JournalWriter;
 }
+
+/** One rename. Injected so a suite can stop a run between the two halves of a swap. */
+export type Renamer = (from: string, to: string) => void;
+
+/** How a journal reaches the disk. Injected for the same reason every other effect here is. */
+export type JournalWriter = (projectRoot: string, journal: RestoreJournal) => void;
 
 export type RestoreMode =
   | { readonly kind: 'run'; readonly confirm: string; readonly acceptDataLoss: string | null }
@@ -951,20 +1086,54 @@ export function runCompleteRestore(
   if (!RESTORE_SUFFIX_RE.test(suffix)) {
     throw new MaintenanceRefused('this run produced a staging suffix that is not the shape this command creates');
   }
-  const completed = new Set<RestoreStepId>(existing?.completed ?? []);
+  // ---- the operation's state, restored from the journal or started fresh ----------------------------
+  //
+  // EVIDENCE COMES BACK WITH IT. A resume answers what the OPERATION established, not what this process saw.
+  const state = new Map<RestoreStepId, JournalStep>(
+    plan.steps.map((step) => [step.id, { id: step.id, state: 'pending' as JournalStepState, detail: null }]));
+  for (const recorded of existing?.steps ?? []) state.set(recorded.id, { ...recorded });
   const swaps: JournalSwap[] = existing === null ? [] : existing.swaps.map((swap) => ({ ...swap }));
+  const evidence: RestoreEvidence = existing?.evidence ?? {
+    custodyProven: false, safetySetTaken: false, safetySetVerified: false,
+  };
+  let custodyProven = evidence.custodyProven;
+  let safetySetTaken = evidence.safetySetTaken;
+  let safetySetVerified = evidence.safetySetVerified;
+
   const results: RestoreStepResult[] = [];
   const notes: string[] = [];
-  let safetySetTaken = existing?.safetySetTaken ?? false;
-  let safetySetVerified = safetySetTaken;
-  let stopped = completed.has('stop-and-destroy');
+  let stopped = state.get('stop-and-destroy')?.state === 'complete';
   let failedAt: RestoreStepId | null = null;
   let failure: string | null = null;
-  let custodyProven = false;
 
   const stagingDir = join(resolved.projectRoot, stagingDirName(suffix));
 
-  const lock = acquireMaintenanceLock(resolved.projectRoot);
+  // ---- THE LOCK A CRASHED RUN LEFT BEHIND -----------------------------------------------------------
+  //
+  // A process that stops existing never reaches its `finally`, so it leaves this project's maintenance lock
+  // directory on disk. The next resume then hits "another maintenance command is already running" — which is
+  // true-sounding, unhelpful, and names neither the journal beside it nor what to do.
+  //
+  // THE LOCK IS STILL NOT BROKEN AUTOMATICALLY. This family's rule is that a stale lock is reported and never
+  // removed by a program, because removing it means guessing whether another process is alive — and a restore
+  // is the worst possible command to be wrong about that in. What changes is that the two facts are reported
+  // TOGETHER, so an operator is told the specific thing that happened rather than a generic contention
+  // message that does not mention the interrupted restore sitting next to it.
+  let lock;
+  try {
+    lock = acquireMaintenanceLock(resolved.projectRoot);
+  } catch (err) {
+    if (existing !== null) {
+      throw new MaintenanceRefused(
+        'this project holds BOTH an interrupted restore journal and a maintenance lock. If nothing is running '
+        + 'now, the run that left that journal died while holding the lock — it never reached the code that '
+        + `releases it. Make sure no maintenance command is running, remove the ${MAINTENANCE_LOCK_DIRNAME} `
+        + 'directory in the project root, and resume. This command will not remove it for you: breaking a lock '
+        + 'means guessing whether another process is alive, and a restore is the worst command to be wrong '
+        + 'about that in. Nothing was changed.');
+    }
+    throw err;
+  }
   try {
     // THE DIGEST IS RE-PROVED UNDER THE LOCK, over a FRESH verification of the set.
     const reResolved = resolveCompleteRestoreRequest(effective, probe);
@@ -975,8 +1144,9 @@ export function runCompleteRestore(
         + 'would happen. Nothing was changed. Re-plan and read it again.');
     }
 
-    const persist = (running: RestoreStepId | null): void => {
-      writeRestoreJournal(resolved.projectRoot, {
+    const write = deps.journalWriter ?? writeRestoreJournal;
+    const persist = (): void => {
+      write(resolved.projectRoot, {
         journal: 'catalog-authority.restore',
         version: RESTORE_JOURNAL_VERSION,
         planDigest: plan.digest,
@@ -993,26 +1163,66 @@ export function runCompleteRestore(
           promotionRecords: resolved.promotionRecords?.relative ?? null,
           sidecarState: resolved.sidecarState?.relative ?? null,
         },
-        completed: plan.steps.map((step) => step.id).filter((id) => completed.has(id)),
-        running,
+        steps: plan.steps.map((step) => state.get(step.id)!),
         swaps: swaps.map((swap) => ({ ...swap })),
+        evidence: { custodyProven, safetySetTaken, safetySetVerified },
       });
     };
-    persist(null);
+    const mark = (id: RestoreStepId, next: JournalStepState, detail: string | null = null): void => {
+      state.set(id, { id, state: next, detail });
+      persist();
+    };
+
+    // ---- RECOVER THE STEP THE PROCESS DIED INSIDE ----------------------------------------------------
+    //
+    // Exactly one step can be `running`, and it is the one the previous process was inside when it stopped
+    // existing. What may safely be done about it is the step's own declared policy — see `STEP_RECOVERY`.
+    const interrupted = plan.steps.map((step) => state.get(step.id)!).find((step) => step.state === 'running');
+    if (interrupted !== undefined) {
+      const recovery = recoverInterruptedStep(interrupted.id, resolved, plan, deps, stagingDir, suffix, swaps);
+      if (recovery.kind === 'refuse') {
+        // The journal keeps saying `running`, so the next attempt sees the same state rather than a state
+        // this refusal invented.
+        throw new MaintenanceRefused(recovery.detail);
+      }
+      for (const id of recovery.reset) state.set(id, { id, state: 'pending', detail: null });
+      if (recovery.kind === 'complete') {
+        state.set(interrupted.id, { id: interrupted.id, state: 'complete', detail: null });
+        if (interrupted.id === 'stop-and-destroy') stopped = true;
+        // A SWAP THAT LANDED AND WAS NEVER RECORDED IS RECONSTRUCTED, because `--abandon` walks that record
+        // and a directory nothing names is a directory nothing can put back.
+        if (recovery.swap !== undefined) swaps.push(recovery.swap);
+        // THE EVIDENCE A RECOVERED STEP PRODUCED IS EVIDENCE THIS OPERATION HOLDS. The safety set was
+        // VERIFIED to be recognised at all, and a report that then said "NONE TAKEN" would tell an operator
+        // their installation is unrecoverable while the set sits in the project.
+        if (interrupted.id === 'safety-set') { safetySetTaken = true; safetySetVerified = true; }
+      }
+      notes.push(recovery.note);
+      persist();
+    }
 
     for (const step of plan.steps) {
-      if (completed.has(step.id)) {
+      const current = state.get(step.id)!;
+      if (current.state === 'complete') {
         results.push({ id: step.id, proves: step.proves, outcome: 'skipped', detail: 'already completed by an earlier run' });
         continue;
       }
       if (failedAt !== null && !PROOF_STEP_IDS.includes(failedAt)) break;
-      persist(step.id);
+
+      // INTENT BEFORE EFFECT. The journal says `running` before anything happens, so a process that dies
+      // inside the step leaves a record naming it — which is the whole basis of the recovery above.
+      mark(step.id, 'running');
 
       let detail: string | null;
       try {
         detail = performStep(step.id, resolved, plan, deps, stagingDir, suffix, {
           onSafetySet: (verified) => { safetySetTaken = true; safetySetVerified = verified; },
-          onSwap: (swap) => { swaps.push(swap); },
+          onSwap: (swap) => {
+            swaps.push(swap);
+            // THE SWAP IS RECORDED THE INSTANT IT LANDS, not when the step returns. A crash between the
+            // renames and the step's own completion must not lose which directory was moved aside.
+            persist();
+          },
           onStopped: () => { stopped = true; },
           onCustodyProven: (proven) => { custodyProven = proven; },
           onNote: (note) => { notes.push(note); },
@@ -1025,20 +1235,28 @@ export function runCompleteRestore(
 
       if (detail !== null) {
         results.push({ id: step.id, proves: step.proves, outcome: 'failed', detail });
+        mark(step.id, 'failed', detail);
         if (failedAt === null) { failedAt = step.id; failure = detail; }
         if (!PROOF_STEP_IDS.includes(step.id)) break;
         continue;
       }
-      completed.add(step.id);
       results.push({ id: step.id, proves: step.proves, outcome: 'held', detail: null });
-      persist(null);
+      // EFFECT BEFORE RECORD. `complete` is written only after the step has actually done its work, so the
+      // one thing a crash can never produce is a step recorded as done that did not happen.
+      mark(step.id, 'complete');
     }
   } finally {
     lock.release();
   }
 
-  const everyStepHeld = failedAt === null;
-  const restoredButUnproven = failedAt !== null && PROOF_STEP_IDS.includes(failedAt);
+  // WHETHER THIS OPERATION HELD, not whether this PROCESS did. A resumed run skips the steps an earlier
+  // process completed, and a step it never touched is still a step that held — so the verdict is read off
+  // the operation's own state rather than off what this loop happened to observe.
+  const finalState = plan.steps.map((step) => state.get(step.id)!);
+  const everyStepHeld = finalState.every((step) => step.state === 'complete');
+  const firstFailure = finalState.find((step) => step.state === 'failed') ?? null;
+  const restoredButUnproven = firstFailure !== null
+    && finalState.every((step) => step.state === 'complete' || PROOF_STEP_IDS.includes(step.id));
 
   if (everyStepHeld) {
     // THE STAGING DIRECTORY HOLDS A COPY OF EVERY SECRET IN THE INSTALLATION. It is removed on success, by
@@ -1103,6 +1321,257 @@ export function runCompleteRestore(
     throw new CompleteRestoreFailed(failure, failedAt, report);
   }
   return report;
+}
+
+/**
+ * What a resume does about the one step a crash left `running`.
+ *
+ * `complete` — the effect is proved to have landed, or has been finished; the step is done.
+ * `retry` — run it again, having reset the steps in `reset` to pending.
+ * `refuse` — this is not a state a resume may act on, and the journal keeps saying so.
+ */
+export type StepRecovery =
+  | { readonly kind: 'complete'; readonly reset: readonly RestoreStepId[]; readonly note: string;
+      /** A swap that landed and was never recorded, reconstructed so `--abandon` can still undo it. */
+      readonly swap?: JournalSwap }
+  | { readonly kind: 'retry'; readonly reset: readonly RestoreStepId[]; readonly note: string }
+  | { readonly kind: 'refuse'; readonly reset: readonly RestoreStepId[]; readonly detail: string; readonly note: string };
+
+/**
+ * Recover the step a process died inside, according to that step's declared policy.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHAT THE PREVIOUS MODEL COULD NOT DO.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * It recorded a `running` step and then, on resume, simply ran it again. For most steps that is right. For
+ * three of them it is not, and the three are the ones where it matters most:
+ *
+ *   * A SAFETY SET THAT WAS PUBLISHED AND NOT RECORDED. Re-running it hits `ops:complete-backup`'s refusal
+ *     of an existing set name, so the resume could never get past its first step — the operator would be
+ *     told to fix a "failed" backup that had in fact succeeded, and their only way forward would be to
+ *     delete the very set protecting them.
+ *   * A SWAP KILLED BETWEEN ITS TWO RENAMES. The target does not exist, the previous contents are under
+ *     `.replaced-` and the new contents are under `.restoring-`. Re-running would copy the staged component
+ *     to a `.restoring-` name that already exists and refuse. The installation would be stuck with NO
+ *     secrets directory at all and a command that would not move.
+ *   * A REPLAY KILLED HALFWAY. Nothing can repair a partial schema in place, and re-running the same dump
+ *     over it produces conflicts, not a restore.
+ *
+ * Each of those has exactly one safe answer, and the answer is dispatched from `STEP_RECOVERY` rather than
+ * from a reader's memory of which steps are idempotent.
+ */
+export function recoverInterruptedStep(
+  id: RestoreStepId,
+  resolved: ResolvedRestore,
+  plan: RestorePlan,
+  deps: CompleteRestoreDeps,
+  stagingDir: string,
+  suffix: string,
+  swaps: readonly JournalSwap[],
+): StepRecovery {
+  const policy = STEP_RECOVERY[id];
+  switch (policy) {
+    case 'retry':
+      return {
+        kind: 'retry',
+        reset: [id],
+        note: `A previous run stopped inside "${id}". That step changes nothing that repeating it would `
+          + 'damage, so it was simply run again.',
+      };
+
+    case 'confirm-or-retry': {
+      // THE SAFETY SET: LOOK BEFORE REPEATING. A set of that name that is there and VERIFIES is the one the
+      // interrupted run took — the whole cycle succeeded and only the record of it was lost.
+      const setDir = join(resolved.projectRoot, resolved.destination, resolved.safetySetName);
+      if (!existsSync(setDir)) {
+        return {
+          kind: 'retry',
+          reset: [id],
+          note: 'A previous run stopped while taking the safety set, and no set of that name is here, so it '
+            + 'was taken again.',
+        };
+      }
+      const verification = verifyBackupSet(setDir);
+      if (verification.ok) {
+        return {
+          kind: 'complete',
+          reset: [],
+          note: 'A previous run stopped after publishing the safety set but before recording it. The set is '
+            + 'here and it VERIFIES, so it is the safety set of this operation and was not taken twice.',
+        };
+      }
+      // A HALF-PUBLISHED SET UNDER A NAME NOBODY MAY REPLACE. This is the one case where a human has to
+      // look: retaking is refused by the name, and trusting it is refused by the verification.
+      return {
+        kind: 'refuse',
+        reset: [],
+        detail: 'a previous run stopped while taking the safety set, and a set of that name is here that does '
+          + 'NOT verify. This command will not replace a backup set and will not trust one that does not '
+          + 'verify. Move it aside deliberately, then resume. Nothing was changed.',
+        note: 'The safety set from the interrupted run is present and does not verify.',
+      };
+    }
+
+    case 'repair-swap': {
+      const target = targetForStep(resolved, id);
+      if (target === null) {
+        return {
+          kind: 'retry', reset: [id],
+          note: `A previous run stopped inside "${id}", which this operation does not place; it was skipped.`,
+        };
+      }
+      return repairSwap(target, stagingDir, componentForStep(id), suffix, deps, swaps);
+    }
+
+    case 'rewind': {
+      // A PARTIAL REPLAY INVALIDATES THE WHOLE DATABASE LEG. The honest recovery is to run the leg again
+      // rather than to guess how much of the dump landed.
+      const to = STEP_REWIND_TO[id]!;
+      const ids = plan.steps.map((step) => step.id);
+      const from = ids.indexOf(to);
+      const reset = from < 0 ? [id] : ids.slice(from, ids.indexOf(id) + 1);
+      return {
+        kind: 'retry',
+        reset,
+        note: `A previous run stopped inside "${id}", which cannot be repeated or repaired against a database `
+          + 'holding part of a dump. The volumes are being destroyed and the whole database leg run again, '
+          + 'which is the only recovery that leaves this installation somewhere describable.',
+      };
+    }
+  }
+}
+
+/** Which target a placement step writes to, or `null` when this operation does not perform it. */
+function targetForStep(resolved: ResolvedRestore, id: RestoreStepId): ResolvedTarget | null {
+  if (id === 'place-secrets') return resolved.secrets;
+  if (id === 'place-promotion-records') return resolved.promotionRecords;
+  if (id === 'place-sidecar-keystore') return resolved.sidecarState;
+  return null;
+}
+
+/** Which component a placement step places. */
+function componentForStep(id: RestoreStepId): BackupComponentId {
+  if (id === 'place-secrets') return 'secrets';
+  if (id === 'place-promotion-records') return 'promotion-records';
+  return 'keystore';
+}
+
+/**
+ * Finish, or undo, a swap that a crash caught between its two renames.
+ *
+ * THE FOUR STATES A CRASH CAN LEAVE, and there are only four because the swap is exactly two renames after a
+ * copy:
+ *
+ *   1. NOTHING MOVED — no `.replaced-`, no `.restoring-`. The step had not got that far. Run it again.
+ *   2. THE COPY EXISTS AND NOTHING ELSE MOVED — a `.restoring-` beside an intact target. The copy is removed
+ *      and the step runs again from the top; it is a copy of the staged component and holds nothing unique.
+ *   3. THE TARGET IS MOVED ASIDE AND THE NEW ONE IS NOT IN PLACE — a `.replaced-` and a `.restoring-`, and no
+ *      target. THIS IS THE DANGEROUS ONE: the installation has no secrets directory at all. The second
+ *      rename is completed, which is what the interrupted step was about to do.
+ *   4. THE SWAP LANDED AND WAS NOT RECORDED — a `.replaced-` and a target holding the staged bytes. The step
+ *      is complete; the only thing lost was the record, and the record is reconstructed.
+ */
+function repairSwap(
+  target: ResolvedTarget,
+  stagingDir: string,
+  id: BackupComponentId,
+  suffix: string,
+  deps: CompleteRestoreDeps,
+  swaps: readonly JournalSwap[],
+): StepRecovery {
+  const parent = join(target.dir, '..');
+  const restoring = join(parent, swapStagingName(target.name, suffix));
+  const replacedName = swapReplacedName(target.name, suffix);
+  const replaced = join(parent, replacedName);
+  const rename = deps.rename ?? renameSync;
+  const already = swaps.some((swap) => swap.component === id);
+
+  if (!existsSync(replaced)) {
+    if (existsSync(restoring)) {
+      // State 2. The copy is this command's own and is reproducible from the staged component.
+      try {
+        removeOwnTreeNoFollow(restoring, 'interrupted swap copy');
+      } catch {
+        return {
+          kind: 'refuse', reset: [],
+          detail: `a previous run left a partial copy beside the ${target.name} directory and it could not be `
+            + 'removed. Look at it before running again. Nothing was changed.',
+          note: 'A partial swap copy could not be removed.',
+        };
+      }
+    }
+    // State 1.
+    return {
+      kind: 'retry', reset: [],
+      note: `A previous run stopped before the ${target.name} directory was moved, so nothing had changed and `
+        + 'the placement was performed normally.',
+    };
+  }
+
+  if (existsSync(target.dir)) {
+    // State 4: both halves landed. Nothing to do but say so, and make sure the record survives.
+    if (existsSync(restoring)) {
+      return {
+        kind: 'refuse', reset: [],
+        detail: `a previous run left BOTH a moved-aside and a staged ${target.name} directory beside an `
+          + 'existing one, which this command cannot have produced. Look at all three before running again. '
+          + 'Nothing was changed.',
+        note: 'An unrecognisable swap state was found.',
+      };
+    }
+    return {
+      kind: 'complete',
+      reset: [],
+      // THE RECORD IS RECONSTRUCTED, because `--abandon` walks it. A swap that landed and was never
+      // journaled would otherwise be a directory nothing could put back.
+      ...(already ? {} : { swap: { component: id, target: target.relative, name: target.name, replaced: replacedName, undone: false } }),
+      note: `A previous run stopped after placing the ${target.name} directory but before recording it. Both `
+        + 'renames had landed, so the placement is complete and the previous contents are still beside it.',
+    };
+  }
+
+  // State 3 — THE ONE THAT MATTERS. The installation currently has no directory at that name.
+  if (!existsSync(restoring)) {
+    // The target is gone and the new contents never got copied: put the previous ones back, so the
+    // installation is at least where it started, and let the step run again.
+    try {
+      rename(replaced, target.dir);
+    } catch {
+      return {
+        kind: 'refuse', reset: [],
+        detail: `a previous run moved the ${target.name} directory aside and this command could not put it `
+          + 'back. The previous contents are beside it under a dot-prefixed name. Nothing was changed.',
+        note: 'An interrupted swap could not be undone.',
+      };
+    }
+    return {
+      kind: 'retry', reset: [],
+      note: `A previous run stopped after moving the ${target.name} directory aside and before the replacement `
+        + 'was ready. The previous contents were put back and the placement was performed again.',
+    };
+  }
+  try {
+    rename(restoring, target.dir);
+  } catch {
+    return {
+      kind: 'refuse', reset: [],
+      detail: `a previous run left the ${target.name} directory missing, with its previous contents and its `
+        + 'replacement both beside it, and neither could be moved into place. Nothing was changed — the data '
+        + 'is all there under the dot-prefixed names.',
+      note: 'An interrupted swap could not be finished.',
+    };
+  }
+  return {
+    kind: 'complete',
+    reset: [],
+    // THE RECORD IS RECONSTRUCTED, because `--abandon` walks it. A swap that landed and was never
+    // journaled would otherwise be a directory nothing could put back.
+    ...(already ? {} : { swap: { component: id, target: target.relative, name: target.name, replaced: replacedName, undone: false } }),
+    note: `A previous run was killed between the two renames of the ${target.name} directory, leaving it `
+      + `MISSING. The interrupted rename was finished${already ? '' : ' and recorded'}, so the installation `
+      + 'holds the restored contents and the previous ones are beside them.',
+  };
 }
 
 interface StepHooks {
@@ -1174,13 +1643,14 @@ function performStep(
       return outcome.status === 0 ? null : 'the stack could not be stopped and its volumes destroyed';
     }
     case 'place-secrets':
-      return swapComponent(resolved.secrets, stagingDir, 'secrets', suffix, 'secrets directory', hooks.onSwap);
+      return swapComponent(resolved.secrets, stagingDir, 'secrets', suffix, 'secrets directory', hooks.onSwap,
+        deps.rename ?? renameSync);
     case 'place-promotion-records':
       return swapComponent(resolved.promotionRecords!, stagingDir, 'promotion-records', suffix,
-        'promotion records directory', hooks.onSwap);
+        'promotion records directory', hooks.onSwap, deps.rename ?? renameSync);
     case 'place-sidecar-keystore':
       return swapComponent(resolved.sidecarState!, stagingDir, 'keystore', suffix,
-        'sidecar state directory', hooks.onSwap);
+        'sidecar state directory', hooks.onSwap, deps.rename ?? renameSync);
     case 'replay-database': {
       // THE STAGED, RE-VERIFIED DUMP — never the set's own file. What is replayed is what was verified.
       const dump = join(stagingDir, COMPONENT_ARTIFACT_NAMES.database);
@@ -1374,6 +1844,7 @@ function swapComponent(
   suffix: string,
   what: string,
   onSwap: (swap: JournalSwap) => void,
+  rename: Renamer,
 ): string | null {
   const source = join(stagingDir, COMPONENT_ARTIFACT_NAMES[id]);
   if (!existsSync(source)) {
@@ -1401,14 +1872,17 @@ function swapComponent(
   let moved = false;
   if (existsSync(target.dir)) {
     try {
-      renameSync(target.dir, replaced);
+      // THE FIRST RENAME. From here until the second one lands, the installation has NO directory at this
+      // name — which is why the journal already records this step as running, and why the recovery knows
+      // how to finish what a crash here interrupts.
+      rename(target.dir, replaced);
     } catch {
       return `the existing ${what} could not be moved aside, so nothing was replaced`;
     }
     moved = true;
   }
   try {
-    renameSync(staging, target.dir);
+    rename(staging, target.dir);
   } catch {
     return `the ${what} from this set could not be moved into place. The previous one is beside it under the `
       + 'replaced name and this run stopped.';
@@ -1506,7 +1980,7 @@ export function abandonRestore(projectRootRequested: string): AbandonReport {
   } else {
     // THE JOURNAL STAYS, AND IT RECORDS WHAT IS STILL OUT OF PLACE. A project with an unresolved swap must
     // keep refusing a fresh restore: running one would take a "safety set" of a half-unwound installation.
-    writeRestoreJournal(projectRoot, { ...journal, swaps, running: null });
+    writeRestoreJournal(projectRoot, { ...journal, swaps });
     notes.push('THE JOURNAL WAS NOT CLEARED: at least one directory this restore moved aside could not be put '
       + 'back. This project keeps refusing a fresh restore until it is. Look at the names above.');
   }

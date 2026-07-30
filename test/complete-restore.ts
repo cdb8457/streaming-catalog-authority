@@ -1,6 +1,8 @@
+import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync,
+  writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -20,6 +22,7 @@ import {
 import {
   CompleteRestoreFailed,
   RESTORE_JOURNAL_NAME,
+  RESTORE_JOURNAL_VERSION,
   abandonRestore,
   canonicalOperation,
   classifyTarget,
@@ -38,6 +41,8 @@ import {
   DESTRUCTIVE_STEP_IDS,
   PROOF_STEP_IDS,
   RESTORE_STEP_IDS,
+  STEP_RECOVERY,
+  STEP_REWIND_TO,
   placementsFor,
   requiredPlacementIds,
   stepsFor,
@@ -51,6 +56,7 @@ import {
 } from '../src/ops/complete-restore-cli.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
 import { restoreStack, setDumpDigest, setKeystoreDigest } from './helpers/fake-restore-stack.js';
+import { CRASH_EXIT_CODE } from './helpers/restore-crash-child.mjs';
 
 // Phases 297-304 — the restore, and every way it must refuse to perform one.
 //
@@ -820,7 +826,8 @@ test('a journal refuses a fresh restore, and --resume continues without swapping
   const journal = readRestoreJournal(root)!;
   assert(journal !== null, 'a journal was left');
   assertEq(journal.planDigest, plan.digest, 'bound to the plan it was running');
-  assert(journal.completed.includes('place-secrets'), 'and it records the swaps that completed');
+  assertEq(journal.steps.find((step) => step.id === 'place-secrets')!.state, 'complete',
+    'and it records the swaps that completed');
 
   // A FRESH RUN IS REFUSED. Running from the top would take a "safety set" of the wreckage.
   refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(first),
@@ -912,7 +919,7 @@ test('a run that failed AT the safety set is resumable, because the DECISION is 
   const journal = readRestoreJournal(root)!;
   assertEq(journal.safetySetPlanned, true, 'the journal records that a safety set was PLANNED');
   assertEq(journal.safetySetTaken, false, 'and that one was never taken — two different facts');
-  assertEq(journal.completed.includes('safety-set'), false, 'the step did not complete');
+  assertEq(journal.steps.find((step) => step.id === 'safety-set')!.state, 'failed', 'the step did not complete');
 
   // AND THE RESUME WORKS, from the same plan, with the safety set taken this time.
   const second = worldFor(setDir);
@@ -1258,11 +1265,13 @@ test('a journal carrying a malicious suffix, an unknown step, or an impossible o
   const root = makeProject('journal-guard');
   takeSet(root, 'set-1');
   const good = {
-    journal: 'catalog-authority.restore', version: 2, planDigest: 'a'.repeat(64), setName: 'set-1',
+    journal: 'catalog-authority.restore', version: RESTORE_JOURNAL_VERSION, planDigest: 'a'.repeat(64),
+    setName: 'set-1',
     destination: 'backups', custodian: 'inline', targetState: 'OCCUPIED', safetySetName: 'pre-restore-set-1',
     suffix: 'aaaaaaaaaaaa', safetySetPlanned: true, safetySetTaken: true,
     request: { secrets: 'secrets', promotionRecords: 'promotion-records', sidecarState: null },
-    completed: ['safety-set'], running: null, swaps: [],
+    steps: [{ id: 'safety-set', state: 'complete', detail: null }], swaps: [],
+    evidence: { custodyProven: false, safetySetTaken: true, safetySetVerified: true },
   };
   const write = (patch: Record<string, unknown>): void => {
     writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify({ ...good, ...patch })}\n`, 'utf8');
@@ -1279,12 +1288,29 @@ test('a journal carrying a malicious suffix, an unknown step, or an impossible o
   }
   write({ setName: '../elsewhere' });
   refuses(() => readRestoreJournal(root), 'usable name', 'a set name that is a path is refused');
-  write({ completed: ['not-a-step'] });
+  write({ steps: [{ id: 'not-a-step', state: 'complete', detail: null }] });
   refuses(() => readRestoreJournal(root), 'does not have', 'a step this build does not have is refused');
-  write({ completed: ['safety-set', 'safety-set'] });
+  write({ steps: [{ id: 'safety-set', state: 'complete', detail: null }, { id: 'safety-set', state: 'pending', detail: null }] });
   refuses(() => readRestoreJournal(root), 'one step twice', 'a duplicated step is refused');
-  write({ completed: ['safety-set'], running: 'safety-set' });
-  refuses(() => readRestoreJournal(root), 'both running and complete', 'a step that is two things at once is refused');
+  // ONE PROCESS, ONE STEP. A crash leaves exactly the step it was inside; two is a file somebody edited.
+  write({ steps: [{ id: 'safety-set', state: 'running', detail: null }, { id: 'stage-components', state: 'running', detail: null }] });
+  refuses(() => readRestoreJournal(root), 'more than one step as running', 'two running steps is refused');
+  write({ steps: [{ id: 'safety-set', state: 'sideways', detail: null }] });
+  refuses(() => readRestoreJournal(root), 'state this build does not have', 'an unknown step state is refused');
+  // A FAILURE WITHOUT A REASON IS A FAILURE NOBODY CAN ACT ON, and a success with one records two things.
+  write({ steps: [{ id: 'safety-set', state: 'failed', detail: null }] });
+  refuses(() => readRestoreJournal(root), 'records no reason', 'a failure with no reason is refused');
+  write({ steps: [{ id: 'safety-set', state: 'complete', detail: 'why' }] });
+  refuses(() => readRestoreJournal(root), 'carries a reason', 'a non-failure carrying a reason is refused');
+  write({ steps: [] });
+  refuses(() => readRestoreJournal(root), 'records no steps', 'an empty step list is refused');
+  // THE EVIDENCE IS ACTED ON, so it is validated like everything else that is.
+  write({ evidence: { custodyProven: false, safetySetTaken: false, safetySetVerified: true } });
+  refuses(() => readRestoreJournal(root), 'verified that was never taken', 'impossible evidence is refused');
+  write({ evidence: { custodyProven: 'yes', safetySetTaken: false, safetySetVerified: false } });
+  refuses(() => readRestoreJournal(root), 'not a boolean', 'evidence that is not a boolean is refused');
+  write({ safetySetPlanned: false, evidence: { custodyProven: false, safetySetTaken: true, safetySetVerified: false } });
+  refuses(() => readRestoreJournal(root), 'never planned', 'evidence of an unplanned safety set is refused');
   write({ custodian: 'sidecar' });
   refuses(() => readRestoreJournal(root), 'sidecar state directory disagree', 'a topology with no state directory is refused');
   write({ safetySetPlanned: false, safetySetTaken: true });
@@ -1296,11 +1322,13 @@ test('a journal carrying a malicious suffix, an unknown step, or an impossible o
   rmSync(join(root, RESTORE_JOURNAL_NAME));
 });
 
-test('a journal whose completed steps are not this operation\'s ordered prefix is refused before anything runs', () => {
-  // A RUN CANNOT FINISH A LATER STEP BEFORE AN EARLIER ONE. A journal claiming otherwise is not an
-  // interrupted run — it is a file somebody edited, and resuming it would perform a skipped step against
-  // state that is already past it.
-  const root = makeProject('journal-order');
+test('a journal in a state no run of this operation could have produced is refused before anything runs', () => {
+  // A LIST OF COMPLETED STEPS COULD NOT EXPRESS AN INDEPENDENT PROOF FAILURE, and a per-step model can
+  // express states a real run never reaches. So the legality rules are the shape of the executor, written
+  // down: non-proof steps are complete* then at most one running/failed then pending*; the proofs stay
+  // pending until every step before them is complete; and the proofs themselves are (complete|failed)* then
+  // at most one running then pending*.
+  const root = makeProject('journal-legality');
   const setDir = takeSet(root, 'set-1');
   const { plan } = planFor(request(root, 'set-1'));
   const world = restoreStack({
@@ -1311,20 +1339,107 @@ test('a journal whose completed steps are not this operation\'s ordered prefix i
   runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
   const journal = readRestoreJournal(root)!;
 
-  // OUT OF ORDER: the replay recorded as done with the teardown that precedes it missing.
-  const scrambled = { ...journal, completed: ['stop-and-destroy', 'safety-set'] };
-  writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify(scrambled)}\n`, 'utf8');
-  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'resume', confirm: plan.digest }),
-    'in this operation\'s order', 'a scrambled completed list is refused');
+  const put = (steps: unknown): void => {
+    writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify({ ...journal, steps })}\n`, 'utf8');
+  };
+  const at = (id: string, state: string, detail: string | null = null) => ({ id, state, detail });
+  const ids = plan.steps.map((step) => step.id);
+  const allBut = (overrides: Record<string, [string, string | null]>) => ids.map((id) => {
+    const over = overrides[id];
+    return over === undefined ? at(id, 'complete') : at(id, over[0], over[1]);
+  });
 
-  // A RUNNING STEP THAT IS NOT THE NEXT ONE.
-  const impossible = { ...journal, completed: ['safety-set'], running: 'stack-up' };
-  writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify(impossible)}\n`, 'utf8');
+  // A LATER NON-PROOF STEP DONE BEFORE AN EARLIER ONE. A run cannot do that.
+  put(allBut({ 'stop-and-destroy': ['pending', null] }));
   refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'resume', confirm: plan.digest }),
-    'not the one this operation would have reached', 'an impossible running step is refused');
-  rmSync(join(root, RESTORE_JOURNAL_NAME));
+    'no run of this operation could have produced', 'a gap before a completed later step is refused');
+
+  // A PROOF REACHED BEFORE THE STEPS BEFORE IT COMPLETED.
+  put(allBut({ 'stack-up': ['pending', null] }));
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'resume', confirm: plan.digest }),
+    'no run of this operation could have produced', 'a proof reached too early is refused');
+
+  // A STEP LIST THAT IS NOT THIS OPERATION'S STEPS.
+  put(ids.slice(0, 3).map((id) => at(id, 'complete')));
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'resume', confirm: plan.digest }),
+    'does not describe this operation', 'a short step list is refused');
+
+  // AND THE STATE A REAL RUN DID PRODUCE IS ACCEPTED — which is the whole point of the model.
+  put(allBut({ 'prove-history': ['failed', 'the durable history could not be read'] }));
+  const resumed = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(resumed.ok, true, 'a legal interrupted state resumes');
 });
 
+test('an EARLIER proof may fail while LATER ones succeed, and that state is legal and resumable', () => {
+  // THE DEFECT THIS PINS, AND IT LEFT AN INSTALLATION WITH NO WAY FORWARD. Every proof runs even after an
+  // earlier one fails — that is correct, and it is what made the old journal illegal. Progress was an
+  // ORDERED LIST OF COMPLETED STEPS validated as a PREFIX, so a run whose `prove-version` failed and whose
+  // `prove-doctor` succeeded wrote a list with a hole in the middle, which its own reader then refused.
+  // The project then refused a fresh restore (a journal is present) AND a resume (the journal is illegal).
+  const root = makeProject('proof-independence');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  // The pinned image expects a later schema, so prove-version fails; every later proof still succeeds.
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION + 1,
+    initialSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(world),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  assertEq(report.steps.find((step) => step.id === 'prove-version')!.outcome, 'failed', 'the first proof failed');
+  assertEq(report.steps.find((step) => step.id === 'prove-doctor')!.outcome, 'held', 'and a later one held');
+
+  // THE JOURNAL IT WROTE IS ONE ITS OWN READER ACCEPTS.
+  const journal = readRestoreJournal(root)!;
+  assert(journal !== null, 'the journal this run wrote reads back');
+  assertEq(journal.steps.find((step) => step.id === 'prove-version')!.state, 'failed', 'the failure is recorded');
+  assertEq(journal.steps.find((step) => step.id === 'prove-doctor')!.state, 'complete',
+    'AND SO IS THE LATER SUCCESS — which a prefix of completed steps could not represent');
+  assert(journal.steps.find((step) => step.id === 'prove-version')!.detail !== null,
+    'and the failure stays diagnosable, with its reason');
+
+  // AND THE INSTALLATION IS RESUMABLE, which is what the old model made impossible.
+  const fixed = worldFor(setDir);
+  const resumed = runCompleteRestore(request(root, 'set-1'), depsFor(fixed), { kind: 'resume', confirm: plan.digest });
+  assertEq(resumed.ok, true, `the resume completed: ${resumed.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(resumed.steps.find((step) => step.id === 'prove-version')!.outcome, 'held',
+    'the previously failed proof was RE-RUN, not skipped — a read-only diagnosis is worth refreshing');
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and the journal is cleared');
+});
+
+test('custody proven by an earlier process survives a resume that skips the step which proved it', () => {
+  // THE DEFECT THIS PINS. `custodyProven` lived only in the running process. A run that PROVED custody and
+  // then failed `prove-history` left a journal with `prove-decrypt` complete; the resume skipped that step,
+  // because it was complete, and so never set the flag — and reported a fully successful restore as
+  // "custody proven: NO". The most important claim this command makes was destroyed by the recovery path
+  // for an unrelated failure.
+  const root = makeProject('custody-evidence');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const first = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  const firstReport = runCompleteRestore(request(root, 'set-1'), depsFor(first),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  assertEq(firstReport.custodyProven, true, 'the first run PROVED custody');
+  assertEq(firstReport.ok, false, 'and then failed a later, unrelated proof');
+
+  // THE EVIDENCE IS IN THE JOURNAL, not only in a process that has ended.
+  const journal = readRestoreJournal(root)!;
+  assertEq(journal.evidence.custodyProven, true, 'the journal carries what the operation established');
+
+  const second = worldFor(setDir);
+  const resumed = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+  assertEq(resumed.ok, true, 'the resume completed');
+  assertEq(resumed.steps.find((step) => step.id === 'prove-decrypt')!.outcome, 'skipped',
+    'the step that proved custody was skipped, because it had already completed');
+  assertEq(resumed.custodyProven, true, 'AND CUSTODY IS STILL PROVEN — the operation established it');
+  assert(renderCompleteRestore(resumed).includes('custody proven     YES'), 'and the rendering says so');
+});
 test('--abandon uses the journal\'s own targets, so altered CLI paths cannot orphan the real ones', () => {
   // THE DEFECT THIS PINS, AND IT WAS SILENT. `abandonRestore` re-derived its targets from the CLI's
   // `--secrets` / `--promotion-records` flags. Give it a different path than the interrupted run used and it
@@ -1662,6 +1777,246 @@ test('the usage text and the abandon behaviour agree about what abandon needs', 
   // AND THE CODE AGREES: the mode's allowlist is exactly that.
   assertEq(MODE_VALUE_FLAGS.abandon.join(','), 'project', 'and the allowlist says the same');
   assertEq(MODE_VALUE_FLAGS.resume.join(','), 'project,resume', 'and a resume takes its digest and nothing else');
+});
+
+
+// ===========================================================================================================
+// CRASH BOUNDARIES — the process dies between an effect and the journal write that records it
+// ===========================================================================================================
+//
+// EVERY CHECK ABOVE COVERS A FAILURE THAT WAS RETURNED. A step that answers "this did not hold" leaves the
+// journal correct by construction, because the code that wrote the failure also ran. THE STATE NOBODY HAD
+// TESTED IS THE ONE WHERE NO CODE RAN AT ALL: a kill, a power loss or an OOM between the effect landing and
+// the journal recording it. That state is reachable in production and was unreachable in the suite.
+//
+// It is reachable here because the two effectful primitives are injected — `CommandRunner` and now `Renamer`.
+// A runner or a renamer that THROWS A HARD ERROR (not a `MaintenanceRefused`, which the step machinery would
+// catch and record) after the effect has landed is exactly a process that stopped existing at that point:
+// the effect is on disk, the journal still says `running`, and nothing recorded the outcome.
+//
+// Each check below therefore does three things: drive a run to a real crash at a NAMED boundary, assert the
+// on-disk state a crash there actually leaves, and then RESUME and assert the installation ends up somewhere
+// describable. A recovery path nobody can execute is a recovery path nobody can claim works.
+
+/**
+ * Run a restore in its own process and kill it at a named boundary.
+ *
+ * `process.exit` inside an injected primitive is the only faithful simulation of a process death: an
+ * exception is CAUGHT by `runGuarded` and by the step machinery, and correctly so, which is exactly why a
+ * suite that threw would be re-testing the error path rather than the crash path. See the child.
+ */
+function crashAt(config: Record<string, unknown>): void {
+  const child = spawnSync(process.execPath,
+    [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), CRASH_CHILD, JSON.stringify(config)],
+    { cwd: repoRoot, encoding: 'utf8', timeout: 120_000, windowsHide: true });
+  if (child.status !== CRASH_EXIT_CODE) {
+    throw new Error(`the run did not die at ${String(config.crashAt)}: exit ${String(child.status)} `
+      + `${(child.stderr ?? '').slice(0, 400)}`);
+  }
+
+  // A PROCESS THAT STOPPED EXISTING NEVER RELEASED THE LOCK. That is real, and this command deliberately
+  // does not break a lock on its own — so it names both facts, and the operator does what it says.
+  const root = String(config.projectRoot);
+  const lock = join(root, MAINTENANCE_LOCK_DIRNAME);
+  assert(existsSync(lock), `a killed run leaves ${MAINTENANCE_LOCK_DIRNAME} behind`);
+  rmSync(lock, { recursive: true, force: true });
+}
+
+/** The refusal an operator meets first, before they clear the lock the dead process left. */
+function crashAtKeepingLock(config: Record<string, unknown>): void {
+  const child = spawnSync(process.execPath,
+    [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), CRASH_CHILD, JSON.stringify(config)],
+    { cwd: repoRoot, encoding: 'utf8', timeout: 120_000, windowsHide: true });
+  if (child.status !== CRASH_EXIT_CODE) {
+    throw new Error(`the run did not die at ${String(config.crashAt)}: exit ${String(child.status)}`);
+  }
+}
+const CRASH_CHILD = fileURLToPath(new URL('./helpers/restore-crash-child.mts', import.meta.url));
+test('CRASH between the two renames of a swap: the target is MISSING, and a resume finishes the rename', () => {
+  // THE STATE THIS PRODUCES IS THE WORST ONE IN THE WHOLE COMMAND. Between the two renames the installation
+  // has NO secrets directory at all: the previous contents are under `.replaced-`, the new ones under
+  // `.restoring-`, and the name everything reads is empty. The first cut's resume would have found no target,
+  // tried to copy the staged component to a `.restoring-` name that already existed, and REFUSED — leaving
+  // the installation with no secrets and a command that would not move.
+  const root = makeProject('crash-mid-swap');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'rename:1' });
+
+  // THE ON-DISK STATE A CRASH THERE REALLY LEAVES.
+  assertEq(existsSync(join(root, 'secrets')), false, 'the secrets directory is GONE — this is the dangerous state');
+  assert(existsSync(join(root, '.secrets.replaced-aaaaaaaaaaaa')), 'the previous contents are beside it');
+  assert(existsSync(join(root, '.secrets.restoring-aaaaaaaaaaaa')), 'and so is the replacement that never landed');
+  const journal = readRestoreJournal(root)!;
+  assertEq(journal.steps.find((step) => step.id === 'place-secrets')!.state, 'running',
+    'and the journal names the step the process was inside');
+
+  // THE RESUME FINISHES WHAT THE CRASH INTERRUPTED.
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(restoreStack({
+    buildSchema: MIGRATION_VERSION, startDestroyed: true,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  })),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), SECRET_VALUE,
+    'THE SECRETS DIRECTORY IS BACK, holding the restored bytes');
+  assertEq(existsSync(join(root, '.secrets.restoring-aaaaaaaaaaaa')), false, 'nothing is left half-renamed');
+  assert(report.replaced.includes('.secrets.replaced-aaaaaaaaaaaa'),
+    'and the previous contents are still named, so an abandon could still put them back');
+});
+
+test('CRASH after BOTH renames but before the record: the swap is recognised, not performed twice', () => {
+  // A crash here leaves a correct installation and a journal that does not know it. Re-running the swap
+  // would rename the RESTORED directory aside and record it as "the previous contents" — losing the real
+  // previous contents behind a second `.replaced-` name and corrupting what `--abandon` would put back.
+  const root = makeProject('crash-after-swap');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'rename:2' });
+
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), SECRET_VALUE, 'the swap did land');
+  const before = readdirSync(root).filter((entry) => entry.includes('.replaced-'));
+  assertEq(before.length, 1, 'and exactly one directory was moved aside');
+
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(restoreStack({
+    buildSchema: MIGRATION_VERSION, startDestroyed: true,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  })),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, 'the resume completed');
+  assertEq(readdirSync(root).filter((entry) => entry.includes('.replaced-')).length, 1,
+    'AND THE SWAP WAS NOT PERFORMED A SECOND TIME');
+  assertEq(readFileSync(join(root, '.secrets.replaced-aaaaaaaaaaaa', 'custodian_kek'), 'utf8'), 'a-later-value\n',
+    'the directory kept aside is still the one the installation had before the restore');
+  assert(report.replaced.includes('.secrets.replaced-aaaaaaaaaaaa'),
+    'and the reconstructed record names it, so --abandon can still undo it');
+});
+
+test('CRASH after the safety set is published, before it is recorded: it is recognised, not retaken', () => {
+  // `ops:complete-backup` REFUSES AN EXISTING SET NAME — deliberately, because replacing a set is how the
+  // only copy of something irrecoverable gets overwritten. So a blind retry after this crash would fail at
+  // the first step, every time, and the operator's only way forward would be to delete the very set that was
+  // protecting them.
+  const root = makeProject('crash-after-safety-set');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+
+  // The safety set's last command is the `compose start` that brings the stack back; dying after it means
+  // the whole verified cycle completed and only the record was lost.
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'complete:safety-set' });
+
+  assert(existsSync(join(root, 'backups', 'pre-restore-set-1')), 'the safety set IS on disk');
+  assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'safety-set')!.state, 'running',
+    'and the journal says the process was inside that step');
+
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(report.steps.find((step) => step.id === 'safety-set')!.outcome, 'skipped',
+    'THE SET WAS RECOGNISED, not taken again into a name that would have refused it');
+  assertEq(report.safetySet, 'pre-restore-set-1', 'and the operation still knows it has one');
+  assertEq(report.safetySetVerified, true, 'proved by verifying it, not by finding a directory of that name');
+});
+
+test('CRASH inside the replay: the whole database leg is run again, because a partial dump cannot be repaired', () => {
+  // A `psql` replay killed halfway leaves a PARTIAL SCHEMA. Nothing can repair that in place, and replaying
+  // the same dump over it produces conflicts rather than a restore. The only honest recovery is to destroy
+  // the volumes and do the leg again — which the step declares, so the journal's own state is rewritten
+  // rather than a human reasoning about which earlier steps have been invalidated.
+  const root = makeProject('crash-mid-replay');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+
+  // The replay goes through the stdin-bound runner; dying there is dying inside `psql`.
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'complete:replay-database' });
+  const journal = readRestoreJournal(root)!;
+  assertEq(journal.steps.find((step) => step.id === 'replay-database')!.state, 'running',
+    'the replay had landed and was not recorded');
+  assertEq(journal.steps.find((step) => step.id === 'stop-and-destroy')!.state, 'complete', 'after a completed teardown');
+
+  const second = restoreStack({
+    buildSchema: MIGRATION_VERSION, startDestroyed: true,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(second.teardowns(), 1, 'THE VOLUMES WERE DESTROYED AGAIN — the leg was rewound, not continued');
+  assertEq(report.steps.find((step) => step.id === 'stop-and-destroy')!.outcome, 'held',
+    'the teardown ran again rather than being skipped as complete');
+  assertEq(report.steps.find((step) => step.id === 'replay-database')!.outcome, 'held', 'and the dump replayed');
+  assert(report.notes.some((note) => note.includes('cannot be repeated or repaired')),
+    'and the report says why the leg was repeated');
+});
+
+test('CRASH after the teardown, before it is recorded: it is simply done again', () => {
+  // Most steps are idempotent and the recovery for them is the boring one. It is checked anyway, because
+  // "most steps are fine" is the assumption that made the other three dangerous.
+  const root = makeProject('crash-after-teardown');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'complete:stop-and-destroy' });
+  assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'stop-and-destroy')!.state, 'running',
+    'the teardown ran and was not recorded');
+
+  const second = restoreStack({
+    buildSchema: MIGRATION_VERSION, startDestroyed: true,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, 'the resume completed');
+  assert(report.notes.some((note) => note.includes('changes nothing that repeating it would damage')),
+    'and said the step was simply repeated');
+});
+
+test('every step declares a recovery policy, and the three that are not plain retries are the known ones', () => {
+  // THE POLICY IS DISPATCHED FROM THE DECLARATION, not from a reader's memory of which steps are idempotent.
+  // A step added to the model has to answer this question before it compiles.
+  for (const id of RESTORE_STEP_IDS) {
+    const policy = STEP_RECOVERY[id];
+    assert(['retry', 'confirm-or-retry', 'repair-swap', 'rewind'].includes(policy), `${id} declares a policy`);
+  }
+  assertEq(STEP_RECOVERY['safety-set'], 'confirm-or-retry', 'a published set is looked for before it is retaken');
+  for (const id of ['place-secrets', 'place-promotion-records', 'place-sidecar-keystore'] as const) {
+    assertEq(STEP_RECOVERY[id], 'repair-swap', `${id} is two renames and is repaired, not repeated`);
+  }
+  assertEq(STEP_RECOVERY['replay-database'], 'rewind', 'a partial replay rewinds the leg');
+  assertEq(STEP_REWIND_TO['replay-database'], 'stop-and-destroy', 'back to the teardown, which is where the leg starts');
+  // AND EVERY REWIND NAMES A STEP THAT REALLY COMES BEFORE IT.
+  for (const [id, to] of Object.entries(STEP_REWIND_TO)) {
+    const ids = RESTORE_STEP_IDS as readonly string[];
+    assert(ids.indexOf(to!) < ids.indexOf(id), `${id} rewinds to a step that precedes it`);
+  }
+});
+
+test('a half-published safety set is refused rather than trusted or replaced', () => {
+  // THE ONE CASE WHERE A HUMAN HAS TO LOOK. Retaking is refused by the name, and trusting it is refused by
+  // the verification — so the command says so and changes nothing, rather than choosing one of two bad
+  // options on the operator's behalf.
+  const root = makeProject('half-safety-set');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'complete:safety-set' });
+
+  // Something damages the published set before the resume: now it neither verifies nor may be replaced.
+  writeFileSync(join(root, 'backups', 'pre-restore-set-1', COMPONENT_ARTIFACT_NAMES.database), 'tampered\n', 'utf8');
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest }),
+  'does NOT verify', 'a half-published safety set is refused');
+  // AND THE JOURNAL STILL SAYS RUNNING, so the next attempt sees the same state rather than one the refusal invented.
+  assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'safety-set')!.state, 'running',
+    'the refusal changed nothing, including the journal');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
 });
 
 // ---------------------------------------------------------------------------------------------------------

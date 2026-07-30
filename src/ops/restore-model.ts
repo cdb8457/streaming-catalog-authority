@@ -187,14 +187,92 @@ export const DESTRUCTIVE_STEP_IDS: readonly RestoreStepId[] = Object.freeze([
 /**
  * The steps that only ESTABLISH something, and change nothing when they are run a second time.
  *
- * `--resume` re-runs the last incomplete step from the top rather than trying to continue inside it, so every
- * step has to be safe to start again. The swaps achieve that by recognising a target that already holds the
- * set's copy — by digest — and skipping rather than swapping a second time, which would rename the RESTORED
- * state aside and call it the previous one.
+ * They are the ones that may fail and let the run CONTINUE: a failed version check must not hide whether the
+ * installation can decrypt, because those are different problems with different answers. That is why the
+ * journal cannot be an ordered list of completed steps — see `JournalStep`.
  */
 export const PROOF_STEP_IDS: readonly RestoreStepId[] = Object.freeze([
   'prove-version', 'prove-doctor', 'prove-decrypt', 'prove-history',
 ]);
+
+// -----------------------------------------------------------------------------------------------------------
+// What a step needs when the process died in the middle of it
+// -----------------------------------------------------------------------------------------------------------
+
+/**
+ * How a resume recovers a step the journal records as RUNNING.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * "RUNNING" IS THE ONE STATE A CRASH CAN LEAVE, AND IT IS NOT THE SAME QUESTION FOR EVERY STEP.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The journal records a step as running BEFORE its effect and complete AFTER it. A process that dies in
+ * between — a kill, a power loss, an OOM — leaves exactly one step running, and the effect either landed,
+ * landed partly, or did not land. What a resume may safely do about that depends entirely on which step it
+ * is, and the first cut of this tranche had one answer for all of them ("run it again"), which is right for
+ * most and catastrophic for two.
+ *
+ * So each step DECLARES its policy, and the recovery is dispatched on the declaration rather than on a
+ * reviewer remembering which steps are idempotent:
+ *
+ *   * `retry` — running it again from the top is indistinguishable from running it once. `compose down -v`
+ *     on an already-destroyed stack, an `up` on a running one, a staging directory that is removed and
+ *     rebuilt, a read-only proof. Most steps are this, and saying so is what makes the other three visible.
+ *
+ *   * `confirm-or-retry` — the effect PUBLISHES SOMETHING UNDER A NAME, and repeating it blindly would be
+ *     refused by the very guard that protects it. The safety set is this: `ops:complete-backup` refuses an
+ *     existing set name, so a crash after the set was published but before the journal was updated would
+ *     leave a resume permanently unable to get past its first step. The recovery LOOKS FIRST: a set that is
+ *     there and verifies is the safety set this run took, and the step is complete.
+ *
+ *   * `repair-swap` — the effect is TWO RENAMES, and a crash between them leaves the target missing, the
+ *     previous contents under `.replaced-` and the new contents under `.restoring-`. That is not a state to
+ *     re-run into: re-running would find no target, copy the staged component to a staging name that already
+ *     exists, and refuse. The recovery finishes the interrupted rename, which is the only outcome that
+ *     leaves the installation somewhere describable.
+ *
+ *   * `rewind` — the effect is NOT idempotent and NOT repairable. A `psql` replay killed halfway leaves a
+ *     partial schema; replaying the same dump over it produces conflicts, not a restore. There is exactly
+ *     one safe recovery and it is to go back to the teardown and do the whole database leg again. The step
+ *     names where to rewind to, so the journal's own state is rewritten rather than a human reasoning about
+ *     which earlier steps have been invalidated.
+ */
+export type RecoveryPolicy = 'retry' | 'confirm-or-retry' | 'repair-swap' | 'rewind';
+
+export const STEP_RECOVERY: Readonly<Record<RestoreStepId, RecoveryPolicy>> = Object.freeze({
+  // Publishes a named set; an existing name is refused, so a blind retry would wedge the resume.
+  'safety-set': 'confirm-or-retry',
+  // Removes whatever partial staging it finds and rebuilds from the set, re-verifying against the manifest.
+  'stage-components': 'retry',
+  'stop-and-destroy': 'retry',
+  'place-secrets': 'repair-swap',
+  'place-promotion-records': 'repair-swap',
+  'place-sidecar-keystore': 'repair-swap',
+  'database-up': 'retry',
+  // `CREATE ROLE IF NOT EXISTS` in one statement.
+  'prepare-runtime-role': 'retry',
+  // A PARTIAL REPLAY IS THE ONE STATE NOTHING CAN REPAIR IN PLACE.
+  'replay-database': 'rewind',
+  // Copies the staged, verified tree into a volume the teardown emptied; a second copy of the same bytes
+  // over a partial one leaves the same tree.
+  'place-inline-keystore': 'retry',
+  'stack-up': 'retry',
+  'prove-version': 'retry',
+  'prove-doctor': 'retry',
+  'prove-decrypt': 'retry',
+  'prove-history': 'retry',
+});
+
+/**
+ * Where a `rewind` step goes back to.
+ *
+ * The database leg is one unit: destroy the volumes, start a fresh database, prepare the role, replay. A
+ * replay interrupted anywhere inside it invalidates the whole leg, and the honest recovery is to run the leg
+ * again rather than to guess how much of the dump landed.
+ */
+export const STEP_REWIND_TO: Readonly<Partial<Record<RestoreStepId, RestoreStepId>>> = Object.freeze({
+  'replay-database': 'stop-and-destroy',
+});
 
 /** What each step establishes. Rendered by `--plan`, and never interpolated with anything read at runtime. */
 export const RESTORE_STEP_PURPOSE: Readonly<Record<RestoreStepId, string>> = Object.freeze({
