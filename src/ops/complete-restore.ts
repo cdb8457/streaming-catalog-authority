@@ -49,6 +49,7 @@ import {
   createPrivateDirectory,
   digestFileNoFollow,
   readFileNoFollow,
+  removeOwnFileNoFollow,
   removeOwnTreeNoFollow,
   resolveInsideRoot,
   resolveMaintenanceRoot,
@@ -1079,7 +1080,26 @@ export interface CompleteRestoreDeps {
    * `writeRestoreJournal`.
    */
   readonly journalWriter?: JournalWriter;
+  /**
+   * How one component is copied into staging, injected. Phase 303 (correction 3b).
+   *
+   * SAME IDIOM AS `Renamer` AND `JournalWriter`, AND THE SAME REASON: a copy is synchronous, so "the
+   * process died in the middle of copying the keystore" is a state no timer, signal or exception can produce
+   * from outside it. Without a seam at the effect, the claim/seal protocol that exists precisely for that
+   * window would be untestable — and an untestable recovery is one nobody can claim works. Production passes
+   * `realStagingCopier`.
+   */
+  readonly copier?: StagingCopier;
 }
+
+/** Copy one component of a backup set into the staging directory. */
+export type StagingCopier = (source: string, destination: string, id: BackupComponentId) => void;
+
+/** The shipped copier: a descriptor-streamed file for the dump, a no-follow tree walk for everything else. */
+export const realStagingCopier: StagingCopier = (source, destination, id) => {
+  if (id === 'database') copyFileNoFollow(source, destination, `${id} component`);
+  else copyTree(source, destination, `${id} component`);
+};
 
 /** One rename. Injected so a suite can stop a run between the two halves of a swap. */
 export type Renamer = (from: string, to: string) => void;
@@ -1935,7 +1955,7 @@ function performStep(
       return null;
     }
     case 'stage-components':
-      return stageComponents(resolved, stagingDir, plan, suffix);
+      return stageComponents(resolved, stagingDir, plan, suffix, deps.copier ?? realStagingCopier);
     case 'stop-and-destroy': {
       hooks.onStopped();
       const outcome = runOne(step.commands[0]!);
@@ -2103,6 +2123,19 @@ export interface StagingMarker {
   readonly journalVersion: typeof RESTORE_JOURNAL_VERSION;
   readonly planDigest: string;
   readonly suffix: string;
+  /**
+   * `claimed` before a byte is copied; `sealed` once every component is copied AND verified.
+   *
+   * THE DEFECT THIS CLOSES. The marker was written LAST, so a process that died DURING the copy left an
+   * UNMARKED tree at a predictable name — and the rule "an unmarked tree is not ours" then meant the resume
+   * could neither trust it nor remove it. The project wedged: every resume refused, and the only way out was
+   * an operator deleting a directory full of secrets by hand.
+   *
+   * A CLAIM COSTS NOTHING AND RESOLVES IT. Written before the copying starts, a partial tree carries proof of
+   * whose it is, and may be removed and rebuilt by the operation that made it — and by nothing else.
+   * `sealed` is what authorises USING the contents; `claimed` authorises only rebuilding them.
+   */
+  readonly state: StagingState;
   readonly components: readonly {
     readonly id: BackupComponentId;
     readonly artifact: string;
@@ -2111,6 +2144,9 @@ export interface StagingMarker {
     readonly bytes: number;
   }[];
 }
+
+/** `claimed` — this operation is building it. `sealed` — every component is copied and verified. */
+export type StagingState = 'claimed' | 'sealed';
 
 export function stagingMarkerPath(stagingDir: string): string {
   return join(stagingDir, STAGING_MARKER_NAME);
@@ -2127,6 +2163,7 @@ export function readStagingMarker(
   stagingDir: string,
   planDigest: string,
   suffix: string,
+  manifest?: BackupManifest,
 ): { readonly marker: StagingMarker } | { readonly refusal: string } {
   const path = stagingMarkerPath(stagingDir);
   if (lstatSync(path, { throwIfNoEntry: false }) === undefined) {
@@ -2153,18 +2190,50 @@ export function readStagingMarker(
     return { refusal: 'the directory at this run\'s staging name belongs to a DIFFERENT restore operation — '
       + 'its marker names another plan. It was left alone.' };
   }
-  if (!Array.isArray(doc.components)) {
-    return { refusal: 'the ownership marker of this run\'s staging directory declares no components.' };
-  }
+  // -------------------------------------------------------------------------------------------------
+  // A DOCUMENT THAT AUTHORISES RECURSIVE DELETION IS VALIDATED CANONICALLY.
+  // -------------------------------------------------------------------------------------------------
+  //
+  // This marker decides whether a directory holding a copy of every secret in the installation may be
+  // REMOVED AND REBUILT, and whether its contents may be placed into a live installation. A shape check that
+  // only asked "is this an object naming the right plan" would let a malformed-but-matching document
+  // authorise both. Every field is checked against a closed vocabulary, and against what the backup set
+  // itself declares.
+  const malformed = {
+    refusal: 'the ownership marker of this run\'s staging directory is malformed, so it proves nothing and '
+      + 'authorises nothing — least of all removing a directory of secrets. It was left alone.',
+  };
+  if (doc.state !== 'claimed' && doc.state !== 'sealed') return malformed;
+  if (!Array.isArray(doc.components)) return malformed;
+  const seen = new Set<string>();
   for (const entry of doc.components) {
-    if (entry === null || typeof entry !== 'object') {
-      return { refusal: 'the ownership marker of this run\'s staging directory is malformed.' };
-    }
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return malformed;
     const component = entry as Record<string, unknown>;
-    if (typeof component.id !== 'string' || !(BACKUP_COMPONENT_IDS as readonly string[]).includes(component.id)
-      || typeof component.digest !== 'string' || typeof component.entries !== 'number'
-      || typeof component.bytes !== 'number' || typeof component.artifact !== 'string') {
-      return { refusal: 'the ownership marker of this run\'s staging directory is malformed.' };
+    // A KNOWN COMPONENT ID, exactly once.
+    if (typeof component.id !== 'string'
+      || !(BACKUP_COMPONENT_IDS as readonly string[]).includes(component.id)) return malformed;
+    if (seen.has(component.id)) return malformed;
+    seen.add(component.id);
+    // THE CANONICAL ARTIFACT NAME FOR THAT ID, not any string.
+    if (component.artifact !== COMPONENT_ARTIFACT_NAMES[component.id as BackupComponentId]) return malformed;
+    // A SHA-256, spelled the one way this product spells one.
+    if (typeof component.digest !== 'string' || !/^[0-9a-f]{64}$/.test(component.digest)) return malformed;
+    // COUNTS THAT ARE COUNTS.
+    for (const count of [component.entries, component.bytes]) {
+      if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return malformed;
+    }
+  }
+  if (manifest !== undefined) {
+    // AND THE EXACT SET AND VALUES THE BACKUP MANIFEST DECLARES. A marker naming a component the set does not
+    // carry, omitting one it does, or disagreeing about a digest, describes a tree this operation could not
+    // have staged.
+    const declared = manifest.components.filter((component) => component.present);
+    if (declared.length !== doc.components.length) return malformed;
+    for (const component of declared) {
+      const claimed = doc.components.find((entry) => entry.id === component.id);
+      if (claimed === undefined) return malformed;
+      if (claimed.digest !== component.digest || claimed.entries !== component.entries
+        || claimed.bytes !== component.bytes) return malformed;
     }
   }
   return { marker: doc as StagingMarker };
@@ -2225,8 +2294,12 @@ export function verifyOwnedStaging(
   manifest: BackupManifest,
   expected: readonly BackupComponentId[],
 ): string | null {
-  const owned = readStagingMarker(stagingDir, plan.digest, suffix);
+  const owned = readStagingMarker(stagingDir, plan.digest, suffix, manifest);
   if ('refusal' in owned) return owned.refusal;
+  if (owned.marker.state !== 'sealed') {
+    return 'this run\'s staging directory is CLAIMED but not sealed: a previous process was still copying '
+      + 'components into it when it stopped. Its contents are not verified and will not be used.';
+  }
   for (const id of expected) {
     const problem = verifyStagedComponent(stagingDir, id, manifest);
     if (problem !== null) return problem;
@@ -2268,12 +2341,16 @@ export function stageComponents(
   stagingDir: string,
   plan: RestorePlan,
   suffix: string,
+  copier: StagingCopier = realStagingCopier,
 ): string | null {
   if (existsSync(stagingDir)) {
     // A RESUME REACHES THIS ONLY IF THE STEP DID NOT COMPLETE, so a directory here is a partial stage from a
     // killed run — IF it is ours. One that is not ours is refused rather than removed: the name is derived
     // from a suffix an operator can read in a journal, and destroying somebody else's directory because it
     // sat at a predictable path is exactly the mistake this marker exists to prevent.
+    // A CLAIMED TREE IS THIS OPERATION'S HALF-BUILT ONE and may be rebuilt; a SEALED one is also this
+    // operation's and is equally safe to rebuild, because the set it came from is still there. What may
+    // never be rebuilt is a tree whose marker does not prove it is ours — see `readStagingMarker`.
     const owned = readStagingMarker(stagingDir, plan.digest, suffix);
     if ('refusal' in owned) return `${owned.refusal} Nothing was destroyed.`;
     try {
@@ -2285,6 +2362,39 @@ export function stageComponents(
   }
   createPrivateDirectory(stagingDir, 'restore staging directory');
 
+  // ---- THE CLAIM, BEFORE A SINGLE BYTE IS COPIED --------------------------------------------------
+  //
+  // THE DEFECT THIS CLOSES. The marker used to be written LAST, so a process that died DURING the copy left
+  // an UNMARKED tree at a predictable name — and "an unmarked tree is not ours" then meant the next resume
+  // could neither trust it nor remove it. The project wedged: every resume refused, and the only way out was
+  // an operator deleting a directory full of secrets by hand.
+  //
+  // A claim costs one small write and resolves it. A partial tree now carries proof of whose it is, so the
+  // operation that made it may remove and rebuild it — and nothing else may.
+  const claimed: StagingMarker['components'][number][] = componentsOfManifest(resolved.manifest);
+  const writeMarker = (state: StagingState): string | null => {
+    try {
+      const path = stagingMarkerPath(stagingDir);
+      if (existsSync(path)) removeOwnFileNoFollow(path, digestFileNoFollow(path, 'staging marker').digest,
+        'staging marker');
+      writePrivateFile(path, `${JSON.stringify({
+        marker: 'catalog-authority.restore-staging',
+        version: STAGING_MARKER_VERSION,
+        journalVersion: RESTORE_JOURNAL_VERSION,
+        planDigest: plan.digest,
+        suffix,
+        state,
+        components: claimed,
+      } satisfies StagingMarker, null, 2)}\n`, 'staging marker');
+    } catch {
+      return 'the staging directory\'s ownership marker could not be written, so nothing later could prove '
+        + 'the staged components are this command\'s. Nothing was destroyed.';
+    }
+    return null;
+  };
+  const claimFailure = writeMarker('claimed');
+  if (claimFailure !== null) return claimFailure;
+
   const staged: StagingMarker['components'][number][] = [];
   for (const id of BACKUP_COMPONENT_IDS) {
     const declared = resolved.manifest.components.find((component) => component.id === id);
@@ -2294,13 +2404,9 @@ export function stageComponents(
     const destination = join(stagingDir, artifact);
 
     try {
-      if (id === 'database') {
-        // STREAMED THROUGH A DESCRIPTOR, unbounded in file size and bounded in memory, refusing to follow a
-        // link at the open.
-        copyFileNoFollow(source, destination, `${id} component`);
-      } else {
-        copyTree(source, destination, `${id} component`);
-      }
+      // STREAMED THROUGH A DESCRIPTOR for the dump — unbounded in file size, bounded in memory, refusing to
+      // follow a link at the open — and a no-follow tree walk for the rest.
+      copier(source, destination, id);
     } catch (err) {
       return err instanceof MaintenanceRefused
         ? `${err.message} Nothing was destroyed.`
@@ -2317,26 +2423,32 @@ export function stageComponents(
     });
   }
 
-  // THE MARKER IS WRITTEN LAST, so a directory carrying one is a directory whose every component was staged
-  // and verified. A kill part way through leaves an unmarked tree, which the next run refuses to trust and
-  // — being unmarked — also refuses to remove, naming it instead.
-  const marker: StagingMarker = {
-    marker: 'catalog-authority.restore-staging',
-    version: STAGING_MARKER_VERSION,
-    journalVersion: RESTORE_JOURNAL_VERSION,
-    planDigest: plan.digest,
-    suffix,
-    components: staged,
-  };
-  try {
-    writePrivateFile(stagingMarkerPath(stagingDir), `${JSON.stringify(marker, null, 2)}\n`, 'staging marker');
-  } catch {
-    return 'the staging directory\'s ownership marker could not be written, so nothing later could prove the '
-      + 'staged components are this command\'s. Nothing was destroyed.';
+  // ---- THE SEAL, ONCE EVERY COMPONENT IS COPIED AND VERIFIED -------------------------------------
+  //
+  // `claimed` says whose the tree is; `sealed` says its contents may be USED. Only a sealed tree
+  // authorises a placement or a replay, so a kill part way through leaves a claimed tree that the same
+  // operation rebuilds and no other operation may touch.
+  if (staged.length !== claimed.length) {
+    return 'the staging directory does not hold every component this set declares, so it was not sealed. '
+      + 'Nothing was destroyed.';
   }
-  return null;
+  return writeMarker('sealed');
 }
 
+/** The components a manifest declares present, in the model's own order, as a marker records them. */
+function componentsOfManifest(manifest: BackupManifest): StagingMarker['components'][number][] {
+  return BACKUP_COMPONENT_IDS.flatMap((id) => {
+    const declared = manifest.components.find((component) => component.id === id);
+    if (declared === undefined || !declared.present) return [];
+    return [{
+      id,
+      artifact: COMPONENT_ARTIFACT_NAMES[id],
+      digest: declared.digest,
+      entries: declared.entries,
+      bytes: declared.bytes,
+    }];
+  });
+}
 /**
  * Put one component's verified copy where the installation reads it, by RENAME.
  *

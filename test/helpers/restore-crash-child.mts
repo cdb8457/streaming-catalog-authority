@@ -2,8 +2,8 @@ import { renameSync } from 'node:fs';
 import { isDirectRun } from '../../src/ops/direct-run.js';
 import { MIGRATION_VERSION } from '../../src/db/schema-version.js';
 import {
-  abandonRestore, runCompleteRestore, writeRestoreJournal,
-  type CompleteRestoreRequest, type RestoreJournal,
+  abandonRestore, realStagingCopier, runCompleteRestore, writeRestoreJournal,
+  type CompleteRestoreRequest, type RestoreJournal, type StagingCopier,
 } from '../../src/ops/complete-restore.js';
 import { restoreStack, setDumpDigest, setKeystoreDigest } from './fake-restore-stack.js';
 
@@ -43,6 +43,8 @@ interface CrashConfig {
    *   `rename:<n>`    — after the nth rename a swap performs (1 = between the two halves).
    *   `command:<s>`   — after the command whose argv contains `<s>` has run.
    *   `replay`        — inside the database replay, after the dump has gone in.
+   *   `staging:<id>`  — DURING the copy of component `<id>` into staging, once its artifact exists. This is
+   *                     the window a marker written last could not describe.
    *   `complete:<id>` — the instant BEFORE the journal records step `<id>` as complete: the step's effect
    *                     has landed and nothing has recorded it.
    *   `after:<id>`    — the instant AFTER that record reaches disk. For the LAST step this is the window in
@@ -71,6 +73,15 @@ function main(): number {
   const die = (): never => {
     // NOT A THROW. The point of this child is that no handler anywhere gets to run.
     process.exit(CRASH_EXIT_CODE);
+  };
+
+  // A KILL DURING THE COPY ITSELF, which is synchronous and so cannot be interrupted by a timer, a signal
+  // handler or an exception from outside it. The copier is injected for exactly this: `staging:<id>` copies
+  // the component and then stops existing, leaving the tree CLAIMED and not sealed — the window the
+  // write-the-marker-last design could not describe at all.
+  const copier: StagingCopier = (source, destination, id) => {
+    realStagingCopier(source, destination, id);
+    if (config.crashAt === `staging:${id}`) die();
   };
 
   let renames = 0;
@@ -146,6 +157,7 @@ function main(): number {
       now: () => new Date(0),
       rename,
       journalWriter,
+      copier,
     }, { kind: 'run', confirm: config.confirm, acceptDataLoss: null });
   } catch (err) {
     // The run failed for a reason of its own before it reached the boundary. That is a different outcome

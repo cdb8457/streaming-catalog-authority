@@ -34,6 +34,10 @@ import {
   planCompleteRestore,
   prepareRuntimeRoleSql,
   readRestoreJournal,
+  readStagingMarker,
+  removeOwnedStaging,
+  stageComponents,
+  verifyOwnedStaging,
   writeRestoreJournal,
   renderCompleteRestore,
   renderRestorePlan,
@@ -2870,6 +2874,127 @@ test('the published safety-set name carries the operation, and the plan says so'
   assert(rendered.includes(`pre-restore-set-1.${operationSuffix(plan.digest)}`),
     'and the plan shows the name it will actually publish under');
   assert(rendered.includes('only this operation can produce'), 'and says why it is that name');
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// Mid-copy staging death, and a marker that authorises deletion
+// ---------------------------------------------------------------------------------------------------------
+
+for (const [component, artifact] of [
+  ['database', COMPONENT_ARTIFACT_NAMES.database],
+  ['secrets', COMPONENT_ARTIFACT_NAMES.secrets],
+] as const) {
+  test(`a REAL death while copying the ${component} component leaves a CLAIMED tree the same operation rebuilds`, () => {
+    // THE DEFECT THIS PINS. The marker used to be written LAST, so a process that died DURING the copy left
+    // an UNMARKED tree at a predictable name — and "an unmarked tree is not ours" then meant the next resume
+    // could neither trust it nor remove it. Every resume refused, and the only way out was an operator
+    // deleting a directory full of secrets by hand.
+    const root = makeProject(`mid-copy-${component}`);
+    const setDir = takeSet(root, 'set-1');
+    const { plan } = planFor(request(root, 'set-1'));
+    crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+      crashAt: `staging:${component}` });
+
+    const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+    assert(existsSync(staging), 'the half-built tree is on disk');
+    assert(existsSync(join(staging, artifact)), `and the ${component} component is part of it`);
+    // THE CLAIM IS THERE, BECAUSE IT IS WRITTEN BEFORE A SINGLE BYTE IS COPIED.
+    const marker = JSON.parse(readFileSync(join(staging, 'catalog-restore-staging.json'), 'utf8')) as
+      { state: string; planDigest: string; suffix: string };
+    assertEq(marker.state, 'claimed', 'the tree is CLAIMED — not sealed, because the copy never finished');
+    assertEq(marker.planDigest, plan.digest, 'and the claim names this operation');
+    assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'stage-components')!.state, 'running',
+      'and the journal says the process was inside the staging step');
+
+    // THE RESUME REBUILDS IT — which it may, because the claim proves the tree is this operation's.
+    const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+      { kind: 'resume', confirm: plan.digest });
+    assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+    assertEq(existsSync(staging), false, 'and the staging tree is gone once the restore completed');
+  });
+}
+
+test('a claimed-but-unsealed tree is never CONSUMED, only rebuilt', () => {
+  // `claimed` says whose the tree is. `sealed` says its contents were all copied and verified. Only a sealed
+  // tree may be placed or replayed — a half-copied keystore that happened to digest correctly for the one
+  // component reached must not be installable.
+  const root = makeProject('claimed-not-sealed');
+  const setDir = takeSet(root, 'set-1');
+  const { resolved, plan } = planFor(request(root, 'set-1'));
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+  const sealed = stageComponents(resolved, staging, plan, 'aaaaaaaaaaaa');
+  assertEq(sealed, null, 'a full staging seals');
+  assertEq(verifyOwnedStaging(staging, plan, 'aaaaaaaaaaaa', resolved.manifest, ['secrets']), null,
+    'and a sealed tree is usable');
+
+  // Roll it back to claimed, as a mid-copy death leaves it.
+  const path = join(staging, 'catalog-restore-staging.json');
+  const marker = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+  writeFileSync(path, `${JSON.stringify({ ...marker, state: 'claimed' })}\n`, 'utf8');
+  const refusal = verifyOwnedStaging(staging, plan, 'aaaaaaaaaaaa', resolved.manifest, ['secrets']);
+  assert(refusal !== null && refusal.includes('CLAIMED but not sealed'),
+    'a claimed tree is refused for consumption');
+  rmSync(staging, { recursive: true, force: true });
+});
+
+test('a marker that does not prove ownership NEVER authorises removal — including a malformed matching one', () => {
+  // THIS DOCUMENT DECIDES WHETHER A DIRECTORY OF SECRETS IS RECURSIVELY DELETED. A shape check that only
+  // asked "is this an object naming the right plan" would let a malformed-but-matching document authorise
+  // both deletion and installation.
+  const root = makeProject('marker-guard');
+  const setDir = takeSet(root, 'set-1');
+  const { resolved, plan } = planFor(request(root, 'set-1'));
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+  stageComponents(resolved, staging, plan, 'aaaaaaaaaaaa');
+  const path = join(staging, 'catalog-restore-staging.json');
+  const good = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+  const canary = join(staging, 'canary');
+  writeFileSync(canary, 'must survive every refusal\n', 'utf8');
+
+  const put = (patch: Record<string, unknown> | null): void => {
+    if (patch === null) rmSync(path);
+    else writeFileSync(path, `${JSON.stringify({ ...good, ...patch })}\n`, 'utf8');
+  };
+  const components = good.components as Array<Record<string, unknown>>;
+  // TWO BARS, DELIBERATELY DIFFERENT. Removing a tree needs OWNERSHIP: this operation's plan and suffix, in
+  // a document whose every field is canonical. USING its contents needs more — agreement with the backup
+  // manifest. A merely manifest-inconsistent marker is still provably ours, and must stay removable, or a
+  // mid-copy death would wedge the project all over again.
+  const cases: Array<[Record<string, unknown> | null, string, 'unowned' | 'inconsistent']> = [
+    [null, 'no claim at all', 'unowned'],
+    [{ planDigest: 'f'.repeat(64) }, 'another operation\'s claim', 'unowned'],
+    [{ suffix: 'ffffffffffff' }, 'another run\'s suffix', 'unowned'],
+    [{ state: 'sideways' }, 'a state this build does not have', 'unowned'],
+    [{ components: 'not a list' }, 'components that are not a list', 'unowned'],
+    [{ components: [{ ...components[0], id: 'not-a-component' }] }, 'an unknown component id', 'unowned'],
+    [{ components: [components[0], components[0]] }, 'one component named twice', 'unowned'],
+    [{ components: components.map((c) => ({ ...c, artifact: 'somewhere-else' })) }, 'a non-canonical artifact name', 'unowned'],
+    [{ components: components.map((c) => ({ ...c, digest: 'not-a-digest' })) }, 'a digest that is not one', 'unowned'],
+    [{ components: components.map((c) => ({ ...c, digest: 'A'.repeat(64) })) }, 'a digest in the wrong case', 'unowned'],
+    [{ components: components.map((c) => ({ ...c, entries: -1 })) }, 'a negative count', 'unowned'],
+    [{ components: components.map((c) => ({ ...c, bytes: 1.5 })) }, 'a fractional byte count', 'unowned'],
+    [{ components: components.map((c) => ({ ...c, bytes: Number.MAX_VALUE })) }, 'a count outside safe integers', 'unowned'],
+    [{ components: components.slice(1) }, 'fewer components than the set declares', 'inconsistent'],
+    [{ components: components.map((c) => ({ ...c, digest: 'b'.repeat(64) })) }, 'digests the manifest disagrees with', 'inconsistent'],
+  ];
+  for (const [patch, why, bar] of cases) {
+    put(patch);
+    const owned = readStagingMarker(staging, plan.digest, 'aaaaaaaaaaaa', resolved.manifest);
+    assert('refusal' in owned, `refused: ${why}`);
+    // AND NOTHING WAS REMOVED BY THE REFUSAL.
+    if (bar === 'unowned') {
+      const removal = removeOwnedStaging(staging,
+        { planDigest: plan.digest, suffix: 'aaaaaaaaaaaa' } as unknown as RestoreJournal);
+      assert(removal !== null, `and removal is refused too: ${why}`);
+      assert(existsSync(canary), `and the directory survives: ${why}`);
+    }
+  }
+  // THE GOOD ONE STILL WORKS, so the guard is not simply refusing everything.
+  put({});
+  assert(!('refusal' in readStagingMarker(staging, plan.digest, 'aaaaaaaaaaaa', resolved.manifest)),
+    'the marker this command wrote is accepted');
+  rmSync(staging, { recursive: true, force: true });
 });
 
 // ---------------------------------------------------------------------------------------------------------
