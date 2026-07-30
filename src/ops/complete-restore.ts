@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
 import { basename, isAbsolute, join, relative as relativePath } from 'node:path';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
@@ -127,21 +127,61 @@ export const PROJECT_TOKEN = '<project>';
 /**
  * The suffix every name this operation creates is built from.
  *
- * IT IS DERIVED FROM THE OPERATION, NOT DRAWN AT RANDOM, and the reason is the safety set. Publication of a
- * backup set is a RENAME, so the only thing that can be atomic with it is the NAME — and a name carrying
- * this operation's own identity is a name no other operation can produce. That is what lets a recovery ask
- * "is this the set THIS operation published" instead of the far weaker "is there a set here that verifies".
+ * Twelve hex characters of the plan digest. Deterministic on purpose: a resume rebuilds the staging and swap
+ * names without trusting a number in a file, and those names are protected by an ownership MARKER rather
+ * than by being hard to guess.
  *
- * Twelve hex characters of the plan digest, which already binds the project, the destination, the set and
- * its verified bytes, every target path, the custody mode, the safety-set name and the occupancy.
+ * IT IS DELIBERATELY NOT WHAT PROVES THE SAFETY SET IS OURS. See `SafetySetClaim`: a deterministic name is a
+ * PREDICTABLE one, and predictable is exactly what a provenance check must not rest on.
  */
 export function operationSuffix(planDigest: string): string {
   return planDigest.slice(0, 12);
 }
 
-/** Where this operation's safety set is published. Derived, so nothing else can occupy it by accident. */
-export function safetySetPublishedName(baseName: string, suffix: string): string {
-  return `${baseName}.${suffix}`;
+/**
+ * The directory THIS RUN claims, exclusively, to publish its safety set into.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHY A NAME — ANY NAME — IS NOT PROVENANCE.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The first attempt at this bound the safety set to a name derived from the plan digest, on the reasoning
+ * that no other operation could produce it. That reasoning was wrong in the way that matters: the plan
+ * digest is DETERMINISTIC, so the derived name is PREDICTABLE — and a perfectly ordinary sequence produces a
+ * valid, unrelated set sitting at it. Run the same restore, abandon it, leave its safety set on disk; run it
+ * again, die inside the safety-set step before `ops:complete-backup` refuses the existing name. The set now
+ * at that name is a backup of the installation as it was before the FIRST run, not the second — a different
+ * moment — and a recovery that adopts it hands the operator a safety set that does not describe what is
+ * about to be destroyed.
+ *
+ * "The name matches" can never distinguish "we published it" from "it was already there and blocked us",
+ * because those two states are identical on disk. So the claim is made out of something that is not a name:
+ *
+ *   1. A NONCE that is drawn from the system CSPRNG, per run — not derived from anything, and so not
+ *      predictable by anybody who has not read this run's journal.
+ *   2. A DIRECTORY created with `mkdir`, which is the one filesystem operation that both creates and refuses
+ *      atomically. Creating it IS the claim: it succeeds for exactly one party.
+ *   3. Recorded in the journal only AFTER that `mkdir` returned, so `created: true` means this run really
+ *      did create that directory rather than find it.
+ *
+ * The safety set is then published INSIDE the claimed directory. "It is in a directory this run created,
+ * under a name nobody could guess" is provenance a pre-existing set cannot have, however it is named. A
+ * claim that was never created, or a directory that turns out to belong to somebody else, sends the run to a
+ * fresh nonce rather than to an adoption.
+ */
+export interface SafetySetClaim {
+  /** 24 hex characters from the system CSPRNG. Not derived from anything. */
+  readonly nonce: string;
+  /** True only once `mkdir` on the claim directory returned successfully to THIS run. */
+  readonly created: boolean;
+}
+
+/** The shape a claim nonce must have. Validated wherever it is concatenated into a path. */
+export const SAFETY_CLAIM_NONCE_RE = /^[0-9a-f]{24}$/;
+
+/** Where a claim's directory sits, relative to the backup destination. */
+export function safetySetClaimDirName(nonce: string): string {
+  return `.pre-restore-claim-${nonce}`;
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -742,7 +782,13 @@ export interface RestoreJournal {
    * about THAT name and no other. A set at the base name is somebody else's: not adopted, not replaced, not
    * touched.
    */
-  readonly safetySetPublishedName: string;
+  /**
+   * This run's exclusive claim on somewhere to publish its safety set, or `null` before one is made.
+   *
+   * Written BEFORE the backup runs — the correct side of the absence/publication boundary — so that
+   * "the set is inside a directory we created" is a fact a recovery can rely on rather than infer.
+   */
+  readonly safetySetClaim: SafetySetClaim | null;
   /**
    * WHICH DIRECTION THIS OPERATION IS GOING, and it is exclusive.
    *
@@ -888,9 +934,21 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
   if (doc.custodian !== 'inline' && doc.custodian !== 'sidecar') return refuse('its custody mode is not one of two');
   if (doc.targetState !== 'OCCUPIED' && doc.targetState !== 'UNKNOWN') return refuse('its target state is not one this build classifies');
   if (doc.phase !== 'restoring' && doc.phase !== 'abandoning') return refuse('its phase is not one this build has');
-  if (typeof doc.safetySetPublishedName !== 'string'
-    || !MAINTENANCE_NAME_RE.test(doc.safetySetPublishedName)) {
-    return refuse('the name it records for its safety set is not a usable name');
+  if (doc.safetySetClaim !== null) {
+    // THE NONCE IS CONCATENATED INTO A DIRECTORY NAME, so it is held to a shape the way every other value
+    // this command builds a path out of is.
+    const claim = doc.safetySetClaim;
+    if (claim === undefined || typeof claim !== 'object' || Array.isArray(claim)) {
+      return refuse('its safety-set claim is not a claim');
+    }
+    const record = claim as Record<string, unknown>;
+    if (typeof record.nonce !== 'string' || !SAFETY_CLAIM_NONCE_RE.test(record.nonce)) {
+      return refuse('its safety-set claim nonce is not the twenty-four hex characters this command draws');
+    }
+    if (typeof record.created !== 'boolean') return refuse('its safety-set claim does not say whether it was created');
+    if (doc.safetySetPlanned !== true && record.created === true) {
+      return refuse('it records a claim created for a safety set this operation never planned');
+    }
   }
   if (typeof doc.safetySetPlanned !== 'boolean' || typeof doc.safetySetTaken !== 'boolean') {
     return refuse('its safety-set fields are not booleans');
@@ -1277,8 +1335,7 @@ export function runCompleteRestore(
   if (existing !== null) assertJournalAgreesWithPlan(existing, plan);
 
   const suffix = existing?.suffix ?? (deps.suffix ?? (() => operationSuffix(plan.digest)))();
-  const publishedSetName = existing?.safetySetPublishedName
-    ?? safetySetPublishedName(resolved.safetySetName, suffix);
+  let safetySetClaim: SafetySetClaim | null = existing?.safetySetClaim ?? null;
   // A RESTORE MAY NOT PROCEED OVER AN ABANDON. The direction is a recorded decision, not an inference from
   // step states an abandon happens to leave behind — which is exactly how a resume used to rebuild a restore
   // on top of an unwind somebody had asked for.
@@ -1391,7 +1448,7 @@ export function runCompleteRestore(
         safetySetName: resolved.safetySetName,
         suffix,
         phase: 'restoring',
-        safetySetPublishedName: publishedSetName,
+        safetySetClaim,
         safetySetPlanned: safetySet,
         safetySetTaken,
         request: {
@@ -1439,7 +1496,7 @@ export function runCompleteRestore(
     const interrupted = plan.steps.map((step) => state.get(step.id)!).find(needsRecovery);
     if (interrupted !== undefined) {
       const recovery = recoverInterruptedStep(interrupted.id, resolved, plan, deps, stagingDir, suffix, swaps,
-        publishedSetName);
+        safetySetClaim);
       if (recovery.kind === 'refuse') {
         // The journal keeps saying `running`, so the next attempt sees the same state rather than a state
         // this refusal invented.
@@ -1486,7 +1543,8 @@ export function runCompleteRestore(
           onStopped: () => { stopped = true; },
           onCustodyProven: (proven) => { custodyProven = proven; },
           onNote: (note) => { notes.push(note); },
-        }, publishedSetName);
+          onClaim: (made) => { safetySetClaim = made; persist(); },
+        }, safetySetClaim);
       } catch (err) {
         detail = err instanceof MaintenanceRefused
           ? err.message
@@ -1574,7 +1632,9 @@ export function runCompleteRestore(
       custodian: resolved.custodian,
       targetState: resolved.targetState,
       planDigest: plan.digest,
-      safetySet: safetySetTaken ? publishedSetName : null,
+      safetySet: safetySetTaken && safetySetClaim !== null
+        ? `${safetySetClaimDirName(safetySetClaim.nonce)}/${resolved.safetySetName}`
+        : null,
       safetySetVerified,
       steps: results,
       replaced,
@@ -1650,7 +1710,7 @@ export function recoverInterruptedStep(
   stagingDir: string,
   suffix: string,
   swaps: readonly JournalSwap[],
-  publishedSetName: string,
+  claim: SafetySetClaim | null,
 ): StepRecovery {
   const policy = STEP_RECOVERY[id];
   switch (policy) {
@@ -1668,14 +1728,26 @@ export function recoverInterruptedStep(
       // THE QUESTION IS NOT "DOES A SET VERIFY". IT IS "IS THIS THE SET THIS OPERATION PUBLISHED". A set at
       // the operator's chosen base name is somebody else's — and a valid one sitting there is exactly what
       // would have made this run's own backup fail, which is why the old check mistook it for success.
-      const setDir = join(resolved.projectRoot, resolved.destination, publishedSetName);
+      // NO CLAIM MEANS NOTHING OF OURS WAS EVER PUBLISHED. Whatever is in the destination belongs to
+      // something else, and the run simply claims somewhere and takes its own.
+      if (claim === null || !claim.created) {
+        return {
+          kind: 'retry',
+          reset: [id],
+          note: 'A previous run stopped while taking the safety set, before it had claimed anywhere to '
+            + 'publish one. Nothing of this run\'s was published, so a fresh claim was made and the safety '
+            + 'set taken. Any set already in that folder belongs to something else and was not touched.',
+        };
+      }
+      const setDir = join(resolved.projectRoot, resolved.destination,
+        safetySetClaimDirName(claim.nonce), resolved.safetySetName);
       if (!existsSync(setDir)) {
         return {
           kind: 'retry',
           reset: [id],
-          note: 'A previous run stopped while taking the safety set, and the set THIS operation would have '
-            + 'published is not here, so it was taken again. Any other set in that folder belongs to '
-            + 'something else and was not touched.',
+          note: 'A previous run claimed somewhere to publish the safety set and stopped before publishing '
+            + 'one. The claim is still ours and still empty, so the set was taken into it. Any other set in '
+            + 'that folder belongs to something else and was not touched.',
         };
       }
       const verification = verifyBackupSet(setDir);
@@ -1683,8 +1755,9 @@ export function recoverInterruptedStep(
         return {
           kind: 'complete',
           reset: [],
-          note: 'A previous run stopped after publishing the safety set but before recording it. The set THIS '
-            + 'operation publishes is here and it VERIFIES, so it belongs to this run and was not taken twice.',
+          note: 'A previous run stopped after publishing the safety set but before recording it. The set is '
+            + 'inside the directory THIS RUN created, under a nonce nothing else could guess, and it '
+            + 'VERIFIES — so it is this run\'s and was not taken twice.',
         };
       }
       // A HALF-PUBLISHED SET UNDER A NAME NOBODY MAY REPLACE. This is the one case where a human has to
@@ -1928,6 +2001,13 @@ interface StepHooks {
   readonly onStopped: () => void;
   readonly onCustodyProven: (proven: boolean) => void;
   readonly onNote: (note: string) => void;
+  /**
+   * Record an exclusive claim, DURABLY, the instant `mkdir` returns and before anything is published into it.
+   *
+   * The ordering is the whole guarantee: a journal that says `created: true` means this run really created
+   * that directory rather than found it, so a set inside it can only have been put there by this run.
+   */
+  readonly onClaim: (claim: SafetySetClaim) => void;
 }
 
 function performStep(
@@ -1938,7 +2018,7 @@ function performStep(
   stagingDir: string,
   suffix: string,
   hooks: StepHooks,
-  publishedSetName: string,
+  claim: SafetySetClaim | null,
 ): string | null {
   const step = plan.steps.find((candidate) => candidate.id === id)!;
   // `<staged>` IS SUBSTITUTED HERE AND NOWHERE ELSE, so the plan an operator confirmed and the command that
@@ -1954,13 +2034,45 @@ function performStep(
 
   switch (id) {
     case 'safety-set': {
+      // ---- CLAIM SOMEWHERE TO PUBLISH, EXCLUSIVELY, BEFORE PUBLISHING ANYTHING ---------------------
+      //
+      // `mkdir` both creates and refuses atomically, so it succeeds for exactly one party. A nonce from the
+      // system CSPRNG makes the name unguessable, and recording `created: true` only after the call returned
+      // makes "we created it" a fact rather than an inference. A directory that already exists is not ours,
+      // whoever put it there — so the run draws another nonce instead of adopting it.
+      let held = claim;
+      if (held === null || !held.created) {
+        let made: SafetySetClaim | null = null;
+        for (let attempt = 0; attempt < 8 && made === null; attempt += 1) {
+          const nonce = randomBytes(12).toString('hex');
+          try {
+            createPrivateDirectory(
+              join(resolved.projectRoot, resolved.destination, safetySetClaimDirName(nonce)),
+              'safety set claim directory');
+            made = { nonce, created: true };
+          } catch {
+            // Occupied, or unwritable. Another nonce costs nothing and adopts nothing.
+            made = null;
+          }
+        }
+        if (made === null) {
+          return 'somewhere to publish the safety set could not be claimed: the backup destination could not '
+            + 'be written to. Nothing was destroyed.';
+        }
+        // DURABLE BEFORE PUBLICATION. This is the ordering the whole provenance rests on.
+        hooks.onClaim(made);
+        held = made;
+      }
+      const claimRelative = `${resolved.destination}/${safetySetClaimDirName(held.nonce)}`;
+
       let outcome: CompleteBackupOutcome;
       try {
         outcome = runVerifiedCompleteBackup({
           projectRoot: resolved.projectRoot,
-          destination: resolved.destination,
-          // THE DERIVED NAME, so a set found here later can be PROVED to be this operation's.
-          setName: publishedSetName,
+          // PUBLISHED INSIDE THE CLAIM. "It is in a directory this run created, under a name nobody could
+          // guess" is provenance a pre-existing set cannot have, however it is named.
+          destination: claimRelative,
+          setName: resolved.safetySetName,
           custodian: resolved.custodian,
           secrets: resolved.secrets.relative,
           ...(resolved.sidecarState === null ? {} : { sidecarState: resolved.sidecarState.relative }),
@@ -2940,10 +3052,9 @@ export function renderRestorePlan(resolved: ResolvedRestore, plan: RestorePlan):
   }
   lines.push(`  custody is ${plan.custodian}, which the set's own manifest agrees with`);
   lines.push(plan.safetySet
-    ? '  a verified safety set would be taken first, published as '
-      + `"${safetySetPublishedName(resolved.safetySetName, operationSuffix(plan.digest))}" — that name carries `
-      + 'an identity only this operation can produce, so nothing else can occupy that name and a resume can '
-      + 'prove the set it finds is the one this operation published'
+    ? `  a verified safety set would be taken first, named "${resolved.safetySetName}", inside a directory `
+      + 'this run claims exclusively with mkdir under an unguessable nonce — so a resume can prove the set '
+      + 'it finds was published by this run and not merely that something valid sits at a predictable name'
     : '  NO SAFETY SET WOULD BE TAKEN, and destroying this installation\'s volumes was acknowledged');
   lines.push('');
   for (const step of plan.steps) {
