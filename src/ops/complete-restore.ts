@@ -2009,6 +2009,22 @@ function performStep(
       if (stale !== null) return stale;
       const dump = join(stagingDir, COMPONENT_ARTIFACT_NAMES.database);
       const outcome = runGuardedFromFile(deps.fileRunner, deps.ledger, materialise(step.commands[0]!), dump);
+      // ---- AND VERIFIED AGAIN AFTER IT WAS CONSUMED ------------------------------------------------
+      //
+      // THE HOLE THIS CLOSES. Verifying and then handing a PATHNAME to another process proves what was
+      // there a moment before `psql` opened it — nothing about what `psql` actually read. Anything that
+      // rewrote the file inside that window was applied to the database, and this command would then have
+      // gone on to boot the stack and run its proofs over it.
+      //
+      // A BOUND CHECK IS NOT A PERFECT ONE, and is not claimed to be: this cannot see what the child read.
+      // What it can do is refuse to CARRY ON. If the bytes are no longer the ones the manifest declares,
+      // what landed in that database is unknown — and an unknown database must never be booted, proved and
+      // reported as a restore.
+      const after = verifyStagedComponent(stagingDir, 'database', resolved.manifest);
+      if (after !== null) {
+        return `${after} — and it changed WHILE psql was reading it, so what is in that database now is `
+          + 'unknown. This restore stops here rather than booting an installation nobody can describe.';
+      }
       return outcome.status === 0 ? null : 'the verified dump did not replay into the fresh database';
     }
     case 'prove-version': {
@@ -2080,6 +2096,14 @@ function performStep(
       for (const command of step.commands) {
         const outcome = runOne(command);
         if (outcome.status !== 0) return failureSentence(id);
+      }
+      // SAME RULE AS THE REPLAY. `compose cp` reads a pathname; a tree rewritten while it copied would have
+      // put key material into the volume this installation decrypts with that nothing ever approved.
+      const afterCopy = verifyStagedComponent(stagingDir, 'keystore', resolved.manifest);
+      if (afterCopy !== null) {
+        return `${afterCopy} — and it changed WHILE it was being copied into the container, so what is in `
+          + 'that keystore volume is unknown. This restore stops here rather than booting an installation '
+          + 'whose key material nobody can describe.';
       }
       return null;
     }

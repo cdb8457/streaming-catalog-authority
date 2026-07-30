@@ -2010,7 +2010,10 @@ test('every step declares a recovery policy, and the three that are not plain re
     assertEq(STEP_RECOVERY[id], 'repair-swap', `${id} is two renames and is repaired, not repeated`);
   }
   assertEq(STEP_RECOVERY['replay-database'], 'rewind', 'a partial replay rewinds the leg');
-  assertEq(STEP_REWIND_TO['replay-database'], 'stop-and-destroy', 'back to the teardown, which is where the leg starts');
+  assertEq(STEP_REWIND_TO['replay-database'], 'stage-components',
+    'back to the STAGING, because the suspect artifact must be rebuilt before the leg is repeated');
+  assertEq(STEP_REWIND_TO['place-inline-keystore'], 'stage-components',
+    'and the keystore copy rewinds the same way, for the same reason');
   // AND EVERY REWIND NAMES A STEP THAT REALLY COMES BEFORE IT.
   for (const [id, to] of Object.entries(STEP_REWIND_TO)) {
     const ids = RESTORE_STEP_IDS as readonly string[];
@@ -2768,7 +2771,8 @@ test('every effectful step declares whether a returned failure needs recovery, a
   // The three that matter are exactly the non-retry policies.
   const risky = RESTORE_STEP_IDS.filter((id) => STEP_RECOVERY[id] !== 'retry');
   assertEq([...risky].sort().join(','),
-    'place-promotion-records,place-secrets,place-sidecar-keystore,replay-database,safety-set',
+    'place-inline-keystore,place-promotion-records,place-secrets,place-sidecar-keystore,replay-database,'
+    + 'safety-set',
     'the steps a returned failure must not simply repeat are the ones declared non-idempotent');
 });
 
@@ -3144,6 +3148,100 @@ test('CRASH at the abandon phase transition is recoverable by another abandon', 
   assertEq(report.ok, true, 'another abandon finished it');
   assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), 'a-later-value\n',
     'and the original contents are back');
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// Mutation DURING consumption, and the rewind it forces
+// ---------------------------------------------------------------------------------------------------------
+//
+// Two steps verify a component and then hand a PATHNAME to another process. Verifying before that proves
+// what was there a moment before the child opened it — nothing about what the child actually read. These
+// inject the mutation from INSIDE the runner, which is the window itself.
+
+test('a dump rewritten WHILE psql reads it stops the run, and the resume rewinds the whole database leg', () => {
+  const root = makeProject('mutate-during-replay');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const first = worldFor(setDir);
+  const staged = join(root, '.catalog-restore.staged-aaaaaaaaaaaa', COMPONENT_ARTIFACT_NAMES.database);
+  const meddling = {
+    ...depsFor(first),
+    fileRunner: (command: Parameters<typeof first.inputRunner>[0], source: string) => {
+      const outcome = first.inputRunner(command, source);
+      // The bytes change inside the window between the check and the child's read.
+      writeFileSync(staged, `${fakeDumpText(MIGRATION_VERSION)}-- rewritten mid-read\n`, 'utf8');
+      return outcome;
+    },
+  };
+  let thrown: unknown = null;
+  try {
+    runCompleteRestore(request(root, 'set-1'), meddling, { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof CompleteRestoreFailed, 'the volumes were destroyed and the replay then failed');
+  const report = (thrown as CompleteRestoreFailed).report;
+  const replay = report.steps.find((step) => step.id === 'replay-database')!;
+  assertEq(replay.outcome, 'failed', 'the replay step did not hold');
+  assert(replay.detail!.includes('WHILE psql was reading it'), 'and says the change happened during the read');
+
+  // THE RUN STOPPED THERE. Nothing after it was attempted.
+  for (const later of ['place-inline-keystore', 'stack-up', 'prove-version', 'prove-decrypt'] as const) {
+    const step = report.steps.find((entry) => entry.id === later);
+    assert(step === undefined || step.outcome !== 'held', `${later} was NOT run over an unknown database`);
+  }
+  assertEq(first.state().stackUp, false, 'and the stack was never booted over it');
+
+  // THE RESUME REWINDS THE WHOLE LEG — including the STAGING, because the staged artifact is the thing that
+  // changed. Rebuilding the leg without rebuilding it would replay the same suspect bytes again.
+  const second = worldFor(setDir);
+  const resumed = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+  assertEq(resumed.ok, true, `the resume completed: ${resumed.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(second.teardowns(), 1, 'THE VOLUMES WERE DESTROYED AGAIN before anything was replayed');
+  assertEq(resumed.steps.find((step) => step.id === 'stop-and-destroy')!.outcome, 'held', 'the teardown ran again');
+  assertEq(resumed.steps.find((step) => step.id === 'database-up')!.outcome, 'held', 'into a fresh database');
+  assertEq(second.replays().length, 1, 'and exactly ONE replay landed — nothing was stacked');
+});
+
+test('a keystore rewritten WHILE compose cp reads it stops the run, and the resume rebuilds the volume', () => {
+  const root = makeProject('mutate-during-cp');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const first = worldFor(setDir);
+  const stagedKeystore = join(root, '.catalog-restore.staged-aaaaaaaaaaaa', COMPONENT_ARTIFACT_NAMES.keystore);
+  const meddling = {
+    ...depsFor(first),
+    runner: (command: Parameters<typeof first.runner>[0]) => {
+      const outcome = first.runner(command);
+      const last = command.args[command.args.length - 1] ?? '';
+      if (command.args.includes('cp') && last.startsWith('app:')) {
+        // The tree changes inside the window the container is reading it.
+        writeFileSync(join(stagedKeystore, 'slipped-in'), 'not in the manifest\n', 'utf8');
+      }
+      return outcome;
+    },
+  };
+  let thrown: unknown = null;
+  try {
+    runCompleteRestore(request(root, 'set-1'), meddling, { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof CompleteRestoreFailed, 'the volumes were destroyed and the copy then failed');
+  const report = (thrown as CompleteRestoreFailed).report;
+  const place = report.steps.find((step) => step.id === 'place-inline-keystore')!;
+  assertEq(place.outcome, 'failed', 'the placement did not hold');
+  assert(place.detail!.includes('WHILE it was being copied into the container'),
+    'and says the change happened during the copy');
+  assertEq(first.state().stackUp, false, 'AND THE STACK WAS NEVER BOOTED over unknown key material');
+
+  // THE RESUME REWINDS: a partially-copied volume is not repaired by copying again over the top.
+  const second = worldFor(setDir);
+  const resumed = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+  assertEq(resumed.ok, true, `the resume completed: ${resumed.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(second.teardowns(), 1, 'THE VOLUMES WERE DESTROYED AGAIN, emptying the keystore volume');
+  assertEq(resumed.steps.find((step) => step.id === 'place-inline-keystore')!.outcome, 'held',
+    'and the keystore was placed into an empty volume, not over a partial copy');
+  assertEq(second.state().keystore, setKeystoreDigest(setDir), 'which now holds exactly the set\'s keystore');
+  assert(resumed.notes.some((note) => note.includes('cannot be repeated or repaired')),
+    'and the report says why the leg was repeated');
 });
 
 // ---------------------------------------------------------------------------------------------------------

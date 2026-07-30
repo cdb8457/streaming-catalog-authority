@@ -253,9 +253,12 @@ export const STEP_RECOVERY: Readonly<Record<RestoreStepId, RecoveryPolicy>> = Ob
   'prepare-runtime-role': 'retry',
   // A PARTIAL REPLAY IS THE ONE STATE NOTHING CAN REPAIR IN PLACE.
   'replay-database': 'rewind',
-  // Copies the staged, verified tree into a volume the teardown emptied; a second copy of the same bytes
-  // over a partial one leaves the same tree.
-  'place-inline-keystore': 'retry',
+  // A PARTIAL COPY INTO A VOLUME IS NOT REPAIRED BY A SECOND COPY. `compose cp` can copy some of a tree and
+  // then fail, and — worse — the tree can change WHILE it is being read, putting key material into the
+  // volume that no verification ever approved. Neither is fixed by copying again over the top: the volume
+  // already holds bytes nobody can account for. The only recovery that leaves a describable installation is
+  // to empty the volume and do the leg again.
+  'place-inline-keystore': 'rewind',
   'stack-up': 'retry',
   'prove-version': 'retry',
   'prove-doctor': 'retry',
@@ -271,7 +274,15 @@ export const STEP_RECOVERY: Readonly<Record<RestoreStepId, RecoveryPolicy>> = Ob
  * again rather than to guess how much of the dump landed.
  */
 export const STEP_REWIND_TO: Readonly<Partial<Record<RestoreStepId, RestoreStepId>>> = Object.freeze({
-  'replay-database': 'stop-and-destroy',
+  // BACK TO THE STAGING, NOT ONLY THE TEARDOWN. The two steps that rewind are the two that hand a PATHNAME
+  // to another process, and the failure that sends them here is "the staged artifact is no longer what the
+  // manifest declares". Rebuilding the leg without rebuilding that artifact would replay or copy the same
+  // suspect bytes again. Staging re-copies from the set, which is still verified.
+  'replay-database': 'stage-components',
+  // THE KEYSTORE VOLUME IS EMPTIED BY THE SAME TEARDOWN THE DATABASE IS. There is no way to empty one
+  // without the other, so a keystore left holding unverified bytes rewinds the whole leg — which also
+  // replays the database, because that database was initialised from secrets this leg places.
+  'place-inline-keystore': 'stage-components',
 });
 
 /** What each step establishes. Rendered by `--plan`, and never interpolated with anything read at runtime. */
