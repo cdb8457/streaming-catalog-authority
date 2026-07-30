@@ -185,12 +185,34 @@ schema is how data gets quietly corrupted, and this product would rather stop.
 
 So the honest sequence is:
 
-1. `docker compose down`
-2. Restore the database dump you took **before you upgraded**, and the **keystore from that same backup**.
-   The two belong together: a dump restored beside a newer keystore, or beside no keystore, gives you an
-   installation that starts and cannot read anything.
-3. Set `CATALOG_AUTHORITY_IMAGE` back to the previous version.
-4. `docker compose up -d`
+1. Set `CATALOG_AUTHORITY_IMAGE` back to the previous version — the build that took the set.
+2. Restore the complete set you took **before you upgraded**. All four components, from that one set: a dump
+   restored beside a newer keystore, or beside no keystore, gives you an installation that starts and cannot
+   read anything.
+
+**That second step is a command.** `ops:complete-restore` takes a verified safety set of what it is about to
+destroy, stops the stack and destroys its volumes so the dump replays into an empty database, places the
+secrets *before* the fresh database is initialised from them, replays the dump, puts the keystore back, starts
+everything, and then proves the result — including that the installation can **decrypt** its own catalog,
+which is the one failure a restored installation otherwise reports as healthy.
+
+```bash
+# Read what it would do. This verifies the set, classifies your installation, and changes nothing.
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline --plan
+
+# Then pass back the digest it printed.
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline \
+    --confirm <the digest --plan printed>
+```
+
+It refuses a set that does not verify, a set whose custody topology disagrees with the one you declared, and
+a set from a **different schema version than the build you are running** — which is why step 1 comes first.
+An interrupted run leaves a journal and is continued with `--resume` or unwound with `--abandon`. The
+boundaries, the ordering and every refusal are in
+[PHASES_297_304_COMPLETE_RESTORE.md](PHASES_297_304_COMPLETE_RESTORE.md).
+
+The by-hand commands in the component table above still work and still say the same thing; use them when you
+are working through it yourself rather than asking for the whole sequence.
 
 **Without that backup, the rollback is not available.** No command in this product can synthesise one, and
 nothing here will pretend otherwise. That is the entire reason "back up before you upgrade" is a step rather

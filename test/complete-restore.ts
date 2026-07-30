@@ -39,7 +39,7 @@ import {
   requiredPlacementIds,
   stepsFor,
 } from '../src/ops/restore-model.js';
-import { parseCompleteRestoreArgs } from '../src/ops/complete-restore-cli.js';
+import { main as cliMain, parseCompleteRestoreArgs } from '../src/ops/complete-restore-cli.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
 import { restoreStack, setDumpDigest, setKeystoreDigest } from './helpers/fake-restore-stack.js';
 
@@ -938,6 +938,44 @@ test('the CLI refuses a credential on a command line, unknown flags, and two ope
   assertEq(parsed.plan, true, 'a plan parses');
   assertEq(parsed.request.destination, 'backups', 'with the documented default destination');
   assertEq(parsed.request.secrets, 'secrets', 'and the documented default secrets directory');
+});
+
+test('the shipped CLI plans a real set end to end, prints the digest, and exits zero having changed nothing', () => {
+  // THE WHOLE COMMAND, NOT ITS PARTS. `main()` is what an operator actually runs; every other check in this
+  // file drives a function underneath it. A `--plan` reaches the real argument parser, the real resolution,
+  // the real verification and the real rendering, and it must do all of that without a Docker daemon —
+  // because reading a plan is what somebody does before they have decided to run anything.
+  const root = makeProject('cli-plan');
+  takeSet(root, 'set-1');
+  const printed: string[] = [];
+  const realLog = console.log;
+  console.log = (...parts: unknown[]): void => { printed.push(parts.map(String).join(' ')); };
+  let code: number;
+  try {
+    code = cliMain(['--project', root, '--set', 'set-1', '--custodian', 'inline',
+      '--promotion-records', 'promotion-records', '--plan']);
+  } finally {
+    console.log = realLog;
+  }
+  const output = printed.join('\n');
+  assertEq(code, 0, `the plan exited zero: ${output}`);
+  assert(output.includes('plan digest: '), 'it printed the digest a confirmation needs');
+  assert(/plan digest: [0-9a-f]{64}/.test(output), 'and the digest is a full sha256');
+  assert(output.includes('! stop-and-destroy'), 'and marked the point of no return');
+  assert(output.includes('a verified safety set would be taken first'), 'and said a safety set is coming');
+  assertEq(output.includes(SECRET_VALUE), false, 'and printed no secret value');
+
+  // AND IT CHANGED NOTHING: no journal, no staging, no replaced directory, no lock left behind.
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'no journal was written');
+  assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'no lock was left');
+  assertEq(readdirSync(root).some((entry) => entry.includes('.restoring-') || entry.includes('.replaced-')), false,
+    'and nothing was staged or moved aside');
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), SECRET_VALUE, 'the installation is untouched');
+
+  // THE DIGEST THE CLI PRINTED IS THE ONE A RUN WOULD REQUIRE. A plan whose digest did not match the run's
+  // would be a plan an operator could never confirm.
+  const expected = planFor(request(root, 'set-1')).plan.digest;
+  assert(output.includes(expected), 'and it is the digest this plan actually has');
 });
 
 test('no report or rendering carries a secret value, a host path or a component\'s content', () => {

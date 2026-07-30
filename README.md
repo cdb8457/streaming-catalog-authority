@@ -226,6 +226,32 @@ An existing set name is **refused**; a run that fails leaves no set and starts y
 `finally` that runs on every path out. Backup directories are `0700` and the files in them are `0600`.
 
 ```bash
+# And put one back. Read it first — this verifies the set, classifies your installation, and changes nothing:
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline --plan
+# then pass back the digest it printed:
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline \
+    --confirm <the digest --plan printed>
+```
+
+**This is the rollback.** There are no down-migrations, so putting an older image back is not one — and a set
+from a different schema version than the build you are running is **refused rather than replayed**. Before it
+destroys anything it takes a verified **safety set** of the installation it is about to replace; a safety set
+that does not verify stops the run with your stack still up. Then it stops the stack and destroys its volumes
+so the dump replays into an *empty* database, places your secrets **before** the fresh database is initialised
+from them (which is what makes the restored `postgres_password` the password the volume actually has), replays
+the dump from its own file descriptor — nothing is copied into a container and nothing is decoded into a
+string — puts the keystore back, and starts everything.
+
+**Then it proves it, and one of the proofs is a decryption.** An installation whose keystore did not arrive
+starts, passes the doctor and reports itself healthy, because a fail-closed unreadable item is
+indistinguishable from a correctly erased one. So a restore that came up but cannot read its own catalog is
+reported as `RESTORED_BUT_UNPROVEN`, not as a success. Components are placed by **rename**: the previous
+directory is kept beside the new one, never merged into and never deleted. An interrupted run leaves a journal
+and refuses a fresh restore until you `--resume` it or `--abandon` it.
+[docs/PHASES_297_304_COMPLETE_RESTORE.md](docs/PHASES_297_304_COMPLETE_RESTORE.md) has the ordering, the
+classification and every refusal.
+
+```bash
 # On a schedule: runs the shipped read-only doctor and records one redacted state file.
 npm run ops:doctor-monitor -- --project /path/to/project --state monitor
 ```
@@ -446,7 +472,8 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:migrate` | apply schema + grants (owner), idempotent, serialised, verified; records the schema version |
 | `ops:version` | db schema version vs this build (exit 1 on mismatch) |
 | `ops:doctor [--json]` | **read-only** production self-check (config, schema version, runtime least-privilege, secret match, custodian, keystore, O4/O5 production gate WARN visibility); `--json` is the stable unattended-healthcheck contract; non-zero exit on any failure |
-| `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |
+| `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) — **one component of four** |
+| `ops:complete-restore -- --project <dir> --set <name> --custodian inline\|sidecar --plan` | puts a **complete set** back: safety set, teardown, all four components, then proofs including a **decryption**. Runs on the host. `--plan` changes nothing and prints the digest `--confirm` requires |
 | `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
 | `ops:operator-ui-token -- --show-path/status/rotate` | safe operator UI token helper; rotation and status do not print the token, and printing requires `--print --confirm-print` |
 | `ops:operator-ui-live-check -- --json` | redaction-safe live operator UI check: health, auth rejection, authenticated status, and logs without printing the token |
