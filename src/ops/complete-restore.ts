@@ -1125,7 +1125,18 @@ export function runCompleteRestore(
     ...(existing.request.sidecarState === null ? {} : { sidecarState: existing.request.sidecarState }),
     safetySetName: existing.safetySetName,
   };
-  const resolved = resolveCompleteRestoreRequest(effective, probe);
+  // ---- THE CLASSIFICATION IS THE OPERATION'S, NOT THIS PROCESS'S -----------------------------------
+  //
+  // THE DEFECT THIS CLOSES. `targetState` is bound into the plan digest, and a resume re-derived it from the
+  // installation AS IT IS NOW — after this very operation has placed components into it. A restore into a
+  // target this command could not prove empty is classified UNKNOWN; the moment it places the records
+  // directory, the same installation classifies OCCUPIED, the rederived plan digest changes, and EVERY
+  // resume of that operation is refused for "not describing this operation". The classification is a
+  // pre-flight fact about the installation BEFORE the operation ran, so it is taken from the journal, which
+  // is where that fact was recorded.
+  const resolved = existing === null
+    ? resolveCompleteRestoreRequest(effective, probe)
+    : { ...resolveCompleteRestoreRequest(effective, probe), targetState: existing.targetState };
 
   if (mode.kind === 'run' && existing !== null) {
     throw new MaintenanceRefused(
@@ -1243,7 +1254,9 @@ export function runCompleteRestore(
     }
 
     // THE DIGEST IS RE-PROVED UNDER THE LOCK, over a FRESH verification of the set.
-    const reResolved = resolveCompleteRestoreRequest(effective, probe);
+    const reResolved = existing === null
+      ? resolveCompleteRestoreRequest(effective, probe)
+      : { ...resolveCompleteRestoreRequest(effective, probe), targetState: existing.targetState };
     const rePlan = planCompleteRestore(reResolved, { safetySet, acceptDataLoss: plan.acceptDataLoss });
     if (rePlan.digest !== plan.digest) {
       throw new MaintenanceRefused(
@@ -1284,9 +1297,31 @@ export function runCompleteRestore(
 
     // ---- RECOVER THE STEP THE PROCESS DIED INSIDE ----------------------------------------------------
     //
-    // Exactly one step can be `running`, and it is the one the previous process was inside when it stopped
-    // existing. What may safely be done about it is the step's own declared policy — see `STEP_RECOVERY`.
-    const interrupted = plan.steps.map((step) => state.get(step.id)!).find((step) => step.state === 'running');
+    // -----------------------------------------------------------------------------------------------------
+    // A `failed` EFFECTFUL STEP NEEDS RECOVERY EXACTLY AS MUCH AS A `running` ONE.
+    // -----------------------------------------------------------------------------------------------------
+    //
+    // THE DEFECT THIS CLOSES. Recovery ran only for a step recorded `running` — a process that stopped
+    // existing. But `performStep` can RETURN a failure after part of its effect has already landed, and the
+    // executor then records `failed`; a resume marked that same step running and performed it again from the
+    // top, with no recovery at all. Three of those are unsafe and two are dead ends:
+    //
+    //   * `psql` can exit non-zero having applied PART OF THE DUMP. Replaying the same dump onto that
+    //     produces conflicts, not a restore — the very thing the `rewind` policy exists for, skipped because
+    //     the step said "failed" instead of "running".
+    //   * A SWAP whose second or third rename fails has already MOVED the staged component out of staging.
+    //     Re-running the step finds no staged source and answers "the staged secrets directory is not
+    //     there... re-run the staging step" — forever. The installation is left with its secrets directory
+    //     missing or half-placed and a command that cannot move.
+    //
+    // So recovery is dispatched on whether the step's effect is AMBIGUOUS, not on which of two words the
+    // journal happens to record. A `retry`-policy step is idempotent by declaration and needs none.
+    const needsRecovery = (step: JournalStep): boolean => {
+      if (step.state === 'running') return true;
+      // A returned failure from a step whose effect cannot simply be repeated.
+      return step.state === 'failed' && STEP_RECOVERY[step.id] !== 'retry';
+    };
+    const interrupted = plan.steps.map((step) => state.get(step.id)!).find(needsRecovery);
     if (interrupted !== undefined) {
       const recovery = recoverInterruptedStep(interrupted.id, resolved, plan, deps, stagingDir, suffix, swaps);
       if (recovery.kind === 'refuse') {
@@ -1631,24 +1666,57 @@ function repairSwap(
     replaced: moved ? replacedName : null, undone: false,
   });
 
-  // ---- 1 and 4: nothing is in flight --------------------------------------------------------------
+  // ---- NOTHING IS IN FLIGHT: either it landed, or it never started ---------------------------------
+  //
+  // -----------------------------------------------------------------------------------------------------
+  // "LANDED" IS DECIDED BY WHAT IS AT THE TARGET, NOT BY WHETHER A `.replaced-` EXISTS.
+  // -----------------------------------------------------------------------------------------------------
+  //
+  // THE DEFECT THIS CLOSES. The landed-but-unrecorded case was recognised only when BOTH a `.replaced-`
+  // directory and the target existed. That is the shape a swap leaves when the target was ALREADY THERE. When
+  // the original target was ABSENT there is no `.replaced-` to find, so a completed swap leaves the target
+  // present, nothing in flight and nothing kept aside — which the old recovery read as "nothing moved" and
+  // retried. The retry then found the staged source gone (the placement had moved it) and answered "the
+  // staged directory is not there, re-run the staging step", forever.
+  //
+  // AND "LANDED" IS VERIFIED, NOT ASSUMED. A directory at the target name is not evidence that this
+  // operation put it there; it is compared against the component the backup manifest declares before this
+  // command agrees the placement is done.
   if (!existsSync(restoring)) {
-    if (existsSync(replaced) && existsSync(target.dir)) {
+    if (existsSync(target.dir) && verifyStagedTree(target.dir, id, manifest) === null) {
+      // It is exactly the component this set declares, so the placement completed and only the record was
+      // lost. Whether a `.replaced-` exists tells us what the target was BEFORE, which is what an abandon
+      // needs — an absent original is recorded as `replaced: null`, and absence is what abandon restores.
+      const moved = existsSync(replaced);
       return {
         kind: 'complete',
         reset: [],
-        ...(already ? {} : { swap: record(true) }),
+        ...(already ? {} : { swap: record(moved) }),
         note: `A previous run stopped after placing the ${target.name} directory but before recording it. `
-          + 'Every rename had landed, so the placement is complete and the previous contents are beside it.',
+          + 'Every rename had landed and the directory is the component this set declares, so the placement '
+          + `is complete. ${moved
+            ? 'The previous contents are beside it.'
+            : 'There had been nothing at that name to keep, and an abandon will restore that absence.'}`,
       };
     }
     if (existsSync(replaced)) {
       return {
         kind: 'refuse', reset: [],
-        detail: `a previous run left the ${target.name} directory missing, with its previous contents beside `
-          + 'it and nothing in flight to put in its place. This command cannot tell what became of the '
-          + 'replacement. Nothing was changed — the previous contents are under the dot-prefixed name.',
+        detail: `a previous run left the ${target.name} directory missing, or holding something that is not `
+          + 'the component this set declares, with its previous contents beside it and nothing in flight to '
+          + 'put in its place. This command cannot tell what became of the replacement. Nothing was changed '
+          + '— the previous contents are under the dot-prefixed name.',
         note: 'An unrecognisable swap state was found.',
+      };
+    }
+    // NOTHING LANDED. That is only recoverable if the staged component is still there to place.
+    if (!existsSync(join(stagingDir, COMPONENT_ARTIFACT_NAMES[id]))) {
+      return {
+        kind: 'refuse', reset: [],
+        detail: `a previous run left neither a staged ${target.name} component, nor one in flight, nor one at `
+          + 'the target that matches this set. This command has nothing verified to place and will not guess. '
+          + 'Nothing was changed.',
+        note: 'The staged component and every in-flight copy of it are gone.',
       };
     }
     return {

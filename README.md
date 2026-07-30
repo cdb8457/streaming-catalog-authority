@@ -278,12 +278,17 @@ established it, so resuming never un-proves something that was proved. A killed 
 maintenance lock; the command tells you so by name rather than reporting generic contention, and still
 refuses to break it for you.
 
-**What that does and does not cover.** The recovery is proved against a process that is *killed* — the suite
-runs real restores in child processes and stops them at named boundaries. A **power loss** is a strictly
-harder failure: this command `fsync`s every file it writes and publishes by rename, but whether those
-reached the platter is the filesystem's and the disk's promise, not this product's, and nothing here has been
-tested against a real power cut. Treat the claim as: *if the journal and the directories survive, this
-command can always tell you where it got to and finish or unwind from there.*
+**What that does and does not cover: PROCESS DEATH.** The recovery is proved against a process that stops
+existing — the suite runs real restores in child processes and kills them at named boundaries. That covers a
+kill, a runtime crash and an operator's Ctrl-C.
+
+It does **not** claim power-loss durability, and it would be wrong to. Files are written with `fsync` and
+published by rename, but the containing DIRECTORY is not fsynced after those renames, so a power cut can
+leave a rename that never reached the disk on filesystems that do not order metadata that way. Establishing
+power-loss durability would mean fsyncing parent directories and naming the filesystems on which the
+resulting ordering holds; neither has been done here, and no test has cut power to a machine. The honest
+claim is: *if the journal and the directories survive, this command can always tell you where it got to and
+finish or unwind from there.*
 
 An interrupted run leaves a journal — a crash-consistent, path-bound state machine — and refuses a fresh
 restore until you `--resume` it or `--abandon` it; both take only `--project`, because the journal knows the

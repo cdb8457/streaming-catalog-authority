@@ -232,7 +232,11 @@ The order is the guarantee, and it is the rehearsal's proven rollback leg pointe
     the restored secret, and gates the app on its own success.
 
 The staging directory holds a copy of every secret in the installation, so a **completed** restore removes it
-by digest-checked ownership. A failed one leaves it for the resume, and says so.
+only when its ownership MARKER proves the tree is this operation's — there is no digest of a directory
+involved in that decision, and the earlier wording claiming one was wrong. Integrity comes from a separate
+check: each component is compared against the digest, entry count and byte count the BACKUP MANIFEST
+records. A failed run leaves the tree for the resume, and says so; a run that cannot prove the tree is its
+own neither removes it nor clears its journal.
 
 Every step is journaled before it runs and marked after it completes. Every path out of the window runs the
 same `finally`, and a restore that leaves services stopped reports the outage as a **named fact** — the same
@@ -340,11 +344,14 @@ right for most steps and catastrophic for three. Each step now DECLARES its reco
 
 **What "crash" means here, exactly.** Every recovery below is proved against a process that is *killed*: the
 suite runs real restores in child processes and stops them at named boundaries with `process.exit`. That
-covers a kill, a crash of the runtime, and an operator's Ctrl-C. It does **not** cover a power loss, which is
-a strictly harder failure: this command `fsync`s what it writes and publishes by rename, but whether those
-bytes reached the platter is the filesystem's and the disk's promise, and no test here has cut power to a
-machine. The honest claim is that **if the journal and the directories survive, this command can always say
-where it got to, and finish or unwind from there.**
+covers a kill, a runtime crash, and an operator's Ctrl-C — **process death**, and nothing wider.
+
+It does **not** claim power-loss durability. Files are written with `fsync` and published by rename, but the
+containing directory is **not** fsynced after those renames, so a power cut can leave a rename that never
+reached the disk on any filesystem that does not order metadata that way. Claiming power-loss durability
+would require fsyncing parent directories and naming the filesystems on which the resulting ordering holds;
+neither has been done, and no test here has cut power to a machine. The honest claim is that **if the journal
+and the directories survive, this command can always say where it got to, and finish or unwind from there.**
 
 A swap that landed and was never recorded has its journal entry **reconstructed**, because `--abandon` walks
 that record and a directory nothing names is a directory nothing can put back. A half-published safety set —

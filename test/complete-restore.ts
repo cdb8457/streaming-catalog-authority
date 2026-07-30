@@ -2547,6 +2547,214 @@ test('a completed operation left unresolved staging keeps its journal, so nothin
   rmSync(join(root, RESTORE_JOURNAL_NAME));
 });
 
+
+// ---------------------------------------------------------------------------------------------------------
+// A RETURNED failure after a partial effect is not a fresh start
+// ---------------------------------------------------------------------------------------------------------
+//
+// Every crash check above kills a process. THESE DO NOT: the step RETURNS an ordinary failure, the executor
+// records `failed`, and the resume used to mark that same step running and perform it again from the top —
+// with no recovery, because recovery only ever ran for a step recorded `running`. For three steps that is
+// unsafe, and for two it is a dead end the installation cannot be moved out of.
+
+test('a replay that EXITS NON-ZERO is not stacked on a possibly partial schema: the leg is rewound first', () => {
+  // `psql` can exit non-zero having applied PART of the dump. Replaying the same dump onto that produces
+  // conflicts, not a restore — which is exactly what the `rewind` policy exists for, and it was skipped
+  // because the journal said "failed" rather than "running".
+  const root = makeProject('replay-nonzero');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const first = worldFor(setDir);
+  const partial = {
+    ...depsFor(first),
+    // The dump goes in — and then the command reports failure, the way a real `psql` does when it stops at
+    // an error part way through applying one.
+    fileRunner: (command: Parameters<typeof first.inputRunner>[0], source: string) => {
+      first.inputRunner(command, source);
+      return { status: 1, stdout: '', stderr: 'ERROR: relation already exists\n' };
+    },
+  };
+  let thrown: unknown = null;
+  try {
+    runCompleteRestore(request(root, 'set-1'), partial, { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof CompleteRestoreFailed, 'the volumes were destroyed and the replay then failed');
+  assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'replay-database')!.state, 'failed',
+    'the journal records a RETURNED failure, not an interrupted step');
+  assertEq(first.teardowns(), 1, 'and the leg had been torn down once');
+
+  // THE RESUME REWINDS BEFORE IT REPLAYS. The world it meets has volumes that were never re-emptied, so a
+  // second replay stacked on the first would be refused by the modelled psql exactly as a real one refuses.
+  const second = worldFor(setDir);
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(second.teardowns(), 1, 'THE VOLUMES WERE DESTROYED AGAIN before the second replay');
+  assertEq(report.steps.find((step) => step.id === 'stop-and-destroy')!.outcome, 'held',
+    'the teardown really ran again rather than being skipped as complete');
+  assertEq(report.steps.find((step) => step.id === 'database-up')!.outcome, 'held',
+    'and a fresh database was started for it');
+  assertEq(second.replays().length, 1, 'and exactly one replay landed, into that fresh database');
+  assert(report.notes.some((note) => note.includes('cannot be repeated or repaired')),
+    'and the report says why the leg was repeated');
+});
+
+for (const failAt of [2, 3] as const) {
+  test(`a swap whose rename #${failAt} FAILS is repaired on resume, not restarted with its source gone`, () => {
+    // THE DEAD END THIS PINS. The first rename moves the staged component OUT of staging. If either later
+    // rename then fails, the step is recorded `failed` — and the resume re-ran it from the top, found no
+    // staged source, and answered "the staged secrets directory is not there... re-run the staging step",
+    // forever, with the installation's secrets directory missing or half-placed.
+    const root = makeProject(`swap-rename-${failAt}`);
+    const setDir = takeSet(root, 'set-1');
+    writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+    const { plan } = planFor(request(root, 'set-1'));
+    const first = worldFor(setDir);
+    let renames = 0;
+    const failing = {
+      ...depsFor(first),
+      rename: (from: string, to: string): void => {
+        renames += 1;
+        if (renames === failAt) throw new Error('injected rename failure');
+        renameSync(from, to);
+      },
+    };
+    let thrown: unknown = null;
+    try {
+      runCompleteRestore(request(root, 'set-1'), failing, { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+    } catch (err) { thrown = err; }
+    assert(thrown instanceof CompleteRestoreFailed, 'the volumes were already destroyed, so this is a step failure');
+
+    // THE STATE IT LEAVES: the staged source has MOVED, and the journal says `failed`.
+    assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'place-secrets')!.state, 'failed',
+      'the journal records a returned failure');
+    assertEq(existsSync(join(root, '.catalog-restore.staged-aaaaaaaaaaaa', COMPONENT_ARTIFACT_NAMES.secrets)), false,
+      'and the staged component is no longer in staging — the first rename moved it');
+    assert(existsSync(join(root, '.secrets.restoring-aaaaaaaaaaaa')), 'it is in flight');
+    if (failAt === 3) {
+      assertEq(existsSync(join(root, 'secrets')), false, 'and at rename 3 the target is MISSING entirely');
+    }
+
+    // THE RESUME REPAIRS IT. It meets volumes the previous process destroyed.
+    const second = restoreStack({
+      buildSchema: MIGRATION_VERSION, startDestroyed: true,
+      moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    });
+    const report = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+    assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+    assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), SECRET_VALUE,
+      'the secrets directory holds the restored bytes');
+    assertEq(existsSync(join(root, '.secrets.restoring-aaaaaaaaaaaa')), false, 'nothing is left in flight');
+    assert(report.replaced.includes('.secrets.replaced-aaaaaaaaaaaa'),
+      'and the previous contents are still named, so an abandon could put them back');
+  });
+}
+
+test('a swap that landed onto an ABSENT target is recognised, not read as "nothing moved"', () => {
+  // THE DEFECT THIS PINS. Landed-but-unrecorded was recognised only when BOTH a `.replaced-` and the target
+  // existed — the shape a swap leaves when the target was ALREADY THERE. With an absent original there is no
+  // `.replaced-` to find, so a completed swap left the target present, nothing in flight and nothing kept
+  // aside, which the recovery read as "nothing moved" and retried — into a staging directory whose component
+  // the placement had already moved out.
+  const root = join(WORK, 'landed-onto-absent');
+  mkdirSync(join(root, 'secrets'), { recursive: true });
+  const source = makeProject('landed-onto-absent-source');
+  const setDir = takeSet(source, 'set-1');
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  copyDirectory(setDir, join(root, 'backups', 'set-1'));
+  assertEq(existsSync(join(root, 'promotion-records')), false, 'the records target does not exist here');
+
+  const req = request(root, 'set-1');
+  const { plan } = planFor(req, false);
+  const first = worldFor(setDir);
+  let renames = 0;
+  const dying = {
+    ...depsFor(first),
+    rename: (from: string, to: string): void => {
+      renameSync(from, to);
+      renames += 1;
+      // 1-3 are the secrets swap; 4 and 5 are the records swap onto an ABSENT target (staged -> in flight,
+      // in flight -> target). Fail immediately after the last one, before anything records it.
+      if (renames === 5) throw new Error('injected failure after the placement landed');
+    },
+  };
+  let thrown: unknown = null;
+  try {
+    runCompleteRestore(req, dying, { kind: 'run', confirm: plan.digest, acceptDataLoss: plan.digest });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof CompleteRestoreFailed, 'the run failed after the volumes had gone');
+
+  // THE STATE: target present, nothing in flight, nothing kept aside — and no record of the swap.
+  assert(existsSync(join(root, 'promotion-records', 'record-live.json')), 'the placement landed');
+  assertEq(existsSync(join(root, '.promotion-records.restoring-aaaaaaaaaaaa')), false, 'nothing is in flight');
+  assertEq(existsSync(join(root, '.promotion-records.replaced-aaaaaaaaaaaa')), false, 'nothing was kept aside');
+  const journal = readRestoreJournal(root)!;
+  assertEq(journal.swaps.some((swap) => swap.component === 'promotion-records'), false,
+    'and the swap was never recorded');
+
+  // THE RESUME RECOGNISES IT rather than retrying into empty staging.
+  const second = restoreStack({
+    buildSchema: MIGRATION_VERSION, startDestroyed: true,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  const report = runCompleteRestore(req, depsFor(second), { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assert(existsSync(join(root, 'promotion-records', 'record-live.json')), 'the placement is still there');
+  assert(report.notes.some((note) => note.includes('nothing at that name to keep')),
+    'and the report says the original had been absent');
+});
+
+test('a target holding something that is NOT this set\'s component is never accepted as landed', () => {
+  // "LANDED" IS DECIDED BY WHAT IS AT THE TARGET, and a directory at that name is not evidence that this
+  // operation put it there. It is compared against the component the manifest declares first.
+  const root = makeProject('landed-verified');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const first = worldFor(setDir);
+  let renames = 0;
+  const dying = {
+    ...depsFor(first),
+    rename: (from: string, to: string): void => {
+      renameSync(from, to);
+      renames += 1;
+      if (renames === 3) throw new Error('injected failure after the placement landed');
+    },
+  };
+  try {
+    runCompleteRestore(request(root, 'set-1'), dying, { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  } catch { /* expected */ }
+  // Something rewrites the placed directory before the resume looks at it.
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'NOT THE SET\'S BYTES\n', 'utf8');
+
+  const second = worldFor(setDir);
+  let refused = false;
+  try {
+    runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
+  } catch (err) {
+    refused = (err as Error).message.includes('not the component this set declares')
+      || (err as Error).message.includes('nothing verified to place');
+  }
+  assertEq(refused, true, 'a target that is not the declared component is refused, not accepted as landed');
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), 'NOT THE SET\'S BYTES\n',
+    'and nothing was changed');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('every effectful step declares whether a returned failure needs recovery, and the executor uses it', () => {
+  // THE ROUTING IS THE FIX, so it is asserted directly: a `failed` step whose policy is not a plain retry is
+  // recovered exactly as a `running` one is.
+  const source = readRepo('src/ops/complete-restore.ts');
+  const routing = source.slice(source.indexOf('const needsRecovery ='), source.indexOf('if (interrupted !== undefined)'));
+  assert(routing.includes("step.state === 'running'"), 'an interrupted step needs recovery');
+  assert(routing.includes("step.state === 'failed'") && routing.includes("STEP_RECOVERY[step.id] !== 'retry'"),
+    'AND SO DOES A RETURNED FAILURE whose effect cannot simply be repeated');
+  // The three that matter are exactly the non-retry policies.
+  const risky = RESTORE_STEP_IDS.filter((id) => STEP_RECOVERY[id] !== 'retry');
+  assertEq([...risky].sort().join(','),
+    'place-promotion-records,place-secrets,place-sidecar-keystore,replay-database,safety-set',
+    'the steps a returned failure must not simply repeat are the ones declared non-idempotent');
+});
+
 // ---------------------------------------------------------------------------------------------------------
 
 function copyDirectory(source: string, destination: string): void {
