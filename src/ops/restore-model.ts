@@ -147,6 +147,14 @@ export function requiredPlacementIds(custodian: CustodianTopology): readonly Bac
  */
 export const RESTORE_STEP_IDS = [
   'safety-set',
+  // PHASE 304 CORRECTION. The set was verified once, and then every later step RE-OPENED it by path: a
+  // `copyTree` walked the component directories again and the replay bound a descriptor to the dump again.
+  // A set that changed in between — by an operator tidying up, by a second process, or by anything hostile
+  // holding a handle on that directory — supplied DIFFERENT BYTES to the restore than the ones the
+  // verification approved, and nothing would have noticed. Every component is now staged first, through
+  // descriptor-safe reads, and the STAGED object is re-verified against the manifest's own recorded digest,
+  // entry count and byte count before anything is placed. What is restored is what was verified.
+  'stage-components',
   'stop-and-destroy',
   'place-secrets',
   'place-promotion-records',
@@ -191,6 +199,8 @@ export const PROOF_STEP_IDS: readonly RestoreStepId[] = Object.freeze([
 /** What each step establishes. Rendered by `--plan`, and never interpolated with anything read at runtime. */
 export const RESTORE_STEP_PURPOSE: Readonly<Record<RestoreStepId, string>> = Object.freeze({
   'safety-set': 'a verified complete backup of the installation this restore is about to destroy',
+  'stage-components': 'every component is copied out of the set and RE-VERIFIED against the manifest, so what '
+    + 'is restored is exactly what was verified rather than whatever is at those paths later',
   'stop-and-destroy': 'the stack is stopped and its volumes destroyed, so the dump replays into an EMPTY database',
   'place-secrets': 'the set\'s secret files are in place BEFORE a fresh database volume is initialised from them',
   'place-promotion-records': 'the set\'s promotion record artifacts are back in the folder the service reads',
@@ -226,6 +236,36 @@ export function stepsFor(options: {
     return true;
   });
 }
+
+/**
+ * The token a plan uses where the run's private staging directory will be.
+ *
+ * THE PLAN DIGEST MUST NOT DEPEND ON THE RUN. The staging directory carries a per-run suffix, so putting its
+ * real path into a planned command would give every plan of the same operation a different digest — and a
+ * digest an operator can never reproduce is a confirmation that confirms nothing. The plan therefore binds
+ * this token, and the run substitutes the directory it created. Both the guard and the display see the token.
+ */
+export const STAGED_TOKEN = '<staged>';
+
+/** Where the verified copy of one component sits inside the staging directory, as the plan spells it. */
+export function stagedPath(relative: string): string {
+  return `${STAGED_TOKEN}/${relative}`;
+}
+
+/** The private directory one run stages its verified components in, inside the project. */
+export function stagingDirName(suffix: string): string {
+  return `.catalog-restore.staged-${suffix}`;
+}
+
+/**
+ * The suffix shape a journal may carry.
+ *
+ * IT IS VALIDATED BECAUSE IT IS CONCATENATED INTO FILE NAMES. A journal is a file on disk that a later run
+ * reads and builds `.secrets.replaced-<suffix>` out of; a suffix carrying a separator, a traversal or a NUL
+ * would make that name point somewhere nobody chose. `stagingSuffix()` produces exactly twelve lowercase hex
+ * characters, and nothing else is accepted.
+ */
+export const RESTORE_SUFFIX_RE = /^[0-9a-f]{12}$/;
 
 /** The staging name a swap uses beside its target. Dot-prefixed, so a killed run leaves something ignorable. */
 export function swapStagingName(target: string, suffix: string): string {

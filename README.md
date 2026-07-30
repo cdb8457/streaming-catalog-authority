@@ -242,12 +242,26 @@ from them (which is what makes the restored `postgres_password` the password the
 the dump from its own file descriptor — nothing is copied into a container and nothing is decoded into a
 string — puts the keystore back, and starts everything.
 
-**Then it proves it, and one of the proofs is a decryption.** An installation whose keystore did not arrive
-starts, passes the doctor and reports itself healthy, because a fail-closed unreadable item is
-indistinguishable from a correctly erased one. So a restore that came up but cannot read its own catalog is
-reported as `RESTORED_BUT_UNPROVEN`, not as a success. Components are placed by **rename**: the previous
-directory is kept beside the new one, never merged into and never deleted. An interrupted run leaves a journal
-and refuses a fresh restore until you `--resume` it or `--abandon` it.
+**Then it proves it, and one of the proofs actually decrypts.** `ops:custody-proof` builds the shipped catalog
+authority over this installation's own custodian and decrypts active records through it — there is no way to
+satisfy it without the key material. That matters because an installation whose keystore did not arrive
+starts, passes the doctor and reports itself healthy: a fail-closed unreadable item is indistinguishable from
+a correctly erased one. A restore that came up but cannot read its own catalog is reported as
+`RESTORED_BUT_UNPROVEN`, not as a success — and a restored catalog with **nothing encrypted in it** reports
+`custody proven: NO`, because there was nothing to prove custody with. Run it any time with
+`npm run ops:custody-proof`.
+
+**It cannot prove your Docker volumes are empty, and it does not pretend to.** `down -v` destroys the database
+and, in inline custody, the keystore volume; reading a volume means starting something, which is a change. So
+an installation is `OCCUPIED` or `UNKNOWN`, never "empty", and both need either a verified safety set or the
+digest-bound `--accept-data-loss`.
+
+Every component is **staged out of the set and re-verified against the manifest** before anything is
+destroyed, so a set that changes after it verified cannot supply the bytes that get restored. Components are
+then placed by **rename**: the previous directory is kept beside the new one, never merged into and never
+deleted. An interrupted run leaves a journal — a validated, path-bound state machine — and refuses a fresh
+restore until you `--resume` it or `--abandon` it; both take only `--project`, because the journal knows the
+operation.
 [docs/PHASES_297_304_COMPLETE_RESTORE.md](docs/PHASES_297_304_COMPLETE_RESTORE.md) has the ordering, the
 classification and every refusal.
 
@@ -473,6 +487,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:version` | db schema version vs this build (exit 1 on mismatch) |
 | `ops:doctor [--json]` | **read-only** production self-check (config, schema version, runtime least-privilege, secret match, custodian, keystore, O4/O5 production gate WARN visibility); `--json` is the stable unattended-healthcheck contract; non-zero exit on any failure |
 | `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) — **one component of four** |
+| `ops:custody-proof [-- --json] [--sample <n>]` | **read-only** proof that this installation can DECRYPT its own catalog, through the shipped authority and its own custodian. Exits 0 proven, 1 NOT proven, 4 nothing encrypted to prove — which is not a pass |
 | `ops:complete-restore -- --project <dir> --set <name> --custodian inline\|sidecar --plan` | puts a **complete set** back: safety set, teardown, all four components, then proofs including a **decryption**. Runs on the host. `--plan` changes nothing and prints the digest `--confirm` requires |
 | `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
 | `ops:operator-ui-token -- --show-path/status/rotate` | safe operator UI token helper; rotation and status do not print the token, and printing requires `--print --confirm-print` |

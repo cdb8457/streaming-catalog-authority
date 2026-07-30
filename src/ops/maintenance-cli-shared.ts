@@ -261,6 +261,22 @@ export const CREDENTIAL_FLAG_WORDS: readonly string[] = Object.freeze([
   'password', 'passwd', 'secret', 'token', 'key', 'credential', 'kek', 'apikey',
 ]);
 
+/**
+ * Flag names that name a DIRECTORY OF credentials rather than a credential.
+ *
+ * THE DEFECT THIS CLOSES, AND IT WAS PRE-EXISTING. The scan above is a substring scan, deliberately blunt so
+ * nobody can argue their way past it. `--secrets` contains `secret`, so `ops:complete-backup -- --secrets
+ * <rel>` — a flag its own usage text documents, and which names the FOLDER the setup script created — was
+ * refused as though somebody had typed a password on a command line. The blunt check was right and its
+ * verdict here was wrong.
+ *
+ * The exemption is an EXACT-NAME allowlist, not a relaxation of the scan: `--secrets` is permitted and
+ * `--secret`, `--secrets-value`, `--db-secrets` and everything else are still refused. A relative path to a
+ * folder is not a credential; the credential is the bytes in the files inside it, which no command here reads
+ * from a command line.
+ */
+export const NON_CREDENTIAL_FLAG_NAMES: readonly string[] = Object.freeze(['secrets']);
+
 export interface ParsedFlags {
   readonly values: Readonly<Record<string, string>>;
   readonly switches: ReadonlySet<string>;
@@ -277,7 +293,7 @@ export function parseMaintenanceFlags(
     if (!argument.startsWith('--')) throw new MaintenanceUsageError(`unexpected argument: ${argument}`);
     const name = argument.slice(2);
     const lower = name.toLowerCase();
-    for (const word of CREDENTIAL_FLAG_WORDS) {
+    for (const word of NON_CREDENTIAL_FLAG_NAMES.includes(lower) ? [] : CREDENTIAL_FLAG_WORDS) {
       if (lower.includes(word)) {
         throw new MaintenanceUsageError(
           `--${name} looks like a credential, and this command takes none on a command line: a command line is `

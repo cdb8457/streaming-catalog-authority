@@ -21,7 +21,9 @@ import {
   CompleteRestoreFailed,
   RESTORE_JOURNAL_NAME,
   abandonRestore,
+  canonicalOperation,
   classifyTarget,
+  composeOccupancyProbe,
   planCompleteRestore,
   prepareRuntimeRoleSql,
   readRestoreJournal,
@@ -30,6 +32,7 @@ import {
   resolveCompleteRestoreRequest,
   runCompleteRestore,
   type CompleteRestoreRequest,
+  type OccupancyProbe,
 } from '../src/ops/complete-restore.js';
 import {
   DESTRUCTIVE_STEP_IDS,
@@ -39,7 +42,13 @@ import {
   requiredPlacementIds,
   stepsFor,
 } from '../src/ops/restore-model.js';
-import { main as cliMain, parseCompleteRestoreArgs } from '../src/ops/complete-restore-cli.js';
+import {
+  COMPLETE_RESTORE_EXIT_FAILED,
+  COMPLETE_RESTORE_EXIT_REFUSED,
+  MODE_VALUE_FLAGS,
+  main as cliMain,
+  parseCompleteRestoreArgs,
+} from '../src/ops/complete-restore-cli.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
 import { restoreStack, setDumpDigest, setKeystoreDigest } from './helpers/fake-restore-stack.js';
 
@@ -158,7 +167,7 @@ function worldFor(setDir: string, options: Parameters<typeof restoreStack>[0] | 
   } as Parameters<typeof restoreStack>[0]);
 }
 
-function depsFor(world: ReturnType<typeof restoreStack>, suffix = 'aaaaaa') {
+function depsFor(world: ReturnType<typeof restoreStack>, suffix = 'aaaaaaaaaaaa') {
   return {
     runner: world.runner,
     fileRunner: world.inputRunner,
@@ -169,11 +178,15 @@ function depsFor(world: ReturnType<typeof restoreStack>, suffix = 'aaaaaa') {
   };
 }
 
-/** Plan a restore and hand back both the plan and the digest a confirmation needs. */
-function planFor(req: CompleteRestoreRequest, safetySet?: boolean) {
-  const resolved = resolveCompleteRestoreRequest(req);
-  const takesSafetySet = safetySet ?? resolved.targetState === 'OCCUPIED';
-  return { resolved, plan: planCompleteRestore(resolved, { safetySet: takesSafetySet }) };
+/**
+ * Plan a restore and hand back both the plan and the digest a confirmation needs.
+ *
+ * A safety set is the default because there is no longer any state in which this command believes it has
+ * nothing to lose: `--accept-data-loss` is the only way to plan without one.
+ */
+function planFor(req: CompleteRestoreRequest, safetySet = true, probe?: OccupancyProbe) {
+  const resolved = resolveCompleteRestoreRequest(req, probe);
+  return { resolved, plan: planCompleteRestore(resolved, { safetySet, acceptDataLoss: !safetySet }) };
 }
 
 console.log('Running Phases 297-304 complete restore suite:\n');
@@ -333,27 +346,57 @@ test('hostile target paths are refused rather than normalised', () => {
     'a symlink inside a target directory is refused');
 });
 
-test('an empty installation is EMPTY and a populated one is OCCUPIED, without any database being touched', () => {
+test('emptiness is NEVER inferred: empty host directories are UNKNOWN, and UNKNOWN is not empty', () => {
+  // THE DEFECT THIS PINS. The first cut called a project with empty host directories EMPTY and skipped the
+  // safety set on the strength of it. But `docker compose down -v` destroys the DATABASE VOLUME and, in
+  // inline custody, the KEYSTORE VOLUME — neither of which is on the host. A project can have an empty
+  // secrets directory and a volume holding an entire catalog, which is exactly the state of an installation
+  // whose host files were lost and whose Docker state was not.
   const populated = makeProject('occupied');
-  assertEq(classifyTarget({
-    secretsDir: join(populated, 'secrets'),
-    promotionRecordsDir: join(populated, 'promotion-records'),
-    sidecarStateDir: null,
-  }), 'OCCUPIED', 'a project with secrets in it has something to lose');
+  const target = (dir: string, name: string) => ({ relative: name, dir: join(dir, name), name });
+  assertEq(classifyTarget(populated, [target(populated, 'secrets'), target(populated, 'promotion-records')]),
+    'OCCUPIED', 'a project with secrets in it has something to lose');
 
   const bare = join(WORK, 'bare-project');
   mkdirSync(join(bare, 'secrets'), { recursive: true });
-  assertEq(classifyTarget({
-    secretsDir: join(bare, 'secrets'), promotionRecordsDir: null, sidecarStateDir: null,
-  }), 'EMPTY', 'empty directories are empty');
+  assertEq(classifyTarget(bare, [target(bare, 'secrets')]), 'UNKNOWN',
+    'EMPTY HOST DIRECTORIES ARE NOT PROOF — the volumes are unread, and unreadable without a mutation');
 
-  // "I COULD NOT SEE IT" IS NOT "IT IS NOT THERE". A target that is not a directory counts as occupied, so
-  // the safe direction costs one extra verified backup rather than an unrecoverable installation.
+  // A NON-MUTATING PROBE CAN ONLY EVER ADD OCCUPANCY, NEVER SUBTRACT IT. `compose ps` starts nothing; a
+  // project WITH containers has been up and has state, and one without could still hold volumes from a
+  // `down` that kept them.
+  assertEq(classifyTarget(bare, [target(bare, 'secrets')], () => 'containers'), 'OCCUPIED',
+    'a project that has containers has been up, and a project that has been up has state');
+  assertEq(classifyTarget(bare, [target(bare, 'secrets')], () => 'none'), 'UNKNOWN',
+    'and no containers still proves nothing, because down keeps volumes');
+  // "I COULD NOT SEE IT" IS NOT "IT IS NOT THERE".
+  assertEq(classifyTarget(bare, [target(bare, 'secrets')], () => 'unanswerable'), 'OCCUPIED',
+    'a probe that cannot answer fails CLOSED');
+
   const odd = join(WORK, 'odd-project');
   mkdirSync(odd, { recursive: true });
   writeFileSync(join(odd, 'secrets'), 'a file where a directory belongs\n', 'utf8');
-  assertEq(classifyTarget({ secretsDir: join(odd, 'secrets'), promotionRecordsDir: null, sidecarStateDir: null }),
-    'OCCUPIED', 'a target that is not a directory is not an absence');
+  assertEq(classifyTarget(odd, [target(odd, 'secrets')]), 'OCCUPIED',
+    'a target that is not a directory is not an absence');
+});
+
+test('the shipped probe asks compose ps, which starts nothing, and fails closed', () => {
+  const ledger = new CommandLedger();
+  for (const answer of [{ stdout: '', expect: 'none' as const }, { stdout: 'abc\n', expect: 'containers' as const }]) {
+    const probe = composeOccupancyProbe(() => ({ status: 0, stdout: answer.stdout, stderr: '' }), ledger);
+    assertEq(probe(join(WORK, 'occupied')), answer.expect, `a listing answers ${answer.expect}`);
+  }
+  assertEq(composeOccupancyProbe(() => ({ status: 1, stdout: '', stderr: 'no daemon' }), ledger)(WORK),
+    'unanswerable', 'a non-zero exit is unanswerable');
+  assertEq(composeOccupancyProbe(() => { throw new Error('boom'); }, ledger)(WORK),
+    'unanswerable', 'and so is a runner that threw');
+  // AND THE PROBE ITSELF STARTS NOTHING.
+  for (const entry of ledger.all()) {
+    assert(entry.args.includes('ps'), 'the probe only ever asks ps');
+    for (const verb of ['up', 'run', 'create', 'down']) {
+      assertEq(entry.args.includes(verb), false, `and never ${verb}`);
+    }
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------
@@ -564,25 +607,43 @@ test('a wrong confirmation, and an acknowledgement of loss from another run, are
   assertEq(world.teardowns(), 0, 'and still nothing was destroyed');
 });
 
-test('acknowledging data loss on an installation with nothing to lose is refused', () => {
-  const root = join(WORK, 'nothing-to-lose');
+test('an installation with no host state cannot take a safety set, so it REQUIRES the acknowledgement', () => {
+  // THE DEFECT THIS PINS. The first cut REFUSED --accept-data-loss here, on the grounds that an EMPTY
+  // installation has nothing to lose. It cannot know that: `down -v` would destroy whatever is in this
+  // project's volumes, and nothing on the host says what that is.
+  //
+  // Without the acknowledgement a safety set is PLANNED — and it cannot be taken, because there is no host
+  // state to back up. So the run stops at its first step with nothing destroyed, and the acknowledgement is
+  // the only way through rather than a shortcut past a check.
+  const root = join(WORK, 'no-host-state');
   mkdirSync(join(root, 'secrets'), { recursive: true });
-  // Take the set from a populated project and move it into this empty one, so the set is real and the target
-  // is genuinely EMPTY.
   const source = makeProject('source-for-empty');
   const setDir = takeSet(source, 'set-1');
   mkdirSync(join(root, 'backups'), { recursive: true });
   copyDirectory(setDir, join(root, 'backups', 'set-1'));
 
-  const req = request(root, 'set-1', { promotionRecords: 'promotion-records' });
-  const { resolved, plan } = planFor(req, false);
-  assertEq(resolved.targetState, 'EMPTY', 'this installation has nothing to lose');
+  const req = request(root, 'set-1');
+  const { resolved, plan } = planFor(req);
+  assertEq(resolved.targetState, 'UNKNOWN', 'this command cannot prove this installation is empty');
+  assertEq(plan.safetySet, true, 'so without an acknowledgement it plans a safety set');
   const world = worldFor(setDir);
-  refuses(() => runCompleteRestore(req, depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: plan.digest }),
-    'habit somebody is building', 'an unnecessary acknowledgement is refused rather than accepted');
-});
+  const report = runCompleteRestore(req, depsFor(world),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  assertEq(report.steps[0]!.id, 'safety-set', 'the first step is the safety set');
+  assertEq(report.steps[0]!.outcome, 'failed', 'and it could not be taken');
+  assertEq(world.teardowns(), 0, 'SO NOTHING WAS DESTROYED');
 
-test('a restore into an EMPTY installation takes no safety set and still restores every component', () => {
+  // AND THE ACKNOWLEDGEMENT IS BOUND TO ITS OWN PLAN. A digest from the safety-set plan does not authorise
+  // the no-safety-set one, and vice versa: they are different operations.
+  // The failed run above left a journal, correctly. Clear it so this is a fresh authorisation check.
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+  const withoutSafety = planFor(req, false).plan;
+  assert(withoutSafety.digest !== plan.digest, 'the two plans are different operations');
+  refuses(() => runCompleteRestore(req, depsFor(worldFor(setDir)),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: plan.digest }),
+  'does not match this plan', 'the safety-set plan cannot be run as the acknowledged one');
+});
+test('a restore into an installation with no host state runs under the acknowledgement, and restores everything', () => {
   const root = join(WORK, 'fresh-install');
   mkdirSync(join(root, 'secrets'), { recursive: true });
   const source = makeProject('source-for-fresh');
@@ -591,10 +652,11 @@ test('a restore into an EMPTY installation takes no safety set and still restore
   copyDirectory(setDir, join(root, 'backups', 'set-1'));
 
   const req = request(root, 'set-1');
-  const { plan } = planFor(req);
-  assertEq(plan.safetySet, false, 'no safety set is planned for an empty installation');
+  const { plan } = planFor(req, false);
+  assertEq(plan.safetySet, false, 'no safety set can be taken here');
   const world = worldFor(setDir);
-  const report = runCompleteRestore(req, depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const report = runCompleteRestore(req, depsFor(world),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: plan.digest });
   assertEq(report.ok, true, `it held: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
   assertEq(report.safetySet, null, 'and none was taken');
   assert(report.notes.some((note) => note.includes('NO SAFETY SET WAS TAKEN')),
@@ -663,7 +725,14 @@ test('a keystore from ANOTHER moment starts, passes the doctor, and FAILS the de
   assertEq(version.outcome, 'held', 'the schema versions agree');
   assertEq(doctor.outcome, 'held', 'the doctor reports a healthy installation');
   assertEq(decrypt.outcome, 'failed', 'AND THE CATALOG CANNOT BE DECRYPTED');
-  assert(decrypt.detail!.includes('DECRYPT'), 'the reason names the failure');
+  assert(decrypt.detail!.includes('could NOT decrypt'), 'the reason names the failure');
+  // AND IT CAME FROM THE REAL PROOF CONTRACT. The restore parsed a `phase-302-custody-proof` body through
+  // the shipped reader and acted on its VERDICT — not on a command name the fake happened to recognise.
+  assertEq(report.custodyProven, false, 'custody was not proven');
+  assert(world.lines().some((line) => line.includes('ops:custody-proof')),
+    'the proof it ran is the one that decrypts, not the one that counts rows');
+  assertEq(world.lines().some((line) => line.includes('ops:collections -- status')), false,
+    'and the vacuous row-counting command is not used as a proof at all');
   assertEq(world.state().stackUp, true, 'the stack is up, which is exactly why liveness proves nothing');
 });
 
@@ -808,7 +877,8 @@ test('--abandon puts the host directories back and says what a rename cannot bri
   runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
   assertEq(existsSync(join(root, 'promotion-records', 'record-later.json')), false, 'the restore replaced the records');
 
-  const report = abandonRestore(request(root, 'set-1'), { ledger: new CommandLedger() });
+  // ABANDON TAKES THE PROJECT ROOT AND NOTHING ELSE — the journal knows what was swapped.
+  const report = abandonRestore(root);
   assertEq(report.ok, true, 'the abandon succeeded');
   assert(report.restored.includes('secrets'), 'the secrets are back');
   assert(report.restored.includes('promotion-records'), 'and so are the records');
@@ -841,7 +911,7 @@ test('a run that failed AT the safety set is resumable, because the DECISION is 
 
   const journal = readRestoreJournal(root)!;
   assertEq(journal.safetySetPlanned, true, 'the journal records that a safety set was PLANNED');
-  assertEq(journal.safetySetName, null, 'and that one was never taken — two different facts');
+  assertEq(journal.safetySetTaken, false, 'and that one was never taken — two different facts');
   assertEq(journal.completed.includes('safety-set'), false, 'the step did not complete');
 
   // AND THE RESUME WORKS, from the same plan, with the safety set taken this time.
@@ -912,7 +982,7 @@ test('a journal this build does not understand is a refusal, never an absence', 
   const root = makeProject('bad-journal');
   takeSet(root, 'set-1');
   writeFileSync(join(root, RESTORE_JOURNAL_NAME), '{"journal":"something-else"}\n', 'utf8');
-  refuses(() => readRestoreJournal(root), 'does not understand', 'an unrecognised journal is refused');
+  refuses(() => readRestoreJournal(root), 'it is not a restore journal', 'an unrecognised journal is refused');
   writeFileSync(join(root, RESTORE_JOURNAL_NAME), 'not json at all\n', 'utf8');
   refuses(() => readRestoreJournal(root), 'not readable JSON', 'and so is one that will not parse');
   rmSync(join(root, RESTORE_JOURNAL_NAME));
@@ -935,9 +1005,9 @@ test('the CLI refuses a credential on a command line, unknown flags, and two ope
     'Start with --plan', 'a run with no operation names the one to start with');
 
   const parsed = parseCompleteRestoreArgs(['--project', 'p', '--set', 's', '--custodian', 'inline', '--plan']);
-  assertEq(parsed.plan, true, 'a plan parses');
-  assertEq(parsed.request.destination, 'backups', 'with the documented default destination');
-  assertEq(parsed.request.secrets, 'secrets', 'and the documented default secrets directory');
+  assertEq(parsed.mode, 'plan', 'a plan parses');
+  assertEq(parsed.request!.destination, 'backups', 'with the documented default destination');
+  assertEq(parsed.request!.secrets, 'secrets', 'and the documented default secrets directory');
 });
 
 test('the shipped CLI plans a real set end to end, prints the digest, and exits zero having changed nothing', () => {
@@ -1050,6 +1120,548 @@ test('nothing else under src/ takes a backup while holding a lock it did not acq
     return readFileSync(join(repoRoot, 'src/ops', name), 'utf8').includes('holdingLock');
   });
   assertEq(callers.join(','), '', 'only the restore passes holdingLock');
+});
+
+
+// ===========================================================================================================
+// THE CORRECTION REGRESSIONS
+// ===========================================================================================================
+//
+// Every check below FAILS on the first cut of this tranche. They are the review's findings, each pinned by
+// the specific wrong behaviour rather than by the shape of the fix.
+
+// ---------------------------------------------------------------------------------------------------------
+// 1. A confirmation authorises ONE operation
+// ---------------------------------------------------------------------------------------------------------
+
+test('a digest from another PROJECT does not authorise this one — in EITHER custody topology', () => {
+  // THE DEFECT THIS PINS, and it was worse in sidecar custody than in inline. The digest hashed the set
+  // name, the set's own digest, the topology, the safety-set boolean and the step list — none of which say
+  // WHICH PROJECT. Inline custody was protected only INCIDENTALLY, because one command in its step list
+  // (`compose cp <set path> app:…`) happens to carry an absolute path. SIDECAR CUSTODY PLACES ITS KEYSTORE
+  // BY RENAME AND ISSUES NO SUCH COMMAND, so two installations holding a copy of one set produced the
+  // IDENTICAL digest, and a confirmation read off one authorised destroying the other.
+  //
+  // An authorisation that depends on a path happening to appear inside an unrelated argument is not an
+  // authorisation. The project is bound directly now, in both topologies.
+  for (const sidecar of [false, true]) {
+    const label = sidecar ? "sidecar" : "inline";
+    const a = makeProject(`digest-a-${label}`, { sidecar });
+    const b = makeProject(`digest-b-${label}`, { sidecar });
+    const setDir = takeSet(a, 'set-1', { sidecar });
+    mkdirSync(join(b, 'backups'), { recursive: true });
+    copyDirectory(setDir, join(b, 'backups', 'set-1'));
+
+    const over = sidecar ? { custodian: 'sidecar' as const, sidecarState: 'sidecar-state' } : {};
+    const planA = planFor(request(a, 'set-1', over)).plan;
+    const planB = planFor(request(b, 'set-1', over)).plan;
+    assert(planA.digest !== planB.digest,
+      `${label}: THE SAME SET IN TWO PROJECTS IS TWO OPERATIONS, and must not share one digest`);
+
+    const world = worldFor(setDir);
+    refuses(() => runCompleteRestore(request(b, 'set-1', over), depsFor(world),
+      { kind: 'run', confirm: planA.digest, acceptDataLoss: null }),
+    'does not match this plan', `${label}: project A's digest does not run against project B`);
+    assertEq(world.teardowns(), 0, `${label}: and nothing in B was destroyed`);
+  }
+});
+test('a digest does not survive a change of destination, target path, safety-set name or occupancy', () => {
+  const root = makeProject('digest-binding');
+  mkdirSync(join(root, 'other-secrets'), { recursive: true });
+  writeFileSync(join(root, 'other-secrets', 'placeholder'), 'x\n', 'utf8');
+  takeSet(root, 'set-1');
+  mkdirSync(join(root, 'elsewhere'), { recursive: true });
+  copyDirectory(join(root, 'backups', 'set-1'), join(root, 'elsewhere', 'set-1'));
+
+  const base = planFor(request(root, 'set-1')).plan.digest;
+
+  // A DIFFERENT DESTINATION is a different set path, even for a byte-identical set.
+  const otherDestination = planFor(request(root, 'set-1', { destination: 'elsewhere' })).plan.digest;
+  assert(base !== otherDestination, 'the backup destination is bound');
+
+  // A DIFFERENT TARGET DIRECTORY is a different set of directories this run would replace. This is the one
+  // that mattered most: the same set, the same project, and a secrets directory the operator did not mean.
+  const otherTarget = planFor(request(root, 'set-1', { secrets: 'other-secrets' })).plan.digest;
+  assert(base !== otherTarget, 'EVERY TARGET PATH IS BOUND');
+
+  // THE SAFETY SET'S NAME decides what a verified backup of the current installation is called.
+  const otherSafety = planFor(request(root, 'set-1', { safetySetName: 'a-different-name' })).plan.digest;
+  assert(base !== otherSafety, 'the safety-set name is bound');
+
+  // THE OCCUPANCY CLASSIFICATION decides whether a safety set is mandatory, so it is part of the operation.
+  const resolved = resolveCompleteRestoreRequest(request(root, 'set-1'));
+  const occupied = planCompleteRestore({ ...resolved, targetState: 'OCCUPIED' }, { safetySet: true, acceptDataLoss: false });
+  const unknown = planCompleteRestore({ ...resolved, targetState: 'UNKNOWN' }, { safetySet: true, acceptDataLoss: false });
+  assert(occupied.digest !== unknown.digest, 'what this command concluded about the installation is bound');
+
+  // AND TWO PLANS OF THE SAME UNTOUCHED OPERATION ARE ONE VALUE, which is what makes a mismatch mean something.
+  assertEq(planFor(request(root, 'set-1')).plan.digest, base, 'the same operation digests the same');
+});
+
+test('no absolute host path reaches the plan, the report or the JSON', () => {
+  // THE DEFECT THIS PINS. `--plan` printed raw argv, so every command carrying the set directory or the
+  // keystore destination put the operator's appdata layout on screen — and into whatever they pasted into an
+  // issue. Paths belong in the HASH, which is unambiguous, and not in the output.
+  const root = makeProject('no-paths');
+  const setDir = takeSet(root, 'set-1');
+  const { resolved, plan } = planFor(request(root, 'set-1'));
+  const rendered = renderRestorePlan(resolved, plan);
+
+  assertEq(rendered.includes(root), false, 'the project root is not printed');
+  assertEq(rendered.includes(WORK), false, 'nor the directory above it');
+  assertEq(rendered.includes(setDir), false, 'nor the set directory');
+  assert(rendered.includes('<project>'), 'the project is named by a token');
+  assert(rendered.includes('<staged>'), 'and the staging directory by another');
+  // The digest still binds them: the plan is readable AND unambiguous.
+  assert(canonicalOperation(resolved, { safetySet: true, acceptDataLoss: false }, plan.steps).includes(root.replace(/\\/g, '/')),
+    'the canonical operation DOES bind the absolute path, which is why the display need not');
+
+  const world = worldFor(setDir);
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(world),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  for (const surface of [JSON.stringify(report), renderCompleteRestore(report)]) {
+    assertEq(surface.includes(root), false, 'no host path in the report');
+    assertEq(surface.includes(WORK), false, 'none at all');
+    assertEq(surface.includes(SECRET_VALUE), false, 'and no secret value');
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// 2. Unknown volume state is not empty state
+// ---------------------------------------------------------------------------------------------------------
+
+test('a project with empty host directories and CONTAINERS is occupied, and needs a safety set', () => {
+  // THE DEFECT THIS PINS. Empty host directories were read as "nothing to lose", and the restore then ran
+  // `down -v` against a project whose database volume held an entire catalog.
+  const root = join(WORK, 'volumes-full');
+  mkdirSync(join(root, 'secrets'), { recursive: true });
+  const source = makeProject('source-for-volumes');
+  const setDir = takeSet(source, 'set-1');
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  copyDirectory(setDir, join(root, 'backups', 'set-1'));
+
+  const probe: OccupancyProbe = () => 'containers';
+  const resolved = resolveCompleteRestoreRequest(request(root, 'set-1'), probe);
+  assertEq(resolved.targetState, 'OCCUPIED',
+    'a project that has containers has state, however empty its host directories are');
+
+  // And without the probe it is UNKNOWN — which is also not empty, and also requires authorisation.
+  assertEq(resolveCompleteRestoreRequest(request(root, 'set-1')).targetState, 'UNKNOWN',
+    'and with nothing to ask, the honest answer is that this command does not know');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// 3. The journal is a state machine, and it is path-bound
+// ---------------------------------------------------------------------------------------------------------
+
+test('a journal carrying a malicious suffix, an unknown step, or an impossible order is refused', () => {
+  const root = makeProject('journal-guard');
+  takeSet(root, 'set-1');
+  const good = {
+    journal: 'catalog-authority.restore', version: 2, planDigest: 'a'.repeat(64), setName: 'set-1',
+    destination: 'backups', custodian: 'inline', targetState: 'OCCUPIED', safetySetName: 'pre-restore-set-1',
+    suffix: 'aaaaaaaaaaaa', safetySetPlanned: true, safetySetTaken: true,
+    request: { secrets: 'secrets', promotionRecords: 'promotion-records', sidecarState: null },
+    completed: ['safety-set'], running: null, swaps: [],
+  };
+  const write = (patch: Record<string, unknown>): void => {
+    writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify({ ...good, ...patch })}\n`, 'utf8');
+  };
+  // IT PARSES CLEAN FIRST, so every refusal below is about the one field it changed.
+  write({});
+  assert(readRestoreJournal(root) !== null, 'the well-formed journal reads');
+
+  // A SUFFIX IS CONCATENATED INTO FILE NAMES. One carrying a separator or a traversal builds a sibling path
+  // nobody chose, out of a file an operator can edit.
+  for (const suffix of ['../../etc', 'a/b', 'AAAAAAAAAAAA', 'short', 'aaaaaaaaaaaaa', '../aaaaaaaaa']) {
+    write({ suffix });
+    refuses(() => readRestoreJournal(root), 'twelve hex', `a suffix of "${suffix}" is refused`);
+  }
+  write({ setName: '../elsewhere' });
+  refuses(() => readRestoreJournal(root), 'usable name', 'a set name that is a path is refused');
+  write({ completed: ['not-a-step'] });
+  refuses(() => readRestoreJournal(root), 'does not have', 'a step this build does not have is refused');
+  write({ completed: ['safety-set', 'safety-set'] });
+  refuses(() => readRestoreJournal(root), 'one step twice', 'a duplicated step is refused');
+  write({ completed: ['safety-set'], running: 'safety-set' });
+  refuses(() => readRestoreJournal(root), 'both running and complete', 'a step that is two things at once is refused');
+  write({ custodian: 'sidecar' });
+  refuses(() => readRestoreJournal(root), 'sidecar state directory disagree', 'a topology with no state directory is refused');
+  write({ safetySetPlanned: false, safetySetTaken: true });
+  refuses(() => readRestoreJournal(root), 'never planned', 'a safety set taken but never planned is refused');
+  write({ swaps: [{ component: 'secrets', target: 'secrets', name: 'secrets', replaced: '.secrets.replaced-ffffffffffff', undone: false }] });
+  refuses(() => readRestoreJournal(root), 'would not have created', 'a replaced name from another run is refused');
+  write({ swaps: [{ component: 'nonsense', target: 'x', name: 'x', replaced: null, undone: false }] });
+  refuses(() => readRestoreJournal(root), 'component this build does not have', 'a swap of nothing is refused');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('a journal whose completed steps are not this operation\'s ordered prefix is refused before anything runs', () => {
+  // A RUN CANNOT FINISH A LATER STEP BEFORE AN EARLIER ONE. A journal claiming otherwise is not an
+  // interrupted run — it is a file somebody edited, and resuming it would perform a skipped step against
+  // state that is already past it.
+  const root = makeProject('journal-order');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const journal = readRestoreJournal(root)!;
+
+  // OUT OF ORDER: the replay recorded as done with the teardown that precedes it missing.
+  const scrambled = { ...journal, completed: ['stop-and-destroy', 'safety-set'] };
+  writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify(scrambled)}\n`, 'utf8');
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'resume', confirm: plan.digest }),
+    'in this operation\'s order', 'a scrambled completed list is refused');
+
+  // A RUNNING STEP THAT IS NOT THE NEXT ONE.
+  const impossible = { ...journal, completed: ['safety-set'], running: 'stack-up' };
+  writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify(impossible)}\n`, 'utf8');
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'resume', confirm: plan.digest }),
+    'not the one this operation would have reached', 'an impossible running step is refused');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('--abandon uses the journal\'s own targets, so altered CLI paths cannot orphan the real ones', () => {
+  // THE DEFECT THIS PINS, AND IT WAS SILENT. `abandonRestore` re-derived its targets from the CLI's
+  // `--secrets` / `--promotion-records` flags. Give it a different path than the interrupted run used and it
+  // found no `.replaced-` directory, reported OK with nothing put back, and CLEARED THE JOURNAL — leaving the
+  // real swapped directories orphaned and the project accepting a fresh restore over them.
+  const root = makeProject('abandon-bound');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const journal = readRestoreJournal(root)!;
+  assert(journal.swaps.some((swap) => swap.component === 'secrets' && swap.replaced !== null),
+    'the run recorded the secrets swap and what it moved aside');
+
+  // THE SIGNATURE MAKES THE DIVERGENCE IMPOSSIBLE. There is nowhere to put a contradicting path.
+  const report = abandonRestore(root);
+  assertEq(report.ok, true, 'the abandon succeeded');
+  assert(report.restored.includes('secrets'), 'and it put back the directory the JOURNAL named');
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), 'a-later-value\n',
+    'the installation is back to what it was before the restore');
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and the journal is cleared');
+});
+
+test('--abandon does NOT clear the journal while a swap it recorded is still out of place', () => {
+  // A PARTIAL UNWIND MUST STAY VISIBLE. Clearing here would let the next run take a "safety set" of a
+  // half-unwound installation and call it the previous state.
+  const root = makeProject('abandon-partial');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  writeFileSync(join(root, 'promotion-records', 'record-later.json'), '{"later":1}\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const journal = readRestoreJournal(root)!;
+  const secretsSwap = journal.swaps.find((swap) => swap.component === 'secrets')!;
+
+  // SOMETHING ELSE TOOK THE DIRECTORY THIS ABANDON HAD TO PUT BACK.
+  rmSync(join(root, secretsSwap.replaced!), { recursive: true, force: true });
+  const report = abandonRestore(root);
+  assertEq(report.ok, false, 'the abandon did not succeed');
+  assertEq(report.journalCleared, false, 'AND THE JOURNAL WAS NOT CLEARED');
+  assert(report.unresolved.includes(secretsSwap.replaced!), 'it names what is still out of place');
+  assert(report.restored.includes('promotion-records'), 'while still putting back the one it could');
+  assert(existsSync(join(root, RESTORE_JOURNAL_NAME)), 'and the journal is still there');
+  // SO THE PROJECT STILL REFUSES A FRESH RESTORE.
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null }),
+  'part way through a restore', 'and a fresh restore over a half-unwound installation is refused');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('a resumed run reports every directory the OPERATION kept, not only the ones this process moved', () => {
+  // THE DEFECT THIS PINS. A resumed run reported an empty `replaced` list, because the swaps happened in the
+  // earlier process. An operator reading it was told nothing had been kept while three directories of their
+  // previous secrets sat on disk, unnamed.
+  const root = makeProject('resume-reporting');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  writeFileSync(join(root, 'promotion-records', 'record-later.json'), '{"later":1}\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const first = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  const firstReport = runCompleteRestore(request(root, 'set-1'), depsFor(first),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  assertEq(firstReport.replaced.length, 2, 'the first run kept two directories');
+
+  const resumed = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(resumed.ok, true, 'the resume completed');
+  assertEq([...resumed.replaced].sort().join(','), [...firstReport.replaced].sort().join(','),
+    'AND IT NAMED THE SAME KEPT DIRECTORIES, which are still on disk');
+  for (const name of resumed.replaced) {
+    assert(existsSync(join(root, name)), `${name} is really there`);
+  }
+  assert(renderCompleteRestore(resumed).includes('previous state kept as'), 'and the rendering says so');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// 4. Only the exact verified bytes are restored
+// ---------------------------------------------------------------------------------------------------------
+
+test('a DUMP that changes after the set verified is refused, before anything is destroyed', () => {
+  // THE DEFECT THIS PINS. The set was verified once, and the replay then bound a descriptor to the dump BY
+  // PATH later. Anything that changed those bytes in between — an operator, a second process, a scheduled
+  // sync — supplied a restore with bytes no verification had ever approved, silently.
+  //
+  // The mutation is injected DURING THE SAFETY SET, which is after both verifications (the one at
+  // resolution and the one re-proved under the lock) and before the staging step reads the set. That is
+  // exactly the window the first cut left open, and it is the only place a suite can stand in it.
+  const root = makeProject('dump-mutation');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+  const deps = depsFor(world);
+  const tampering = {
+    ...deps,
+    runner: (command: Parameters<typeof world.runner>[0]) => {
+      if (command.args.join(' ').includes('compose start')) {
+        writeFileSync(join(setDir, COMPONENT_ARTIFACT_NAMES.database),
+          `${fakeDumpText(MIGRATION_VERSION)}-- tampered\n`, 'utf8');
+      }
+      return world.runner(command);
+    },
+  };
+
+  const report = runCompleteRestore(request(root, 'set-1'), tampering,
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const staged = report.steps.find((step) => step.id === 'stage-components');
+  assert(staged !== undefined, 'the staging step ran');
+  assertEq(staged!.outcome, 'failed', 'and it refused the changed set');
+  assert(staged!.detail!.includes('changed after it was verified'), 'naming what happened');
+  assertEq(world.teardowns(), 0, 'NOTHING WAS DESTROYED');
+  assertEq(world.replays().length, 0, 'and the tampered bytes never reached a database');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('a COMPONENT DIRECTORY that changes after the set verified is refused too', () => {
+  const root = makeProject('tree-mutation');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+  const tampering = {
+    ...depsFor(world),
+    runner: (command: Parameters<typeof world.runner>[0]) => {
+      if (command.args.join(' ').includes('compose start')) {
+        // One extra file in the secrets component: the digest, the entry count and the byte count all move.
+        writeFileSync(join(setDir, COMPONENT_ARTIFACT_NAMES.secrets, 'slipped-in'), 'not in the manifest\n', 'utf8');
+      }
+      return world.runner(command);
+    },
+  };
+
+  const report = runCompleteRestore(request(root, 'set-1'), tampering,
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const staged = report.steps.find((step) => step.id === 'stage-components')!;
+  assertEq(staged.outcome, 'failed', 'the staging step refused the changed component');
+  assert(staged.detail!.includes('changed after it was verified'), 'naming what happened');
+  assertEq(world.teardowns(), 0, 'and nothing was destroyed');
+  // AND THE SLIPPED-IN FILE NEVER REACHED THE INSTALLATION.
+  assertEq(existsSync(join(root, 'secrets', 'slipped-in')), false, 'the target never received it');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('a set changed BEFORE the run is refused by the verification, without a staging step being reached', () => {
+  // The outer half of the same guarantee: a mutation this command can see at resolution is refused there,
+  // and the staging check is what covers the window after it.
+  const root = makeProject('pre-run-mutation');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(setDir, COMPONENT_ARTIFACT_NAMES.database), 'not the dump that was digested\n', 'utf8');
+  refuses(() => resolveCompleteRestoreRequest(request(root, 'set-1')), 'does not verify',
+    'a set changed before the run never gets as far as a plan');
+});
+test('what is placed comes from the staged copy, so a set changed mid-run cannot reach the installation', () => {
+  // THE POSITIVE HALF. Staging happens before the teardown; if the set is mutated AFTER that, the restore
+  // still places the bytes it verified, because it never reads the set again.
+  const root = makeProject('staged-wins');
+  const setDir = takeSet(root, 'set-1');
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+  const deps = depsFor(world);
+  const tampering = {
+    ...deps,
+    runner: (command: Parameters<typeof world.runner>[0]) => {
+      // The instant the volumes are destroyed — i.e. after staging — rewrite the set on disk.
+      if (command.args.includes('down')) {
+        writeFileSync(join(setDir, COMPONENT_ARTIFACT_NAMES.secrets, 'custodian_kek'), 'INJECTED\n', 'utf8');
+      }
+      return world.runner(command);
+    },
+  };
+  const report = runCompleteRestore(request(root, 'set-1'), tampering,
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  assertEq(report.ok, true, `the restore held: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), SECRET_VALUE,
+    'THE VERIFIED BYTES ARRIVED, not the ones written into the set mid-run');
+});
+
+test('the staging directory holds secret material, and a completed restore removes it', () => {
+  const root = makeProject('staging-cleanup');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  assertEq(report.ok, true, 'the restore held');
+  const leftovers = readdirSync(root).filter((entry) => entry.startsWith('.catalog-restore.staged-'));
+  assertEq(leftovers.join(','), '', 'no staging directory survives a completed restore');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// 5. The proof decrypts, and says so honestly when it cannot
+// ---------------------------------------------------------------------------------------------------------
+
+test('the restore runs the proof that DECRYPTS, and never the one that counts rows', () => {
+  // THE DEFECT THIS PINS. `ops:collections status` reads the managed-collection and history tables and counts
+  // rows. It constructs no CatalogAuthority, asks the custodian for no key and decrypts nothing — so it
+  // answers identically on an installation whose keystore is missing, wrong, or from another moment.
+  const root = makeProject('real-proof');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(world),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  assertEq(report.ok, true, 'the restore held');
+  assertEq(report.custodyProven, true, 'and custody was PROVEN');
+  const decryptStep = plan.steps.find((step) => step.id === 'prove-decrypt')!;
+  const argv = decryptStep.commands.flatMap((command) => command.args).join(' ');
+  assert(argv.includes('ops:custody-proof'), 'the decryption proof runs the command that decrypts');
+  assertEq(argv.includes('ops:collections'), false, 'and NOT the one that counts rows');
+  assert(argv.includes('--json'), 'and asks for the machine-readable contract, because it reads the body');
+});
+
+test('a custody proof body that is not the shipped contract is UNKNOWN, which is not a pass', () => {
+  // A proof step that accepted a body it could not parse would be satisfied by any command that exits zero.
+  const root = makeProject('proof-contract');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = worldFor(setDir);
+  const deps = {
+    ...depsFor(world),
+    runner: (command: Parameters<typeof world.runner>[0]) => {
+      if (command.args.join(' ').includes('ops:custody-proof')) {
+        return { status: 0, stdout: '{"ok":true}\n', stderr: '' };
+      }
+      return world.runner(command);
+    },
+  };
+  const report = runCompleteRestore(request(root, 'set-1'), deps,
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  const proof = report.steps.find((step) => step.id === 'prove-decrypt')!;
+  assertEq(proof.outcome, 'failed', 'a body outside the contract fails the proof');
+  assert(proof.detail!.includes('UNKNOWN'), 'and says the answer is unknown rather than fine');
+  assertEq(report.custodyProven, false, 'and custody is not claimed');
+  rmSync(join(root, RESTORE_JOURNAL_NAME), { force: true });
+});
+
+test('a restored catalog with NOTHING ENCRYPTED reports honestly that custody was not proven', () => {
+  // AN EMPTY CATALOG CANNOT PROVE CUSTODY, and rounding that up to a pass is the temptation this closes. The
+  // restore itself did not fail — there is genuinely nothing to decrypt — but the claim is not made.
+  const root = makeProject('empty-catalog');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    encryptedRecords: 0,
+  });
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(world),
+    { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  assertEq(report.ok, true, 'every step held');
+  assertEq(report.state, 'RESTORED', 'and the restore completed');
+  assertEq(report.custodyProven, false, 'AND CUSTODY WAS NOT PROVEN');
+  assert(report.notes.some((note) => note.includes('no active encrypted record')),
+    'the report says why, in words');
+  assert(report.notes.some((note) => note.includes('CUSTODY WAS NOT PROVEN')),
+    'and does not let it pass unremarked');
+  assert(renderCompleteRestore(report).includes('custody proven     NO'), 'and the rendering leads with it');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// 6. CLI semantics
+// ---------------------------------------------------------------------------------------------------------
+
+test('a POST-destructive failure exits 1, not the pre-destructive refusal code', () => {
+  // THE DEFECT THIS PINS. `CompleteRestoreFailed` fell into the same catch as every pre-destructive refusal
+  // and exited 3 — the code this command documents as "refused before anything was destroyed". A scheduler
+  // watching for "nothing happened" was told nothing happened by a run that had destroyed the volumes.
+  const root = makeProject('exit-codes');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'up -d --pull never --wait --wait-timeout 60 postgres', status: 1 }],
+  });
+  let thrown: unknown = null;
+  try {
+    runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof CompleteRestoreFailed, 'the volumes were destroyed and a step then failed');
+  assertEq(world.teardowns(), 1, 'the teardown really happened');
+  assert(COMPLETE_RESTORE_EXIT_FAILED === 1 && COMPLETE_RESTORE_EXIT_REFUSED === 3,
+    'the two codes mean different things');
+  // The CLI's own catch is what maps it, and it maps it to the STEP FAILURE code.
+  const cli = readRepo('src/ops/complete-restore-cli.ts');
+  const branch = cli.slice(cli.indexOf('if (err instanceof CompleteRestoreFailed)'));
+  assert(branch.slice(0, 800).includes('return COMPLETE_RESTORE_EXIT_FAILED'),
+    'a post-destructive failure exits 1');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('a flag that a mode would ignore is refused, not accepted', () => {
+  // A FLAG THAT DOES NOTHING IS A FLAG SOMEBODY BELIEVES DID SOMETHING. `--accept-data-loss` alongside
+  // `--resume` authorised nothing and was silently dropped; the `--abandon` path went further and USED the
+  // path flags to decide which directories to rename.
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--resume', 'd', '--accept-data-loss', 'd']),
+    'not part of --resume', 'a data-loss acknowledgement with --resume is refused');
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--abandon', '--accept-data-loss', 'd']),
+    'not part of --abandon', 'and with --abandon');
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--abandon', '--secrets', 'elsewhere']),
+    'not part of --abandon', 'and a path flag with --abandon, which the journal already knows');
+  refuses(() => parseCompleteRestoreArgs(['--project', 'p', '--resume', 'd', '--set', 's']),
+    'not part of --resume', 'and a set with --resume');
+
+  // THE DOCUMENTED COMBINATIONS STILL WORK, and abandon needs only the project.
+  const abandon = parseCompleteRestoreArgs(['--project', 'p', '--abandon']);
+  assertEq(abandon.mode, 'abandon', 'an abandon parses');
+  assertEq(abandon.request, null, 'and carries no request at all');
+  const resume = parseCompleteRestoreArgs(['--project', 'p', '--resume', 'd', '--json']);
+  assertEq(resume.mode, 'resume', 'a resume parses');
+  assertEq(resume.request, null, 'and takes its operation from the journal');
+  const run = parseCompleteRestoreArgs(['--project', 'p', '--set', 's', '--custodian', 'inline',
+    '--confirm', 'd', '--accept-data-loss', 'd']);
+  assertEq(run.mode, 'run', 'a run parses');
+  assertEq(run.acceptDataLoss, 'd', 'with its acknowledgement, which IS relevant here');
+});
+
+test('the usage text and the abandon behaviour agree about what abandon needs', () => {
+  const cli = readRepo('src/ops/complete-restore-cli.ts');
+  assert(cli.includes('TAKES ONLY --project'), 'the usage says abandon takes only the project');
+  // AND THE CODE AGREES: the mode's allowlist is exactly that.
+  assertEq(MODE_VALUE_FLAGS.abandon.join(','), 'project', 'and the allowlist says the same');
+  assertEq(MODE_VALUE_FLAGS.resume.join(','), 'project,resume', 'and a resume takes its digest and nothing else');
 });
 
 // ---------------------------------------------------------------------------------------------------------

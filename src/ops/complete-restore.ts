@@ -1,24 +1,35 @@
 import { createHash } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, renameSync, statSync, unlinkSync } from 'node:fs';
-import { join } from 'node:path';
+import { isAbsolute, join, relative as relativePath } from 'node:path';
 import { MIGRATION_VERSION } from '../db/schema-version.js';
 import { RUNTIME_ROLE_NAME } from './bootstrap.js';
-import { COMPONENT_ARTIFACT_NAMES, type BackupComponentId } from './backup-components.js';
+import {
+  BACKUP_COMPONENT_IDS,
+  COMPONENT_ARTIFACT_NAMES,
+  type BackupComponentId,
+} from './backup-components.js';
 import {
   copyTree,
   digestTreeAt,
   readBackupManifest,
   runVerifiedCompleteBackup,
+  type BackupManifest,
   type CompleteBackupOutcome,
 } from './complete-backup.js';
 import { verifyBackupSet, type BackupVerificationReport } from './backup-set-verification.js';
 import { classifyDoctor, parseDoctorJson } from './doctor-monitor.js';
+import { readCustodyProof, type CustodyProofReport } from './custody-proof.js';
 import { readSchemaVersions } from './upgrade-rehearsal.js';
 import {
+  RESTORE_STEP_IDS,
   RESTORE_STEP_PURPOSE,
+  RESTORE_SUFFIX_RE,
   DESTRUCTIVE_STEP_IDS,
   PROOF_STEP_IDS,
+  STAGED_TOKEN,
   requiredPlacementIds,
+  stagedPath,
+  stagingDirName,
   stepsFor,
   swapReplacedName,
   swapStagingName,
@@ -26,11 +37,16 @@ import {
   type RestoreStepId,
 } from './restore-model.js';
 import {
+  MAINTENANCE_NAME_RE,
   MaintenanceRefused,
   acquireMaintenanceLock,
   assertPlainTree,
   assertUsableName,
+  copyFileNoFollow,
+  createPrivateDirectory,
+  digestFileNoFollow,
   readFileNoFollow,
+  removeOwnTreeNoFollow,
   resolveInsideRoot,
   resolveMaintenanceRoot,
   runGuarded,
@@ -52,39 +68,45 @@ import {
 // PROJECT, which was the point of a rehearsal and is also its limit. An operator holding a verified set and a
 // broken installation had four numbered steps in a document, of which step two is four components, an
 // ordering, a schema decision, a cluster role `pg_dump` does not carry, and a database that must be EMPTY
-// before a dump is replayed into it. The one part of this product's lifecycle with no command was the part
-// performed by somebody who had just lost something.
+// before a dump is replayed into it.
 //
 // THIS COMPOSES, IT DOES NOT REDEFINE. The component list is `backup-components.ts`'s. The placements are
-// `restore-model.ts`'s. The set is verified by Phase 278's `verifyBackupSet` — before it is read, and AGAIN
-// under the lock. The safety set is taken by Phase 277's own `runVerifiedCompleteBackup`, not by a second
-// implementation of a backup. There is no second answer here to any question another phase has answered.
+// `restore-model.ts`'s. The set is verified by Phase 278's `verifyBackupSet`. The safety set is Phase 277's
+// own `runVerifiedCompleteBackup`, called by name. The decryption proof is Phase 302's `ops:custody-proof`,
+// which decrypts through the shipped catalog authority.
 //
 // -----------------------------------------------------------------------------------------------------
-// EVERYTHING THAT CAN REFUSE HAPPENS BEFORE ANYTHING IS DESTROYED.
+// WHAT THE FIRST CUT GOT WRONG, AND WHAT EACH CORRECTION IS.
 // -----------------------------------------------------------------------------------------------------
 //
-// `stop-and-destroy` is `docker compose down -v`, and it is irreversible. Every path resolution, every
-// classification, the set verification, the topology agreement and the plan-digest re-proof happen before it.
-// A restore that refuses has changed NOTHING, and a restore that has passed that step has either a verified
-// safety set behind it or an explicit, digest-bound acknowledgement that there is none.
+//   * A CONFIRMATION BOUND ONLY PART OF WHAT IT AUTHORISED. The digest covered the set, the topology and the
+//     step list — but not WHICH PROJECT, which destination, which target directories, which safety-set name
+//     or what this command believed about the installation it was about to destroy. A digest read off one
+//     project's plan authorised the same-shaped operation against another. It now binds a canonical
+//     OPERATION IDENTITY, and every one of those is in it.
 //
-// -----------------------------------------------------------------------------------------------------
-// AND THE PROOF AFTERWARDS INCLUDES A DECRYPTION.
-// -----------------------------------------------------------------------------------------------------
+//   * "EMPTY" WAS INFERRED FROM EMPTY HOST DIRECTORIES. `docker compose down -v` destroys VOLUMES, and a
+//     project whose host directories are empty can still have a populated database volume and a populated
+//     keystore volume. There is no way to read a volume's contents without starting something, and starting
+//     something is a mutation. So emptiness is never inferred: a target is OCCUPIED or UNKNOWN, both require
+//     authorisation, and the only way past is the digest-bound acknowledgement of data loss.
 //
-// An installation whose keystore did not arrive STARTS, PASSES EVERY CHECK AND REPORTS ITSELF HEALTHY,
-// because a fail-closed unreadable item is indistinguishable from a correctly erased one. That sentence is
-// `backup-components.ts`'s, it is why the keystore is a component at all, and it means a restore that proves
-// only liveness has proved nothing about the thing most likely to have gone wrong. So one of the four proofs
-// is a shipped primitive that MUST DECRYPT to answer.
+//   * THE SET COULD CHANGE AFTER IT WAS VERIFIED. Every placement re-opened the set by path. Components are
+//     now STAGED and re-verified against the manifest before anything is destroyed, and the staged object is
+//     what gets placed.
+//
+//   * THE JOURNAL WAS TRUSTED AND WAS NOT PATH-BOUND. It is now a validated state machine that carries its
+//     own targets, so `--abandon` unwinds the operation that actually ran rather than whatever flags the
+//     operator happens to type next.
+//
+//   * AND THE DECRYPTION PROOF DID NOT DECRYPT. See `custody-proof.ts`.
 
 export const COMPLETE_RESTORE_REPORT = 'phase-297-304-complete-restore';
-export const COMPLETE_RESTORE_VERSION = 1;
+export const COMPLETE_RESTORE_VERSION = 2;
 
 /** The journal a run in progress leaves in the project root. Private, and refused by a second run. */
 export const RESTORE_JOURNAL_NAME = '.catalog-restore.journal.json';
-export const RESTORE_JOURNAL_VERSION = 1;
+export const RESTORE_JOURNAL_VERSION = 2;
 /** A journal is small by construction. A file at that name larger than this is not one of ours. */
 export const MAX_JOURNAL_BYTES = 64 * 1024;
 
@@ -95,77 +117,80 @@ export const INLINE_KEYSTORE_CONTAINER_PATH = '/var/lib/catalog/keystore';
 export const DATABASE_WAIT_SECONDS = 60;
 export const STACK_WAIT_SECONDS = 120;
 
+/** What a rendered command shows where the project root is. No absolute host path reaches an output. */
+export const PROJECT_TOKEN = '<project>';
+
 // -----------------------------------------------------------------------------------------------------------
 // The request, and what resolving it proves
 // -----------------------------------------------------------------------------------------------------------
 
 export interface CompleteRestoreRequest {
-  /** The Compose project directory, absolute. Resolved and proved to be a real, contained, non-broad root. */
   readonly projectRoot: string;
-  /** Where sets are kept, relative to the project root. */
   readonly destination: string;
-  /** The set to restore, inside the destination. */
   readonly setName: string;
-  /**
-   * The custody topology of THIS INSTALLATION, declared. It must also agree with the set's own manifest — a
-   * sidecar set restored as inline puts key material in a volume the sidecar never reads.
-   */
   readonly custodian: CustodianTopology;
-  /** The sidecar's state directory, relative to the project root. REQUIRED in sidecar mode, refused inline. */
   readonly sidecarState?: string;
-  /** The promotion-records directory, relative to the project root. */
   readonly promotionRecords?: string;
-  /** The secrets directory, relative to the project root. */
   readonly secrets: string;
-  /** What to call the safety set. Refused if one of that name already exists, like any other set. */
   readonly safetySetName?: string;
 }
 
 /**
- * Whether the installation being restored INTO has anything to lose.
+ * What this command was able to establish about the installation it would restore into.
  *
- * DELIBERATELY NOT A DATABASE PROBE. Asking the database would mean starting it, and by the time a restore
- * has started something it has already changed the installation it was asked to judge. Host state is what
- * this can see without touching anything, and host state is enough to decide the only question this answers:
- * whether a safety set is mandatory.
+ * -----------------------------------------------------------------------------------------------------
+ * THERE IS NO `EMPTY`, AND ITS ABSENCE IS THE CORRECTION.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The first cut classified a project with empty host directories as EMPTY and skipped the safety set on the
+ * strength of it. But the components this restore destroys are not all on the host: `docker compose down -v`
+ * destroys the DATABASE VOLUME and, in inline custody, the KEYSTORE VOLUME. A project can have an empty
+ * `secrets/` directory and a volume holding an entire catalog — that is precisely the state of an
+ * installation whose host files were lost and whose Docker state was not.
+ *
+ * Reading a volume's contents means starting a container against it, and starting something is a mutation
+ * this command must not perform before it has been authorised. So emptiness is NEVER INFERRED:
+ *
+ *   * `OCCUPIED` — positive evidence of state. Host component directories hold something, or the project has
+ *     containers, or a probe could not answer. A verified safety set is mandatory.
+ *   * `UNKNOWN` — no positive evidence either way, and no way to get any without mutating. A safety set
+ *     cannot be taken (there is nothing on the host to back up), so the ONLY way past is the digest-bound
+ *     acknowledgement of data loss.
+ *
+ * Both states require authorisation. Nothing is destroyed on the strength of a guess.
  */
-export type TargetState = 'EMPTY' | 'OCCUPIED';
+export type TargetState = 'OCCUPIED' | 'UNKNOWN';
+
+/** One resolved placement target: the operator's own relative string, the proved path, and the leaf name. */
+export interface ResolvedTarget {
+  readonly relative: string;
+  readonly dir: string;
+  readonly name: string;
+}
 
 export interface ResolvedRestore {
   readonly projectRoot: string;
   readonly setDir: string;
   readonly setName: string;
-  readonly custodian: CustodianTopology;
-  readonly sidecarStateDir: string | null;
-  readonly sidecarStateName: string | null;
-  readonly secretsDir: string;
-  readonly secretsName: string;
-  readonly promotionRecordsDir: string | null;
-  readonly promotionRecordsName: string | null;
-  /**
-   * The operator's own relative strings, kept because the SAFETY SET is Phase 277's command and its request
-   * takes relatives, not resolved paths. Carrying them means the safety set is taken of exactly the
-   * directories this restore is about to replace, rather than of a second interpretation of the same flags.
-   */
-  readonly secretsRelative: string;
-  readonly sidecarStateRelative: string | null;
-  readonly promotionRecordsRelative: string | null;
-  /** Where the safety set would be taken, relative to the project. The backup command's own arguments. */
   readonly destination: string;
+  readonly custodian: CustodianTopology;
+  readonly secrets: ResolvedTarget;
+  readonly promotionRecords: ResolvedTarget | null;
+  readonly sidecarState: ResolvedTarget | null;
   readonly safetySetName: string;
-  /** Which components the set actually carries, decided by the manifest and checked on disk. */
   readonly present: readonly BackupComponentId[];
   readonly targetState: TargetState;
   readonly verification: BackupVerificationReport;
+  readonly manifest: BackupManifest;
 }
 
-/**
- * Validate a request into resolved, proved paths, and verify the set.
- *
- * SEPARATE FROM RUNNING IT, so `--plan` and a suite see exactly what would happen with no service stopped.
- * Every refusal in this function happens before anything is created and before any service is touched.
- */
-export function resolveCompleteRestoreRequest(request: CompleteRestoreRequest): ResolvedRestore {
+/** A probe of the project's container state. Non-mutating; `compose ps` starts nothing. */
+export type OccupancyProbe = (projectRoot: string) => 'containers' | 'none' | 'unanswerable';
+
+export function resolveCompleteRestoreRequest(
+  request: CompleteRestoreRequest,
+  probe?: OccupancyProbe,
+): ResolvedRestore {
   const projectRoot = resolveMaintenanceRoot(request.projectRoot, 'project root');
   assertUsableName(request.setName, 'backup set name');
   const safetySetName = request.safetySetName ?? `pre-restore-${request.setName}`;
@@ -181,10 +206,6 @@ export function resolveCompleteRestoreRequest(request: CompleteRestoreRequest): 
   const setDir = resolveMaintenanceRoot(join(destinationDir, request.setName), 'backup set directory');
 
   // ---- 1. IS THE SET RESTORABLE AT ALL --------------------------------------------------------------
-  //
-  // TWO DIFFERENT FACTS, AND BOTH ARE REQUIRED. `ok` says the set is intact and unchanged since it was taken.
-  // `restorableUnderThisBuild` says this build could actually replay it — an INTACT set from an older build
-  // verifies and is NOT restorable here, and saying so is the entire point of that flag.
   const verification = verifyBackupSet(setDir);
   if (!verification.ok) {
     throw new MaintenanceRefused(
@@ -219,11 +240,7 @@ export function resolveCompleteRestoreRequest(request: CompleteRestoreRequest): 
   }
 
   // ---- 3. THE TARGETS ------------------------------------------------------------------------------
-  //
-  // TOPOLOGY IS STATED, AND STATED EXCLUSIVELY — the same rule Phase 277 applies to taking one, for the same
-  // reason. An ignored path is a path somebody will believe was used.
-  let sidecarStateDir: string | null = null;
-  let sidecarStateName: string | null = null;
+  let sidecarState: ResolvedTarget | null = null;
   if (request.custodian === 'sidecar') {
     if (request.sidecarState === undefined || request.sidecarState.trim() === '') {
       throw new MaintenanceRefused(
@@ -231,119 +248,168 @@ export function resolveCompleteRestoreRequest(request: CompleteRestoreRequest): 
         + 'the keystore goes: a restore that placed it in the wrong directory would look complete and leave an '
         + 'installation that can decrypt nothing.');
     }
-    sidecarStateDir = resolveInsideRoot(projectRoot, request.sidecarState, 'sidecar state directory');
-    sidecarStateName = lastSegment(request.sidecarState);
-    if (existsSync(sidecarStateDir)) assertPlainTree(sidecarStateDir, 'sidecar state directory');
+    sidecarState = resolveTarget(projectRoot, request.sidecarState, 'sidecar state directory');
   } else if (request.sidecarState !== undefined) {
     throw new MaintenanceRefused(
       'a sidecar state directory was given with inline custody. One of the two is wrong, and this command will not '
       + 'choose which.');
   }
 
-  const secretsDir = resolveInsideRoot(projectRoot, request.secrets, 'secrets directory');
-  if (existsSync(secretsDir)) assertPlainTree(secretsDir, 'secrets directory');
+  const secrets = resolveTarget(projectRoot, request.secrets, 'secrets directory');
 
-  let promotionRecordsDir: string | null = null;
-  let promotionRecordsName: string | null = null;
-  const setHasRecords = present.includes('promotion-records');
-  if (setHasRecords) {
+  let promotionRecords: ResolvedTarget | null = null;
+  if (present.includes('promotion-records')) {
     if (request.promotionRecords === undefined || request.promotionRecords.trim() === '') {
       throw new MaintenanceRefused(
         'this set carries promotion record artifacts and no promotion-records directory was given, so there is '
         + 'nowhere to put them. Name one, or take a set without them. This command will not silently drop a '
         + 'component it was handed — those files are the operator\'s own and this product cannot recreate them.');
     }
-    promotionRecordsDir = resolveInsideRoot(projectRoot, request.promotionRecords, 'promotion records directory');
-    promotionRecordsName = lastSegment(request.promotionRecords);
-    if (existsSync(promotionRecordsDir)) assertPlainTree(promotionRecordsDir, 'promotion records directory');
-  } else if (request.promotionRecords !== undefined && request.promotionRecords.trim() !== '') {
-    // NOT A REFUSAL. A set without records is a correct and permanent state for most installations, and an
-    // operator who always passes the same flags should not be stopped by one. The directory is simply not a
-    // placement, and the plan will not list a step for it.
-    promotionRecordsDir = null;
+    promotionRecords = resolveTarget(projectRoot, request.promotionRecords, 'promotion records directory');
+  }
+
+  // ---- 4. EVERY TARGET IS DISTINCT -----------------------------------------------------------------
+  //
+  // TWO COMPONENTS AT ONE PATH IS A RESTORE THAT DESTROYS ONE OF THEM. The second swap would rename the FIRST
+  // component's freshly restored directory aside and record it as "the previous contents".
+  const targets = [secrets, promotionRecords, sidecarState].filter((target): target is ResolvedTarget => target !== null);
+  for (let i = 0; i < targets.length; i += 1) {
+    for (let j = i + 1; j < targets.length; j += 1) {
+      if (targets[i]!.dir === targets[j]!.dir) {
+        throw new MaintenanceRefused(
+          'two components were pointed at the same directory. Restoring both would put one on top of the other '
+          + 'and record the first one as the previous contents of the second. Nothing was changed.');
+      }
+    }
   }
 
   return {
     projectRoot,
     setDir,
     setName: request.setName,
-    custodian: request.custodian,
-    sidecarStateDir,
-    sidecarStateName,
-    secretsDir,
-    secretsName: lastSegment(request.secrets),
-    promotionRecordsDir,
-    promotionRecordsName,
-    secretsRelative: request.secrets,
-    sidecarStateRelative: request.custodian === 'sidecar' ? request.sidecarState! : null,
-    // The safety set backs up the records directory only when THIS restore will replace it. A directory the
-    // set has nothing for is not this run's to capture, and Phase 277 treats an absent one as absent anyway.
-    promotionRecordsRelative: promotionRecordsDir === null ? null : request.promotionRecords!,
     destination: request.destination,
+    custodian: request.custodian,
+    secrets,
+    promotionRecords,
+    sidecarState,
     safetySetName,
     present,
-    targetState: classifyTarget({ secretsDir, promotionRecordsDir, sidecarStateDir }),
+    targetState: classifyTarget(projectRoot, targets, probe),
     verification,
+    manifest,
   };
 }
 
+/** Resolve one operator-supplied relative directory into a proved target. */
+function resolveTarget(projectRoot: string, relative: string, what: string): ResolvedTarget {
+  const dir = resolveInsideRoot(projectRoot, relative, what);
+  if (existsSync(dir)) assertPlainTree(dir, what);
+  const name = lastSegment(relative);
+  // THE LEAF NAME IS CONCATENATED INTO `.<name>.replaced-<suffix>`, so it is held to the same shape every
+  // other name this command creates is held to. A leaf carrying a dot-prefix or a separator would produce a
+  // sibling nobody chose.
+  assertUsableName(name, `${what} name`);
+  return { relative, dir, name };
+}
+
 /**
- * Is there anything here to lose?
+ * What this command can establish about the installation it would restore into, without mutating it.
  *
- * OCCUPIED on the FIRST sign of state, never on the absence of all of it. A directory that cannot be listed
- * counts as occupied: "I could not see it" is not "it is not there", and the consequence of getting this
- * wrong in the safe direction is one extra verified backup.
+ * THE PROBE IS `docker compose ps`, WHICH STARTS NOTHING. A project with containers has been up, and a
+ * project that has been up has volumes with state in them — so containers are POSITIVE evidence of occupancy
+ * that empty host directories cannot contradict. A probe that cannot answer is treated as occupancy, because
+ * "I could not see it" is not "it is not there".
+ *
+ * AND THE ABSENCE OF CONTAINERS PROVES NOTHING. `docker compose down` removes containers and KEEPS volumes,
+ * so a project with no containers and a full database volume is an ordinary state. That is why the other
+ * answer is UNKNOWN and not EMPTY.
  */
-export function classifyTarget(dirs: {
-  readonly secretsDir: string;
-  readonly promotionRecordsDir: string | null;
-  readonly sidecarStateDir: string | null;
-}): TargetState {
-  for (const dir of [dirs.secretsDir, dirs.promotionRecordsDir, dirs.sidecarStateDir]) {
-    if (dir === null) continue;
-    const stats = lstatSync(dir, { throwIfNoEntry: false });
+export function classifyTarget(
+  projectRoot: string,
+  targets: readonly ResolvedTarget[],
+  probe?: OccupancyProbe,
+): TargetState {
+  for (const target of targets) {
+    const stats = lstatSync(target.dir, { throwIfNoEntry: false });
     if (stats === undefined) continue;
     if (!stats.isDirectory()) return 'OCCUPIED';
     try {
-      if (readdirSync(dir).length > 0) return 'OCCUPIED';
+      if (readdirSync(target.dir).length > 0) return 'OCCUPIED';
     } catch {
       return 'OCCUPIED';
     }
   }
-  return 'EMPTY';
+  if (probe === undefined) return 'UNKNOWN';
+  // `unanswerable` FAILS CLOSED. A daemon that will not talk to us is not a daemon reporting an empty project.
+  return probe(projectRoot) === 'none' ? 'UNKNOWN' : 'OCCUPIED';
+}
+
+/** The shipped probe: one `compose ps`, which resolves and lists and starts nothing. */
+export function composeOccupancyProbe(runner: CommandRunner, ledger: CommandLedger): OccupancyProbe {
+  return (projectRoot: string): 'containers' | 'none' | 'unanswerable' => {
+    let outcome: CommandOutcome;
+    try {
+      outcome = runGuarded(runner, ledger, {
+        program: 'docker', args: ['compose', 'ps', '-a', '--quiet'], cwd: projectRoot,
+        purpose: 'ask whether this project has any containers, without starting one',
+      });
+    } catch {
+      return 'unanswerable';
+    }
+    if (outcome.status !== 0) return 'unanswerable';
+    return outcome.stdout.trim() === '' ? 'none' : 'containers';
+  };
 }
 
 // -----------------------------------------------------------------------------------------------------------
-// The plan
+// The plan, and the operation identity a confirmation binds
 // -----------------------------------------------------------------------------------------------------------
 
 export interface RestorePlanStep {
   readonly id: RestoreStepId;
-  /** What it establishes, in one sentence. `restore-model.ts`'s, never retyped. */
   readonly proves: string;
-  /** Whether the installation is not where it was once this step has completed. */
   readonly destructive: boolean;
-  /** The commands it issues, in order, as values. Empty for a step that only moves files on this host. */
+  /** The commands it issues, as values. `<staged>` stands for the run's private staging directory. */
   readonly commands: readonly MaintenanceCommand[];
+  /**
+   * The same commands, rendered safe to print.
+   *
+   * NO ABSOLUTE HOST PATH REACHES AN OUTPUT — the rule every other report in this family has always been
+   * held to, and the one the first cut's `--plan` broke by printing raw argv. The project root becomes
+   * `<project>` and the staging directory stays `<staged>`, so a plan is still exactly readable as a
+   * sequence of operations without naming anybody's appdata layout.
+   */
+  readonly display: readonly string[];
 }
 
 export interface RestorePlan {
   readonly steps: readonly RestorePlanStep[];
   readonly safetySet: boolean;
+  readonly acceptDataLoss: boolean;
   readonly targetState: TargetState;
   readonly custodian: CustodianTopology;
   /**
-   * The digest a confirmation has to carry back.
+   * The digest a confirmation has to carry back — over the WHOLE operation.
    *
-   * OVER WHAT WAS DECIDED, not over how it was printed: the set's own `setDigest` from the verification, the
-   * declared custody, whether a safety set will be taken, and every step id with the exact argv of every
-   * command it issues. A set that changed, a target that changed topology, or a step list that differs by one
-   * argument all produce a different value — and a different value is a refusal with nothing destroyed.
+   * THE DEFECT THIS CLOSES. The first cut hashed the set name, the set's own digest, the topology, the
+   * safety-set boolean and the step list. It did NOT hash which project, which backup destination, which
+   * secrets/records/sidecar directory, what the safety set would be CALLED, or what this command believed
+   * about the installation. So a digest an operator read off a plan for one project authorised a
+   * same-shaped restore of the same set into a DIFFERENT project, with DIFFERENT target directories, under a
+   * DIFFERENT occupancy classification — which is the whole authorisation, defeated by a paste.
+   *
+   * It now binds a canonical operation identity: every path, every choice, every classification, the set's
+   * verified digest and the exact ordered commands. The paths go into the HASH and never into the output.
    */
   readonly digest: string;
 }
 
-export function planCompleteRestore(resolved: ResolvedRestore, options: { readonly safetySet: boolean }): RestorePlan {
+export interface PlanOptions {
+  readonly safetySet: boolean;
+  readonly acceptDataLoss: boolean;
+}
+
+export function planCompleteRestore(resolved: ResolvedRestore, options: PlanOptions): RestorePlan {
   const cwd = resolved.projectRoot;
   const compose = (args: readonly string[], purpose: string): MaintenanceCommand =>
     ({ program: 'docker', args: ['compose', ...args], cwd, purpose });
@@ -351,16 +417,12 @@ export function planCompleteRestore(resolved: ResolvedRestore, options: { readon
   const ids = stepsFor({
     custodian: resolved.custodian,
     safetySet: options.safetySet,
-    promotionRecords: resolved.promotionRecordsDir !== null,
+    promotionRecords: resolved.promotionRecords !== null,
   });
 
   const commandsFor = (id: RestoreStepId): readonly MaintenanceCommand[] => {
     switch (id) {
       case 'stop-and-destroy':
-        // `down -v`, AND THE `-v` IS THE POINT. A dump replays into an EMPTY database; replaying it over a
-        // schema that is already there produces conflicts, not a rollback. In inline custody the same
-        // teardown empties the keystore volume, which is what makes the placement afterwards a placement and
-        // never a merge of two moments' key material.
         return [compose(['down', '-v'], 'stop the stack and destroy its volumes')];
       case 'database-up':
         return [compose(
@@ -374,14 +436,14 @@ export function planCompleteRestore(resolved: ResolvedRestore, options: { readon
       case 'replay-database':
         return [compose(
           ['exec', '-T', 'postgres', 'psql', '-U', 'postgres', '-d', 'catalog', '-v', 'ON_ERROR_STOP=1'],
-          'replay the verified dump from this command\'s own descriptor')];
+          'replay the STAGED, RE-VERIFIED dump from this command\'s own descriptor')];
       case 'place-inline-keystore':
         return [
           compose(['create', '--pull', 'never', 'app'],
             'create the app container the keystore is copied into, without starting it'),
-          compose(['cp', `${join(resolved.setDir, COMPONENT_ARTIFACT_NAMES.keystore)}${SEPARATOR_FOR_CP}`,
+          compose(['cp', `${stagedPath(COMPONENT_ARTIFACT_NAMES.keystore)}/.`,
             `app:${INLINE_KEYSTORE_CONTAINER_PATH}`],
-          'copy the set\'s keystore into the volume the teardown emptied'),
+          'copy the STAGED, RE-VERIFIED keystore into the volume the teardown emptied'),
         ];
       case 'stack-up':
         return [compose(
@@ -394,59 +456,120 @@ export function planCompleteRestore(resolved: ResolvedRestore, options: { readon
         return [compose(['exec', '-T', 'app', 'npm', 'run', '--silent', 'ops:doctor', '--', '--json'],
           'run the shipped read-only doctor')];
       case 'prove-decrypt':
-        return [compose(['exec', '-T', 'app', 'npm', 'run', '--silent', 'ops:collections', '--', 'status'],
-          'read the catalog through a shipped primitive that must DECRYPT to answer')];
+        // THE PROOF THAT ACTUALLY DECRYPTS. `ops:custody-proof` builds a real `CatalogAuthority` over this
+        // installation's own custodian and decrypts active records through it. There is no way to satisfy it
+        // without the key material — which is the entire point, and is what the previous `ops:collections
+        // status` could not do, since it only counted rows.
+        return [compose(['exec', '-T', 'app', 'npm', 'run', '--silent', 'ops:custody-proof', '--', '--json'],
+          'DECRYPT active catalog records through the shipped authority and this installation\'s custodian')];
       case 'prove-history':
         return [compose(['exec', '-T', 'app', 'npm', 'run', '--silent', 'ops:collections', '--', 'history'],
           'read the durable, identity-minimised history')];
       default:
-        // The safety set and the three swaps issue no command of their own: the safety set is Phase 277's
-        // whole cycle, and a swap is two renames on this host.
         return [];
     }
   };
 
-  const steps = ids.map((id): RestorePlanStep => ({
-    id,
-    proves: RESTORE_STEP_PURPOSE[id],
-    destructive: DESTRUCTIVE_STEP_IDS.includes(id),
-    commands: commandsFor(id),
-  }));
+  const steps = ids.map((id): RestorePlanStep => {
+    const commands = commandsFor(id);
+    return {
+      id,
+      proves: RESTORE_STEP_PURPOSE[id],
+      destructive: DESTRUCTIVE_STEP_IDS.includes(id),
+      commands,
+      display: commands.map((command) => displayCommand(resolved.projectRoot, command)),
+    };
+  });
 
-  const canonical = JSON.stringify([
-    COMPLETE_RESTORE_REPORT,
-    COMPLETE_RESTORE_VERSION,
-    resolved.setName,
-    resolved.verification.setDigest,
-    resolved.custodian,
-    options.safetySet,
-    steps.map((step) => [step.id, step.commands.map((command) => [command.program, ...command.args])]),
-  ]);
   return {
     steps,
     safetySet: options.safetySet,
+    acceptDataLoss: options.acceptDataLoss,
     targetState: resolved.targetState,
     custodian: resolved.custodian,
-    digest: createHash('sha256').update(canonical, 'utf8').digest('hex'),
+    digest: operationDigest(resolved, options, steps),
   };
 }
 
 /**
- * The separator `compose cp` needs to copy a directory's CONTENTS rather than the directory itself.
+ * The canonical identity of the operation a confirmation authorises.
  *
- * `cp ./keystore-backup/. app:/…/keystore` is the form `backup-components.ts` has always documented, and it
- * is a forward slash on every platform because it is a Docker CLI argument, not a host path component.
+ * EVERYTHING THAT CHANGES WHAT HAPPENS IS IN HERE, and the list is deliberately exhaustive rather than
+ * "the interesting parts": which project, which destination, which set, the bytes that set verified as,
+ * which custody topology, every target directory, what this command concluded about the installation, what
+ * the safety set would be called, whether one would be taken, whether loss was acknowledged, and the exact
+ * ordered argv of every command. Paths are canonicalised to one separator so two spellings of one path
+ * cannot produce two digests — and they are HASHED, never printed.
  */
-const SEPARATOR_FOR_CP = '/.';
+export function canonicalOperation(
+  resolved: ResolvedRestore,
+  options: PlanOptions,
+  steps: readonly RestorePlanStep[],
+): string {
+  const path = (value: string): string => value.replace(/\\/g, '/').replace(/\/+$/, '');
+  return JSON.stringify([
+    COMPLETE_RESTORE_REPORT,
+    COMPLETE_RESTORE_VERSION,
+    ['project', path(resolved.projectRoot)],
+    ['destination', resolved.destination, path(join(resolved.projectRoot, resolved.destination))],
+    ['set', resolved.setName, path(resolved.setDir), resolved.verification.setDigest,
+      resolved.verification.manifestSchemaVersion],
+    ['custodian', resolved.custodian],
+    ['targets', ...BACKUP_COMPONENT_IDS.map((id) => {
+      const target = targetForComponent(resolved, id);
+      return [id, target === null ? null : target.relative, target === null ? null : path(target.dir)];
+    })],
+    ['present', ...[...resolved.present].sort()],
+    ['targetState', resolved.targetState],
+    ['safetySet', options.safetySet, resolved.safetySetName],
+    ['acceptDataLoss', options.acceptDataLoss],
+    ['steps', ...steps.map((step) => [step.id, ...step.commands.map((c) => [c.program, ...c.args])])],
+  ]);
+}
+
+function operationDigest(
+  resolved: ResolvedRestore,
+  options: PlanOptions,
+  steps: readonly RestorePlanStep[],
+): string {
+  return createHash('sha256').update(canonicalOperation(resolved, options, steps), 'utf8').digest('hex');
+}
+
+/** Which host target a component is placed at, or `null` when this run does not place it on the host. */
+export function targetForComponent(resolved: ResolvedRestore, id: BackupComponentId): ResolvedTarget | null {
+  switch (id) {
+    case 'secrets': return resolved.secrets;
+    case 'promotion-records': return resolved.promotionRecords;
+    case 'keystore': return resolved.custodian === 'sidecar' ? resolved.sidecarState : null;
+    case 'database': return null;
+  }
+}
+
+/**
+ * One command, rendered safe to print.
+ *
+ * The project root becomes `<project>`; anything still absolute afterwards becomes `<path>`, because an
+ * argument this command did not build out of the project root is one nobody has checked the shape of.
+ */
+export function displayCommand(projectRoot: string, command: MaintenanceCommand): string {
+  const args = command.args.map((argument) => displayArgument(projectRoot, argument));
+  return `${command.program} ${args.join(' ')}`;
+}
+
+export function displayArgument(projectRoot: string, argument: string): string {
+  const root = projectRoot.replace(/\\/g, '/').replace(/\/+$/, '');
+  const normalised = argument.replace(/\\/g, '/');
+  if (normalised === root) return PROJECT_TOKEN;
+  if (normalised.startsWith(`${root}/`)) return `${PROJECT_TOKEN}/${normalised.slice(root.length + 1)}`;
+  return isAbsolute(argument) ? '<path>' : argument;
+}
 
 /**
  * The one statement that creates the managed runtime role.
  *
  * `pg_dump` preserves GRANT targets and does NOT dump cluster-wide roles, so the role the restored ACLs land
  * on has to exist first. It is a product constant rather than input from the dump, it is created WITHOUT a
- * login — `CREATE ROLE` defaults to NOLOGIN — and it carries no credential; the normal bootstrap sets its
- * password from the restored secret afterwards. Only `CREATE ROLE` is spelled, so the maintenance command
- * vocabulary contains no registry "login" token and the no-network ledger stays mechanically checkable.
+ * login — `CREATE ROLE` defaults to NOLOGIN — and it carries no credential.
  */
 export function prepareRuntimeRoleSql(): string {
   return 'DO $catalog$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_catalog.pg_roles WHERE rolname = '
@@ -454,33 +577,47 @@ export function prepareRuntimeRoleSql(): string {
 }
 
 // -----------------------------------------------------------------------------------------------------------
-// The journal
+// The journal — a validated state machine, bound to its own paths
 // -----------------------------------------------------------------------------------------------------------
+
+/** One component this run swapped on the host, and what it moved aside to do it. */
+export interface JournalSwap {
+  readonly component: BackupComponentId;
+  /** The target's own relative path, from the run that swapped it. NOT re-derived from a later command line. */
+  readonly target: string;
+  /** The leaf name, so the `.replaced-` sibling can be found without re-parsing the path. */
+  readonly name: string;
+  /** What the previous contents were renamed to, or `null` when the target did not exist. */
+  readonly replaced: string | null;
+  /** Whether `--abandon` has already put this one back. A journal is not clearable while any is `false`. */
+  readonly undone: boolean;
+}
 
 export interface RestoreJournal {
   readonly journal: 'catalog-authority.restore';
   readonly version: typeof RESTORE_JOURNAL_VERSION;
   readonly planDigest: string;
   readonly setName: string;
+  readonly destination: string;
   readonly custodian: CustodianTopology;
-  /** The swap suffix this run chose. `--abandon` finds the replaced directories by it. */
+  readonly targetState: TargetState;
+  readonly safetySetName: string;
   readonly suffix: string;
-  /**
-   * Whether this run's PLAN included a safety set — recorded as a decision, not inferred from a name.
-   *
-   * THE DEFECT THIS CLOSES, AND IT IS ON THE PATH THAT MATTERS MOST. `safetySetName` is null until the safety
-   * set has actually been taken, so a run that failed AT the safety-set step left a journal saying "no safety
-   * set". A `--resume` would then re-derive a plan WITHOUT that step, produce a different digest, and be
-   * refused for "having been planned for something else" — sending an operator to `--abandon` over a run that
-   * had destroyed nothing and was resumable. The decision and the outcome are two different facts and are
-   * now two different fields.
-   */
   readonly safetySetPlanned: boolean;
-  readonly safetySetName: string | null;
-  /** Step ids that completed, in order. A step that started and did not complete is simply not here. */
+  readonly safetySetTaken: boolean;
+  /**
+   * The request this run was planned from, so `--resume` and `--abandon` act on the OPERATION and not on
+   * whatever flags are typed next. A resume re-derives the plan from these and requires the same digest.
+   */
+  readonly request: {
+    readonly secrets: string;
+    readonly promotionRecords: string | null;
+    readonly sidecarState: string | null;
+  };
+  /** Step ids that completed, in plan order. Validated as a prefix of the rederived plan. */
   readonly completed: readonly RestoreStepId[];
-  /** The step that was running when the journal was last written, or `null` between steps. */
   readonly running: RestoreStepId | null;
+  readonly swaps: readonly JournalSwap[];
 }
 
 export function journalPath(projectRoot: string): string {
@@ -490,10 +627,17 @@ export function journalPath(projectRoot: string): string {
 /**
  * Read a journal, or answer `null` when there is none.
  *
- * OPENED THE SAME WAY EVERY OTHER FILE IN THIS FAMILY IS: without following a link, bounded, and refused
- * rather than guessed at when it is not a journal this build understands. A file at that name that is not
- * ours is a refusal, not an absence — treating it as an absence would let anything sitting at that path
- * silently authorise a fresh destructive run.
+ * -----------------------------------------------------------------------------------------------------
+ * EVERY FIELD IS VALIDATED, BECAUSE EVERY FIELD IS ACTED ON.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * This file decides which steps a resume skips, which directories an abandon renames, and what suffix goes
+ * into the names it builds. The first cut checked five types and a literal. A journal is a file in a
+ * directory an operator owns, and the correct posture toward it is the one this family takes toward every
+ * other input: a shape it does not recognise is a REFUSAL, never an absence, and never a default.
+ *
+ * The structural checks are here; the checks that need the plan (is `completed` a prefix of the steps this
+ * operation actually has?) are in `assertJournalAgreesWithPlan`, because they cannot be answered without one.
  */
 export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
   const path = journalPath(projectRoot);
@@ -507,24 +651,129 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
       'this project holds a restore journal that is not readable JSON. A restore was interrupted here, or '
       + 'something else is using that name. Nothing was changed — look at it before running anything.');
   }
-  const doc = parsed as Partial<RestoreJournal>;
-  if (doc.journal !== 'catalog-authority.restore' || doc.version !== RESTORE_JOURNAL_VERSION
-    || typeof doc.planDigest !== 'string' || typeof doc.setName !== 'string' || typeof doc.suffix !== 'string'
-    || typeof doc.safetySetPlanned !== 'boolean'
-    || !Array.isArray(doc.completed) || (doc.custodian !== 'inline' && doc.custodian !== 'sidecar')) {
+  const refuse = (why: string): never => {
     throw new MaintenanceRefused(
-      'this project holds a restore journal this build does not understand. Nothing was changed.');
+      `this project holds a restore journal this build will not act on: ${why}. Nothing was changed. A journal `
+      + 'decides which steps are skipped and which directories are renamed, so one that is not exactly what this '
+      + 'command wrote is refused rather than interpreted.');
+  };
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) return refuse('it is not an object');
+  const doc = parsed as Record<string, unknown>;
+
+  if (doc.journal !== 'catalog-authority.restore') return refuse('it is not a restore journal');
+  if (doc.version !== RESTORE_JOURNAL_VERSION) return refuse('its version is not one this build writes');
+  if (typeof doc.planDigest !== 'string' || !/^[0-9a-f]{64}$/.test(doc.planDigest)) {
+    return refuse('its plan digest is not a sha256');
   }
-  return doc as RestoreJournal;
+  // A SUFFIX IS CONCATENATED INTO FILE NAMES. One carrying a separator or a traversal would build a sibling
+  // path nobody chose, out of a file an operator can edit.
+  if (typeof doc.suffix !== 'string' || !RESTORE_SUFFIX_RE.test(doc.suffix)) {
+    return refuse('its suffix is not the twelve hex characters this command generates');
+  }
+  for (const field of ['setName', 'safetySetName'] as const) {
+    const value = doc[field];
+    if (typeof value !== 'string' || !MAINTENANCE_NAME_RE.test(value)) return refuse(`its ${field} is not a usable name`);
+  }
+  if (typeof doc.destination !== 'string' || doc.destination.trim() === '') return refuse('it has no destination');
+  if (doc.custodian !== 'inline' && doc.custodian !== 'sidecar') return refuse('its custody mode is not one of two');
+  if (doc.targetState !== 'OCCUPIED' && doc.targetState !== 'UNKNOWN') return refuse('its target state is not one this build classifies');
+  if (typeof doc.safetySetPlanned !== 'boolean' || typeof doc.safetySetTaken !== 'boolean') {
+    return refuse('its safety-set fields are not booleans');
+  }
+  if (doc.safetySetTaken && !doc.safetySetPlanned) return refuse('it records a safety set that was never planned');
+
+  const request = doc.request;
+  if (request === null || typeof request !== 'object' || Array.isArray(request)) return refuse('it carries no request');
+  const req = request as Record<string, unknown>;
+  if (typeof req.secrets !== 'string') return refuse('it names no secrets directory');
+  for (const field of ['promotionRecords', 'sidecarState'] as const) {
+    if (req[field] !== null && typeof req[field] !== 'string') return refuse(`its ${field} is neither a path nor absent`);
+  }
+  if ((doc.custodian === 'sidecar') !== (typeof req.sidecarState === 'string')) {
+    return refuse('its custody mode and its sidecar state directory disagree');
+  }
+
+  // ---- the step list --------------------------------------------------------------------------------
+  if (!Array.isArray(doc.completed)) return refuse('its completed list is not a list');
+  const seen = new Set<string>();
+  for (const entry of doc.completed) {
+    if (typeof entry !== 'string' || !(RESTORE_STEP_IDS as readonly string[]).includes(entry)) {
+      return refuse('its completed list names a step this build does not have');
+    }
+    if (seen.has(entry)) return refuse('its completed list names one step twice');
+    seen.add(entry);
+  }
+  if (doc.running !== null) {
+    if (typeof doc.running !== 'string' || !(RESTORE_STEP_IDS as readonly string[]).includes(doc.running)) {
+      return refuse('its running step is not one this build has');
+    }
+    if (seen.has(doc.running)) return refuse('it records a step as both running and complete');
+  }
+
+  // ---- the swaps ------------------------------------------------------------------------------------
+  if (!Array.isArray(doc.swaps)) return refuse('its swap list is not a list');
+  const swapped = new Set<string>();
+  for (const entry of doc.swaps) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) return refuse('a swap entry is not an object');
+    const swap = entry as Record<string, unknown>;
+    if (typeof swap.component !== 'string' || !(BACKUP_COMPONENT_IDS as readonly string[]).includes(swap.component)) {
+      return refuse('a swap names a component this build does not have');
+    }
+    if (swapped.has(swap.component)) return refuse('a component was swapped twice');
+    swapped.add(swap.component);
+    if (typeof swap.target !== 'string' || swap.target.trim() === '') return refuse('a swap names no target');
+    if (typeof swap.name !== 'string' || !MAINTENANCE_NAME_RE.test(swap.name)) return refuse('a swap\'s target name is not a usable name');
+    if (swap.replaced !== null && (typeof swap.replaced !== 'string'
+      || swap.replaced !== swapReplacedName(swap.name, doc.suffix))) {
+      return refuse('a swap names a replaced directory this command would not have created');
+    }
+    if (typeof swap.undone !== 'boolean') return refuse('a swap does not say whether it was undone');
+  }
+  return doc as unknown as RestoreJournal;
+}
+
+/**
+ * The checks that need the plan: does this journal describe THIS operation, and is its progress possible?
+ *
+ * `completed` must be a strict ORDERED PREFIX of the plan's steps. A journal that records a later step as
+ * done and an earlier one as not is not a run that was interrupted — it is a run that never happened, or a
+ * file somebody edited, and resuming it would perform the missing step against state that is already past it.
+ */
+export function assertJournalAgreesWithPlan(journal: RestoreJournal, plan: RestorePlan): void {
+  if (journal.planDigest !== plan.digest) {
+    throw new MaintenanceRefused(
+      'the interrupted restore in this project was planned for a different operation than the one this command '
+      + 'just resolved — a different project, destination, set, target directory, custody mode, safety-set name '
+      + 'or occupancy. Resuming it would apply half of one restore and half of another. Nothing was changed.');
+  }
+  const ids = plan.steps.map((step) => step.id);
+  for (const [index, id] of journal.completed.entries()) {
+    if (ids[index] !== id) {
+      throw new MaintenanceRefused(
+        'the restore journal in this project records completed steps that are not this operation\'s steps in this '
+        + 'operation\'s order. That is not an interrupted run: a run cannot finish a later step before an earlier '
+        + 'one. Nothing was changed.');
+    }
+  }
+  if (journal.running !== null) {
+    const expected = ids[journal.completed.length];
+    if (journal.running !== expected) {
+      throw new MaintenanceRefused(
+        'the restore journal records a step as running that is not the one this operation would have reached. '
+        + 'Nothing was changed.');
+    }
+  }
+  if (journal.completed.length > ids.length) {
+    throw new MaintenanceRefused('the restore journal records more completed steps than this operation has');
+  }
 }
 
 /**
  * Write the journal, replacing whatever it said before.
  *
- * A NEW FILE AND A RENAME, EVERY TIME. `writePrivateFile` is `O_EXCL` on purpose — nothing in this family
- * writes into a name it did not create — so an update stages a uniquely named private file beside the journal
- * and renames it over the top. The rename is what makes a journal read by anything else either the previous
- * complete one or the new complete one, never a prefix of either.
+ * A NEW FILE AND A RENAME, EVERY TIME. `writePrivateFile` is `O_EXCL` on purpose, so an update stages a
+ * uniquely named private file beside the journal and renames it over the top — which is what makes a journal
+ * read by anything else either the previous complete one or the new complete one, never a prefix of either.
  */
 export function writeRestoreJournal(projectRoot: string, journal: RestoreJournal): void {
   const staging = join(projectRoot, `${RESTORE_JOURNAL_NAME}.writing-${stagingSuffix()}`);
@@ -537,12 +786,11 @@ export function writeRestoreJournal(projectRoot: string, journal: RestoreJournal
 }
 
 /**
- * Remove the journal, if it is one of ours. Used by a completed run and by `--abandon`.
+ * Remove the journal, if it is one of ours.
  *
- * IT READS IT FIRST, AND THAT IS THE OWNERSHIP PROOF. `readRestoreJournal` refuses a file at that name this
- * build does not understand, so the `unlink` below can only ever reach a journal this product wrote — the
- * same rule `removeOwnFileNoFollow` states with a digest, established here by the parse that has to succeed.
- * This is the ONLY removal in this module: every other operation is a rename.
+ * IT READS IT FIRST, AND THAT IS THE OWNERSHIP PROOF: `readRestoreJournal` refuses anything this build did
+ * not write, so the `unlink` below can only ever reach a journal this product produced. This is the ONLY
+ * removal of a file in this module; every other operation on operator state is a rename.
  */
 export function clearRestoreJournal(projectRoot: string): void {
   const path = journalPath(projectRoot);
@@ -561,21 +809,10 @@ export function clearRestoreJournal(projectRoot: string): void {
 
 export interface CompleteRestoreDeps {
   readonly runner: CommandRunner;
-  /** The runner that binds the set's dump to the child's stdin. The replay is its only user. */
   readonly fileRunner: FileInputRunner;
-  /**
-   * The runner that binds a child's stdout to a file — Phase 277's, needed by the SAFETY SET's `pg_dump`.
-   *
-   * IT IS HERE RATHER THAN A WHOLE BACKUP FUNCTION BEING INJECTED, and that is deliberate. An injected
-   * "take a backup" seam is a seam through which a caller — or a suite — could supply something that returns
-   * `ok: true` without a set existing, which is exactly the false proof the safety set exists to prevent.
-   * What is injected is a process runner; the backup itself is `runVerifiedCompleteBackup`, called by name.
-   */
   readonly backupFileRunner: FileOutputRunner;
   readonly ledger: CommandLedger;
-  /** Injected so a suite gets deterministic swap names. Never used for a decision. */
   readonly suffix?: () => string;
-  /** Injected so a suite's safety set carries a fixed timestamp. Never used for a name or a decision. */
   readonly now?: () => Date;
 }
 
@@ -586,29 +823,39 @@ export type RestoreMode =
 export interface RestoreStepResult {
   readonly id: RestoreStepId;
   readonly proves: string;
-  /** `held` the step did what it says; `skipped` it was already done and recognised; `failed` it did not. */
   readonly outcome: 'held' | 'skipped' | 'failed';
-  /** The closed-set sentence for a step that did not hold. Never interpolated with anything read at runtime. */
   readonly detail: string | null;
 }
 
 export interface CompleteRestoreReport {
   readonly report: typeof COMPLETE_RESTORE_REPORT;
   readonly version: typeof COMPLETE_RESTORE_VERSION;
-  /** Every step held, every proof held, and the installation is back. Nothing weaker is `true`. */
   readonly ok: boolean;
-  /** The state this run reached, as one of four words. */
-  readonly state: 'RESTORED' | 'RESTORED_BUT_UNPROVEN' | 'INCOMPLETE' | 'REFUSED';
+  readonly state: 'RESTORED' | 'RESTORED_BUT_UNPROVEN' | 'INCOMPLETE';
   readonly setName: string;
   readonly custodian: CustodianTopology;
   readonly targetState: TargetState;
   readonly planDigest: string;
-  /** The safety set's name, or `null` when the run was told to take none. */
   readonly safetySet: string | null;
   readonly safetySetVerified: boolean;
   readonly steps: readonly RestoreStepResult[];
-  /** The base names the previous host state was renamed to, so an operator can find and destroy them. */
+  /**
+   * Every directory whose previous contents this OPERATION kept, from the journal — not only the ones this
+   * process happened to move.
+   *
+   * THE DEFECT THIS CLOSES. A resumed run reported an empty list, because the swaps had happened in the
+   * earlier process. An operator reading the resumed run's report was told nothing had been kept, while three
+   * directories of their previous secrets sat on disk unnamed.
+   */
   readonly replaced: readonly string[];
+  /**
+   * Whether the installation DEMONSTRATED that it can decrypt its own catalog.
+   *
+   * Its own field, and never folded into `ok`, because a restored catalog holding no encrypted record cannot
+   * prove custody and has not failed either. `ok` says the restore ran; this says whether the claim that
+   * matters most was actually established.
+   */
+  readonly custodyProven: boolean;
   readonly schemaVersion: number;
   readonly network: 'none';
   readonly mediaAccess: 'none';
@@ -616,23 +863,16 @@ export interface CompleteRestoreReport {
 }
 
 /**
- * A restore that failed WITH the second fact when there is one.
+ * A restore that failed after the installation was stopped.
  *
- * The same shape `CompleteBackupFailed` has, for the same reason: when a step fails and the installation is
- * left stopped, an operator has two problems and the urgent one is the outage. The primary refusal is
- * preserved word for word and the outage is ADDED to it rather than substituted for it.
+ * IT IS A STEP FAILURE, NOT A REFUSAL, and the CLI exits 1 for it. The first cut let it fall into the same
+ * `catch` as a pre-destructive refusal and exited 3 — the code documented as "refused before anything was
+ * destroyed" — so a scheduler watching for "nothing happened" was told nothing happened by a run that had
+ * destroyed the installation's volumes.
  */
 export class CompleteRestoreFailed extends MaintenanceRefused {
   readonly primary: string;
   readonly stateReached: RestoreStepId | null;
-  /**
-   * The report this run WOULD have returned.
-   *
-   * THE DEFECT THIS CLOSES IS THE SAME ONE PHASE 277 CLOSED, ONE LEVEL UP. A thrown failure never returns a
-   * report, and the report is where the safety set's name and the `.replaced-` directories are — which are
-   * exactly the two things an operator standing over a stopped installation needs. So the report travels ON
-   * the failure, and the CLI prints it before the refusal rather than after losing it.
-   */
   readonly report: CompleteRestoreReport;
 
   constructor(primary: string, stateReached: RestoreStepId | null, report: CompleteRestoreReport) {
@@ -652,8 +892,23 @@ export function runCompleteRestore(
   deps: CompleteRestoreDeps,
   mode: RestoreMode,
 ): CompleteRestoreReport {
-  const resolved = resolveCompleteRestoreRequest(request);
-  const existing = readRestoreJournal(resolved.projectRoot);
+  const probe = composeOccupancyProbe(deps.runner, deps.ledger);
+  const existing = readRestoreJournal(resolveMaintenanceRoot(request.projectRoot, 'project root'));
+
+  // A RESUME USES THE JOURNAL'S OWN REQUEST, NOT THE COMMAND LINE. The operation was decided when it was
+  // planned; letting a later invocation re-supply the paths is how a resume swaps a directory the original
+  // run never touched.
+  const effective: CompleteRestoreRequest = existing === null ? request : {
+    projectRoot: request.projectRoot,
+    destination: existing.destination,
+    setName: existing.setName,
+    custodian: existing.custodian,
+    secrets: existing.request.secrets,
+    ...(existing.request.promotionRecords === null ? {} : { promotionRecords: existing.request.promotionRecords }),
+    ...(existing.request.sidecarState === null ? {} : { sidecarState: existing.request.sidecarState }),
+    safetySetName: existing.safetySetName,
+  };
+  const resolved = resolveCompleteRestoreRequest(effective, probe);
 
   if (mode.kind === 'run' && existing !== null) {
     throw new MaintenanceRefused(
@@ -667,95 +922,100 @@ export function runCompleteRestore(
       'there is no restore to resume in this project: no journal is here. Nothing was changed.');
   }
 
-  // A RESUMED RUN INHERITS THE SHAPE IT WAS INTERRUPTED IN. Whether a safety set was taken is a fact about
-  // the run that already happened; recomputing it from the target's CURRENT state would answer EMPTY on an
-  // installation this run itself emptied, which would change the plan and therefore the digest.
-  const safetySet = existing !== null
-    ? existing.safetySetPlanned
-    : resolved.targetState === 'OCCUPIED' && mode.kind === 'run' && mode.acceptDataLoss === null;
-  const plan = planCompleteRestore(resolved, { safetySet });
+  const acceptDataLoss = mode.kind === 'run' && mode.acceptDataLoss !== null;
+  const safetySet = existing !== null ? existing.safetySetPlanned : (!acceptDataLoss);
+  const plan = planCompleteRestore(resolved, { safetySet, acceptDataLoss: existing?.safetySetPlanned === false || acceptDataLoss });
 
+  // ---- authorisation -------------------------------------------------------------------------------
   if (mode.confirm !== plan.digest) {
     throw new MaintenanceRefused(
       'the confirmation does not match this plan\'s digest. Run --plan again, read what it would do, and pass the '
-      + 'digest it prints. A digest computed for a different set, a different topology or a different step list '
-      + 'is not a confirmation of THIS run, and nothing was changed.');
+      + 'digest it prints. A digest is bound to the WHOLE operation — this project, this destination, this set, '
+      + 'these target directories, this custody mode, this safety-set name and what this command found here — so '
+      + 'one computed for any other of those is not a confirmation of this run. Nothing was changed.');
   }
-  if (mode.kind === 'run' && mode.acceptDataLoss !== null) {
-    if (resolved.targetState === 'EMPTY') {
-      throw new MaintenanceRefused(
-        'this installation has nothing to lose and a loss was acknowledged anyway. That acknowledgement is a habit '
-        + 'somebody is building for the run where there IS something to lose, so it is refused here. Drop the flag.');
-    }
-    if (mode.acceptDataLoss !== plan.digest) {
+  if (mode.kind === 'run') {
+    if (mode.acceptDataLoss !== null && mode.acceptDataLoss !== plan.digest) {
       throw new MaintenanceRefused(
         'the acknowledgement of data loss does not carry this plan\'s digest, so it could have been pasted from '
         + 'another run, another set or another project. Nothing was changed.');
     }
+    if (!safetySet && mode.acceptDataLoss === null) {
+      throw new MaintenanceRefused(
+        'this restore would destroy this installation\'s volumes without a safety set. Nothing was changed.');
+    }
   }
-  if (existing !== null && existing.planDigest !== plan.digest) {
-    throw new MaintenanceRefused(
-      'the interrupted restore in this project was planned for something other than what this command just '
-      + 'resolved. Resuming it under a different plan would apply half of one restore and half of another. '
-      + 'Nothing was changed.');
-  }
+  if (existing !== null) assertJournalAgreesWithPlan(existing, plan);
 
   const suffix = existing?.suffix ?? (deps.suffix ?? stagingSuffix)();
+  if (!RESTORE_SUFFIX_RE.test(suffix)) {
+    throw new MaintenanceRefused('this run produced a staging suffix that is not the shape this command creates');
+  }
   const completed = new Set<RestoreStepId>(existing?.completed ?? []);
+  const swaps: JournalSwap[] = existing === null ? [] : existing.swaps.map((swap) => ({ ...swap }));
   const results: RestoreStepResult[] = [];
-  const replaced: string[] = [];
   const notes: string[] = [];
-  let safetySetName: string | null = existing?.safetySetName ?? null;
-  let safetySetVerified = existing !== null && existing.safetySetName !== null;
-  let stopped = false;
+  let safetySetTaken = existing?.safetySetTaken ?? false;
+  let safetySetVerified = safetySetTaken;
+  let stopped = completed.has('stop-and-destroy');
   let failedAt: RestoreStepId | null = null;
   let failure: string | null = null;
+  let custodyProven = false;
 
-  // ONE MAINTENANCE COMMAND AT A TIME, PER PROJECT. The same lock `ops:complete-backup` takes, so a backup
-  // and a restore of one installation cannot interleave — and the safety set below is taken INSIDE it.
+  const stagingDir = join(resolved.projectRoot, stagingDirName(suffix));
+
   const lock = acquireMaintenanceLock(resolved.projectRoot);
   try {
-    // THE DIGEST IS RE-PROVED UNDER THE LOCK, over a FRESH verification of the set. Everything above ran
-    // outside the lock; this is the check that says the set is still the set and the plan is still the plan at
-    // the moment the destructive steps begin.
-    const reResolved = resolveCompleteRestoreRequest(request);
-    const rePlan = planCompleteRestore(reResolved, { safetySet });
+    // THE DIGEST IS RE-PROVED UNDER THE LOCK, over a FRESH verification of the set.
+    const reResolved = resolveCompleteRestoreRequest(effective, probe);
+    const rePlan = planCompleteRestore(reResolved, { safetySet, acceptDataLoss: plan.acceptDataLoss });
     if (rePlan.digest !== plan.digest) {
       throw new MaintenanceRefused(
         'the set or the installation changed between the plan and this run, so the plan no longer describes what '
         + 'would happen. Nothing was changed. Re-plan and read it again.');
     }
 
-    writeRestoreJournal(resolved.projectRoot, {
-      journal: 'catalog-authority.restore',
-      version: RESTORE_JOURNAL_VERSION,
-      planDigest: plan.digest,
-      setName: resolved.setName,
-      custodian: resolved.custodian,
-      suffix,
-      safetySetPlanned: safetySet,
-      safetySetName,
-      completed: [...completed],
-      running: null,
-    });
+    const persist = (running: RestoreStepId | null): void => {
+      writeRestoreJournal(resolved.projectRoot, {
+        journal: 'catalog-authority.restore',
+        version: RESTORE_JOURNAL_VERSION,
+        planDigest: plan.digest,
+        setName: resolved.setName,
+        destination: resolved.destination,
+        custodian: resolved.custodian,
+        targetState: resolved.targetState,
+        safetySetName: resolved.safetySetName,
+        suffix,
+        safetySetPlanned: safetySet,
+        safetySetTaken,
+        request: {
+          secrets: resolved.secrets.relative,
+          promotionRecords: resolved.promotionRecords?.relative ?? null,
+          sidecarState: resolved.sidecarState?.relative ?? null,
+        },
+        completed: plan.steps.map((step) => step.id).filter((id) => completed.has(id)),
+        running,
+        swaps: swaps.map((swap) => ({ ...swap })),
+      });
+    };
+    persist(null);
 
     for (const step of plan.steps) {
       if (completed.has(step.id)) {
         results.push({ id: step.id, proves: step.proves, outcome: 'skipped', detail: 'already completed by an earlier run' });
         continue;
       }
-      // A STEP AFTER A FAILED NON-PROOF STEP IS NOT ATTEMPTED. Once a placement or a boot has not held, every
-      // later one would be acting on state nobody can describe.
       if (failedAt !== null && !PROOF_STEP_IDS.includes(failedAt)) break;
-
-      journalRunning(resolved.projectRoot, plan.digest, resolved, suffix, safetySet, safetySetName, completed, step.id);
+      persist(step.id);
 
       let detail: string | null;
       try {
-        detail = performStep(step.id, resolved, plan, deps, suffix, {
-          onSafetySet: (name, verified) => { safetySetName = name; safetySetVerified = verified; },
-          onReplaced: (name) => { replaced.push(name); },
+        detail = performStep(step.id, resolved, plan, deps, stagingDir, suffix, {
+          onSafetySet: (verified) => { safetySetTaken = true; safetySetVerified = verified; },
+          onSwap: (swap) => { swaps.push(swap); },
           onStopped: () => { stopped = true; },
+          onCustodyProven: (proven) => { custodyProven = proven; },
+          onNote: (note) => { notes.push(note); },
         });
       } catch (err) {
         detail = err instanceof MaintenanceRefused
@@ -765,144 +1025,117 @@ export function runCompleteRestore(
 
       if (detail !== null) {
         results.push({ id: step.id, proves: step.proves, outcome: 'failed', detail });
-        // THE FIRST FAILURE IS THE ONE THAT GETS REPORTED AS THE CAUSE, and later ones are still recorded.
         if (failedAt === null) { failedAt = step.id; failure = detail; }
-        // ---- BUT EVERY PROOF STILL RUNS ------------------------------------------------------------
-        //
-        // THE DEFECT THIS CLOSES. Stopping at the first failed proof meant an operator whose version check
-        // did not hold was never told whether their installation could DECRYPT — which is a different
-        // problem with a different answer, and the one they most need to know. The proofs change nothing,
-        // they are independent diagnoses, and there is no reason to withhold three of them because the
-        // first disagreed. So the loop continues while the failure is a proof, and stops otherwise.
         if (!PROOF_STEP_IDS.includes(step.id)) break;
         continue;
       }
       completed.add(step.id);
       results.push({ id: step.id, proves: step.proves, outcome: 'held', detail: null });
-      journalRunning(resolved.projectRoot, plan.digest, resolved, suffix, safetySet, safetySetName, completed, null);
+      persist(null);
     }
   } finally {
     lock.release();
   }
 
-  // ---- what state did this run actually reach ------------------------------------------------------
-  const proofsRun = plan.steps.filter((step) => PROOF_STEP_IDS.includes(step.id)).map((step) => step.id);
   const everyStepHeld = failedAt === null;
-  const proofsHeld = everyStepHeld && proofsRun.every((id) => completed.has(id));
-  // A FAILURE INSIDE THE PROOFS IS NOT THE SAME AS A FAILURE BEFORE THEM. The installation IS restored and
-  // running; what did not hold is the evidence that it is correct — and the difference decides what an
-  // operator does next, so it is a different word rather than a note under one.
   const restoredButUnproven = failedAt !== null && PROOF_STEP_IDS.includes(failedAt);
 
   if (everyStepHeld) {
+    // THE STAGING DIRECTORY HOLDS A COPY OF EVERY SECRET IN THE INSTALLATION. It is removed on success, by
+    // digest-checked ownership, so a completed restore does not leave a second copy of the keystore and the
+    // secret files lying in the project.
+    try {
+      if (existsSync(stagingDir)) removeOwnTreeNoFollow(stagingDir, 'restore staging directory');
+    } catch {
+      notes.push('The private staging directory could not be removed. It holds a copy of this set\'s secrets and '
+        + 'keystore: remove it yourself, the way you would remove a password.');
+    }
     clearRestoreJournal(resolved.projectRoot);
     notes.push('The journal has been cleared: this restore completed and this project is not part way through one.');
   } else {
     notes.push('A restore journal was left in this project. Continue with --resume, or put the host directories '
       + 'back with --abandon. This project refuses a fresh restore until one of those has run.');
+    notes.push('A private staging directory holding this set\'s verified components was left in place for the '
+      + 'resume. It holds secret material.');
   }
-  if (safetySetName !== null) {
+  if (safetySetTaken) {
     notes.push('The safety set holds the installation as it was before this restore. Destroy it deliberately once '
       + 'you have confirmed this restore is the one you wanted.');
   } else {
     notes.push('NO SAFETY SET WAS TAKEN. The installation this restore replaced is not recoverable from anything '
       + 'this command produced.');
   }
+  if (everyStepHeld && !custodyProven) {
+    notes.push('CUSTODY WAS NOT PROVEN. The restore ran and the installation is up, but it did not demonstrate '
+      + 'that it can decrypt its own catalog — see the custody proof\'s own reason. Do not treat this as a '
+      + 'proven restore.');
+  }
+
+  const replaced = swaps.filter((swap) => swap.replaced !== null && !swap.undone)
+    .map((swap) => swap.replaced as string);
   if (replaced.length > 0) {
     notes.push('The previous contents of the swapped directories are beside them under the names listed above. '
       + 'They hold secret material: destroy them the way you would destroy a password, once you are done.');
   }
   notes.push('Nothing was fetched and no media path was read.');
 
-  const state: CompleteRestoreReport['state'] = everyStepHeld
-    ? 'RESTORED'
-    : restoredButUnproven ? 'RESTORED_BUT_UNPROVEN' : 'INCOMPLETE';
-
   const report: CompleteRestoreReport = {
     report: COMPLETE_RESTORE_REPORT,
     version: COMPLETE_RESTORE_VERSION,
-    ok: everyStepHeld && proofsHeld,
-    state,
+    ok: everyStepHeld,
+    state: everyStepHeld ? 'RESTORED' : restoredButUnproven ? 'RESTORED_BUT_UNPROVEN' : 'INCOMPLETE',
     setName: resolved.setName,
     custodian: resolved.custodian,
     targetState: resolved.targetState,
     planDigest: plan.digest,
-    safetySet: safetySetName,
+    safetySet: safetySetTaken ? resolved.safetySetName : null,
     safetySetVerified,
     steps: results,
     replaced,
+    custodyProven,
     schemaVersion: MIGRATION_VERSION,
     network: 'none',
     mediaAccess: 'none',
     notes,
   };
 
-  // A FAILURE THAT LEFT THE INSTALLATION DOWN IS A THROW, NOT A REPORT WITH A FALSE `ok`.
-  //
-  // The distinction is the same one Phase 277 draws: a run that failed BEFORE the teardown has changed
-  // nothing and is a plain refusal; a run that failed AFTER it has left services stopped, and an operator
-  // must not have to read a report to discover that. The proofs are the exception — by then the stack is up.
   if (failure !== null && stopped && !restoredButUnproven) {
     throw new CompleteRestoreFailed(failure, failedAt, report);
   }
   return report;
 }
 
-/** Record which step is running, before it runs. The journal is the only thing `--resume` trusts. */
-function journalRunning(
-  projectRoot: string,
-  planDigest: string,
-  resolved: ResolvedRestore,
-  suffix: string,
-  safetySetPlanned: boolean,
-  safetySetName: string | null,
-  completed: ReadonlySet<RestoreStepId>,
-  running: RestoreStepId | null,
-): void {
-  writeRestoreJournal(projectRoot, {
-    journal: 'catalog-authority.restore',
-    version: RESTORE_JOURNAL_VERSION,
-    planDigest,
-    setName: resolved.setName,
-    custodian: resolved.custodian,
-    suffix,
-    safetySetPlanned,
-    safetySetName,
-    completed: [...completed],
-    running,
-  });
+interface StepHooks {
+  readonly onSafetySet: (verified: boolean) => void;
+  readonly onSwap: (swap: JournalSwap) => void;
+  readonly onStopped: () => void;
+  readonly onCustodyProven: (proven: boolean) => void;
+  readonly onNote: (note: string) => void;
 }
 
-/**
- * Perform one step. Answers `null` when it held, or the closed sentence for why it did not.
- *
- * NOTHING HERE THROWS TO SIGNAL A STEP FAILING — a returned sentence is the signal, so every step's failure
- * travels the same way and reaches the report. A `MaintenanceRefused` thrown by a helper is caught by the
- * caller and becomes the same thing.
- */
 function performStep(
   id: RestoreStepId,
   resolved: ResolvedRestore,
   plan: RestorePlan,
   deps: CompleteRestoreDeps,
+  stagingDir: string,
   suffix: string,
-  hooks: {
-    readonly onSafetySet: (name: string, verified: boolean) => void;
-    readonly onReplaced: (name: string) => void;
-    readonly onStopped: () => void;
-  },
+  hooks: StepHooks,
 ): string | null {
   const step = plan.steps.find((candidate) => candidate.id === id)!;
-  const runOne = (command: MaintenanceCommand): CommandOutcome => runGuarded(deps.runner, deps.ledger, command);
+  // `<staged>` IS SUBSTITUTED HERE AND NOWHERE ELSE, so the plan an operator confirmed and the command that
+  // runs differ by exactly one thing: a directory this run created.
+  const materialise = (command: MaintenanceCommand): MaintenanceCommand => ({
+    ...command,
+    args: command.args.map((argument) => argument.startsWith(`${STAGED_TOKEN}/`)
+      ? join(stagingDir, argument.slice(STAGED_TOKEN.length + 1))
+      : argument),
+  });
+  const runOne = (command: MaintenanceCommand): CommandOutcome =>
+    runGuarded(deps.runner, deps.ledger, materialise(command));
 
   switch (id) {
     case 'safety-set': {
-      // PHASE 277'S WHOLE CYCLE, CALLED BY NAME AND UNCHANGED. `ok` there is the conjunction of the set being
-      // taken, the stack coming back AND the set verifying, and nothing weaker is accepted here.
-      //
-      // `holdingLock` is why this is one line rather than a lock dance: this run already holds the project's
-      // maintenance lock and `mkdir` as a lock is not reentrant. The exclusion property is unchanged — the
-      // lock is held for the whole of this backup, by the restore.
       let outcome: CompleteBackupOutcome;
       try {
         outcome = runVerifiedCompleteBackup({
@@ -910,11 +1143,9 @@ function performStep(
           destination: resolved.destination,
           setName: resolved.safetySetName,
           custodian: resolved.custodian,
-          secrets: resolved.secretsRelative,
-          ...(resolved.sidecarStateRelative === null ? {} : { sidecarState: resolved.sidecarStateRelative }),
-          ...(resolved.promotionRecordsRelative === null
-            ? {}
-            : { promotionRecords: resolved.promotionRecordsRelative }),
+          secrets: resolved.secrets.relative,
+          ...(resolved.sidecarState === null ? {} : { sidecarState: resolved.sidecarState.relative }),
+          ...(resolved.promotionRecords === null ? {} : { promotionRecords: resolved.promotionRecords.relative }),
         }, {
           runner: deps.runner,
           fileRunner: deps.backupFileRunner,
@@ -923,38 +1154,37 @@ function performStep(
           ...(deps.now === undefined ? {} : { now: deps.now }),
         });
       } catch (err) {
-        hooks.onSafetySet(resolved.safetySetName, false);
-        // THE BACKUP'S OWN WORDS, WHICH THIS PRODUCT WROTE. Anything else becomes a fixed sentence, because a
-        // foreign error's message routinely carries the absolute path it failed on.
         return err instanceof MaintenanceRefused
           ? `${err.message} Nothing was destroyed.`
           : 'a verified safety set could not be taken, for a reason this command does not have safe wording for. '
             + 'Nothing was destroyed.';
       }
-      hooks.onSafetySet(resolved.safetySetName, outcome.ok);
+      hooks.onSafetySet(outcome.ok);
       if (!outcome.ok) {
         return 'a verified safety set could not be taken of the installation this restore would destroy, so '
           + 'nothing was destroyed. Fix what the backup reported first.';
       }
       return null;
     }
+    case 'stage-components':
+      return stageComponents(resolved, stagingDir);
     case 'stop-and-destroy': {
       hooks.onStopped();
       const outcome = runOne(step.commands[0]!);
       return outcome.status === 0 ? null : 'the stack could not be stopped and its volumes destroyed';
     }
     case 'place-secrets':
-      return swapComponent(resolved.secretsDir, resolved.secretsName, resolved.setDir, 'secrets', suffix,
-        'secrets directory', hooks.onReplaced);
+      return swapComponent(resolved.secrets, stagingDir, 'secrets', suffix, 'secrets directory', hooks.onSwap);
     case 'place-promotion-records':
-      return swapComponent(resolved.promotionRecordsDir!, resolved.promotionRecordsName!, resolved.setDir,
-        'promotion-records', suffix, 'promotion records directory', hooks.onReplaced);
+      return swapComponent(resolved.promotionRecords!, stagingDir, 'promotion-records', suffix,
+        'promotion records directory', hooks.onSwap);
     case 'place-sidecar-keystore':
-      return swapComponent(resolved.sidecarStateDir!, resolved.sidecarStateName!, resolved.setDir,
-        'keystore', suffix, 'sidecar state directory', hooks.onReplaced);
+      return swapComponent(resolved.sidecarState!, stagingDir, 'keystore', suffix,
+        'sidecar state directory', hooks.onSwap);
     case 'replay-database': {
-      const dump = join(resolved.setDir, COMPONENT_ARTIFACT_NAMES.database);
-      const outcome = runGuardedFromFile(deps.fileRunner, deps.ledger, step.commands[0]!, dump);
+      // THE STAGED, RE-VERIFIED DUMP — never the set's own file. What is replayed is what was verified.
+      const dump = join(stagingDir, COMPONENT_ARTIFACT_NAMES.database);
+      const outcome = runGuardedFromFile(deps.fileRunner, deps.ledger, materialise(step.commands[0]!), dump);
       return outcome.status === 0 ? null : 'the verified dump did not replay into the fresh database';
     }
     case 'prove-version': {
@@ -969,8 +1199,6 @@ function performStep(
         return 'the restored database is not at the schema version this set recorded, so what is running is not '
           + 'the moment this set captured';
       }
-      // A MATCHING BODY BEHIND A FAILED PROCESS IS A CONTRADICTION. `ops:version` exits non-zero exactly when
-      // the build and the database disagree, so numbers that agree over a non-zero exit are two answers.
       return outcome.status === 0
         ? null
         : 'the schema versions printed agree and the command did not succeed, which do not agree';
@@ -983,17 +1211,44 @@ function performStep(
           ? 'the doctor did not answer in the shape this build understands'
           : 'the doctor did not succeed, whatever it printed';
       }
-      // THE STATE, WHICH IS ONE OF FOUR WORDS, and never a `detail`: a doctor detail is written for a person
-      // at a terminal and can name a path, a uid or a connection.
       const state = classifyDoctor(parsed);
       if (state === 'FAIL' || state === 'INVALID') return `the doctor reported ${state} on the restored installation`;
       return outcome.status === 0
         ? null
         : 'the doctor printed a healthy report and did not succeed, which do not agree';
     }
+    case 'prove-decrypt': {
+      // THE PROOF THAT DECRYPTS. Its BODY is what is consumed — the exit status alone would let a command
+      // that failed for an unrelated reason read as "custody is fine", and a body alone would let a report
+      // from a run that never finished read as a verdict. Both, and they must agree.
+      const outcome = runOne(step.commands[0]!);
+      const proof: CustodyProofReport | null = readCustodyProof(outcome.stdout);
+      if (proof === null) {
+        return 'the custody proof did not answer in the shape this build understands, so whether this '
+          + 'installation can decrypt its own catalog is UNKNOWN — which is not a pass';
+      }
+      if (proof.verdict === 'NOT_PROVEN') {
+        hooks.onCustodyProven(false);
+        return `the installation could NOT decrypt ${proof.attempted - proof.outcomes.decrypted} of the `
+          + `${proof.attempted} active encrypted record(s) it was asked about. That is what a keystore from a `
+          + 'different moment than the database looks like, and the installation will otherwise report itself '
+          + 'healthy';
+      }
+      if (proof.verdict === 'NO_ENCRYPTED_RECORDS') {
+        // HELD, AND NOT PROVEN. The restore did not fail — there is genuinely nothing encrypted in this
+        // catalog — but the claim that matters most was not established, and saying so is the whole point.
+        hooks.onCustodyProven(false);
+        hooks.onNote('The restored catalog holds no active encrypted record, so the custody proof had nothing to '
+          + 'decrypt. This restore did NOT demonstrate that the keystore matches the database. That is a correct '
+          + 'state for a set taken from an empty installation and it is not a proof of custody.');
+        return null;
+      }
+      hooks.onCustodyProven(true);
+      return outcome.status === 0
+        ? null
+        : 'the custody proof reported success and the command did not succeed, which do not agree';
+    }
     default: {
-      // Every remaining step is "run the commands and require zero", which covers the two `up`s, the role
-      // preparation, the inline keystore placement and the two remaining proofs.
       for (const command of step.commands) {
         const outcome = runOne(command);
         if (outcome.status !== 0) return failureSentence(id);
@@ -1003,81 +1258,163 @@ function performStep(
   }
 }
 
-/** The closed sentence for a step whose process did not succeed, named for what the step was asking. */
 export function failureSentence(id: RestoreStepId): string {
   switch (id) {
     case 'database-up': return 'a fresh database did not become healthy from an image already on this host';
     case 'prepare-runtime-role': return 'the credential-free managed runtime role could not be prepared';
     case 'place-inline-keystore': return 'the set\'s keystore could not be placed in the app container\'s volume';
     case 'stack-up': return 'the restored stack did not start and become healthy';
-    case 'prove-decrypt': return 'the installation could not read and DECRYPT its own catalog, which is what a '
-      + 'keystore that did not arrive looks like';
     case 'prove-history': return 'the durable history could not be read out of the restored installation';
     default: return 'this step did not succeed';
   }
 }
 
+// -----------------------------------------------------------------------------------------------------------
+// Staging: what is restored is what was verified
+// -----------------------------------------------------------------------------------------------------------
+
 /**
- * Put one component's copy where the installation reads it, by RENAME rather than by writing over anything.
+ * Copy every component out of the set and RE-VERIFY the copy against the manifest.
  *
- * THE ORDER IS THE GUARANTEE, and every one of the four operations is chosen for what a kill in the middle of
- * it leaves:
+ * -----------------------------------------------------------------------------------------------------
+ * THE DEFECT THIS CLOSES.
+ * -----------------------------------------------------------------------------------------------------
  *
- *   1. The set's copy is staged beside the target under a dot-prefixed name. A kill here leaves a staging
- *      directory and an UNTOUCHED target.
- *   2. The target, if there is one, is renamed to `.<name>.replaced-<suffix>`. A kill here leaves no target —
- *      visible, named, and exactly what `--abandon` puts back.
- *   3. The staged copy is renamed into place.
- *   4. Nothing is deleted. The previous state stays on disk under a name this command chose, because deleting
- *      the only copy of an operator's secrets to tidy up would be the worst kind of helpfulness.
+ * `verifyBackupSet` runs once, at resolution. Every placement afterwards re-opened the set BY PATH: a
+ * `copyTree` walked the component directories again, and the replay bound a descriptor to the dump again.
+ * Between the verification and those reads the set could change — an operator tidying up, a second process,
+ * a scheduled sync, anything holding a handle on that directory — and the restore would place bytes that no
+ * verification had ever approved, silently.
  *
- * AND IT IS IDEMPOTENT, WHICH IS WHAT MAKES `--resume` SAFE. A target that already holds exactly what this
- * set would put there — by the digest algorithm the backup itself uses, not a second one — is recognised and
- * SKIPPED. Swapping a second time would rename the RESTORED state aside and record it as the previous one.
+ * So each component is staged once, through the same descriptor-safe reads every other copy in this family
+ * uses, and the STAGED OBJECT is re-digested and compared to the manifest's own recorded digest, entry count
+ * and byte count. A mismatch is a refusal, and it happens BEFORE the teardown, so a set that changed under
+ * this command costs nothing.
+ *
+ * From here on, nothing reads the set again. The swaps copy from the staging directory and the replay binds
+ * its descriptor to the staged dump.
+ */
+export function stageComponents(resolved: ResolvedRestore, stagingDir: string): string | null {
+  if (existsSync(stagingDir)) {
+    // A RESUME REACHES THIS ONLY IF THE STEP DID NOT COMPLETE, so a directory here is a partial stage from a
+    // killed run. It is removed and rebuilt rather than trusted: a half-staged component that verified would
+    // be the exact defect this step exists to prevent.
+    try {
+      removeOwnTreeNoFollow(stagingDir, 'restore staging directory');
+    } catch {
+      return 'a staging directory from an earlier attempt is here and could not be removed. Look at it before '
+        + 'running again: this command will not stage into a directory it did not just create.';
+    }
+  }
+  createPrivateDirectory(stagingDir, 'restore staging directory');
+
+  for (const id of BACKUP_COMPONENT_IDS) {
+    const declared = resolved.manifest.components.find((component) => component.id === id);
+    if (declared === undefined || !declared.present) continue;
+    const artifact = COMPONENT_ARTIFACT_NAMES[id];
+    const source = join(resolved.setDir, artifact);
+    const destination = join(stagingDir, artifact);
+
+    if (id === 'database') {
+      // STREAMED THROUGH A DESCRIPTOR, unbounded in file size and bounded in memory, and refusing to follow
+      // a link at the open.
+      let copied: number;
+      try {
+        copied = copyFileNoFollow(source, destination, `${id} component`);
+      } catch (err) {
+        return err instanceof MaintenanceRefused
+          ? `${err.message} Nothing was destroyed.`
+          : `the ${id} component could not be staged. Nothing was destroyed.`;
+      }
+      const staged = digestFileNoFollow(destination, `staged ${id} component`);
+      if (staged.digest !== declared.digest || copied !== declared.bytes || staged.size !== declared.bytes) {
+        return `the ${id} component of this set is not the one the verification approved: what was copied out `
+          + 'just now does not match the digest and size the manifest recorded. The set changed after it was '
+          + 'verified. Nothing was destroyed.';
+      }
+      continue;
+    }
+
+    try {
+      copyTree(source, destination, `${id} component`);
+    } catch (err) {
+      return err instanceof MaintenanceRefused
+        ? `${err.message} Nothing was destroyed.`
+        : `the ${id} component could not be staged. Nothing was destroyed.`;
+    }
+    const staged = digestTreeAt(destination, `staged ${id} component`);
+    if (staged.digest !== declared.digest || staged.entries !== declared.entries || staged.bytes !== declared.bytes) {
+      return `the ${id} component of this set is not the one the verification approved: what was copied out just `
+        + 'now does not match the digest, entry count and size the manifest recorded. The set changed after it '
+        + 'was verified. Nothing was destroyed.';
+    }
+  }
+  return null;
+}
+
+/**
+ * Put one component's verified copy where the installation reads it, by RENAME.
+ *
+ * The source is the STAGING directory, never the set — so what lands is what was verified, and a set that
+ * changes during the run cannot reach the installation.
+ *
+ * THE ORDER IS THE GUARANTEE, and each of the four operations is chosen for what a kill in the middle leaves:
+ * a staging copy beside an untouched target; a target renamed aside under a name this command chose; the new
+ * contents in place; and nothing deleted, because deleting the only copy of an operator's secrets to tidy up
+ * would be the worst kind of helpfulness.
+ *
+ * AND IT IS IDEMPOTENT, WHICH IS WHAT MAKES `--resume` SAFE. A target already holding exactly what this set
+ * would put there is recognised by digest and skipped; swapping twice would rename the RESTORED state aside
+ * and record it as the previous one.
  */
 function swapComponent(
-  targetDir: string,
-  targetName: string,
-  setDir: string,
+  target: ResolvedTarget,
+  stagingDir: string,
   id: BackupComponentId,
   suffix: string,
   what: string,
-  onReplaced: (name: string) => void,
+  onSwap: (swap: JournalSwap) => void,
 ): string | null {
-  const source = join(setDir, COMPONENT_ARTIFACT_NAMES[id]);
-  const expected = digestTreeAt(source, `${what} in the set`);
+  const source = join(stagingDir, COMPONENT_ARTIFACT_NAMES[id]);
+  if (!existsSync(source)) {
+    return `the staged ${what} is not there, so this step has nothing verified to place. Re-run the staging step.`;
+  }
+  const expected = digestTreeAt(source, `staged ${what}`);
 
-  if (existsSync(targetDir)) {
-    const stats = lstatSync(targetDir);
+  if (existsSync(target.dir)) {
+    const stats = lstatSync(target.dir);
     if (stats.isSymbolicLink()) return `the ${what} is a symbolic link, which this command will not write through`;
     if (!stats.isDirectory()) return `the ${what} is not a directory`;
-    // ALREADY THERE, AND PROVED SO. Never "it exists, so it is probably done".
-    if (digestTreeAt(targetDir, what).digest === expected.digest) return null;
+    if (digestTreeAt(target.dir, what).digest === expected.digest) return null;
   }
 
-  const parent = join(targetDir, '..');
-  const staging = join(parent, swapStagingName(targetName, suffix));
-  const replaced = join(parent, swapReplacedName(targetName, suffix));
+  const parent = join(target.dir, '..');
+  const staging = join(parent, swapStagingName(target.name, suffix));
+  const replacedName = swapReplacedName(target.name, suffix);
+  const replaced = join(parent, replacedName);
   if (existsSync(staging) || existsSync(replaced)) {
     return `a previous attempt left a staging or replaced ${what} beside this one. Look at them before running `
       + 'again: this command will not write into a name it did not just create.';
   }
 
   copyTree(source, staging, what);
-  if (existsSync(targetDir)) {
+  let moved = false;
+  if (existsSync(target.dir)) {
     try {
-      renameSync(targetDir, replaced);
+      renameSync(target.dir, replaced);
     } catch {
       return `the existing ${what} could not be moved aside, so nothing was replaced`;
     }
-    onReplaced(swapReplacedName(targetName, suffix));
+    moved = true;
   }
   try {
-    renameSync(staging, targetDir);
+    renameSync(staging, target.dir);
   } catch {
     return `the ${what} from this set could not be moved into place. The previous one is beside it under the `
       + 'replaced name and this run stopped.';
   }
+  // RECORDED AFTER BOTH RENAMES, so the journal never claims a swap that did not complete.
+  onSwap({ component: id, target: target.relative, name: target.name, replaced: moved ? replacedName : null, undone: false });
   return null;
 }
 
@@ -1089,69 +1426,102 @@ export interface AbandonReport {
   readonly report: 'phase-303-restore-abandon';
   readonly ok: boolean;
   readonly setName: string;
-  /** The base names put back. Base names, never paths. */
   readonly restored: readonly string[];
+  /** Swaps this run could not put back. The journal is NOT cleared while any of these remain. */
+  readonly unresolved: readonly string[];
+  readonly journalCleared: boolean;
   readonly notes: readonly string[];
 }
 
 /**
- * Put the swapped host directories back, and clear the journal.
+ * Put the swapped host directories back, and clear the journal only if every one of them is back.
  *
- * IT RESTORES HOST STATE ONLY, AND IT SAYS SO. The database and, in inline custody, the keystore were
- * destroyed by `docker compose down -v`, and a rename cannot bring either of them back. What does is the
- * SAFETY SET, through this same command — and pretending otherwise would be the single most dangerous
- * sentence this product could print.
+ * -----------------------------------------------------------------------------------------------------
+ * IT TAKES THE PROJECT ROOT AND NOTHING ELSE, AND THAT IS THE CORRECTION.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The first cut re-derived the targets from the CLI's `--secrets` / `--promotion-records` / `--sidecar-state`
+ * flags. Those can differ from the ones the interrupted run actually swapped — by a typo, by a different
+ * habit, or by a second operator — and the consequence was silent: an abandon would find no `.replaced-`
+ * directory at the path it was told about, report `ok` with nothing put back, and CLEAR THE JOURNAL, leaving
+ * the real swapped directories orphaned and the project accepting a fresh restore over them.
+ *
+ * The journal now carries the operation's own targets, and they are what this walks. It also refuses to
+ * clear itself while any recorded swap is still unresolved: a partial unwind is a state that must stay
+ * visible, not one that gets forgotten because the command returned.
  */
-export function abandonRestore(request: CompleteRestoreRequest, deps: { readonly ledger: CommandLedger }): AbandonReport {
-  const projectRoot = resolveMaintenanceRoot(request.projectRoot, 'project root');
+export function abandonRestore(projectRootRequested: string): AbandonReport {
+  const projectRoot = resolveMaintenanceRoot(projectRootRequested, 'project root');
   const journal = readRestoreJournal(projectRoot);
   if (journal === null) {
     throw new MaintenanceRefused('there is no restore to abandon in this project: no journal is here.');
   }
-  void deps;
 
   const restored: string[] = [];
+  const unresolved: string[] = [];
   const notes: string[] = [];
-  // Resolved WITHOUT the set: abandoning must work when the set has been moved away, which is exactly the
-  // situation somebody is in when they decide to abandon.
-  const targets: { readonly dir: string; readonly name: string }[] = [];
-  const add = (relative: string | undefined): void => {
-    if (relative === undefined || relative.trim() === '') return;
-    targets.push({ dir: resolveInsideRoot(projectRoot, relative, 'directory'), name: lastSegment(relative) });
-  };
-  add(request.secrets);
-  add(request.promotionRecords);
-  add(request.sidecarState);
+  const swaps = journal.swaps.map((swap) => ({ ...swap }));
 
-  for (const target of targets) {
-    const parent = join(target.dir, '..');
-    const replaced = join(parent, swapReplacedName(target.name, journal.suffix));
-    if (!existsSync(replaced)) continue;
+  for (const swap of swaps) {
+    if (swap.undone) continue;
+    if (swap.replaced === null) {
+      // NOTHING WAS MOVED ASIDE — the target did not exist before this operation. There is nothing to put
+      // back, and the restored copy is left where it is: removing it would destroy the only copy of a
+      // component this command was asked to place.
+      swap.undone = true;
+      continue;
+    }
+    // THE TARGET COMES FROM THE JOURNAL, resolved against this project root and proved the same way every
+    // other path is.
+    let dir: string;
+    try {
+      dir = resolveInsideRoot(projectRoot, swap.target, `${swap.component} target`);
+    } catch {
+      unresolved.push(swap.replaced);
+      continue;
+    }
+    const parent = join(dir, '..');
+    const replaced = join(parent, swap.replaced);
+    if (!existsSync(replaced)) { unresolved.push(swap.replaced); continue; }
     if (lstatSync(replaced).isSymbolicLink() || !statSync(replaced).isDirectory()) {
-      throw new MaintenanceRefused(
-        'what this run moved aside is no longer a plain directory, so it was left alone. Nothing was changed.');
+      unresolved.push(swap.replaced);
+      continue;
     }
     // THE RESTORED COPY IS MOVED ASIDE, NOT DELETED. Same rule as the swap: this command does not destroy the
-    // only copy of anything, and an operator who abandons and then changes their mind still has both.
-    if (existsSync(target.dir)) {
-      const aside = join(parent, `.${target.name}.abandoned-${journal.suffix}`);
-      if (existsSync(aside)) {
-        throw new MaintenanceRefused(
-          'an abandoned copy of this directory is already beside it from an earlier attempt. Look at it first: '
-          + 'this command will not write into a name it did not just create. Nothing was changed.');
-      }
-      renameSync(target.dir, aside);
+    // only copy of anything, and an operator who abandons and then changes their mind still holds both.
+    if (existsSync(dir)) {
+      const aside = join(parent, `.${swap.name}.abandoned-${journal.suffix}`);
+      if (existsSync(aside)) { unresolved.push(swap.replaced); continue; }
+      try { renameSync(dir, aside); } catch { unresolved.push(swap.replaced); continue; }
     }
-    renameSync(replaced, target.dir);
-    restored.push(target.name);
+    try { renameSync(replaced, dir); } catch { unresolved.push(swap.replaced); continue; }
+    swap.undone = true;
+    restored.push(swap.name);
   }
 
-  clearRestoreJournal(projectRoot);
+  const journalCleared = unresolved.length === 0;
+  if (journalCleared) {
+    clearRestoreJournal(projectRoot);
+    notes.push('The journal has been cleared, so this project accepts a restore again.');
+  } else {
+    // THE JOURNAL STAYS, AND IT RECORDS WHAT IS STILL OUT OF PLACE. A project with an unresolved swap must
+    // keep refusing a fresh restore: running one would take a "safety set" of a half-unwound installation.
+    writeRestoreJournal(projectRoot, { ...journal, swaps, running: null });
+    notes.push('THE JOURNAL WAS NOT CLEARED: at least one directory this restore moved aside could not be put '
+      + 'back. This project keeps refusing a fresh restore until it is. Look at the names above.');
+  }
   notes.push('The host directories this restore swapped are back where they were. THE DATABASE AND, IN INLINE '
     + 'CUSTODY, THE KEYSTORE WERE DESTROYED BY THE TEARDOWN AND ARE NOT COMING BACK FROM A RENAME. Restore the '
     + 'safety set to get them.');
-  notes.push('The journal has been cleared, so this project accepts a restore again.');
-  return { report: 'phase-303-restore-abandon', ok: true, setName: journal.setName, restored, notes };
+  return {
+    report: 'phase-303-restore-abandon',
+    ok: journalCleared,
+    setName: journal.setName,
+    restored,
+    unresolved,
+    journalCleared,
+    notes,
+  };
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -1168,6 +1538,7 @@ export function renderCompleteRestore(report: CompleteRestoreReport): string {
   lines.push(`  plan digest        ${report.planDigest.slice(0, 16)}`);
   lines.push(`  safety set         ${report.safetySet ?? 'NONE TAKEN'}`
     + `${report.safetySet === null ? '' : ` (verified: ${report.safetySetVerified})`}`);
+  lines.push(`  custody proven     ${report.custodyProven ? 'YES — it decrypted its own catalog' : 'NO'}`);
   lines.push(`  schema version     ${report.schemaVersion}`);
   lines.push('  steps:');
   for (const step of report.steps) {
@@ -1180,7 +1551,7 @@ export function renderCompleteRestore(report: CompleteRestoreReport): string {
   lines.push(`  network            ${report.network}`);
   lines.push(`  media access       ${report.mediaAccess}`);
   for (const note of report.notes) lines.push(`  note: ${note}`);
-  lines.push(`  RESULT: ${report.ok ? 'RESTORED AND PROVED' : report.state}`);
+  lines.push(`  RESULT: ${report.ok && report.custodyProven ? 'RESTORED AND PROVED' : report.state}`);
   return lines.join('\n');
 }
 
@@ -1189,25 +1560,32 @@ export function renderRestorePlan(resolved: ResolvedRestore, plan: RestorePlan):
   const lines: string[] = [];
   lines.push(`This restore would put set "${resolved.setName}" back, with no shell involved:`);
   lines.push(`  the installation it would restore into is ${plan.targetState}`);
+  if (plan.targetState === 'UNKNOWN') {
+    lines.push('    — its host directories are empty, and this command CANNOT prove its Docker volumes are.');
+    lines.push('      Reading a volume means starting something, and starting something is a change.');
+  }
   lines.push(`  custody is ${plan.custodian}, which the set's own manifest agrees with`);
   lines.push(plan.safetySet
     ? `  a verified safety set would be taken first, named "${resolved.safetySetName}"`
-    : '  NO SAFETY SET WOULD BE TAKEN');
+    : '  NO SAFETY SET WOULD BE TAKEN, and destroying this installation\'s volumes was acknowledged');
   lines.push('');
   for (const step of plan.steps) {
     lines.push(`  ${step.destructive ? '!' : ' '} ${step.id}`);
     lines.push(`      ${step.proves}`);
-    for (const command of step.commands) {
-      lines.push(`      ${command.program} ${command.args.join(' ')}`);
-    }
+    // THE SAFE RENDERING. `<project>` stands for the project root and `<staged>` for this run's private
+    // staging directory: a plan is exactly readable without naming anybody's appdata layout.
+    for (const command of step.display) lines.push(`      ${command}`);
   }
   lines.push('');
   lines.push('  ! marks a step after which this installation is not where it was.');
+  lines.push('  <project> is the project directory you named; <staged> is a private directory this run creates.');
   lines.push('  Components are placed by RENAME: the previous directory is kept beside the new one.');
   lines.push('  Nothing would be fetched and no media path would be read.');
   lines.push('');
   lines.push(`  plan digest: ${plan.digest}`);
-  lines.push('  Pass that digest back with --confirm to run this. Nothing has been changed.');
+  lines.push('  It binds this project, this destination, this set and its verified bytes, these target');
+  lines.push('  directories, this custody mode, this safety-set name and what was found here. A digest from');
+  lines.push('  any other operation will not confirm this one. Nothing has been changed.');
   return lines.join('\n');
 }
 
@@ -1219,4 +1597,10 @@ function lastSegment(relative: string): string {
     throw new MaintenanceRefused('a directory was named by a path with no final segment, which names nothing');
   }
   return last;
+}
+
+/** Exported so a suite can assert that no rendered surface carries a path outside the project. */
+export function projectRelative(projectRoot: string, path: string): string {
+  const inside = relativePath(projectRoot, path);
+  return inside === '' ? PROJECT_TOKEN : `${PROJECT_TOKEN}/${inside.replace(/\\/g, '/')}`;
 }

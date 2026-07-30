@@ -53,8 +53,29 @@ export interface RestoreStackOptions {
   readonly initialSchema?: number;
   /** What `compose cp app:… <dest>` writes, i.e. the keystore the safety set copies out. */
   readonly liveKeystoreFiles?: Readonly<Record<string, string>>;
+  /**
+   * How many active ENCRYPTED records the restored catalog holds, for the custody proof to work over.
+   *
+   * Zero models the honest case the shipped proof reports as NO_ENCRYPTED_RECORDS: a restore that ran, an
+   * installation that is up, and custody that was never demonstrated because there was nothing to decrypt.
+   */
+  readonly encryptedRecords?: number;
   /** Make the doctor report a failure even though the stack is up. */
   readonly doctorStates?: readonly ('pass' | 'warn' | 'fail')[];
+  /**
+   * What `docker compose ps -a --quiet` answers. `none` models a project that has never been up; `containers`
+   * one that has; `unanswerable` a daemon that will not talk, which must fail closed to OCCUPIED.
+   *
+   * Default `none`, because the probe is only consulted when the host directories are already empty — the
+   * one case where a wrong answer would let a restore destroy volumes it had no authorisation for.
+   */
+  readonly containers?: 'none' | 'containers' | 'unanswerable';
+  /**
+   * In SIDECAR custody the installation reads its keystore from a host directory, not from the app volume.
+   * The world reads that directory at proof time, so a sidecar restore's custody proof is answered by what
+   * the swap actually put on disk rather than by a container copy that never happens.
+   */
+  readonly sidecarStateDir?: string;
 }
 
 export interface RestoreStackState {
@@ -121,16 +142,39 @@ export function restoreStack(options: RestoreStackOptions): RestoreStack {
     return null;
   };
 
-  /** Does the installation currently hold a database and a keystore from ONE moment? */
-  const decrypts = (): boolean =>
-    loadedDump !== null && keystore !== null
-    && options.moments.some((moment) => moment.dumpDigest === loadedDump && moment.keystoreDigest === keystore);
+  /**
+   * Does the installation currently hold a database and a keystore from ONE moment?
+   *
+   * In SIDECAR custody the keystore is a host directory the swap put in place, so it is read from disk at
+   * proof time. In INLINE custody it is whatever `compose cp` put into the app volume. Either way the answer
+   * is about the key material actually present, which is what makes the proof non-vacuous.
+   */
+  const heldKeystore = (): string | null => {
+    if (options.sidecarStateDir === undefined) return keystore;
+    if (!existsSync(options.sidecarStateDir)) return null;
+    try {
+      return digestTreeAt(options.sidecarStateDir, 'sidecar keystore in place').digest;
+    } catch {
+      return null;
+    }
+  };
+  const decrypts = (): boolean => {
+    const held = heldKeystore();
+    return loadedDump !== null && held !== null
+      && options.moments.some((moment) => moment.dumpDigest === loadedDump && moment.keystoreDigest === held);
+  };
 
   const runner: CommandRunner = (command: MaintenanceCommand): CommandOutcome => {
     const joined = [command.program, ...command.args].join(' ');
     const forced = injected(joined);
     if (forced !== null) return forced;
     const args = command.args;
+
+    // ---- the occupancy probe, which starts nothing --------------------------------------------------
+    if (args.includes('ps')) {
+      if (options.containers === 'unanswerable') return fail('cannot reach the daemon\n');
+      return ok(options.containers === 'containers' ? 'abc123\ndef456\n' : '');
+    }
 
     // ---- the teardown ------------------------------------------------------------------------------
     if (args.includes('down')) {
@@ -216,14 +260,33 @@ export function restoreStack(options: RestoreStackOptions): RestoreStack {
       const body = fakeDoctorJson(states);
       return states.includes('fail') ? { status: 1, stdout: body, stderr: '' } : ok(body);
     }
+    if (joined.includes('ops:custody-proof')) {
+      // -------------------------------------------------------------------------------------------------
+      // THE PROOF IS MODELLED BY ITS REPORT, NOT BY ITS NAME.
+      // -------------------------------------------------------------------------------------------------
+      //
+      // THE DEFECT THIS CLOSES. The first cut special-cased `ops:collections status` and returned a bare
+      // failure when the modelled moment did not match. Two things were wrong with that: the production
+      // command it stood in for does not decrypt anything (it counts rows), so the suite was asserting a
+      // property no shipped code had; and the fake answered by COMMAND NAME rather than by producing the
+      // report the restore actually parses, so the restore's own consumption of that report — the schema
+      // check, the verdict handling, the `NO_ENCRYPTED_RECORDS` branch — was never exercised at all.
+      //
+      // This emits a real `phase-302-custody-proof` body whose verdict follows from the modelled custody
+      // state, and the restore reads it through the shipped `readCustodyProof`. A body that did not satisfy
+      // that contract would fail the restore here, which is what makes this a test of the contract.
+      if (!stackUp) return fail('the stack is not running\n');
+      const encrypted = options.encryptedRecords ?? 3;
+      if (encrypted === 0) {
+        return ok(custodyProofBody('NO_ENCRYPTED_RECORDS', 0, 0, { decrypted: 0 }));
+      }
+      const attempted = Math.min(encrypted, 25);
+      return decrypts()
+        ? ok(custodyProofBody('PROVEN', encrypted, attempted, { decrypted: attempted }))
+        : { status: 1, stdout: custodyProofBody('NOT_PROVEN', encrypted, attempted, { 'key-not-found': attempted }), stderr: '' };
+    }
     if (joined.includes('ops:collections')) {
       if (!stackUp) return fail('the stack is not running\n');
-      // BOTH READS NEED THE CATALOG. `status` is the decryption proof and `history` reads durable state; an
-      // installation holding a keystore from another moment fails the first and passes the second, which is
-      // precisely why the restore runs both and why they are separate steps.
-      if (joined.includes('status') && !decrypts()) {
-        return fail('the custodian cannot open this item\n');
-      }
       return ok('{"ok":true}\n');
     }
 
@@ -283,6 +346,37 @@ export function restoreStack(options: RestoreStackOptions): RestoreStack {
     teardowns: () => teardowns,
     replays: () => [...replays],
   };
+}
+
+/**
+ * A `phase-302-custody-proof` body, built to the shipped contract.
+ *
+ * Every count is filled in and the outcomes sum to the attempt, because `readCustodyProof` checks both — a
+ * fake that produced a body the product would reject would make every proof step fail for the wrong reason.
+ */
+export function custodyProofBody(
+  verdict: 'PROVEN' | 'NOT_PROVEN' | 'NO_ENCRYPTED_RECORDS',
+  encryptedRecords: number,
+  attempted: number,
+  outcomes: Partial<Record<string, number>>,
+): string {
+  const full = {
+    'decrypted': 0, 'key-not-found': 0, 'key-destroyed': 0, 'undecryptable': 0, 'custodian-error': 0,
+    ...outcomes,
+  };
+  return `${JSON.stringify({
+    report: 'phase-302-custody-proof',
+    version: 1,
+    verdict,
+    proven: verdict === 'PROVEN',
+    encryptedRecords,
+    attempted,
+    sampleBound: 25,
+    outcomes: full,
+    wrote: 'nothing',
+    network: 'none',
+    notes: [],
+  }, null, 2)}\n`;
 }
 
 /** The schema version a fake dump carries, read the way the shipped inspector reads a real one. */

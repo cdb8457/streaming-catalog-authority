@@ -328,12 +328,17 @@ export const BACKUP_INSPECT_COMMANDS: BackupCommands = {
  */
 export const COMPLETE_RESTORE_NOTE =
   'Put a verified backup set back. It takes a verified safety set of what it is about to destroy first, '
-  + 'stops the stack and destroys its volumes so the dump replays into an EMPTY database, places all four '
-  + 'components, starts everything again, and then proves the result — including that the installation can '
-  + 'DECRYPT its own catalog, which is the one failure a restored installation reports as healthy. Start with '
-  + '--plan: it verifies the set, prints every step and a digest, and changes nothing. Running requires that '
-  + 'digest back. THERE ARE NO DOWN-MIGRATIONS, so a set older than the build you are running is refused '
-  + 'rather than replayed: this is the rollback, and putting an old image back is not.';
+  + 'stages every component out of the set and re-checks it against the manifest, stops the stack and '
+  + 'destroys its volumes so the dump replays into an EMPTY database, places all four components, starts '
+  + 'everything again, and then proves the result — including that the installation can DECRYPT its own '
+  + 'catalog, which is the one failure a restored installation reports as healthy. Start with --plan: it '
+  + 'verifies the set, prints every step and a digest, and changes nothing. Running requires that digest '
+  + 'back, and the digest is bound to the whole operation — this project, these directories, this set — so '
+  + 'one read off another plan will not run this one. It CANNOT prove your Docker volumes are empty, because '
+  + 'reading a volume means starting something: every restore needs either a safety set or an explicit '
+  + 'acknowledgement that volumes of unknown contents are about to go. THERE ARE NO DOWN-MIGRATIONS, so a '
+  + 'set older than the build you are running is refused rather than replayed: this is the rollback, and '
+  + 'putting an old image back is not.';
 
 export const COMPLETE_RESTORE_COMMANDS: BackupCommands = {
   posix: 'npm run ops:complete-restore -- --project /path/to/project --set set-name --custodian inline --plan',

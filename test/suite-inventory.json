@@ -1433,6 +1433,14 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "custody-proof.ts",
+      "group": "db",
+      "args": [
+        "5467"
+      ],
+      "requires": []
     }
   ]
 }
