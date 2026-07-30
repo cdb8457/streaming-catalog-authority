@@ -11,6 +11,7 @@ Six functional commits from `c4893a6`, worktree clean. **Nothing pushed, no PR o
 | `fdd2fab` | 4 — the direction of an operation is recorded before its first effect, and is exclusive |
 | `1f1323d` | 2 — a component handed to another process is verified after it was read |
 | `ea38ce4` | 6 — case-variant overlap and the journal-state matrix |
+| `f156b4d` | 1 (corrected) — an unforgeable per-run claim, after the coordinator rejected the derived name |
 
 ## Item 1 — safety-set provenance
 
@@ -19,14 +20,34 @@ an existing set name, so "a valid set already sits there" is exactly the conditi
 backup fails — and dying just before that refusal leaves precisely the state the old check read as success. A
 resume adopted a **stranger's backup** as the only thing between the installation and unrecoverable loss.
 
-Publication is a rename, so the only thing that can be atomic with it is the **name**. This operation
-publishes under `<chosen>.<twelve hex of the plan digest>` — an identity no other operation can produce,
-since the digest already binds project, destination, set and its verified bytes, every target path, custody,
-safety-set name and occupancy. Recovery asks about that name only.
+**My first fix for this was wrong, and the coordinator rejected it correctly.** It published to
+`<base>.<twelve hex of the plan digest>` and argued no other operation could produce that name. The argument
+fails on its own premise: the plan digest is **deterministic**, so the name is **predictable** — and an
+ordinary sequence puts a valid unrelated set at it. Run the restore, abandon it, leave its safety set behind;
+run the same restore again and die inside the safety-set step before the backup refuses the existing name.
+The set sitting there backs up a **different moment**, and adopting it hands the operator a safety set that
+does not describe what is about to be destroyed. "The name matches" can never distinguish "we published it"
+from "it was already there and blocked us": those states are identical on disk.
 
-Five tests: unrelated valid set pre-exists and death lands before the rejection (own set taken, stranger's
-byte-for-byte untouched); own set published then death before the record (recognised by verifying);
-claim exists but set absent (retried); damaged own set (refused, not replaced); and the naming property.
+The claim is therefore not a name:
+
+1. A **nonce** from the system CSPRNG, per run — derived from nothing, so unpredictable to anyone who has not
+   read this run's journal.
+2. A **directory created with `mkdir`**, the one filesystem operation that both creates and refuses
+   atomically. Creating it *is* the claim: it succeeds for exactly one party.
+3. Recorded in the journal only **after** that call returned — so `created: true` is a fact, not an inference
+   — and **before** anything is published into it, which is the correct side of the absence/publication
+   boundary.
+
+The set is published *inside* the claimed directory. "It is in a directory this run created, under a name
+nobody could guess" is provenance a pre-existing set cannot have, however it is named. An already-existing
+claim directory was not created by this run, so the run draws another nonce rather than adopting from it.
+
+Eight tests, including the exact negative the review named: valid sets planted at **both** locations a
+name-based scheme would predict (the operator's chosen name and the plan-derived one my first fix used),
+death inside the safety-set step before the backup can reject anything, and a resume that publishes its own
+set inside its own claim while leaving both strangers byte-for-byte untouched. Plus an occupied claim
+directory, and a claim recorded but never created.
 
 ## Item 2 — mutation during consumption
 
@@ -89,7 +110,7 @@ set, and version 3; and accepts each genuine crash state.
 | Gate | Result |
 | --- | --- |
 | `npx tsc --noEmit` | **PASS**, 0 errors |
-| `npm run test:complete-restore` | **113 passed, 0 failed** (was 95) |
+| `npm run test:complete-restore` | **116 passed, 0 failed** (was 95) |
 | `npm run test:complete-backup` | 49 passed, 0 failed |
 | `npm run test:custody-proof` | 9 passed, 0 failed |
 | `test/test-runner.ts` | 60 passed, 0 failed |
@@ -117,9 +138,9 @@ untouched deliberately.
    observes what is on disk afterwards and refuses to continue on a mismatch. Closing it properly would mean
    handing the child a descriptor it cannot re-open, which `compose cp` does not offer.
 2. **Parent-directory fsync is still absent**, so the durability claim stays at process death.
-3. **`operationSuffix` is twelve hex of the plan digest.** Collision would require two operations with the
-   same 48-bit prefix *and* an operator choosing the same base name; the full digest is still compared for
-   every other purpose.
+3. **The claim nonce is 96 bits from the system CSPRNG**, and the claim survives only in the journal. A lost
+   journal means a lost claim — which is safe (the next run claims afresh and adopts nothing) but leaves the
+   orphaned directory for an operator to remove; it is named in the report.
 4. **A case-sensitive volume mounted under Windows** is treated as case-insensitive; the cost is refusing two
    targets that could have coexisted.
 5. **Journal version 4 is not migrated from 3.** Fails closed, as before.
