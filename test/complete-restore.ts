@@ -9,7 +9,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MIGRATION_VERSION } from '../src/db/schema-version.js';
 import { REQUIRED_SECRET_FILES, COMPONENT_ARTIFACT_NAMES } from '../src/ops/backup-components.js';
+import { verifyBackupSet } from '../src/ops/backup-set-verification.js';
 import {
+  digestTreeAt,
   runVerifiedCompleteBackup,
   type CompleteBackupRequest,
 } from '../src/ops/complete-backup.js';
@@ -23,6 +25,8 @@ import {
   CompleteRestoreFailed,
   RESTORE_JOURNAL_NAME,
   RESTORE_JOURNAL_VERSION,
+  operationSuffix,
+  safetySetPublishedName,
   abandonRestore,
   canonicalOperation,
   classifyTarget,
@@ -46,6 +50,7 @@ import {
   RESTORE_STEP_IDS,
   STEP_RECOVERY,
   STEP_REWIND_TO,
+  RESTORE_SUFFIX_RE,
   placementsFor,
   requiredPlacementIds,
   stepsFor,
@@ -106,6 +111,8 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 /** Read a repository file with line endings normalised, so a CRLF checkout reads the same as an LF one. */
 const readRepo = (rel: string): string => readFileSync(join(repoRoot, rel), 'utf8').split('\r\n').join('\n');
 const WORK = mkdtempSync(join(tmpdir(), 'ca-restore-'));
+/** The name a safety set is published under for the suite's injected suffix. Derived, never chosen. */
+const PUBLISHED_SAFETY_SET = `pre-restore-set-1.${'a'.repeat(12)}`;
 const SECRET_VALUE = 'a-kek-value-that-must-never-appear-in-any-report';
 const HOST_MARKER = 'ca-restore-host-marker';
 
@@ -501,7 +508,7 @@ test('a restore puts all four components back, in order, and proves the result',
 
   assertEq(report.ok, true, `the restore held: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
   assertEq(report.state, 'RESTORED', 'and reports the state it reached');
-  assertEq(report.safetySet, 'pre-restore-set-1', 'a safety set was taken');
+  assertEq(report.safetySet, PUBLISHED_SAFETY_SET, 'a safety set was taken, under a name only this operation could choose');
   assertEq(report.safetySetVerified, true, 'and it verified');
   assertEq(world.teardowns(), 1, 'the volumes were destroyed exactly once');
 
@@ -928,7 +935,7 @@ test('a run that failed AT the safety set is resumable, because the DECISION is 
   const second = worldFor(setDir);
   const resumed = runCompleteRestore(request(root, 'set-1'), depsFor(second), { kind: 'resume', confirm: plan.digest });
   assertEq(resumed.ok, true, `the resumed run held: ${resumed.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
-  assertEq(resumed.safetySet, 'pre-restore-set-1', 'and it took the safety set the plan called for');
+  assertEq(resumed.safetySet, PUBLISHED_SAFETY_SET, 'and it took the safety set the plan called for');
 });
 
 test('every proof runs, even after one of them fails — they are independent diagnoses', () => {
@@ -980,7 +987,7 @@ test('a failure that leaves the installation stopped carries its report, naming 
   } catch (err) { thrown = err; }
   assert(thrown instanceof CompleteRestoreFailed, 'a stopped installation is a thrown failure');
   const carried = (thrown as CompleteRestoreFailed).report;
-  assertEq(carried.safetySet, 'pre-restore-set-1', 'and the report it carries names the safety set');
+  assertEq(carried.safetySet, PUBLISHED_SAFETY_SET, 'and the report it carries names the safety set');
   assertEq(carried.state, 'INCOMPLETE', 'and the state it reached');
   assert(carried.steps.some((step) => step.id === 'database-up' && step.outcome === 'failed'),
     'and the step that did not hold');
@@ -1916,7 +1923,7 @@ test('CRASH after the safety set is published, before it is recorded: it is reco
   crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
     crashAt: 'complete:safety-set' });
 
-  assert(existsSync(join(root, 'backups', 'pre-restore-set-1')), 'the safety set IS on disk');
+  assert(existsSync(join(root, 'backups', PUBLISHED_SAFETY_SET)), 'the safety set IS on disk');
   assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'safety-set')!.state, 'running',
     'and the journal says the process was inside that step');
 
@@ -1925,7 +1932,7 @@ test('CRASH after the safety set is published, before it is recorded: it is reco
   assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
   assertEq(report.steps.find((step) => step.id === 'safety-set')!.outcome, 'skipped',
     'THE SET WAS RECOGNISED, not taken again into a name that would have refused it');
-  assertEq(report.safetySet, 'pre-restore-set-1', 'and the operation still knows it has one');
+  assertEq(report.safetySet, PUBLISHED_SAFETY_SET, 'and the operation still knows it has one');
   assertEq(report.safetySetVerified, true, 'proved by verifying it, not by finding a directory of that name');
 });
 
@@ -2013,7 +2020,8 @@ test('a half-published safety set is refused rather than trusted or replaced', (
     crashAt: 'complete:safety-set' });
 
   // Something damages the published set before the resume: now it neither verifies nor may be replaced.
-  writeFileSync(join(root, 'backups', 'pre-restore-set-1', COMPONENT_ARTIFACT_NAMES.database), 'tampered\n', 'utf8');
+  writeFileSync(join(root, 'backups', PUBLISHED_SAFETY_SET, COMPONENT_ARTIFACT_NAMES.database),
+    'tampered\n', 'utf8');
   refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
     { kind: 'resume', confirm: plan.digest }),
   'does NOT verify', 'a half-published safety set is refused');
@@ -2753,6 +2761,115 @@ test('every effectful step declares whether a returned failure needs recovery, a
   assertEq([...risky].sort().join(','),
     'place-promotion-records,place-secrets,place-sidecar-keystore,replay-database,safety-set',
     'the steps a returned failure must not simply repeat are the ones declared non-idempotent');
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// Safety-set provenance: an unrelated set is never adopted
+// ---------------------------------------------------------------------------------------------------------
+
+test('an unrelated valid set at the chosen name is NEVER adopted as this operation\'s safety set', () => {
+  // THE DEFECT THIS PINS, AND IT IS THE WORST ONE IN THE COMMAND. Recovery adopted any set at the operator's
+  // chosen safety-set name that VERIFIED. But `ops:complete-backup` REFUSES an existing set name — so "a
+  // valid set already sits there" is precisely the condition under which this run's backup FAILS, and dying
+  // just before that refusal leaves exactly the state the old check read as success. A resume then adopted a
+  // stranger's backup as the only thing standing between this installation and unrecoverable loss, and
+  // reported `safetySetVerified: true` about a set that had nothing to do with it.
+  const root = makeProject('foreign-safety-set');
+  const setDir = takeSet(root, 'set-1');
+  // A perfectly valid, completely unrelated set already occupies the operator's chosen name.
+  const stranger = takeSet(root, 'pre-restore-set-1');
+  assert(verifyBackupSet(stranger).ok, 'the stranger\'s set is valid');
+  const strangerDigest = digestTreeAt(stranger, 'the stranger\'s set').digest;
+
+  const { plan } = planFor(request(root, 'set-1'));
+  // Die inside the safety-set step, exactly as a process would that never reached the refusal.
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'command:compose stop app' });
+  assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'safety-set')!.state, 'running',
+    'the journal says the process was inside the safety-set step');
+
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+
+  // IT TOOK ITS OWN, AND LEFT THE STRANGER'S ALONE.
+  assertEq(report.safetySet, PUBLISHED_SAFETY_SET, 'the safety set it holds is the one IT published');
+  assert(report.safetySet !== 'pre-restore-set-1', 'and NOT the set that was already sitting at the base name');
+  assert(existsSync(join(root, 'backups', PUBLISHED_SAFETY_SET)), 'its own set is on disk');
+  assertEq(digestTreeAt(stranger, 'the stranger\'s set').digest, strangerDigest,
+    'AND THE STRANGER\'S SET WAS NOT TOUCHED, adopted, replaced or removed');
+});
+
+test('a set this operation published is recognised on resume, and not taken twice', () => {
+  const root = makeProject('own-safety-set');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'complete:safety-set' });
+  assert(existsSync(join(root, 'backups', PUBLISHED_SAFETY_SET)), 'the set this operation publishes is on disk');
+  const published = digestTreeAt(join(root, 'backups', PUBLISHED_SAFETY_SET), 'the published set').digest;
+
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.steps.find((step) => step.id === 'safety-set')!.outcome, 'skipped',
+    'it was recognised rather than retaken');
+  assertEq(report.safetySetVerified, true, 'by VERIFYING it, not by finding a directory of that name');
+  assertEq(digestTreeAt(join(root, 'backups', PUBLISHED_SAFETY_SET), 'the published set').digest, published,
+    'and the set is byte-for-byte the one the first process published');
+});
+
+test('a claimed safety set whose final set is absent is simply taken again', () => {
+  const root = makeProject('absent-safety-set');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'command:compose stop app' });
+  assertEq(existsSync(join(root, 'backups', PUBLISHED_SAFETY_SET)), false, 'nothing was published');
+
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.steps.find((step) => step.id === 'safety-set')!.outcome, 'held', 'the safety set was taken');
+  assertEq(report.safetySet, PUBLISHED_SAFETY_SET, 'under this operation\'s own name');
+  assert(report.notes.some((note) => note.includes('is not here, so it was taken again')),
+    'and the report says why');
+});
+
+test('a partial or invalid set at this operation\'s own name is refused, not trusted and not replaced', () => {
+  const root = makeProject('invalid-own-set');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'complete:safety-set' });
+  // Something damages it before the resume looks.
+  writeFileSync(join(root, 'backups', PUBLISHED_SAFETY_SET, COMPONENT_ARTIFACT_NAMES.database),
+    'tampered\n', 'utf8');
+
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest }),
+  'does NOT verify', 'a set that does not verify is refused');
+  assert(existsSync(join(root, 'backups', PUBLISHED_SAFETY_SET)), 'and it was NOT replaced or removed');
+  assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'safety-set')!.state, 'running',
+    'and the journal is untouched by the refusal');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('the published safety-set name carries the operation, and the plan says so', () => {
+  const root = makeProject('safety-name');
+  takeSet(root, 'set-1');
+  const { resolved, plan } = planFor(request(root, 'set-1'));
+  assertEq(safetySetPublishedName('base', operationSuffix(plan.digest)),
+    `base.${plan.digest.slice(0, 12)}`, 'the name is derived from the plan digest');
+  assertEq(operationSuffix(plan.digest).length, 12, 'twelve hex characters');
+  assert(RESTORE_SUFFIX_RE.test(operationSuffix(plan.digest)), 'of the shape every other name here uses');
+  // TWO DIFFERENT OPERATIONS CANNOT COLLIDE, because the digest binds the whole operation.
+  const other = planFor(request(root, 'set-1', { secrets: 'secrets' }), false).plan;
+  assert(operationSuffix(other.digest) !== operationSuffix(plan.digest),
+    'a different operation derives a different name');
+  const rendered = renderRestorePlan(resolved, plan);
+  assert(rendered.includes(`pre-restore-set-1.${operationSuffix(plan.digest)}`),
+    'and the plan shows the name it will actually publish under');
+  assert(rendered.includes('only this operation can produce'), 'and says why it is that name');
 });
 
 // ---------------------------------------------------------------------------------------------------------

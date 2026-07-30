@@ -109,7 +109,7 @@ export const COMPLETE_RESTORE_VERSION = 2;
 
 /** The journal a run in progress leaves in the project root. Private, and refused by a second run. */
 export const RESTORE_JOURNAL_NAME = '.catalog-restore.journal.json';
-export const RESTORE_JOURNAL_VERSION = 3;
+export const RESTORE_JOURNAL_VERSION = 4;
 /** A journal is small by construction. A file at that name larger than this is not one of ours. */
 export const MAX_JOURNAL_BYTES = 64 * 1024;
 
@@ -122,6 +122,26 @@ export const STACK_WAIT_SECONDS = 120;
 
 /** What a rendered command shows where the project root is. No absolute host path reaches an output. */
 export const PROJECT_TOKEN = '<project>';
+
+/**
+ * The suffix every name this operation creates is built from.
+ *
+ * IT IS DERIVED FROM THE OPERATION, NOT DRAWN AT RANDOM, and the reason is the safety set. Publication of a
+ * backup set is a RENAME, so the only thing that can be atomic with it is the NAME — and a name carrying
+ * this operation's own identity is a name no other operation can produce. That is what lets a recovery ask
+ * "is this the set THIS operation published" instead of the far weaker "is there a set here that verifies".
+ *
+ * Twelve hex characters of the plan digest, which already binds the project, the destination, the set and
+ * its verified bytes, every target path, the custody mode, the safety-set name and the occupancy.
+ */
+export function operationSuffix(planDigest: string): string {
+  return planDigest.slice(0, 12);
+}
+
+/** Where this operation's safety set is published. Derived, so nothing else can occupy it by accident. */
+export function safetySetPublishedName(baseName: string, suffix: string): string {
+  return `${baseName}.${suffix}`;
+}
 
 // -----------------------------------------------------------------------------------------------------------
 // The request, and what resolving it proves
@@ -707,6 +727,21 @@ export interface RestoreJournal {
   readonly targetState: TargetState;
   readonly safetySetName: string;
   readonly suffix: string;
+  /**
+   * The name this operation's safety set is published under — derived from the operation, not chosen.
+   *
+   * THE DEFECT THIS CLOSES. Recovery treated ANY verifying set at the operator's chosen safety-set name as
+   * belonging to this interrupted restore. It need not: `ops:complete-backup` REFUSES an existing set name,
+   * so the very state that makes recovery necessary — a process that died inside the safety-set step — is
+   * also the state a set that ALREADY EXISTED under that name produces, by making this run's backup fail. A
+   * resume then adopted a stranger's backup as the only thing standing between this installation and
+   * unrecoverable loss, and reported it as verified.
+   *
+   * The published name carries twelve hex characters of this operation's plan digest, so recovery asks
+   * about THAT name and no other. A set at the base name is somebody else's: not adopted, not replaced, not
+   * touched.
+   */
+  readonly safetySetPublishedName: string;
   readonly safetySetPlanned: boolean;
   readonly safetySetTaken: boolean;
   /**
@@ -1201,7 +1236,9 @@ export function runCompleteRestore(
   }
   if (existing !== null) assertJournalAgreesWithPlan(existing, plan);
 
-  const suffix = existing?.suffix ?? (deps.suffix ?? stagingSuffix)();
+  const suffix = existing?.suffix ?? (deps.suffix ?? (() => operationSuffix(plan.digest)))();
+  const publishedSetName = existing?.safetySetPublishedName
+    ?? safetySetPublishedName(resolved.safetySetName, suffix);
   if (!RESTORE_SUFFIX_RE.test(suffix)) {
     throw new MaintenanceRefused('this run produced a staging suffix that is not the shape this command creates');
   }
@@ -1303,6 +1340,7 @@ export function runCompleteRestore(
         targetState: resolved.targetState,
         safetySetName: resolved.safetySetName,
         suffix,
+        safetySetPublishedName: publishedSetName,
         safetySetPlanned: safetySet,
         safetySetTaken,
         request: {
@@ -1349,7 +1387,8 @@ export function runCompleteRestore(
     };
     const interrupted = plan.steps.map((step) => state.get(step.id)!).find(needsRecovery);
     if (interrupted !== undefined) {
-      const recovery = recoverInterruptedStep(interrupted.id, resolved, plan, deps, stagingDir, suffix, swaps);
+      const recovery = recoverInterruptedStep(interrupted.id, resolved, plan, deps, stagingDir, suffix, swaps,
+        publishedSetName);
       if (recovery.kind === 'refuse') {
         // The journal keeps saying `running`, so the next attempt sees the same state rather than a state
         // this refusal invented.
@@ -1396,7 +1435,7 @@ export function runCompleteRestore(
           onStopped: () => { stopped = true; },
           onCustodyProven: (proven) => { custodyProven = proven; },
           onNote: (note) => { notes.push(note); },
-        });
+        }, publishedSetName);
       } catch (err) {
         detail = err instanceof MaintenanceRefused
           ? err.message
@@ -1484,7 +1523,7 @@ export function runCompleteRestore(
       custodian: resolved.custodian,
       targetState: resolved.targetState,
       planDigest: plan.digest,
-      safetySet: safetySetTaken ? resolved.safetySetName : null,
+      safetySet: safetySetTaken ? publishedSetName : null,
       safetySetVerified,
       steps: results,
       replaced,
@@ -1560,6 +1599,7 @@ export function recoverInterruptedStep(
   stagingDir: string,
   suffix: string,
   swaps: readonly JournalSwap[],
+  publishedSetName: string,
 ): StepRecovery {
   const policy = STEP_RECOVERY[id];
   switch (policy) {
@@ -1574,13 +1614,17 @@ export function recoverInterruptedStep(
     case 'confirm-or-retry': {
       // THE SAFETY SET: LOOK BEFORE REPEATING. A set of that name that is there and VERIFIES is the one the
       // interrupted run took — the whole cycle succeeded and only the record of it was lost.
-      const setDir = join(resolved.projectRoot, resolved.destination, resolved.safetySetName);
+      // THE QUESTION IS NOT "DOES A SET VERIFY". IT IS "IS THIS THE SET THIS OPERATION PUBLISHED". A set at
+      // the operator's chosen base name is somebody else's — and a valid one sitting there is exactly what
+      // would have made this run's own backup fail, which is why the old check mistook it for success.
+      const setDir = join(resolved.projectRoot, resolved.destination, publishedSetName);
       if (!existsSync(setDir)) {
         return {
           kind: 'retry',
           reset: [id],
-          note: 'A previous run stopped while taking the safety set, and no set of that name is here, so it '
-            + 'was taken again.',
+          note: 'A previous run stopped while taking the safety set, and the set THIS operation would have '
+            + 'published is not here, so it was taken again. Any other set in that folder belongs to '
+            + 'something else and was not touched.',
         };
       }
       const verification = verifyBackupSet(setDir);
@@ -1588,8 +1632,8 @@ export function recoverInterruptedStep(
         return {
           kind: 'complete',
           reset: [],
-          note: 'A previous run stopped after publishing the safety set but before recording it. The set is '
-            + 'here and it VERIFIES, so it is the safety set of this operation and was not taken twice.',
+          note: 'A previous run stopped after publishing the safety set but before recording it. The set THIS '
+            + 'operation publishes is here and it VERIFIES, so it belongs to this run and was not taken twice.',
         };
       }
       // A HALF-PUBLISHED SET UNDER A NAME NOBODY MAY REPLACE. This is the one case where a human has to
@@ -1597,8 +1641,8 @@ export function recoverInterruptedStep(
       return {
         kind: 'refuse',
         reset: [],
-        detail: 'a previous run stopped while taking the safety set, and a set of that name is here that does '
-          + 'NOT verify. This command will not replace a backup set and will not trust one that does not '
+        detail: 'a previous run stopped while taking the safety set, and the set this operation publishes is '
+          + 'here and does NOT verify. This command will not replace a backup set and will not trust one that does not '
           + 'verify. Move it aside deliberately, then resume. Nothing was changed.',
         note: 'The safety set from the interrupted run is present and does not verify.',
       };
@@ -1843,6 +1887,7 @@ function performStep(
   stagingDir: string,
   suffix: string,
   hooks: StepHooks,
+  publishedSetName: string,
 ): string | null {
   const step = plan.steps.find((candidate) => candidate.id === id)!;
   // `<staged>` IS SUBSTITUTED HERE AND NOWHERE ELSE, so the plan an operator confirmed and the command that
@@ -1863,7 +1908,8 @@ function performStep(
         outcome = runVerifiedCompleteBackup({
           projectRoot: resolved.projectRoot,
           destination: resolved.destination,
-          setName: resolved.safetySetName,
+          // THE DERIVED NAME, so a set found here later can be PROVED to be this operation's.
+          setName: publishedSetName,
           custodian: resolved.custodian,
           secrets: resolved.secrets.relative,
           ...(resolved.sidecarState === null ? {} : { sidecarState: resolved.sidecarState.relative }),
@@ -2698,7 +2744,10 @@ export function renderRestorePlan(resolved: ResolvedRestore, plan: RestorePlan):
   }
   lines.push(`  custody is ${plan.custodian}, which the set's own manifest agrees with`);
   lines.push(plan.safetySet
-    ? `  a verified safety set would be taken first, named "${resolved.safetySetName}"`
+    ? '  a verified safety set would be taken first, published as '
+      + `"${safetySetPublishedName(resolved.safetySetName, operationSuffix(plan.digest))}" — that name carries `
+      + 'an identity only this operation can produce, so nothing else can occupy that name and a resume can '
+      + 'prove the set it finds is the one this operation published'
     : '  NO SAFETY SET WOULD BE TAKEN, and destroying this installation\'s volumes was acknowledged');
   lines.push('');
   for (const step of plan.steps) {
