@@ -361,13 +361,39 @@ export function resolveCompleteRestoreRequest(
  * containment test then compares whole SEGMENTS, because `a/bc` is not inside `a/b` however the strings
  * begin. Both paths have already been resolved, so no `..` survives to be reasoned about here.
  */
-export function pathsOverlap(a: string, b: string): boolean {
-  const norm = (value: string): string => value.replace(/\\/g, '/').replace(/\/+$/, '');
+export function pathsOverlap(a: string, b: string, caseInsensitive = HOST_PATHS_ARE_CASE_INSENSITIVE): boolean {
+  // -----------------------------------------------------------------------------------------------------
+  // THE COMPARISON MUST MATCH THE FILESYSTEM, NOT THE STRING.
+  // -----------------------------------------------------------------------------------------------------
+  //
+  // THE DEFECT THIS CLOSES. The comparison was case-SENSITIVE, and this product ships on Windows, where
+  // `SECRETS` and `secrets` are one directory. `--secrets secrets --promotion-records SECRETS` therefore
+  // passed the overlap guard while naming ONE directory twice: the second placement renames the first
+  // component's freshly restored directory aside and records it as "the previous contents". `--secrets
+  // BACKUPS` renames the backup destination aside — with the set being restored inside it — while the guard
+  // that exists to prevent exactly that compares two strings that differ.
+  //
+  // Containment is still whole-SEGMENT: `a/bc` is not inside `a/b` however the strings begin, and folding
+  // case does not change that.
+  const norm = (value: string): string => {
+    const slashed = value.replace(/\\/g, '/').replace(/\/+$/, '');
+    return caseInsensitive ? slashed.toLowerCase() : slashed;
+  };
   const left = norm(a);
   const right = norm(b);
   if (left === right) return true;
   return left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
 }
+
+/**
+ * Whether this host's filesystem identifies paths without regard to case.
+ *
+ * Windows and macOS default to case-insensitive; Linux does not. A constant rather than a probe, because
+ * probing means creating a file to find out — and the question this product needs answered is "could two
+ * spellings name one directory here", for which the platform default is the safe reading. On a
+ * case-sensitive volume mounted under Windows the only cost is refusing two targets that could have coexisted.
+ */
+export const HOST_PATHS_ARE_CASE_INSENSITIVE = process.platform === 'win32' || process.platform === 'darwin';
 
 /**
  * Leaf names this command creates beside a target for its own bookkeeping.
