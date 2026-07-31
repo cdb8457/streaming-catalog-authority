@@ -381,8 +381,13 @@ in the `offline` group rather than claiming a `docker` capability they do not us
 * **The lock stops this product's own runs.** It does not stop a person running `docker compose` in another
   terminal, and it does not detect a stale lock automatically, because detecting one means guessing whether
   another process is alive.
-* **Retention removes nothing, ever.** There is deliberately no flag that does. Removing a set is a decision
-  with a name attached, taken by a person who has just read what they are removing.
+* **Retention removed nothing, at the time these phases shipped, ever** — there was deliberately no flag that
+  did, and the instruction was to read the plan and remove one directory by hand. **Phases 305-312 closed
+  that**, without changing the principle it rested on: `ops:backup-retention` verifies every set in a
+  destination, protects the newest restorable set and the newest pre-upgrade rollback point unconditionally,
+  and removes a set only against a digest over the whole list an operator has just read. It is still never
+  scheduled, and `deploy/unraid-catalog-maintenance.sh` still only ever prints a plan. See
+  `docs/PHASES_305_312_BACKUP_RETENTION.md`.
 * **The rehearsal proves the product against a disposable copy of your data.** It cannot prove anything about
   hardware, about a different host, or about a migration whose failure depends on data your backup does not
   contain.

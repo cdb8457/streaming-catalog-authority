@@ -95,38 +95,32 @@ case "${MODE}" in
     ;;
 
   # -------------------------------------------------------------------------------------------------------
-  # RETENTION IS A PLAN, AND THAT IS THE WHOLE DESIGN.
+  # RETENTION IS A PLAN HERE, AND THAT IS THE WHOLE DESIGN.
   #
-  # This prints the sets it can see, oldest first, and says which ones a policy WOULD remove. It removes
-  # nothing, and there is deliberately no flag here that would. To actually remove a set you read this list,
-  # decide, and remove that one directory yourself — a decision with a name attached, taken by a person who
-  # has just read what they are removing.
+  # PHASES 305-312 CHANGED WHAT THIS MODE RUNS, AND DELIBERATELY DID NOT CHANGE WHAT IT DOES. It used to be a
+  # shell loop over `ls`, sorting names LEXICALLY, hashing that listing, and telling an operator to go and
+  # `rm -rf` a directory by hand. That instruction could not tell a set that verifies from one truncated last
+  # Tuesday, could not tell the ONLY restorable set from one of ten, could not tell the pre-upgrade rollback
+  # point from a routine nightly, took no lock, and — being a recursive delete — left half a set under a name
+  # an operator trusts if it was interrupted.
   #
-  # The digest below is over the ENUMERATED SET LIST. It exists so that a future destructive step, if one is
-  # ever added, can require the exact list the operator was shown: a cleanup authorised against a list that
-  # has since changed is a cleanup of something nobody looked at.
+  # It now runs the shipped `ops:backup-retention --plan`, which VERIFIES every set, orders by the manifests'
+  # own dates rather than by name, protects the newest restorable set and the newest rollback point
+  # unconditionally, and prints a digest over the WHOLE list — every set, its date, its verification and its
+  # decision.
+  #
+  # IT STILL REMOVES NOTHING, AND THERE IS STILL NO FLAG HERE THAT WOULD. Removing a set takes that digest
+  # back through `--confirm`, typed by a person who has just read what they are removing. Backups deleted on
+  # a timer are how the copy you needed goes away on the night the thing you needed it for happened.
   # -------------------------------------------------------------------------------------------------------
   retention-plan)
-    BACKUP_DIR="${PROJECT_DIR}/backups"
-    [ -d "${BACKUP_DIR}" ] || { echo "no backups directory yet; nothing to plan"; exit 0; }
     KEEP="${CATALOG_RETENTION_KEEP:-7}"
-    echo "backup sets, oldest first (keeping the newest ${KEEP}):"
-    SETS="$(ls -1 "${BACKUP_DIR}" 2>/dev/null | grep -v '^\.' | sort || true)"
-    [ -n "${SETS}" ] || { echo "  (none)"; exit 0; }
-    TOTAL="$(printf '%s\n' "${SETS}" | wc -l | tr -d ' ')"
-    INDEX=0
-    printf '%s\n' "${SETS}" | while IFS= read -r NAME; do
-      INDEX=$((INDEX + 1))
-      if [ "$((TOTAL - INDEX))" -ge "${KEEP}" ]; then
-        echo "  WOULD REMOVE  ${NAME}"
-      else
-        echo "  keep          ${NAME}"
-      fi
-    done
+    MIN_AGE="${CATALOG_RETENTION_MIN_AGE_DAYS:-7}"
+    run_in_project npm run --silent ops:backup-retention -- \
+      --project "${PROJECT_DIR}" --keep-last "${KEEP}" --min-age-days "${MIN_AGE}" --plan
     echo ""
-    echo "set-list digest: $(printf '%s\n' "${SETS}" | sha256sum | cut -d' ' -f1)"
-    echo "Nothing was removed. This command has no flag that removes anything: read the list, then remove the"
-    echo "one directory you decided on. Verify what you are keeping with ops:backup-inspect first."
+    echo "Nothing was removed, and this script has no mode that removes anything. To act on the plan above,"
+    echo "run ops:backup-retention yourself with the digest it printed. Read the list first."
     ;;
 
   *)

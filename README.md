@@ -297,6 +297,33 @@ operation.
 classification and every refusal.
 
 ```bash
+# Remove old backup sets. Read the plan first; it verifies every set in the folder and changes nothing.
+npm run ops:backup-retention -- --project /path/to/project --keep-last 7 --min-age-days 7 --plan
+npm run ops:backup-retention -- --project /path/to/project --keep-last 7 --min-age-days 7 --confirm <digest>
+```
+
+Backups accumulate — nightly, plus one safety set every time you restore — and until now the instruction for
+removing one was `rm -rf`. `rm -rf` cannot tell a set that verifies from one truncated last Tuesday, cannot
+tell the **only** set this build could restore from one of ten, cannot tell your pre-upgrade rollback point
+from a routine nightly, takes no lock, and leaves **half a set under a name you trust** if it is interrupted.
+
+`--plan` lists every directory in the destination, **verifies each one**, and prints a decision and a closed
+reason for each, then a digest over that whole list — so a backup taken while you were reading refuses the
+run. **Two sets are protected by rules no flag reaches past**: the newest set this build could restore, and
+the newest set from *before* this build's schema, which is the only thing that can roll this installation
+back and which "keep the newest one that works" would have deleted first. A destination holding no restorable
+set at all **refuses the whole run**. Directories with no manifest of ours — including backups you took by
+hand — are reported and never touched.
+
+**Nothing is deleted in place.** Each set is renamed into a private quarantine directory and only then
+removed, so a set name in that folder always holds a whole set or nothing. An interrupted prune leaves a
+journal, refuses a fresh one, and is finished with `--resume` or put back with `--abandon`, which **names
+what it cannot bring back**. It issues no command of any kind and contacts nothing. A project part way
+through a restore refuses it outright.
+[docs/PHASES_305_312_BACKUP_RETENTION.md](docs/PHASES_305_312_BACKUP_RETENTION.md) has the classes, the
+protections and the non-goals — including why it is never run on a timer.
+
+```bash
 # On a schedule: runs the shipped read-only doctor and records one redacted state file.
 npm run ops:doctor-monitor -- --project /path/to/project --state monitor
 ```
@@ -304,7 +331,9 @@ npm run ops:doctor-monitor -- --project /path/to/project --state monitor
 It **sends no alert** — it exits `0` healthy, `3` WARN, `1` FAIL, `4` the doctor could not be read, and your
 scheduler alerts from that. It never softens the doctor: a WARN is a WARN on the fiftieth consecutive run.
 `deploy/unraid-catalog-maintenance.sh` is a worked User Scripts/cron example with overlap locking, a bounded
-timeout, and retention that only ever prints a **plan**.
+timeout, and a retention mode that runs the shipped `ops:backup-retention --plan` and still removes nothing.
+Backups deleted on a timer are how the copy you needed goes away on the night the thing you needed it for
+happened, so the confirmation is always a person at a keyboard.
 
 ```bash
 # Rehearse an upgrade, and the rollback that makes it reversible, in a throwaway project:
