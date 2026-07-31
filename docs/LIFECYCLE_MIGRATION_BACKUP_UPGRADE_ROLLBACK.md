@@ -144,6 +144,36 @@ rather than inspecting somewhere nobody asked about. From a bundle, with no tool
 restore** panel carries the `docker compose run` form. See `PHASE_257_BACKUP_INSPECT.md`. A backup nobody has
 ever looked at is a hope, not a rollback plan.
 
+### Removing old ones
+
+Sets accumulate: one a night if you scheduled `deploy/unraid-catalog-maintenance.sh backup`, plus one **safety
+set** every time you run `ops:complete-restore`. Removing one used to mean `rm -rf`, and that is the most
+dangerous instruction in this document, so it is now a command:
+
+```
+npm run ops:backup-retention -- --project /path/to/project --keep-last 7 --min-age-days 7 --plan
+npm run ops:backup-retention -- --project /path/to/project --keep-last 7 --min-age-days 7 --confirm <digest>
+```
+
+`--plan` **verifies every set in the folder** and prints one decision and one closed reason per set, then a
+digest over that whole list — every name, date, verification and decision — which `--confirm` requires back
+and which is recomputed under the maintenance lock before anything moves. A set taken while you were reading
+the plan refuses the confirmation.
+
+**Two sets no policy can remove.** The newest set this build could restore, and the newest set from *before*
+this build's schema. That second one is the whole reason this section is careful: it is the only thing that
+can roll this installation back, it is not restorable under the build you are running, and every naive "keep
+the newest working backup" rule deletes it first. A destination holding no restorable set at all refuses the
+run outright — a retention decision is one you make while holding a good backup.
+
+Directories with no manifest of ours are never touched, so a backup you took by hand following the commands
+above is safe. Nothing is deleted in place: each set is renamed into a private quarantine directory and only
+then removed, so a set name in that folder always holds a whole set or nothing, and an interrupted prune is
+put back with `--abandon` — which names every set it could **not** bring back. A project part way through a
+restore refuses retention entirely. See `PHASES_305_312_BACKUP_RETENTION.md`.
+
+It is deliberately not scheduled and there is no `--yes`: the cron example prints the plan and stops.
+
 ---
 
 ## Upgrade

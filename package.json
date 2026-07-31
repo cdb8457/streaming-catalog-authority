@@ -608,7 +608,10 @@
     "test:complete-restore": "tsx test/complete-restore.ts",
     "test:phase297-local": "npm run test:complete-restore",
     "ops:custody-proof": "tsx src/ops/custody-proof-cli.ts",
-    "test:custody-proof": "tsx test/custody-proof.ts 5467"
+    "test:custody-proof": "tsx test/custody-proof.ts 5467",
+    "ops:backup-retention": "tsx src/ops/backup-retention-cli.ts",
+    "test:backup-retention": "tsx test/backup-retention.ts",
+    "test:phase305-local": "npm run test:backup-retention"
   },
   "dependencies": {
     "pg": "^8.13.1",

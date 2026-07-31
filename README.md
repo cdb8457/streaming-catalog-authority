@@ -297,6 +297,33 @@ operation.
 classification and every refusal.
 
 ```bash
+# Remove old backup sets. Read the plan first; it verifies every set in the folder and changes nothing.
+npm run ops:backup-retention -- --project /path/to/project --keep-last 7 --min-age-days 7 --plan
+npm run ops:backup-retention -- --project /path/to/project --keep-last 7 --min-age-days 7 --confirm <digest>
+```
+
+Backups accumulate — nightly, plus one safety set every time you restore — and until now the instruction for
+removing one was `rm -rf`. `rm -rf` cannot tell a set that verifies from one truncated last Tuesday, cannot
+tell the **only** set this build could restore from one of ten, cannot tell your pre-upgrade rollback point
+from a routine nightly, takes no lock, and leaves **half a set under a name you trust** if it is interrupted.
+
+`--plan` lists every directory in the destination, **verifies each one**, and prints a decision and a closed
+reason for each, then a digest over that whole list — so a backup taken while you were reading refuses the
+run. **Two sets are protected by rules no flag reaches past**: the newest set this build could restore, and
+the newest set from *before* this build's schema, which is the only thing that can roll this installation
+back and which "keep the newest one that works" would have deleted first. A destination holding no restorable
+set at all **refuses the whole run**. Directories with no manifest of ours — including backups you took by
+hand — are reported and never touched.
+
+**Nothing is deleted in place.** Each set is renamed into a private quarantine directory and only then
+removed, so a set name in that folder always holds a whole set or nothing. An interrupted prune leaves a
+journal, refuses a fresh one, and is finished with `--resume` or put back with `--abandon`, which **names
+what it cannot bring back**. It issues no command of any kind and contacts nothing. A project part way
+through a restore refuses it outright.
+[docs/PHASES_305_312_BACKUP_RETENTION.md](docs/PHASES_305_312_BACKUP_RETENTION.md) has the classes, the
+protections and the non-goals — including why it is never run on a timer.
+
+```bash
 # On a schedule: runs the shipped read-only doctor and records one redacted state file.
 npm run ops:doctor-monitor -- --project /path/to/project --state monitor
 ```
@@ -304,7 +331,9 @@ npm run ops:doctor-monitor -- --project /path/to/project --state monitor
 It **sends no alert** — it exits `0` healthy, `3` WARN, `1` FAIL, `4` the doctor could not be read, and your
 scheduler alerts from that. It never softens the doctor: a WARN is a WARN on the fiftieth consecutive run.
 `deploy/unraid-catalog-maintenance.sh` is a worked User Scripts/cron example with overlap locking, a bounded
-timeout, and retention that only ever prints a **plan**.
+timeout, and a retention mode that runs the shipped `ops:backup-retention --plan` and still removes nothing.
+Backups deleted on a timer are how the copy you needed goes away on the night the thing you needed it for
+happened, so the confirmation is always a person at a keyboard.
 
 ```bash
 # Rehearse an upgrade, and the rollback that makes it reversible, in a throwaway project:
@@ -520,6 +549,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) — **one component of four** |
 | `ops:custody-proof [-- --json] [--sample <n>]` | **read-only** proof that this installation can DECRYPT its own catalog, through the shipped authority and its own custodian. Exits 0 proven, 1 NOT proven, 4 nothing encrypted to prove — which is not a pass |
 | `ops:complete-restore -- --project <dir> --set <name> --custodian inline\|sidecar --plan` | puts a **complete set** back: safety set, teardown, all four components, then proofs including a **decryption**. Runs on the host. `--plan` changes nothing and prints the digest `--confirm` requires |
+| `ops:backup-retention -- --project <dir> [--keep-last <n>] [--min-age-days <n>] --plan` | removes old backup sets. Verifies every set in the destination, prints one decision and reason each, then a digest `--confirm` requires back and re-proves under the lock. The newest restorable set and the newest pre-upgrade rollback point are protected unconditionally; a destination with no restorable set refuses the run. Renames into quarantine before deleting; issues no command of any kind |
 | `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
 | `ops:operator-ui-token -- --show-path/status/rotate` | safe operator UI token helper; rotation and status do not print the token, and printing requires `--print --confirm-print` |
 | `ops:operator-ui-live-check -- --json` | redaction-safe live operator UI check: health, auth rejection, authenticated status, and logs without printing the token |

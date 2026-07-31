@@ -345,6 +345,35 @@ export const COMPLETE_RESTORE_COMMANDS: BackupCommands = {
   windows: 'npm run ops:complete-restore -- --project C:\\path\\to\\project --set set-name --custodian inline --plan',
 };
 
+/**
+ * Phases 305-312 — removing one.
+ *
+ * WHY THIS BELONGS BESIDE THE OTHER TWO. This product takes a set on a schedule and takes another one every
+ * time somebody restores, and until now it removed none of them: the operator instruction was to read a shell
+ * listing and `rm -rf` a directory by hand. That instruction cannot tell a set that verifies from one that was
+ * truncated, cannot tell the only restorable set from one of ten, cannot tell the pre-upgrade rollback point
+ * from a routine nightly, takes no lock, and leaves half a set under a trusted name if it is interrupted.
+ *
+ * IT IS RENDERED FROM THIS MODEL for the same anti-drift reason the other two are: the panel, the lifecycle
+ * document and the command cannot disagree about what retention is if there is one place that says it.
+ */
+export const BACKUP_RETENTION_NOTE =
+  'Remove old backup sets. Start with --plan: it lists every directory in the destination, VERIFIES each one, '
+  + 'and prints a decision and a reason for each — then a digest. Running requires that digest back, and it is '
+  + 'recomputed under the maintenance lock over a fresh inventory, so a backup taken since you read the list '
+  + 'refuses the run. Two sets are protected by rules no flag reaches past: the newest set this build could '
+  + 'restore, and the newest set from BEFORE this build\'s schema, which is the only thing that can roll this '
+  + 'installation back. A destination holding no restorable set at all refuses the whole run. Nothing is '
+  + 'deleted in place: each set is renamed into a private quarantine directory and only then removed, so a set '
+  + 'name here always holds a whole set or nothing, and an interrupted prune can be put back with --abandon. '
+  + 'It issues no command of any kind, contacts nothing, and never removes a directory that is not a set this '
+  + 'product took.';
+
+export const BACKUP_RETENTION_COMMANDS: BackupCommands = {
+  posix: 'npm run ops:backup-retention -- --project /path/to/project --keep-last 7 --plan',
+  windows: 'npm run ops:backup-retention -- --project C:\\path\\to\\project --keep-last 7 --plan',
+};
+
 // -----------------------------------------------------------------------------------------------------------
 // Coverage against the shipped stacks
 // -----------------------------------------------------------------------------------------------------------

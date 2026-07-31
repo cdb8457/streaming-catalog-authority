@@ -64,6 +64,8 @@ import {
 import {
   BACKUP_INSPECT_COMMANDS,
   BACKUP_INSPECT_NOTE,
+  BACKUP_RETENTION_COMMANDS,
+  BACKUP_RETENTION_NOTE,
   BACKUP_SUMMARY,
   COMPLETE_RESTORE_COMMANDS,
   COMPLETE_RESTORE_NOTE,
@@ -1705,6 +1707,9 @@ ${renderCommands({ posix: BACKUP_INSPECT_COMMANDS.posix, windows: BACKUP_INSPECT
 <h3>Put one back</h3>
 <p class="muted">${escapeHtml(COMPLETE_RESTORE_NOTE)}</p>
 ${renderCommands({ posix: COMPLETE_RESTORE_COMMANDS.posix, windows: COMPLETE_RESTORE_COMMANDS.windows })}
+<h3>Remove old ones</h3>
+<p class="muted">${escapeHtml(BACKUP_RETENTION_NOTE)}</p>
+${renderCommands({ posix: BACKUP_RETENTION_COMMANDS.posix, windows: BACKUP_RETENTION_COMMANDS.windows })}
 </section>
 <section class="panel wide" id="trouble-panel">
 <h2>Troubleshooting</h2>
