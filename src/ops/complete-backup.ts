@@ -169,6 +169,16 @@ export interface CompleteBackupReport {
 }
 
 export interface CompleteBackupDeps {
+  /**
+   * The destination must ALREADY EXIST, and this command must not create it.
+   *
+   * THE ONE CALLER THAT SETS IT is the restore publishing its safety set into a directory it claimed by
+   * `mkdir` — where creating the directory IS the claim. If that directory has since been removed, then
+   * the claim is void and the recovery has already decided to abandon the nonce; a backup that quietly
+   * recreated the path would take this installation's only safety net into a directory nothing owns, at a
+   * path written down in a file in the project, behind the recovery's back.
+   */
+  readonly requireExistingDestination?: boolean;
   readonly runner: CommandRunner;
   /** The runner that binds a child's stdout to a file. The database dump is the only user of it. */
   readonly fileRunner: FileOutputRunner;
@@ -373,6 +383,12 @@ export function takeCompleteBackupWithoutVerifying(
       + 'name. Replacing a set is how the only copy of something irrecoverable gets overwritten by a failed run.');
   }
   if (!existsSync(resolved.destinationDir)) {
+    if (deps.requireExistingDestination === true) {
+      throw new MaintenanceRefused(
+        'the destination this backup was told to publish into is not there. The caller requires an existing '
+        + 'directory — creating it would produce a directory nothing owns at a path something else has '
+        + 'written down. Nothing was taken.');
+    }
     createPrivateDirectory(resolved.destinationDir, 'backup destination');
   }
 

@@ -169,6 +169,94 @@ export function operationSuffix(planDigest: string): string {
  * claim that was never created, or a directory that turns out to belong to somebody else, sends the run to a
  * fresh nonce rather than to an adoption.
  */
+/** The file inside a claim directory that proves whose the directory is. Never followed as a link. */
+export const SAFETY_CLAIM_MARKER_NAME = 'catalog-restore-claim.json';
+
+/**
+ * The proof that the directory at a recorded claim path is STILL the one this operation created.
+ *
+ * THE DEFECT THIS CLOSES. The journal recorded `{ nonce, created: true }` and recovery read that as "the
+ * claim is still ours" — a sentence about the PAST, applied to the PRESENT without looking. Between the
+ * record and the resume the directory can be deleted (an operator tidying the backups folder, a sync, a
+ * cleanup script) and then RECREATED by anything, at a path that is by then written down in a file in the
+ * project. A recovery that retried into it would publish this installation's only safety net into a
+ * directory somebody else owns; one that adopted from it would report a stranger's backup as this run's.
+ *
+ * So the claim is bound to the LIVE directory by a marker written INSIDE it, before the journal records the
+ * claim at all. `created: true` still means "we made it"; the marker means "and this is still it".
+ */
+export interface SafetyClaimMarker {
+  readonly marker: 'catalog-authority.restore-safety-claim';
+  readonly version: 1;
+  readonly journalVersion: typeof RESTORE_JOURNAL_VERSION;
+  readonly planDigest: string;
+  readonly suffix: string;
+  readonly nonce: string;
+}
+
+/** What a live claim directory turned out to be. Only `owned` may be retried into or adopted from. */
+export type ClaimLiveness =
+  | { readonly kind: 'owned' }
+  /** The recorded directory is not there at all, so nothing of this run was ever published into it. */
+  | { readonly kind: 'vanished' }
+  /** Something is there and it is not provably ours. Preserved, never removed, never used. */
+  | { readonly kind: 'foreign'; readonly why: string };
+
+/**
+ * Prove the directory at a recorded claim path is still exactly the one this operation created.
+ *
+ * Absence is a DISTINCT answer from occupation, because the two have opposite safe responses: a vanished
+ * claim means draw a fresh nonce and adopt nothing, and an occupied-but-unproved one means stop and let a
+ * human look. Answering both with "retry into it" is what made a recorded path reusable by anybody.
+ */
+export function proveClaimOwnership(
+  claimDir: string,
+  planDigest: string,
+  suffix: string,
+  nonce: string,
+): ClaimLiveness {
+  const stats = lstatSync(claimDir, { throwIfNoEntry: false });
+  if (stats === undefined) return { kind: 'vanished' };
+  // A LINK AT THAT NAME IS NOT A DIRECTORY THIS RUN MADE, whatever it points at.
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    return { kind: 'foreign', why: 'what is at the claimed path is not a plain directory' };
+  }
+  const path = join(claimDir, SAFETY_CLAIM_MARKER_NAME);
+  if (lstatSync(path, { throwIfNoEntry: false }) === undefined) {
+    return { kind: 'foreign', why: 'the directory at the claimed path carries no ownership marker' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileNoFollow(path, 'safety set claim marker', 64 * 1024).bytes.toString('utf8'));
+  } catch {
+    return { kind: 'foreign', why: 'the ownership marker at the claimed path cannot be read' };
+  }
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { kind: 'foreign', why: 'the ownership marker at the claimed path is not one this build wrote' };
+  }
+  const doc = parsed as Partial<SafetyClaimMarker>;
+  if (doc.marker !== 'catalog-authority.restore-safety-claim' || doc.version !== 1
+    || doc.journalVersion !== RESTORE_JOURNAL_VERSION) {
+    return { kind: 'foreign', why: 'the ownership marker at the claimed path is not one this build wrote' };
+  }
+  if (doc.planDigest !== planDigest || doc.suffix !== suffix || doc.nonce !== nonce) {
+    return { kind: 'foreign', why: 'the directory at the claimed path belongs to a different operation' };
+  }
+  return { kind: 'owned' };
+}
+
+/** Write the ownership marker into a claim directory this call has just created, and nowhere else. */
+export function writeClaimMarker(claimDir: string, planDigest: string, suffix: string, nonce: string): void {
+  writePrivateFile(join(claimDir, SAFETY_CLAIM_MARKER_NAME), `${JSON.stringify({
+    marker: 'catalog-authority.restore-safety-claim',
+    version: 1,
+    journalVersion: RESTORE_JOURNAL_VERSION,
+    planDigest,
+    suffix,
+    nonce,
+  } satisfies SafetyClaimMarker, null, 2)}\n`, 'safety set claim marker');
+}
+
 export interface SafetySetClaim {
   /** 24 hex characters from the system CSPRNG. Not derived from anything. */
   readonly nonce: string;
@@ -1580,6 +1668,10 @@ export function runCompleteRestore(
         // this refusal invented.
         throw new MaintenanceRefused(recovery.detail);
       }
+      // A CLAIM WHOSE DIRECTORY IS GONE IS FORGOTTEN BEFORE ANYTHING ELSE HAPPENS, and the journal says so
+      // on disk before the retry runs — so a process that dies during the retry does not find the dead
+      // nonce again and walk back into the path it just abandoned.
+      if (recovery.kind === 'retry' && recovery.discardClaim === true) safetySetClaim = null;
       for (const id of recovery.reset) state.set(id, { id, state: 'pending', detail: null });
       if (recovery.kind === 'complete') {
         state.set(interrupted.id, { id: interrupted.id, state: 'complete', detail: null });
@@ -1753,7 +1845,13 @@ export type StepRecovery =
   | { readonly kind: 'complete'; readonly reset: readonly RestoreStepId[]; readonly note: string;
       /** A swap that landed and was never recorded, reconstructed so `--abandon` can still undo it. */
       readonly swap?: JournalSwap }
-  | { readonly kind: 'retry'; readonly reset: readonly RestoreStepId[]; readonly note: string }
+  | { readonly kind: 'retry'; readonly reset: readonly RestoreStepId[]; readonly note: string;
+      /**
+       * Forget the recorded safety-set claim: the directory it names is gone, so the nonce and the path
+       * must never be used again. A vanished claim that stayed in the journal would be a path anything
+       * could recreate and this run would then publish into.
+       */
+      readonly discardClaim?: true }
   | { readonly kind: 'refuse'; readonly reset: readonly RestoreStepId[]; readonly detail: string; readonly note: string };
 
 /**
@@ -1817,15 +1915,50 @@ export function recoverInterruptedStep(
             + 'set taken. Any set already in that folder belongs to something else and was not touched.',
         };
       }
-      const setDir = join(resolved.projectRoot, resolved.destination,
-        safetySetClaimDirName(claim.nonce), resolved.safetySetName);
+      // ---- IS THE CLAIM STILL THERE, AND STILL OURS? -------------------------------------------------
+      //
+      // THE DEFECT THIS CLOSES. This said "the claim is still ours" without looking at it. The journal
+      // records that we CREATED a directory; it cannot record that the directory still exists, and between
+      // the record and the resume an operator tidying the backups folder, a sync or a cleanup script can
+      // remove it — after which anything at all may occupy that now-written-down path. Retrying into it
+      // would publish this installation's only safety net into a stranger's directory; adopting from it
+      // would report a stranger's backup as this run's.
+      const claimDir = join(resolved.projectRoot, resolved.destination, safetySetClaimDirName(claim.nonce));
+      const liveness = proveClaimOwnership(claimDir, plan.digest, suffix, claim.nonce);
+      if (liveness.kind === 'vanished') {
+        // NOT REUSED. The nonce and the path are abandoned, a fresh claim is drawn, and nothing that may
+        // since have appeared at the old path is read, adopted or removed.
+        return {
+          kind: 'retry',
+          reset: [id],
+          discardClaim: true,
+          note: 'A previous run claimed somewhere to publish the safety set and that directory is no longer '
+            + 'there, so nothing of that run was ever published into it. The claim was abandoned rather '
+            + 'than reused: a path this project has written down is a path anything could recreate. A '
+            + 'fresh claim was made and the safety set taken into that.',
+        };
+      }
+      if (liveness.kind === 'foreign') {
+        // NOT ADOPTED, NOT REMOVED, NOT PUBLISHED INTO. Whatever is there was put there by something else.
+        return {
+          kind: 'refuse',
+          reset: [],
+          detail: `a previous run claimed somewhere to publish the safety set, and ${liveness.why}. This `
+            + 'command will not publish into a directory it cannot prove it created and will not remove '
+            + 'one. Look at the backup destination, move what is there aside deliberately, then resume. '
+            + 'Nothing was changed.',
+          note: 'The directory this run claimed for its safety set is occupied by something this run cannot '
+            + 'prove is its own. It was left exactly as it is.',
+        };
+      }
+      const setDir = join(claimDir, resolved.safetySetName);
       if (!existsSync(setDir)) {
         return {
           kind: 'retry',
           reset: [id],
           note: 'A previous run claimed somewhere to publish the safety set and stopped before publishing '
-            + 'one. The claim is still ours and still empty, so the set was taken into it. Any other set in '
-            + 'that folder belongs to something else and was not touched.',
+            + 'one. The claim is PROVED still ours by the marker inside it and is still empty, so the set '
+            + 'was taken into it. Any other set in that folder belongs to something else and was not touched.',
         };
       }
       const verification = verifyBackupSet(setDir);
@@ -2119,14 +2252,36 @@ function performStep(
       // makes "we created it" a fact rather than an inference. A directory that already exists is not ours,
       // whoever put it there — so the run draws another nonce instead of adopting it.
       let held = claim;
+      // ---- A RECORDED CLAIM IS PROVED BEFORE IT IS USED, on every path into this step ---------------
+      //
+      // Recovery is one way here and not the only one: a `run` that reads its own journal, a resume whose
+      // recovery targeted a different step, and a retry that comes back around all arrive with a claim in
+      // hand. Each of them must ask the same question of the live filesystem, because the answer can have
+      // changed since the record was written.
+      if (held !== null && held.created) {
+        const claimDir = join(resolved.projectRoot, resolved.destination, safetySetClaimDirName(held.nonce));
+        const liveness = proveClaimOwnership(claimDir, plan.digest, suffix, held.nonce);
+        // GONE MEANS GONE. The nonce is not reused, and `ops:complete-backup` is never handed a destination
+        // that would RECREATE the abandoned path behind the recovery's back.
+        if (liveness.kind === 'vanished') held = null;
+        if (liveness.kind === 'foreign') {
+          return `the directory this run claimed for its safety set is not one it can prove it created: `
+            + `${liveness.why}. This command will not publish a safety set into it and will not remove it. `
+            + 'Nothing was destroyed.';
+        }
+      }
       if (held === null || !held.created) {
         let made: SafetySetClaim | null = null;
         for (let attempt = 0; attempt < 8 && made === null; attempt += 1) {
           const nonce = randomBytes(12).toString('hex');
           try {
-            createPrivateDirectory(
-              join(resolved.projectRoot, resolved.destination, safetySetClaimDirName(nonce)),
-              'safety set claim directory');
+            const claimDir = join(resolved.projectRoot, resolved.destination, safetySetClaimDirName(nonce));
+            createPrivateDirectory(claimDir, 'safety set claim directory');
+            // THE MARKER GOES IN BEFORE THE JOURNAL RECORDS THE CLAIM. The ordering is what makes the
+            // record meaningful: a journal that names a claim always names one that carried the proof, so
+            // a claim found WITHOUT the proof is not a crash state — it is a different directory. A death
+            // between the two leaves a marked, empty, unreferenced directory that nothing adopts.
+            writeClaimMarker(claimDir, plan.digest, suffix, nonce);
             made = { nonce, created: true };
           } catch {
             // Occupied, or unwritable. Another nonce costs nothing and adopts nothing.
@@ -2160,6 +2315,9 @@ function performStep(
           fileRunner: deps.backupFileRunner,
           ledger: deps.ledger,
           holdingLock: true,
+          // CREATING THE DIRECTORY WAS THE CLAIM. If it is gone, the claim is void — and a backup that
+          // recreated it would publish into a path this project has written down and nothing owns.
+          requireExistingDestination: true,
           ...(deps.now === undefined ? {} : { now: deps.now }),
         });
       } catch (err) {

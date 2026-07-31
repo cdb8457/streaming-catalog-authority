@@ -3894,6 +3894,159 @@ test('a journal whose staged-component commitment disagrees with the set stops t
   rmSync(path);
 });
 
+
+// ---------------------------------------------------------------------------------------------------------
+// A recorded claim is revalidated against the LIVE filesystem, every time
+// ---------------------------------------------------------------------------------------------------------
+//
+// THE DEFECT THESE PIN. The journal records `{ nonce, created: true }` — a fact about the past — and recovery
+// read it as "the claim is still ours", a claim about the present, without looking at the directory. Between
+// the record and the resume that directory can be deleted by an operator tidying the backups folder, by a
+// sync, by a cleanup script; and once it is gone, ANYTHING may occupy a path that is by then written down in
+// a file in the project. Retrying into it publishes this installation's only safety net into a stranger's
+// directory. Adopting from it reports a stranger's backup as this run's.
+
+test('a recorded claim whose directory VANISHED is abandoned, not reused', () => {
+  const root = makeProject('claim-vanished');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  // Die inside the safety-set step, after the claim exists and before anything is published into it.
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'command:compose stop app' });
+  const recorded = claimDir(root);
+  assert(existsSync(join(root, 'backups', recorded)), 'the claim directory is there');
+  assert(existsSync(join(root, 'backups', recorded, 'catalog-restore-claim.json')),
+    'AND IT CARRIES THE OWNERSHIP MARKER, written before the journal recorded the claim at all');
+
+  // AND THEN IT IS GONE. Nothing of this run was ever published into it, so there is nothing to adopt.
+  rmSync(join(root, 'backups', recorded), { recursive: true, force: true });
+
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+
+  // A FRESH CLAIM, AT A FRESH NONCE. The dead path is not recreated and not reused.
+  // Read from the report, because a completed operation clears its journal.
+  const now = report.safetySet!.split('/')[0]!;
+  assert(now !== recorded, 'the operation drew a NEW nonce rather than walking back into the recorded path');
+  assertEq(existsSync(join(root, 'backups', recorded)), false, 'and the vanished path was NOT recreated');
+  assert(report.safetySet !== null && report.safetySet.startsWith(now),
+    'the safety set is inside the new claim');
+  assert(report.notes.some((note) => note.includes('no longer there')), 'and the report says what happened');
+});
+
+test('a recorded claim REPLACED BY A FOREIGN EMPTY DIRECTORY is refused and preserved', () => {
+  const root = makeProject('claim-foreign-empty');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'command:compose stop app' });
+  const recorded = claimDir(root);
+
+  // Somebody else's directory now sits at the recorded path. It is EMPTY of anything of ours — no marker —
+  // which is exactly what a recreated path looks like.
+  rmSync(join(root, 'backups', recorded), { recursive: true, force: true });
+  mkdirSync(join(root, 'backups', recorded), { recursive: true });
+  writeFileSync(join(root, 'backups', recorded, 'not-ours'), 'somebody else put this here\n', 'utf8');
+
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest }),
+  'cannot prove it created', 'the resume refuses rather than publishing into it');
+  assertEq(readFileSync(join(root, 'backups', recorded, 'not-ours'), 'utf8'),
+    'somebody else put this here\n', 'AND THE FOREIGN DIRECTORY IS UNTOUCHED');
+  assertEq(existsSync(join(root, 'backups', recorded, 'pre-restore-set-1')), false,
+    'nothing was published into it');
+  assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'safety-set')!.state, 'running',
+    'and the journal still says what it said');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('a recorded claim REPLACED BY A FOREIGN VALID SET is refused, and never adopted as ours', () => {
+  // THE WORST OF THE THREE. A set that VERIFIES, at the exact path this run recorded, is indistinguishable
+  // from success to anything that does not ask who created the directory holding it — and adopting it would
+  // report a stranger's backup as the safety net standing between this installation and unrecoverable loss.
+  const root = makeProject('claim-foreign-set');
+  const setDir = takeSet(root, 'set-1');
+  const foreign = takeSet(root, 'set-2');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'command:compose stop app' });
+  const recorded = claimDir(root);
+
+  rmSync(join(root, 'backups', recorded), { recursive: true, force: true });
+  mkdirSync(join(root, 'backups', recorded), { recursive: true });
+  // A REAL, VERIFYING SET, at the exact name this operation publishes under.
+  copyDirectory(foreign, join(root, 'backups', recorded, 'pre-restore-set-1'));
+  assertEq(verifyBackupSet(join(root, 'backups', recorded, 'pre-restore-set-1')).ok, true,
+    'the set sitting there really does verify');
+  const untouched = digestTreeAt(join(root, 'backups', recorded, 'pre-restore-set-1'), 'the foreign set').digest;
+
+  refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest }),
+  'cannot prove it created', 'a verifying set at the recorded path is still refused');
+  assertEq(digestTreeAt(join(root, 'backups', recorded, 'pre-restore-set-1'), 'the foreign set').digest,
+    untouched, 'AND THE FOREIGN SET IS BYTE-FOR-BYTE UNTOUCHED: not adopted, not replaced, not removed');
+  const journal = readRestoreJournal(root)!;
+  assertEq(journal.steps.find((step) => step.id === 'safety-set')!.state, 'running', 'the journal is unchanged');
+  assertEq(journal.evidence.safetySetTaken, false, 'and NOTHING recorded a safety set as taken');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+});
+
+test('a claim marker naming a different operation is refused as firmly as a missing one', () => {
+  const root = makeProject('claim-wrong-marker');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+    crashAt: 'command:compose stop app' });
+  const recorded = claimDir(root);
+  const marker = join(root, 'backups', recorded, 'catalog-restore-claim.json');
+  const good = JSON.parse(readFileSync(marker, 'utf8')) as Record<string, unknown>;
+
+  for (const [patch, why] of [
+    [{ marker: 'something.else' }, 'a marker this build did not write'],
+    [{ version: 99 }, 'a version this build does not have'],
+    [{ planDigest: 'f'.repeat(64) }, 'another operation\'s plan'],
+    [{ suffix: 'ffffffffffff' }, 'another run\'s suffix'],
+    [{ nonce: 'f'.repeat(24) }, 'a nonce that is not the recorded one'],
+  ] as Array<[Record<string, unknown>, string]>) {
+    writeFileSync(marker, `${JSON.stringify({ ...good, ...patch })}\n`, 'utf8');
+    refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+      { kind: 'resume', confirm: plan.digest }), 'cannot prove it created', `refused: ${why}`);
+    assert(existsSync(marker), `and the directory survives: ${why}`);
+  }
+  // AND THE HONEST MARKER STILL WORKS, so the check is exactness rather than suspicion.
+  writeFileSync(marker, `${JSON.stringify(good)}\n`, 'utf8');
+  const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+    { kind: 'resume', confirm: plan.digest });
+  assertEq(report.ok, true, `the resume completed once the marker was itself again: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  assert(report.safetySet !== null && report.safetySet.startsWith(recorded),
+    'and it published into the claim it had proved, rather than drawing a new one');
+});
+
+test('ops:complete-backup will not RECREATE a claimed destination that has gone', () => {
+  // The claim IS the `mkdir`. A backup that quietly recreated a missing destination would take this
+  // installation's safety set into a directory nothing owns, at a path written down in the project — behind
+  // the back of the recovery that had already decided to abandon it.
+  const root = makeProject('claim-no-recreate');
+  const setDir = takeSet(root, 'set-1');
+  const world = worldFor(setDir);
+  const destination = `backups/${safetySetClaimDirName('a'.repeat(24))}`;
+  refuses(() => runVerifiedCompleteBackup({
+    projectRoot: root,
+    destination,
+    setName: 'pre-restore-set-1',
+    custodian: 'inline',
+    secrets: 'secrets',
+  }, {
+    runner: world.runner,
+    fileRunner: world.outputRunner,
+    ledger: world.ledger,
+    requireExistingDestination: true,
+  }), 'is not there', 'the backup refuses a destination it would have to create');
+  assertEq(existsSync(join(root, 'backups', safetySetClaimDirName('a'.repeat(24)))), false,
+    'AND IT DID NOT CREATE IT');
+});
+
 // ---------------------------------------------------------------------------------------------------------
 
 function copyDirectory(source: string, destination: string): void {
