@@ -101,9 +101,73 @@ case "${ACTION}" in
     # `mktemp` creates the file itself, with O_CREAT|O_EXCL and an unpredictable name, so it cannot be
     # pre-planted and cannot be followed. `umask 077` makes it private from the instant it exists rather than
     # a moment afterwards, and the trap removes it on any exit path — including the one where `mv` fails.
+    #
+    # PHASE 329. AND THE TRAP MUST NOT DECIDE THE EXIT STATUS. `cleanup() { [ -n "${TEMP}" ] && rm -f
+    # "${TEMP}"; }` ends in a TEST, and after a successful `mv` clears `TEMP` that test is FALSE — so the
+    # function returned 1, and because it is the last thing an EXIT trap runs, the SHELL EXITED 1 after doing
+    # everything correctly. A successful bootstrap reported failure: the marker was written, the stack was
+    # selected, and every caller that reads an exit code — an Unraid User Script, a runbook step, anything
+    # that would roll back on non-zero — was told the switch had not happened. That is the worst shape a
+    # status bug can take, because the rollback it invites acts against state that IS already committed.
+    #
+    # PHASE 329 CORRECTION 1. AND THE FIRST FIX PUT A SECOND HOLE WHERE THE FIRST ONE HAD BEEN, because it
+    # ended a handler that was ALSO INSTALLED FOR `INT` AND `TERM` with `return 0`.
+    #
+    # A signal handler that returns is not a refusal — it is a RESUMPTION. Bash runs the handler and then
+    # CARRIES ON at the next statement, so `kill -TERM` on this script cleaned up a temporary the script was
+    # still about to use, ran on to `mv`, published the marker, printed the success text and exited 0. An
+    # operator pressing Ctrl-C, or an automation sending TERM to stop a switch mid-flight, got the switch
+    # anyway AND was told it succeeded. `set -euo pipefail` does not help: nothing failed.
+    #
+    # So the two jobs are now separate, because they were never the same job:
+    #
+    #   `remove_temp`     ONE responsibility — the private temporary is gone. Says whether it managed it.
+    #   `on_exit`         THE STATUS IS ALREADY DECIDED when this runs. It captures `$?` FIRST, cleans up, and
+    #                     re-exits with the status the script had arrived with — so it can never overwrite an
+    #                     earlier failure with a later success. The one thing it may change is 0: a cleanup
+    #                     that FAILED after an otherwise successful run is a private temporary left behind in
+    #                     the project directory, and that must not disappear into an exit 0.
+    #   `on_signal`       THE STATUS IS NOT DECIDED — termination was REQUESTED and must happen. It disarms
+    #                     every trap so nothing recurses, removes the temporary, and RE-RAISES the same signal
+    #                     against itself with the default disposition, so this script dies of the signal it
+    #                     was sent and the caller sees the conventional 128+N. The `exit` after the re-raise
+    #                     is unreachable in practice and is there so that a host where the re-raise somehow
+    #                     does not kill the shell still cannot fall through into publishing.
     TEMP=""
-    cleanup() { [ -n "${TEMP}" ] && rm -f "${TEMP}"; }
-    trap cleanup EXIT INT TERM
+    remove_temp() {
+      [ -n "${TEMP}" ] || return 0
+      rm -f "${TEMP}" || return 1
+      TEMP=""
+      return 0
+    }
+    on_exit() {
+      status=$?
+      trap - EXIT
+      if ! remove_temp && [ "${status}" -eq 0 ]; then
+        echo "refusing: the private temporary file could not be removed from ${PROJECT_DIR}" >&2
+        exit 4
+      fi
+      exit "${status}"
+    }
+    on_signal() {
+      trap - EXIT INT TERM
+      remove_temp || echo "warning: the private temporary file could not be removed" >&2
+      # STATE IS READ FROM THE FILESYSTEM, NOT FROM A FLAG THIS SCRIPT KEPT. A `PUBLISHED=1` set on the line
+      # after `mv` has a real window: a signal delivered between the rename returning and the assignment
+      # running would report "not published" about a marker that IS on disk. The marker itself has no such
+      # window — it either exists when the handler looks or it does not — so the handler looks.
+      if [ -e "${MARKER}" ]; then
+        echo "terminated by SIG$1; a custody marker IS present at ${MARKER}." >&2
+        echo "Run this script with 'status' to see which mode is in force." >&2
+      else
+        echo "refusing: terminated by SIG$1 before any custody marker was written" >&2
+      fi
+      kill -s "$1" "$$"
+      exit $((128 + $2))
+    }
+    trap on_exit EXIT
+    trap 'on_signal INT 2' INT
+    trap 'on_signal TERM 15' TERM
     TEMP="$(umask 077; mktemp "${PROJECT_DIR}/.custody-mode.XXXXXXXXXX")" || {
       echo "refusing: a private temporary file could not be created in ${PROJECT_DIR}" >&2
       exit 3

@@ -13,6 +13,14 @@
 # without a Bash shell. It does the same things in the same order and produces byte-identical secret files:
 # LF-terminated, no BOM, so Docker hands the container exactly the value written here.
 #
+# WITH ONE DELIBERATE DIFFERENCE, AND IT IS A REFUSAL. `custodian_root_key` — the root wrapping key of the
+# sidecar-managed KEK ring — is NOT created here. It must be owned by the sidecar's runtime user and readable
+# by nobody else, and that is a POSIX guarantee this platform cannot make or check. The Bash twin creates it
+# through deploy/write-custody-secret.mjs, which establishes exactly that on a file descriptor and refuses to
+# create anything at all on a host that cannot. Writing one here anyway would produce a real root key with an
+# unverifiable ACL that every custody check in this project would then read as established custody. The stack
+# this script installs runs static KEK custody and never reads a root wrapping key, so nothing here needs one.
+#
 # It creates .\secrets\ (random values, never printed except the operator token you need to log in) and an
 # empty .\promotion-records\ folder for the Phase 231-240 chain artifacts. It is safe to re-run: existing
 # secrets are kept, never regenerated, so a re-run cannot lock you out of a running stack.
@@ -89,6 +97,51 @@ function Write-SecretIfAbsent {
     Write-Host "  created   ./secrets/$Name"
 }
 
+function Deny-CustodySecret {
+    # PHASE 329. THE ROOT WRAPPING KEY IS NOT CREATED ON THIS PLATFORM, AND THIS IS THE WHOLE REASON.
+    #
+    # THE DEFECT THIS CLOSES. This script used to create `custodian_root_key` with `Write-SecretIfAbsent`,
+    # like an operator token: 32 random bytes, written through the generic writer, followed by a BEST-EFFORT
+    # ACL whose `catch {}` swallows every failure. Its Bash twin does the opposite, deliberately and loudly.
+    # There, custody goes through `deploy/write-custody-secret.mjs`, which opens the name once with
+    # O_CREAT|O_EXCL|O_NOFOLLOW, sets the mode and the owner ON THE DESCRIPTOR, reads the bytes back from that
+    # same descriptor, and REFUSES — creating nothing — on any host that cannot establish all of it. Windows
+    # is named in that helper as such a host, in as many words: "this platform has no file ownership model, so
+    # a root wrapping key cannot be created here owned by the sidecar runtime user and readable by nobody
+    # else. NOTHING WAS CREATED."
+    #
+    # So the same installation step was a refusal on one platform and a silent success on the other, and the
+    # silent one produced the more dangerous artefact: a file named `custodian_root_key`, holding a real key,
+    # carrying no owner the sidecar could be checked against and no mode any reader could verify. Every part
+    # of this project that looks at custody — the backup component check, the classifier that decides whether
+    # an installation is legacy or migrated, the operator's own reading of a `secrets/` listing — would take
+    # its presence as an installation that HAS a root wrapping key under the custody rules. It had a file.
+    #
+    # THE REFUSAL IS THIS ONE SECRET, NOT THE WHOLE SETUP. The stack this script installs is
+    # `docker-compose.runtime.yml`, which runs STATIC KEK custody and has no custodian sidecar in it at all;
+    # nothing here consumes a root wrapping key. Failing the entire Windows setup over a key its own stack
+    # never reads would take away a supported configuration to fix a file that should not have been written.
+    # So this names what it did not do and why, and the rest of the setup proceeds unchanged.
+    param([string] $Name)
+    $path = Join-Path $SecretsDir $Name
+    if (Test-Path -Path $path -PathType Leaf) {
+        # AND AN EXISTING ONE IS NAMED, NOT BLESSED AND NOT DELETED. A key written by an earlier version of
+        # this script is already on disk with whatever ACL that run happened to leave; this cannot verify it
+        # and will not pretend to. Removing it is not this script's decision either — it may be the only copy
+        # of a key sealing a ring somewhere else.
+        Write-Host "  UNVERIFIED ./secrets/$Name (present, but this platform cannot establish or check its ownership)"
+        Write-Host "             It was written by an older version of this script. Treat it as compromised:"
+        Write-Host "             it has never been proven readable only by the sidecar's runtime user."
+        return
+    }
+    Write-Host "  refused   ./secrets/$Name (NOT created)"
+    Write-Host "            This platform has no file ownership model, so a root wrapping key cannot be"
+    Write-Host "            created here owned by the sidecar runtime user and readable by nobody else."
+    Write-Host "            NOTHING WAS CREATED. The stack this script installs uses static KEK custody and"
+    Write-Host "            does not read one. Managed-ring custody is established on the POSIX host that"
+    Write-Host "            will actually run the sidecar, by deploy/local-runtime-setup.sh."
+}
+
 Write-Host 'Catalog Authority local runtime setup'
 Write-Host ''
 
@@ -111,10 +164,10 @@ Write-SecretIfAbsent -Name 'admin_database_url' -Value "postgresql://postgres:$P
 Write-SecretIfAbsent -Name 'database_url' -Value "postgresql://app:$AppPassword@postgres:5432/catalog"
 Write-SecretIfAbsent -Name 'completion_secret' -Value (New-RandomSecret)
 Write-SecretIfAbsent -Name 'custodian_kek' -Value (New-RandomSecret)
-# PHASE 282. The ROOT WRAPPING KEY for the sidecar-managed KEK ring. Generated here so a new install
-# has one from the start; an existing install adopts its static KEK with `ops:kek-ring migrate`. It is read
-# only by the custodian sidecar, only from this file, and never from an environment variable or a command line.
-Write-SecretIfAbsent -Name 'custodian_root_key' -Value (New-RandomSecret)
+# PHASE 282, CORRECTED IN PHASE 329. The ROOT WRAPPING KEY for the sidecar-managed KEK ring is created by
+# the POSIX setup script only, through a helper that can prove the file's owner and mode. This platform
+# cannot, so it refuses rather than writing an unprotected one. See Deny-CustodySecret above.
+Deny-CustodySecret -Name 'custodian_root_key'
 Write-SecretIfAbsent -Name 'operator_ui_token' -Value (New-RandomSecret)
 
 if (-not (Test-Path -Path $RecordsDir -PathType Container)) { [void] (New-Item -ItemType Directory -Path $RecordsDir) }

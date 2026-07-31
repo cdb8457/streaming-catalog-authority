@@ -666,6 +666,24 @@ export const REQUIRED_SUITE_SCRIPTS: readonly string[] = Object.freeze([
   // only evidence a release can have is that this suite still runs, and it is the one suite in the family
   // whose failure mode is silence.
   'test:phase321-local',
+  // Phases 329-336 is here for a reason none of the others have, and it is the reason it exists at all.
+  //
+  // FOUR CUSTODY GATES SPENT FOUR RELEASE BASELINES FAILING FOR A REASON THAT WAS NOT A DEFECT. Each cut a
+  // region out of a shipped shell script by searching for a literal containing a bare LF, and no such literal
+  // is present in a checkout with CRLF endings — which is what Git produces on Windows by default. `indexOf`
+  // answered -1, `slice` turned that into the rest of the file or into the empty string, and the gates
+  // reported violations that did not exist. Four tranche reports in a row recorded them as pre-existing and
+  // moved on, which is what a red baseline trains people to do.
+  //
+  // The same mechanism fails OPEN just as easily: an empty region satisfies every "must not contain" gate
+  // ever written, and that version produces a green tick over an unread file. This suite holds the parsers
+  // that replaced those four to answering the same about a script however the checkout typed it, and to
+  // REFUSING rather than returning a region they are unsure of. It also drives the shipped scripts as
+  // PROCESSES — which is how it found a successful `unraid-custody-mode.sh bootstrap` exiting 1, a marker
+  // written and committed while every caller reading an exit code was told it had not been.
+  //
+  // If it stops running, the way this project proves its custody scripts stops being checked anywhere.
+  'test:phase329-local',
 ]);
 
 /**

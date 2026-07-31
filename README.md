@@ -42,6 +42,41 @@ Then open <http://127.0.0.1:8099/> and paste the operator token the setup script
 `./secrets/operator_ui_token` — a local file, mounted as a Docker secret, never an environment variable and
 never in a URL or a log. Re-running setup keeps every secret it already made, so it cannot lock you out.
 
+**On Windows, the setup refuses one secret, and that is expected.** You will see this, and the install is
+fine:
+
+```
+  refused   ./secrets/custodian_root_key (NOT created)
+            This platform has no file ownership model, so a root wrapping key cannot be
+            created here owned by the sidecar runtime user and readable by nobody else.
+            NOTHING WAS CREATED. ...
+```
+
+`custodian_root_key` is the root wrapping key for **managed-ring KEK custody**, and it is only safe to exist
+if it can be owned by one account and read by no other. Windows has no POSIX file ownership model, so no
+Windows setup can establish or check that — and a key written there anyway would be a real root key with an
+unverifiable ACL, which every custody check in this project would then read as custody established. The Bash
+setup refuses the same secret on the same host for the same reason.
+
+What this means in practice:
+
+- **The Windows local runtime stack is static-KEK custody, and that is its supported mode.**
+  `docker-compose.runtime.yml` contains no custodian sidecar and consumes no root wrapping key; it runs on
+  `custodian_kek`, which the setup does create. The stack starts and runs normally.
+- **Complete backups still work.** `ops:complete-backup` requires a root wrapping key only when the set's
+  keystore actually holds a KEK ring — a sealed box needs its key. A static-custody installation has no ring,
+  so a complete backup succeeds and does not invent a file the installation does not have.
+- **Managed-ring custody and `ops:custody-cutover` need a POSIX host.** Establishing the root key, migrating
+  onto a ring and rotating it are done where the custodian sidecar actually runs, by
+  `deploy/local-runtime-setup.sh` or `deploy/arcane-setup.sh`. There is no flag or platform that turns the
+  refusal into a success.
+- **If an older Windows setup already created one**, the next run reports it `UNVERIFIED` rather than deleting
+  it or accepting it. It has never been proven readable only by its owner: treat it as compromised, and
+  rotate the root wrapping key if that installation is ever moved to a POSIX host.
+
+The full reasoning is in
+[docs/PHASES_329_336_CUSTODY_RUNTIME_CLOSURE.md](docs/PHASES_329_336_CUSTODY_RUNTIME_CLOSURE.md).
+
 **The database migrates itself.** `up -d` starts PostgreSQL, runs a one-shot `migrate` container to
 completion, and only then starts the UI. It is idempotent (safe on every `up`), serialised by an advisory
 lock, and fail-closed: if it fails, the app container is never started, so there is no half-installed UI to
