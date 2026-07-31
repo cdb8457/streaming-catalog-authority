@@ -31,6 +31,7 @@ import {
 import { spawnSync } from 'node:child_process';
 import { CommandLedger, type MaintenanceCommand } from '../src/ops/maintenance-safety.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
+import { callSite, callSites, parseShellSource } from './helpers/shell-source.js';
 
 // Phases 293-296 — the upgrade that must not strand a v1.1.4 installation.
 //
@@ -584,12 +585,35 @@ await test('the custody secret helper never takes key material on a command line
   assert(helper.includes("randomBytes(32).toString('hex')"), 'and can generate the key inside its own process');
   assert(!/const \[, , path, value/.test(helper), 'the value is no longer an argv position');
   for (const script of ['deploy/local-runtime-setup.sh', 'deploy/arcane-setup.sh']) {
-    const source = readRepo(script);
-    assert(source.includes('write_custody_secret custodian_root_key\n'),
+    const text = readRepo(script);
+    const source = parseShellSource(text, script);
+    // COUNTED, NOT TERMINATED (Phase 329). This used to assert the literal
+    // `'write_custody_secret custodian_root_key\n'` — an LF glued to the end, standing in for "and nothing
+    // after it". On a CRLF checkout the byte after the name is a CR, the literal never matched, and the gate
+    // announced that the setup script passes a value for the root key when it passes none. The line ending was
+    // never the property under test; the ARGUMENT COUNT is. So the call site is split into words and counted,
+    // which says exactly what this gate means and says it the same way on every checkout.
+    const call = callSite(source, 'write_custody_secret');
+    assertEq(call.join(' '), 'write_custody_secret custodian_root_key',
       `${script} passes no value for the root key`);
-    assert(/CUSTODY_HELPER\}" "\$\{SECRETS_DIR\}\/\$\{name\}" --generate/.test(source),
+    assertEq(call.length, 2, `${script} hands the helper a name and nothing else`);
+    assert(/CUSTODY_HELPER\}" "\$\{SECRETS_DIR\}\/\$\{name\}" --generate/.test(text),
       `${script} asks the helper to generate it`);
-    assert(!/write_custody_secret custodian_root_key "/.test(source),
+    // AND THE HELPER'S OWN INVOCATION CARRIES NO VALUE EITHER: a path, a source word, and two ids. This is
+    // the argv that would appear in `ps` for every account on the host, so it is the one worth counting.
+    const invocations = callSites(source, 'node').filter((call) => call[1] === '${CUSTODY_HELPER}');
+    assertEq(invocations.length, 1, `${script} runs the custody helper exactly once`);
+    const invocation = invocations[0]!;
+    assertEq(invocation.length, 6,
+      `${script} runs the helper with a path, a source and two ids: ${invocation.join(' ')}`);
+    assertEq(invocation[3], '--generate', `${script} names the source rather than supplying the value`);
+    // NOT ONE WORD OF THAT COMMAND LINE IS A SECRET. Every argument is a path or an id expanded from a
+    // variable this script set from its own configuration; none is a substitution that produces key material.
+    for (const word of invocation.slice(1)) {
+      assert(!/random_secret|randomBytes|openssl/.test(word),
+        `${script} puts no generated value on the helper's command line: ${word}`);
+    }
+    assert(!/write_custody_secret custodian_root_key ["'$]/.test(text),
       `${script} never puts a generated key on a command line`);
   }
 });

@@ -163,6 +163,32 @@ start wired to both**, so the cutover cannot be half done.
 **`custodian_root_key` is in the required-secret model**, so every backup, verification and rehearsal checks
 for it. A backup holding the ring and not the root key is a sealed box with no key.
 
+> **Amended in Phases 329-336 — where the root key can be created at all.** The requirement above follows the
+> evidence in the set, not the declaration in the stack: `requiredSecretFilesFor(ringPresent)` drops
+> `custodian_root_key` when the keystore holds no KEK ring. That rule was written for released v1.1.4
+> installations, and it is also what makes the Windows case coherent.
+>
+> **`deploy/local-runtime-setup.ps1` does not create the root wrapping key.** It cannot: a root key is only
+> safe to exist if it is owned by the sidecar's runtime user and readable by nobody else, and Windows has no
+> POSIX file ownership model to establish or check that. `deploy/write-custody-secret.mjs` — the POSIX path —
+> already refused to create one on such a host and said so. The PowerShell script used to create one anyway,
+> through its ordinary secret writer with a best-effort ACL; that was a real defect and it is fixed. The
+> script now prints the same refusal and continues with the rest of the setup.
+>
+> The consequences, all of them:
+>
+> * the Windows local runtime stack is **static-KEK custody only** — `docker-compose.runtime.yml` has no
+>   custodian sidecar and no service consumes the root key, so its absence changes nothing about starting;
+> * **complete backups still work** on such an installation, because there is no ring and therefore no
+>   requirement, and the set does not invent a placeholder at that name;
+> * **managed-ring custody, `ops:custody-cutover` and root rotation require a POSIX host**, which is where the
+>   sidecar runs in any case;
+> * a `custodian_root_key` left by an older PowerShell setup is reported **UNVERIFIED** — never deleted, never
+>   blessed — and should be treated as compromised.
+>
+> Proved end to end in `test/custody-runtime-closure.ts`, which runs the PowerShell setup, asserts the absence,
+> and then drives the real `runVerifiedCompleteBackup` against an installation of exactly that shape.
+
 ### Status of the open design gates
 
 **O4 — the external/runtime custodian boundary — is CLOSED by implementation evidence.** The sidecar runs as

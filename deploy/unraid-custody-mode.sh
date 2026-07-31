@@ -101,8 +101,17 @@ case "${ACTION}" in
     # `mktemp` creates the file itself, with O_CREAT|O_EXCL and an unpredictable name, so it cannot be
     # pre-planted and cannot be followed. `umask 077` makes it private from the instant it exists rather than
     # a moment afterwards, and the trap removes it on any exit path — including the one where `mv` fails.
+    #
+    # PHASE 329. AND THE TRAP MUST NOT DECIDE THE EXIT STATUS. `cleanup() { [ -n "${TEMP}" ] && rm -f
+    # "${TEMP}"; }` ends in a TEST, and after a successful `mv` clears `TEMP` that test is FALSE — so the
+    # function returned 1, and because it is the last thing an EXIT trap runs, the SHELL EXITED 1 after doing
+    # everything correctly. A successful bootstrap reported failure: the marker was written, the stack was
+    # selected, and every caller that reads an exit code — an Unraid User Script, a runbook step, anything
+    # that would roll back on non-zero — was told the switch had not happened. That is the worst shape a
+    # status bug can take, because the rollback it invites acts against state that IS already committed.
+    # `return 0` makes the trap a cleanup rather than a verdict; the verdict belongs to the arm itself.
     TEMP=""
-    cleanup() { [ -n "${TEMP}" ] && rm -f "${TEMP}"; }
+    cleanup() { [ -n "${TEMP}" ] && rm -f "${TEMP}"; return 0; }
     trap cleanup EXIT INT TERM
     TEMP="$(umask 077; mktemp "${PROJECT_DIR}/.custody-mode.XXXXXXXXXX")" || {
       echo "refusing: a private temporary file could not be created in ${PROJECT_DIR}" >&2

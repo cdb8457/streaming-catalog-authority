@@ -215,6 +215,10 @@ export const BACKUP_SUMMARY =
  * `app_password` is optional. The setup scripts generate it so a deployment can hold a real credential for
  * the least-privileged runtime role, but no stack mounts it and `ops:bootstrap` teaches the database from
  * `database_url`; a backup without it is not broken.
+ *
+ * AND "REQUIRED" HERE MEANS CATALOGUED, NOT UNCONDITIONAL. One entry — `custodian_root_key` — is required of
+ * a given set only when that set's keystore actually holds a KEK ring. `requiredSecretFilesFor(ringPresent)`
+ * is the predicate every caller should use; this array is what it filters.
  */
 export const REQUIRED_SECRET_FILES: readonly string[] = [
   'admin_database_url',
@@ -224,9 +228,20 @@ export const REQUIRED_SECRET_FILES: readonly string[] = [
   //
   // IT IS ON THIS LIST FOR THE SAME REASON THE KEK IS, AND MORE SO. A backup holding the ring and not the
   // root key is a backup of a sealed box with no key: the ring restores, nothing opens it, and every item
-  // reads as unreadable — which is indistinguishable from a correct erasure, so nothing reports it. It is
-  // required from the moment the stack declares it rather than from the moment an installation migrates,
-  // because a list that depended on which state an installation was in would be a list nobody could check.
+  // reads as unreadable — which is indistinguishable from a correct erasure, so nothing reports it.
+  //
+  // THIS LIST IS THE CATALOGUE, NOT THE PREDICATE. Read `requiredSecretFilesFor(ringPresent)` below for
+  // whether a given set must hold this file: the requirement follows THE EVIDENCE IN THE SET — a keystore
+  // carrying a ring — rather than the fact that the stack declares the secret.
+  //
+  // AN EARLIER VERSION OF THIS COMMENT SAID THE OPPOSITE, and said it for a reason that sounded right: a list
+  // that depended on which state an installation was in would be a list nobody could check. What that
+  // reasoning missed is that the state IS checkable, from the set itself, without asking the installation
+  // anything — and that requiring the file unconditionally refused a complete backup to every released
+  // v1.1.4 installation, the one population that most needs a rollback set. The conditional rule replaced it
+  // (see `backupSetHasRing`), and the comment here outlived the design it described. Corrected in Phases
+  // 329-336, when `deploy/local-runtime-setup.ps1` stopped creating this file on a platform that cannot
+  // establish its ownership — which made an already-stale comment an actively misleading one.
   'custodian_root_key',
   'database_url',
   'operator_ui_token',

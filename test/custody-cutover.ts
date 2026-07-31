@@ -35,6 +35,14 @@ import { parseCutoverArgs } from '../src/ops/custody-cutover-cli.js';
 import { CommandLedger, type MaintenanceCommand } from '../src/ops/maintenance-safety.js';
 import { runDoctor, type DoctorCheck, type DoctorReport } from '../src/ops/doctor.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
+import { asMap, parseYaml } from '../src/ops/minimal-yaml.js';
+import {
+  caseArm,
+  caseBlock,
+  code as shellCode,
+  parseShellSource,
+  textOf as shellText,
+} from './helpers/shell-source.js';
 
 // Phases 289-292 — the shipped stack moving from static bootstrap custody onto the ring, and a doctor that
 // reports what it finds there.
@@ -267,20 +275,36 @@ await test('the runtime stack resolves to exactly two custody wirings, and neith
 });
 
 await test('the steady-state stack has no static KEK anywhere, and the overlay is the only place it exists', () => {
-  const runtime = readRepo(RUNTIME_COMPOSE_FILE);
-  const bootstrap = readRepo(BOOTSTRAP_COMPOSE_FILE);
+  // PARSED, NOT MATCHED (Phase 329). The last claim here used to be `/custodian_kek:\n\s+file:/` — a regular
+  // expression with a bare LF in it, asserting that a declared secret and its `file:` key were adjacent in the
+  // BYTES of the checkout. On any checkout with CRLF endings, which is what Git produces on Windows by
+  // default, the LF never matched and the gate reported that the overlay declares no static KEK — while the
+  // overlay declared one perfectly well, four lines further down the same file. The stack is a structure;
+  // asking the parser what it declares cannot be decided by a line ending, an indent width or a key order.
+  const runtime = parseYaml(readRepo(RUNTIME_COMPOSE_FILE));
+  const bootstrap = parseYaml(readRepo(BOOTSTRAP_COMPOSE_FILE));
+  const runtimeText = readRepo(RUNTIME_COMPOSE_FILE);
+
+  const sidecarEnv = (doc: ReturnType<typeof parseYaml>): Record<string, unknown> => asMap(
+    asMap(asMap(doc.services ?? null, 'services').sidecar ?? null, 'sidecar').environment ?? null,
+    'sidecar environment');
 
   // THE CANONICAL FILE. Root-only custody, and the static key is not mounted, not a secret, and not named as
   // an environment variable anywhere in it.
-  assert(/SIDECAR_ROOT_KEY_FILE:\s*\/run\/catalog-custody\/custodian_root_key/.test(runtime),
+  assertEq(sidecarEnv(runtime).SIDECAR_ROOT_KEY_FILE, '/run/catalog-custody/custodian_root_key',
     'the steady state wires the sidecar to the root wrapping key');
-  assert(!/SIDECAR_KEK_FILE/.test(runtime), 'and names no static KEK file');
-  assert(!/custodian_kek/.test(runtime), 'and mounts and declares no static KEK at all');
+  assert(!('SIDECAR_KEK_FILE' in sidecarEnv(runtime)), 'and names no static KEK file');
+  // Nowhere AT ALL, which is a claim about the whole file rather than about one service, so the text is the
+  // right instrument for it: a comment mentioning the static KEK would fail this, and that is intended.
+  assert(!runtimeText.includes('custodian_kek'), 'and mounts and declares no static KEK at all');
 
   // THE OVERLAY. It puts the static key back and takes the root wiring away — the daemon refuses both.
-  assert(/SIDECAR_KEK_FILE:\s*\/run\/secrets\/custodian_kek/.test(bootstrap), 'the overlay wires the static KEK');
-  assert(/SIDECAR_ROOT_KEY_FILE:\s*""/.test(bootstrap), 'and explicitly unsets the root key wiring');
-  assert(/custodian_kek:\n\s+file:/.test(bootstrap), 'and declares the secret the runtime file does not');
+  assertEq(sidecarEnv(bootstrap).SIDECAR_KEK_FILE, '/run/secrets/custodian_kek', 'the overlay wires the static KEK');
+  assertEq(sidecarEnv(bootstrap).SIDECAR_ROOT_KEY_FILE, '', 'and explicitly unsets the root key wiring');
+  const declared = asMap(bootstrap.secrets ?? null, 'secrets');
+  assert('custodian_kek' in declared, 'and declares the secret the runtime file does not');
+  assert(typeof asMap(declared.custodian_kek ?? null, 'custodian_kek').file === 'string',
+    'as a file-backed secret, which is the only kind an ordinary Compose install can serve');
 });
 
 await test('no service gets a Docker socket, a privilege escalation, a host network or a new port', () => {
@@ -725,25 +749,40 @@ await test('no compose run can fetch an image, and the mode marker is never writ
   // It wrote `printf ... > "${MARKER}.tmp.$$"`: a name anybody can predict, through a redirection that
   // FOLLOWS A SYMBOLIC LINK — so a link planted at that name is a write wherever it points, as whichever
   // account runs the script. On Unraid that is root, in a web terminal.
-  const script = readRepo('deploy/unraid-custody-mode.sh');
+  const script = parseShellSource(readRepo('deploy/unraid-custody-mode.sh'), 'deploy/unraid-custody-mode.sh');
   // THE WRITE, NOT THE WORD. The file still NAMES the old defect in a comment, which is where a reader
   // learns why this is the way it is; what must be gone is a redirection into a predictable name.
-  const code = script.replace(/^\s*#.*$/gm, '');
-  assert(!/>\s*"\$\{MARKER\}\.tmp/.test(code), 'nothing is written through a predictable temporary name');
-  assert(!/\$\$/.test(code), 'and no process id names a file');
-  assert(/mktemp .*XXXXXXXXXX/.test(script), 'it creates an unpredictable temp with mktemp');
-  assert(script.includes('umask 077'), 'private from the instant it exists');
-  assert(/trap cleanup EXIT/.test(script), 'and removed on every exit path');
-  assert(/mv -f "\$\{TEMP\}" "\$\{MARKER\}"/.test(script), 'and published by an atomic rename');
+  const executable = shellText(shellCode(script).lines);
+  assert(!/>\s*"\$\{MARKER\}\.tmp/.test(executable), 'nothing is written through a predictable temporary name');
+  assert(!/\$\$/.test(executable), 'and no process id names a file');
+  const whole = shellText(script.lines);
+  assert(/mktemp .*XXXXXXXXXX/.test(whole), 'it creates an unpredictable temp with mktemp');
+  assert(whole.includes('umask 077'), 'private from the instant it exists');
+  assert(/trap cleanup EXIT/.test(whole), 'and removed on every exit path');
+  assert(/mv -f "\$\{TEMP\}" "\$\{MARKER\}"/.test(whole), 'and published by an atomic rename');
+
   // ROOT-ONLY REMOVES THE MARKER AND NEVER WRITES ONE FIRST: the steady state is defined by its absence.
-  // ANCHORED ON THE CASE LABEL ITSELF — a bare `root-only)` also appears inside the command printer, and a
-  // slice that started there would swallow the bootstrap case and prove nothing.
-  const caseLabel = `${'\n'}  root-only)${'\n'}`;
-  const defaultLabel = `${'\n'}  *)${'\n'}`;
-  const rootOnlyBlock = script.slice(script.indexOf(caseLabel), script.indexOf(defaultLabel));
-  assert(rootOnlyBlock.includes('rm -f "${MARKER}"'), 'root-only removes the marker');
-  assert(!rootOnlyBlock.includes('mktemp') && !rootOnlyBlock.includes('printf'),
-    'and writes nothing on the way there');
+  //
+  // PARSED, NOT SLICED (Phase 329). The old version knew exactly what was hard here — its comment said "a
+  // bare `root-only)` also appears inside the command printer, and a slice that started there would swallow
+  // the bootstrap case and prove nothing" — and then anchored on `'\n  root-only)\n'`, a literal carrying a
+  // bare LF and a guess at the indent. On a CRLF checkout `indexOf` answered -1 for BOTH ends, `slice(-1, -1)`
+  // returned the EMPTY STRING, and the gate searched nothing and failed. Had the two literals been reversed
+  // it would have searched nothing and PASSED, which is the same defect with a worse outcome.
+  //
+  // There are in fact THREE `root-only)` arms in that script — one validating a marker's contents, one in the
+  // command printer, one performing the action — so the arm is selected by the `case` it belongs to rather
+  // than by which occurrence comes first. Asking for an arm that is missing, duplicated or unterminated is an
+  // error naming the script; there is no slice-shaped way to get a silent wrong answer.
+  const rootOnly = shellText(shellCode({ path: 'root-only', lines: caseArm(caseBlock(script, 'ACTION'), 'root-only') }).lines);
+  assert(rootOnly.includes('rm -f "${MARKER}"'), 'root-only removes the marker');
+  assert(!rootOnly.includes('mktemp') && !rootOnly.includes('printf'), 'and writes nothing on the way there');
+  // AND THE CONTRAST THAT PROVES THE ARM WAS REALLY SELECTED: the bootstrap arm, from the same `case`, is the
+  // one that writes. A reader of the two lines above cannot tell an arm that writes nothing from an arm that
+  // was never found; this can.
+  const bootstrapArm = shellText(caseArm(caseBlock(script, 'ACTION'), 'bootstrap'));
+  assert(bootstrapArm.includes('mktemp') && !bootstrapArm.includes('rm -f "${MARKER}"'),
+    'while the bootstrap arm of the same case is the one that creates a marker');
 });
 
 // ---------------------------------------------------------------------------------------------------------

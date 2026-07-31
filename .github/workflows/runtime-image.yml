@@ -84,6 +84,22 @@ jobs:
           npm run test:phase305-local
           npm run test:phase313-local
           npm run test:phase321-local
+      - name: Phases 329-336 — the custody runtime, and the way custody is proved
+        # Two things, and the second is why this is a required gate rather than one more suite.
+        #
+        # It drives the shipped custody scripts as PROCESSES — the root-key writer, the PowerShell setup and
+        # the Unraid mode switch — against hostile paths, injected partial failures and a real argv, and
+        # asserts what the operating system reports back. That is how it found a successful `bootstrap`
+        # exiting 1: the marker written and committed, and every caller reading an exit code told otherwise.
+        #
+        # And it holds the READERS the custody gates use. Four of those gates spent four release baselines
+        # failing because they sliced a shell script on a literal containing a bare LF, which a CRLF checkout
+        # does not contain; the same slice returns the empty string just as easily, and an empty region
+        # satisfies every "must not contain" gate there is. This suite pins those readers to answering the
+        # same about a script whatever its line endings, and to refusing rather than guessing.
+        #
+        # No Docker daemon, no images and no network are needed or used.
+        run: npm run test:phase329-local
       - name: Phase 280, 279, 278, 277 — host-side maintenance automation
         # Phase 277 is the complete backup: the four irrecoverable components taken from one quiesced moment.
         # Phase 278 is the verification that follows every one of them, and the scheduled doctor monitor.

@@ -616,7 +616,9 @@
     "test:phase305-local": "npm run test:backup-retention",
     "test:phase313-local": "npm run test:safety-set-lifecycle",
     "test:shared-destination-lock": "tsx test/shared-destination-lock.ts",
-    "test:phase321-local": "npm run test:shared-destination-lock"
+    "test:phase321-local": "npm run test:shared-destination-lock",
+    "test:custody-runtime-closure": "tsx test/custody-runtime-closure.ts",
+    "test:phase329-local": "npm run test:custody-runtime-closure"
   },
   "dependencies": {
     "pg": "^8.13.1",

@@ -51,6 +51,13 @@ import { main as kekRingMain } from '../src/ops/kek-ring-cli.js';
 import { CommandLedger, MaintenanceRefused, type MaintenanceCommand } from '../src/ops/maintenance-safety.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
 import { asMap, parseYaml } from '../src/ops/minimal-yaml.js';
+import {
+  callSites,
+  code as shellCode,
+  functionBody,
+  parseShellSource,
+  textOf as shellText,
+} from './helpers/shell-source.js';
 
 // The review corrections to Phases 281-284, each held to the defect it closes.
 //
@@ -570,17 +577,33 @@ await test('the root key is delivered by a bind mount, because a Compose secret 
   // THE HOST SIDE IS WHERE THE GUARANTEE LIVES, and the setup script FAILS rather than continuing if it
   // cannot establish it. No best-effort chown for custody.
   for (const script of ['deploy/local-runtime-setup.sh', 'deploy/arcane-setup.sh']) {
+    const source = parseShellSource(readRepo(script), script);
     const text = readRepo(script);
-    assert(text.includes('write_custody_secret custodian_root_key'),
+    assert(callSites(source, 'write_custody_secret').some((call) => call[1] === 'custodian_root_key'),
       `${script} writes the root key through the custody helper`);
     // AND IT DELEGATES TO A DESCRIPTOR-BASED HELPER, not to a sequence of path operations. A shell version
     // resolved the name at every step — check, redirect, chmod, chown, stat — and a swap between any two of
     // them would have had root re-mode and overwrite whatever the name then pointed at.
     assert(text.includes('write-custody-secret.mjs'), `${script} delegates to the no-follow helper`);
-    const body = text.slice(text.indexOf('write_custody_secret() {'));
-    const helperBody = body.slice(0, body.indexOf('\n}\n'));
-    assert(!helperBody.includes('chmod') && !helperBody.includes('chown') && !helperBody.includes('stat '),
+    // BRACE-MATCHED, NOT SLICED TO THE NEXT `\n}\n` (Phase 329). The literal below used to be a bare LF
+    // sandwiched around a closing brace. On a CRLF checkout it never matched, `indexOf` answered -1,
+    // `slice(0, -1)` handed back THE REST OF THE FILE, and the region searched for `chmod` ran on past this
+    // helper into `write_secret_if_absent` — which chmods ordinary app secrets, legitimately and by design.
+    // The gate then reported a custody violation that did not exist, in four consecutive release baselines.
+    // The extractor now matches braces and REFUSES if the function is missing or never closed, so the only
+    // outcomes are the right region or a named error; there is no silent wrong region left to get.
+    const helperBody = shellText(shellCode({
+      path: script, lines: functionBody(source, 'write_custody_secret'),
+    }).lines);
+    assert(!/\bchmod\b/.test(helperBody) && !/\bchown\b/.test(helperBody) && !/\bstat\b/.test(helperBody),
       `${script} performs no path-based mode, owner or stat operation for custody: ${helperBody}`);
+    // AND THE CONTRAST THAT PROVES THE REGION WAS REALLY THE HELPER'S. `write_secret_if_absent` in the same
+    // script DOES chmod, correctly, because an operator token is not a root wrapping key. An empty region and
+    // a region with no chmod in it read identically to the assertion above; this tells them apart, so a future
+    // extractor that quietly returns nothing fails here instead of passing everywhere.
+    const ordinary = shellText(functionBody(source, 'write_secret_if_absent'));
+    assert(/\bchmod\b/.test(ordinary),
+      `${script}: the ordinary-secret writer is the one that chmods, so the custody region above was real`);
     assert(text.includes('refusing.'), `${script} says it is refusing rather than continuing`);
   }
   // AND THE READER STILL REQUIRES OWNER-ONLY — the fix is the delivery mechanism, not a weakened check.
