@@ -109,13 +109,29 @@ export const SAFETY_SET_VERSION = 1;
 export const SAFETY_SET_JOURNAL_NAME = '.catalog-safety-set.journal.json';
 
 /**
- * Version 1, and anything else is refused AT THE VERSION BOUNDARY before a later field is read.
+ * Version 2, and anything else is refused AT THE VERSION BOUNDARY before a later field is read.
  *
  * There is no migration and there never will be a silent one: this document decides which directories a
  * recovery is allowed to destroy, and guessing at what a field meant in a schema this build does not
  * implement is how a half-understood record removes the wrong tree.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHAT CHANGED, AND WHY IT COULD NOT BE A COMPATIBLE ADDITION.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * Version 1 recorded `deleting` and nothing else. A resume then proved the OUTER quarantine marker — which
+ * says the quarantine directory is this operation's — and recursively removed whatever directory now
+ * occupied the planned child name, WITHOUT re-proving the child. The outer marker's allowlist is a list of
+ * names, and a name is not a tree: anything moved to that name after the `deleting` record was persisted
+ * would have been recursively deleted. The predictable name and the outer allowlist were being used as live
+ * child ownership, and neither is.
+ *
+ * Version 2 adds `consumeNonce` to each entry: an unpredictable value drawn when the entry enters
+ * `deleting`, persisted in the journal, and written INTO the tree being consumed as a consumption marker.
+ * A version-1 journal cannot carry one, so a `deleting` entry in it can never be proved against a live
+ * child — there is nothing correct to fill the field in with, and the document is refused for BEING one.
  */
-export const SAFETY_SET_JOURNAL_VERSION = 1;
+export const SAFETY_SET_JOURNAL_VERSION = 2;
 
 /** The journal is bounded before it is parsed. A destination of 2000 entries fits inside this many times over. */
 export const MAX_SAFETY_JOURNAL_BYTES = 4 * 1024 * 1024;
@@ -128,6 +144,40 @@ export const SAFETY_QUARANTINE_CLAIM_PREFIX = '.catalog-safety-set.claiming-';
 
 /** The ownership marker inside a quarantine directory. Nothing is removed from a tree without one. */
 export const SAFETY_QUARANTINE_MARKER_NAME = 'catalog-safety-set-quarantine.json';
+
+/**
+ * The consumption marker written INSIDE the claim tree that is about to be destroyed.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE OUTER MARKER PROVES THE CONTAINER. THIS PROVES THE CHILD.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * A quarantine marker says "this DIRECTORY is this operation's" and carries the list of names this
+ * operation put in it. That is a list of NAMES, and a name is not a tree. Once an entry is recorded
+ * `deleting` the tree it names may be partial, so it cannot be re-proved against its commitment — and the
+ * first cut concluded from that that it could be removed on the strength of the outer marker alone.
+ * Anything that took the child's name after the record was persisted was then recursively deleted.
+ *
+ * So the authority for consuming a child lives INSIDE the child, is bound to an unpredictable value drawn
+ * per consumption and persisted in the journal, and — this is the part that makes it work at all — it is
+ * the LAST thing removed. That gives one invariant, and every question a recovery asks is answered by it:
+ *
+ *   THE FIRST `unlink` INSIDE A CLAIM IS ALWAYS PRECEDED BY A VALID CONSUMPTION MARKER INSIDE IT.
+ *
+ *   * marker ABSENT   — nothing has been unlinked, so the tree must still prove to be the planned claim,
+ *                       exactly as an intact one does. A stranger's tree fails that and is refused.
+ *   * marker PRESENT and ours — this operation began consuming this tree. It may be partial, and finishing
+ *                       it is authorised whatever state it is in.
+ *   * marker PRESENT and not ours — refused. Nothing is removed and nothing after it is touched.
+ *
+ * What it is NOT: proof against somebody who can rewrite the journal, because the value it binds is written
+ * down there. That is the same boundary every other proof in this command has, it is stated in the threat
+ * model, and it is not restated as a stronger claim here.
+ */
+export const SAFETY_CONSUMING_MARKER_NAME = 'catalog-safety-set-consuming.json';
+
+/** The shape of a consumption nonce. Validated wherever one is read back out of a durable document. */
+export const CONSUME_NONCE_RE = /^[0-9a-f]{24}$/;
 
 /** Exactly what `stagingSuffix()` produces. Validated wherever a suffix is concatenated into a path. */
 export const SAFETY_SUFFIX_RE = /^[0-9a-f]{12}$/;
@@ -214,15 +264,49 @@ export function resolveSafetySetProject(projectRoot: string): string {
   return root;
 }
 
-export function assertNoOtherOperationInProgress(projectRoot: string): void {
-  if (existsSync(join(projectRoot, RESTORE_JOURNAL_NAME))) {
+/**
+ * Is there ANYTHING at this name in the project root?
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * PRESENCE, NOT READABILITY, AND ASKED WITHOUT FOLLOWING A LINK.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * THE DEFECT THIS CLOSES. `existsSync` FOLLOWS a symbolic link, so it answers false for a DANGLING one — and
+ * a dangling link at a journal's name is exactly the state a half-tidied project is in. It answers false for
+ * a link into a directory that has gone, and it answers about the TARGET rather than about the name for
+ * every link that resolves. The question this command needs answered is "has another command left its mark
+ * here", and the safe answer to "there is something at that name and this build cannot say what" is YES.
+ *
+ * `lstat` answers about the name itself, and anything at all — a file, a directory, a link, a dangling link,
+ * a device — is a reason to stop. A journal this build cannot read is still a journal.
+ */
+export function operationMarkPresent(projectRoot: string, name: string): boolean {
+  return lstatSync(join(projectRoot, name), { throwIfNoEntry: false }) !== undefined;
+}
+
+/**
+ * Refuse while a RESTORE is part way through this project. Fail-closed, and taken on every path.
+ *
+ * IT IS SEPARATE FROM THE PRUNE REFUSAL BECAUSE `--abandon` TAKES THIS ONE AND NOT THAT ONE. An abandon is a
+ * recovery: refusing it while an interrupted prune exists would be half of a pair of commands that can each
+ * only be unwound after the other, which is a wedge with no way out. A live RESTORE is different in kind —
+ * it holds a claim on somewhere to publish the only record of the installation it is destroying, and an
+ * abandon renames claim directories back into the same destination under names a restore may be about to
+ * use. So the restore refusal has no exception, and it is checked before a single byte is written.
+ */
+export function assertNoRestoreInProgress(projectRoot: string): void {
+  if (operationMarkPresent(projectRoot, RESTORE_JOURNAL_NAME)) {
     throw new MaintenanceRefused(
       'this project is part way through a restore — ops:complete-restore left its journal here. That run holds '
       + 'a claim on somewhere to publish its safety set, and the safety set it takes is the only record of the '
-      + 'installation it is destroying, so nothing here will remove anything. Finish it with --resume or unwind '
-      + 'it with --abandon first.');
+      + 'installation it is destroying, so nothing here will move or remove anything. Finish it with --resume '
+      + 'or unwind it with --abandon first.');
   }
-  if (existsSync(join(projectRoot, RETENTION_JOURNAL_NAME))) {
+}
+
+export function assertNoOtherOperationInProgress(projectRoot: string): void {
+  assertNoRestoreInProgress(projectRoot);
+  if (operationMarkPresent(projectRoot, RETENTION_JOURNAL_NAME)) {
     throw new MaintenanceRefused(
       'this project is part way through a backup prune — ops:backup-retention left its journal here. Some of '
       + 'this destination\'s ordinary sets are renamed aside into its quarantine directory, and this command '
@@ -304,7 +388,22 @@ export function inventoryClaims(destinationDir: string): readonly ClaimInventory
     if (name.startsWith(SAFETY_QUARANTINE_PREFIX) || name.startsWith(SAFETY_QUARANTINE_CLAIM_PREFIX)) continue;
     const claimDir = join(destinationDir, name);
     const shaped = CLAIM_NAME_RE.test(name);
-    const carriesMarker = lstatSync(join(claimDir, SAFETY_CLAIM_MARKER_NAME), { throwIfNoEntry: false }) !== undefined;
+    // ---- THE TOP-LEVEL ENTRY IS EXAMINED BEFORE ANY CHILD OF IT IS NAMED --------------------------
+    //
+    // THE DEFECT THIS CLOSES. This used to `lstat` `<entry>/catalog-restore-claim.json` first, to decide
+    // whether the entry carried a marker. That path resolves `<entry>` — so for a symbolic link or a Windows
+    // junction the probe TRAVERSED THE LINK, out of the destination and into whatever it pointed at, purely
+    // to answer a question about admission. A directory this command has been told to inventory must never
+    // be a reason to read somewhere it was not told to look.
+    //
+    // So the entry itself is `lstat`ed first, and a child of it is named only once it is known to be a real
+    // directory. A link at a claim-SHAPED name is still admitted — by its name alone, and classified
+    // `NOT_A_DIRECTORY` without being opened — because an operator has to see it. A link at any other name
+    // is not this command's business at all, and is not touched, opened or followed to find out.
+    const stats = lstatSync(claimDir, { throwIfNoEntry: false });
+    const examinable = stats !== undefined && !stats.isSymbolicLink() && stats.isDirectory();
+    const carriesMarker = examinable
+      && lstatSync(join(claimDir, SAFETY_CLAIM_MARKER_NAME), { throwIfNoEntry: false }) !== undefined;
     if (!shaped && !carriesMarker) continue;
     out.push(classifyClaim(destinationDir, name));
   }
@@ -598,6 +697,14 @@ export interface SafetyJournalEntry {
   readonly state: SafetyEntryState;
   /** A closed sentence, only ever present on `failed`. */
   readonly reason: string | null;
+  /**
+   * The unpredictable value this consumption is bound to. Present EXACTLY when the state is `deleting`.
+   *
+   * It is drawn from the system CSPRNG when the entry enters `deleting`, persisted here, and written into
+   * the tree being consumed. A `deleting` entry without one describes a consumption whose live child can
+   * never be identified, which is why version 1 of this document is refused rather than upgraded.
+   */
+  readonly consumeNonce: string | null;
 }
 
 export type SafetyPhase = 'removing' | 'abandoning';
@@ -817,7 +924,22 @@ function parseSafetySetJournal(
     } else if (value.reason !== null) {
       return refuse('a claim that did not fail carries a failure reason');
     }
-    entries.push({ name: value.name as string, state, reason: state === 'failed' ? (value.reason as string) : null });
+    // PRESENT EXACTLY WHEN THE STATE IS `deleting`, AND VALIDATED BEFORE ANYTHING IS CONCATENATED WITH IT.
+    // A `deleting` entry with no consumption nonce describes a consumption whose live child cannot be
+    // identified; one on any other state describes an authority this command never issues.
+    if (state === 'deleting') {
+      if (typeof value.consumeNonce !== 'string' || !CONSUME_NONCE_RE.test(value.consumeNonce)) {
+        return refuse('a claim recorded as being removed carries no consumption nonce this command draws');
+      }
+    } else if (value.consumeNonce !== null) {
+      return refuse('a claim that is not being removed carries a consumption nonce');
+    }
+    entries.push({
+      name: value.name as string,
+      state,
+      reason: state === 'failed' ? (value.reason as string) : null,
+      consumeNonce: state === 'deleting' ? (value.consumeNonce as string) : null,
+    });
   }
 
   // THE DOCUMENT AGREES WITH ITSELF...
@@ -1226,6 +1348,170 @@ function requireSafetyQuarantine(
   return quarantineDir;
 }
 
+// -----------------------------------------------------------------------------------------------------------
+// The consumption marker — live ownership of the ONE CHILD being destroyed
+// -----------------------------------------------------------------------------------------------------------
+
+export interface SafetyConsumingMarker {
+  readonly marker: 'catalog-authority.safety-set-consuming';
+  readonly version: 1;
+  readonly journalVersion: typeof SAFETY_SET_JOURNAL_VERSION;
+  readonly planDigest: string;
+  readonly suffix: string;
+  /** The claim this marker authorises consuming. A marker for another claim authorises nothing here. */
+  readonly claim: string;
+  /** Drawn per consumption, from the system CSPRNG, and persisted in the journal entry. */
+  readonly consumeNonce: string;
+  /** What this operation committed to about the claim, so a marker cannot be carried to a different one. */
+  readonly commitment: SafetyCommitment;
+}
+
+export function consumingMarkerPath(claimDir: string): string {
+  return join(claimDir, SAFETY_CONSUMING_MARKER_NAME);
+}
+
+export function expectedConsumingMarker(
+  journal: SafetySetJournal,
+  commitment: SafetyCommitment,
+  consumeNonce: string,
+): SafetyConsumingMarker {
+  if (!CONSUME_NONCE_RE.test(consumeNonce)) {
+    throw new MaintenanceRefused('the consumption nonce is not one this command draws');
+  }
+  return {
+    marker: 'catalog-authority.safety-set-consuming',
+    version: 1,
+    journalVersion: SAFETY_SET_JOURNAL_VERSION,
+    planDigest: journal.planDigest,
+    suffix: journal.suffix,
+    claim: commitment.name,
+    consumeNonce,
+    commitment,
+  };
+}
+
+/** Is there anything at the consumption marker's name? Asked WITHOUT following a link. */
+export function consumingMarkerPresent(claimDir: string): boolean {
+  return lstatSync(consumingMarkerPath(claimDir), { throwIfNoEntry: false }) !== undefined;
+}
+
+/** A directory holding nothing at all. Unreadable answers `false`, because unknown is not empty. */
+export function isEmptyDirectory(path: string): boolean {
+  try {
+    return readdirSync(path).length === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prove the tree at `claimDir` is the one THIS consumption began on.
+ *
+ * Compared WHOLE against what this operation would have written, for the same reason the quarantine marker
+ * is: field-by-field leniency is how a marker that names the right operation while describing a different
+ * claim ends up authorising a deletion.
+ */
+export function readConsumingMarker(
+  claimDir: string,
+  journal: SafetySetJournal,
+  commitment: SafetyCommitment,
+  consumeNonce: string,
+): { readonly ok: true } | { readonly ok: false; readonly why: string } {
+  const path = consumingMarkerPath(claimDir);
+  const stats = lstatSync(path, { throwIfNoEntry: false });
+  if (stats === undefined) {
+    return { ok: false, why: 'this claim carries no consumption marker of this operation\'s' };
+  }
+  if (stats.isSymbolicLink() || !stats.isFile()) {
+    return { ok: false, why: 'this claim\'s consumption marker is not a plain file' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileNoFollow(path, 'safety-set consumption marker', 4 * 1024 * 1024)
+      .bytes.toString('utf8'));
+  } catch {
+    return { ok: false, why: 'this claim\'s consumption marker could not be read' };
+  }
+  if (!isRecord(parsed)) return { ok: false, why: 'this claim\'s consumption marker is not a record' };
+  const want = JSON.stringify(expectedConsumingMarker(journal, commitment, consumeNonce));
+  const have = JSON.stringify({
+    marker: parsed.marker, version: parsed.version, journalVersion: parsed.journalVersion,
+    planDigest: parsed.planDigest, suffix: parsed.suffix, claim: parsed.claim,
+    consumeNonce: parsed.consumeNonce, commitment: parsed.commitment,
+  });
+  if (want !== have) {
+    return { ok: false, why: 'this claim\'s consumption marker does not describe this consumption' };
+  }
+  return { ok: true };
+}
+
+export function writeConsumingMarker(
+  claimDir: string,
+  journal: SafetySetJournal,
+  commitment: SafetyCommitment,
+  consumeNonce: string,
+): void {
+  writePrivateFile(consumingMarkerPath(claimDir),
+    `${JSON.stringify(expectedConsumingMarker(journal, commitment, consumeNonce), null, 2)}\n`,
+    'safety-set consumption marker');
+}
+
+/**
+ * Remove a claim this operation is consuming, KEEPING ITS AUTHORITY ALIVE UNTIL LAST.
+ *
+ * The invariant the whole recovery rests on is that a partially consumed tree still carries its consumption
+ * marker, so the marker cannot be removed by a walk that visits children in whatever order the filesystem
+ * hands them back. It is unlinked explicitly, after everything else, immediately before the directory itself.
+ *
+ * IT ALSO RE-CHECKS THE MEMBERSHIP IT IS ABOUT TO WALK. A consumed claim holds at most three things: the
+ * restore's ownership marker, this operation's consumption marker and the one safety set the commitment
+ * names. Anything else appearing inside it is refused rather than walked — the bound from the manifest is
+ * about SIZE, and this is about SHAPE, and a tree that grew a member is not the tree this operation proved.
+ */
+function removeConsumedClaim(
+  claimDir: string,
+  commitment: SafetyCommitment,
+  remove: (path: string, what: string, maxEntries: number) => number,
+): void {
+  let members: readonly string[];
+  try {
+    members = readdirSync(claimDir).slice().sort();
+  } catch {
+    throw new MaintenanceRefused('this claim could not be listed, so nothing was removed for it');
+  }
+  const allowed = new Set([SAFETY_CLAIM_MARKER_NAME, SAFETY_CONSUMING_MARKER_NAME,
+    ...(commitment.setName === null ? [] : [commitment.setName])]);
+  for (const member of members) {
+    if (!allowed.has(member)) {
+      throw new MaintenanceRefused(
+        'this claim holds something this operation did not put there and did not commit to removing, so '
+        + 'nothing in it was removed');
+    }
+  }
+  // THE SAFETY SET FIRST, through the shipped no-follow bounded removal. Its bound comes from what the
+  // manifest declared the set to be.
+  if (commitment.setName !== null && members.includes(commitment.setName)) {
+    remove(join(claimDir, commitment.setName), `safety set ${commitment.setName}`,
+      removalEntryBound(commitment.entries));
+  }
+  // THEN THE RESTORE'S OWN MARKER, then this operation's authority, then the directory. `unlink` never
+  // follows a link, so even one created in the window between the listing and the removal is unlinked as a
+  // link rather than followed to somebody else's bytes.
+  for (const member of [SAFETY_CLAIM_MARKER_NAME, SAFETY_CONSUMING_MARKER_NAME]) {
+    if (lstatSync(join(claimDir, member), { throwIfNoEntry: false }) === undefined) continue;
+    try {
+      unlinkSync(join(claimDir, member));
+    } catch {
+      throw new MaintenanceRefused('this claim could not be removed in full');
+    }
+  }
+  try {
+    rmdirSync(claimDir);
+  } catch {
+    throw new MaintenanceRefused('this claim could not be removed in full');
+  }
+}
+
 /**
  * Prove the tree at `path` is EXACTLY the claim this operation planned to remove.
  *
@@ -1362,6 +1648,7 @@ export type SafetyFailpoint =
   | 'after-quarantine-mark'
   | 'after-floor-proof'
   | 'after-deleting-mark'
+  | 'after-consuming-marker'
   | 'after-remove'
   | 'after-abandon-rename';
 
@@ -1564,7 +1851,8 @@ export function runSafetySetLifecycle(
         protectedNewestRollbackPoint: replanned.protectedNewestRollbackPoint,
         restorableRemaining: replanned.restorableRemaining,
         restorableTopLevel: replanned.restorableTopLevel,
-        entries: replanned.removals.map((name) => ({ name, state: 'pending' as const, reason: null })),
+        entries: replanned.removals.map((name) =>
+          ({ name, state: 'pending' as const, reason: null, consumeNonce: null })),
         phase: 'removing',
       };
       writeJournal(resolved.projectRoot, journal);
@@ -1639,12 +1927,27 @@ function executeSafetySet(
   // what matters to a reader is what the OPERATION has done and not which process did it.
   let effected = journal.entries.some((entry) => entry.state !== 'pending') || existsSync(quarantineDir);
 
-  const mark = (name: string, state: SafetyEntryState, reason: string | null): void => {
-    journal = {
+  /**
+   * Persist a state change, and only then believe it.
+   *
+   * THE DEFECT THIS CLOSES. The in-memory journal used to be mutated BEFORE the write was attempted, so a
+   * write that threw left this process believing a state the disk did not record. Every later decision in
+   * the same run — and every field of the report built on the way out — was then made against a document
+   * that does not exist. The write is the state; nothing here is true until it lands.
+   */
+  const mark = (
+    name: string,
+    state: SafetyEntryState,
+    reason: string | null,
+    consumeNonce: string | null = null,
+  ): void => {
+    const next: SafetySetJournal = {
       ...journal,
-      entries: journal.entries.map((entry) => (entry.name === name ? { name, state, reason } : entry)),
+      entries: journal.entries.map((entry) =>
+        (entry.name === name ? { name, state, reason, consumeNonce } : entry)),
     };
-    writeJournal(resolved.projectRoot, journal);
+    writeJournal(resolved.projectRoot, next);
+    journal = next;
   };
 
   /**
@@ -1817,40 +2120,109 @@ function executeSafetySet(
         stop(entry.name, safeReason(err));
         continue;
       }
+      const commitment = commitments.get(entry.name)!;
+      const claimDir = join(owned, entry.name);
       if (current === 'quarantined') {
         // AN INTACT, NOT-YET-CONSUMED TREE IS PROVED AGAINST WHAT WAS PLANNED, EVERY TIME, IMMEDIATELY BEFORE
         // IT IS DESTROYED.
         try {
-          proveClaimIsPlanned(join(owned, entry.name), commitments.get(entry.name)!);
+          proveClaimIsPlanned(claimDir, commitment);
         } catch (err) {
           stop(entry.name, safeReason(err));
           continue;
         }
+        // THE NONCE IS PERSISTED BEFORE THE MARKER IS WRITTEN, and the marker before the first `unlink`.
+        // That ordering is what makes "marker absent" mean "nothing has been unlinked yet" — a marker
+        // written before the journal recorded the nonce would be an authority nothing could check.
         try {
-          mark(entry.name, 'deleting', null);
+          mark(entry.name, 'deleting', null, randomBytes(12).toString('hex'));
         } catch (err) {
           stop(entry.name, safeReason(err));
           continue;
         }
         at('after-deleting-mark', entry.name);
       }
-      // A `deleting` TREE MAY BE PARTIAL, so it is not re-verified — that is the whole reason the state
-      // exists. What authorises finishing it is the ownership marker above and this entry's own record.
+
+      // ---- LIVE OWNERSHIP OF THE CHILD ABOUT TO BE CONSUMED --------------------------------------------
+      //
+      // THE DEFECT THIS CLOSES. This used to remove whatever directory occupied the planned child name, on
+      // the strength of the OUTER quarantine marker and this entry's own record. The outer marker proves the
+      // container and carries a list of NAMES; a name is not a tree. Anything moved to that name after
+      // `deleting` was persisted — a stranger's directory, a restore's fresh claim, an operator's folder —
+      // was recursively deleted.
+      //
+      // The consumption marker inside the child is the authority now, and the invariant it maintains is that
+      // the first `unlink` is always preceded by it. So absence is not ambiguity: it means nothing has been
+      // unlinked, and the tree must therefore still prove to be the planned claim exactly as an intact one
+      // does. A replacement fails that, and a legitimately partial tree never reaches it.
+      const consumeNonce = stateEntry(entry.name).consumeNonce;
+      if (consumeNonce === null) {
+        stop(entry.name, 'this claim is recorded as being removed and carries no consumption nonce, which '
+          + 'one run cannot produce. Nothing was removed for it, and nothing after it was touched.');
+        continue;
+      }
+      if (consumingMarkerPresent(claimDir)) {
+        const proof = readConsumingMarker(claimDir, journal, commitment, consumeNonce);
+        if (!proof.ok) {
+          stop(entry.name, `${proof.why}. Nothing was removed for it, and nothing after it was touched.`);
+          continue;
+        }
+      } else if (isEmptyDirectory(claimDir)) {
+        // THE TAIL OF A CONSUMPTION, and the one place the marker's absence is not a question.
+        //
+        // The consumption marker is unlinked immediately before the directory itself, so a removal that got
+        // everything out and then could not `rmdir` — a handle held open, a scanner, a permission that moved
+        // — leaves an EMPTY directory with no authority in it. Requiring the marker here would strand the
+        // operation: a resume could not prove an empty directory is the planned claim, and an abandon will
+        // not put an empty tree back under a trusted name either.
+        //
+        // It is safe because an empty directory holds nothing that can be lost, and this one is inside a
+        // quarantine directory this operation has already proved is its own. Nothing is read, followed or
+        // recursed: the next step removes exactly one empty directory.
+        notes.push(`${entry.name} was already emptied by an interrupted removal and only its directory was `
+          + 'left. Nothing was in it.');
+      } else {
+        // NOTHING HAS BEEN UNLINKED, so this tree has to be the whole planned claim. A replacement put here
+        // after the record was persisted dies exactly here, before a single entry of it is removed.
+        try {
+          proveClaimIsPlanned(claimDir, commitment);
+        } catch (err) {
+          stop(entry.name, `${safeReason(err)} This claim is recorded as being removed and carries no `
+            + 'consumption marker, so nothing of it had been removed yet and what is there now is not what '
+            + 'was planned. Nothing after it was touched.');
+          continue;
+        }
+        try {
+          writeConsumingMarker(claimDir, journal, commitment, consumeNonce);
+        } catch (err) {
+          stop(entry.name, safeReason(err));
+          continue;
+        }
+        at('after-consuming-marker', entry.name);
+      }
+
       try {
         effected = true;
         // THE BOUND COMES FROM WHAT THE CLAIM DECLARED ITSELF TO BE. A tree holding substantially more than
         // the manifest recorded is not the tree this command verified, and the walk refuses rather than
-        // carrying on into somebody's data.
-        remove(join(owned, entry.name), `restore claim ${entry.name}`,
-          removalEntryBound(byName.get(entry.name)?.entries ?? 0));
+        // carrying on into somebody's data. The consumption marker goes last, so a kill anywhere inside this
+        // leaves a tree that can still prove whose consumption it is.
+        removeConsumedClaim(claimDir, commitment, remove);
       } catch (err) {
         stop(entry.name, err instanceof MaintenanceRefused ? err.message
           : 'this claim could not be removed from the quarantine directory');
         continue;
       }
       at('after-remove', entry.name);
-      mark(entry.name, 'removed', null);
+      // THE TREE IS GONE, AND THE REPORT SAYS SO BEFORE ANYTHING ELSE IS ATTEMPTED.
+      //
+      // THE DEFECT THIS CLOSES. The state publication came first, and a journal write that failed here threw
+      // out of the run before the claim was ever added to `removed` — so the post-effect report an operator
+      // reads said NOTHING WAS REMOVED about a claim that no longer exists. What is on disk is not in doubt
+      // at this point; only the record of it is. The durable state stays `deleting`, which is what lets a
+      // resume close it out, and the report is truthful either way.
       recordRemoved(entry.name);
+      mark(entry.name, 'removed', null);
     }
 
     // 8. THE PROOF. The safety set this run promised to protect is verified again, FROM DISK, after every
@@ -1902,7 +2274,12 @@ function executeSafetySet(
   }
 
   function stateOf(name: string): SafetyEntryState {
-    return journal.entries.find((entry) => entry.name === name)!.state;
+    return stateEntry(name).state;
+  }
+
+  /** The journal's CURRENT record for a claim — the one on disk, because `mark` only believes what landed. */
+  function stateEntry(name: string): SafetyJournalEntry {
+    return journal.entries.find((entry) => entry.name === name)!;
   }
 
   /** Remove the quarantine directory when only its marker is left, and answer whether it is still there. */
@@ -2054,10 +2431,23 @@ export function abandonSafetySetLifecycle(
   const writeJournal = deps.journalWriter ?? writeSafetySetJournal;
   const clearJournal = deps.journalClearer ?? clearSafetySetJournal;
   const root = resolveMaintenanceRoot(projectRoot, 'project directory');
+  // ---- A PROJECT PART WAY THROUGH A RESTORE REFUSES THIS COMMAND ENTIRELY, ABANDON INCLUDED --------
+  //
+  // THE DEFECT THIS CLOSES. The contract this command states — in its usage, its note and its design — is
+  // that a project mid-restore refuses it. `--abandon` did not take that check, so an abandon could run
+  // beside a live restore and rename claim directories back into the destination that restore is publishing
+  // into. The deliberate exception is for an interrupted PRUNE, and only that: two commands that can each
+  // only be unwound after the other is a wedge with no way out, and retention never descends into a claim
+  // namespace, so an interrupted prune cannot make this recovery wrong. A live restore can.
+  //
+  // Checked here, BEFORE the lock and before `phase: 'abandoning'` is written, and again under the lock —
+  // because a check made before a lock is a check about a moment that has passed.
+  assertNoRestoreInProgress(root);
 
   const projectLock = acquireMaintenanceLock(root);
   let destinationLock: MaintenanceLock | null = null;
   try {
+    assertNoRestoreInProgress(root);
     const opening = readSafetySetJournal(root);
     if (opening === null) {
       throw new MaintenanceRefused('there is no interrupted safety-set lifecycle run in this project to abandon');
@@ -2135,35 +2525,75 @@ export function abandonSafetySetLifecycle(
         const source = join(quarantineDir, entry.name);
         const target = join(destinationDir, entry.name);
         const inQuarantine = existsSync(quarantineDir) && existsSync(source);
+        // PRESENCE OF THE NAME, not readability of what it resolves to: a dangling link at a claim's name
+        // still occupies it, and renaming onto it would be renaming onto something.
+        const targetTaken = lstatSync(target, { throwIfNoEntry: false }) !== undefined;
+
+        // ---- `deleting` IS ANSWERED FIRST, BECAUSE ONLY IT KNOWS WHAT AN ABSENCE MEANS ----------------
+        //
+        // THE DEFECT THIS CLOSES. The target-present branch came first and read as "never quarantined, or
+        // already put back by an interrupted abandon" — a sentence that is FALSE for a `deleting` entry. A
+        // `deleting` entry was definitely quarantined, and its tree may already have been destroyed; so an
+        // unrelated directory that had since taken its name was being read as a clean put-back. The entry
+        // was marked `pending`, counted as neither put back nor lost, and an abandon that had lost a safety
+        // set could render `RESULT: ABANDONED` and exit zero.
+        if (entry.state === 'deleting') {
+          if (inQuarantine) {
+            // A tree that was being consumed may be truncated. Putting a partial safety set back under a
+            // name an operator trusts is the exact failure the quarantine exists to prevent.
+            unresolved.push(entry.name);
+            notes.push(`${entry.name} was part way through being removed and may be incomplete. It was NOT `
+              + 'put back under its own name, because a partial safety set under a trusted name is worse '
+              + 'than none.');
+            continue;
+          }
+          // GONE. This operation was consuming that tree and it is not there any more: the removal landed
+          // and the record did not. Whatever is at its old name now is not it.
+          goneForever.push(entry.name);
+          current = markEntry(current, entry.name, 'removed', null);
+          writeJournal(root, current);
+          if (targetTaken) {
+            notes.push(`${entry.name} was part way through being removed and is gone. Something is at its `
+              + 'name again: that is NOT the claim this operation destroyed, this command did not put it '
+              + 'there, and nothing here touched it.');
+          }
+          continue;
+        }
+
         if (!inQuarantine) {
-          if (existsSync(target)) {
-            // Never quarantined, or already put back by an interrupted abandon. Either way it belongs there.
+          if (targetTaken) {
+            // ---- AN INTERRUPTED ABANDON RENAME, DISTINGUISHED WHERE THE DISTINCTION EXISTS ------------
+            //
+            // `quarantined` and something at its own name is the one case where the two readings can be
+            // told apart: a previous abandon really did rename it back and die before recording it, OR
+            // something unrelated took the name. Proving it against the commitment answers which, so a
+            // genuine put-back is REPORTED as one and a replacement is named and left alone — rather than
+            // both being silently marked `pending` and counted as neither.
+            if (entry.state === 'quarantined') {
+              try {
+                proveClaimIsPlanned(target, commitments.get(entry.name)!);
+              } catch {
+                unresolved.push(entry.name);
+                notes.push(`${entry.name} was recorded as set aside, and what is at its name now is not it. `
+                  + 'Nothing here touched either.');
+                continue;
+              }
+              putBack.push(entry.name);
+              current = markEntry(current, entry.name, 'pending', null);
+              writeJournal(root, current);
+              continue;
+            }
+            // `pending` or `failed`: this operation never moved it, so it is where it has always been.
             current = markEntry(current, entry.name, 'pending', null);
             writeJournal(root, current);
             continue;
           }
-          // IN NEITHER PLACE, AND WHAT THAT MEANS DEPENDS ON WHAT THE JOURNAL SAYS. Recorded `deleting` and
-          // absent from both: the removal landed and the record did not, so that claim is GONE. Recorded
-          // `pending`, `quarantined` or `failed` and absent from both: this operation never began removing
-          // it, so its absence was not caused here. That is a question, not a conclusion.
-          if (entry.state === 'deleting') {
-            goneForever.push(entry.name);
-            current = markEntry(current, entry.name, 'removed', null);
-            writeJournal(root, current);
-            continue;
-          }
+          // IN NEITHER PLACE, recorded `pending`, `quarantined` or `failed`: this operation never began
+          // removing it, so its absence was not caused here. That is a question, not a conclusion.
           unresolved.push(entry.name);
           continue;
         }
-        if (entry.state === 'deleting') {
-          // A tree that was being consumed may be truncated. Putting a partial safety set back under a name
-          // an operator trusts is the exact failure the quarantine exists to prevent.
-          unresolved.push(entry.name);
-          notes.push(`${entry.name} was part way through being removed and may be incomplete. It was NOT put `
-            + 'back under its own name, because a partial safety set under a trusted name is worse than none.');
-          continue;
-        }
-        if (existsSync(target)) {
+        if (targetTaken) {
           unresolved.push(entry.name);
           continue;
         }
@@ -2238,7 +2668,10 @@ function markEntry(
 ): SafetySetJournal {
   return {
     ...journal,
-    entries: journal.entries.map((entry) => (entry.name === name ? { name, state, reason } : entry)),
+    // AN ABANDON NEVER LEAVES AN ENTRY IN `deleting`, so it never writes a consumption nonce: it either puts
+    // a whole tree back (`pending`), records one as gone (`removed`), or leaves it exactly as it found it.
+    entries: journal.entries.map((entry) =>
+      (entry.name === name ? { name, state, reason, consumeNonce: null } : entry)),
   };
 }
 

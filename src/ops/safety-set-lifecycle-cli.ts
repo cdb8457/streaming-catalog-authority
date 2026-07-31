@@ -4,6 +4,8 @@ import {
   reportRefusal,
 } from './maintenance-cli-shared.js';
 import {
+  SAFETY_SET_REPORT,
+  SAFETY_SET_VERSION,
   SafetySetAbandonFailed,
   SafetySetFailed,
   abandonSafetySetLifecycle,
@@ -36,15 +38,63 @@ import { isDirectRun } from './direct-run.js';
 // THERE IS NO `--force`, NO `--yes` AND NO SCHEDULE. The protections are not defaults, and the Unraid example
 // gained a mode that prints this plan and has no mode that acts on it.
 //
-// `--json` MEANS EXACTLY ONE JSON DOCUMENT, ON ONE STREAM. Ordinary paths put it on stdout; a failure that
-// arrives after claims have moved puts it on stderr — the same stream ownership `ops:complete-restore` and
-// `ops:backup-retention` use, so all three automate the same way. Every remediation sentence dropped from
-// JSON mode is already inside the report's own `notes`.
+// `--json` MEANS EXACTLY ONE JSON DOCUMENT, ON ONE STREAM, ON EVERY PATH. Ordinary reports go to stdout; a
+// failure that arrives after claims have moved, a pre-effect refusal and a usage error go to stderr — the
+// same stream ownership `ops:complete-restore` and `ops:backup-retention` use, so all three automate the
+// same way. Every remediation sentence dropped from JSON mode is already inside the report's own `notes`,
+// and a refusal or a usage error becomes a `SafetySetRefusalDocument` rather than prose. `--help` is the one
+// documented exception and stays human text.
 
 export const SAFETY_SET_EXIT_OK = 0;
 export const SAFETY_SET_EXIT_FAILED = 1;
 export const SAFETY_SET_EXIT_USAGE = 2;
 export const SAFETY_SET_EXIT_REFUSED = 3;
+
+/**
+ * What `--json` emits when this command refuses or is misused.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * A FLAG THAT MEANS "MACHINE-READABLE" HAS TO HOLD ON THE PATHS A MACHINE ACTUALLY MEETS.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * THE DEFECT THIS CLOSES. The usage text and this command's own acceptance suite both promised exactly one
+ * JSON document on every path, and two paths emitted plain prose instead: a pre-effect refusal (exit 3) and
+ * a usage error (exit 2, followed by the whole usage text). Those are not rare paths — a refusal is the
+ * ordinary outcome of a scheduled `--plan` against a project that is mid-restore, and anything reading this
+ * command's output would have had to sniff whether the bytes were JSON before parsing them. A contract that
+ * holds on the success paths and breaks on the failure paths is not a contract.
+ *
+ * It carries the same `report`/`version` header as the real reports so one parser handles every document,
+ * and `state` distinguishes them: no reader has to infer the outcome from which fields are missing.
+ */
+export interface SafetySetRefusalDocument {
+  readonly report: typeof SAFETY_SET_REPORT;
+  readonly version: typeof SAFETY_SET_VERSION;
+  readonly ok: false;
+  readonly state: 'REFUSED' | 'USAGE';
+  /** The exit code this document is emitted with, so a reader that only has the bytes still knows. */
+  readonly exitCode: typeof SAFETY_SET_EXIT_REFUSED | typeof SAFETY_SET_EXIT_USAGE;
+  /** This product's own words, redacted the way every other surface is. Never a host path. */
+  readonly message: string;
+  readonly commands: 'none';
+  readonly network: 'none';
+}
+
+export function refusalDocument(
+  state: 'REFUSED' | 'USAGE',
+  message: string,
+): SafetySetRefusalDocument {
+  return {
+    report: SAFETY_SET_REPORT,
+    version: SAFETY_SET_VERSION,
+    ok: false,
+    state,
+    exitCode: state === 'REFUSED' ? SAFETY_SET_EXIT_REFUSED : SAFETY_SET_EXIT_USAGE,
+    message,
+    commands: 'none',
+    network: 'none',
+  };
+}
 
 function usage(): string {
   return [
@@ -90,7 +140,9 @@ function usage(): string {
     '                           evidence than a manifest — the plan says so beside every such decision.',
     '  --keep-minimum-restorable <n>  refuse the whole run if it would leave fewer restorable sets ACROSS THIS',
     `                           WHOLE DESTINATION than this (default: ${DEFAULT_SAFETY_SET_POLICY.keepMinimumRestorable})`,
-    '  --json                   print the machine-readable report, and NOTHING else on that stream',
+    '  --json                   print exactly one JSON document and NOTHING else on that stream, on every',
+    '                           path: plan, run, resume, abandon, an incomplete or post-effect failure, a',
+    '                           refusal and a usage error. --help stays human text.',
     '',
     'WHAT NO POLICY CAN REMOVE. The newest safety set this build could restore, and the newest safety set from',
     'BEFORE this build\'s schema. A claim with work in flight, one holding anything this build does not',
@@ -226,11 +278,20 @@ export function parseSafetySetArgs(argv: readonly string[]): ParsedSafetySetArgs
  * outside without one.
  */
 export function main(argv: readonly string[] = process.argv.slice(2), deps: SafetySetDeps = {}): number {
+  // `--help` IS HUMAN TEXT, EVEN BESIDE `--json`, and that is the one documented exception: it is a request
+  // for the manual, not for a report, and there is no report of a manual to emit.
   if (argv.includes('--help') || argv.includes('-h')) { console.log(usage()); return SAFETY_SET_EXIT_OK; }
   let args: ParsedSafetySetArgs;
   try {
     args = parseSafetySetArgs(argv);
   } catch (err) {
+    // THE FLAG IS READ FROM THE RAW ARGUMENTS, because the parse is what just failed. A usage error is the
+    // first thing an automated caller meets when it gets a flag wrong, and it is the last place that should
+    // hand back something it cannot parse.
+    if (argv.includes('--json')) {
+      console.error(JSON.stringify(refusalDocument('USAGE', reportRefusal(err)), null, 2));
+      return SAFETY_SET_EXIT_USAGE;
+    }
     console.error(reportRefusal(err));
     console.error('');
     console.error(usage());
@@ -320,6 +381,10 @@ export function main(argv: readonly string[] = process.argv.slice(2), deps: Safe
       console.error('');
       console.error(err.message);
       return SAFETY_SET_EXIT_FAILED;
+    }
+    if (args.json) {
+      console.error(JSON.stringify(refusalDocument('REFUSED', reportRefusal(err)), null, 2));
+      return SAFETY_SET_EXIT_REFUSED;
     }
     console.error(reportRefusal(err));
     return SAFETY_SET_EXIT_REFUSED;

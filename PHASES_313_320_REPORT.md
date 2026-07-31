@@ -51,8 +51,9 @@ this run must not touch.
 - `src/ops/safety-set-lifecycle.ts` — inventory, plan, digest, journal, quarantine, execute, floor re-proof,
   abandon, render
 - `src/ops/safety-set-lifecycle-cli.ts` — `ops:safety-set-lifecycle`
-- `test/safety-set-lifecycle.ts` — 81 checks
-- `test/helpers/safety-set-crash-child.mts` — a real run, killed at a named boundary
+- `test/safety-set-lifecycle.ts` — 81 checks at first cut, **98 after Correction 1**
+- `test/helpers/safety-set-crash-child.mts` — a real run, killed at a named boundary (nine of them
+  after Correction 1 added `after-consuming-marker`)
 - `docs/PHASES_313_320_SAFETY_SET_LIFECYCLE.md`
 
 **Changed**
@@ -180,7 +181,7 @@ deliberately **not** taking the mid-prune refusal, so the pair can never wedge e
 | Gate | Result |
 | --- | --- |
 | `npx tsc -p tsconfig.json --noEmit` | **PASS**, 0 errors |
-| `npm run test:safety-set-lifecycle` (new) | **81 passed, 0 failed** |
+| `npm run test:safety-set-lifecycle` (new) | **81 passed, 0 failed** — see *Correction 1* for the current count |
 | `npm run test:complete-restore` | 136 passed, 0 failed |
 | `npm run test:backup-retention` | 114 passed, 0 failed |
 | `npm run test:complete-backup` | 49 passed, 0 failed |
@@ -210,6 +211,143 @@ deliberately **not** taking the mid-prune refusal, so the pair can never wedge e
   was touched. The whole command, including `--confirm`, `--resume` and `--abandon`, is exercised end to end
   against real claims and real sets in temporary project roots.
 
+## Correction 1 — six defects found by independent review, all reachable, all fixed
+
+Every finding was correct. Three of them were exploitable, and the first is the one that mattered: a
+directory that was not ours could be recursively deleted. What follows is what each one was and what
+replaced it.
+
+### 1. CRITICAL — `deleting` authorised removing a NAME, not a TREE
+
+Once an entry was persisted as `deleting`, a resume proved the **outer** quarantine marker — which says the
+quarantine directory is this operation's and carries the list of names this operation put in it — and then
+recursively removed whatever directory now occupied the planned child name. It did not re-prove the child,
+deliberately, because a partially consumed tree cannot satisfy its commitment. **A list of names is not a
+tree.** Anything moved to that name after the record was persisted — a stranger's directory, an operator's
+folder, a fresh claim — was recursively deleted. The predictable name and the outer allowlist were being used
+as live child ownership, and neither is.
+
+The authority now lives **inside the child**, is bound to an unpredictable `consumeNonce` drawn per
+consumption and persisted in the journal entry, and — the part that makes it work at all — **it is the last
+thing removed**. One invariant answers every question a recovery asks:
+
+> **The first `unlink` inside a claim is always preceded by a valid consumption marker inside it.**
+
+So the marker's absence is not ambiguity. Absent and non-empty means nothing has been unlinked, and the tree
+must still prove to be the planned claim exactly as an intact one does — which a replacement fails. Present
+and ours means finishing is authorised whatever state the tree is in. Present and not ours is refused.
+The ordering is prove → **persist the nonce** → write the marker → remove; a marker written before the
+journal recorded the nonce would be an authority nothing could check.
+
+**Journal schema 2**, and version 1 is refused at the boundary: a version-1 `deleting` entry describes a
+consumption whose live child can never be identified, and there is nothing correct to fill the field in with.
+
+**A window I found while reviewing my own fix**, and closed in the same change: the consumption marker is
+unlinked immediately before the directory itself, so a removal that got everything out and then could not
+`rmdir` left an **empty** directory with no authority in it. Requiring the marker there would have stranded
+the operation — nothing can prove an empty directory is the planned claim, and an abandon will not put an
+empty tree back either. An empty directory holds nothing that can be lost and sits inside a quarantine
+already proved to be ours, so it is removed; one stray byte in it and the tree has to prove itself again.
+
+### 2. Inventory admission traversed links to decide admission
+
+`inventoryClaims` asked "does this entry carry a marker" by `lstat`ing `<entry>/catalog-restore-claim.json` —
+a path that **resolves `<entry>`**. For a symbolic link or a Windows junction the probe therefore traversed
+the link, out of the destination and into whatever it pointed at, purely to answer a question about whether
+to look at it. The entry itself is now `lstat`ed first and a child of it is named only once it is known to be
+a real directory. A link at a claim-**shaped** name is still admitted by its name alone and classified
+`NOT_A_DIRECTORY` without being opened; a link at any other name is not this command's business and is not
+touched, opened or followed to find out.
+
+### 3. `--abandon` did not take the live-restore refusal
+
+The usage, the operator note and the design all state that a project part way through a restore refuses this
+command entirely. `--abandon` did not check, so an abandon could run beside a live restore and rename claim
+directories back into the destination that restore is publishing into. It is checked now before the lock and
+again under it, **before `phase: 'abandoning'` is written or anything is moved**, so a refused abandon leaves
+the journal byte-identical. The deliberate exception for an interrupted **prune** is preserved and is the
+only one: two commands that can each only be unwound after the other is a wedge with no way out.
+
+**And presence is now asked without following a link.** `existsSync` follows a symbolic link, so it answered
+*false* for a dangling one — exactly the state a half-tidied project is in — and answered about the target
+rather than the name for every link that resolved. `lstat` answers about the name itself: a file, a
+directory, a link, a dangling link or a device all block, on `--plan`, `--confirm`, `--resume` and
+`--abandon` alike. A journal this build cannot read is still a journal.
+
+### 4. An abandon could report a destroyed safety set as a clean unwind
+
+For a journal entry persisted as `deleting`, "source absent, target present" was read by a branch whose
+comment said *never quarantined, or already put back by an interrupted abandon* — a sentence that is **false**
+for `deleting`. Such an entry was definitely quarantined and its tree may already have been destroyed, so an
+unrelated directory that had since taken its name was read as a clean put-back: the entry was marked
+`pending`, counted as neither put back nor lost, and an abandon that had lost a safety set could render
+`RESULT: ABANDONED` and exit zero.
+
+`deleting` is now answered **first**, because only it knows what an absence means. A `deleting` entry whose
+tree is gone is loss, named as such; whatever occupies its old name is reported as *not* the claim this
+operation destroyed and is never touched. And where the distinction genuinely exists — a `quarantined` entry
+with something at its own name — the two readings are separated by **proving the target against the
+commitment**: a genuine interrupted rename is reported as *put back*, a replacement is named unresolved and
+left alone. For `pending` and `failed` there is nothing to distinguish, because this operation never moved
+them.
+
+### 5. `--json` emitted prose on the two paths a machine meets first
+
+The usage text and this suite's own title both promised exactly one JSON document on every path, and two
+paths emitted plain text: a pre-effect refusal (exit 3) and a usage error (exit 2, followed by the entire
+usage text). A refusal is the ordinary outcome of a scheduled `--plan` against a busy project, so anything
+automating this had to sniff whether the bytes were JSON before parsing them. Both now emit a
+`SafetySetRefusalDocument` — same `report`/`version` header as every other document, plus `state`
+(`REFUSED`/`USAGE`), `exitCode` and this product's own redacted words — on **stderr**, with stdout carrying
+nothing. `--help` is the one documented exception and stays human text even beside `--json`.
+
+### 6. A post-remove journal failure reported that nothing was removed
+
+If the recursive removal succeeded and the following journal write failed, the state publication came before
+the claim was added to the report — so the post-effect report an operator reads said **nothing was removed**
+about a safety set that no longer exists. The report now names the claim and its bytes before the publication
+is attempted; the durable state stays `deleting`, which is what lets a resume close it out. `mark` was also
+changed to commit its in-memory update **only after the write lands**, so this process can never believe a
+state the disk does not record.
+
+### Correction 1 gates
+
+| Gate | Result |
+| --- | --- |
+| `npx tsc -p tsconfig.json --noEmit` | **PASS**, 0 errors |
+| `npm run test:safety-set-lifecycle` | **98 passed, 0 failed** (was 81) |
+| `npm run test:complete-restore` | 136 passed, 0 failed |
+| `npm run test:backup-retention` | 114 passed, 0 failed |
+| `npm run test:complete-backup` | 49 passed, 0 failed |
+| `npm run test:backup-components` | 41 passed, 0 failed |
+| `npm run test:release-readiness` | 44 passed, 0 failed |
+| `npm run test:deploy` | 210 passed, 0 failed |
+| `npm run test:operator-ui-service` | 5 passed, 0 failed |
+| `npm run test:doctor-monitor` | 19 passed, 0 failed |
+| `npm run test:inventory` | **ok: true**, 324 suites, no drift |
+
+Broad `offline`/`db`/`docker` aggregates were **not** run for this correction, as instructed.
+
+### What the 17 new checks drive
+
+A real child-process kill after `deleting` is persisted, the child then **replaced with a stranger tree**,
+resumed, and the stranger proved **byte-identical** with nothing after it destroyed — and the same fixture
+without the replacement proved to still finish. A kill at the new `after-consuming-marker` boundary, with the
+marker's nonce asserted equal to the journal's and the safety set inside it byte-identical. A **real partial
+removal** (a component genuinely unlinked, then a throw) proved to leave its authority behind, then replaced
+and refused, then — in a second fixture — resumed to completion. Five ways a consumption marker can be wrong.
+A member appearing inside a tree mid-consumption. The emptied-tail case and its one-stray-byte counterexample.
+A version-1 journal, a `deleting` entry with no nonce, a nonce that is not one, and a nonce on a state that
+never carries one. Shaped, unshaped and dangling junctions with an **external marker target** asserted
+untouched. An abandon refused mid-restore with the journal proved byte-identical and no lock left behind, and
+a dangling link, a directory and an empty file at the restore journal's name each blocking all four modes. A
+`deleting` claim whose name was taken by a stranger, proved to be reported as loss with the stranger
+untouched. A genuine interrupted abandon rename reported as *put back*, beside a replacement in the same
+journal state reported as unresolved. `JSON.parse` over the refusal and usage streams with the opposite
+stream asserted empty, the usage prose asserted absent, and both human paths asserted unchanged. And a
+writer failpoint aimed at the `removed` publication, asserting the report names the gone claim and its bytes,
+the disk still says `deleting`, the tree is really gone, a resume closes it out and an abandon calls it loss.
+
 ## Remaining review risks
 
 1. **The shared-destination boundary is documented, not closed.** Another project's restore publishing into a
@@ -228,13 +366,18 @@ deliberately **not** taking the mid-prune refusal, so the pair can never wedge e
    identically.
 5. **`--resume` refuses while a retention prune is interrupted.** `--abandon` is always available, so it is
    not a wedge — but an operator who crashed both commands must deal with the prune first or abandon this one.
-6. **This tranche changed two shipped modules to share primitives.** `complete-restore.ts` (marker id and file
+6. **Correction 1 bumped the journal schema to 2 and changed the removal protocol.** A `deleting` entry now
+   carries a consumption nonce and the tree being consumed carries a marker that is removed last. An
+   operator holding an interrupted run written by the pre-correction build will have it refused at the
+   version boundary and must `--abandon` it with that build, or remove the journal by hand. Nothing shipped,
+   so no real installation is in that state — but it is the kind of thing a reviewer should see stated.
+7. **This tranche changed two shipped modules to share primitives.** `complete-restore.ts` (marker id and file
    name) and `backup-retention.ts` (the set-identity proof, the manifest shape, the inventory-row validator).
    Both keep their exact refusal wording and both suites pass unmodified — but a reviewer should confirm they
    are happy with the coupling, because it is the one change in this tranche that touches code the previous
    two tranches own.
-7. **This tranche added `test:phase313-local` to the required-suite list and the workflow.** Same list, same
+8. **This tranche added `test:phase313-local` to the required-suite list and the workflow.** Same list, same
    family, same argument as the two entries beside it — a reviewer should confirm they are happy with the CI
    obligation.
-8. **The whole tranche is proved against a real filesystem and no Docker daemon**, which is correct here
+9. **The whole tranche is proved against a real filesystem and no Docker daemon**, which is correct here
    because this command issues no command at all — but nothing in it ran as a live long-running process.

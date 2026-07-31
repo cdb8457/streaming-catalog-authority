@@ -44,12 +44,15 @@ import {
   CLAIM_MARKER_EXPECTATION,
   CLAIM_NAME_RE,
   MAX_CLAIM_ENTRIES,
+  SAFETY_CONSUMING_MARKER_NAME,
+  consumingMarkerPresent,
   SAFETY_ENTRY_STATES,
   SAFETY_QUARANTINE_CLAIM_PREFIX,
   SAFETY_QUARANTINE_MARKER_NAME,
   SAFETY_QUARANTINE_PREFIX,
   SAFETY_SET_JOURNAL_NAME,
   SAFETY_SET_JOURNAL_VERSION,
+  SAFETY_SET_REPORT,
   SafetySetAbandonFailed,
   SafetySetFailed,
   abandonSafetySetLifecycle,
@@ -67,6 +70,7 @@ import {
   resolveSafetySetRequest,
   runSafetySetLifecycle,
   safetyPreconditionRefusal,
+  writeSafetySetJournal,
   safetyQuarantineDirName,
   type SafetyEntryState,
   type SafetySetJournal,
@@ -556,6 +560,52 @@ test('a valid claim MOVED to another name is found, and refused for the name dis
   assert(found !== undefined, 'a marker under an ordinary name is still found');
   assertEq(found!.claimClass, 'MALFORMED', 'and still refused');
   assertEq(found!.evidence, 'MARKER_NAME_DISAGREES', 'for exactly this reason');
+});
+
+test('CORRECTION 1: admission never probes a child of a link, shaped or not', () => {
+  const root = makeProject('link-admission');
+  // A DIRECTORY OUTSIDE THE DESTINATION, holding a marker that would read as a perfectly valid claim. The
+  // whole point is that this command must never find out.
+  const outside = makeProject('link-admission-outside');
+  const nonce = createHash('sha256').update('nonce:outside').digest('hex').slice(0, 24);
+  const planDigest = createHash('sha256').update('plan:outside').digest('hex');
+  const bait = join(outside, safetySetClaimDirName(nonce));
+  mkdirSync(bait, { recursive: true });
+  writeClaimMarker(bait, planDigest, operationSuffix(planDigest), nonce);
+  const baitBefore = snapshot(bait);
+
+  // 1. AN UNSHAPED LINK. The first cut `lstat`ed `<entry>/catalog-restore-claim.json` to decide admission,
+  // which RESOLVES `<entry>` — so this junction was traversed, out of the destination, purely to answer a
+  // question about whether to look at it. It is now not admitted, not opened and not followed.
+  const unshaped = join(root, 'backups', 'somebody-elses-folder');
+  if (linkDirectory(bait, unshaped)) {
+    const names = inventoryClaims(join(root, 'backups')).map((entry) => entry.name);
+    assertEq(names.includes('somebody-elses-folder'), false,
+      `an unshaped link is not inventoried at all: ${names.join(', ')}`);
+    assert(sameSnapshot(baitBefore, snapshot(bait)), 'and what it points at is untouched');
+  }
+
+  // 2. A SHAPED LINK is still admitted — by its NAME alone — so an operator sees it. It is classified from
+  // an `lstat` of the link itself and is never opened.
+  const shaped = join(root, 'backups', safetySetClaimDirName('d'.repeat(24)));
+  if (linkDirectory(bait, shaped)) {
+    const row = inventoryClaims(join(root, 'backups'))
+      .find((entry) => entry.name === safetySetClaimDirName('d'.repeat(24)));
+    assert(row !== undefined, 'a shaped link IS inventoried, so it is visible');
+    assertEq(row!.claimClass, 'NOT_A_DIRECTORY', 'and classified from the link itself');
+    assertEq(row!.evidence, 'NOT_A_DIRECTORY', 'with the evidence to match');
+    assertEq(row!.nonce, null, 'nothing about it is proved');
+    assert(sameSnapshot(baitBefore, snapshot(bait)), 'and what it points at is STILL untouched');
+  }
+
+  // 3. A DANGLING link at a shaped name is not a reason to throw, either.
+  const dangling = join(root, 'backups', safetySetClaimDirName('f'.repeat(24)));
+  if (linkDirectory(join(outside, 'never-existed'), dangling)) {
+    const row = inventoryClaims(join(root, 'backups'))
+      .find((entry) => entry.name === safetySetClaimDirName('f'.repeat(24)));
+    assert(row !== undefined && !REMOVABLE_CLAIM_CLASSES.includes(row.claimClass),
+      'a dangling shaped link is inventoried and is not removable');
+  }
 });
 
 test('a reparse point at a claim-shaped name is NOT_A_DIRECTORY, and is never opened', () => {
@@ -1076,6 +1126,9 @@ function crashFixture(name: string): { readonly root: string; readonly a: MadeCl
 
 const CRASH_POLICY = { keepLast: 1, minAgeDays: 7 };
 
+/** The consumption nonce the precondition matrix arranges for a `deleting` entry. Twenty-four hex. */
+const MATRIX_CONSUME_NONCE = 'abcdef0123456789abcdef01';
+
 test('killed after the journal: nothing has moved, and a resume finishes the operation', () => {
   const { root, a, keeper } = crashFixture('crash-journal');
   const digest = crash(root, 'after-journal', { policy: CRASH_POLICY });
@@ -1200,6 +1253,198 @@ test('a resume whose destination lost its restorable sets HALTS BEFORE DELETING,
 });
 
 // -----------------------------------------------------------------------------------------------------------
+// Correction 1 — live ownership of the child being consumed
+// -----------------------------------------------------------------------------------------------------------
+
+/** Where the tree being consumed lives once a run has set it aside. */
+function quarantinedClaim(root: string, name: string): string {
+  return join(root, 'backups', safetyQuarantineDirName(SUFFIX), name);
+}
+
+test('THE DEFECT: a child REPLACED after `deleting` was persisted is refused, not recursively deleted', () => {
+  const { root, a, keeper } = crashFixture('replace-deleting');
+  const digest = crash(root, `after-deleting-mark:${a.name}`, { policy: CRASH_POLICY });
+  const quarantined = quarantinedClaim(root, a.name);
+  // THE EXACT WINDOW. The journal says `deleting`; nothing has been unlinked yet, so there is no consumption
+  // marker. The first cut proved only the OUTER quarantine marker here — whose allowlist is a list of NAMES —
+  // and then recursively removed whatever directory occupied this one.
+  assertEq(journalOf(root).entries[0]!.state, 'deleting', 'the state is persisted');
+  assertEq(consumingMarkerPresent(quarantined), false, 'and nothing has been unlinked, so there is no marker');
+
+  rmSync(quarantined, { recursive: true });
+  mkdirSync(quarantined, { recursive: true });
+  writeFileSync(join(quarantined, 'their-photos.txt'), 'irreplaceable\n', 'utf8');
+  mkdirSync(join(quarantined, 'a-folder'), { recursive: true });
+  writeFileSync(join(quarantined, 'a-folder', 'more.txt'), 'also irreplaceable\n', 'utf8');
+  const before = snapshot(quarantined);
+
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'the run did not succeed');
+  assert(report.failed.some((failure) => failure.name === a.name), 'it stopped on the replaced claim');
+  assert(sameSnapshot(before, snapshot(quarantined)), 'THE STRANGER TREE IS BYTE-IDENTICAL');
+  assertEq(report.removed.length, 0, 'nothing was removed at all');
+  assert(existsSync(keeper.dir), 'and the protected claim is exactly where it was');
+});
+
+test('a LEGITIMATE tree at the same moment still resumes, and its authority is written before the first unlink', () => {
+  const { root, a } = crashFixture('legit-deleting');
+  const digest = crash(root, `after-deleting-mark:${a.name}`, { policy: CRASH_POLICY });
+  const quarantined = quarantinedClaim(root, a.name);
+  assertEq(consumingMarkerPresent(quarantined), false, 'no marker yet');
+  const report = resume(root, digest);
+  assert(report.ok, `the resume finished: ${JSON.stringify(report.failed)}`);
+  assertEq(existsSync(quarantined), false, 'and the tree is gone');
+});
+
+test('killed AFTER the consumption marker: the tree is intact, marked, and a resume finishes it', () => {
+  const { root, a } = crashFixture('after-consuming');
+  const whole = snapshot(a.dir);
+  const digest = crash(root, `after-consuming-marker:${a.name}`, { policy: CRASH_POLICY });
+  const quarantined = quarantinedClaim(root, a.name);
+  assert(consumingMarkerPresent(quarantined), 'the authority for the first unlink is in place');
+  const marker = JSON.parse(readFileSync(join(quarantined, SAFETY_CONSUMING_MARKER_NAME), 'utf8')) as
+    { consumeNonce: string; claim: string };
+  assertEq(marker.claim, a.name, 'it names this claim');
+  assertEq(marker.consumeNonce, journalOf(root).entries[0]!.consumeNonce, 'and the nonce the journal recorded');
+  // The tree is otherwise untouched — the marker is written before anything is removed, not during. The
+  // safety set is still byte-identical to the one that was quarantined.
+  const members = readdirSync(quarantined).slice().sort()
+    .filter((name) => name !== SAFETY_CONSUMING_MARKER_NAME);
+  assertEq(JSON.stringify(members), JSON.stringify([SAFETY_CLAIM_MARKER_NAME, a.setName].sort()),
+    'the claim still holds exactly its marker and its safety set');
+  const setBefore = new Map([...whole].filter(([key]) => key.startsWith(`${a.setName!}/`)));
+  const setAfter = new Map([...snapshot(quarantined)].filter(([key]) => key.startsWith(`${a.setName!}/`)));
+  assert(sameSnapshot(setBefore, setAfter), 'and the safety set inside it is byte-identical');
+  assert(resume(root, digest).ok, 'a resume finishes it');
+  assertEq(existsSync(quarantined), false, 'and the tree is gone');
+});
+
+test('a PARTIALLY consumed tree keeps its authority, and a replacement of it is still refused', () => {
+  const { root, a } = crashFixture('partial-then-replaced');
+  const digest = crash(root, `after-deleting-mark:${a.name}`, { policy: CRASH_POLICY });
+  const quarantined = quarantinedClaim(root, a.name);
+  // A REAL PARTIAL REMOVAL: one component is unlinked and the removal then fails.
+  const partial = resume(root, digest, {
+    remover: (path: string) => {
+      rmSync(join(path, COMPONENT_ARTIFACT_NAMES.database));
+      throw new MaintenanceRefused('the safety set could not be removed in full');
+    },
+  });
+  assertEq(partial.ok, false, 'the removal did not complete');
+  assert(consumingMarkerPresent(quarantined), 'the authority SURVIVED the partial removal — it goes last');
+  assertEq(journalOf(root).entries[0]!.state, 'deleting', 'and the journal still authorises finishing it');
+
+  // NOW REPLACE THE PARTIAL TREE. A stranger's directory carries no consumption marker, so the run falls to
+  // the "nothing has been unlinked" branch and has to prove it is the planned claim, which it is not.
+  rmSync(quarantined, { recursive: true });
+  mkdirSync(quarantined, { recursive: true });
+  writeFileSync(join(quarantined, 'theirs.txt'), 'not ours\n', 'utf8');
+  const before = snapshot(quarantined);
+  const refused = resume(root, digest);
+  assertEq(refused.ok, false, 'the replacement is refused');
+  assertEq(refused.removed.length, 0, 'nothing was removed');
+  assert(sameSnapshot(before, snapshot(quarantined)), 'and it is byte-identical');
+});
+
+test('a legitimate partial removal still finishes on a later resume', () => {
+  const { root, a } = crashFixture('partial-finishes');
+  const digest = crash(root, `after-deleting-mark:${a.name}`, { policy: CRASH_POLICY });
+  const quarantined = quarantinedClaim(root, a.name);
+  const partial = resume(root, digest, {
+    remover: (path: string) => {
+      rmSync(join(path, COMPONENT_ARTIFACT_NAMES.database));
+      throw new MaintenanceRefused('the safety set could not be removed in full');
+    },
+  });
+  assertEq(partial.ok, false, 'the first attempt did not complete');
+  assert(partial.retained !== null && partial.retained.holds.includes(a.name), 'and the report names the tree');
+  const second = resume(root, digest);
+  assert(second.ok, `the second resume finishes it: ${JSON.stringify(second.failed)}`);
+  assert(second.removed.includes(a.name), 'and reports what the OPERATION removed');
+  assertEq(existsSync(quarantined), false, 'the tree is gone');
+  assertEq(existsSync(join(root, 'backups', safetyQuarantineDirName(SUFFIX))), false,
+    'and the quarantine directory was cleaned up');
+});
+
+test('the TAIL of a consumption — emptied, marker gone, rmdir failed — resumes rather than stranding', () => {
+  // The consumption marker is unlinked immediately before the directory itself, so a removal that got
+  // everything out and then could not `rmdir` leaves an EMPTY directory with no authority in it. Requiring
+  // the marker there would strand the operation: nothing can prove an empty directory is the planned claim,
+  // and an abandon will not put an empty tree back under a trusted name either.
+  const { root, a } = crashFixture('consumption-tail');
+  const digest = crash(root, `after-consuming-marker:${a.name}`, { policy: CRASH_POLICY });
+  const quarantined = quarantinedClaim(root, a.name);
+  rmSync(quarantined, { recursive: true });
+  mkdirSync(quarantined, { recursive: true });
+  assertEq(consumingMarkerPresent(quarantined), false, 'the authority is gone with everything else');
+  assertEq(readdirSync(quarantined).length, 0, 'and the directory is empty');
+  const report = resume(root, digest);
+  assert(report.ok, `the resume finishes it: ${JSON.stringify(report.failed)}`);
+  assert(report.removed.includes(a.name), 'and reports the claim as removed');
+  assertEq(existsSync(quarantined), false, 'the empty directory is gone');
+  // AND AN EMPTY DIRECTORY IS THE ONLY THING THAT PASSES THAT BRANCH: one stray byte in it and the tree has
+  // to prove it is the planned claim again.
+  const strict = crashFixture('consumption-tail-strict');
+  const strictDigest = crash(strict.root, `after-consuming-marker:${strict.a.name}`, { policy: CRASH_POLICY });
+  const strictDir = quarantinedClaim(strict.root, strict.a.name);
+  rmSync(strictDir, { recursive: true });
+  mkdirSync(strictDir, { recursive: true });
+  writeFileSync(join(strictDir, 'theirs.txt'), 'not empty\n', 'utf8');
+  const before = snapshot(strictDir);
+  const refused = resume(strict.root, strictDigest);
+  assertEq(refused.ok, false, 'a non-empty replacement is still refused');
+  assert(sameSnapshot(before, snapshot(strictDir)), 'and is byte-identical');
+});
+
+test('a consumption marker for another consumption, or an edited one, authorises nothing', () => {
+  const cases: Array<[string, (path: string) => void]> = [
+    ['a different consumption nonce', (path) => {
+      const marker = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      writeFileSync(path, `${JSON.stringify({ ...marker, consumeNonce: MATRIX_CONSUME_NONCE }, null, 2)}\n`, 'utf8');
+    }],
+    ['a different claim', (path) => {
+      const marker = JSON.parse(readFileSync(path, 'utf8')) as Record<string, unknown>;
+      writeFileSync(path, `${JSON.stringify({ ...marker, claim: safetySetClaimDirName('e'.repeat(24)) }, null, 2)}\n`, 'utf8');
+    }],
+    ['an edited commitment', (path) => {
+      const marker = JSON.parse(readFileSync(path, 'utf8')) as { commitment: Record<string, unknown> };
+      marker.commitment = { ...marker.commitment, bytes: 1 };
+      writeFileSync(path, `${JSON.stringify(marker, null, 2)}\n`, 'utf8');
+    }],
+    ['a marker that is not readable', (path) => { writeFileSync(path, '{ broken', 'utf8'); }],
+    ['a marker that is not a record', (path) => { writeFileSync(path, '42', 'utf8'); }],
+  ];
+  for (const [label, mutate] of cases) {
+    const { root, a } = crashFixture(`consuming-${label.replace(/[^a-z]/g, '')}`);
+    const digest = crash(root, `after-consuming-marker:${a.name}`, { policy: CRASH_POLICY });
+    const quarantined = quarantinedClaim(root, a.name);
+    mutate(join(quarantined, SAFETY_CONSUMING_MARKER_NAME));
+    const before = snapshot(quarantined);
+    const report = resume(root, digest);
+    assertEq(report.ok, false, `${label}: the run did not succeed`);
+    assertEq(report.removed.length, 0, `${label}: and removed nothing`);
+    assert(sameSnapshot(before, snapshot(quarantined)), `${label}: the tree is byte-identical`);
+  }
+});
+
+test('a consumption never removes anything that was not committed to, and never in place', () => {
+  const { root, a } = crashFixture('consuming-shape');
+  const digest = crash(root, `after-consuming-marker:${a.name}`, { policy: CRASH_POLICY });
+  const quarantined = quarantinedClaim(root, a.name);
+  // A MEMBER THIS OPERATION DID NOT COMMIT TO. The bound from the manifest is about SIZE; this is about
+  // SHAPE, and a tree that grew a member is not the tree that was proved.
+  mkdirSync(join(quarantined, 'appeared'), { recursive: true });
+  writeFileSync(join(quarantined, 'appeared', 'theirs.txt'), 'not ours\n', 'utf8');
+  const before = snapshot(quarantined);
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'the run did not succeed');
+  assert(sameSnapshot(before, snapshot(quarantined)), 'and nothing inside it was removed');
+  // AND NOTHING WAS EVER DELETED IN PLACE: the destination still holds only claims and ordinary sets.
+  assert(!existsSync(a.dir), 'the claim is set aside, not at its own name');
+  assert(digest.length === 64, 'the digest was real');
+});
+
+// -----------------------------------------------------------------------------------------------------------
 // Phase 316 — journal authority: forgeries with recomputed digests
 // -----------------------------------------------------------------------------------------------------------
 
@@ -1237,7 +1482,7 @@ function forgeWithFabricatedClaim(root: string, row: ClaimInventoryEntry): void 
       restorableTopLevel: evaluation.restorableTopLevel,
       entries: evaluation.removals.map((name) => {
         const existing = journal.entries.find((entry) => entry.name === name);
-        return existing ?? { name, state: 'pending' as const, reason: null };
+        return existing ?? { name, state: 'pending' as const, reason: null, consumeNonce: null };
       }),
     };
   });
@@ -1251,7 +1496,8 @@ test('a forged journal that moves the PROTECTED claim into the removal list is r
     decisions: journal.decisions.map((decision) => (decision.name === keeper.name
       ? { ...decision, decision: 'remove' as const, reason: 'BEYOND_KEEP_WINDOW' as const } : decision)),
     removals: [...journal.removals, keeper.name],
-    entries: [...journal.entries, { name: keeper.name, state: 'pending' as const, reason: null }],
+    entries: [...journal.entries,
+      { name: keeper.name, state: 'pending' as const, reason: null, consumeNonce: null }],
     restorableRemaining: 1,
   }));
   refuses(() => readSafetySetJournal(root), 'not the ones this build makes', 'the forgery');
@@ -1344,8 +1590,45 @@ test('A SELF-CONSISTENT FORGERY pointing at a stranger\'s directory passes every
   assert(digest !== forged!.planDigest, 'the forgery had to recompute the digest, and it did');
 });
 
+test('a VERSION 1 journal is refused for being one, because it can carry no consumption record', () => {
+  // The correction that added `consumeNonce` could not be a compatible addition: a version-1 `deleting`
+  // entry describes a consumption whose live child can never be identified, and there is nothing correct to
+  // fill the field in with. An old document is refused AT THE BOUNDARY rather than upgraded.
+  const { root } = crashFixture('version-one');
+  crash(root, 'after-journal', { policy: CRASH_POLICY });
+  const raw = JSON.parse(readFileSync(join(root, SAFETY_SET_JOURNAL_NAME), 'utf8')) as Record<string, unknown>;
+  assertEq(raw.version, SAFETY_SET_JOURNAL_VERSION, 'this build writes the current version');
+  assertEq(SAFETY_SET_JOURNAL_VERSION, 2, 'which is 2');
+  writeFileSync(join(root, SAFETY_SET_JOURNAL_NAME),
+    `${JSON.stringify({ ...raw, version: 1 }, null, 2)}\n`, 'utf8');
+  refuses(() => readSafetySetJournal(root), 'its version is 1 and this build writes 2', 'a version-1 journal');
+});
+
+test('a `deleting` entry without a consumption nonce, or a nonce on any other state, is refused', () => {
+  const { root, a } = crashFixture('nonce-shape');
+  crash(root, `after-deleting-mark:${a.name}`, { policy: CRASH_POLICY });
+  const original = readFileSync(join(root, SAFETY_SET_JOURNAL_NAME), 'utf8');
+  const withEntries = (mutate: (entry: Record<string, unknown>) => Record<string, unknown>): void => {
+    const journal = JSON.parse(original) as Record<string, unknown>;
+    const entries = (journal.entries as Array<Record<string, unknown>>).map((entry) => mutate(entry));
+    writeFileSync(join(root, SAFETY_SET_JOURNAL_NAME),
+      `${JSON.stringify({ ...journal, entries }, null, 2)}\n`, 'utf8');
+  };
+  assert((JSON.parse(original) as SafetySetJournal).entries[0]!.consumeNonce !== null,
+    'the real transition drew and persisted one');
+  withEntries((entry) => (entry.state === 'deleting' ? { ...entry, consumeNonce: null } : entry));
+  refuses(() => readSafetySetJournal(root), 'carries no consumption nonce', 'a deleting entry with no nonce');
+  withEntries((entry) => (entry.state === 'deleting' ? { ...entry, consumeNonce: 'not-hex' } : entry));
+  refuses(() => readSafetySetJournal(root), 'carries no consumption nonce', 'a nonce that is not one');
+  withEntries((entry) => ({ ...entry, state: 'pending', reason: null, consumeNonce: MATRIX_CONSUME_NONCE }));
+  refuses(() => readSafetySetJournal(root), 'is not being removed carries a consumption nonce',
+    'a nonce on a state that never has one');
+  writeFileSync(join(root, SAFETY_SET_JOURNAL_NAME), original, 'utf8');
+  assert(readSafetySetJournal(root) !== null, 'and the untouched journal still reads');
+});
+
 test('a journal at any other version is refused AT THE VERSION BOUNDARY', () => {
-  for (const version of [0, 2, '1', null]) {
+  for (const version of [0, 3, '2', null]) {
     const { root } = crashFixture(`version-${String(version)}`);
     crash(root, 'after-journal', { policy: CRASH_POLICY });
     const raw = JSON.parse(readFileSync(join(root, SAFETY_SET_JOURNAL_NAME), 'utf8')) as Record<string, unknown>;
@@ -1587,7 +1870,15 @@ test('the executor agrees with the table on every combination, and an illegal on
         // operator's own text editor could make, and it is exactly the tampering the table has to answer.
         const journal = journalOf(root);
         const entries = journal.entries.map((entry) => (entry.name === subject.name
-          ? { name: entry.name, state, reason: state === 'failed' ? 'a previous run said so' : null }
+          ? {
+            name: entry.name,
+            state,
+            reason: state === 'failed' ? 'a previous run said so' : null,
+            // A `deleting` ENTRY WITHOUT A CONSUMPTION NONCE IS NOT A STATE THIS COMMAND WRITES, and the
+            // journal reader refuses it before the executor sees it — so the matrix arranges the nonce the
+            // real transition would have drawn, and the consumption marker beside it where one is needed.
+            consumeNonce: state === 'deleting' ? MATRIX_CONSUME_NONCE : null,
+          }
           : entry));
         writeFileSync(join(root, SAFETY_SET_JOURNAL_NAME),
           `${JSON.stringify({ ...journal, entries }, null, 2)}\n`, 'utf8');
@@ -1623,9 +1914,10 @@ test('a removal that unlinks something and then throws stays `deleting`, and a s
     remover: (path: string) => {
       // A REAL PARTIAL REMOVAL. One component is really unlinked and then the removal fails, which is what a
       // file another process holds open, a permission change or an rmdir that will not complete produces.
-      const setName = readdirSync(path).find((name) => name !== SAFETY_CLAIM_MARKER_NAME)!;
-      rmSync(join(path, setName, COMPONENT_ARTIFACT_NAMES.database));
-      throw new MaintenanceRefused('the restore claim could not be removed in full');
+      // The injected seam now receives the SAFETY SET, because a consumption removes the set first and keeps
+      // its own authority alive until last.
+      rmSync(join(path, COMPONENT_ARTIFACT_NAMES.database));
+      throw new MaintenanceRefused('the safety set could not be removed in full');
     },
   });
   assertEq(report.ok, false, 'the run did not succeed');
@@ -1656,6 +1948,105 @@ test('a `deleting` tree is never put back by an abandon, and is named as possibl
 // -----------------------------------------------------------------------------------------------------------
 // Phase 318 — abandon
 // -----------------------------------------------------------------------------------------------------------
+
+test('CORRECTION 1: --abandon refuses while a restore is live, before it writes or moves anything', () => {
+  const { root, a } = crashFixture('abandon-restore');
+  crash(root, `after-quarantine-mark:${a.name}`, { policy: CRASH_POLICY });
+  const quarantined = quarantinedClaim(root, a.name);
+  const whole = snapshot(quarantined);
+  const journalBefore = readFileSync(join(root, SAFETY_SET_JOURNAL_NAME), 'utf8');
+
+  writeFileSync(join(root, RESTORE_JOURNAL_NAME), '{"whatever":true}\n', 'utf8');
+  refuses(() => abandonSafetySetLifecycle(root), 'part way through a restore', 'an abandon mid-restore');
+  // NOT ONE BYTE. The phase was not flipped to `abandoning`, nothing was renamed, and the lock was released.
+  assertEq(readFileSync(join(root, SAFETY_SET_JOURNAL_NAME), 'utf8'), journalBefore,
+    'the journal is byte-identical, so phase=abandoning was never written');
+  assert(sameSnapshot(whole, snapshot(quarantined)), 'and the quarantined claim is byte-identical');
+  assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'the project lock was not left behind');
+
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+  const report = abandonSafetySetLifecycle(root);
+  assertEq(report.state, 'ABANDONED', 'and once the restore is gone the recovery works');
+  assert(sameSnapshot(whole, snapshot(a.dir)), 'putting the claim back byte for byte');
+});
+
+test('CORRECTION 1: a restore journal blocks by PRESENCE — a dangling link and a directory both refuse', () => {
+  const cases: Array<[string, (path: string) => boolean]> = [
+    ['a dangling symbolic link', (path) => linkDirectory(join(WORK, 'never-existed-at-all'), path)],
+    ['a directory', (path) => { mkdirSync(path, { recursive: true }); return true; }],
+    ['an empty file', (path) => { writeFileSync(path, '', 'utf8'); return true; }],
+  ];
+  for (const [label, place] of cases) {
+    const { root, a } = crashFixture(`presence-${label.replace(/[^a-z]/g, '')}`);
+    const digest = crash(root, `after-quarantine-mark:${a.name}`, { policy: CRASH_POLICY });
+    const journalPath = join(root, RESTORE_JOURNAL_NAME);
+    if (!place(journalPath)) continue;
+    // `existsSync` FOLLOWS A LINK, so a dangling one answers false and this used to sail straight past.
+    // Presence of the NAME is the question, and it is asked without following anything.
+    refuses(() => planFor(root, { policy: CRASH_POLICY }), 'part way through a restore', `${label}: plan`);
+    refuses(() => resume(root, digest), 'part way through a restore', `${label}: resume`);
+    refuses(() => abandonSafetySetLifecycle(root), 'part way through a restore', `${label}: abandon`);
+    rmSync(journalPath, { recursive: true, force: true });
+    assert(abandonSafetySetLifecycle(root).state === 'ABANDONED', `${label}: and the recovery works after`);
+  }
+});
+
+test('CORRECTION 1: a `deleting` claim whose tree is gone is LOSS, even when something took its name', () => {
+  const { root, a } = crashFixture('abandon-deleting-replaced');
+  crash(root, `after-remove:${a.name}`, { policy: CRASH_POLICY });
+  assertEq(journalOf(root).entries[0]!.state, 'deleting', 'the removal landed and the record did not');
+  assertEq(existsSync(quarantinedClaim(root, a.name)), false, 'the tree really is gone');
+
+  // SOMETHING UNRELATED TAKES THE OLD NAME. The first cut read "source absent, target present" as "never
+  // quarantined, or already put back", marked the entry `pending`, counted it as neither put back nor lost,
+  // and could report RESULT: ABANDONED with an exit code of zero about a destroyed safety set.
+  mkdirSync(a.dir, { recursive: true });
+  writeFileSync(join(a.dir, 'theirs.txt'), 'somebody put this here\n', 'utf8');
+  const before = snapshot(a.dir);
+
+  const report = abandonSafetySetLifecycle(root);
+  assert(report.goneForever.includes(a.name), 'the claim is named as GONE FOREVER');
+  assertEq(report.putBack.includes(a.name), false, 'it is NOT reported as put back');
+  assertEq(report.ok, false, 'and this is not a clean unwind');
+  assertEq(report.state, 'ABANDONED_WITH_LOSS', 'it is loss, and it says so');
+  assert(report.notes.some((note) => note.includes('is at its name again')),
+    'with the sentence that reconciles "gone" and a directory that is plainly there');
+  assert(sameSnapshot(before, snapshot(a.dir)), 'and the replacement is byte-identical');
+});
+
+test('CORRECTION 1: an interrupted abandon rename is told apart from a replacement at the same name', () => {
+  // 1. A GENUINE interrupted rename: the claim really is back under its own name, and it proves it.
+  const genuine = crashFixture('abandon-interrupted-genuine');
+  const digest = crash(genuine.root, `after-quarantine-mark:${genuine.a.name}`, { policy: CRASH_POLICY });
+  const whole = snapshot(quarantinedClaim(genuine.root, genuine.a.name));
+  const crashed = spawnChild({
+    projectRoot: genuine.root, destination: 'backups', confirm: digest, suffix: SUFFIX,
+    policy: policy(CRASH_POLICY), nowMs: NOW.getTime(),
+    crashAt: `after-abandon-rename:${genuine.a.name}`, operation: 'abandon',
+  });
+  assertEq(crashed.status, SAFETY_CRASH_EXIT_CODE, `the abandon had to die mid-rename: ${crashed.stderr}`);
+  clearLocks(genuine.root);
+  assertEq(journalOf(genuine.root).entries.find((entry) => entry.name === genuine.a.name)!.state,
+    'quarantined', 'the rename landed and nothing recorded it');
+  const rerun = abandonSafetySetLifecycle(genuine.root);
+  assert(rerun.putBack.includes(genuine.a.name),
+    'a rerun REPORTS it as put back, because that is what happened to it');
+  assertEq(rerun.state, 'ABANDONED', 'and the unwind is clean');
+  assert(sameSnapshot(whole, snapshot(genuine.a.dir)), 'byte for byte');
+
+  // 2. A REPLACEMENT at the same name, in the same journal state, is not the same sentence.
+  const replaced = crashFixture('abandon-interrupted-replaced');
+  crash(replaced.root, `after-quarantine-mark:${replaced.a.name}`, { policy: CRASH_POLICY });
+  rmSync(quarantinedClaim(replaced.root, replaced.a.name), { recursive: true });
+  mkdirSync(replaced.a.dir, { recursive: true });
+  writeFileSync(join(replaced.a.dir, 'theirs.txt'), 'not the claim\n', 'utf8');
+  const strangerBefore = snapshot(replaced.a.dir);
+  const report = abandonSafetySetLifecycle(replaced.root);
+  assertEq(report.putBack.includes(replaced.a.name), false, 'a replacement is NOT reported as put back');
+  assert(report.unresolved.includes(replaced.a.name), 'it is named as still out of place');
+  assertEq(report.ok, false, 'and the abandon is not clean');
+  assert(sameSnapshot(strangerBefore, snapshot(replaced.a.dir)), 'the replacement is byte-identical');
+});
 
 test('an abandon puts back every quarantined claim, byte for byte, and clears the journal', () => {
   const root = makeProject('abandon-1');
@@ -1841,11 +2232,107 @@ test('--json emits exactly one document on every report path, and nothing else o
   JSON.parse(abandon.out.trim());
   assertEq(abandon.err, '', 'with nothing on stderr');
 
-  // 5. a refusal, and a usage error
+  // 5. A PRE-EFFECT REFUSAL. CORRECTION 1: this used to emit plain prose, on the path a scheduled --plan
+  // against a busy project meets first. It is one document now, on stderr, with stdout carrying nothing.
   const refusal = capture(() => cliMain(['--project', planRoot, '--resume', 'a'.repeat(64), '--json']));
   assertEq(refusal.value, SAFETY_SET_EXIT_REFUSED, 'a refusal exits 3');
-  const usage = capture(() => cliMain(['--project', planRoot]));
-  assertEq(usage.value, SAFETY_SET_EXIT_USAGE, 'and a usage error exits 2');
+  assertEq(refusal.out, '', 'stdout carries NOTHING');
+  const refusalDoc = JSON.parse(refusal.err.trim()) as
+    { ok: boolean; state: string; exitCode: number; message: string; report: string };
+  assertEq(refusalDoc.ok, false, 'the document says it is not ok');
+  assertEq(refusalDoc.state, 'REFUSED', 'and which kind of outcome it is');
+  assertEq(refusalDoc.exitCode, SAFETY_SET_EXIT_REFUSED, 'carrying the exit code a reader would otherwise lose');
+  assertEq(refusalDoc.report, SAFETY_SET_REPORT, 'under the same header as every other document');
+  assert(refusalDoc.message.length > 10, 'and this product\'s own words');
+  assert(!refusalDoc.message.includes(WORK), 'redacted the way every other surface is');
+
+  // 6. A USAGE ERROR — the first thing an automated caller meets when it gets a flag wrong.
+  const usage = capture(() => cliMain(['--project', planRoot, '--json']));
+  assertEq(usage.value, SAFETY_SET_EXIT_USAGE, 'a usage error exits 2');
+  assertEq(usage.out, '', 'stdout carries NOTHING');
+  const usageDoc = JSON.parse(usage.err.trim()) as { ok: boolean; state: string; exitCode: number };
+  assertEq(usageDoc.state, 'USAGE', 'the document names the outcome');
+  assertEq(usageDoc.exitCode, SAFETY_SET_EXIT_USAGE, 'with its exit code');
+  // AND THE WHOLE USAGE TEXT IS NOT APPENDED AFTER IT, which is what made this unparseable before. The
+  // stream IS the document: nothing before the opening brace, nothing after the closing one.
+  for (const [label, stream] of [['a refusal', refusal.err], ['a usage error', usage.err]] as const) {
+    const trimmed = stream.trim();
+    assert(trimmed.startsWith('{') && trimmed.endsWith('}'), `${label}: the stream is one document`);
+    assertEq(JSON.stringify(JSON.parse(trimmed)), JSON.stringify(JSON.parse(trimmed)),
+      `${label}: and it parses whole`);
+  }
+  assert(!usage.err.includes('usage: npm run ops:safety-set-lifecycle'), 'no usage prose follows it');
+  assertEq(usageDoc.ok, false, 'and a usage error is not ok');
+
+  // 7. WITHOUT --json both paths keep their human prose, including the usage text.
+  const humanUsage = capture(() => cliMain(['--project', planRoot]));
+  assertEq(humanUsage.value, SAFETY_SET_EXIT_USAGE, 'a human usage error still exits 2');
+  assert(humanUsage.err.includes('usage: npm run ops:safety-set-lifecycle'), 'and still prints the manual');
+  const humanRefusal = capture(() => cliMain(['--project', planRoot, '--resume', 'a'.repeat(64)]));
+  assertEq(humanRefusal.value, SAFETY_SET_EXIT_REFUSED, 'a human refusal still exits 3');
+  assertEq(humanRefusal.out, '', 'on stderr only');
+
+  // 8. --help is the one documented exception, and stays human text even beside --json.
+  const help = capture(() => cliMain(['--help', '--json']));
+  assertEq(help.value, SAFETY_SET_EXIT_OK, '--help exits 0');
+  assert(help.out.includes('usage: npm run ops:safety-set-lifecycle'), 'and prints the manual as text');
+});
+
+test('CORRECTION 1: a journal write that fails AFTER the tree is gone still names what is gone', () => {
+  const { root, a } = crashFixture('removed-write-truth');
+  const digest = crash(root, `after-consuming-marker:${a.name}`, { policy: CRASH_POLICY });
+  const bytes = journalOf(root).claims.find((claim) => claim.name === a.name)!.bytes;
+  assert(bytes > 0, 'the claim declares a size');
+
+  // THE FAILPOINT IS AIMED AT THE `removed` PUBLICATION AND NOTHING ELSE. The recursive removal succeeds;
+  // only the record of it fails. The first cut published the state before adding the claim to the report,
+  // so this threw out with `removed` empty — a post-effect report that said NOTHING WAS REMOVED about a
+  // safety set that no longer exists.
+  let thrown: unknown = null;
+  try {
+    resume(root, digest, {
+      journalWriter: (projectRoot: string, journal: SafetySetJournal) => {
+        if (journal.entries.some((entry) => entry.name === a.name && entry.state === 'removed')) {
+          throw new MaintenanceRefused('the safety-set lifecycle journal could not be written');
+        }
+        writeSafetySetJournal(projectRoot, journal);
+      },
+    });
+  } catch (err) { thrown = err; }
+
+  assert(thrown instanceof SafetySetFailed, `a post-effect failure: ${(thrown as Error).name}`);
+  const report = (thrown as SafetySetFailed).report;
+  assert(report.removed.includes(a.name), 'THE REPORT NAMES THE CLAIM THAT IS GONE');
+  assertEq(report.bytesRemoved, bytes, 'and the bytes it freed');
+  assertEq(report.state, 'INCOMPLETE', 'the run did not finish');
+  assertEq(existsSync(quarantinedClaim(root, a.name)), false, 'the tree really is gone from disk');
+  // THE DURABLE STATE STILL PERMITS RECOVERY: it says `deleting`, which is what lets a resume close it out.
+  assertEq(journalOf(root).entries.find((entry) => entry.name === a.name)!.state, 'deleting',
+    'and the journal on disk still says deleting, because the write never landed');
+
+  const closing = resume(root, digest);
+  assert(closing.ok, `a resume closes it out: ${JSON.stringify(closing.failed)}`);
+  assert(closing.removed.includes(a.name), 'still reporting what the OPERATION removed');
+  assertEq(existsSync(join(root, SAFETY_SET_JOURNAL_NAME)), false, 'and the journal is cleared');
+});
+
+test('CORRECTION 1: an abandon after that same failure reports the loss truthfully', () => {
+  const { root, a } = crashFixture('removed-write-abandon');
+  const digest = crash(root, `after-consuming-marker:${a.name}`, { policy: CRASH_POLICY });
+  try {
+    resume(root, digest, {
+      journalWriter: (projectRoot: string, journal: SafetySetJournal) => {
+        if (journal.entries.some((entry) => entry.name === a.name && entry.state === 'removed')) {
+          throw new MaintenanceRefused('the safety-set lifecycle journal could not be written');
+        }
+        writeSafetySetJournal(projectRoot, journal);
+      },
+    });
+  } catch { /* the post-effect failure is the setup, not the assertion */ }
+  const report = abandonSafetySetLifecycle(root);
+  assert(report.goneForever.includes(a.name), 'the abandon names the claim as gone forever');
+  assertEq(report.ok, false, 'and does not call that a clean unwind');
+  assertEq(report.state, 'ABANDONED_WITH_LOSS', 'it is loss');
 });
 
 test('the human render carries its remediation prose, and JSON mode carries it in notes instead', () => {

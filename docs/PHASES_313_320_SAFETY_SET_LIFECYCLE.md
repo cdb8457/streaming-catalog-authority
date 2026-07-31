@@ -88,10 +88,19 @@ of ours; a quarantine directory replaced by an ordinary one.
 
 An entry enters the claim inventory when **either** is true:
 
-1. it carries a file at the claim marker's name, whatever that file turns out to be — so a claim somebody
-   **renamed** is still found, and reported as moved rather than silently ignored; or
+1. it is a **real directory** — `lstat`ed as itself, never through a link — and carries a file at the claim
+   marker's name, whatever that file turns out to be. So a claim somebody **renamed** is still found, and
+   reported as moved rather than silently ignored; or
 2. its own name has the shape a claim directory's name has — so a claim-shaped directory carrying **no**
    marker is reported rather than invisible.
+
+**The entry is examined before any child of it is named** *(Correction 1)*. The first cut asked rule 1 first,
+by `lstat`ing `<entry>/catalog-restore-claim.json` — a path that **resolves `<entry>`**, so for a symbolic
+link or a Windows junction the probe traversed the link, out of the destination and into whatever it pointed
+at, purely to answer a question about admission. A directory this command has been told to inventory must
+never be a reason to read somewhere it was not told to look. A link at a claim-**shaped** name is still
+admitted, by its name alone, and classified `NOT_A_DIRECTORY` without being opened; a link at any other name
+is not this command's business and is not touched, opened or followed to find out.
 
 Neither is trusted alone. Nine classes, closed and total:
 
@@ -238,6 +247,21 @@ is interrupted is a pair neither of which can ever be resumed. Retention never d
 namespace, so an interrupted lifecycle run cannot make a prune wrong — while the reverse is not true, because
 this command's floor is counted over sets a prune can legitimately remove.
 
+### A live RESTORE refuses every mode, `--abandon` included
+
+*(Correction 1.)* The prune exception above is for an interrupted **prune**, and only that. `--abandon` did
+not take the restore check at all, so an abandon could run beside a live restore and rename claim directories
+back into the destination that restore is publishing into. It is checked now **before the lock, and again
+under it, before `phase: 'abandoning'` is written or anything is moved** — so a refused abandon leaves the
+journal byte-identical.
+
+**Presence, not readability, and asked without following a link.** `existsSync` FOLLOWS a symbolic link, so
+it answers *false* for a dangling one — and a dangling link at a journal's name is exactly the state a
+half-tidied project is in. It also answers about the target rather than about the name. The question is "has
+another command left its mark here", and the safe answer to "there is something at that name and this build
+cannot say what" is **yes**. `lstat` answers about the name itself: a file, a directory, a link, a dangling
+link or a device all block. This applies to `--plan`, `--confirm`, `--resume` and `--abandon` alike.
+
 ### The live floor re-proof
 
 A `--confirm` re-proves the plan under the lock. A `--resume` does **not** — it continues the operation the
@@ -283,6 +307,41 @@ It is checked **before the rename**, not only before the delete. A rename is rev
 effect on a directory in somebody's backup folder — and a journal whose claim row *fabricates* a marker for a
 stranger's directory passes every document-level check.
 
+### The consumption marker — live ownership of the one child being destroyed
+
+*Added by Correction 1. The quarantine marker proves the **container**; this proves the **child**.*
+
+A quarantine marker says "this directory is this operation's" and carries the list of names this operation
+put in it. That is a list of **names**, and a name is not a tree. Once an entry is recorded `deleting` its
+tree may be partial, so it cannot be re-proved against its commitment — and the first cut concluded from that
+that it could be removed on the strength of the outer marker alone. **Anything that took the child's name
+after the record was persisted was then recursively deleted.**
+
+So the authority for consuming a child lives **inside the child**, is bound to an unpredictable
+`consumeNonce` drawn per consumption and persisted in the journal entry, and — the part that makes it work —
+**it is the last thing removed**. That gives one invariant, and every question a recovery asks is answered
+by it:
+
+> **The first `unlink` inside a claim is always preceded by a valid consumption marker inside it.**
+
+| What the recovery finds | What it means | What it does |
+| --- | --- | --- |
+| Marker **absent**, tree non-empty | Nothing has been unlinked yet | Prove it is the planned claim, exactly as an intact one. A replacement fails here |
+| Marker **present** and this consumption's | This operation began consuming it; it may be partial | Finish it |
+| Marker **present**, not this consumption's | Something else | Refuse; nothing removed, nothing after it touched |
+| Marker **absent**, directory **empty** | The tail: everything went, including the authority, and the `rmdir` did not | Remove the empty directory. Nothing can be lost |
+
+The ordering is: prove the intact tree → **persist the nonce** → write the marker → remove. A marker written
+before the journal recorded the nonce would be an authority nothing could check.
+
+**What it is not.** Proof against somebody who can rewrite the journal, because the value it binds is written
+down there. That is the same boundary every other proof in this command has and it is not restated as a
+stronger claim.
+
+**Journal schema 2.** `consumeNonce` could not be a compatible addition: a version-1 `deleting` entry
+describes a consumption whose live child can never be identified, and there is nothing correct to fill the
+field in with. A version-1 document is refused **at the version boundary**.
+
 ### Per-claim states, and why `deleting` had to exist
 
 `pending → quarantined → deleting → removed`, plus `failed`.
@@ -326,16 +385,35 @@ A `deleting` tree is **not** put back — it may be truncated, and a partial saf
 trusts is worse than none. Clearing the journal when no reversible work remains never converts loss into
 success.
 
+**`deleting` is answered first, because only it knows what an absence means** *(Correction 1)*. The
+target-present branch used to come first and read as "never quarantined, or already put back by an
+interrupted abandon" — a sentence that is **false** for a `deleting` entry. Such an entry was definitely
+quarantined and its tree may already have been destroyed, so an unrelated directory that had since taken its
+name was read as a clean put-back: the entry was marked `pending`, counted as neither put back nor lost, and
+an abandon that had lost a safety set could render `RESULT: ABANDONED` and exit zero. A `deleting` entry
+whose tree is gone is now **loss**, named as such, and whatever occupies its old name is reported as *not*
+the claim this operation destroyed and is never touched.
+
+**An interrupted abandon rename is told apart from a replacement, where the distinction exists.** For a
+`quarantined` entry with something at its own name, the two readings — a previous abandon really did rename
+it back and die before recording it, or something unrelated took the name — are distinguished by **proving
+the target against the commitment**. A genuine put-back is reported as one; a replacement is named unresolved
+and left alone. For `pending` and `failed` there is nothing to distinguish: this operation never moved them.
+
 ## Phase 319 — the surfaces
 
 * **`ops:safety-set-lifecycle`** with four modes: `--plan`, `--confirm <digest>`, `--resume <digest>`,
   `--abandon`. Each accepts only its own flags — a flag this command would ignore is refused, because a flag
   that does nothing is a flag somebody believes did something. `--resume` and `--abandon` take **only**
   `--project`: the operation comes from the journal, not from a command line typed later.
-* **`--json` is exactly one document, on one stream.** stdout on the ordinary paths, stderr on a post-effect
-  failure — the same stream ownership `ops:complete-restore` and `ops:backup-retention` use, so all three
-  automate the same way. Every remediation sentence dropped from JSON mode is already inside the report's
-  `notes`.
+* **`--json` is exactly one document, on one stream, on EVERY path.** stdout for plan, run, resume, abandon
+  and an incomplete run; stderr for a post-effect failure, a **pre-effect refusal** and a **usage error** —
+  the same stream ownership `ops:complete-restore` and `ops:backup-retention` use, so all three automate the
+  same way. Every remediation sentence dropped from JSON mode is already inside the report's `notes`; a
+  refusal or a usage error becomes a `SafetySetRefusalDocument` carrying `state`, `exitCode` and this
+  product's own redacted words, rather than prose. *(Correction 1: the refusal and usage paths emitted plain
+  text, which is what a scheduled `--plan` against a busy project meets first.)* **`--help` is the one
+  documented exception and stays human text even beside `--json`.**
 * **Exit codes**: `0` completed and the protected safety set still verifies · `1` a removal did not complete,
   or the protected set could not be verified afterwards, or an abandon was not clean · `2` bad usage · `3`
   refused before anything was moved. A failure that arrives after claims have moved never exits `3`.

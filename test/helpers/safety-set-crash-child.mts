@@ -47,7 +47,11 @@ interface CrashConfig {
    *   `after-quarantine-rename:<claim>`     — the rename landed and NOTHING has recorded it.
    *   `after-quarantine-mark:<claim>`       — the rename landed and the journal says so.
    *   `after-floor-proof`                   — everything is quarantined and nothing has been deleted.
-   *   `after-deleting-mark:<claim>`         — the journal says `deleting` and the tree is still INTACT.
+   *   `after-deleting-mark:<claim>`         — the journal says `deleting` with a consumption nonce, the tree
+   *                                           is still INTACT, and it carries NO consumption marker yet, so
+   *                                           a recovery must still prove it is the planned claim.
+   *   `after-consuming-marker:<claim>`      — the consumption marker is inside the tree and nothing has been
+   *                                           unlinked. This is the authority a partial removal survives on.
    *   `after-remove:<claim>`                — the tree is gone and NOTHING has recorded it.
    *   `after-abandon-rename:<claim>`        — an abandon put a claim back and NOTHING has recorded it.
    */
