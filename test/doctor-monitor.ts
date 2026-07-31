@@ -398,8 +398,17 @@ test('the Unraid example locks against overlap, bounds itself, and deletes nothi
   assert(script.includes('flock -n 9'), 'it refuses to overlap rather than queueing');
   assert(script.includes('timeout "${TIMEOUT_SECONDS}"'), 'and every run is bounded');
   assert(script.includes('retention-plan'), 'retention is a plan');
-  assert(script.includes('WOULD REMOVE'), 'that says what it would remove');
-  assert(script.includes('set-list digest'), 'and digests the exact list it enumerated');
+  // PHASES 305-312 REPLACED THE SHELL LOOP WITH THE SHIPPED COMMAND, and did not change what this mode does.
+  // It used to enumerate `ls` output, print WOULD REMOVE beside names sorted LEXICALLY, and `sha256sum` that
+  // listing; the digest was over names, so a set whose bytes had changed produced the same one. The command
+  // it now runs verifies every set, orders by the manifests' own dates, and digests the whole inventory.
+  assert(script.includes('ops:backup-retention'), 'and it is the shipped command that makes it');
+  assert(script.includes('--plan'), 'in plan mode');
+  // THE SCAN IS OVER WHAT THIS SCRIPT RUNS, NOT WHAT IT EXPLAINS. Its commentary names `--confirm` precisely
+  // in order to say that a human types it, and an assertion forbidding the word would forbid saying so.
+  const executable = script.split('\n').filter((line) => !/^\s*#/.test(line)).join('\n');
+  assert(!executable.includes('--confirm'), 'and no line it executes carries a confirmation');
+  assert(!executable.includes('--yes'), 'nor anything else that would remove a backup on a timer');
   for (const forbidden of ['rm -rf', 'rm -r ', 'find ', 'curl', 'wget', 'mail ', 'webhook',
     '--password', '--token', '--secret']) {
     assert(!script.includes(forbidden), `the example must not use ${forbidden}`);

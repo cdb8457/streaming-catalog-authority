@@ -13,9 +13,11 @@
 #     you. A monitor that alerts is a monitor that is silent when the alerting is what broke.
 #   * IT PASSES NO CREDENTIAL. Not on a command line, not in an environment variable. The commands refuse a
 #     flag whose name looks like a secret; secrets reach the product through the files the setup script made.
-#   * IT DELETES NOTHING BY DEFAULT. Retention is a PLAN. See RETENTION below: removing a backup requires an
-#     exact digest of the set list you were shown, typed deliberately, because "clean up old backups" is one
-#     mistyped variable away from "remove the only copy of something irrecoverable".
+#   * IT DELETES NOTHING, IN ANY MODE. Retention here is a PLAN. Since Phases 305-312 that plan is made by the
+#     shipped `ops:backup-retention`, which verifies every set and ends with a digest over the whole list;
+#     actually removing a set takes that digest back through `--confirm`, typed by a person who has just read
+#     it. There is no mode of this script that does, because "clean up old backups" is one mistyped variable
+#     away from "remove the only copy of something irrecoverable".
 #   * IT TOUCHES NO MEDIA PATH AND NO MEDIA SERVER. Neither does anything it calls.
 #
 # OVERLAP. Two copies of this cannot run at once: `flock` on a lock file beside the project, plus the
@@ -45,7 +47,8 @@ usage: unraid-catalog-maintenance.sh [monitor|backup|retention-plan]
 
   monitor          run the read-only doctor monitor once (schedule this every few minutes)
   backup           take and verify one complete backup     (schedule this nightly)
-  retention-plan   list backup sets and print what a cleanup WOULD remove. Removes nothing.
+  retention-plan   verify every backup set and print what a cleanup WOULD remove, with a digest.
+                   Removes nothing, and there is no mode here that does.
 
 Exit codes are the underlying command's, unchanged:
   monitor: 0 healthy | 3 WARN | 1 FAIL | 4 the doctor could not be read
@@ -99,7 +102,7 @@ case "${MODE}" in
   #
   # PHASES 305-312 CHANGED WHAT THIS MODE RUNS, AND DELIBERATELY DID NOT CHANGE WHAT IT DOES. It used to be a
   # shell loop over `ls`, sorting names LEXICALLY, hashing that listing, and telling an operator to go and
-  # `rm -rf` a directory by hand. That instruction could not tell a set that verifies from one truncated last
+  # recursively delete a directory by hand. That could not tell a set that verifies from one truncated last
   # Tuesday, could not tell the ONLY restorable set from one of ten, could not tell the pre-upgrade rollback
   # point from a routine nightly, took no lock, and — being a recursive delete — left half a set under a name
   # an operator trusts if it was interrupted.
