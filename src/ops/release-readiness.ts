@@ -652,6 +652,12 @@ export const REQUIRED_SUITE_SCRIPTS: readonly string[] = Object.freeze([
   // removes the sets a restore falls back to would have been the inconsistency.
   'test:phase297-local',
   'test:phase305-local',
+  // Phases 313-320 is the third of them, and the argument is unchanged: `ops:safety-set-lifecycle` removes
+  // the safety sets a restore took of an installation immediately before destroying it — a moment nobody can
+  // reproduce. It is the one command that can delete the last thing standing between an operator and a
+  // failed restore, and a release that could not see its suite stop running would be a release with no
+  // evidence about it.
+  'test:phase313-local',
 ]);
 
 /**

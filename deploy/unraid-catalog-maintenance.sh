@@ -39,16 +39,19 @@ STATE_DIR_REL="${CATALOG_STATE_DIR_REL:-monitor}"     # an existing directory fo
 TIMEOUT_SECONDS="${CATALOG_MAINTENANCE_TIMEOUT:-3600}"
 
 LOCK_FILE="${PROJECT_DIR}/.catalog-maintenance.flock"
-MODE="${1:-monitor}"                                   # monitor | backup | retention-plan
+MODE="${1:-monitor}"                                   # monitor | backup | retention-plan | safety-set-plan
 
 usage() {
   cat <<'USAGE'
-usage: unraid-catalog-maintenance.sh [monitor|backup|retention-plan]
+usage: unraid-catalog-maintenance.sh [monitor|backup|retention-plan|safety-set-plan]
 
   monitor          run the read-only doctor monitor once (schedule this every few minutes)
   backup           take and verify one complete backup     (schedule this nightly)
   retention-plan   verify every backup set and print what a cleanup WOULD remove, with a digest.
                    Removes nothing, and there is no mode here that does.
+  safety-set-plan  the same, for the safety sets a RESTORE left behind. ops:backup-retention never
+                   touches those on purpose, so they build up one per restore; this prints what
+                   ops:safety-set-lifecycle WOULD remove, with a digest. Removes nothing either.
 
 Exit codes are the underlying command's, unchanged:
   monitor: 0 healthy | 3 WARN | 1 FAIL | 4 the doctor could not be read
@@ -124,6 +127,24 @@ case "${MODE}" in
     echo ""
     echo "Nothing was removed, and this script has no mode that removes anything. To act on the plan above,"
     echo "run ops:backup-retention yourself with the digest it printed. Read the list first."
+    ;;
+
+  safety-set-plan)
+    # ---------------------------------------------------------------------------------------------------
+    # THE SECOND PLAN, AND IT REMOVES NOTHING FOR THE SAME REASON THE FIRST ONE DOES.
+    #
+    # A restore publishes its safety set inside a directory it claims exclusively, and ops:backup-retention
+    # deliberately never descends into an in-flight namespace — so those accumulate one per restore and only
+    # ops:safety-set-lifecycle can see them. Acting on this plan means typing its digest back, by a person
+    # who has just read the list. A timer cannot read a list.
+    # ---------------------------------------------------------------------------------------------------
+    SAFETY_KEEP="${CATALOG_SAFETY_SET_KEEP:-3}"
+    SAFETY_MIN_AGE="${CATALOG_SAFETY_SET_MIN_AGE_DAYS:-14}"
+    run_in_project npm run --silent ops:safety-set-lifecycle -- \
+      --project "${PROJECT_DIR}" --keep-last "${SAFETY_KEEP}" --min-age-days "${SAFETY_MIN_AGE}" --plan
+    echo ""
+    echo "Nothing was removed, and this script has no mode that removes anything. To act on the plan above,"
+    echo "run ops:safety-set-lifecycle yourself with the digest it printed. Read the list first."
     ;;
 
   *)
