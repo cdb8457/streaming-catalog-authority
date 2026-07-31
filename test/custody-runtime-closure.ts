@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import {
   SPAWN_DEFAULTS, SCRIPT_TIMEOUT_MS, describeRun, removeQuietly, runScript, usableBash, usablePowerShell,
+  type Shell,
 } from '../src/ops/usable-shell.js';
 import {
   REQUIRED_SECRET_FILES, ROOT_KEY_SECRET_NAME, backupSetHasRing, requiredSecretFilesFor,
@@ -931,10 +932,12 @@ await test('the runtime stack the PowerShell setup installs never reads a root w
 function stageMarkerProject(name: string): {
   project: string;
   temporaries: () => readonly string[];
+  shimRan: () => boolean;
   runWithShim: (command: string, body: string, action: string) => SpawnSyncReturns<string>;
 } | null {
   const shell = usableBash();
   if (shell === null) return null;
+  if (!signalDeliveryWorks(shell)) return null;
   const project = join(WORK, name);
   const bin = join(project, 'bin');
   mkdirSync(bin, { recursive: true });
@@ -944,25 +947,106 @@ function stageMarkerProject(name: string): {
   const script = join(project, 'unraid-custody-mode.sh');
   writeFileSync(script, readRepo('deploy/unraid-custody-mode.sh'));
 
-  // A POSIX-shell view of a host path. The script requires an absolute path beginning with `/` — deliberately,
-  // because it runs on an Unraid box — and a `PATH` entry must be in the same form, since a `C:\ ` drive
-  // letter would split on the `:` that separates PATH entries.
-  const hostPath = (path: string): string => (POSIX ? path
-    : path.replace(/^([A-Za-z]):[\\/]/, (_all, drive: string) => `/${drive.toLowerCase()}/`).replace(/\\/g, '/'));
-
+  // THE SHIM LEAVES A RECEIPT. "The shim never ran" and "the script ignored the signal" produced the SAME
+  // symptom in correction 2 — exit 0 with the success text — and it cost a release candidate to tell them
+  // apart. A sentinel makes the first one a named failure instead of a puzzling status.
+  const receipt = join(project, 'shim-ran');
   return {
     project,
     temporaries: () => readdirSync(project).filter((entry) => entry.startsWith('.custody-mode.')),
+    shimRan: () => existsSync(receipt),
     runWithShim: (command, body, action) => {
-      writeFileSync(join(bin, command), `#!/usr/bin/env bash\n${body}`, { mode: 0o755 });
-      return spawnSync(shell.command, [...shell.args(script), hostPath(project), action], {
-        ...SPAWN_DEFAULTS,
-        timeout: SCRIPT_TIMEOUT_MS,
-        cwd: project,
-        env: { ...process.env, PATH: `${hostPath(bin)}${POSIX ? ':' : ':'}${process.env.PATH ?? ''}` },
-      });
+      writeFileSync(join(bin, command),
+        `#!/usr/bin/env bash\n: > "${hostPath(receipt)}"\n${body}`, { mode: 0o755 });
+      return runWithShimPath(shell, bin, script, [hostPath(project), action], project);
     },
   };
+}
+
+/**
+ * A POSIX-shell view of a host path. The mode script requires an absolute path beginning with `/` —
+ * deliberately, because it runs on an Unraid box — and a `PATH` entry must be in the same form, since a
+ * `C:\ ` drive letter would split on the `:` that separates PATH entries.
+ */
+function hostPath(path: string): string {
+  return POSIX ? path
+    : path.replace(/^([A-Za-z]):[\\/]/, (_all, drive: string) => `/${drive.toLowerCase()}/`).replace(/\\/g, '/');
+}
+
+/**
+ * Run a script with a directory prepended to `PATH`, IN A WAY THAT DOES NOT DEPEND ON WHO LAUNCHED US.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * CORRECTION 2. THE "DETERMINISTIC" SHIM WAS DETERMINISTIC ONLY FROM ONE KIND OF PARENT.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The signal gates below passed from a Git-Bash terminal and FAILED FIVE OF FIVE from PowerShell — both of
+ * them, both directions, exit 0 with the success text and an empty stderr. That is the shape of a script that
+ * was never signalled at all, and it was: the shim never ran. Two independent reasons, both of them about
+ * how `PATH` crosses into the MSYS world:
+ *
+ *   1. THE ENVIRONMENT KEY IS `path`, NOT `PATH`, WHEN NODE IS LAUNCHED FROM POWERSHELL. Spreading
+ *      `...process.env` and then setting `PATH` produced an environment carrying BOTH keys, and the child
+ *      resolved the inherited one. From Git Bash the key really is `PATH`, so the override worked and the
+ *      whole mechanism looked sound.
+ *
+ *   2. AND FIXING THAT WAS NOT ENOUGH. `C:\Program Files\Git\bin\bash.exe` — which is what `usableBash()`
+ *      finds from a native Windows parent — RE-INITIALISES `PATH` for itself. Probed directly, the child's
+ *      `PATH` came back as `/mingw64/bin:/usr/bin:...` under every env construction tried: single key, POSIX
+ *      form, Windows form, semicolons, colons. `type -a chmod` answered `/usr/bin/chmod` every time. No
+ *      arrangement of the parent environment can win that argument.
+ *
+ * SO THE PATH IS SET INSIDE THE SHELL, AFTER MSYS HAS FINISHED INITIALISING IT, and the shell then `exec`s
+ * the script — same process, so the shim's `$PPID` is still the shell running the shipped script. This works
+ * from both launchers, with the two DIFFERENT bash binaries the two launchers select, and on POSIX where
+ * none of this applies. It is verified, not assumed: `signalDeliveryWorks()` below exercises exactly this
+ * invocation before any gate relies on it.
+ */
+function runWithShimPath(
+  shell: Shell, bin: string, script: string, args: readonly string[], cwd: string,
+  env: NodeJS.ProcessEnv | undefined = undefined,
+): SpawnSyncReturns<string> {
+  return spawnSync(shell.command, [
+    '-c',
+    // `exec "$BASH"` — THE SHELL ALREADY RUNNING, by its own absolute path. Writing `exec bash` would look up
+    // `bash` again through the PATH this line has just rewritten, which is both a different question and a
+    // worse one: it could select a different bash from the one `usableBash()` proved, and it would depend on
+    // command resolution inside an environment the test is deliberately manipulating. `$BASH` is the
+    // interpreter that is already here, and `exec` keeps it in the same process — so the shim's `$PPID` is
+    // still the shell running the shipped script.
+    //
+    // `$0` is the placeholder name; `$1` is the shim directory; the rest is the script and its arguments.
+    'export PATH="$1:$PATH"; shift; exec "$BASH" "$@"',
+    'catalog-authority-shim-runner',
+    hostPath(bin),
+    script.replace(/\\/g, '/'),
+    ...args,
+  ], { ...SPAWN_DEFAULTS, timeout: SCRIPT_TIMEOUT_MS, cwd, ...(env === undefined ? {} : { env }) });
+}
+
+/**
+ * Can this host actually deliver a signal from a shim to the shell running a script, and does the shell's
+ * trap run? A real probe of the real mechanism, or `false`.
+ *
+ * NOT A PLATFORM GUESS. The gates below are the only proof that a termination request stops a custody switch,
+ * so "skip" must mean "this host demonstrably cannot do the thing", never "this host is Windows" and never a
+ * quiet pass. The probe runs a throwaway script shaped like the real one — a `TERM` trap, then a command the
+ * shim stands in for — and requires the trap's exit status back. If the shim did not run, or the signal did
+ * not arrive, or the trap did not fire, the script reaches its last line and says so on stdout, and this
+ * answers `false` rather than letting a gate conclude anything.
+ */
+function signalDeliveryWorks(shell: Shell): boolean {
+  const probe = join(WORK, 'signal-probe');
+  const bin = join(probe, 'bin');
+  mkdirSync(bin, { recursive: true });
+  writeFileSync(join(bin, 'catalog-signal-probe-shim'), '#!/usr/bin/env bash\nkill -TERM "$PPID"\nexit 0\n',
+    { mode: 0o755 });
+  const script = join(probe, 'probe.sh');
+  writeFileSync(script,
+    'set -euo pipefail\ntrap \'exit 42\' TERM\ncatalog-signal-probe-shim\necho NOT-TERMINATED\n');
+  const run = runWithShimPath(shell, bin, script, [], probe);
+  const reached = (run.stdout ?? '').includes('NOT-TERMINATED');
+  return !reached && (run.status === 42 || signalOf(run) === 15);
 }
 
 await test('the marker script, EXECUTED, publishes atomically and leaves no temporary behind', () => {
@@ -1038,6 +1122,60 @@ await test('the marker script, EXECUTED, publishes atomically and leaves no temp
     'with still exactly one marker and no accumulated temporaries');
 });
 
+await test('the shim mechanism does not depend on the environment it inherited', () => {
+  // CORRECTION 2, HELD DIRECTLY. The two signal gates below passed from a Git-Bash terminal and failed FIVE
+  // OF FIVE from PowerShell, in both directions, with exit 0 and an empty stderr — the shape of a script that
+  // was never signalled. It never was: the shim was never resolved.
+  //
+  // TWO REASONS, AND THE SECOND IS WHY THIS GATE CANNOT BE ABOUT ENVIRONMENT KEYS. From a PowerShell parent
+  // the env key is `path`, so spreading `process.env` and setting `PATH` left the child carrying both and
+  // using the inherited one. Fixing that changed nothing, because the `bash.exe` a native Windows parent
+  // selects RE-INITIALISES `PATH` for itself: probed under every construction — single key, POSIX form,
+  // Windows form, colons, semicolons — the child's `PATH` was `/mingw64/bin:/usr/bin:...` and `type -a chmod`
+  // answered `/usr/bin/chmod`.
+  //
+  // So this asserts the property that survives both: a shim placed on `PATH` FROM INSIDE the shell is the
+  // command that runs, whatever the parent environment says. It is proved with a genuinely HOSTILE
+  // environment — every casing of the path key removed and replaced with a directory that does not exist —
+  // so a mechanism that depended on inheriting a usable `PATH` could not produce this result by luck.
+  const shell = usableBash();
+  if (shell === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  const probe = join(WORK, 'launcher-independence');
+  const bin = join(probe, 'bin');
+  mkdirSync(bin, { recursive: true });
+  // AN ABSOLUTE INTERPRETER, because `#!/usr/bin/env bash` would need `env` ON THE PATH this test is
+  // deliberately emptying — which would make the probe fail for a reason that is not the one under test.
+  writeFileSync(join(bin, 'catalog-launcher-probe'), '#!/bin/sh\necho SHIM-RESOLVED\n', { mode: 0o755 });
+  const script = join(probe, 'probe.sh');
+  writeFileSync(script, 'catalog-launcher-probe\n');
+
+  const hostile: NodeJS.ProcessEnv = { ...process.env };
+  for (const key of Object.keys(hostile)) {
+    if (key.toLowerCase() === 'path') delete hostile[key];
+  }
+  hostile.PATH = hostPath(join(probe, 'no-such-directory'));
+
+  // THE INTERPRETER IS NAMED ABSOLUTELY FOR THIS ONE RUN. `usableBash()` may answer the bare name `bash`,
+  // and an empty inherited PATH would then stop NODE from finding the binary at all — a spawn error, which
+  // is a different failure from the one under test and would let this gate "pass" for the wrong reason if it
+  // were ever inverted. Asking the shell for its own `$BASH` under the ordinary environment resolves it.
+  // `cygpath -w` where it exists: `$BASH` is `/usr/bin/bash` in the MSYS view, which Node cannot spawn — it
+  // needs the Windows path for the same file. On a real POSIX host there is no cygpath and no translation.
+  const located = spawnSync(shell.command,
+    ['-c', 'if command -v cygpath >/dev/null 2>&1; then cygpath -w "$BASH"; else printf %s "$BASH"; fi'],
+    { ...SPAWN_DEFAULTS, timeout: SCRIPT_TIMEOUT_MS });
+  const interpreter = (located.stdout ?? '').trim();
+  assert(interpreter !== '', `the shell can name its own interpreter — ${describeRun(located)}`);
+  const run = runWithShimPath({ ...shell, command: interpreter }, bin, script, [], probe, hostile);
+  assert((run.stdout ?? '').includes('SHIM-RESOLVED'),
+    `the shim on the constructed PATH is what runs, even with a hostile inherited PATH — ${describeRun(run)}`);
+
+  // AND THE PROBE THE GATES GATE THEMSELVES ON IS REAL: it exercises this same invocation, a real signal and
+  // a real trap. A `false` here means the gates SKIP; it must never mean they quietly pass.
+  assertEq(signalDeliveryWorks(shell), true,
+    'and a signal sent through that shim reaches the script shell and runs its trap');
+});
+
 await test('a TERM before publication kills the script, publishes nothing, and leaves no temp', () => {
   // CORRECTION 1, AND IT IS A DEFECT THE FIRST FIX INTRODUCED.
   //
@@ -1054,9 +1192,15 @@ await test('a TERM before publication kills the script, publishes nothing, and l
   const shell = usableBash();
   if (shell === null) { console.log('        (skipped: no usable bash on this host)'); return; }
   const staged = stageMarkerProject('sig-before');
-  if (staged === null) { console.log('        (skipped: this host cannot deliver a signal between processes)'); return; }
+  if (staged === null) {
+    console.log('        (skipped: a real probe of this exact mechanism could not deliver a signal here)');
+    return;
+  }
   const run = staged.runWithShim('chmod', 'kill -TERM "$PPID"\nexit 0\n', 'bootstrap');
 
+  // THE RECEIPT FIRST. Correction 2: from PowerShell the shim was never resolved at all, and the resulting
+  // "exit 0, success text, empty stderr" reads exactly like a script that ignored a signal it did receive.
+  assert(staged.shimRan(), 'the shim really ran — otherwise nothing below is a statement about signals');
   assert(run.status !== 0, `the script does not exit 0 after a termination request — ${describeRun(run)}`);
   assertEq(signalOf(run), 15, `and it died of SIGTERM rather than merely failing — ${describeRun(run)}`);
   assertEq(existsSync(join(staged.project, CUSTODY_MODE_FILENAME)), false, 'no marker was published');
@@ -1078,9 +1222,17 @@ await test('a TERM after publication still fails, and tells the truth about the 
   const shell = usableBash();
   if (shell === null) { console.log('        (skipped: no usable bash on this host)'); return; }
   const staged = stageMarkerProject('sig-after');
-  if (staged === null) { console.log('        (skipped: this host cannot deliver a signal between processes)'); return; }
-  const run = staged.runWithShim('mv', '/usr/bin/mv "$@"\nkill -TERM "$PPID"\nexit 0\n', 'bootstrap');
+  if (staged === null) {
+    console.log('        (skipped: a real probe of this exact mechanism could not deliver a signal here)');
+    return;
+  }
+  // `command -p` runs the system `mv` from the default PATH rather than this shim, which is how the real
+  // rename happens before the signal. NO FALLBACK RETRY: if that rename fails, the interesting state is the
+  // one the failure produced, and attempting it a second time would change the state under test before the
+  // signal is even sent.
+  const run = staged.runWithShim('mv', 'command -p mv "$@"\nkill -TERM "$PPID"\nexit 0\n', 'bootstrap');
 
+  assert(staged.shimRan(), 'the shim really ran — otherwise nothing below is a statement about signals');
   assert(run.status !== 0, `a termination request is never a success — ${describeRun(run)}`);
   assertEq(signalOf(run), 15, `and it died of SIGTERM — ${describeRun(run)}`);
   assertEq(existsSync(join(staged.project, CUSTODY_MODE_FILENAME)), true, 'the rename had already happened');

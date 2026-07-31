@@ -36,7 +36,7 @@ fixed here.
 | File | Change |
 | --- | --- |
 | `test/helpers/shell-source.ts` | **New.** Structural reader for the shipped shell scripts: brace-matched function bodies, `case` blocks and arms, word-split call sites across `\` continuations and into `$( … )`, quote-aware comment stripping. Every extractor **refuses rather than returning a region it is unsure of**. *Correction 1:* all extraction now goes through one validating door, `logicalLines`, which refuses unterminated quotes and substitutions, dangling final continuations, duplicate function definitions, unterminated heredocs and expanding heredoc bodies — and validates on the **logical** line, which also fixed a silent truncation of the custody helper. |
-| `test/custody-runtime-closure.ts` | **New**, 36 checks. The phase329 suite. |
+| `test/custody-runtime-closure.ts` | **New**, 37 checks. The phase329 suite. |
 | `test/kek-correction-gates.ts` | The custody-helper gate is brace-matched, plus a contrast assertion that `write_secret_if_absent` *does* chmod — so an empty region cannot pass. |
 | `test/custody-transition.ts` | The command-line gate counts **arguments** instead of asserting an LF terminator, and now also counts the helper's real argv and rejects value-producing substitutions in it. |
 | `test/custody-cutover.ts` | The overlay gate **parses the YAML**; the marker gate uses `caseArm(caseBlock(src, 'ACTION'), …)` plus a contrast assertion on the `bootstrap` arm. |
@@ -158,6 +158,43 @@ whether a marker exists rather than a `PUBLISHED=1` flag, which would have a rea
 returning and the assignment running. Root-only idempotence and a successful `bootstrap` exiting 0 are
 unchanged and re-asserted.
 
+## Correction 2 — the signal gates were passing on one launcher's word
+
+Independent acceptance run from PowerShell reproduced **both** Phase 329 signal-gate failures **five of five**:
+TERM before publication and TERM after publication each exited **0**, printed the bootstrap success text, and
+produced **empty stderr**. The same suite passed from a Git-Bash terminal. The gates were real, but the
+mechanism delivering the signal was not launcher-independent, so correction 1's claim that they were
+"deterministic" was true of the *timing* and false of the *delivery*.
+
+**The shim was never resolved.** Two independent causes, both about how `PATH` crosses into the MSYS world:
+
+| Cause | Evidence |
+| --- | --- |
+| From a PowerShell parent, `process.env` carries the search path under the key **`path`**. Spreading `...process.env` and setting `PATH` left the child holding **both keys** and using the inherited one. From Git Bash the key is `PATH`, so the override worked — which is why this survived two corrections. | probe printed `PATH-ish env keys: [ 'path' ]`, and `keys we set that look like PATH: [ 'path', 'PATH' ]` |
+| **And fixing that changed nothing.** `C:\Program Files\Git\bin\bash.exe`, which `usableBash()` selects from a native Windows parent, **re-initialises `PATH` for itself**. | under single-key, POSIX-form, Windows-form, colon and semicolon constructions alike, the child's `PATH` was `/mingw64/bin:/usr/bin:…` and `type -a chmod` answered `/usr/bin/chmod` |
+
+**The fix** prepends the shim directory **from inside the shell**, after MSYS has initialised it, then
+`exec "$BASH" "$@"` — the already-running interpreter, by its own absolute path, so no second command lookup
+can select a different bash and the `exec` keeps the same process (the shim's `$PPID` is still the script's
+shell). Three safeguards now prevent this being believed on one launcher's word again: a **real capability
+probe** of the exact invocation (a skip means the host demonstrably cannot signal, never a quiet pass); a
+**receipt file** each shim touches, asserted before any status claim, so "the shim never ran" can no longer
+look like "the script ignored the signal"; and a **launcher-independence gate** that runs the mechanism under
+a hostile environment — every casing of the path key deleted and replaced with a non-existent directory — and
+requires the shim to win anyway.
+
+**Proved to discriminate, not merely to pass.** Under the fixed mechanism, launched from PowerShell:
+
+| Script | Exit | Claims success | Marker |
+| --- | --- | --- | --- |
+| `43f854a` (pre-correction-1) | **0** | **yes** | present |
+| current HEAD | **3840** (SIGTERM) | no | present, reported truthfully on stderr |
+
+Review cleanups applied with it: `exec "$BASH"` instead of re-resolving `bash` through the rewritten PATH; the
+launcher-independence test now genuinely supplies the hostile environment its comment describes; and the
+after-publish shim uses `command -p mv "$@"` with **no fallback retry**, since a real first failure must not
+be attempted again before the signal is sent.
+
 ## The two defects, stated plainly
 
 ### 1. The PowerShell setup wrote a root wrapping key it could not protect
@@ -271,7 +308,7 @@ It is recorded as a flake on this evidence, not assumed to be one:
 
 | Suite | Result |
 | --- | --- |
-| `test/custody-runtime-closure.ts` (new) | **36 passed, 0 failed** (22 at `43f854a`; correction 1 added 14) |
+| `test/custody-runtime-closure.ts` (new) | **37 passed, 0 failed** (22 at `43f854a`; correction 1 added 14, correction 2 added 1) |
 | `test/promotion-chain-operator-ui.ts` | **19 passed, 0 failed** — includes the PowerShell setup **executed** on this host |
 | `test/release-readiness.ts` | **44 passed, 0 failed** — the mutation test removes each required suite command in turn and requires a BLOCK; it now covers `test:phase329-local` |
 | `test/deploy.ts`, `test/o4-o5-runtime-acceptance.ts`, `test/consumer-release-image.ts`, `test/arcane-install.ts`, `test/managed-custody-lifecycle.ts`, `test/custodian-contract.ts`, `test/backup-inspect.ts`, `test/complete-backup.ts` | all **exit 0** within the offline group |

@@ -194,7 +194,7 @@ No source-text gate in this repository could have caught it. Nothing about that 
 
 ## Part 3 — The new suite
 
-`test/custody-runtime-closure.ts`, registered as `test:phase329-local` and as a required CI gate. 36 checks.
+`test/custody-runtime-closure.ts`, registered as `test:phase329-local` and as a required CI gate. 37 checks.
 
 **The extractors, held to their contract** — the same region from the same script under LF, CRLF and CR;
 refusal (not a wrong region) when a function, arm or `case` is missing, duplicated or unclosed; an arm chosen
@@ -393,6 +393,55 @@ Exit status is read through `signalOf`, which accepts all three encodings one fa
 `signal: 'SIGTERM'`, a shell's `128+N`, and Git-Bash/MSYS's raw wait status `N << 8` (3840). Asserting one of
 them would make the suite pass or fail on which shell the host provided, which is the class of accident this
 whole tranche exists to remove.
+
+### Correction 2 — "deterministic" was true of the timing and false of the delivery
+
+The paragraph above was right about *when* the signal fires and wrong about *whether it fires at all*. Run
+from a Git-Bash terminal the two signal gates passed; run from PowerShell they failed **five of five**, both
+directions, with **exit 0, the success text on stdout, and an empty stderr** — the exact shape of a script
+that was never signalled. It never was. The shim was never resolved, and two independent things had to be
+fixed before it could be.
+
+**1. The environment key is `path`, not `PATH`.** With Node launched from PowerShell, `process.env` carries
+the search path under a lowercase key. Spreading `...process.env` and then setting `PATH` produced an
+environment holding **both**, and the child used the inherited one. From Git Bash the key really is `PATH`, so
+the override worked — which is precisely why the mechanism looked sound for two corrections.
+
+**2. And fixing that changed nothing.** `C:\Program Files\Git\bin\bash.exe` — what `usableBash()` selects when
+the parent is a native Windows process — **re-initialises `PATH` for itself**. Probed directly, the child's
+`PATH` came back as `/mingw64/bin:/usr/bin:…` under *every* construction attempted (single key, POSIX form,
+Windows form, colons, semicolons), and `type -a chmod` answered `/usr/bin/chmod` every time. No arrangement of
+the parent environment wins that argument.
+
+**The fix is to stop arguing with it.** The shim directory is prepended to `PATH` **from inside the shell**,
+after MSYS has finished initialising it, and the shell then `exec`s the script:
+
+```sh
+bash -c 'export PATH="$1:$PATH"; shift; exec "$BASH" "$@"' … <shim-dir> <script> <args>
+```
+
+`exec "$BASH"` names the shell **already running**, by its own absolute path, rather than looking `bash` up
+again through the PATH that line has just rewritten — so the proven interpreter is preserved and the `exec`
+keeps it in the same process, which is what makes the shim's `$PPID` the shell running the shipped script.
+
+Three things now stop this from ever again being believed on one launcher's word:
+
+- **A real capability probe.** `signalDeliveryWorks()` runs a throwaway script shaped like the real one — a
+  `TERM` trap, then a command the shim stands in for — through the *same* invocation, and requires the trap's
+  status back. A skip means the host demonstrably cannot deliver a signal; it can never mean a quiet pass.
+- **A receipt.** Each shim touches a sentinel file, and both gates assert it before asserting anything about
+  status. "The shim never ran" and "the script ignored a signal it received" produced identical symptoms in
+  this correction; they can no longer be confused.
+- **A launcher-independence gate** that runs the mechanism under a **hostile** environment — every casing of
+  the path key removed and replaced with a directory that does not exist — and requires the shim to win
+  anyway. (It resolves the interpreter absolutely for that one run, via `cygpath -w "$BASH"` where cygpath
+  exists, because an empty inherited PATH would otherwise stop Node from finding the binary at all — a spawn
+  error, which is a different failure from the one under test.)
+
+**Verified as a discriminator, not just as a pass.** Under the fixed mechanism, launched from PowerShell, the
+pre-correction script at `43f854a` exits **0**, prints `custody mode: bootstrap` and leaves the marker; the
+corrected script exits **3840** (SIGTERM), prints no success text, and reports the marker truthfully on
+stderr. The gates detect the original defect in the launch context where they previously could not.
 
 ## Residual risks
 
