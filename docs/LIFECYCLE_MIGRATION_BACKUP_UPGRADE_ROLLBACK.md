@@ -174,6 +174,35 @@ restore refuses retention entirely. See `PHASES_305_312_BACKUP_RETENTION.md`.
 
 It is deliberately not scheduled and there is no `--yes`: the cron example prints the plan and stops.
 
+### Removing the ones a restore left behind
+
+`ops:backup-retention` above removes the sets at the **top level** of that folder. It never descends into a
+dot-prefixed name — which is what keeps it away from a backup that is still being written, a restore in
+progress and its own quarantine — and a restore publishes its safety set **inside** exactly such a name
+(`.pre-restore-claim-<nonce>/pre-restore-<set>`). So those built up one per restore and nothing removed them.
+This is the command that owns them:
+
+```
+npm run ops:safety-set-lifecycle -- --project /path/to/project --keep-last 3 --min-age-days 14 --plan
+npm run ops:safety-set-lifecycle -- --project /path/to/project --keep-last 3 --min-age-days 14 --confirm <digest>
+```
+
+It works the way the one above does — read a plan, type the digest back, nothing deleted in place, `--resume`
+and `--abandon` for an interrupted run — with one extra proof and one stronger protection.
+
+**The extra proof.** A claim goes only when the ownership marker *inside* it proves an `ops:complete-restore`
+of this build created it **and** the directory's own name agrees with the nonce in that marker. A
+claim-shaped directory with no marker, one from another build, one that has been **moved**, one holding a
+backup that is still being taken, and a link at a claim's name are all reported and all survive.
+
+**The stronger protection.** The floor is counted across the **whole** destination — the ordinary sets and
+the safety sets together — and it is proved **again from what is actually on disk** immediately before the
+first deletion. So a destination whose only restorable set is a safety set keeps it, whatever `--keep-last`
+says; and a run resumed after something else removed the sets it was counting on stops with nothing
+destroyed. See `PHASES_313_320_SAFETY_SET_LIFECYCLE.md`.
+
+It is not scheduled either. The cron example gained a `safety-set-plan` mode that prints this plan and stops.
+
 ---
 
 ## Upgrade
