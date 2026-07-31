@@ -203,6 +203,33 @@ It is now a `HeldDestination` capability:
 
 `MaintenanceLocks.inherited()` — the public "take nothing" factory the first cut shipped — is gone.
 
+#### And a standalone backup may not enter the claim namespace at all
+
+The destination lock is taken in the directory a command publishes into, so a hand-run
+`ops:complete-backup --destination backups/.pre-restore-claim-<nonce>` would lock *inside* the claim while
+`ops:backup-retention` and `ops:safety-set-lifecycle` lock the destination *above* it — two commands in one
+destination, each holding a lock the other never looks at. Both entry points refuse any destination with a
+claim-shaped component, before the project lock and before anything is created.
+
+**Every component is checked**, not just the leaf, and each one against **what the filesystem does with case
+in that particular directory** — never against a guess about the host. A literal `.pre-restore-claim-<nonce>`
+always refuses. A shouted `.PRE-RESTORE-CLAIM-<NONCE>` refuses only where that spelling and the lower-case
+one reach **one** directory: proved by `ino`/`dev` where the filesystem reports them, and by the parent's
+**listing** where it does not — a directory entry exists under exactly the spelling the filesystem stores, so
+a listing containing the requested spelling means a genuinely distinct directory, and one containing only the
+lower-case claim while the requested spelling still resolves means an alias. A parent that cannot be listed
+refuses if the requested spelling resolves at all. On a case-sensitive volume the shouted name is the
+operator's own directory and is allowed, and the suite asserts that half with the same shouted claim-shaped
+name rather than with an unrelated upper-case directory.
+
+#### The holder note
+
+It is read the way every other file here is read — once, without following a link, bounded at 4 KiB — and
+the probe never throws: it is called from a `finally`, so an escaping filesystem error would replace whatever
+result the command was carrying. Absent is a legitimate state, because writing the note is best-effort at
+acquisition. A link, an oversized file, a directory at the note's name, bytes that are not a note, and a
+foreign token all mean **release removes nothing**.
+
 ---
 
 ## Crash boundaries

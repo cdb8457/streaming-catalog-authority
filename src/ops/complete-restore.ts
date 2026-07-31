@@ -1677,6 +1677,17 @@ export function runCompleteRestore(
     }
     locks.lockDestination(resolveBackupDestination(resolved.projectRoot, destinationRelative).destinationDir);
 
+    // ---- THE NESTED AUTHORITY IS MINTED HERE, BEFORE ANYTHING IS WRITTEN -----------------------------
+    //
+    // The safety-set step needs a `HeldDestination` to authorise the backup it publishes into its claim.
+    // Minting it is not free of consequence: it REFUSES when this filesystem reports no usable directory
+    // identity, because a capability that cannot name a directory cannot be checked against one. Asking
+    // for it at the point of use meant that refusal arrived INSIDE the step loop — after `mark(step,
+    // 'running')` had already written a journal recording a step that then never ran, leaving the project
+    // holding an interrupted restore it never began. So it is minted the instant both locks are held and
+    // before the first journal write, and the whole operation refuses with nothing on disk.
+    const authority = locks.heldDestination();
+
     // THE DIGEST IS RE-PROVED UNDER THE LOCK, over a FRESH verification of the set.
     const reResolved = existing === null
       ? resolveCompleteRestoreRequest(effective, probe)
@@ -1825,7 +1836,7 @@ export function runCompleteRestore(
           onCustodyProven: (proven) => { custodyProven = proven; },
           onNote: (note) => { notes.push(note); },
           onClaim: (made) => { safetySetClaim = made; persist(); },
-        }, safetySetClaim, locks.heldDestination());
+        }, safetySetClaim, authority);
       } catch (err) {
         detail = err instanceof MaintenanceRefused
           ? err.message

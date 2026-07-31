@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import {
-  existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, symlinkSync,
-  writeFileSync,
+  appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
+  symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -11,6 +11,7 @@ import {
   DESTINATION_LOCK_DIRNAME,
   DESTINATION_LOCK_DIRNAMES,
   MAINTENANCE_LOCK_DIRNAME,
+  CommandLedger,
   MaintenanceLocks,
   MaintenanceRefused,
   assertHeldDestination,
@@ -27,8 +28,8 @@ import {
 } from '../src/ops/safety-set-lifecycle.js';
 import { DEFAULT_SAFETY_SET_POLICY } from '../src/ops/safety-set-model.js';
 import {
-  RESTORE_JOURNAL_NAME, RESTORE_JOURNAL_VERSION, abandonRestore, planCompleteRestore, readRestoreJournal,
-  resolveCompleteRestoreRequest, runCompleteRestore,
+  RESTORE_JOURNAL_NAME, RESTORE_JOURNAL_VERSION, abandonRestore, composeOccupancyProbe, planCompleteRestore,
+  readRestoreJournal, resolveCompleteRestoreRequest, runCompleteRestore,
 } from '../src/ops/complete-restore.js';
 import {
   runVerifiedCompleteBackup, takeCompleteBackupWithoutVerifying,
@@ -37,6 +38,7 @@ import { main as completeBackupCli } from '../src/ops/complete-backup-cli.js';
 import { main as completeRestoreCli } from '../src/ops/complete-restore-cli.js';
 import { main as retentionCli } from '../src/ops/backup-retention-cli.js';
 import { main as lifecycleCli } from '../src/ops/safety-set-lifecycle-cli.js';
+import { COMPONENT_ARTIFACT_NAMES } from '../src/ops/backup-components.js';
 import { fakeToolchain } from './helpers/fake-toolchain.js';
 import { restoreStack, setDumpDigest, setKeystoreDigest } from './helpers/fake-restore-stack.js';
 import { MIGRATION_VERSION } from '../src/db/schema-version.js';
@@ -1348,6 +1350,288 @@ test('no module under src/ can suppress the locks with a flag, because there is 
 // -----------------------------------------------------------------------------------------------------------
 // Registration, documentation, and the operator's own surfaces
 // -----------------------------------------------------------------------------------------------------------
+
+// -----------------------------------------------------------------------------------------------------------
+// Review round 2: the mint happens before the first write, case aliases, and the holder note
+// -----------------------------------------------------------------------------------------------------------
+
+test('the nested authority is minted before any journal write, and a refusal there leaves no journal', () => {
+  // ---- WHAT THIS IS FOR --------------------------------------------------------------------------
+  //
+  // `locks.heldDestination()` can REFUSE — it does when the filesystem reports no usable directory
+  // identity, because a capability that cannot name a directory cannot be checked against one. It used to
+  // be called at the point of use, inside the step loop, which is AFTER `mark(step, 'running')` has
+  // written a journal. A refusal there would have left the project holding an interrupted restore that had
+  // never begun. It is now the first thing after both locks are held.
+  //
+  // WHAT IS PROVED HERE, AND WHAT IS NOT. The mint's own refusal cannot be produced on a filesystem that
+  // reports inodes, and no production seam was added to fake one — so this proves the property the
+  // ordering exists for, in two halves that together close it: the mint is the first statement after
+  // `lockDestination` and precedes every write in the source, and a refusal that really does arrive in
+  // that window leaves nothing behind on a REAL run.
+  const source = readRepo('src/ops/complete-restore.ts');
+  const run = source.slice(source.indexOf('export function runCompleteRestore'));
+  const mint = run.indexOf('const authority = locks.heldDestination();');
+  assert(mint > 0, 'the capability is minted in the run, once, into a constant');
+  assert(mint > run.indexOf('locks.lockDestination('), 'after both locks are held');
+  for (const write of ['const write = deps.journalWriter', 'const persist = ', 'mark(step.id, \'running\')',
+    'for (const step of plan.steps)']) {
+    assert(mint < run.indexOf(write), `and before ${write}`);
+  }
+  assertEq((run.match(/locks\.heldDestination\(\)/g) ?? []).length, 1,
+    'and it is minted exactly once, never again at the point of use');
+
+  // ---- THE BEHAVIOURAL HALF: A REAL REFUSAL IN THAT WINDOW ---------------------------------------
+  //
+  // The under-lock re-resolve sits immediately after the mint and before the first journal write, and it
+  // re-VERIFIES the set. So the set is broken at a moment that is after the pre-lock resolve has already
+  // accepted it and before the under-lock one runs — which is exactly the window a mint refusal would
+  // arrive in. The seam used is the injected `CommandRunner` this suite already owns: the occupancy probe
+  // is a real command this restore issues, and its FIRST call is the pre-lock one. Nothing in production
+  // was widened to make this reachable.
+  const root = makeMaintenanceProject(join(WORK, 'mint-before-write'));
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  const setDir = takeSharedSet(root, 'backups', 'set-a', new Date('2020-01-01T00:00:00.000Z'));
+  // The placement targets are moved aside so they classify as ABSENT, which is what makes the restore ask
+  // Docker whether the project has containers — the probe this test needs as its boundary.
+  renameSync(join(root, 'secrets'), join(root, 'secrets-aside'));
+  renameSync(join(root, 'promotion-records'), join(root, 'promotion-records-aside'));
+
+  const request = {
+    projectRoot: root, destination: 'backups', setName: 'set-a', custodian: 'inline' as const,
+    secrets: 'secrets', promotionRecords: 'promotion-records',
+  };
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  const planLedger = new CommandLedger();
+  const plan = planCompleteRestore(
+    resolveCompleteRestoreRequest(request, composeOccupancyProbe(world.runner, planLedger)),
+    { safetySet: true, acceptDataLoss: false });
+
+  let probes = 0;
+  const breakingRunner: typeof world.runner = (command) => {
+    if ([command.program, ...command.args].join(' ').includes('compose ps')) {
+      probes += 1;
+      // AFTER THE PRE-LOCK RESOLVE HAS ACCEPTED THE SET, AND BEFORE THE UNDER-LOCK ONE READS IT AGAIN.
+      if (probes === 1) appendFileSync(join(setDir, COMPONENT_ARTIFACT_NAMES.database), '-- broken\n', 'utf8');
+    }
+    return world.runner(command);
+  };
+  refuses(() => runCompleteRestore(request, {
+    runner: breakingRunner,
+    fileRunner: world.inputRunner,
+    backupFileRunner: world.outputRunner,
+    ledger: world.ledger,
+    suffix: () => 'aaaaaaaaaaaa',
+    now: () => new Date('2026-07-31T12:00:00.000Z'),
+  }, { kind: 'run', confirm: plan.digest, acceptDataLoss: null }),
+    'does not verify', 'a refusal in the post-lock, post-mint, pre-write window');
+  assert(probes >= 1, 'and the boundary really was reached');
+
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false,
+    'AND IT LEFT NO JOURNAL: nothing between taking the locks and the first step may write one');
+  assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'and released the project lock');
+  assertEq(existsSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME)), false, 'and the destination lock');
+  assertEq(readdirSync(join(root, 'backups')).filter((name) => name.startsWith('.pre-restore-claim-')).length, 0,
+    'and claimed nothing');
+  assertEq(existsSync(join(root, 'secrets')), false, 'and placed nothing');
+});
+
+test('a case-variant claim name is refused where the filesystem says it is the same directory', () => {
+  // ---- REVIEW ROUND 2, FINDING 2 -----------------------------------------------------------------
+  //
+  // The claim-namespace refusal matched the literal segments an operator typed. On a case-INSENSITIVE
+  // volume `backups/.PRE-RESTORE-CLAIM-<nonce>` names the very same directory as the lower-case claim and
+  // was walking straight past the guard. The fix may not be a global fold: on a case-SENSITIVE volume that
+  // upper-case name is a DIFFERENT directory an operator is entitled to use, and refusing it would be
+  // inventing a restriction. So the answer is measured per directory, from `ino`/`dev`, and this test
+  // asserts BOTH halves — whichever half this host can actually demonstrate.
+  const root = makeMaintenanceProject(join(WORK, 'claim-case-alias'));
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  const nonce = 'a'.repeat(24);
+  mkdirSync(join(root, 'backups', `.pre-restore-claim-${nonce}`));
+  const shouted = `backups/.PRE-RESTORE-CLAIM-${nonce.toUpperCase()}`;
+  const insensitive = existsSync(join(root, shouted));
+  const attempt = (destination: string): { readonly refusal: string | null } => {
+    const tools = fakeToolchain();
+    try {
+      runVerifiedCompleteBackup({
+        projectRoot: root, destination, setName: 'manual-set', custodian: 'inline',
+        secrets: 'secrets', promotionRecords: 'promotion-records',
+      }, { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger });
+    } catch (err) {
+      return { refusal: (err as Error).message };
+    }
+    return { refusal: null };
+  };
+
+  if (insensitive) {
+    // ---- THE ALIAS HALF: one directory, two spellings, and the shouted one is refused -------------
+    const outcome = attempt(shouted);
+    assert(outcome.refusal !== null && outcome.refusal.includes('safety-set claim namespace'),
+      `the shouted spelling of one claim directory is refused: ${String(outcome.refusal)}`);
+    assertEq(existsSync(join(root, 'backups', `.pre-restore-claim-${nonce}`, 'manual-set')), false,
+      'and nothing was published into it');
+  } else {
+    // ---- THE DISTINCT half: THE SAME SHOUTED CLAIM-SHAPED NAME, and here it is a real, separate
+    // directory sitting BESIDE the lower-case claim. This is the assertion that proves the guard does not
+    // simply fold case for everyone: an ordinary upper-case destination would prove nothing, because it is
+    // not claim-shaped under any spelling. On a case-sensitive volume this name is the operator's to use.
+    mkdirSync(join(root, shouted), { recursive: true });
+    assert(existsSync(join(root, 'backups', `.pre-restore-claim-${nonce}`)),
+      'the lower-case claim is still its own directory beside it');
+    const ok = attempt(shouted);
+    assertEq(ok.refusal, null,
+      `a genuinely distinct claim-SHAPED name is not a claim on a case-sensitive volume: ${String(ok.refusal)}`);
+    assert(existsSync(join(root, shouted, 'manual-set')), 'and the set was published there');
+    assertEq(existsSync(join(root, 'backups', `.pre-restore-claim-${nonce}`, 'manual-set')), false,
+      'and NOT into the real claim beside it');
+  }
+});
+
+test('a holder note that is a link, oversized, or malformed never lets release delete the lock', () => {
+  // ---- REVIEW ROUND 2, FINDING 3 -----------------------------------------------------------------
+  //
+  // The note inside a lock decides whether this process DELETES that lock, and it sits in a directory an
+  // operator owns. It used to be read by name with `readFileSync`: a symbolic link at that name would have
+  // been followed to somebody else's file, and a large file at that name would have been pulled whole into
+  // memory to answer a question about thirty-two hex characters. It is now read through the same
+  // no-follow, size-bounded reader every other file in this module uses, and anything that is not plainly
+  // OUR note fails closed — release removes nothing.
+  const notePath = (root: string): string => join(root, MAINTENANCE_LOCK_DIRNAME, 'holder.txt');
+  const withHeldLock = (name: string, tamper: (root: string) => boolean): boolean => {
+    const root = makeMaintenanceProject(join(WORK, name));
+    const locks = MaintenanceLocks.open(root);
+    const applied = tamper(root);
+    locks.release();
+    const survived = existsSync(join(root, MAINTENANCE_LOCK_DIRNAME));
+    rmSync(join(root, MAINTENANCE_LOCK_DIRNAME), { recursive: true, force: true });
+    return applied ? survived : true;
+  };
+
+  // 1. OVERSIZED. Larger than a note has any business being, and it is not read to find out.
+  assertEq(withHeldLock('note-oversized', (root) => {
+    writeFileSync(notePath(root), `token=${'a'.repeat(32)}\n${'x'.repeat(8192)}`, 'utf8');
+    return true;
+  }), true, 'an oversized note stops the release');
+
+  // 2. MALFORMED. Bytes that are not a note this product wrote.
+  assertEq(withHeldLock('note-malformed', (root) => {
+    writeFileSync(notePath(root), 'pid=1\nnot-a-token\n', 'utf8');
+    return true;
+  }), true, 'a malformed note stops the release');
+
+  // 3. SOMEBODY ELSE'S TOKEN.
+  assertEq(withHeldLock('note-foreign', (root) => {
+    writeFileSync(notePath(root), `pid=2\ntoken=${'b'.repeat(32)}\n`, 'utf8');
+    return true;
+  }), true, 'a foreign token stops the release');
+
+  // 4. A SYMBOLIC LINK AT THE NOTE'S NAME, pointing at a file that carries a PERFECTLY VALID token. The
+  //    link is the point: following it would read somebody else's bytes and delete this lock on the
+  //    strength of them.
+  let linked = false;
+  const survivedLink = withHeldLock('note-symlink', (root) => {
+    const decoy = join(root, 'decoy-note.txt');
+    writeFileSync(decoy, `pid=3\ntoken=${'c'.repeat(32)}\n`, 'utf8');
+    const real = readFileSync(notePath(root), 'utf8');
+    writeFileSync(join(root, 'real-note.txt'), real, 'utf8');
+    rmSync(notePath(root), { force: true });
+    try { symlinkSync(join(root, 'real-note.txt'), notePath(root), 'file'); linked = true; } catch { /* below */ }
+    return linked;
+  });
+  if (linked) {
+    assertEq(survivedLink, true,
+      'a note reached through a symbolic link stops the release, even when the target carries our token');
+  } else {
+    skip('a holder note that is a symbolic link stops the release',
+      'this host permits no file symbolic link, so the alias cannot be built here');
+  }
+
+  // 5. A DIRECTORY AT THE NOTE'S NAME. `lstat` answers happily — it is not absent — and the read then
+  //    refuses. This is the portable stand-in for every "there is something here and it cannot be read as
+  //    a note" case, and it also proves the probe does not THROW: release is called from a `finally`, so an
+  //    escaping filesystem error would replace whatever result the command was carrying.
+  assertEq(withHeldLock('note-is-a-directory', (root) => {
+    rmSync(notePath(root), { force: true });
+    mkdirSync(notePath(root));
+    return true;
+  }), true, 'a directory where the note should be stops the release, and does not throw out of it');
+
+  // 6. AND THE TWO STATES THAT MUST STILL RELEASE: our own note, and no note at all.
+  const clean = makeMaintenanceProject(join(WORK, 'note-ours'));
+  const held = MaintenanceLocks.open(clean);
+  held.release();
+  assertEq(existsSync(join(clean, MAINTENANCE_LOCK_DIRNAME)), false, 'our own note releases normally');
+
+  const noNote = makeMaintenanceProject(join(WORK, 'note-absent'));
+  const second = MaintenanceLocks.open(noNote);
+  rmSync(notePath(noNote), { force: true });
+  second.release();
+  assertEq(existsSync(join(noNote, MAINTENANCE_LOCK_DIRNAME)), false,
+    'and an ABSENT note still releases, because writing it is best-effort and identity already proved this lock');
+});
+
+test('case aliasing is detected from the directory LISTING, not from inodes alone', () => {
+  // REVIEW ROUND 2. `directoryIdentity` returns null on a filesystem that reports `ino` 0, so a detector
+  // built only on `sameIdentity` would answer "not an alias" precisely where it could not measure — which
+  // is failing OPEN in the one place the capability code deliberately fails closed. The listing is the
+  // detector that still works there, and identity is corroboration.
+  //
+  // THIS HALF IS STRUCTURAL AND SAYS SO. An inode-zero filesystem cannot be produced on this host, and no
+  // production seam was added to fake one; what is asserted is that the listing branch exists, that it is
+  // reached when identity is unavailable, and that an unlistable parent refuses rather than allows. The
+  // BEHAVIOURAL proof of the alias rule itself is the case-variant test above, which runs on whichever
+  // kind of volume this host has.
+  const owner = readRepo('src/ops/maintenance-safety.ts');
+  const fn = owner.slice(owner.indexOf('function segmentNamesAClaim'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert(body.includes('readdirSync(parent)'), 'the parent listing is consulted');
+  assert(body.indexOf('sameIdentity(') < body.indexOf('readdirSync(parent)'),
+    'identity is tried first, as corroboration');
+  assert(body.includes('if (requested !== null && lower !== null) return false;'),
+    'and two MEASURED, different inodes end it as genuinely distinct');
+  assert(body.includes('return entryExists(join(parent, segment));'),
+    'while a parent that cannot be listed refuses if the requested spelling resolves at all');
+  assert(body.includes('names.includes(segment)'), 'a listed exact spelling is a distinct directory');
+  assert(body.includes('names.includes(folded)'), 'and a listed lower-case spelling with a resolving alias is not');
+  // ASKED OF THE CODE, NOT OF THE PROSE — the module's own comment explains why a platform is not a
+  // filesystem, and that sentence must not be what makes this pass.
+  const executable = owner.split('\n')
+    .filter((line) => { const t = line.trimStart(); return !t.startsWith('*') && !t.startsWith('//'); })
+    .join('\n');
+  assert(!executable.includes('process.platform'), 'and no code anywhere infers this from the host');
+});
+
+test('directory identity is read as exact integers, because a file index outgrows a double', () => {
+  // REVIEW ROUND 2. `ino` is 64 bits. This worktree's own host reports directory indices above 2^53, where
+  // a JavaScript number stops being able to hold every integer — so two DIFFERENT directories could have
+  // compared equal, which is the one mistake an identity check may never make: it decides whether a
+  // capability authorises a directory and whether a release deletes a lock.
+  const owner = readRepo('src/ops/maintenance-safety.ts');
+  const fn = owner.slice(owner.indexOf('function directoryIdentity'));
+  const body = fn.slice(0, fn.indexOf('\n}'));
+  assert(body.includes('bigint: true'), 'the identity is read with bigint stats');
+  assert(body.includes('=== 0n'), 'and the "no usable inode" test is an exact integer comparison');
+  assert(owner.includes('readonly ino: bigint'), 'and the identity type carries exact integers');
+
+  // AND IT REALLY DISTINGUISHES two directories on this host, which is what the type is for.
+  const root = makeMaintenanceProject(join(WORK, 'identity-exact'));
+  mkdirSync(join(root, 'one'), { recursive: true });
+  mkdirSync(join(root, 'two'), { recursive: true });
+  const locks = MaintenanceLocks.open(root);
+  try {
+    locks.lockDestination(resolveBackupDestination(root, 'one').destinationDir);
+    const authority = locks.heldDestination();
+    assertHeldDestination(authority, root, resolveBackupDestination(root, 'one').destinationDir);
+    refuses(() => assertHeldDestination(authority, root, resolveBackupDestination(root, 'two').destinationDir),
+      'DIFFERENT backup destination', 'two sibling directories are never confused for one another');
+  } finally {
+    locks.release();
+  }
+});
 
 test('the command family, its suite and its documents are registered where the runner and CI look', () => {
   const inventory = JSON.parse(readRepo('test/suite-inventory.json')) as {

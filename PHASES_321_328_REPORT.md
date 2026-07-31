@@ -455,6 +455,57 @@ The three suites that touch the lock primitive without belonging to this family 
 - **No scheduler, no `--force`, no `--break-lock`.** A plan still takes no lock.
 - **Retention and safety-set lifecycle kept every protection**: 114 and 98 checks, unchanged in substance.
 
+## Review round 2 — three more findings, all fixed
+
+1. **The nested capability was minted at the point of use, inside the step loop.** Minting can refuse — it
+   does when the filesystem reports no usable directory identity — and by then `mark(step, 'running')` had
+   already written a journal, leaving the project holding an interrupted restore that had never begun. It is
+   now minted into a `const` the instant both locks are held and before the first write. Proved structurally
+   (the mint precedes the journal writer, `persist`, `mark` and the step loop, and is minted exactly once)
+   and behaviourally: a real refusal arriving in that window — the under-lock re-verification of a set
+   broken through the suite's own injected runner, with no production seam added — leaves no journal, no
+   claim, no locks and nothing placed.
+2. **The claim-namespace guard matched only the literal segments an operator typed.** On a case-insensitive
+   volume `backups/.PRE-RESTORE-CLAIM-<nonce>` names the same directory as the claim and walked past it. The
+   fix may not be a global fold, because on a case-sensitive volume that name is a different directory an
+   operator may legitimately use. Case behaviour is now measured **per directory**: `ino`/`dev` where the
+   filesystem reports them, and the parent's **listing** where it does not — because `directoryIdentity`
+   returns null on an inode-zero filesystem, and a detector built only on identity would have failed **open**
+   exactly where the capability code fails closed. An unlistable parent refuses if the requested spelling
+   resolves. The regression asserts both halves with the *same shouted claim-shaped name*: refused as an
+   alias on a case-insensitive volume, allowed as a distinct directory on a case-sensitive one. The resolved
+   real path is re-checked as well as the literal request.
+3. **`readHolderToken` read the note by name with `readFileSync`, and its `lstat` sat outside the
+   try/catch.** A symbolic link at that name would have been followed to somebody else's bytes and a lock
+   deleted on the strength of them; an oversized file would have been pulled whole into memory; and an
+   `EACCES`/`EIO` from the probe would have escaped `release()` — which runs in a `finally` — replacing the
+   command's real result. It now reads through `readFileNoFollow` bounded at 4 KiB, the whole probe is
+   guarded, and absence is kept distinct from unreadable: a link, an oversized note, a directory at the
+   note's name, malformed bytes and a foreign token all leave the lock alone.
+
+**Also in this round:** directory identity is read with `bigint` stats. `ino` is 64 bits and this
+repository's own host reports directory indices above 2^53, where a JavaScript `number` stops holding every
+integer — so two different directories could have compared equal in the one check that decides whether a
+capability authorises a directory and whether a release deletes a lock.
+
+### Review round 2 gates
+
+| Gate | Result |
+| --- | --- |
+| `npx tsc -p tsconfig.json --noEmit` | **PASS**, 0 errors |
+| `npm run test:shared-destination-lock` | **52 passed, 0 failed, 1 skipped** (was 47) |
+| `npm run test:complete-backup` | 49 passed, 0 failed |
+| `npm run test:complete-restore` | 136 passed, 0 failed |
+| `npm run test:backup-retention` | 114 passed, 0 failed |
+| `npm run test:safety-set-lifecycle` | 98 passed, 0 failed |
+| `npm run test:inventory` | **PASS**, `ok: true` |
+| `npx tsx test/release-readiness.ts` | 44 passed, 0 failed |
+| `doctor-monitor` / `kek-rotation` / `upgrade-rehearsal` / `backup-components` | 19 / 12 / 49 / 41, 0 failed |
+
+The one skip is honest and names its reason: this host permits no **file** symbolic link, so the "note
+reached through a link" case cannot be built here. It runs on POSIX CI. A directory at the note's name
+covers the same fail-closed path portably and does run.
+
 ## Remaining risks after Correction 1
 
 1. **The nested capability is checked, but the claim it authorises is only checked for shape and existence.**
@@ -467,5 +518,14 @@ The three suites that touch the lock primitive without belonging to this family 
 3. **`releaseOwnedLock` leaves a stale lock when it cannot prove ownership.** That is deliberate — the
    alternative deletes somebody else's — but it means a renamed-and-replaced destination accumulates a lock
    an operator has to remove by hand, and nothing reports it until the next run.
-4. Risks 1-6 from the candidate report above stand as written, minus the claim-namespace risk, which is
+4. **On a case-insensitive volume, a claim-shaped-when-folded destination that does not yet exist is
+   allowed, and would be created.** The guard refuses aliases of claims that are *there*; it does not reserve
+   the whole shouted namespace in advance. The residual hazard is the lock-below-lock one only —
+   `ops:safety-set-lifecycle` classifies such a directory as foreign and never touches it — and closing it
+   would mean refusing a name on a volume whose case behaviour cannot be measured until something exists at
+   it. Stated rather than quietly widened.
+5. **The inode-zero listing detector is asserted structurally, not behaviourally.** No filesystem reporting
+   `ino` 0 is reachable on the hosts this suite runs on, and no production seam was added to fake one. What
+   runs behaviourally is the alias rule itself, on whichever kind of volume the host has.
+6. Risks 1-6 from the candidate report above stand as written, minus the claim-namespace risk, which is
    closed.

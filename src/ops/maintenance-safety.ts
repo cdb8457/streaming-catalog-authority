@@ -1,8 +1,7 @@
 import { createHash, randomBytes } from 'node:crypto';
 import {
   closeSync, constants as fsConstants, existsSync, fstatSync, fsyncSync, lstatSync, mkdirSync, openSync,
-  readFileSync, readSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync,
-  writeSync,
+  readSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import type { Stats } from 'node:fs';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
@@ -754,8 +753,8 @@ export function publishDirectory(staging: string, final: string, what: string): 
  * cannot make.
  */
 interface DirectoryIdentity {
-  readonly dev: number;
-  readonly ino: number;
+  readonly dev: bigint;
+  readonly ino: bigint;
 }
 
 /**
@@ -766,9 +765,14 @@ interface DirectoryIdentity {
  * is NOT required to be non-zero: Windows reports `0` for it and a real, stable, rename-surviving `ino`.
  */
 function directoryIdentity(path: string): DirectoryIdentity | null {
-  const stats = lstatSync(path, { throwIfNoEntry: false });
+  // `bigint`, AND IT IS NOT A STYLE CHOICE. A Windows file index is 64 bits and routinely exceeds 2^53 —
+  // this repository's own worktree reports one — so the default `number` inode is a LOSSY reading of it.
+  // Two distinct directories whose indices differ only below the float's precision would compare EQUAL,
+  // which is the one mistake an identity check may never make: it is what decides whether a capability
+  // authorises a directory and whether a release deletes a lock. Exact integers, or nothing.
+  const stats = lstatSync(path, { bigint: true, throwIfNoEntry: false });
   if (stats === undefined || !stats.isDirectory() || stats.isSymbolicLink()) return null;
-  if (stats.ino === 0) return null;
+  if (stats.ino === 0n) return null;
   return { dev: stats.dev, ino: stats.ino };
 }
 
@@ -874,24 +878,61 @@ function releaseOwnedLock(path: string, mine: DirectoryIdentity | null, token: s
     // No usable identity from this filesystem, so the token is the only proof there is. No token, no removal.
     return;
   }
-  // A NOTE THAT IS THERE MUST BE OURS. Absent is fine — writing it is best-effort at acquisition — but one
-  // carrying somebody else's token means this directory has been rebuilt by another process.
+  // A NOTE THAT IS THERE MUST BE OURS, AND MUST BE READABLE AS OURS. Three outcomes, three answers:
+  //
+  //   ABSENT      — fine. Writing it is best-effort at acquisition, and the identity above already proved
+  //                 this is the directory this call created.
+  //   OUR TOKEN   — fine.
+  //   ANYTHING ELSE — somebody else's token, a note that is a symbolic link, one larger than a note has any
+  //                 business being, or bytes that are not a note at all. Every one of those means this
+  //                 directory is not in the state this call left it in, and the safe answer to that is to
+  //                 remove NOTHING. A stale lock is reported by the next run; a wrongly deleted one is not.
   const found = readHolderToken(path);
-  if (found !== null && found !== token) return;
+  if (found !== HOLDER_ABSENT && found !== token) return;
   try { unlinkSync(join(path, HOLDER_FILE_NAME)); } catch { /* may not exist */ }
   try { rmdirSync(path); } catch { /* a lock that will not release is reported by the next run, not hidden */ }
 }
 
-/** The token inside a lock directory, or `null` when there is no readable note. Never throws. */
-function readHolderToken(path: string): string | null {
-  let raw: string;
+/** There is nothing at the note's name. Distinct from "there is something and it is not ours". */
+const HOLDER_ABSENT = Symbol('catalog-authority.lock-holder-absent');
+/** There is something, and it is not a note this product wrote. Never equal to any token. */
+const HOLDER_UNREADABLE = Symbol('catalog-authority.lock-holder-unreadable');
+
+/** How large a lock's holder note may be. It is two short lines; anything more is not one of ours. */
+export const MAX_HOLDER_FILE_BYTES = 4096;
+
+/**
+ * The token inside a lock directory: our token, ABSENT, or UNREADABLE. Never throws.
+ *
+ * IT IS READ THE WAY EVERY OTHER FILE IN THIS MODULE IS READ — through `readFileNoFollow`, which opens the
+ * name once without following a symbolic link and refuses one larger than the bound. A lock directory sits
+ * in a backup destination an operator owns, and the note inside it decides whether this process DELETES a
+ * lock; reading it by name with no bound would mean a link at that name could point release at somebody
+ * else's file, and a large file at that name could be pulled whole into memory to answer a question about
+ * thirty-two hex characters.
+ *
+ * THE THREE OUTCOMES ARE KEPT APART on purpose. Absent is a legitimate state — writing the note is
+ * best-effort at acquisition — while unreadable is evidence that something touched this directory, and the
+ * caller must be able to tell those apart rather than treating both as "no token".
+ */
+function readHolderToken(path: string): string | typeof HOLDER_ABSENT | typeof HOLDER_UNREADABLE {
+  const notePath = join(path, HOLDER_FILE_NAME);
   try {
-    raw = readFileSync(join(path, HOLDER_FILE_NAME), 'utf8');
+    // `throwIfNoEntry: false` COVERS ONLY ENOENT. `EACCES`, `EIO`, `ENOTDIR` and a path that has become
+    // something `lstat` will not answer about all still THROW — and this is called from a `finally`, so an
+    // escaping error would replace whatever result the command was carrying with a filesystem error about
+    // a lock note. Absence is the ONLY outcome of this probe that means "there is nothing here"; every
+    // other failure means "this cannot be read", which is not permission to delete anything.
+    if (lstatSync(notePath, { throwIfNoEntry: false }) === undefined) return HOLDER_ABSENT;
+    const raw = readFileNoFollow(notePath, 'maintenance lock holder file', MAX_HOLDER_FILE_BYTES)
+      .bytes.toString('utf8');
+    const match = /^token=([0-9a-f]{32})$/m.exec(raw);
+    return match === null ? HOLDER_UNREADABLE : match[1]!;
   } catch {
-    return null;
+    // A link, a special file, one that changed size while it was read, one over the bound, or a name this
+    // process cannot examine at all.
+    return HOLDER_UNREADABLE;
   }
-  const match = /^token=([0-9a-f]{32})$/m.exec(raw);
-  return match === null ? null : match[1]!;
 }
 
 /** A short, unguessable suffix for a staging directory beside its final name. */
@@ -1052,15 +1093,115 @@ export function isSafetyClaimDirName(name: string): boolean {
  * safety set through a `HeldDestination` minted while it holds the enclosing destination, and that
  * capability — not a flag and not a name — is what authorises the claim as a target.
  */
-export function assertNotSafetyClaimNamespace(relativeDestination: string): void {
+export function assertNotSafetyClaimNamespace(projectRoot: string, relativeDestination: string): void {
   const segments = relativeDestination.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.');
-  if (!segments.some((segment) => isSafetyClaimDirName(segment))) return;
+  let parent = projectRoot;
+  let claim = false;
+  for (const segment of segments) {
+    if (segmentNamesAClaim(parent, segment)) { claim = true; break; }
+    parent = join(parent, segment);
+  }
+  // ---- AND AGAIN OVER WHAT IS REALLY THERE ---------------------------------------------------------
+  //
+  // The literal request is what an operator typed; the resolved path is what the filesystem has. They can
+  // differ — a `.` segment, a separator spelling, a symlinked ancestor above the project root — and the
+  // question "is this inside a claim" is about the second one. `resolveInsideRoot` has already refused a
+  // link at any component below the root, so this is a cheap confirmation rather than a second policy.
+  if (!claim) {
+    const real = fullyExistingRealPath(join(projectRoot, ...segments));
+    if (real !== null) {
+      const inside = relative(projectRoot, real).split(/[\\/]/).filter((part) => part !== '' && part !== '.');
+      let realParent = projectRoot;
+      for (const segment of inside) {
+        if (segmentNamesAClaim(realParent, segment)) { claim = true; break; }
+        realParent = join(realParent, segment);
+      }
+    }
+  }
+  if (!claim) return;
   throw new MaintenanceRefused(
     'this backup was pointed at a directory inside a restore\'s safety-set claim namespace '
     + `(${SAFETY_CLAIM_DIR_PREFIX}<nonce>). A claim belongs to the ops:complete-restore run that created `
     + 'it, and publishing into one would take this command\'s destination lock BELOW the lock '
     + 'ops:backup-retention and ops:safety-set-lifecycle take on the destination above it — so two commands '
     + 'would be working in one destination at once. Name the backup destination itself. Nothing was taken.');
+}
+
+/**
+ * Is this one path segment a claim directory, ASKED OF THE FILESYSTEM THE PARENT IS ON?
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * CASE INSENSITIVITY IS A PROPERTY OF A DIRECTORY, NOT OF A HOST, AND NOT OF EVERY DIRECTORY.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * A literal match is the easy half. The hard half is `backups/.PRE-RESTORE-CLAIM-<nonce>`: on a
+ * case-insensitive volume that names the SAME directory as the lower-case claim and must be refused, and on
+ * a case-SENSITIVE volume it is a different directory an operator is entitled to use as a destination.
+ * Folding case for everyone breaks the second; folding it for `win32`/`darwin` guesses at a machine when
+ * the question is about a volume — macOS ships case-sensitive APFS and Windows supports per-directory case
+ * sensitivity.
+ *
+ * SO IT IS MEASURED, HERE, ON THIS PARENT. If the segment is a claim once lower-cased, the lower-cased name
+ * is looked up beside it: same directory by `ino`/`dev`, and the two spellings are one directory and this IS
+ * a claim; a different directory or no directory at all, and they are genuinely two names and this is not.
+ * Nothing is inferred from a platform and nothing is folded anywhere else.
+ */
+function segmentNamesAClaim(parent: string, segment: string): boolean {
+  if (isSafetyClaimDirName(segment)) return true;
+  const folded = segment.toLowerCase();
+  if (folded === segment || !isSafetyClaimDirName(folded)) return false;
+
+  // ---- IDENTITY FIRST, AS CORROBORATION AND NEVER AS THE ONLY DETECTOR ---------------------------
+  //
+  // When the filesystem answers with inodes, two spellings that resolve to one inode ARE one directory and
+  // two that resolve to different inodes are two. But `directoryIdentity` returns null on a filesystem
+  // that reports `ino` 0 — and a `sameIdentity` that is false because nothing could be measured would
+  // ALLOW the alias, which is failing OPEN in the one place the capability code deliberately fails closed.
+  const requested = directoryIdentity(join(parent, segment));
+  const lower = directoryIdentity(join(parent, folded));
+  if (sameIdentity(requested, lower)) return true;
+  if (requested !== null && lower !== null) return false;   // measured, and genuinely two directories
+
+  // ---- SO THE LISTING IS THE DETECTOR THAT STILL WORKS WITHOUT INODES ----------------------------
+  //
+  // A directory entry exists under exactly the spelling the filesystem stores. If the parent lists the
+  // requested spelling, that spelling is a real, distinct entry and this volume is case-sensitive here. If
+  // it lists only the lower-case claim while the requested spelling nevertheless RESOLVES, the two names
+  // reach one entry: an alias, and refused.
+  let names: readonly string[];
+  try {
+    names = readdirSync(parent);
+  } catch {
+    // Cannot tell. If the requested spelling resolves at all, refuse: an unanswerable question about a
+    // claim namespace is not permission to publish into one.
+    return entryExists(join(parent, segment));
+  }
+  if (names.includes(segment)) return false;
+  return names.includes(folded) && entryExists(join(parent, segment));
+}
+
+/** Is there anything at this name? Never throws — an unanswerable name is reported as absent to callers
+ * that treat absence as "not an alias", and every one of those has already required the name to resolve. */
+function entryExists(path: string): boolean {
+  try {
+    return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The real path of this path when ALL of it exists, or `null`.
+ *
+ * It is deliberately not a deepest-existing-ancestor walk: the caller uses it to re-ask the claim question
+ * of what is really on disk, and a path that is not fully there has no components on disk to re-ask about.
+ */
+function fullyExistingRealPath(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
 }
 
 /**

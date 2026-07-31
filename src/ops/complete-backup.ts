@@ -506,7 +506,7 @@ export function takeCompleteBackupWithoutVerifying(
   }
   // NOBODY AUTHORISED A CLAIM, SO A CLAIM IS NOT A DESTINATION. Refused before the project lock, before the
   // destination exists and before anything is created.
-  assertNotSafetyClaimNamespace(request.destination);
+  assertNotSafetyClaimNamespace(resolved.projectRoot, request.destination);
   const locks = MaintenanceLocks.open(resolved.projectRoot);
   try {
     enterDestination(request, deps, resolved, locks);
@@ -767,7 +767,7 @@ export function runVerifiedCompleteBackup(
   }
   // NOBODY AUTHORISED A CLAIM, SO A CLAIM IS NOT A DESTINATION. Refused before the project lock, before the
   // destination exists and before anything is created.
-  assertNotSafetyClaimNamespace(request.destination);
+  assertNotSafetyClaimNamespace(resolved.projectRoot, request.destination);
 
   const locks = MaintenanceLocks.open(resolved.projectRoot);
   try {
