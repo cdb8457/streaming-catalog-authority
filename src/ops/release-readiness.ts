@@ -642,6 +642,16 @@ export const REQUIRED_SUITE_SCRIPTS: readonly string[] = Object.freeze([
   'test:phase277-local',
   'test:phase278-local',
   'test:phase279-local',
+  // Phases 297-304 and 305-312 are here for the strongest form of that reason. `ops:complete-restore` stops
+  // the stack and destroys its volumes; `ops:backup-retention` removes backup sets. They are the only two
+  // commands this product ships that destroy state nobody can obtain again from anywhere, and a release that
+  // could not see their suites stop running would be a release with no evidence about either.
+  //
+  // 297-304 was omitted when it shipped. Adding it here is not scope creep into another tranche: it is the
+  // same list, the same family and the same argument, and leaving it out while adding the command that
+  // removes the sets a restore falls back to would have been the inconsistency.
+  'test:phase297-local',
+  'test:phase305-local',
 ]);
 
 /**
