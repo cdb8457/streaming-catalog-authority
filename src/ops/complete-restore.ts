@@ -110,7 +110,24 @@ export const COMPLETE_RESTORE_VERSION = 2;
 
 /** The journal a run in progress leaves in the project root. Private, and refused by a second run. */
 export const RESTORE_JOURNAL_NAME = '.catalog-restore.journal.json';
-export const RESTORE_JOURNAL_VERSION = 4;
+/**
+ * The schema of the persisted journal, and of every marker that binds itself to it.
+ *
+ * IT MOVES WHENEVER A PERSISTED FIELD DOES. Version 5 adds `stagingCommitment`: the exact staged-component
+ * values, recorded before anything is destroyed, on which an abandon deletes a directory holding a copy of
+ * every secret in the installation.
+ *
+ * THE DEFECT THIS CLOSES. That field was made REQUIRED while the version stayed at 4, so a genuine v4
+ * journal written by the previous build — which could not have carried it — was refused with "it carries no
+ * staged-component commitment": a malformed-document complaint about a document that was perfectly well
+ * formed for the build that wrote it. The distinction matters to whoever reads the refusal. An older
+ * journal is refused AT THE SCHEMA BOUNDARY, before a single field of it is examined or acted on, because
+ * this build cannot know what a field meant in a schema it does not implement.
+ *
+ * There is no migration, and that is deliberate: a journal decides which steps are skipped and which
+ * directories are renamed, and guessing at an older one is how a half-understood record destroys something.
+ */
+export const RESTORE_JOURNAL_VERSION = 5;
 /** A journal is small by construction. A file at that name larger than this is not one of ours. */
 export const MAX_JOURNAL_BYTES = 64 * 1024;
 
@@ -2842,12 +2859,27 @@ export function stageComponents(
   // a valid claimed marker" with no state in between. It is also SECRET-FREE while it is being built: not a
   // byte of any component is copied until after the publication.
   //
-  // PROCESS DEATH VERSUS POWER LOSS. Against a process that stops existing this is exact: every intermediate
-  // state is either the absent path or a fully claimed one, and the leftover build directory carries the
-  // same marker, so it is recognisable and removable. Against a POWER LOSS it is not claimed: the rename's
-  // metadata may not have reached the disk, because the containing directory is not fsynced afterwards. See
-  // The staging directory is never visible without a valid claim, in
-  // docs/PHASES_297_304_COMPLETE_RESTORE.md.
+  // PROCESS DEATH VERSUS POWER LOSS. Against a process that stops existing, the guarantee about THE
+  // PREDICTABLE PATH is exact: every state it can be observed in is either absent or a fully claimed
+  // directory of this operation's.
+  //
+  // WHAT IS LEFT BESIDE IT IS A WEAKER STATEMENT, and an earlier version of this comment overstated it by
+  // saying the leftover build directory always carries the same marker. It does not: a death between the
+  // `mkdir` on the line below and the marker write can leave `.catalog-restore.claiming-<hex>` with nothing
+  // in it. That orphan is harmless, and precisely because it is UNMARKED it is never mistaken for anything:
+  //
+  //   * It is SECRET-FREE. Not a byte of any component is copied until after the publication, so an orphan
+  //     from before the publication cannot hold one.
+  //   * Its name is UNPREDICTABLE and is not the predictable path, so it blocks nothing: the next attempt
+  //     draws a fresh name, and `createPrivateDirectory` refuses rather than reuses on collision.
+  //   * It is never trusted and never recursively deleted as an owned tree. Removing a directory of secrets
+  //     is authorised by a marker proving whose it is and what it holds, and an unmarked orphan has none —
+  //     so this command leaves it alone and an operator removes it, exactly as with any other directory it
+  //     cannot prove is its own.
+  //
+  // Against a POWER LOSS none of this is claimed: the rename's metadata may not have reached the disk,
+  // because the containing directory is not fsynced afterwards. See "The staging directory is never visible
+  // without a valid claim" in docs/PHASES_297_304_COMPLETE_RESTORE.md.
   const building = join(resolved.projectRoot, `.catalog-restore.claiming-${randomBytes(9).toString('hex')}`);
   createPrivateDirectory(building, 'restore staging claim');
 

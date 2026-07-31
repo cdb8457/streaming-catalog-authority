@@ -32,10 +32,18 @@ Both transitions are now atomic renames:
 * **claimed → sealed.** The complete sealed marker is written to a private temporary file inside the tree and
   renamed over the top. A reader sees the old valid marker or the new valid one, never neither.
 
-**The guarantee, stated exactly.** Against a process that stops existing this is complete: every observable
-state of the predictable path is absent, or a fully claimed/sealed directory of ours; the leftover build
-directory carries the same operation-bound marker, so it is recognisable rather than mysterious; and a resume
-proceeds with no manual deletion. Against **power loss to the disk** it is not, and the code and the docs say
+**The guarantee, stated exactly.** Against a process that stops existing, the guarantee about the
+**predictable path** is complete: every observable state of it is absent, or a fully claimed/sealed directory
+of ours, and a resume proceeds with no manual deletion.
+
+> **Corrected in correction 5.** This paragraph originally added that the leftover build directory always
+> carries the same operation-bound marker. It does not: a death between the `mkdir` and the marker write
+> leaves `.catalog-restore.claiming-<hex>` empty. The orphan is secret-free (nothing is copied until after
+> the publication), unpredictably named and therefore blocks nothing, and is never trusted or recursively
+> deleted as an owned tree — an unmarked directory authorises no removal, so it is left for an operator
+> exactly like any other directory this command cannot prove is its own.
+
+Against **power loss to the disk** it is not, and the code and the docs say
 so: `rename` is atomic with respect to other readers, but the containing directory is not `fsync`ed
 afterwards, so the metadata may not have reached stable storage. After a power cut the path may be absent
 when the run believed it published, or the marker may read `claimed` when it was sealed — both states the

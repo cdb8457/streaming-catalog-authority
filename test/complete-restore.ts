@@ -40,6 +40,7 @@ import {
   readStagingMarker,
   realStagingCopier,
   componentsOfManifest,
+  proveClaimOwnership,
   removeOwnedStaging,
   stageComponents,
   verifyOwnedStaging,
@@ -2143,11 +2144,20 @@ test('a half-published safety set is refused rather than trusted or replaced', (
 // The boundaries the previous commit named and did not cover
 // ---------------------------------------------------------------------------------------------------------
 
-test('CRASH after staging is verified, before its completion record: the tree is unmarked and refused, not reused', () => {
-  // A KILL INSIDE `stage-components` LEAVES A PLAUSIBLE-LOOKING TREE at a name derived from a suffix an
-  // operator can read in a journal. The marker is written LAST, so a tree without one is a tree whose
-  // components were never all staged and verified — and it is neither trusted nor removed, because a plain
-  // directory at an expected name is not proof of anything.
+test('CRASH after staging is verified, before its completion record: the tree is SEALED, ours, and rebuilt', () => {
+  // WHAT THIS TEST USED TO SAY IS NO LONGER TRUE, AND SAYING IT WAS ITS OWN DEFECT. Its name and its comment
+  // described the FIRST design, in which the marker was written LAST and a killed run therefore left an
+  // UNMARKED tree at a predictable name — refused by every reader and removable by nothing, which wedged the
+  // project. That design was replaced: the tree is CLAIMED before a byte is copied and SEALED once every
+  // component is copied and verified, and both transitions are atomic. The assertions below had already been
+  // updated to the new contract while the name and the comment still described the old one, which is the
+  // most misleading state a test can be in — it reads as proof of a guarantee nobody holds any more.
+  //
+  // THE ACTUAL CONTRACT AT THIS BOUNDARY: the process died after every component was staged and verified and
+  // after the seal, but before the journal recorded the step complete. The tree is therefore SEALED and
+  // provably this operation's, the journal says the step was still running, and the resume rebuilds it from
+  // the set with no manual deletion. A tree that is NOT provably ours is a different case entirely, and the
+  // test below this one is the one that covers it.
   const root = makeProject('crash-mid-staging');
   const setDir = takeSet(root, 'set-1');
   const { plan } = planFor(request(root, 'set-1'));
@@ -2156,9 +2166,12 @@ test('CRASH after staging is verified, before its completion record: the tree is
 
   const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
   assert(existsSync(staging), 'the staged tree is on disk');
-  assert(existsSync(join(staging, 'catalog-restore-staging.json')), 'and it carries its ownership marker');
+  const marker = JSON.parse(readFileSync(join(staging, 'catalog-restore-staging.json'), 'utf8')) as
+    Record<string, unknown>;
+  assertEq(marker.state, 'sealed', 'and it is SEALED: every component was copied and verified before it died');
+  assertEq(marker.planDigest, plan.digest, 'and the marker is bound to this operation');
   assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'stage-components')!.state, 'running',
-    'and the journal says the process was inside that step');
+    'while the journal says the process was inside that step');
 
   // THE RESUME RE-STAGES, because the step never completed — and it may, because the tree is provably ours.
   const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
@@ -3460,10 +3473,13 @@ test('impossible phase, claim and step combinations are refused before anything 
     writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify({ ...good, ...patch })}\n`, 'utf8');
   };
 
-  // THE VERSION MOVED, so a journal from the previous build is refused rather than half-understood.
-  assertEq(RESTORE_JOURNAL_VERSION, 4, 'the journal version reflects the fields that were added');
-  put({ version: 3 });
-  refuses(() => readRestoreJournal(root), 'not one this build writes', 'a previous version is refused');
+  // THE VERSION MOVES WITH THE PERSISTED FIELDS. 5 is `stagingCommitment`; 4 was `phase`; a journal from any
+  // previous build is refused at the schema boundary rather than half-understood.
+  assertEq(RESTORE_JOURNAL_VERSION, 5, 'the journal version reflects the fields that were added');
+  for (const version of [3, 4]) {
+    put({ version });
+    refuses(() => readRestoreJournal(root), 'not one this build writes', `version ${version} is refused`);
+  }
 
   for (const [patch, needle, why] of [
     [{ phase: 'sideways' }, 'phase is not one this build has', 'a direction this build does not have'],
@@ -4114,6 +4130,153 @@ test('the audit accepts every state a REAL death actually produces', () => {
     const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
       { kind: 'resume', confirm: plan.digest });
     assertEq(report.ok, true, `${boundary}: and the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  }
+});
+
+
+// ---------------------------------------------------------------------------------------------------------
+// The schema version moves with the persisted fields
+// ---------------------------------------------------------------------------------------------------------
+
+test('a GENUINE PRE-COMMITMENT v4 JOURNAL is refused for its version, not for the field it could not have', () => {
+  // THE DEFECT THIS PINS. `stagingCommitment` was made a required persisted field while the version stayed at
+  // 4 — so a journal written by the build BEFORE that field existed, which could not possibly have carried
+  // it, was refused with "it carries no staged-component commitment". That is a malformed-document complaint
+  // about a document that was perfectly well formed for the build that wrote it, and it points an operator
+  // at the wrong problem: theirs is not a corrupt file, it is an older schema.
+  const root = makeProject('old-journal-version');
+  const setDir = takeSet(root, 'set-1');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  // EXACTLY WHAT THE PREVIOUS BUILD WROTE: version 4, and no commitment field at all.
+  const current = readRestoreJournal(root)!;
+  const { stagingCommitment: _dropped, ...rest } = current as unknown as Record<string, unknown>;
+  writeFileSync(join(root, RESTORE_JOURNAL_NAME), `${JSON.stringify({ ...rest, version: 4 })}\n`, 'utf8');
+
+  let message = '';
+  try {
+    readRestoreJournal(root);
+    throw new Error('an older journal was accepted');
+  } catch (err) { message = (err as Error).message; }
+  assert(message.includes('version is not one this build writes'),
+    `it is refused AT THE SCHEMA BOUNDARY: ${message.slice(0, 200)}`);
+  assertEq(message.includes('staged-component commitment'), false,
+    'and NOT as a malformed current journal missing a field its own build never had');
+
+  // AND NOTHING ACTED ON IT. A run and a resume both stop, and the file is left exactly as it is.
+  const before = readFileSync(join(root, RESTORE_JOURNAL_NAME), 'utf8');
+  for (const mode of [
+    { kind: 'run' as const, confirm: plan.digest, acceptDataLoss: null },
+    { kind: 'resume' as const, confirm: plan.digest },
+  ]) {
+    refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)), mode),
+      'version is not one this build writes', `${mode.kind} refuses an older schema`);
+  }
+  refuses(() => abandonRestore(root), 'version is not one this build writes', 'and so does an abandon');
+  assertEq(readFileSync(join(root, RESTORE_JOURNAL_NAME), 'utf8'), before, 'the older journal is untouched');
+  rmSync(join(root, RESTORE_JOURNAL_NAME));
+  rmSync(join(root, '.catalog-restore.staged-aaaaaaaaaaaa'), { recursive: true, force: true });
+});
+
+test('every state a REAL death leaves is written at the CURRENT version, and round-trips at it', () => {
+  // A VERSION BUMP IS ONLY HONEST IF THE BUILD ACTUALLY WRITES IT. A constant that moved while the writer
+  // kept emitting the old number would refuse this operation's own journals.
+  for (const boundary of [
+    'staging-phase:claim-built',
+    'staging-phase:claim-published',
+    'staging-phase:sealing',
+    'staging:secrets',
+    'command:compose stop app',
+    'complete:safety-set',
+    'complete:stage-components',
+  ]) {
+    const root = makeProject(`version-crash-${boundary.replace(/[^a-z]+/g, '-')}`);
+    const setDir = takeSet(root, 'set-1');
+    const { plan } = planFor(request(root, 'set-1'));
+    crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+      crashAt: boundary });
+
+    // THE RAW FILE CARRIES THE NEW NUMBER, read without going through the reader that would enforce it.
+    const raw = JSON.parse(readFileSync(join(root, RESTORE_JOURNAL_NAME), 'utf8')) as Record<string, unknown>;
+    assertEq(raw.version, RESTORE_JOURNAL_VERSION, `${boundary}: the journal on disk is at the current schema`);
+    assert(Array.isArray(raw.stagingCommitment), `${boundary}: and carries the field that moved the version`);
+    const journal = readRestoreJournal(root);
+    assert(journal !== null && journal.version === RESTORE_JOURNAL_VERSION,
+      `${boundary}: and it round-trips through the reader`);
+  }
+});
+
+test('the staging and safety-claim markers carry the journal version, and require it', () => {
+  // BOTH MARKERS BIND THEMSELVES TO THE SCHEMA. A marker written under one schema cannot authorise anything
+  // under another: what a field meant is part of the schema, and a directory of secrets is deleted on it.
+  const root = makeProject('marker-versions');
+  const setDir = takeSet(root, 'set-1');
+  const { resolved, plan } = planFor(request(root, 'set-1'));
+  const commitment = componentsOfManifest(resolved.manifest);
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+  assertEq(stageComponents(resolved, staging, plan, 'aaaaaaaaaaaa'), null, 'the tree was staged');
+
+  const stagingMarker = join(staging, 'catalog-restore-staging.json');
+  const stagingDoc = JSON.parse(readFileSync(stagingMarker, 'utf8')) as Record<string, unknown>;
+  assertEq(stagingDoc.journalVersion, RESTORE_JOURNAL_VERSION, 'the staging marker carries the new version');
+  writeFileSync(stagingMarker, `${JSON.stringify({ ...stagingDoc, journalVersion: 4 })}\n`, 'utf8');
+  const stale = readStagingMarker(staging, plan.digest, 'aaaaaaaaaaaa', commitment);
+  assert('refusal' in stale, 'a staging marker from an older schema proves nothing');
+  assert(removeOwnedStaging(staging, { planDigest: plan.digest, suffix: 'aaaaaaaaaaaa',
+    stagingCommitment: commitment } as unknown as RestoreJournal) !== null,
+  'and authorises no removal');
+  assert(existsSync(join(staging, COMPONENT_ARTIFACT_NAMES.secrets)), 'the tree survives it');
+  rmSync(staging, { recursive: true, force: true });
+
+  // THE CLAIM MARKER, on a claim a real death left behind.
+  const crashRoot = makeProject('marker-versions-claim');
+  const crashSet = takeSet(crashRoot, 'set-1');
+  const crashPlan = planFor(request(crashRoot, 'set-1')).plan;
+  crashAt({ projectRoot: crashRoot, setDir: crashSet, setName: 'set-1', confirm: crashPlan.digest,
+    suffix: 'aaaaaaaaaaaa', crashAt: 'command:compose stop app' });
+  const recorded = claimDir(crashRoot);
+  const claimMarker = join(crashRoot, 'backups', recorded, 'catalog-restore-claim.json');
+  const claimDoc = JSON.parse(readFileSync(claimMarker, 'utf8')) as Record<string, unknown>;
+  assertEq(claimDoc.journalVersion, RESTORE_JOURNAL_VERSION, 'the claim marker carries the new version');
+  assertEq(proveClaimOwnership(join(crashRoot, 'backups', recorded), crashPlan.digest, 'aaaaaaaaaaaa',
+    claimDoc.nonce as string).kind, 'owned', 'and proves ownership as it stands');
+  writeFileSync(claimMarker, `${JSON.stringify({ ...claimDoc, journalVersion: 4 })}\n`, 'utf8');
+  assertEq(proveClaimOwnership(join(crashRoot, 'backups', recorded), crashPlan.digest, 'aaaaaaaaaaaa',
+    claimDoc.nonce as string).kind, 'foreign', 'a claim marker from an older schema proves nothing');
+  refuses(() => runCompleteRestore(request(crashRoot, 'set-1'), depsFor(worldFor(crashSet)),
+    { kind: 'resume', confirm: crashPlan.digest }), 'cannot prove it created',
+  'so the resume will not publish into it');
+  assert(existsSync(claimMarker), 'and the directory is preserved');
+  rmSync(join(crashRoot, RESTORE_JOURNAL_NAME));
+});
+
+test('no stale journal version is hard-coded in production code, helpers or the restore document', () => {
+  // A LINT, AND IT SAYS SO. It proves no behaviour — the tests above do that — but a version constant is only
+  // load-bearing if nothing sidesteps it, and a literal left in a writer, a helper or the document would keep
+  // producing or describing documents this build refuses. The acceptance suite itself is excluded on purpose:
+  // its old-version fixtures are the regressions the constant exists for.
+  const walk = (relative: string): string[] => {
+    const full = join(repoRoot, relative);
+    if (!lstatSync(full).isDirectory()) return relative.endsWith('.ts') || relative.endsWith('.mts') ? [relative] : [];
+    return readdirSync(full).flatMap((entry) => walk(`${relative}/${entry}`));
+  };
+  const files = [...walk('src'), 'test/helpers/restore-crash-child.mts',
+    'docs/PHASES_297_304_COMPLETE_RESTORE.md'];
+  assert(files.length > 20, 'the lint really did walk the tree');
+  for (const file of files) {
+    for (const [index, line] of readRepo(file).split('\n').entries()) {
+      if (line.includes('RESTORE_JOURNAL_VERSION = ')) continue;    // the constant's own definition
+      assertEq(/(journalVersion|version)\s*[:=]\s*[0-9]+/.test(line) && line.includes('ournal'), false,
+        `${file}:${index + 1} carries a hard-coded journal version: ${line.trim().slice(0, 90)}`);
+      assertEq(/journal version\s+[0-4]\b/i.test(line), false,
+        `${file}:${index + 1} names a stale journal version: ${line.trim().slice(0, 90)}`);
+    }
   }
 });
 

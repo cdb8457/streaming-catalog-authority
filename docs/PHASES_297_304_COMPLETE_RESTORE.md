@@ -406,10 +406,22 @@ Both ownership transitions are now atomic renames:
   leaves the CLAIMED state, which is a state this build understands and this operation can rebuild from.
 
 **The exact guarantee, and its exact limit.** Against a **process that stops existing** — a kill, an
-`OOM`, a power-off of the container while the filesystem keeps running — this is complete: every state the
-predictable path can be observed in is either absent or a fully claimed/sealed directory of ours, the
-leftover build directory carries the same operation-bound marker so it is recognisable rather than mysterious,
-and a resume proceeds with no manual deletion. Against **power loss to the disk** it is not: `rename` is
+`OOM`, a power-off of the container while the filesystem keeps running — the guarantee about **the
+predictable path** is complete: every state it can be observed in is either absent or a fully claimed/sealed
+directory of ours, and a resume proceeds with no manual deletion.
+
+**What is left beside it is a weaker statement, and this document overstated it.** It said the leftover build
+directory always carries the same operation-bound marker. It does not: a death between the `mkdir` and the
+marker write leaves `.catalog-restore.claiming-<hex>` empty. That orphan is harmless, and precisely because
+it is unmarked it is never mistaken for anything. It is **secret-free** — no component is copied until after
+the publication, so an orphan from before it cannot hold one. Its name is **unpredictable** and is not the
+predictable path, so it **blocks nothing**: the next attempt draws a fresh name, and the claim creation
+refuses rather than reuses on collision. And it is **never trusted and never recursively deleted as an owned
+tree**, because removing a directory of secrets is authorised by a marker proving whose it is and what it
+holds — an unmarked orphan has none, so this command leaves it alone for an operator to remove, exactly as
+it leaves any other directory it cannot prove is its own.
+
+Against **power loss to the disk** none of this is claimed: `rename` is
 atomic with respect to other readers, but this command does not `fsync` the containing directory afterwards,
 so the rename's metadata may not have reached stable storage. After a power cut the predictable path may be
 absent when the run believed it published, or the marker may read `claimed` when it was sealed. Both of those
