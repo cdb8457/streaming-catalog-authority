@@ -804,6 +804,21 @@ export interface RestoreJournal {
   readonly safetySetPlanned: boolean;
   readonly safetySetTaken: boolean;
   /**
+   * EXACTLY WHAT THIS OPERATION STAGED, recorded before anything was destroyed.
+   *
+   * THE DEFECT THIS CLOSES. An abandon removes the staging tree — a recursive deletion of a directory
+   * holding a copy of every secret in the installation — and it runs from the journal alone, long after the
+   * set it came from may have been moved, renamed or archived. It therefore had NO manifest to compare the
+   * ownership marker against, and settled for "the marker names this plan and this suffix", which a marker
+   * describing entirely different components satisfies.
+   *
+   * The commitment is written with the first journal of the operation, before the safety set, the teardown
+   * or a single copy — so it exists on the safe side of every destructive act — and it is validated
+   * canonically on every read, exactly as the marker is. An abandon compares the marker against THIS, and
+   * a run compares the two against each other: they cannot disagree without the journal having been edited.
+   */
+  readonly stagingCommitment: StagingMarker['components'];
+  /**
    * The request this run was planned from, so `--resume` and `--abandon` act on the OPERATION and not on
    * whatever flags are typed next. A resume re-derives the plan from these and requires the same digest.
    */
@@ -954,6 +969,37 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
     return refuse('its safety-set fields are not booleans');
   }
   if (doc.safetySetTaken && !doc.safetySetPlanned) return refuse('it records a safety set that was never planned');
+
+  // ---- the staging commitment, which authorises a recursive deletion of secrets ---------------------
+  if (!Array.isArray(doc.stagingCommitment)) return refuse('it carries no staged-component commitment');
+  const committed = new Set<string>();
+  let previous = -1;
+  for (const entry of doc.stagingCommitment) {
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      return refuse('its staged-component commitment holds something that is not a component');
+    }
+    const component = entry as Record<string, unknown>;
+    const index = typeof component.id === 'string'
+      ? (BACKUP_COMPONENT_IDS as readonly string[]).indexOf(component.id) : -1;
+    if (index < 0) return refuse('its staged-component commitment names a component this build does not have');
+    if (committed.has(component.id as string)) return refuse('its staged-component commitment names one component twice');
+    committed.add(component.id as string);
+    // IN THE MODEL'S OWN ORDER, because the marker comparison is positional and a reordered commitment
+    // would silently compare the wrong pairs.
+    if (index <= previous) return refuse('its staged-component commitment is out of this build\'s component order');
+    previous = index;
+    if (component.artifact !== COMPONENT_ARTIFACT_NAMES[component.id as BackupComponentId]) {
+      return refuse('its staged-component commitment names an artifact that is not the one for that component');
+    }
+    if (typeof component.digest !== 'string' || !/^[0-9a-f]{64}$/.test(component.digest)) {
+      return refuse('its staged-component commitment carries a digest that is not one');
+    }
+    for (const count of [component.entries, component.bytes]) {
+      if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) {
+        return refuse('its staged-component commitment carries a count that is not one');
+      }
+    }
+  }
 
   const request = doc.request;
   if (request === null || typeof request !== 'object' || Array.isArray(request)) return refuse('it carries no request');
@@ -1443,6 +1489,28 @@ export function runCompleteRestore(
         + 'would happen. Nothing was changed. Re-plan and read it again.');
     }
 
+    // ---- THE JOURNAL AND THE SET MUST AGREE ABOUT WHAT WAS STAGED --------------------------------
+    //
+    // The commitment recorded before anything was destroyed is what an abandon deletes the staging tree on.
+    // If it disagrees with the set now on disk, one of the two has been edited, and neither is safe to act
+    // on: acting on the journal would authorise deleting a tree the set says is something else, and acting
+    // on the set would let a swapped set redirect that deletion. The operation stops with nothing changed.
+    if (existing !== null) {
+      const declared = componentsOfManifest(reResolved.manifest);
+      const recorded = existing.stagingCommitment;
+      const agrees = recorded.length === declared.length && declared.every((component, index) => {
+        const other = recorded[index]!;
+        return other.id === component.id && other.artifact === component.artifact
+          && other.digest === component.digest && other.entries === component.entries
+          && other.bytes === component.bytes;
+      });
+      if (!agrees) {
+        throw new MaintenanceRefused(
+          'this journal records staged components that the set it names does not declare. One of the two has '
+          + 'been edited since this operation started, and neither is safe to act on. Nothing was changed.');
+      }
+    }
+
     const write = deps.journalWriter ?? writeRestoreJournal;
     const currentJournal = (running: RestoreStepId | null = null): RestoreJournal => {
       void running;
@@ -1460,6 +1528,7 @@ export function runCompleteRestore(
         safetySetClaim,
         safetySetPlanned: safetySet,
         safetySetTaken,
+        stagingCommitment: componentsOfManifest(resolved.manifest),
         request: {
           secrets: resolved.secrets.relative,
           promotionRecords: resolved.promotionRecords?.relative ?? null,
@@ -1592,7 +1661,7 @@ export function runCompleteRestore(
       // in the project would leave that copy named by nothing, in a project that has forgotten a restore
       // ever ran. The name is reported and this operation stays open instead.
       const removal = existsSync(stagingDir)
-        ? removeOwnedStaging(stagingDir, currentJournal())
+        ? removeOwnedStaging(stagingDir, currentJournal(), componentsOfManifest(resolved.manifest))
         : null;
       if (removal === null) {
         clearRestoreJournal(resolved.projectRoot);
@@ -2340,7 +2409,7 @@ export function readStagingMarker(
   stagingDir: string,
   planDigest: string,
   suffix: string,
-  manifest?: BackupManifest,
+  expected: StagingMarker['components'],
 ): { readonly marker: StagingMarker } | { readonly refusal: string } {
   const path = stagingMarkerPath(stagingDir);
   if (lstatSync(path, { throwIfNoEntry: false }) === undefined) {
@@ -2400,18 +2469,26 @@ export function readStagingMarker(
       if (typeof count !== 'number' || !Number.isSafeInteger(count) || count < 0) return malformed;
     }
   }
-  if (manifest !== undefined) {
-    // AND THE EXACT SET AND VALUES THE BACKUP MANIFEST DECLARES. A marker naming a component the set does not
-    // carry, omitting one it does, or disagreeing about a digest, describes a tree this operation could not
-    // have staged.
-    const declared = manifest.components.filter((component) => component.present);
-    if (declared.length !== doc.components.length) return malformed;
-    for (const component of declared) {
-      const claimed = doc.components.find((entry) => entry.id === component.id);
-      if (claimed === undefined) return malformed;
-      if (claimed.digest !== component.digest || claimed.entries !== component.entries
-        || claimed.bytes !== component.bytes) return malformed;
-    }
+  // -------------------------------------------------------------------------------------------------
+  // AND THE EXACT VALUES THE SET ITSELF DECLARES — ON EVERY READ, NOT SOME OF THEM.
+  // -------------------------------------------------------------------------------------------------
+  //
+  // THE DEFECT THIS CLOSES. The manifest comparison was OPTIONAL, and the two paths that use this marker to
+  // authorise a RECURSIVE DELETION — the rebuild of a partial stage, and the cleanup on success and on
+  // abandon — were exactly the two that omitted it. A marker that named the right plan and the right suffix
+  // but described a different set of components therefore authorised removing a tree of secrets. The
+  // strictness was present, documented, and applied only where nothing was destroyed.
+  //
+  // It is a required argument now, so a caller cannot forget it, and the comparison is EXACT: same length,
+  // same order, same ids, same digests, same counts. Missing, extra, duplicated, reordered or altered are
+  // all the same answer — this marker does not describe what this operation staged, and it authorises
+  // nothing.
+  if (doc.components.length !== expected.length) return malformed;
+  for (let index = 0; index < expected.length; index += 1) {
+    const want = expected[index]!;
+    const got = doc.components[index]!;
+    if (got.id !== want.id || got.artifact !== want.artifact || got.digest !== want.digest
+      || got.entries !== want.entries || got.bytes !== want.bytes) return malformed;
   }
   return { marker: doc as StagingMarker };
 }
@@ -2471,7 +2548,7 @@ export function verifyOwnedStaging(
   manifest: BackupManifest,
   expected: readonly BackupComponentId[],
 ): string | null {
-  const owned = readStagingMarker(stagingDir, plan.digest, suffix, manifest);
+  const owned = readStagingMarker(stagingDir, plan.digest, suffix, componentsOfManifest(manifest));
   if ('refusal' in owned) return owned.refusal;
   if (owned.marker.state !== 'sealed') {
     return 'this run\'s staging directory is CLAIMED but not sealed: a previous process was still copying '
@@ -2490,8 +2567,12 @@ export function verifyOwnedStaging(
  * The tree holds a copy of every secret in the installation, so leaving it is a real cost — and removing a
  * directory that is not ours is a worse one. A refusal answers a sentence; a removal answers `null`.
  */
-export function removeOwnedStaging(stagingDir: string, journal: RestoreJournal): string | null {
-  const owned = readStagingMarker(stagingDir, journal.planDigest, journal.suffix);
+export function removeOwnedStaging(
+  stagingDir: string,
+  journal: RestoreJournal,
+  expected: StagingMarker['components'] = journal.stagingCommitment,
+): string | null {
+  const owned = readStagingMarker(stagingDir, journal.planDigest, journal.suffix, expected);
   if ('refusal' in owned) return owned.refusal;
   try {
     removeOwnTreeNoFollow(stagingDir, 'restore staging directory');
@@ -2529,8 +2610,14 @@ export function stageComponents(
     // A CLAIMED TREE IS THIS OPERATION'S HALF-BUILT ONE and may be rebuilt; a SEALED one is also this
     // operation's and is equally safe to rebuild, because the set it came from is still there. What may
     // never be rebuilt is a tree whose marker does not prove it is ours — see `readStagingMarker`.
-    const owned = readStagingMarker(stagingDir, plan.digest, suffix);
-    if ('refusal' in owned) return `${owned.refusal} Nothing was destroyed.`;
+    const owned = readStagingMarker(stagingDir, plan.digest, suffix, componentsOfManifest(resolved.manifest));
+    // AND THE REFUSAL NAMES IT. The directory is left in place, it may hold a copy of every secret in the
+    // installation, and the name is derived from this operation rather than read out of anything — so
+    // naming it costs no confidentiality and an operator who is not told cannot act.
+    if ('refusal' in owned) {
+      return `${owned.refusal} Nothing was destroyed: ${stagingDirName(suffix)} is still there, and it may `
+        + 'hold a copy of this installation\'s secrets. Look at it before running again.';
+    }
     try {
       removeOwnTreeNoFollow(stagingDir, 'restore staging directory');
     } catch {
@@ -2654,8 +2741,14 @@ export function stageComponents(
   return writeMarker(stagingDir, 'sealed');
 }
 
-/** The components a manifest declares present, in the model's own order, as a marker records them. */
-function componentsOfManifest(manifest: BackupManifest): StagingMarker['components'][number][] {
+/**
+ * The components a manifest declares present, in the model's own order, as a marker records them.
+ *
+ * THIS IS THE COMMITMENT. Every path that lets a staging marker authorise a recursive deletion compares the
+ * marker against one of these, value for value and position for position. A commitment derived from the
+ * verified manifest and one read out of the journal must be identical, and the journal cross-checks them.
+ */
+export function componentsOfManifest(manifest: BackupManifest): StagingMarker['components'][number][] {
   return BACKUP_COMPONENT_IDS.flatMap((id) => {
     const declared = manifest.components.find((component) => component.id === id);
     if (declared === undefined || !declared.present) return [];
