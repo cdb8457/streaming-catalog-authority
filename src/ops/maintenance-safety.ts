@@ -4,7 +4,7 @@ import {
   readSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import type { Stats } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 // Phases 277-280 — the safety floor every host-side maintenance command stands on.
 //
@@ -784,6 +784,228 @@ export function acquireLockDirectory(path: string, contention: string): Maintena
 /** A short, unguessable suffix for a staging directory beside its final name. */
 export function stagingSuffix(): string {
   return randomBytes(6).toString('hex');
+}
+
+// -----------------------------------------------------------------------------------------------------------
+// Phases 321-328 — the SECOND lock domain: one physical backup destination, across projects
+// -----------------------------------------------------------------------------------------------------------
+
+/**
+ * The lock every command that reads or writes a backup destination takes, by name.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHY IT IS HERE AND NOT IN ONE OF THE COMMANDS.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * It used to live in `ops:backup-retention` and be called `.catalog-retention.lock`, and
+ * `ops:safety-set-lifecycle` imported it from there. That was already a lie by the second command and it
+ * became a hole with the third and fourth: `ops:complete-backup` and `ops:complete-restore` took only their
+ * own PROJECT lock, so a second Compose project pointed at the same physical directory could publish a set,
+ * claim a safety-set directory or destroy an installation while a prune held that directory mid-quarantine.
+ * The Phase 313-320 report named it as its first remaining risk. This is the one definition that closes it.
+ *
+ * THE NAME IS THE DOMAIN, SO THE NAME IS NEUTRAL. `.catalog-destination.lock` says what it protects — a
+ * destination — rather than which of the four commands happened to need it first.
+ *
+ * IT IS A DIRECTORY IN THE DESTINATION, WHICH IS WHY IT IS PHYSICAL. Two projects that reach one directory
+ * by two different relative paths still `mkdir` the same inode, so exclusion holds across projects without
+ * any registry, daemon, port or shared file anywhere. Every caller resolves the destination through
+ * `provePhysicalDestination` first, so a second spelling of one directory is the same directory here too.
+ */
+export const DESTINATION_LOCK_DIRNAME = '.catalog-destination.lock';
+
+/**
+ * Destination lock names EARLIER BUILDS of this product used.
+ *
+ * A CRASHED RUN FROM AN OLDER BUILD LEFT A REAL LOCK, AND A RENAME MUST NOT MAKE IT INVISIBLE. If this build
+ * simply stopped looking at `.catalog-retention.lock`, an operator upgrading with an interrupted prune on
+ * disk would find the new commands walking straight past a directory the old ones would have refused for.
+ * So the old name is still refused — loudly, naming itself — and it is still never removed automatically.
+ */
+export const LEGACY_DESTINATION_LOCK_DIRNAMES: readonly string[] = Object.freeze(['.catalog-retention.lock']);
+
+/** Every name that is a destination lock to this build, current or historical. Excluded from inventories. */
+export const DESTINATION_LOCK_DIRNAMES: readonly string[] =
+  Object.freeze([DESTINATION_LOCK_DIRNAME, ...LEGACY_DESTINATION_LOCK_DIRNAMES]);
+
+/**
+ * The ONE sentence an operator reads when a destination is busy, whichever of the four commands they ran.
+ *
+ * It names all four, and it names the cross-project case, because the whole point of this lock is that the
+ * command holding it may not be one in the project the operator is standing in.
+ */
+export const DESTINATION_LOCK_CONTENTION =
+  'another command is already working in this backup destination — ops:complete-backup, ops:complete-restore, '
+  + 'ops:backup-retention or ops:safety-set-lifecycle, in this project or in ANOTHER project pointed at the '
+  + `same directory — or one was interrupted and left its lock behind (${DESTINATION_LOCK_DIRNAME} in the `
+  + 'destination). Nothing was changed. Wait for it, or remove that directory once you are sure nothing is '
+  + 'running.';
+
+/** A destination resolved to the physical directory a lock would be taken in. */
+export interface ResolvedDestination {
+  readonly projectRoot: string;
+  readonly destinationDir: string;
+  /** Exactly what the operator wrote, relative to the project. This is what a journal records. */
+  readonly destinationRelative: string;
+  /** The destination's own leaf name. The only part of it that ever reaches a report. */
+  readonly destinationName: string;
+}
+
+/**
+ * Turn a named destination directory into the PHYSICAL one, and refuse the two shapes nothing may use.
+ *
+ * `realpath` IS THE POINT. The lock's exclusion is only as good as the agreement between two processes about
+ * which directory they are talking about, and on a case-insensitive host `Backups` and `backups` are one
+ * directory with two spellings. Resolving both to the filesystem's own answer means one `mkdir`, one lock.
+ *
+ * The caller has ALREADY proved containment with `resolveInsideRoot`, which refuses a symbolic link at every
+ * component — so this cannot be handed a name that resolves out of the project.
+ */
+export function provePhysicalDestination(projectRoot: string, destinationDir: string): string {
+  const real = resolveMaintenanceRoot(destinationDir, 'backup destination');
+  if (real === projectRoot) {
+    throw new MaintenanceRefused('the backup destination cannot be the project root itself');
+  }
+  return real;
+}
+
+/**
+ * Resolve a destination named RELATIVE to the project, to the physical directory a lock lives in.
+ *
+ * IT IS RELATIVE, AND THAT IS WHY A JOURNAL CAN RECORD IT. A durable file in an operator's project directory
+ * has no business carrying that operator's absolute appdata layout; the journal lives IN the project root,
+ * so the project root is the one path a reader always already has, and everything else is expressed against
+ * it. `destinationRelative` is therefore what the operator wrote, unchanged — never the resolved path.
+ */
+export function resolveBackupDestination(projectRoot: string, relative: string): ResolvedDestination {
+  const destinationDir = provePhysicalDestination(
+    projectRoot, resolveInsideRoot(projectRoot, relative, 'backup destination'));
+  return {
+    projectRoot,
+    destinationDir,
+    destinationRelative: relative,
+    destinationName: basename(destinationDir),
+  };
+}
+
+/**
+ * Take the destination lock, refusing a lock left by an earlier build before taking a new one.
+ *
+ * A STALE LOCK IS NEVER BROKEN AUTOMATICALLY, current name or old. Automatic staleness detection means
+ * guessing whether another process is alive, and the four commands behind this lock stop stacks, destroy
+ * volumes and delete the only copy of things nobody can produce again. Guessing wrong here means two writers
+ * in one destination.
+ */
+export function acquireDestinationLock(destinationDir: string): MaintenanceLock {
+  for (const legacy of LEGACY_DESTINATION_LOCK_DIRNAMES) {
+    // `lstat`, NOT `existsSync`: the question is whether there is ANYTHING at that name, and a dangling link
+    // at a lock's name is a state a half-tidied destination is really in.
+    if (lstatSync(join(destinationDir, legacy), { throwIfNoEntry: false }) !== undefined) {
+      throw new MaintenanceRefused(
+        `this backup destination holds ${legacy}, which is the destination lock an EARLIER build of this `
+        + 'product used. Either a run of that build is working here now, or one was interrupted and left it '
+        + 'behind. Nothing was changed. This command will not remove it and will not work around it: finish '
+        + 'or unwind that run with the build that started it, or remove that directory once you are sure '
+        + 'nothing is running.');
+    }
+  }
+  return acquireLockDirectory(join(destinationDir, DESTINATION_LOCK_DIRNAME), DESTINATION_LOCK_CONTENTION);
+}
+
+/**
+ * The project lock and the destination lock, in the ONE order this product takes them.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE ORDER IS STRUCTURAL, NOT A CONVENTION FOUR FILES AGREE TO FOLLOW.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * PROJECT FIRST, DESTINATION SECOND, AND THE RELEASE IS THE EXACT REVERSE. Two projects sharing one
+ * destination is the whole reason the second lock exists, and it is also the shape that deadlocks: if one
+ * command took the destination first and another took the project first, two runs could each hold what the
+ * other is waiting for. There is no waiting here — `mkdir` refuses rather than blocks — so the failure would
+ * be mutual refusal rather than a hang, which is better and still wrong.
+ *
+ * SO THERE IS NO WAY TO EXPRESS THE OTHER ORDER. A caller cannot reach `acquireDestinationLock` through this
+ * type without already holding the project lock, because the only way to get one of these is to take that
+ * lock; and `release()` releases what it holds innermost-first regardless of what the caller remembers. A
+ * suite asserts that no command module calls `acquireDestinationLock` directly.
+ *
+ * THE DESTINATION IS LOCKED LATE ON PURPOSE. Three of the four commands do not know which destination they
+ * are acting on until they have read a journal — and that journal may only be read under the project lock,
+ * because a journal read before the lock describes a moment that has passed. So this is acquired in two
+ * steps: the project at construction, the destination once the operation knows what it is.
+ */
+export class MaintenanceLocks {
+  private project: MaintenanceLock | null;
+  private destination: MaintenanceLock | null = null;
+  /** True when a CALLER already holds both locks for this destination and this is a nested operation. */
+  private readonly inherited: boolean;
+  private released = false;
+
+  private constructor(project: MaintenanceLock | null, inherited: boolean) {
+    this.project = project;
+    this.inherited = inherited;
+  }
+
+  /** Take this project's maintenance lock. Everything else follows it. */
+  static open(projectRoot: string): MaintenanceLocks {
+    return new MaintenanceLocks(acquireMaintenanceLock(projectRoot), false);
+  }
+
+  /**
+   * Take NOTHING, because the caller already holds both locks covering this operation.
+   *
+   * THERE IS EXACTLY ONE CALLER AND IT IS NAMED: `ops:complete-restore`, taking the safety set of the
+   * installation it is about to destroy, through `ops:complete-backup`, into a claim directory INSIDE the
+   * destination it already holds. `mkdir` as a lock is not reentrant, so a nested acquisition would
+   * self-deadlock — and a destination lock taken at the claim directory would be a lock on the wrong
+   * directory AND a stray entry inside a set's own claim.
+   */
+  static inherited(): MaintenanceLocks {
+    return new MaintenanceLocks(null, true);
+  }
+
+  /** Whether this stack actually holds the destination lock, as opposed to inheriting or not needing one. */
+  get holdsDestination(): boolean {
+    return this.destination !== null;
+  }
+
+  /**
+   * Take the destination lock, once, after the project lock.
+   *
+   * `destinationDir` must already be physical — see `provePhysicalDestination`.
+   */
+  lockDestination(destinationDir: string): void {
+    if (this.released) {
+      throw new MaintenanceRefused('a destination lock was asked for after the locks were released');
+    }
+    if (this.destination !== null) {
+      throw new MaintenanceRefused('one operation may hold one destination lock, and this one asked twice');
+    }
+    if (this.inherited) return;
+    this.destination = acquireDestinationLock(destinationDir);
+  }
+
+  /** Release what is held, innermost first. Safe to call twice; every path out of an operation runs it. */
+  release(): void {
+    this.released = true;
+    const destination = this.destination;
+    this.destination = null;
+    const project = this.project;
+    this.project = null;
+    // DESTINATION FIRST, THEN PROJECT. A release that let go of the project first would open a window in
+    // which this project could start a second command while this one still held the shared destination.
+    //
+    // AND THE SECOND RELEASE HAPPENS EVEN IF THE FIRST FAILS. `acquireLockDirectory`'s release swallows its
+    // own failures today, so this `finally` is defence rather than a fix — but a lock that could not be
+    // released is exactly the moment a bare sequence would leave THIS PROJECT permanently locked by a
+    // process that has finished, which is a worse outcome than the stale destination lock that caused it.
+    try {
+      if (destination !== null) destination.release();
+    } finally {
+      if (project !== null) project.release();
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------------------------------------

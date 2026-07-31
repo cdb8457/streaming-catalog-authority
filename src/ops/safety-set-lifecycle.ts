@@ -13,7 +13,6 @@ import {
 } from './complete-restore.js';
 import {
   RETENTION_JOURNAL_NAME,
-  RETENTION_LOCK_DIRNAME,
   inventoryDestination,
   validateInventoryEntry,
 } from './backup-retention.js';
@@ -25,18 +24,17 @@ import {
   type ClaimMarkerExpectation,
 } from './maintenance-identity.js';
 import {
+  DESTINATION_LOCK_DIRNAMES,
+  MaintenanceLocks,
   MaintenanceRefused,
-  acquireLockDirectory,
-  acquireMaintenanceLock,
   assertUsableName,
   createPrivateDirectory,
   readFileNoFollow,
   removeOwnTreeNoFollow,
-  resolveInsideRoot,
+  resolveBackupDestination,
   resolveMaintenanceRoot,
   stagingSuffix,
   writePrivateFile,
-  type MaintenanceLock,
 } from './maintenance-safety.js';
 import { instantOf, removalEntryBound, type InventoryEntry } from './retention-model.js';
 import {
@@ -324,17 +322,11 @@ export function assertNoOtherOperationInProgress(projectRoot: string): void {
  * project root, so the project root is the one path a reader always already has.
  */
 export function resolveSafetySetDestination(projectRoot: string, relative: string): ResolvedSafetySet {
-  const destinationDir = resolveMaintenanceRoot(
-    resolveInsideRoot(projectRoot, relative, 'backup destination'), 'backup destination');
-  if (destinationDir === projectRoot) {
-    throw new MaintenanceRefused('the backup destination cannot be the project root itself');
-  }
-  return {
-    projectRoot,
-    destinationDir,
-    destinationRelative: relative,
-    destinationName: basename(destinationDir),
-  };
+  // ONE RESOLUTION, SHARED WITH THE OTHER THREE COMMANDS — Phases 321-328. It is the same function
+  // `ops:backup-retention`, `ops:complete-backup` and `ops:complete-restore` resolve through, so all four
+  // agree on which physical directory a relative destination names, which is the precondition for the lock
+  // taken in it to exclude anything at all.
+  return resolveBackupDestination(projectRoot, relative);
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -382,7 +374,7 @@ export function inventoryClaims(destinationDir: string): readonly ClaimInventory
   }
   const out: ClaimInventoryEntry[] = [];
   for (const name of names) {
-    if (name === RETENTION_LOCK_DIRNAME) continue;
+    if (DESTINATION_LOCK_DIRNAMES.includes(name)) continue;
     // THIS COMMAND'S OWN IN-FLIGHT ARTIFACTS ARE NOT CLAIMS. A quarantine directory it published holds claims
     // and is not one, and counting it would make the plan and the re-plan under the lock disagree.
     if (name.startsWith(SAFETY_QUARANTINE_PREFIX) || name.startsWith(SAFETY_QUARANTINE_CLAIM_PREFIX)) continue;
@@ -1780,8 +1772,7 @@ export function runSafetySetLifecycle(
   // a check made before a lock is a check about a moment that has passed.
   const projectRoot = resolveSafetySetProject(request.projectRoot);
 
-  const projectLock = acquireMaintenanceLock(projectRoot);
-  let destinationLock: MaintenanceLock | null = null;
+  const locks = MaintenanceLocks.open(projectRoot);
   try {
     assertNoOtherOperationInProgress(projectRoot);
     const existing = readSafetySetJournal(projectRoot);
@@ -1812,13 +1803,14 @@ export function runSafetySetLifecycle(
       ? resolveSafetySetDestination(projectRoot, existing!.destination)
       : resolveSafetySetDestination(projectRoot, request.destination);
 
-    // THE SECOND LOCK DOMAIN IS `ops:backup-retention`'s, ON PURPOSE. Both commands rename directories inside
-    // one backup destination and both count what that destination holds, so sharing the lock is what makes
-    // "two commands cannot be half way through one destination at once" true rather than hoped for. It is
-    // taken second, after the project lock, exactly as retention takes it: same domains, same order, no new
-    // deadlock. What it does NOT cover is another PROJECT's `ops:complete-backup` or `ops:complete-restore`,
-    // which hold only their own project locks — see the documented shared-destination boundary.
-    destinationLock = lockDestination(resolved);
+    // THE SECOND LOCK DOMAIN IS SHARED WITH ALL THREE OTHER BACKUP-FAMILY COMMANDS, ON PURPOSE. Every one of
+    // them renames, publishes, reads or removes directories inside one backup destination, so sharing one
+    // lock taken IN that destination is what makes "two commands cannot be half way through one destination
+    // at once" true rather than hoped for. It is taken second, after the project lock, through the same
+    // `MaintenanceLocks` stack every command uses: same domains, same order, no way to invert it, no
+    // deadlock. Phases 321-328 extended it to `ops:complete-backup` and `ops:complete-restore`, which is what
+    // closes the shared-destination boundary the Phase 313-320 report left open.
+    locks.lockDestination(resolved.destinationDir);
 
     let journal: SafetySetJournal;
     if (mode.kind === 'run') {
@@ -1863,18 +1855,9 @@ export function runSafetySetLifecycle(
 
     return executeSafetySet(resolved, journal, at, writeJournal, clearJournal, remove);
   } finally {
-    // INNERMOST FIRST, and every path out runs this.
-    if (destinationLock !== null) destinationLock.release();
-    projectLock.release();
+    // INNERMOST FIRST, and every path out runs this. The order is the stack's, not this call site's.
+    locks.release();
   }
-}
-
-function lockDestination(resolved: ResolvedSafetySet): MaintenanceLock | null {
-  if (resolved.destinationDir === resolved.projectRoot) return null;
-  return acquireLockDirectory(join(resolved.destinationDir, RETENTION_LOCK_DIRNAME),
-    'another backup-destination maintenance run holds this destination — ops:backup-retention or this '
-    + 'command — or one was interrupted and left its lock behind (.catalog-retention.lock in the destination). '
-    + 'Wait for it, or remove that directory once you are sure nothing is running.');
 }
 
 /**
@@ -2444,8 +2427,7 @@ export function abandonSafetySetLifecycle(
   // because a check made before a lock is a check about a moment that has passed.
   assertNoRestoreInProgress(root);
 
-  const projectLock = acquireMaintenanceLock(root);
-  let destinationLock: MaintenanceLock | null = null;
+  const locks = MaintenanceLocks.open(root);
   try {
     assertNoRestoreInProgress(root);
     const opening = readSafetySetJournal(root);
@@ -2455,7 +2437,7 @@ export function abandonSafetySetLifecycle(
     const resolved = resolveSafetySetDestination(root, opening.destination);
     const destinationDir = resolved.destinationDir;
     const destinationName = resolved.destinationName;
-    destinationLock = lockDestination(resolved);
+    locks.lockDestination(resolved.destinationDir);
 
     let current: SafetySetJournal = { ...opening, phase: 'abandoning' };
     const quarantine = safetyQuarantineDirName(current.suffix);
@@ -2655,8 +2637,7 @@ export function abandonSafetySetLifecycle(
       };
     }
   } finally {
-    if (destinationLock !== null) destinationLock.release();
-    projectLock.release();
+    locks.release();
   }
 }
 

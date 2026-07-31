@@ -1453,6 +1453,12 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "shared-destination-lock.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }

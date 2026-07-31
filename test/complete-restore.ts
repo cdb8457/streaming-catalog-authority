@@ -16,6 +16,7 @@ import {
   type CompleteBackupRequest,
 } from '../src/ops/complete-backup.js';
 import {
+  DESTINATION_LOCK_DIRNAME,
   MAINTENANCE_LOCK_DIRNAME,
   MaintenanceRefused,
   assertPermittedCommand,
@@ -1929,12 +1930,18 @@ function crashAt(config: Record<string, unknown>): void {
       + `${(child.stderr ?? '').slice(0, 400)}`);
   }
 
-  // A PROCESS THAT STOPPED EXISTING NEVER RELEASED THE LOCK. That is real, and this command deliberately
-  // does not break a lock on its own — so it names both facts, and the operator does what it says.
+  // A PROCESS THAT STOPPED EXISTING NEVER RELEASED EITHER LOCK. That is real, and this command deliberately
+  // breaks neither on its own — so it names the facts, and the operator does what it says. PHASES 321-328
+  // added the second one: a restore holds the shared destination lock for the whole operation, so a killed
+  // restore leaves a lock in the backup destination too, and the recovery a suite drives in-process must
+  // clear exactly what an operator would clear by hand.
   const root = String(config.projectRoot);
-  const lock = join(root, MAINTENANCE_LOCK_DIRNAME);
-  assert(existsSync(lock), `a killed run leaves ${MAINTENANCE_LOCK_DIRNAME} behind`);
-  rmSync(lock, { recursive: true, force: true });
+  const project = join(root, MAINTENANCE_LOCK_DIRNAME);
+  assert(existsSync(project), `a killed run leaves ${MAINTENANCE_LOCK_DIRNAME} behind`);
+  const destination = join(root, String(config.destination ?? 'backups'), DESTINATION_LOCK_DIRNAME);
+  assert(existsSync(destination), `a killed run leaves ${DESTINATION_LOCK_DIRNAME} behind too`);
+  rmSync(project, { recursive: true, force: true });
+  rmSync(destination, { recursive: true, force: true });
 }
 
 /** The refusal an operator meets first, before they clear the lock the dead process left. */
@@ -2267,8 +2274,8 @@ test('the finalization happens under the lock, so nothing can act on a completed
   // The property, asserted against the source rather than inferred: the verdict, the staging cleanup and the
   // journal clear are all INSIDE the try whose `finally` releases the lock.
   const source = readRepo('src/ops/complete-restore.ts');
-  const body = source.slice(source.indexOf('lock = acquireMaintenanceLock(resolved.projectRoot);'));
-  const release = body.indexOf('    lock.release();');
+  const body = source.slice(source.indexOf('locks = MaintenanceLocks.open(resolved.projectRoot);'));
+  const release = body.indexOf('    locks.release();');
   for (const marker of ['clearRestoreJournal(resolved.projectRoot)', 'removeOwnedStaging(stagingDir',
     'const everyStepHeld =', 'report = {']) {
     const at = body.indexOf(marker);
@@ -2276,7 +2283,7 @@ test('the finalization happens under the lock, so nothing can act on a completed
   }
   // AND ABANDON TAKES THE SAME LOCK.
   const abandon = source.slice(source.indexOf('export function abandonRestore'));
-  assert(abandon.slice(0, 2000).includes('acquireMaintenanceLock(projectRoot)'),
+  assert(abandon.slice(0, 2000).includes('MaintenanceLocks.open(projectRoot)'),
     'abandon serialises every effect it performs under the project lock');
 });
 
@@ -2626,7 +2633,7 @@ test('no stale pre-lock journal snapshot may drive an effect', () => {
   // reads (the seam IS the lock), so what is asserted is the guarantee itself: the re-read happens under the
   // lock, BEFORE any step runs, and a difference is a refusal.
   const source = readRepo('src/ops/complete-restore.ts');
-  const locked = source.slice(source.indexOf('lock = acquireMaintenanceLock(resolved.projectRoot);'));
+  const locked = source.slice(source.indexOf('locks = MaintenanceLocks.open(resolved.projectRoot);'));
   const reread = locked.indexOf('const underLock = readRestoreJournal(resolved.projectRoot);');
   const firstStep = locked.indexOf('for (const step of plan.steps)');
   const firstPersist = locked.indexOf('persist();');
@@ -2639,8 +2646,8 @@ test('no stale pre-lock journal snapshot may drive an effect', () => {
   // ABANDON HOLDS THE SAME RULE, and it is a separate function that had to be given it separately.
   const abandon = source.slice(source.indexOf('export function abandonRestore'));
   const scope = abandon.slice(0, abandon.indexOf('function abandonUnderLock'));
-  assert(scope.includes('acquireMaintenanceLock(projectRoot)'), 'abandon takes the project lock');
-  assert(scope.indexOf('const journal = readRestoreJournal(projectRoot);') > scope.indexOf('acquireMaintenanceLock'),
+  assert(scope.includes('MaintenanceLocks.open(projectRoot)'), 'abandon takes the project lock');
+  assert(scope.indexOf('const journal = readRestoreJournal(projectRoot);') > scope.indexOf('MaintenanceLocks.open'),
     'and re-reads the journal after taking it');
   assert(scope.includes('changed between reading it and taking the lock'),
     'refusing one that changed in between');

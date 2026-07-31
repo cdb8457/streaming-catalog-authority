@@ -55,6 +55,11 @@ function usage(): string {
     'It contacts no network, reads no media path, opens no secret file, and takes no credential on this',
     'command line. Backup directories are private (0700) and the files inside them are private (0600).',
     '',
+    'Serialised per destination: this command, ops:complete-restore, ops:backup-retention and',
+    'ops:safety-set-lifecycle run one command at a time per backup destination — including',
+    'across PROJECTS. A second project pointed at the same physical directory is refused, never',
+    'interleaved.',
+    '',
     'exit codes: 0 taken and verified | 1 taken and did NOT verify | 2 bad usage | 3 refused before anything ran',
   ].join('\n');
 }

@@ -614,7 +614,9 @@
     "ops:safety-set-lifecycle": "tsx src/ops/safety-set-lifecycle-cli.ts",
     "test:safety-set-lifecycle": "tsx test/safety-set-lifecycle.ts",
     "test:phase305-local": "npm run test:backup-retention",
-    "test:phase313-local": "npm run test:safety-set-lifecycle"
+    "test:phase313-local": "npm run test:safety-set-lifecycle",
+    "test:shared-destination-lock": "tsx test/shared-destination-lock.ts",
+    "test:phase321-local": "npm run test:shared-destination-lock"
   },
   "dependencies": {
     "pg": "^8.13.1",
