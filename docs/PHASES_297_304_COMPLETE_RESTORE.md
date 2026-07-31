@@ -424,6 +424,69 @@ replacement — by injection **and by a real child process calling `process.exit
 resulting disk and journal state, resumes in-process with no manual deletion, and proves a foreign directory
 in the same project was neither removed nor consumed.
 
+### What authorises deleting the staging tree is an exact commitment, not a name
+
+The staging tree holds a copy of every secret in the installation, and three paths remove it recursively:
+the rebuild of a partial stage, the cleanup after a successful run, and the cleanup during an abandon. Each
+of them is authorised by the ownership marker inside the tree — and the comparison against what the backup
+set actually declares was OPTIONAL, omitted by exactly those three. A marker naming the right plan and the
+right suffix but describing entirely different components therefore authorised the deletion. The strictness
+was present, documented, and applied only where nothing was destroyed.
+
+The comparison is a required argument now, and it is exact: same length, same order, same ids, same artifact
+names, same digests, same entry and byte counts. Missing, extra, duplicated, reordered and altered are one
+answer — this marker does not describe what this operation staged, so it authorises nothing, and the tree
+and the journal are both left exactly as they are with the secret-bearing path named in the refusal.
+
+**An abandon has no set to compare against, so the operation commits before it destroys anything.** Abandon
+runs from the journal alone, hours later, and an operator may by then have moved, archived or deleted the
+set the restore came from. The exact staged-component values are therefore written into the FIRST journal of
+the operation — before the safety set, before the teardown, before a single copy — and validated canonically
+on every read, exactly as the marker is: known ids, no duplicates, this build's component order, canonical
+artifact names, lower-case SHA-256, counts that are counts. A run cross-checks that commitment against the
+set now on disk and stops with nothing changed if they disagree, because at that point one of the two has
+been edited and neither is safe to act on.
+
+### A recorded claim is revalidated against the live filesystem
+
+The safety-set claim is `{ nonce, created: true }` in the journal, and recovery read that as "the claim is
+still ours" — a sentence about the past applied to the present without looking. Between the record and the
+resume that directory can be deleted by an operator tidying the backups folder, by a sync, by a cleanup
+script; and once it is gone, anything at all may occupy a path that is by then written down in a file in the
+project. Retrying into it publishes this installation's only safety net into a stranger's directory.
+Adopting from it reports a stranger's backup as this run's — and a set that VERIFIES at that path is
+indistinguishable from success to anything that does not ask who created the directory holding it.
+
+So the claim is bound to the live directory by an ownership marker written INSIDE it — canonically
+validated, opened without following a link — before the journal records the claim at all. That ordering is
+what makes the record meaningful: a journal that names a claim always names one that carried the proof, so a
+claim found without the proof is not a crash state, it is a different directory. Three answers, with three
+different safe responses:
+
+| The recorded path is | What happens |
+| --- | --- |
+| Gone | The nonce and the path are ABANDONED, not reused. A fresh claim is drawn and nothing that may since have appeared there is read, adopted or removed. |
+| Occupied without a valid marker of this operation | Refused. Nothing is published into it, nothing is removed, and a human is told to look. This holds whether it is empty, holds somebody else's files, or holds a backup set that verifies. |
+| Proved ours | The existing behaviour: an empty claim is published into, and a set inside it that verifies is recognised as this run's rather than taken twice. |
+
+And `ops:complete-backup` will not RECREATE a destination the caller claimed by `mkdir`: creating the
+directory IS the claim, so a backup that quietly recreated a missing one would publish into a path this
+project has written down and nothing owns, behind the back of the recovery that had just abandoned it.
+
+### The audit is over combinations, not only fields
+
+Every field being individually well formed is not the same as the document describing a state a run of this
+program can be IN, and the difference matters because these fields are acted on together. The reader refuses,
+before any effect: a journal whose two records of the safety set disagree; a safety set recorded as taken by
+a step that has not run, or with nowhere claimed to have published it into; a completed safety-set step that
+took no set; a safety-set step in an operation that planned none; a claim this command did not create; and a
+swap recorded as put back by an operation that is not abandoning.
+
+The other half of that is not refusing genuine crashes. Rules tight enough to catch an edited journal are
+also tight enough to refuse a state a kill really produces, and a refused crash state is a project that can
+neither resume nor abandon — strictly worse than the state it was in. Every rule is stated over states the
+executor actually persists, in the order it persists them, and a test kills eight real boundaries and
+requires every resulting journal to read AND to resume to completion.
 ### Evidence outlives the process that produced it
 
 `custodyProven` lived only in the running process. A run that PROVED custody and then failed `prove-history`
