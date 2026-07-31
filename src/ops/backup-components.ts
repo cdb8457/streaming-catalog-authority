@@ -312,6 +312,39 @@ export const BACKUP_INSPECT_COMMANDS: BackupCommands = {
     + '-e CATALOG_AUTHORITY_BACKUP_DIR=/backup app ops:backup-inspect',
 };
 
+/**
+ * Phases 297-304 — putting one back.
+ *
+ * WHY THIS IS HERE RATHER THAN ONLY IN A DOCUMENT. Every component above carries a `restore` command pair,
+ * and those are what an operator runs BY HAND. They are correct and they are four separate operations in an
+ * order that matters, performed by somebody who has just lost something — which is the same shape of problem
+ * the backup side had before Phase 277, and it was solved the same way: one command, from this one model.
+ *
+ * IT RUNS ON THE HOST, and the commands above run against the stack. That is not an inconsistency: the
+ * by-hand forms are what you use when you are working through it yourself, and this is what you use when you
+ * want the ordering, the empty database, the cluster role, the safety set and the proof handled for you.
+ *
+ * NO ABSOLUTE PATH AND NO PARTICULAR MACHINE'S LAYOUT, the same rule every other command here is held to.
+ */
+export const COMPLETE_RESTORE_NOTE =
+  'Put a verified backup set back. It takes a verified safety set of what it is about to destroy first, '
+  + 'stages every component out of the set and re-checks it against the manifest, stops the stack and '
+  + 'destroys its volumes so the dump replays into an EMPTY database, places all four components, starts '
+  + 'everything again, and then proves the result — including that the installation can DECRYPT its own '
+  + 'catalog, which is the one failure a restored installation reports as healthy. Start with --plan: it '
+  + 'verifies the set, prints every step and a digest, and changes nothing. Running requires that digest '
+  + 'back, and the digest is bound to the whole operation — this project, these directories, this set — so '
+  + 'one read off another plan will not run this one. It CANNOT prove your Docker volumes are empty, because '
+  + 'reading a volume means starting something: every restore needs either a safety set or an explicit '
+  + 'acknowledgement that volumes of unknown contents are about to go. THERE ARE NO DOWN-MIGRATIONS, so a '
+  + 'set older than the build you are running is refused rather than replayed: this is the rollback, and '
+  + 'putting an old image back is not.';
+
+export const COMPLETE_RESTORE_COMMANDS: BackupCommands = {
+  posix: 'npm run ops:complete-restore -- --project /path/to/project --set set-name --custodian inline --plan',
+  windows: 'npm run ops:complete-restore -- --project C:\\path\\to\\project --set set-name --custodian inline --plan',
+};
+
 // -----------------------------------------------------------------------------------------------------------
 // Coverage against the shipped stacks
 // -----------------------------------------------------------------------------------------------------------

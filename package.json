@@ -603,7 +603,12 @@
     "test:custodian-storage-ipc-gates": "tsx test/custodian-storage-ipc-gates.ts",
     "test:custody-cutover": "tsx test/custody-cutover.ts",
     "test:custody-transition": "tsx test/custody-transition.ts",
-    "test:managed-custody-lifecycle": "tsx test/managed-custody-lifecycle.ts"
+    "test:managed-custody-lifecycle": "tsx test/managed-custody-lifecycle.ts",
+    "ops:complete-restore": "tsx src/ops/complete-restore-cli.ts",
+    "test:complete-restore": "tsx test/complete-restore.ts",
+    "test:phase297-local": "npm run test:complete-restore",
+    "ops:custody-proof": "tsx src/ops/custody-proof-cli.ts",
+    "test:custody-proof": "tsx test/custody-proof.ts 5467"
   },
   "dependencies": {
     "pg": "^8.13.1",

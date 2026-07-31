@@ -226,6 +226,77 @@ An existing set name is **refused**; a run that fails leaves no set and starts y
 `finally` that runs on every path out. Backup directories are `0700` and the files in them are `0600`.
 
 ```bash
+# And put one back. Read it first — this verifies the set, classifies your installation, and changes nothing:
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline --plan
+# then pass back the digest it printed:
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline \
+    --confirm <the digest --plan printed>
+
+# On an installation with no host state to back up there is no safety set to take. That is a CHOICE you
+# plan explicitly — and the digest that plan prints is what you then acknowledge:
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline \
+    --plan --no-safety-set
+npm run ops:complete-restore -- --project /path/to/project --set set-2026-07-29 --custodian inline \
+    --no-safety-set --confirm <that digest> --accept-data-loss <that same digest>
+```
+
+**This is the rollback.** There are no down-migrations, so putting an older image back is not one — and a set
+from a different schema version than the build you are running is **refused rather than replayed**. Before it
+destroys anything it takes a verified **safety set** of the installation it is about to replace; a safety set
+that does not verify stops the run with your stack still up. Then it stops the stack and destroys its volumes
+so the dump replays into an *empty* database, places your secrets **before** the fresh database is initialised
+from them (which is what makes the restored `postgres_password` the password the volume actually has), replays
+the dump from its own file descriptor — nothing is copied into a container and nothing is decoded into a
+string — puts the keystore back, and starts everything.
+
+**Then it proves it, and one of the proofs actually decrypts.** `ops:custody-proof` builds the shipped catalog
+authority over this installation's own custodian and decrypts active records through it — there is no way to
+satisfy it without the key material. That matters because an installation whose keystore did not arrive
+starts, passes the doctor and reports itself healthy: a fail-closed unreadable item is indistinguishable from
+a correctly erased one. A restore that came up but cannot read its own catalog is reported as
+`RESTORED_BUT_UNPROVEN`, not as a success — and a restored catalog with **nothing encrypted in it** reports
+`custody proven: NO`, because there was nothing to prove custody with. Run it any time with
+`npm run ops:custody-proof`.
+
+**It cannot prove your Docker volumes are empty, and it does not pretend to.** `down -v` destroys the database
+and, in inline custody, the keystore volume; reading a volume means starting something, which is a change. So
+an installation is `OCCUPIED` or `UNKNOWN`, never "empty", and both need either a verified safety set or the
+digest-bound `--accept-data-loss`.
+
+Every component is **staged out of the set and re-verified against the manifest** before anything is
+destroyed, so a set that changes after it verified cannot supply the bytes that get restored. Components are
+then placed by **rename**: the previous directory is kept beside the new one, never merged into and never
+deleted.
+
+**An interrupted run is a state with a name, including one interrupted by a process that stopped existing.**
+Each step is recorded before its effect and again after it, so a process that stops existing between the two
+leaves exactly one step marked running — and each step declares how to recover from that: finish an
+interrupted rename, recognise a safety set that was published but never recorded, or rewind the whole
+database leg, which is the only honest answer to a replay killed halfway. What the operation has already
+established, including whether it proved it can decrypt its own catalog, is persisted with the step that
+established it, so resuming never un-proves something that was proved. A killed run also leaves the
+maintenance lock; the command tells you so by name rather than reporting generic contention, and still
+refuses to break it for you.
+
+**What that does and does not cover: PROCESS DEATH.** The recovery is proved against a process that stops
+existing — the suite runs real restores in child processes and kills them at named boundaries. That covers a
+kill, a runtime crash and an operator's Ctrl-C.
+
+It does **not** claim power-loss durability, and it would be wrong to. Files are written with `fsync` and
+published by rename, but the containing DIRECTORY is not fsynced after those renames, so a power cut can
+leave a rename that never reached the disk on filesystems that do not order metadata that way. Establishing
+power-loss durability would mean fsyncing parent directories and naming the filesystems on which the
+resulting ordering holds; neither has been done here, and no test has cut power to a machine. The honest
+claim is: *if the journal and the directories survive, this command can always tell you where it got to and
+finish or unwind from there.*
+
+An interrupted run leaves a journal — a crash-consistent, path-bound state machine — and refuses a fresh
+restore until you `--resume` it or `--abandon` it; both take only `--project`, because the journal knows the
+operation.
+[docs/PHASES_297_304_COMPLETE_RESTORE.md](docs/PHASES_297_304_COMPLETE_RESTORE.md) has the ordering, the
+classification and every refusal.
+
+```bash
 # On a schedule: runs the shipped read-only doctor and records one redacted state file.
 npm run ops:doctor-monitor -- --project /path/to/project --state monitor
 ```
@@ -446,7 +517,9 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:migrate` | apply schema + grants (owner), idempotent, serialised, verified; records the schema version |
 | `ops:version` | db schema version vs this build (exit 1 on mismatch) |
 | `ops:doctor [--json]` | **read-only** production self-check (config, schema version, runtime least-privilege, secret match, custodian, keystore, O4/O5 production gate WARN visibility); `--json` is the stable unattended-healthcheck contract; non-zero exit on any failure |
-| `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) |
+| `ops:backup -- dump/restore <file>` | ciphertext-only backup / guarded restore (preflight + integrity gate) — **one component of four** |
+| `ops:custody-proof [-- --json] [--sample <n>]` | **read-only** proof that this installation can DECRYPT its own catalog, through the shipped authority and its own custodian. Exits 0 proven, 1 NOT proven, 4 nothing encrypted to prove — which is not a pass |
+| `ops:complete-restore -- --project <dir> --set <name> --custodian inline\|sidecar --plan` | puts a **complete set** back: safety set, teardown, all four components, then proofs including a **decryption**. Runs on the host. `--plan` changes nothing and prints the digest `--confirm` requires |
 | `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
 | `ops:operator-ui-token -- --show-path/status/rotate` | safe operator UI token helper; rotation and status do not print the token, and printing requires `--print --confirm-print` |
 | `ops:operator-ui-live-check -- --json` | redaction-safe live operator UI check: health, auth rejection, authenticated status, and logs without printing the token |

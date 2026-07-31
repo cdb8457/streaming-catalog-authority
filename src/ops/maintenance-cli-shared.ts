@@ -5,6 +5,7 @@ import {
   assertPermittedCommand,
   type CommandOutcome,
   type CommandRunner,
+  type FileInputRunner,
   type FileOutputRunner,
   type MaintenanceCommand,
 } from './maintenance-safety.js';
@@ -130,6 +131,61 @@ export function realFileOutputRunner(): FileOutputRunner {
   };
 }
 
+/**
+ * The real BINARY-INPUT runner: the child's stdin is the file, byte for byte. Phase 301.
+ *
+ * The mirror of `realFileOutputRunner`, and the reason a restore never copies a dump into a container. The
+ * source is opened `O_RDONLY` **without following a symbolic link** and `fstat`ed on that descriptor, so the
+ * bytes that reach `psql` are the bytes of the object that was verified — a leaf swapped for a link between
+ * the verification and the replay is refused at the open rather than followed.
+ *
+ * Nothing is written by this function at all. It reads a file the caller resolved inside a verified set and
+ * hands the descriptor to a child; there is no shell, no `<`, and no destination.
+ */
+export function realFileInputRunner(): FileInputRunner {
+  return (command: MaintenanceCommand, source: string): CommandOutcome => {
+    const noFollow = typeof fsConstants.O_NOFOLLOW === 'number' ? fsConstants.O_NOFOLLOW : 0;
+    let fd: number;
+    try {
+      fd = openSync(source, fsConstants.O_RDONLY | noFollow);
+    } catch {
+      throw new MaintenanceRefused(
+        'the file this step replays could not be opened, or it is a symbolic link. Nothing was replayed.');
+    }
+    let run;
+    try {
+      // WINDOWS HAS NO `O_NOFOLLOW`, so the guarantee is re-established the way every other read in this
+      // family re-establishes it: ask the OPEN DESCRIPTOR what it is. A directory, a device or a named pipe
+      // at that path is refused here rather than streamed into a database.
+      if (!fstatSync(fd).isFile()) {
+        throw new MaintenanceRefused('the file this step replays is not a regular file. Nothing was replayed.');
+      }
+      run = spawnSync(command.program, [...command.args], {
+        cwd: command.cwd,
+        shell: false,
+        // The DESCRIPTOR for stdin, pipes for the rest. The bytes go from the file to the child without this
+        // process seeing them, so nothing is decoded and nothing is bounded by a buffer.
+        stdio: [fd, 'pipe', 'pipe'],
+        maxBuffer: MAINTENANCE_MAX_STDERR_BYTES,
+        timeout: MAINTENANCE_STEP_TIMEOUT_MS,
+        windowsHide: true,
+        env: narrowedEnvironment(),
+      });
+    } finally {
+      try { closeSync(fd); } catch { /* nothing rests on this close */ }
+    }
+
+    if (run.error !== undefined) throw run.error;
+    return {
+      status: run.status ?? -1,
+      // A replay's stdout is `psql`'s chatter. It is bounded and stripped the same way stderr is, because it
+      // can carry a table name and is never an artifact.
+      stdout: boundedStderr(run.stdout === null || run.stdout === undefined ? '' : String(run.stdout)),
+      stderr: boundedStderr(run.stderr === null || run.stderr === undefined ? '' : String(run.stderr)),
+    };
+  };
+}
+
 /** The size of a file this process just wrote through a descriptor, asked of the file itself. */
 export function writtenFileSize(destination: string): number {
   let fd: number;
@@ -205,6 +261,22 @@ export const CREDENTIAL_FLAG_WORDS: readonly string[] = Object.freeze([
   'password', 'passwd', 'secret', 'token', 'key', 'credential', 'kek', 'apikey',
 ]);
 
+/**
+ * Flag names that name a DIRECTORY OF credentials rather than a credential.
+ *
+ * THE DEFECT THIS CLOSES, AND IT WAS PRE-EXISTING. The scan above is a substring scan, deliberately blunt so
+ * nobody can argue their way past it. `--secrets` contains `secret`, so `ops:complete-backup -- --secrets
+ * <rel>` — a flag its own usage text documents, and which names the FOLDER the setup script created — was
+ * refused as though somebody had typed a password on a command line. The blunt check was right and its
+ * verdict here was wrong.
+ *
+ * The exemption is an EXACT-NAME allowlist, not a relaxation of the scan: `--secrets` is permitted and
+ * `--secret`, `--secrets-value`, `--db-secrets` and everything else are still refused. A relative path to a
+ * folder is not a credential; the credential is the bytes in the files inside it, which no command here reads
+ * from a command line.
+ */
+export const NON_CREDENTIAL_FLAG_NAMES: readonly string[] = Object.freeze(['secrets']);
+
 export interface ParsedFlags {
   readonly values: Readonly<Record<string, string>>;
   readonly switches: ReadonlySet<string>;
@@ -221,7 +293,7 @@ export function parseMaintenanceFlags(
     if (!argument.startsWith('--')) throw new MaintenanceUsageError(`unexpected argument: ${argument}`);
     const name = argument.slice(2);
     const lower = name.toLowerCase();
-    for (const word of CREDENTIAL_FLAG_WORDS) {
+    for (const word of NON_CREDENTIAL_FLAG_NAMES.includes(lower) ? [] : CREDENTIAL_FLAG_WORDS) {
       if (lower.includes(word)) {
         throw new MaintenanceUsageError(
           `--${name} looks like a credential, and this command takes none on a command line: a command line is `
