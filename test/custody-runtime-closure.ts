@@ -1,4 +1,4 @@
-import { spawnSync } from 'node:child_process';
+import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
   statSync, symlinkSync, writeFileSync,
@@ -13,6 +13,7 @@ import {
   REQUIRED_SECRET_FILES, ROOT_KEY_SECRET_NAME, backupSetHasRing, requiredSecretFilesFor,
 } from '../src/ops/backup-components.js';
 import { runVerifiedCompleteBackup } from '../src/ops/complete-backup.js';
+import { CUSTODY_MODE_FILENAME } from '../src/ops/custody-runtime-mode.js';
 import { asMap, parseYaml } from '../src/ops/minimal-yaml.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
 import {
@@ -24,6 +25,7 @@ import {
   code as shellCode,
   commandSubstitutions,
   functionBody,
+  logicalLines,
   parseShellSource,
   textOf as shellText,
   withoutComment,
@@ -102,6 +104,25 @@ const CUSTODY_SETUP_SCRIPTS = ['deploy/local-runtime-setup.sh', 'deploy/arcane-s
 
 /** A 64-character hex root key, the shape the helper generates. */
 const A_ROOT_KEY = 'a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2';
+
+/**
+ * Which signal killed a child, whichever way this host encoded that.
+ *
+ * THREE ENCODINGS FOR ONE FACT. Node reports `signal: 'SIGTERM'` when it sees the child die of a signal; a
+ * POSIX shell that outlives its child reports the conventional `128 + N`; and a Git-Bash/MSYS shell hands
+ * back the RAW WAIT STATUS, `N << 8` — 3840 for SIGTERM, which is neither 143 nor obviously wrong-looking.
+ * Asserting one of the three would make this suite pass or fail on which shell the host happened to provide,
+ * which is exactly the class of accident this whole tranche exists to remove.
+ */
+function signalOf(run: SpawnSyncReturns<string>): number | null {
+  if (run.signal === 'SIGTERM') return 15;
+  if (run.signal === 'SIGINT') return 2;
+  const status = run.status;
+  if (typeof status !== 'number') return null;
+  if (status > 128 && status < 256) return status - 128;
+  if (status > 255 && status % 256 === 0) return status >> 8;
+  return null;
+}
 
 /** The same script text, typed the three ways a checkout can type it. */
 function eachLineEnding(lf: string): ReadonlyArray<readonly [string, string]> {
@@ -201,6 +222,336 @@ await test('an extractor that cannot find its region refuses, and never answers 
   assertEq(callSites(parseShellSource('', 'empty'), 'anything').length, 0,
     'an empty script has no call sites, stated as a count rather than as an empty region');
   refuses(() => callSite(source, 'no_such_command'), 'not once', 'asking for the one call site of a command with none');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// 1b. Correction 1 — malformed input is a refusal, not a plausible answer
+// ---------------------------------------------------------------------------------------------------------
+
+await test('a malformed line is refused rather than answered with a plausible-looking parse', () => {
+  // THE FIVE HOLES A HOSTILE REVIEW FOUND IN THE FIRST VERSION OF THIS READER. Every one of them ACCEPTED
+  // malformed input and returned something that reads exactly like a correct answer. The module's whole
+  // premise is that uncertainty is a refusal, and these were the counter-examples.
+  //
+  // Each is a way to make a forbidden call INVISIBLE, which is the direction that fails OPEN: a gate asking
+  // "does this region contain chmod" gets "no" from a line nobody could parse.
+  refuses(() => words('cmd "unterminated'), 'unterminated double quote',
+    'a double quote that never closes — it used to return ["cmd","unterminated"]');
+  refuses(() => words("cmd 'unterminated"), 'unterminated single quote',
+    'a single quote that never closes');
+  refuses(() => commandSubstitutions('x="$(node foo'), 'unterminated command substitution',
+    'a substitution that never closes — it used to return [], meaning "no command here"');
+  refuses(() => callSites(parseShellSource('node "${HELPER}" --generate \\', 'trailing'), 'node'),
+    'ends on a line continuation',
+    'a file ending mid-continuation — the arguments after it were never written');
+  // AND THE WORST OF THE FIVE. Bash runs the LAST definition of a function; this returned the FIRST.
+  const duplicated = parseShellSource(
+    'write_custody_secret() {\n  node "${H}" "${P}" --generate 1 1\n}\n'
+    + 'write_custody_secret() {\n  chmod 0644 "${P}"\n}\n', 'duplicated');
+  refuses(() => functionBody(duplicated, 'write_custody_secret'), 'Bash would run the LAST one',
+    'a function defined twice — the gate would have read a clean definition and approved a chmod');
+});
+
+await test('malformed syntax AROUND the real custody invocation is refused, and the real one is not', () => {
+  // NOT A SYNTHETIC FIXTURE. The shipped setup script is taken as it is, mutated one way at a time, and each
+  // mutation must be refused — because each one is a way somebody could hide what the custody helper is
+  // really handed. The unmutated original must still produce its exact six words, or the strictness has been
+  // bought by breaking the thing it protects.
+  const path = 'deploy/local-runtime-setup.sh';
+  const original = readRepo(path);
+  const source = parseShellSource(original, path);
+  const helper = callSites(source, 'node').filter((call) => call[1] === '${CUSTODY_HELPER}');
+  assertEq(helper.length, 1, 'the real script yields exactly one helper invocation');
+  assertEq(helper[0]!.length, 6, `and its six words: ${helper[0]!.join(' ')}`);
+
+  const mutations: ReadonlyArray<readonly [string, string, string]> = [
+    // The continuation that carries the two ids. Drop it and the invocation silently loses its last two
+    // arguments — an argument-counting gate would read 4 and could not say why.
+    ['the helper continuation is dropped', '--generate \\', '--generate'],
+    // A quote removed from the middle of the invocation.
+    ['a quote in the invocation is unbalanced', '"${SECRETS_DIR}/${name}"', '"${SECRETS_DIR}/${name}'],
+    // The substitution that wraps the whole call.
+    ['the substitution around the call never closes', ')" || {', '" || {'],
+  ];
+  for (const [what, from, to] of mutations) {
+    assert(original.includes(from), `the mutation anchor is present: ${from}`);
+    const mutated = parseShellSource(original.replace(from, to), `${path} (${what})`);
+    let refused = '';
+    try { callSites(mutated, 'node'); } catch (err) { refused = (err as Error).message; }
+    assert(refused !== '', `${what}: must be refused, not parsed into a plausible call`);
+    assert(refused.includes(path), `${what}: the refusal names the script — ${refused}`);
+  }
+
+  // AND THE FUNCTION ITSELF, DEFINED TWICE IN THE REAL SCRIPT. A second definition anywhere after the first
+  // is what bash would actually run.
+  const doubled = parseShellSource(
+    `${original}\nwrite_custody_secret() {\n  chmod 0644 "${'$'}{SECRETS_DIR}/${'$'}{1}"\n}\n`, path);
+  refuses(() => functionBody(doubled, 'write_custody_secret'), 'Bash would run the LAST one',
+    'the real script with a second, chmod-ing definition appended');
+});
+
+await test('the helper body is read to its END, which the committed reader did not do', () => {
+  // A THIRD SILENT WRONG REGION, FOUND BY THIS CORRECTION AND NOT BY A FAILING GATE.
+  //
+  // The committed extractor matched braces on PHYSICAL lines. The custody helper's invocation spans a `\`
+  // continuation, and the second physical line — `"${...}" "${...}")" || {` — carries a stray `"` that pairs
+  // with one on the line before. Read alone, that line looks like it OPENS a quote, so the block-opening `{`
+  // at its end was treated as quoted text and never counted. The matching `}` six lines later then took the
+  // depth to zero, and the "function body" ended at `exit 1` — 17 lines of a 23-line function, with the whole
+  // `case ... esac` tail outside the region the custody gate searched.
+  //
+  // The gate passed, because the truncated part happened to contain no `chmod`. A `chmod` in those six lines
+  // would have been invisible. Validating on the LOGICAL line — continuations joined first — is what fixes
+  // it, and this asserts the end of the region rather than trusting that it is there.
+  const source = parseShellSource(readRepo('deploy/local-runtime-setup.sh'), 'deploy/local-runtime-setup.sh');
+  const body = functionBody(source, 'write_custody_secret');
+  assertEq(body[body.length - 1]!.trim(), 'esac', 'the body runs to the end of the function');
+  const whole = shellText(body);
+  assert(whole.includes('case "${outcome}" in'), 'and includes the case the truncated region cut off');
+  assert(whole.includes('kept'), 'including the branch that reports an existing secret was kept');
+  // The property the custody gate actually asserts, now over the WHOLE function rather than three quarters.
+  assert(!/\bchmod\b/.test(shellText(shellCode({ path: 'b', lines: body }).lines)),
+    'and the whole function, not part of it, performs no chmod');
+});
+
+await test('a quoted terminator cannot end a case arm early and hide what follows it', () => {
+  // CORRECTION 1, SECOND ROUND — CONFIRMED FAIL-OPEN. `caseArms` located an arm's end with
+  // `line.includes(';;')`, so a `;;` INSIDE A STRING ended the arm. Probed against the working tree, this arm
+  // came back as the `echo` line alone, with the `chmod` two lines later OUTSIDE the region the custody gate
+  // searches. A confidently wrong region, in the direction that hides the dangerous thing — the module's
+  // original defect, reintroduced by the module itself.
+  const script = parseShellSource(`case "\${ACTION}" in
+  bootstrap)
+    echo "a literal ;; inside a string"
+    chmod 0644 "\${SECRETS_DIR}/custodian_root_key"
+    ;;
+  *)
+    exit 3
+    ;;
+esac
+`, 'quoted-terminator');
+  const arm = shellText(caseArm(caseBlock(script, 'ACTION'), 'bootstrap'));
+  assert(arm.includes('chmod 0644'), `the arm runs to its REAL terminator: ${arm}`);
+  assert(arm.includes('a literal ;; inside a string'), 'and still contains the string that used to end it');
+  assert(!arm.includes('exit 3'), 'while stopping before the next arm');
+
+  // AND THE SAME MISTAKE ONE LEVEL UP: a quoted `esac` used to close the block, truncating it so that a later
+  // arm — the one holding the chmod — could not be found at all.
+  const withEsac = parseShellSource(`case "\${ACTION}" in
+  bootstrap)
+    echo "the word esac appears here"
+    ;;
+  *)
+    chmod 0644 /etc/shadow
+    ;;
+esac
+`, 'quoted-esac');
+  const fallback = shellText(caseArm(caseBlock(withEsac, 'ACTION'), '*'));
+  assert(fallback.includes('chmod 0644 /etc/shadow'),
+    `a quoted esac does not truncate the block: ${fallback}`);
+});
+
+await test('a nested case does not end the arm that contains it', () => {
+  // CORRECTION 1, FINAL ROUND — CONFIRMED FAIL-OPEN. The arm ended at the FIRST `;;` after its pattern, and
+  // an inner `case` supplies one long before the outer arm is over. Probed against the working tree, the
+  // `bootstrap)` arm below came back as its first two lines — with the `chmod` after the inner `esac` outside
+  // the region the custody gate searches. Every fail-open in this module has had the same shape: a region
+  // that ends too early, and a `!includes` that reads the shortfall as absence.
+  const script = parseShellSource(`case "\${ACTION}" in
+  bootstrap)
+    case "\${MODE}" in
+      a) echo inner-a ;;
+      *) echo inner-other ;;
+    esac
+    chmod 0644 "\${SECRETS_DIR}/custodian_root_key"
+    ;;
+  *)
+    exit 3
+    ;;
+esac
+`, 'nested-case');
+  const arm = shellText(caseArm(caseBlock(script, 'ACTION'), 'bootstrap'));
+  assert(arm.includes('chmod 0644'), `the arm survives the nested case: ${arm}`);
+  assert(arm.includes('esac'), 'and contains the inner case it wraps');
+  assert(!arm.includes('exit 3'), 'while still stopping before the next arm');
+  // The inner arms are still addressable in their own right, scoped to the case they belong to.
+  assert(shellText(caseArm(caseBlock(script, 'MODE'), 'a')).includes('inner-a'),
+    'and the inner case is a block of its own');
+});
+
+await test('an escaped quote before a hash does not turn the rest of the line into a comment', () => {
+  // CORRECTION 1, SECOND ROUND — CONFIRMED FAIL-OPEN. Four separate quote walkers lived in this module and
+  // disagreed: `openQuoteAt` honoured a backslash inside a double-quoted string, `withoutComment` and `words`
+  // did not. So `withoutComment` decided the string closed at the escaped quote, read the following `#` as a
+  // comment, and returned a TRUNCATED line. `code(source)` — which several gates search — is exactly that
+  // function mapped over a file, so a `chmod` after such a line was simply not in the text they read.
+  const line = 'echo "she said \\"hi\\" # still inside the string"';
+  assertEq(withoutComment(line), line, 'the whole line survives, because none of it is a comment');
+  assertEq(words(line).length, 2, 'and it is two words: the command and one quoted value');
+  assertEq(words(line)[1], 'she said "hi" # still inside the string', 'with the escapes resolved');
+
+  // THE SHAPE THAT HID A REAL COMMAND: a command after a `;` on the same line.
+  const hidden = parseShellSource('echo "a \\" # b" ; chmod 0644 /etc/shadow\n', 'escaped-hash');
+  assertEq(callSites(hidden, 'chmod').length, 1, 'a command after the string is still a call site');
+  assertEq(callSites(hidden, 'echo').length, 1, 'and so is the one before it');
+  // A REAL comment is still a comment — the fix must not have removed the ability to ignore prose.
+  assertEq(withoutComment('chmod 0644 x # this really is a comment'), 'chmod 0644 x ',
+    'an unquoted # still starts a comment');
+  assertEq(callSites(parseShellSource('# chmod 0644 /etc/shadow\n', 'commented'), 'chmod').length, 0,
+    'and a commented-out command is not a call site');
+});
+
+await test('a separator separates whether or not anybody typed a space around it', () => {
+  // CORRECTION 1, THIRD ROUND — CONFIRMED FAIL-OPEN, AND THE MOST DIRECT ONE YET. Words were split on
+  // WHITESPACE ALONE, so `echo x;chmod 0644 secret` tokenised as `["echo","x;chmod","0644","secret"]`.
+  // `chmod` was never the head of a word, never in command position, and `callSites(..., 'chmod')` answered
+  // ZERO for a line that really runs it. Five valid shapes all returned zero — every one of them a way to run
+  // a forbidden command that the no-chmod and no-docker gates could not see.
+  for (const [what, line] of [
+    ['a semicolon', 'echo x;chmod 0644 secret'],
+    ['an AND list', 'true&&chmod 0644 secret'],
+    ['an OR list', 'false||chmod 0644 secret'],
+    ['a pipe', 'printf x|chmod 0644 secret'],
+    ['a subshell', '(chmod 0644 secret)'],
+  ] as const) {
+    assertEq(callSites(parseShellSource(`${line}\n`, what), 'chmod').length, 1,
+      `${what} puts what follows it in command position: ${line}`);
+  }
+  assertEq(words('echo x;chmod 0644 secret').join('|'), 'echo|x|;|chmod|0644|secret',
+    'the separator is its own token');
+  // AND A SEPARATOR INSIDE A STRING IS NOT A SEPARATOR, which is the other half of getting this right.
+  assertEq(words('echo "a;b"').join('|'), 'echo|a;b', 'a quoted semicolon is part of the value');
+  assertEq(callSites(parseShellSource('echo "x;chmod 0644 secret"\n', 'quoted'), 'chmod').length, 0,
+    'and a command named inside a string is not a call site');
+  // A DEFINITION IS STILL NOT A CALL. `(` and `)` became tokens for the sake of the subshell case above, and
+  // `name() {` puts the name in command position unless a reader knows what a definition looks like.
+  assertEq(callSites(parseShellSource('write_custody_secret() {\n  echo hi\n}\n', 'def'),
+    'write_custody_secret').length, 0, 'defining a function does not call it');
+});
+
+await test('every ordinary way of reaching a command counts as reaching it', () => {
+  // CORRECTION 1, THIRD ROUND FOLLOW-UP — FIFTEEN MORE CONFIRMED ZEROES. Emitting `&` as a token without
+  // accepting it as a separator left `echo x&chmod` hiding the chmod, which is the worst kind of half-fix: a
+  // tokeniser that looks right and a gate that still cannot see. And a command reached through an assignment
+  // prefix, a control keyword or a wrapper was never in "command position" at all — so `VAR=x chmod`,
+  // `if chmod`, `while chmod`, `! chmod` and `sudo chmod` each ran the command while every gate said zero.
+  for (const [what, line] of [
+    ['a background separator, unspaced', 'echo x&chmod 0644 secret'],
+    ['a background separator, spaced', 'echo x & chmod 0644 secret'],
+    ['an assignment prefix', 'VAR=x chmod 0644 secret'],
+    ['two assignment prefixes', 'A=1 B=2 chmod 0644 secret'],
+    ['an if condition', 'if chmod 0644 secret; then echo y; fi'],
+    ['an elif condition', 'elif chmod 0644 secret; then echo y; fi'],
+    ['a while condition', 'while chmod 0644 secret; do echo y; done'],
+    ['an until condition', 'until chmod 0644 secret; do echo y; done'],
+    ['a negation', '! chmod 0644 secret'],
+    ['the command builtin', 'command chmod 0644 secret'],
+    ['env', 'env chmod 0644 secret'],
+    ['sudo', 'sudo chmod 0644 secret'],
+    ['time', 'time chmod 0644 secret'],
+    ['exec', 'exec chmod 0644 secret'],
+    ['xargs', 'xargs chmod 0644 secret'],
+  ] as const) {
+    assertEq(callSites(parseShellSource(`${line}\n`, what), 'chmod').length, 1,
+      `${what} reaches the command: ${line}`);
+  }
+  // AND THE THINGS THAT MUST STAY ZERO, so the breadth above was not bought with false positives.
+  for (const [what, line] of [
+    ['a command named inside a string', 'echo "chmod 0644 secret"'],
+    ['a commented-out command', '# chmod 0644 secret'],
+    ['a different command with the same prefix', 'chmod_helper 0644 secret'],
+    ['a command as a bare argument', 'echo chmod 0644 secret'],
+  ] as const) {
+    assertEq(callSites(parseShellSource(`${line}\n`, what), 'chmod').length, 0,
+      `${what} is not a call site: ${line}`);
+  }
+});
+
+await test('a heredoc opener does not swallow the rest of its line, and its delimiter matches exactly', () => {
+  // CORRECTION 1, THIRD ROUND — TWO MORE CONFIRMED FAIL-OPENS.
+  //
+  // (B) Only the text BEFORE the heredoc operator was kept, so `cat <<'EOF' ; chmod 0644 secret` came back as
+  // the single word `cat` and the command after the delimiter word vanished — zero call sites for a line that
+  // really runs it. A redirection tail was lost the same way.
+  const tail = parseShellSource("cat <<'EOF' ; chmod 0644 secret\nbody\nEOF\n", 'heredoc-tail');
+  assertEq(callSites(tail, 'chmod').length, 1, 'a command after a heredoc operator is still a call site');
+  assertEq(callSites(tail, 'cat').length, 1, 'and so is the one that opened it');
+  const redirected = logicalLines(parseShellSource("cat <<'EOF' > \"${FILE}\"\nbody\nEOF\n", 'heredoc-redir'));
+  assert(shellText(redirected.map((entry) => entry.text)).includes('> "${FILE}"'),
+    'a redirection on the same line is preserved');
+  // The body itself is still data.
+  assertEq(callSites(tail, 'body').length, 0, 'while the body is not code');
+
+  // (C) The delimiter was compared with `.trim()`, so a SPACE-indented `  EOF` closed a plain `<<'EOF'` — and
+  // the lines after it, still data to the shell, were handed back as executable code. The shell requires an
+  // exact match; only `<<-` strips indentation, and only leading TABS.
+  const spaced = parseShellSource("cat <<'EOF'\n  EOF\nchmod 0644 secret\nEOF\n", 'space-delimiter');
+  assertEq(callSites(spaced, 'chmod').length, 0,
+    'a space-indented delimiter does not close a non-dashed heredoc, so the body stays data');
+  const dashed = parseShellSource("cat <<-'EOF'\nbody\n\tEOF\nchmod 0644 secret\n", 'tab-delimiter');
+  assertEq(callSites(dashed, 'chmod').length, 1,
+    'while a tab-indented delimiter DOES close a dashed one, and the code after it is code');
+});
+
+await test('a heredoc opened on a continuation line is still a heredoc', () => {
+  // CORRECTION 1, SECOND ROUND. Heredocs were detected BEFORE continuations were joined, so an operator
+  // introduced on a continuation line was invisible and its body was handed back as executable code. Probed
+  // directly, `callSites(..., 'chmod')` returned ONE — a call site reported from inside a heredoc BODY. That
+  // is the mirror image of hiding a call, and just as wrong: a gate would refuse a script over a line that
+  // is data.
+  const onContinuation = parseShellSource(`cat \\
+  <<'EOF'
+chmod 0644 /etc/shadow
+EOF
+`, 'heredoc-continuation');
+  assertEq(callSites(onContinuation, 'chmod').length, 0, 'the body is data, wherever the operator was written');
+  assertEq(callSites(onContinuation, 'cat').length, 1, 'while the command that opened it is still a call site');
+
+  // MORE THAN ONE ON A LINE IS REFUSED, because the bodies pair up with the operators in an order this
+  // reader does not model — and a reader that consumed one body would treat the second as code.
+  refuses(() => logicalLines(parseShellSource("cat <<'A' <<'B'\nx\nA\ny\nB\n", 'two-heredocs')),
+    'more than one heredoc on a line', 'two heredocs on one line');
+  // A here-STRING is not a here-document: it consumes no following lines.
+  assertEq(callSites(parseShellSource('cat <<< "text"\nchmod 0644 x\n', 'herestring'), 'chmod').length, 1,
+    'a here-string does not swallow the line after it');
+});
+
+await test('a heredoc body is data, and an unterminated or expanding one is refused', () => {
+  // FIVE OF THE SHIPPED SCRIPTS CARRY A HEREDOC — usage banners and exit-code tables — and one of them
+  // contains an apostrophe in ordinary English prose ("the underlying command's"), which is quote-unbalanced
+  // and entirely harmless. Refusing that would be refusing a comment, so quoted heredoc bodies are skipped.
+  const quoted = parseShellSource(
+    "usage() {\n  cat <<'EOF'\nit's fine, and \"unbalanced\ntoo\nEOF\n}\nchmod 0644 x\n", 'quoted-heredoc');
+  assertEq(logicalLines(quoted).length > 0, true, 'a quoted heredoc body does not stop the reader');
+  assertEq(callSites(quoted, 'chmod').length, 1, 'and code after it is still read');
+  // BUT AN UNQUOTED HEREDOC REALLY EXPANDS `$( )`, and this reader does not model that. It refuses rather
+  // than skipping past a command that would actually run.
+  refuses(() => logicalLines(parseShellSource('cat <<EOF\n$(rm -rf /)\nEOF\n', 'expanding')),
+    'UNQUOTED heredoc body contains a command substitution', 'a heredoc that really executes something');
+  refuses(() => logicalLines(parseShellSource("cat <<'EOF'\nnever closed\n", 'unterminated')),
+    'never terminated', 'a heredoc with no terminator');
+});
+
+await test('every shipped script still parses, under all three line endings', () => {
+  // THE STRICTNESS MUST NOT HAVE BEEN BOUGHT BY BREAKING THE CORPUS. Every `.sh` this repository ships is
+  // read end to end, in all three typings, and the custody helper is re-extracted from the two scripts that
+  // define it so the answer is compared rather than merely obtained.
+  let examined = 0;
+  for (const file of readdirSync(join(repoRoot, 'deploy')).filter((name) => name.endsWith('.sh'))) {
+    const lf = readRepo(join('deploy', file)).replace(/\r\n|\r/g, '\n');
+    let expected: string | null = null;
+    for (const [what, text] of eachLineEnding(lf)) {
+      const source = parseShellSource(text, `deploy/${file} (${what})`);
+      const lines = logicalLines(source);
+      assert(lines.length > 0, `deploy/${file} (${what}) yields logical lines`);
+      let body: string | null = null;
+      try { body = shellText(functionBody(source, 'write_custody_secret')); } catch { body = null; }
+      if (expected === null) expected = body ?? '(none)';
+      assertEq(body ?? '(none)', expected, `deploy/${file}: ${what} reads the same custody helper`);
+    }
+    examined += 1;
+  }
+  assert(examined >= 10, `every shipped shell script was parsed in three typings (${examined})`);
 });
 
 await test('an arm is chosen by the case it belongs to, not by which text matches first', () => {
@@ -561,8 +912,58 @@ await test('the runtime stack the PowerShell setup installs never reads a root w
 });
 
 // ---------------------------------------------------------------------------------------------------------
-// 7. The mode marker: atomic, unpredictable, and removed by the arm that owns removal
+// 7. The mode marker: atomic, unpredictable, removed by the arm that owns removal — and signal-safe
 // ---------------------------------------------------------------------------------------------------------
+
+/**
+ * A real Catalog Authority project with the shipped mode script beside it, and a way to run that script with
+ * one command replaced by a shim on `PATH`.
+ *
+ * THE SHIM IS THE CLOCK. Signalling a script from outside and hoping to land in the window between "the
+ * temporary exists" and "the rename happens" is a race, and a racy test of a signal handler is worse than no
+ * test. A shim standing in for a command the arm calls INSIDE that window fires at exactly one point, every
+ * time: bash runs a pending trap when the current foreground command completes, so the trap runs after the
+ * shim exits and before the next statement.
+ *
+ * Returns `null` where this cannot be done honestly — a host with no POSIX-shaped shell, or one that cannot
+ * deliver a signal between processes. A skip that says so is the correct outcome there; a pass is not.
+ */
+function stageMarkerProject(name: string): {
+  project: string;
+  temporaries: () => readonly string[];
+  runWithShim: (command: string, body: string, action: string) => SpawnSyncReturns<string>;
+} | null {
+  const shell = usableBash();
+  if (shell === null) return null;
+  const project = join(WORK, name);
+  const bin = join(project, 'bin');
+  mkdirSync(bin, { recursive: true });
+  for (const file of ['docker-compose.unraid.runtime.yml', 'docker-compose.unraid.bootstrap.yml']) {
+    writeFileSync(join(project, file), readRepo(file));
+  }
+  const script = join(project, 'unraid-custody-mode.sh');
+  writeFileSync(script, readRepo('deploy/unraid-custody-mode.sh'));
+
+  // A POSIX-shell view of a host path. The script requires an absolute path beginning with `/` — deliberately,
+  // because it runs on an Unraid box — and a `PATH` entry must be in the same form, since a `C:\ ` drive
+  // letter would split on the `:` that separates PATH entries.
+  const hostPath = (path: string): string => (POSIX ? path
+    : path.replace(/^([A-Za-z]):[\\/]/, (_all, drive: string) => `/${drive.toLowerCase()}/`).replace(/\\/g, '/'));
+
+  return {
+    project,
+    temporaries: () => readdirSync(project).filter((entry) => entry.startsWith('.custody-mode.')),
+    runWithShim: (command, body, action) => {
+      writeFileSync(join(bin, command), `#!/usr/bin/env bash\n${body}`, { mode: 0o755 });
+      return spawnSync(shell.command, [...shell.args(script), hostPath(project), action], {
+        ...SPAWN_DEFAULTS,
+        timeout: SCRIPT_TIMEOUT_MS,
+        cwd: project,
+        env: { ...process.env, PATH: `${hostPath(bin)}${POSIX ? ':' : ':'}${process.env.PATH ?? ''}` },
+      });
+    },
+  };
+}
 
 await test('the marker script, EXECUTED, publishes atomically and leaves no temporary behind', () => {
   const shell = usableBash();
@@ -637,19 +1038,103 @@ await test('the marker script, EXECUTED, publishes atomically and leaves no temp
     'with still exactly one marker and no accumulated temporaries');
 });
 
+await test('a TERM before publication kills the script, publishes nothing, and leaves no temp', () => {
+  // CORRECTION 1, AND IT IS A DEFECT THE FIRST FIX INTRODUCED.
+  //
+  // Phase 329 fixed a successful `bootstrap` exiting 1 by ending the trap handler with `return 0`. That
+  // handler was ALSO INSTALLED FOR INT AND TERM — and a signal handler that RETURNS is not a refusal, it is a
+  // resumption. Bash ran it and carried on at the next statement, so `kill -TERM` deleted the temporary the
+  // script was still about to use, ran on to `mv`, PUBLISHED THE MARKER, printed the success text and exited
+  // 0. An operator pressing Ctrl-C, or automation stopping a switch mid-flight, got the switch anyway and was
+  // told it had succeeded. A direct probe of that handler shape: `CONTINUED-AFTER-TERM`, exit 0.
+  //
+  // THE SIGNAL IS DELIVERED BY A REAL PROCESS AT A DETERMINISTIC POINT. A `chmod` shim on PATH signals the
+  // script's own shell; the shipped arm calls `chmod` after the temporary exists and before `mv`, and bash
+  // runs a pending trap when the foreground command completes — so the window is exact, not a race.
+  const shell = usableBash();
+  if (shell === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  const staged = stageMarkerProject('sig-before');
+  if (staged === null) { console.log('        (skipped: this host cannot deliver a signal between processes)'); return; }
+  const run = staged.runWithShim('chmod', 'kill -TERM "$PPID"\nexit 0\n', 'bootstrap');
+
+  assert(run.status !== 0, `the script does not exit 0 after a termination request — ${describeRun(run)}`);
+  assertEq(signalOf(run), 15, `and it died of SIGTERM rather than merely failing — ${describeRun(run)}`);
+  assertEq(existsSync(join(staged.project, CUSTODY_MODE_FILENAME)), false, 'no marker was published');
+  assertEq(staged.temporaries().length, 0, 'and no private temporary was left behind');
+  assert(!(run.stdout ?? '').includes('custody mode: bootstrap'),
+    `and no success text was printed: ${run.stdout ?? ''}`);
+  assert((run.stderr ?? '').includes('terminated by SIGTERM'), `it says what happened: ${run.stderr ?? ''}`);
+  assert((run.stderr ?? '').includes('before any custody marker was written'), 'and what the state is');
+});
+
+await test('a TERM after publication still fails, and tells the truth about the marker being there', () => {
+  // THE OTHER SIDE OF THE SAME HANDLER, because "terminated" and "terminated, and the marker is in place
+  // anyway" are different facts and an operator acts differently on each. The shim performs the REAL rename
+  // and then signals, so the marker exists when the handler looks.
+  //
+  // The handler reads the FILESYSTEM rather than a `PUBLISHED=1` flag set on the line after `mv`: that flag
+  // has a real window — a signal delivered between the rename returning and the assignment running would
+  // report "not published" about a marker that is on disk. The marker has no such window.
+  const shell = usableBash();
+  if (shell === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  const staged = stageMarkerProject('sig-after');
+  if (staged === null) { console.log('        (skipped: this host cannot deliver a signal between processes)'); return; }
+  const run = staged.runWithShim('mv', '/usr/bin/mv "$@"\nkill -TERM "$PPID"\nexit 0\n', 'bootstrap');
+
+  assert(run.status !== 0, `a termination request is never a success — ${describeRun(run)}`);
+  assertEq(signalOf(run), 15, `and it died of SIGTERM — ${describeRun(run)}`);
+  assertEq(existsSync(join(staged.project, CUSTODY_MODE_FILENAME)), true, 'the rename had already happened');
+  assertEq(staged.temporaries().length, 0, 'and no temporary survives either way');
+  assert((run.stderr ?? '').includes('a custody marker IS present'),
+    `the operator is told the marker is there: ${run.stderr ?? ''}`);
+  assert((run.stderr ?? '').includes("'status'"), 'and how to find out which mode is in force');
+  assert(!(run.stdout ?? '').includes('custody mode: bootstrap'), 'while the run still does not claim success');
+});
+
 await test('the marker temp name is unpredictable, and no process id ever names a file', () => {
   const script = parseShellSource(readRepo('deploy/unraid-custody-mode.sh'), 'deploy/unraid-custody-mode.sh');
   const executable = shellText(shellCode(script).lines);
   // `> "${MARKER}.tmp.$$"` was a name anybody could predict, through a redirection that FOLLOWS a symbolic
   // link — so a link planted at that name was a write wherever it pointed, as whichever account ran the
   // script. On Unraid that is root, in a web terminal.
-  assert(!/\$\$/.test(executable), 'no process id names a file');
+  //
+  // THE RULE IS ABOUT NAMING A FILE, NOT ABOUT THE CHARACTERS `$$`. Correction 1 added a signal handler that
+  // re-raises the received signal against this very shell — `kill -s "$1" "$$"` — which is the one correct
+  // use of a process id in this script and must not be swept up by a blanket ban. So every occurrence is
+  // located and required to be an argument of `kill`, which is a claim about what the process id is FOR.
+  // COMMENTS ARE EXCLUDED, because the comment three lines above this one QUOTES the old defect verbatim in
+  // order to explain it. A gate that could not tell an explanation from an instruction would force the
+  // script to stop documenting its own history.
+  let signalled = 0;
+  for (const logical of logicalLines(script)) {
+    const executableLine = withoutComment(logical.text);
+    if (!executableLine.includes('$$')) continue;
+    const parts = words(executableLine, `${script.path}:${logical.line}`);
+    assertEq(parts[0], 'kill',
+      `a process id may only be signalled, never used to name a file — ${script.path}:${logical.line}: ${executableLine.trim()}`);
+    signalled += 1;
+  }
+  assertEq(signalled, 1, 'and the one process id in the script is the re-raise in the signal handler');
   assert(!/>\s*"?\$\{MARKER\}\.tmp/.test(executable), 'and nothing is redirected into a predictable name');
   const bootstrap = shellText(caseArm(caseBlock(script, 'ACTION'), 'bootstrap'));
   assert(/mktemp\s+.*XXXXXXXXXX/.test(bootstrap), 'the arm that writes uses mktemp with ten random characters');
   assert(/mv -f "\$\{TEMP\}" "\$\{MARKER\}"/.test(bootstrap), 'and publishes by an atomic rename');
   assert(executable.includes('umask 077'), 'private from the instant it exists');
-  assert(/trap cleanup EXIT/.test(executable), 'and cleaned up on every exit path, including a failing one');
+  // CORRECTION 1: EXIT AND THE SIGNALS ARE HANDLED SEPARATELY, and that separation is the fix. One handler
+  // installed for all three ended in `return 0`, which made SIGINT and SIGTERM RESUME the script instead of
+  // stopping it. The structural claim here is deliberately narrow — the behaviour is proved by sending a real
+  // SIGTERM to the real script two tests above — but a single `trap ... EXIT INT TERM` reappearing is the
+  // exact regression, and it is worth failing on the shape alone.
+  assert(/trap on_exit EXIT$/m.test(executable), 'EXIT is cleaned up on every exit path, including a failing one');
+  assert(/trap 'on_signal INT 2' INT/.test(executable), 'INT has its own handler');
+  assert(/trap 'on_signal TERM 15' TERM/.test(executable), 'and so does TERM');
+  // `trap - EXIT INT TERM` is the DISARM inside the signal handler, and it must name all three: it is what
+  // stops the handler recursing and stops the EXIT trap running a second cleanup behind it. So the forbidden
+  // shape is an INSTALL across all three, which is a handler, not a `-`.
+  assert(!/trap\s+(?!-\s)\S+\s+EXIT\s+INT/.test(executable),
+    'and no one handler serves EXIT and the signals, because a signal handler that returns RESUMES the script');
+  assert(/trap - EXIT INT TERM/.test(executable), 'while the signal handler disarms all three before acting');
+  assert(/kill -s "\$1" "\$\$"/.test(executable), 'a signal is re-raised with the default disposition');
 });
 
 // ---------------------------------------------------------------------------------------------------------

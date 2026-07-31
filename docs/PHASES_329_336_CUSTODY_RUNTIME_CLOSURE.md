@@ -194,7 +194,7 @@ No source-text gate in this repository could have caught it. Nothing about that 
 
 ## Part 3 — The new suite
 
-`test/custody-runtime-closure.ts`, registered as `test:phase329-local` and as a required CI gate. 22 checks.
+`test/custody-runtime-closure.ts`, registered as `test:phase329-local` and as a required CI gate. 36 checks.
 
 **The extractors, held to their contract** — the same region from the same script under LF, CRLF and CR;
 refusal (not a wrong region) when a function, arm or `case` is missing, duplicated or unclosed; an arm chosen
@@ -250,6 +250,149 @@ both status and effect.
   `unraid-custody-mode.sh bootstrap` now exiting 0 on success — which is the defect fix. The Windows setup's
   *output* does change (it prints a refusal where it used to print `created`), and that is documented as an
   operator-visible compatibility change in `README.md` rather than filed under "nothing changed".
+
+## Correction 1 — two fail-closed gaps, and a third silent wrong region
+
+An independent hostile review probed the committed candidate directly and found two places where this tranche
+had not lived up to its own promise. Both are fixed; tracing the first turned up a third defect nobody had
+reported.
+
+### Gap 1 — the reader promised that uncertainty is a refusal, and accepted five malformed inputs
+
+`test/helpers/shell-source.ts` opens by stating that **every extractor refuses rather than returning a region
+it is not sure of**. Direct probes showed that was aspiration, not behaviour:
+
+| Input | Committed answer | Why it is dangerous |
+| --- | --- | --- |
+| `words('cmd "unterminated')` | `["cmd","unterminated"]` | Reads like a correct two-word command. The rest of the line is unreadable, and a gate asking whether it contains `chmod` is told "no". |
+| `words("cmd 'unterminated")` | `["cmd","unterminated"]` | Same. |
+| `commandSubstitutions('x="$(node foo')` | `[]` | "There is no substitution here" — about a line whose whole content is one. |
+| `callSites` on a file ending in `\` | a normal call, minus the next line's arguments | An argument count is the entire proof that no key travels on a command line. |
+| `functionBody` with the function defined **twice** | the **first** definition, silently | **Bash runs the last one.** A gate could read a clean definition and approve a script that chmods. |
+
+Every one of these fails **open**: it makes a forbidden call invisible. The reader now validates through a
+single door, `logicalLines`, which refuses unterminated quotes, unterminated command substitutions, a dangling
+continuation at end of file, an unterminated heredoc, and heredoc bodies whose expansions it does not model —
+each naming the script and the line.
+
+**Validation happens on the logical line, and that detail is load-bearing.** The most important construct in
+this corpus is quote-unbalanced when read one physical line at a time:
+
+```sh
+outcome="$(node "${CUSTODY_HELPER}" "${SECRETS_DIR}/${name}" --generate \
+  "${CUSTODY_RUNTIME_UID}" "${CUSTODY_RUNTIME_GID}")" || {
+```
+
+Line one opens a double quote it does not close; line two closes one it never opened. A per-physical-line rule
+would reject the exact invocation the custody gates exist to count. Joining continuations first is what makes
+the rule both strict and correct.
+
+**Heredoc bodies are skipped rather than parsed**, which is correct rather than convenient: five shipped
+scripts carry one, and `unraid-catalog-maintenance.sh` has an apostrophe in ordinary prose ("the underlying
+command's") inside its usage banner. Refusing that would be refusing a comment. An *unquoted* heredoc really
+expands `$( )`, so one containing a substitution is refused instead of skipped past.
+
+### The third defect: the committed reader was truncating the custody helper
+
+Fixing the above changed the extracted helper body from 17 lines to 23, which is not a formatting difference.
+The committed extractor matched braces on **physical** lines. On the invocation's second physical line —
+`"${...}" "${...}")" || {` — the stray `"` (which pairs with one on the line before) put the scanner into a
+quoted state, so the block-opening `{` at the end was treated as quoted text and never counted. The matching
+`}` six lines later took the depth to zero, and the "function body" ended at `exit 1`:
+
+| | Committed | Corrected |
+| --- | --- | --- |
+| Body length | 17 lines | 23 lines |
+| Last line | `exit 1` | `esac` |
+| Contains the `case`/`kept` tail | no | yes |
+
+The custody gate passed only because the six lines it never read happened to contain no `chmod`. **A `chmod`
+there would have been invisible** — the same class of silent wrong region this module was written to
+eliminate, still present inside the module itself. `test/custody-runtime-closure.ts` now asserts the body ends
+at `esac`, so a regression to physical-line matching fails on the region's end rather than on its luck.
+
+### The rest of the reader, found by three further rounds of hostile review
+
+Each round probed the reader directly and each found more of the same defect. Every one is recorded here
+because the pattern matters more than any single instance: **a region that ends too early, and a `!includes`
+that reads the shortfall as absence.**
+
+| Round | Input | Answer before | Now |
+| --- | --- | --- | --- |
+| 2 | an arm containing a **quoted** `;;` | the arm ended at the string; a later `chmod` was outside it | ends at the real terminator |
+| 2 | a block containing a **quoted** `esac` | the block was truncated; a later arm could not be found | ends at the real `esac` |
+| 2 | `echo "she said \"hi\" # …"` | `withoutComment` closed at the escaped quote, read `#` as a comment and **truncated the line** | the whole line survives |
+| 2 | a heredoc opened on a **continuation** line | the operator was invisible; the body was returned as executable code | the body is data |
+| 3 | `echo x;chmod …`, `true&&chmod`, `false\|\|chmod`, `printf x\|chmod`, `(chmod …)` | **zero** `chmod` call sites — separators only counted when whitespace made them standalone | all found |
+| 3 | `cat <<'EOF' ; chmod …` | the tail after the delimiter word was **dropped**; zero call sites | tail preserved |
+| 3 | a **space**-indented delimiter closing `<<'EOF'` | `.trim()` matched it, ending the body early and leaking data as code | exact match; `<<-` strips leading tabs only |
+| 3f | `echo x&chmod`, `VAR=x chmod`, `if/elif/while/until chmod`, `! chmod`, `sudo/env/xargs/time/exec/command chmod` | **zero** for fifteen shapes — `&` was emitted but never accepted, and assignment/control/wrapper prefixes were not command positions | all fifteen found |
+| final | an arm containing a **nested `case`** | the arm ended at the inner case's first `;;`; a later `chmod` was outside it | depth-tracked; the arm spans the nested case |
+
+Two structural consequences:
+
+- **One lexer, not five.** The module began with four separate quote walkers that disagreed with each other —
+  `openQuoteAt` honoured a backslash inside double quotes; `withoutComment`, `words` and `braceDelta` did not.
+  Whether a malformed input then failed open or closed was luck. There is now a single `lex()` that every
+  other function asks, and a `maskQuoted` view so `;;`, `esac` and `$(` are located in **code** rather than in
+  text.
+- **A definition is not a call.** Making `(` and `)` tokens (needed for the subshell case) put
+  `write_custody_secret() {` in command position, which briefly made the shipped script look as though it
+  invoked the custody helper twice. `name ( )` is now recognised as a definition.
+
+The breadth was checked for false positives as well as false negatives: a command named inside a string, one
+that is commented out, one that merely shares a prefix, and one passed as a bare argument all still count as
+zero.
+
+### Gap 2 — the EXIT fix made SIGINT and SIGTERM resume the script
+
+Phase 329 fixed a successful `bootstrap` exiting 1 by ending the trap handler with `return 0`. That handler
+was installed for `EXIT INT TERM`, and **a signal handler that returns is not a refusal — it is a
+resumption.** Bash ran it and carried on at the next statement.
+
+Measured on the committed script, with a real `SIGTERM` delivered by a `PATH` shim at a deterministic point:
+
+| | Committed | Corrected |
+| --- | --- | --- |
+| TERM after the rename | **exit 0**, marker present, **prints "custody mode: bootstrap"** | exit 143, marker present, no success text |
+| TERM before the rename | exit 1 (cleanup had deleted the temp `mv` still needed) | exit 143, no marker, no temp, no success text |
+
+An operator pressing Ctrl-C, or automation stopping a switch mid-flight, got the switch **and was told it had
+succeeded**. `set -euo pipefail` does not help: nothing failed.
+
+The two jobs are now separate, because they were never the same job:
+
+- **`remove_temp`** — one responsibility: the private temporary is gone. Reports whether it managed it.
+- **`on_exit`** (EXIT only) — the status is already decided. Captures `$?` **first**, cleans up, and re-exits
+  with the status the script arrived with, so it can never overwrite an earlier failure with a later success.
+  The one thing it may change is `0`: a cleanup that failed after an otherwise successful run has left a
+  private temporary in the project directory, and that must not disappear into an exit 0.
+- **`on_signal`** (INT, TERM) — the status is *not* decided; termination was **requested** and must happen. It
+  disarms all three traps so nothing recurses or double-cleans, removes the temporary, and **re-raises the
+  same signal against itself with the default disposition**, so the script dies of the signal it was sent and
+  the caller sees the conventional 128+N. The `exit` after the re-raise is unreachable in practice and exists
+  so that a host where the re-raise somehow does not kill the shell still cannot fall through into publishing.
+
+**The handler reads the filesystem, not a flag.** A `PUBLISHED=1` set on the line after `mv` has a real
+window: a signal delivered between the rename returning and the assignment running would report "not
+published" about a marker that is on disk. The marker itself has no such window, so the handler looks at it —
+and says either "terminated before any custody marker was written" or "terminated; a custody marker IS
+present … run with `status` to see which mode is in force."
+
+Root-only idempotence and a successful `bootstrap` exiting 0 are unchanged and re-asserted.
+
+### How the signal is delivered deterministically
+
+Signalling from outside and hoping to land between "the temporary exists" and "the rename happens" is a race,
+and a racy test of a signal handler is worse than none. A shim on `PATH` standing in for a command the arm
+calls *inside* that window fires at exactly one point: bash runs a pending trap when the current foreground
+command completes, so the trap runs after the shim exits and before the next statement. `chmod` marks the
+before-publication point; an `mv` shim that performs the real rename and then signals marks the after.
+
+Exit status is read through `signalOf`, which accepts all three encodings one fact arrives in — Node's
+`signal: 'SIGTERM'`, a shell's `128+N`, and Git-Bash/MSYS's raw wait status `N << 8` (3840). Asserting one of
+them would make the suite pass or fail on which shell the host provided, which is the class of accident this
+whole tranche exists to remove.
 
 ## Residual risks
 

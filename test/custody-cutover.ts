@@ -754,11 +754,24 @@ await test('no compose run can fetch an image, and the mode marker is never writ
   // learns why this is the way it is; what must be gone is a redirection into a predictable name.
   const executable = shellText(shellCode(script).lines);
   assert(!/>\s*"\$\{MARKER\}\.tmp/.test(executable), 'nothing is written through a predictable temporary name');
-  assert(!/\$\$/.test(executable), 'and no process id names a file');
+  // A PROCESS ID MAY BE SIGNALLED; IT MAY NOT NAME A FILE. Phase 329 correction 1 gave this script a signal
+  // handler that re-raises the signal it received against its own shell — `kill -s "$1" "$$"` — which is the
+  // one legitimate use of `$$` here and the reason a blanket ban on the characters is the wrong rule. What
+  // was dangerous was `> "${MARKER}.tmp.$$"`: a PREDICTABLE NAME, written through a redirection that follows
+  // a symbolic link. So every occurrence must be an argument of `kill`.
+  for (const line of shellCode(script).lines) {
+    if (!line.includes('$$')) continue;
+    assertEq(line.trim().split(/\s+/)[0], 'kill',
+      `a process id may only be signalled, never used to name a file: ${line.trim()}`);
+  }
   const whole = shellText(script.lines);
   assert(/mktemp .*XXXXXXXXXX/.test(whole), 'it creates an unpredictable temp with mktemp');
   assert(whole.includes('umask 077'), 'private from the instant it exists');
-  assert(/trap cleanup EXIT/.test(whole), 'and removed on every exit path');
+  // REMOVED ON EVERY EXIT PATH, AND THE SIGNAL PATHS ARE THEIR OWN. Phase 329 correction 1 split these:
+  // one handler installed for `EXIT INT TERM` and ending in `return 0` made SIGINT and SIGTERM RESUME the
+  // script rather than stop it, so a termination request published the marker anyway and exited 0.
+  assert(/trap on_exit EXIT/.test(whole), 'and removed on every exit path');
+  assert(/trap 'on_signal TERM 15' TERM/.test(whole), 'with termination handled separately, not as an exit');
   assert(/mv -f "\$\{TEMP\}" "\$\{MARKER\}"/.test(whole), 'and published by an atomic rename');
 
   // ROOT-ONLY REMOVES THE MARKER AND NEVER WRITES ONE FIRST: the steady state is defined by its absence.

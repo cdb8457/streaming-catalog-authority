@@ -29,14 +29,14 @@ fixed here.
 | File | Change |
 | --- | --- |
 | `deploy/local-runtime-setup.ps1` | **Defect fix.** Stops creating `custodian_root_key` through the generic secret writer + best-effort ACL. New `Deny-CustodySecret` refuses that one secret in the POSIX helper's own words, keeps the rest of the Windows setup working, and reports a pre-existing key as `UNVERIFIED` rather than deleting or blessing it. |
-| `deploy/unraid-custody-mode.sh` | **Defect fix.** `cleanup()` now `return 0`s. It ended in a test that is false on the success path, so the `EXIT` trap returned 1 and a **successful `bootstrap` exited 1**. |
+| `deploy/unraid-custody-mode.sh` | **Two defect fixes.** (1) `cleanup()` ended in a test that is false on the success path, so the `EXIT` trap returned 1 and a **successful `bootstrap` exited 1**. (2) *Correction 1:* the `return 0` that fixed it made the same handler, installed for `INT`/`TERM`, **resume** the script — a TERM after the rename exited **0** and claimed success. EXIT cleanup and signal disposition are now separate; a signal is re-raised with the default disposition. |
 
 ### Tests
 
 | File | Change |
 | --- | --- |
-| `test/helpers/shell-source.ts` | **New.** Structural reader for the shipped shell scripts: brace-matched function bodies, `case` blocks and arms, word-split call sites across `\` continuations and into `$( … )`, quote-aware comment stripping. Every extractor **refuses rather than returning a region it is unsure of**. |
-| `test/custody-runtime-closure.ts` | **New**, 22 checks. The phase329 suite. |
+| `test/helpers/shell-source.ts` | **New.** Structural reader for the shipped shell scripts: brace-matched function bodies, `case` blocks and arms, word-split call sites across `\` continuations and into `$( … )`, quote-aware comment stripping. Every extractor **refuses rather than returning a region it is unsure of**. *Correction 1:* all extraction now goes through one validating door, `logicalLines`, which refuses unterminated quotes and substitutions, dangling final continuations, duplicate function definitions, unterminated heredocs and expanding heredoc bodies — and validates on the **logical** line, which also fixed a silent truncation of the custody helper. |
+| `test/custody-runtime-closure.ts` | **New**, 36 checks. The phase329 suite. |
 | `test/kek-correction-gates.ts` | The custody-helper gate is brace-matched, plus a contrast assertion that `write_secret_if_absent` *does* chmod — so an empty region cannot pass. |
 | `test/custody-transition.ts` | The command-line gate counts **arguments** instead of asserting an LF terminator, and now also counts the helper's real argv and rejects value-producing substitutions in it. |
 | `test/custody-cutover.ts` | The overlay gate **parses the YAML**; the marker gate uses `caseArm(caseBlock(src, 'ACTION'), …)` plus a contrast assertion on the `bootstrap` arm. |
@@ -79,6 +79,84 @@ from comments:
 No other documented command, flag, output shape or exit code changed, other than
 `unraid-custody-mode.sh bootstrap` now exiting 0 on success — which is the defect being fixed, and which no
 document had described as anything else.
+
+## Correction 1 — two fail-closed gaps found by hostile review, and a third defect underneath
+
+An independent review probed the committed candidate `43f854a` directly. Both findings were real and are
+fixed; tracing the first turned up a third defect nobody had reported.
+
+### Gap 1 — "uncertainty is a refusal" was aspiration, not behaviour
+
+`test/helpers/shell-source.ts` opens by promising that every extractor refuses rather than returning a region
+it is unsure of. Five malformed inputs were being **silently accepted**, and every one of them fails **open** —
+it makes a forbidden call invisible:
+
+| Input | Committed answer | Now |
+| --- | --- | --- |
+| `words('cmd "unterminated')` | `["cmd","unterminated"]` | refused |
+| `words("cmd 'unterminated")` | `["cmd","unterminated"]` | refused |
+| `commandSubstitutions('x="$(node foo')` | `[]` — "no command here" | refused |
+| `callSites` on a file ending in `\` | a call missing the next line's arguments | refused |
+| `functionBody` with the function defined twice | the **first** definition; **bash runs the last** | refused, naming both lines |
+
+All validation now goes through one door, `logicalLines`, on the **logical** line rather than the physical
+one — which matters because the shipped custody invocation is itself quote-unbalanced per physical line (it
+spans a `\` continuation). Heredoc bodies are skipped as data; an unterminated one, or an unquoted one
+containing a live `$( )`, is refused.
+
+Three further rounds of hostile review probed the reader again, and each found more of the same defect. All
+are fixed, and each has a direct regression:
+
+| Round | Input | Answer before | Now |
+| --- | --- | --- | --- |
+| 2 | an arm containing a **quoted** `;;`; a block containing a **quoted** `esac` | region truncated; a later `chmod` fell outside it | ends at the real terminator |
+| 2 | `echo "she said \"hi\" # …"` | `withoutComment` **truncated the line** at a false comment | the whole line survives |
+| 2 | a heredoc opened on a **continuation** line | body returned as executable code | body is data |
+| 3 | `echo x;chmod`, `true&&chmod`, `false\|\|chmod`, `printf x\|chmod`, `(chmod)` | **zero** call sites | all found |
+| 3 | `cat <<'EOF' ; chmod …` | tail after the delimiter word **dropped** | tail preserved |
+| 3 | a **space**-indented heredoc delimiter | `.trim()` closed the body early, leaking data as code | exact match; `<<-` strips tabs only |
+| 3f | `echo x&chmod`, `VAR=x chmod`, `if/while/until/! chmod`, `sudo/env/xargs chmod` | **zero** for fifteen shapes | all fifteen found |
+| final | an arm containing a **nested `case`** | arm ended at the inner case's first `;;` | depth-tracked |
+
+The module now has **one** lexer rather than five that disagreed, and `;;`/`esac`/`$(` are located in code
+rather than in text. False positives were checked too: a command named inside a string, commented out,
+sharing a prefix, or passed as a bare argument all still count as zero.
+
+### The third defect: the committed reader truncated the custody helper
+
+The extracted helper body went from 17 lines to 23 — not a formatting difference. Matching braces on physical
+lines, a stray `"` on the invocation's continuation line hid the block-opening `{`, and the body ended six
+lines early at `exit 1`, with the whole `case … esac` tail outside the region the custody gate searched:
+
+| | Committed | Corrected |
+| --- | --- | --- |
+| Body length | 17 lines | 23 lines |
+| Last line | `exit 1` | `esac` |
+| Contains the `case`/`kept` tail | no | yes |
+
+The gate passed only because those six lines happened to contain no `chmod`. **A `chmod` there would have been
+invisible** — the same silent-wrong-region class this module exists to eliminate, still inside the module.
+
+### Gap 2 — the EXIT fix made SIGINT and SIGTERM *resume* the script
+
+Phase 329 fixed a successful `bootstrap` exiting 1 by ending the trap handler with `return 0`. That handler
+was installed for `EXIT INT TERM`, and a signal handler that returns is a **resumption**, not a refusal.
+Measured on the committed script with a real `SIGTERM` at a deterministic point:
+
+| | Committed | Corrected |
+| --- | --- | --- |
+| TERM **after** the rename | **exit 0**, marker present, **prints "custody mode: bootstrap"** | exit 143, marker present, no success text |
+| TERM **before** the rename | exit 1 (cleanup had deleted the temp `mv` still needed) | exit 143, no marker, no temp, no success text |
+
+An operator pressing Ctrl-C, or automation stopping a switch mid-flight, got the switch **and was told it
+succeeded**. `set -euo pipefail` does not help: nothing failed.
+
+`remove_temp`, `on_exit` (EXIT only — captures `$?` first, never overwrites an earlier failure, and refuses to
+let a cleanup failure vanish into an exit 0) and `on_signal` (INT/TERM — disarms, cleans, and re-raises the
+signal with the default disposition) are now three separate things. The handler reads the **filesystem** for
+whether a marker exists rather than a `PUBLISHED=1` flag, which would have a real window between `mv`
+returning and the assignment running. Root-only idempotence and a successful `bootstrap` exiting 0 are
+unchanged and re-asserted.
 
 ## The two defects, stated plainly
 
@@ -158,6 +236,22 @@ this tranche.
 **The offline group has no inherited exceptions.** The previous baseline was 287 selected / 284 passed /
 3 failed, with the three failures carried forward through four tranches. It is now clean.
 
+**Correction 1 re-ran everything.** `npm run typecheck` 0, `npm run test:inventory` 0, and the full offline
+group **291/291** on the final sweep. Named suites at the end of correction 1: `custody-runtime-closure`
+**36/36**, `kek-correction-gates` **38/38**, `custody-cutover` **24/24**, `custody-transition` **15/15**,
+`promotion-chain-operator-ui` **19/19**, `complete-backup` **49/49**, `backup-components` **41/41**,
+`release-readiness` **44/44**.
+
+**A second intermittent, characterised rather than waved away.** One correction-1 sweep failed
+`custodian-storage-ipc-gates.ts` on "a directory swapped after the custodian was built is refused, not
+walked". That check renames a directory aside, creates a new one at the same path, and expects the custodian
+to notice the swap by comparing `dev`/`ino` (`src/core/crypto/file-custodian.ts`). **NTFS recycles file
+indices**: a freshly created directory can be handed the index of one just renamed away, and under a
+291-suite parallel run that collision is occasionally realised — at which point the replacement is genuinely
+undetectable by identity and nothing is refused. The suite passed **36/36 on five consecutive individual
+runs**, imports nothing this tranche touched, and the sweeps before and after were clean. Recorded as an
+environment-dependent identity collision, not as a defect in this work.
+
 **One intermittent, reported rather than hidden.** The group was run five times. Four runs were
 291/291. One run failed a single check in `external-snapshot-produce.ts` —
 "two no-overwrite publishers cannot both succeed, and the winner is complete", at the *deliberate overwrite*
@@ -177,7 +271,7 @@ It is recorded as a flake on this evidence, not assumed to be one:
 
 | Suite | Result |
 | --- | --- |
-| `test/custody-runtime-closure.ts` (new) | **22 passed, 0 failed** |
+| `test/custody-runtime-closure.ts` (new) | **36 passed, 0 failed** (22 at `43f854a`; correction 1 added 14) |
 | `test/promotion-chain-operator-ui.ts` | **19 passed, 0 failed** — includes the PowerShell setup **executed** on this host |
 | `test/release-readiness.ts` | **44 passed, 0 failed** — the mutation test removes each required suite command in turn and requires a BLOCK; it now covers `test:phase329-local` |
 | `test/deploy.ts`, `test/o4-o5-runtime-acceptance.ts`, `test/consumer-release-image.ts`, `test/arcane-install.ts`, `test/managed-custody-lifecycle.ts`, `test/custodian-contract.ts`, `test/backup-inspect.ts`, `test/complete-backup.ts` | all **exit 0** within the offline group |
