@@ -1536,7 +1536,8 @@ test('--abandon does NOT clear the journal while a swap it recorded is still out
   // SO THE PROJECT STILL REFUSES A FRESH RESTORE.
   refuses(() => runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
     { kind: 'run', confirm: plan.digest, acceptDataLoss: null }),
-  'part way through a restore', 'and a fresh restore over a half-unwound installation is refused');
+  'ONLY COMMAND THAT MAY CONTINUE HERE IS --abandon',
+  'and a fresh restore over a half-unwound installation is refused, naming the one command that may run');
   rmSync(join(root, RESTORE_JOURNAL_NAME));
 });
 
@@ -3103,7 +3104,7 @@ test('an abandon that stalls part way keeps the project ABANDONING: no resume ma
     'being ABANDONED, not restored', 'a resume refuses over an abandon');
   refuses(() => runCompleteRestore(request(root, 'set-1'), watching,
     { kind: 'run', confirm: plan.digest, acceptDataLoss: null }),
-  'part way through a restore', 'and so does a fresh run');
+  'ONLY COMMAND THAT MAY CONTINUE HERE IS --abandon', 'and so does a fresh run');
   assertEq(renames, 0, 'NEITHER PERFORMED A SINGLE RENAME');
   assertEq(watcher.ledger.all().length, 0, 'nor issued a single command');
   assertEq(readFileSync(join(root, 'secrets', 'custodian_kek'), 'utf8'), before,
@@ -3501,6 +3502,82 @@ test('a claim recorded but never created sends the run to a fresh one, adopting 
   assert(secondReport.safetySet !== null && secondReport.safetySet.startsWith('.pre-restore-claim-'),
     'a fresh run claims its own place');
   assert(existsSync(join(root, 'backups', orphan)), 'and an orphaned claim is left alone, not reused');
+});
+
+
+test('an abandoning journal refuses run and resume with ZERO effects, even when the set has been moved away', () => {
+  // THE DEFECT THIS PINS. The direction check sat AFTER the request was resolved — which verifies the backup
+  // set, opens its manifest and runs the occupancy probe against Docker. "Refuse with zero effects" was
+  // therefore not true, and an operator whose set had been moved got a MISSING-SET error instead of being
+  // told the one thing that matters: somebody asked for this restore to be put back.
+  const root = makeProject('abandoning-zero-effects');
+  const setDir = takeSet(root, 'set-1');
+  // BOTH targets must differ from the set, so both are really swapped and the abandon has two to unwind.
+  writeFileSync(join(root, 'secrets', 'custodian_kek'), 'a-later-value\n', 'utf8');
+  writeFileSync(join(root, 'promotion-records', 'record-later.json'), '{"later":1}\n', 'utf8');
+  const { plan } = planFor(request(root, 'set-1'));
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+    failWhen: [{ contains: 'ops:collections -- history', status: 1 }],
+  });
+  runCompleteRestore(request(root, 'set-1'), depsFor(world), { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+
+  // Somebody asks to abandon, and it stalls: the direction is recorded.
+  const journal = readRestoreJournal(root)!;
+  const records = journal.swaps.find((swap) => swap.component === 'promotion-records');
+  if (records?.replaced != null) rmSync(join(root, records.replaced), { recursive: true, force: true });
+  const stalled = abandonRestore(root);
+  assertEq(stalled.ok, false, 'the abandon stalled');
+  assertEq(readRestoreJournal(root)!.phase, 'abandoning', 'and the direction is on disk');
+
+  // SPIES ON EVERY EFFECT THIS COMMAND CAN PERFORM. Built while the set is still readable, so that the
+  // refusal below is the command's and not the harness's.
+  const spied = worldFor(setDir);
+
+  // AND THE SET IS MOVED AWAY, which is what an operator tidying up during an incident does.
+  renameSync(join(root, 'backups', 'set-1'), join(root, 'backups', 'set-1-moved'));
+
+  let commands = 0;
+  let renames = 0;
+  const spying = {
+    ...depsFor(spied),
+    runner: (command: Parameters<typeof world.runner>[0]) => { commands += 1; return world.runner(command); },
+    rename: (from: string, to: string): void => { renames += 1; renameSync(from, to); },
+    fileRunner: (command: Parameters<typeof world.inputRunner>[0], source: string) => {
+      commands += 1;
+      return world.inputRunner(command, source);
+    },
+    backupFileRunner: (command: Parameters<typeof world.outputRunner>[0], destination: string) => {
+      commands += 1;
+      return world.outputRunner(command, destination);
+    },
+  };
+
+  for (const mode of [
+    { kind: 'run' as const, confirm: plan.digest, acceptDataLoss: null },
+    { kind: 'resume' as const, confirm: plan.digest },
+  ]) {
+    let message = '';
+    try {
+      runCompleteRestore(request(root, 'set-1'), spying, mode);
+      throw new Error(`${mode.kind} was not refused`);
+    } catch (err) { message = (err as Error).message; }
+    // THE REFUSAL NAMES THE ONE COMMAND THAT MAY CONTINUE — not a missing set, not a daemon.
+    assert(message.includes('ONLY COMMAND THAT MAY CONTINUE HERE IS --abandon'),
+      `${mode.kind}: the refusal names --abandon, got: ${message.slice(0, 160)}`);
+    assertEq(message.includes('does not verify') || message.includes('not there'), false,
+      `${mode.kind}: and it is NOT a complaint about the moved set`);
+  }
+  assertEq(commands, 0, 'NOT ONE COMMAND WAS ISSUED — no probe, no docker, nothing');
+  assertEq(renames, 0, 'and not one rename');
+
+  // ABANDON STILL CONTINUES, from journal-bound targets, with the set nowhere to be found.
+  mkdirSync(join(root, records!.replaced!), { recursive: true });
+  writeFileSync(join(root, records!.replaced!, 'r.json'), '{}\n', 'utf8');
+  const finished = abandonRestore(root);
+  assertEq(finished.ok, true, 'the abandon finished without the set being present at all');
+  assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and cleared the journal');
 });
 
 // ---------------------------------------------------------------------------------------------------------

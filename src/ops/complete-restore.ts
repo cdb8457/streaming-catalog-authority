@@ -1271,6 +1271,25 @@ export function runCompleteRestore(
   const probe = composeOccupancyProbe(deps.runner, deps.ledger);
   const existing = readRestoreJournal(resolveMaintenanceRoot(request.projectRoot, 'project root'));
 
+  // ---- THE DIRECTION IS CHECKED BEFORE ANYTHING IS TOUCHED -----------------------------------------
+  //
+  // THE DEFECT THIS CLOSES. This check used to sit AFTER the request was resolved — which verifies the backup
+  // set, opens its manifest and runs the occupancy probe against Docker. "A run and a resume refuse with zero
+  // effects" was therefore not true: they read the set, started a probe, and could fail on a MOVED OR MISSING
+  // SET or an unreachable daemon instead of telling the operator the one thing that matters, which is that
+  // somebody asked for this restore to be put back and only `--abandon` may continue it.
+  //
+  // It is now the first thing that happens after the journal has been read and validated: before the request
+  // is resolved, before the set is opened, before Docker is asked anything, before a plan exists and before a
+  // confirmation is compared.
+  if (existing !== null && existing.phase === 'abandoning') {
+    throw new MaintenanceRefused(
+      'this project is being ABANDONED, not restored: an operator asked for the interrupted restore to be put '
+      + 'back, and that unwind is not finished. Continuing the restore now would place components back over '
+      + 'directories somebody has just asked to have returned to what they were. THE ONLY COMMAND THAT MAY '
+      + 'CONTINUE HERE IS --abandon. Nothing was read, nothing was probed and nothing was changed.');
+  }
+
   // A RESUME USES THE JOURNAL'S OWN REQUEST, NOT THE COMMAND LINE. The operation was decided when it was
   // planned; letting a later invocation re-supply the paths is how a resume swaps a directory the original
   // run never touched.
@@ -1336,16 +1355,6 @@ export function runCompleteRestore(
 
   const suffix = existing?.suffix ?? (deps.suffix ?? (() => operationSuffix(plan.digest)))();
   let safetySetClaim: SafetySetClaim | null = existing?.safetySetClaim ?? null;
-  // A RESTORE MAY NOT PROCEED OVER AN ABANDON. The direction is a recorded decision, not an inference from
-  // step states an abandon happens to leave behind — which is exactly how a resume used to rebuild a restore
-  // on top of an unwind somebody had asked for.
-  if (existing !== null && existing.phase === 'abandoning') {
-    throw new MaintenanceRefused(
-      'this project is being ABANDONED, not restored: an operator asked for the interrupted restore to be put '
-      + 'back, and that unwind is not finished. Continuing the restore now would place components back over '
-      + 'directories somebody has just asked to have returned to what they were. Finish it with --abandon. '
-      + 'Nothing was changed.');
-  }
   if (!RESTORE_SUFFIX_RE.test(suffix)) {
     throw new MaintenanceRefused('this run produced a staging suffix that is not the shape this command creates');
   }
