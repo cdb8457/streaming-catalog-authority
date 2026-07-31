@@ -17,6 +17,7 @@ import {
   type CompleteBackupOutcome,
 } from './complete-backup.js';
 import { verifyBackupSet, type BackupVerificationReport } from './backup-set-verification.js';
+import { SAFETY_CLAIM_MARKER_FILE, SAFETY_CLAIM_MARKER_ID } from './maintenance-identity.js';
 import { classifyDoctor, parseDoctorJson } from './doctor-monitor.js';
 import { readCustodyProof, type CustodyProofReport } from './custody-proof.js';
 import { readSchemaVersions } from './upgrade-rehearsal.js';
@@ -186,8 +187,17 @@ export function operationSuffix(planDigest: string): string {
  * claim that was never created, or a directory that turns out to belong to somebody else, sends the run to a
  * fresh nonce rather than to an adoption.
  */
-/** The file inside a claim directory that proves whose the directory is. Never followed as a link. */
-export const SAFETY_CLAIM_MARKER_NAME = 'catalog-restore-claim.json';
+/**
+ * The file inside a claim directory that proves whose the directory is. Never followed as a link.
+ *
+ * THE NAME AND THE MARKER ID COME FROM `maintenance-identity.ts` RATHER THAN FROM A LITERAL HERE. Phase 313
+ * added a command that removes these directories, which means two modules now have to agree about what a
+ * claim IS; a second copy of either string would be a second definition of that, and the command that
+ * creates claims and the command that destroys them disagreeing about it is the failure that centralisation
+ * exists to prevent. Nothing else about this file changed: the checks below and their wording are the ones
+ * Phases 297-304 shipped.
+ */
+export const SAFETY_CLAIM_MARKER_NAME = SAFETY_CLAIM_MARKER_FILE;
 
 /**
  * The proof that the directory at a recorded claim path is STILL the one this operation created.
@@ -203,7 +213,7 @@ export const SAFETY_CLAIM_MARKER_NAME = 'catalog-restore-claim.json';
  * claim at all. `created: true` still means "we made it"; the marker means "and this is still it".
  */
 export interface SafetyClaimMarker {
-  readonly marker: 'catalog-authority.restore-safety-claim';
+  readonly marker: typeof SAFETY_CLAIM_MARKER_ID;
   readonly version: 1;
   readonly journalVersion: typeof RESTORE_JOURNAL_VERSION;
   readonly planDigest: string;
@@ -252,7 +262,7 @@ export function proveClaimOwnership(
     return { kind: 'foreign', why: 'the ownership marker at the claimed path is not one this build wrote' };
   }
   const doc = parsed as Partial<SafetyClaimMarker>;
-  if (doc.marker !== 'catalog-authority.restore-safety-claim' || doc.version !== 1
+  if (doc.marker !== SAFETY_CLAIM_MARKER_ID || doc.version !== 1
     || doc.journalVersion !== RESTORE_JOURNAL_VERSION) {
     return { kind: 'foreign', why: 'the ownership marker at the claimed path is not one this build wrote' };
   }
@@ -265,7 +275,7 @@ export function proveClaimOwnership(
 /** Write the ownership marker into a claim directory this call has just created, and nowhere else. */
 export function writeClaimMarker(claimDir: string, planDigest: string, suffix: string, nonce: string): void {
   writePrivateFile(join(claimDir, SAFETY_CLAIM_MARKER_NAME), `${JSON.stringify({
-    marker: 'catalog-authority.restore-safety-claim',
+    marker: SAFETY_CLAIM_MARKER_ID,
     version: 1,
     journalVersion: RESTORE_JOURNAL_VERSION,
     planDigest,

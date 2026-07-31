@@ -8,6 +8,7 @@ import {
 } from './complete-backup.js';
 import { verifyBackupSet } from './backup-set-verification.js';
 import { RESTORE_JOURNAL_NAME } from './complete-restore.js';
+import { manifestShape, proveBackupSetIdentity } from './maintenance-identity.js';
 import {
   MAINTENANCE_NAME_RE,
   MaintenanceRefused,
@@ -273,25 +274,14 @@ export function classifyEntry(destinationDir: string, name: string): InventoryEn
   };
 }
 
-function shapeOfManifest(name: string, manifest: BackupManifest): {
-  readonly name: string; readonly takenAt: string | null; readonly takenAtMs: number | null;
-  readonly schemaVersion: number | null; readonly bytes: number; readonly entries: number;
-} {
-  const instant = instantOf(manifest.takenAt);
-  const declared = manifest.components.filter((component) => component.present);
-  return {
-    name,
-    takenAt: instant === null ? null : instant.takenAt,
-    takenAtMs: instant === null ? null : instant.takenAtMs,
-    schemaVersion: typeof manifest.schemaVersion === 'number' ? manifest.schemaVersion : null,
-    bytes: declared.reduce((total, component) => total + numberOr(component.bytes), 0),
-    entries: declared.reduce((total, component) => total + numberOr(component.entries), 0),
-  };
-}
-
-function numberOr(value: unknown): number {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
-}
+/**
+ * What a manifest says about the shape of a set.
+ *
+ * MOVED TO `maintenance-identity.ts` IN PHASE 313 and imported back under its old name. A second command now
+ * reasons about the same manifest fields for the same purpose, and two copies of "what a set declares itself
+ * to be" is how the two would drift.
+ */
+const shapeOfManifest = manifestShape;
 
 // -----------------------------------------------------------------------------------------------------------
 // Phase 308 — the plan, and the digest that binds the list somebody read
@@ -742,8 +732,15 @@ function validatePolicy(value: unknown, refuse: (why: string) => never): Retenti
   return policy;
 }
 
-/** Every field of an inventory row, checked before anything reads any of them. */
-function validateInventoryEntry(value: unknown, refuse: (why: string) => never): InventoryEntry {
+/**
+ * Every field of an inventory row, checked before anything reads any of them.
+ *
+ * EXPORTED IN PHASE 313. `ops:safety-set-lifecycle` persists the same destination inventory in its own
+ * journal for the same reason — its evaluator has to be RE-RUN over it rather than the document re-hashed —
+ * and a second validator for the same rows would be a second place for a field to stop being checked.
+ * `refuse` is the caller's, so each command's refusals stay its own.
+ */
+export function validateInventoryEntry(value: unknown, refuse: (why: string) => never): InventoryEntry {
   if (!isRecord(value)) return refuse('one of its inventory rows is not a record');
   if (typeof value.name !== 'string' || value.name === '' || value.name.length > 128) {
     return refuse('one of its inventory rows has no usable name');
@@ -1012,58 +1009,20 @@ function requireQuarantineDirectory(
  * VERIFIED set fails it too, which is where that forgery finally dies.
  */
 export function proveSetIsPlanned(path: string, row: InventoryEntry): void {
-  if (row.setDigest === '') {
-    throw new MaintenanceRefused('this operation recorded no identity for this set, so nothing was removed for it');
-  }
-  let stats;
-  try {
-    stats = lstatSync(path);
-  } catch {
-    throw new MaintenanceRefused('this set could not be examined, so nothing was removed for it');
-  }
-  if (stats.isSymbolicLink()) {
-    throw new MaintenanceRefused('this set is a symbolic link, and this command will not remove through one');
-  }
-  if (!stats.isDirectory()) throw new MaintenanceRefused('this set is not a directory, so it was left alone');
-  let report;
-  try {
-    report = verifyBackupSet(path);
-  } catch {
-    throw new MaintenanceRefused('this set could not be verified against what was planned, so it was left alone');
-  }
-  if (report.setDigest !== row.setDigest) {
-    throw new MaintenanceRefused(
-      'this set is not the one this operation planned to remove — its contents do not match the identity '
-      + 'recorded when the plan was made. Nothing was removed for it.');
-  }
-  // THE VERDICT AND ITS FINDINGS, NOT ONLY THE DIGEST.
-  //
-  // `setDigest` is over what the MANIFEST declares — the set name, the schema version and each component's
-  // recorded digest — so a component whose BYTES were changed after the set was taken does not move it. What
-  // moves is the verification: a tampered component produces `COMPONENT_CHANGED`. Comparing the verdict and
-  // the exact finding set closes that, including for a set that was already `UNVERIFIED` when it was planned
-  // and has since been mutated in a different way.
-  const findings = [...new Set(report.problems.map((problem) => problem.finding))].sort();
-  if (report.ok !== (row.setClass === 'VERIFIED')
-    || JSON.stringify(findings) !== JSON.stringify([...row.findings])) {
-    throw new MaintenanceRefused(
-      'this set no longer verifies the way it did when the plan was made. Nothing was removed for it.');
-  }
-  let manifest: BackupManifest;
-  try {
-    manifest = readBackupManifest(path);
-  } catch {
-    throw new MaintenanceRefused('this set\'s manifest could not be read again, so nothing was removed for it');
-  }
-  // AND THE MANIFEST'S OWN FIELDS. `setDigest` deliberately does not cover `takenAt`, so two sets taken from
-  // an unchanged installation minutes apart hash identically — which means the digest alone cannot tell one
-  // of this operation's sets from another of them. The date can, and it is compared here for that reason.
-  const shape = shapeOfManifest(row.name, manifest);
-  if (shape.takenAt !== row.takenAt || shape.bytes !== row.bytes || shape.entries !== row.entries
-    || shape.schemaVersion !== row.schemaVersion) {
-    throw new MaintenanceRefused(
-      'this set\'s manifest no longer says what it said when the plan was made. Nothing was removed for it.');
-  }
+  // THE PROOF ITSELF MOVED TO `maintenance-identity.ts` IN PHASE 313, unchanged, refusal wording included.
+  // `ops:safety-set-lifecycle` has to ask exactly this question of the safety set inside a restore claim
+  // immediately before it destroys it, and a second implementation of "is this still the set we committed
+  // to" would be a second place for one of the four layers to quietly go missing.
+  proveBackupSetIdentity(path, {
+    name: row.name,
+    setDigest: row.setDigest,
+    takenAt: row.takenAt,
+    schemaVersion: row.schemaVersion,
+    bytes: row.bytes,
+    entries: row.entries,
+    verified: row.setClass === 'VERIFIED',
+    findings: row.findings,
+  });
 }
 
 // -----------------------------------------------------------------------------------------------------------
