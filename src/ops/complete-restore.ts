@@ -42,6 +42,7 @@ import {
 import {
   MAINTENANCE_LOCK_DIRNAME,
   MAINTENANCE_NAME_RE,
+  SAFETY_CLAIM_DIR_PREFIX,
   MaintenanceLocks,
   MaintenanceRefused,
   assertPlainTree,
@@ -62,6 +63,7 @@ import {
   type CommandLedger,
   type CommandOutcome,
   type CommandRunner,
+  type HeldDestination,
   type FileInputRunner,
   type FileOutputRunner,
   type MaintenanceCommand,
@@ -295,9 +297,16 @@ export interface SafetySetClaim {
 /** The shape a claim nonce must have. Validated wherever it is concatenated into a path. */
 export const SAFETY_CLAIM_NONCE_RE = /^[0-9a-f]{24}$/;
 
-/** Where a claim's directory sits, relative to the backup destination. */
+/**
+ * Where a claim's directory sits, relative to the backup destination.
+ *
+ * THE PREFIX IS THE SHARED ONE. Correction 1 moved it to `maintenance-safety.ts`, because
+ * `ops:complete-backup` now refuses to be pointed into a claim namespace and the held-destination
+ * capability authorises exactly one claim directory — so four commands have to agree about the shape, and
+ * they agree by importing it rather than by each spelling it.
+ */
 export function safetySetClaimDirName(nonce: string): string {
-  return `.pre-restore-claim-${nonce}`;
+  return `${SAFETY_CLAIM_DIR_PREFIX}${nonce}`;
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -1816,7 +1825,7 @@ export function runCompleteRestore(
           onCustodyProven: (proven) => { custodyProven = proven; },
           onNote: (note) => { notes.push(note); },
           onClaim: (made) => { safetySetClaim = made; persist(); },
-        }, safetySetClaim);
+        }, safetySetClaim, locks.heldDestination());
       } catch (err) {
         detail = err instanceof MaintenanceRefused
           ? err.message
@@ -2332,6 +2341,13 @@ function performStep(
   suffix: string,
   hooks: StepHooks,
   claim: SafetySetClaim | null,
+  /**
+   * PROOF, minted by this run's own lock stack, that both locks are held for this project and this
+   * destination. Only the safety-set step uses it, and only to authorise the nested `ops:complete-backup`
+   * that publishes into a claim directory INSIDE the destination this restore is holding. Correction 1
+   * replaced a `holdingLock` boolean here, which named nothing and could be set by anyone.
+   */
+  authority: HeldDestination,
 ): string | null {
   const step = plan.steps.find((candidate) => candidate.id === id)!;
   // `<staged>` IS SUBSTITUTED HERE AND NOWHERE ELSE, so the plan an operator confirmed and the command that
@@ -2416,7 +2432,11 @@ function performStep(
           runner: deps.runner,
           fileRunner: deps.backupFileRunner,
           ledger: deps.ledger,
-          holdingLock: true,
+          // THE PROOF, NOT A FLAG. `held` is bound to THIS project and to the physical destination this
+          // restore is holding; the backup validates it before it creates anything, and it stops
+          // authorising anything the moment this run releases its locks. A claim directory outside the held
+          // destination, or a capability from another project, is refused there rather than trusted here.
+          held: authority,
           // CREATING THE DIRECTORY WAS THE CLAIM. If it is gone, the claim is void — and a backup that
           // recreated it would publish into a path this project has written down and nothing owns.
           requireExistingDestination: true,

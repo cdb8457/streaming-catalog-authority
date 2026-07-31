@@ -10,31 +10,36 @@ import {
   DESTINATION_LOCK_CONTENTION,
   DESTINATION_LOCK_DIRNAME,
   DESTINATION_LOCK_DIRNAMES,
-  LEGACY_DESTINATION_LOCK_DIRNAMES,
   MAINTENANCE_LOCK_DIRNAME,
   MaintenanceLocks,
   MaintenanceRefused,
-  acquireDestinationLock,
+  assertHeldDestination,
   provePhysicalDestination,
   resolveBackupDestination,
+  type HeldDestination,
 } from '../src/ops/maintenance-safety.js';
 import {
   RETENTION_JOURNAL_NAME, abandonRetention, planRetention, resolveRetentionRequest, runRetention,
 } from '../src/ops/backup-retention.js';
 import { DEFAULT_RETENTION_POLICY } from '../src/ops/retention-model.js';
 import {
-  SAFETY_SET_JOURNAL_NAME, planSafetySetLifecycle, resolveSafetySetRequest,
+  SAFETY_SET_JOURNAL_NAME, planSafetySetLifecycle, resolveSafetySetRequest, runSafetySetLifecycle,
 } from '../src/ops/safety-set-lifecycle.js';
 import { DEFAULT_SAFETY_SET_POLICY } from '../src/ops/safety-set-model.js';
 import {
-  RESTORE_JOURNAL_NAME, RESTORE_JOURNAL_VERSION, abandonRestore, readRestoreJournal,
+  RESTORE_JOURNAL_NAME, RESTORE_JOURNAL_VERSION, abandonRestore, planCompleteRestore, readRestoreJournal,
+  resolveCompleteRestoreRequest, runCompleteRestore,
 } from '../src/ops/complete-restore.js';
-import { runVerifiedCompleteBackup } from '../src/ops/complete-backup.js';
+import {
+  runVerifiedCompleteBackup, takeCompleteBackupWithoutVerifying,
+} from '../src/ops/complete-backup.js';
 import { main as completeBackupCli } from '../src/ops/complete-backup-cli.js';
 import { main as completeRestoreCli } from '../src/ops/complete-restore-cli.js';
 import { main as retentionCli } from '../src/ops/backup-retention-cli.js';
 import { main as lifecycleCli } from '../src/ops/safety-set-lifecycle-cli.js';
 import { fakeToolchain } from './helpers/fake-toolchain.js';
+import { restoreStack, setDumpDigest, setKeystoreDigest } from './helpers/fake-restore-stack.js';
+import { MIGRATION_VERSION } from '../src/db/schema-version.js';
 import {
   HOLDER_CRASH_EXIT_CODE,
   makeMaintenanceProject,
@@ -48,6 +53,7 @@ import {
   type FamilyCommand,
   type HoldConfig,
   type HoldEvidence,
+  type HoldPoint,
 } from './helpers/shared-destination-kit.js';
 
 // Phases 321-328 — ONE PHYSICAL BACKUP DESTINATION, FOUR DESTRUCTIVE COMMANDS, AND THE LOCK THEY SHARE.
@@ -148,19 +154,30 @@ test('two distinct project roots resolve one physical destination to one directo
 });
 
 test('one physical destination admits exactly one lock, whichever address asks for it', () => {
+  // THROUGH THE STACK, BECAUSE THERE IS NO OTHER ROUTE — CORRECTION 1. `acquireDestinationLock` is no
+  // longer exported at all, so neither a command nor a suite can take a destination lock without first
+  // holding a project lock. Two DISTINCT projects here, so the project locks never contend and the only
+  // thing that can refuse is the destination.
   const shared = makeSharedDestination(WORK, 'alias-lock');
   const outer = resolveBackupDestination(shared.outer, shared.outerDestination).destinationDir;
   const inner = resolveBackupDestination(shared.inner, shared.innerDestination).destinationDir;
-  const first = acquireDestinationLock(outer);
+  const first = MaintenanceLocks.open(shared.outer);
   try {
-    refuses(() => acquireDestinationLock(inner), 'already working in this backup destination',
-      'the second address finds the lock the first one took');
+    first.lockDestination(outer);
+    const second = MaintenanceLocks.open(shared.inner);
+    try {
+      refuses(() => second.lockDestination(inner), 'already working in this backup destination',
+        'the second address finds the lock the first one took');
+    } finally {
+      second.release();
+    }
   } finally {
     first.release();
   }
   // AND IT IS RELEASED, so the second address can take it once the first is done.
-  const second = acquireDestinationLock(inner);
-  second.release();
+  const later = MaintenanceLocks.open(shared.inner);
+  later.lockDestination(inner);
+  later.release();
   assertEq(existsSync(join(shared.destination, DESTINATION_LOCK_DIRNAME)), false, 'nothing is left behind');
 });
 
@@ -184,9 +201,8 @@ test('a destination reached through a link is refused before any lock, on this p
 });
 
 test('a case-variant address is the same physical destination where the filesystem says so', () => {
-  const root = makeMaintenanceProject(join(WORK, 'alias-case'));
-  mkdirSync(join(root, 'backups'), { recursive: true });
-  const insensitive = existsSync(join(root, 'BACKUPS'));
+  const shared = makeSharedDestination(WORK, 'alias-case');
+  const insensitive = existsSync(join(shared.inner, 'BACKUPS'));
   if (!insensitive) {
     skip('a case-variant address resolves to one directory',
       'this filesystem is case-SENSITIVE, so "BACKUPS" is a different directory and there is no alias to test');
@@ -197,14 +213,21 @@ test('a case-variant address is the same physical destination where the filesyst
   // differ in spelling. It does not matter: the lock is a DIRECTORY IN THE DESTINATION, and on a
   // case-insensitive filesystem those two spellings name one directory, so the second `mkdir` finds the
   // first one's lock. That is what makes this lock physical rather than nominal.
-  const lower = resolveBackupDestination(root, 'backups');
-  const upper = resolveBackupDestination(root, 'BACKUPS');
-  const held = acquireDestinationLock(lower.destinationDir);
+  const lower = resolveBackupDestination(shared.inner, 'backups');
+  const upper = resolveBackupDestination(shared.outer, 'inner/BACKUPS');
+  const holder = MaintenanceLocks.open(shared.inner);
   try {
-    refuses(() => acquireDestinationLock(upper.destinationDir), 'already working in this backup destination',
-      'the other spelling of one directory finds the lock that is already in it');
+    holder.lockDestination(lower.destinationDir);
+    const other = MaintenanceLocks.open(shared.outer);
+    try {
+      refuses(() => other.lockDestination(upper.destinationDir),
+        'already working in this backup destination',
+        'the other spelling of one directory finds the lock that is already in it');
+    } finally {
+      other.release();
+    }
   } finally {
-    held.release();
+    holder.release();
   }
 });
 
@@ -263,9 +286,19 @@ test('the project lock and the destination lock never deadlock two projects shar
   }
 });
 
+test('the raw destination-lock acquisition is not exported, so the order cannot be expressed backwards', () => {
+  // CORRECTION 1 MADE THIS STRUCTURAL RATHER THAN POLICED. The first cut exported
+  // `acquireDestinationLock` and asserted that no command module called it — a lint rule, not an authority.
+  // It is now module-private, so a caller literally cannot reach it: the only route to a destination lock
+  // is an instance of `MaintenanceLocks`, and the only way to get one of those is to take the project lock.
+  const owner = readRepo('src/ops/maintenance-safety.ts');
+  assert(owner.includes('\nfunction acquireDestinationLock('),
+    'the acquisition is declared without `export`');
+  assert(!owner.includes('export function acquireDestinationLock'),
+    'and is not exported under any signature');
+});
+
 test('every command takes both locks through the one stack, and nothing takes them directly', () => {
-  // THE ORDER IS STRUCTURAL, and this is the check that keeps it structural: a module that called
-  // `acquireDestinationLock` itself could take it before the project lock, or forget to release it.
   const owner = 'src/ops/maintenance-safety.ts';
   for (const file of readdirSync(join(repoRoot, 'src', 'ops')).filter((name) => name.endsWith('.ts'))) {
     const rel = `src/ops/${file}`;
@@ -286,13 +319,30 @@ test('every command takes both locks through the one stack, and nothing takes th
   }
 });
 
+test('there is EXACTLY ONE destination lock name, so acquisition is one atomic mkdir', () => {
+  // CORRECTION 1. The first cut renamed the lock to `.catalog-destination.lock` and kept the old name
+  // working by `lstat`ing it first — a check of one name followed by a create of another, which is not a
+  // lock at all: an older build could `mkdir` the old name inside that window and both processes would
+  // believe they held the destination. There is one name, it is the one older builds already use, and
+  // acquiring it is a single `mkdir`.
+  assertEq(DESTINATION_LOCK_DIRNAMES.length, 1, 'one name, because two names cannot be acquired atomically');
+  assertEq(DESTINATION_LOCK_DIRNAMES[0], DESTINATION_LOCK_DIRNAME, 'and it is the canonical one');
+  assertEq(DESTINATION_LOCK_DIRNAME, '.catalog-retention.lock',
+    'which is the name every shipped build of this product has used, so cross-version contention is real');
+  const owner = readRepo('src/ops/maintenance-safety.ts');
+  const acquire = owner.slice(owner.indexOf('function acquireDestinationLock'));
+  const body = acquire.slice(0, acquire.indexOf('\n}'));
+  assert(!body.includes('lstat') && !body.includes('existsSync'),
+    'and acquiring it inspects nothing first: a pre-check is the race this correction removed');
+  assertEq((body.match(/acquireLockDirectory\(/g) ?? []).length, 1, 'one mkdir, not two');
+});
+
 test('there is one destination lock name and one refusal vocabulary, and no command spells it itself', () => {
   const owner = readRepo('src/ops/maintenance-safety.ts');
   assert(owner.includes(`'${DESTINATION_LOCK_DIRNAME}'`), 'the name is a literal in exactly one module');
   for (const file of ['complete-backup', 'complete-restore', 'backup-retention', 'safety-set-lifecycle']) {
     const source = readRepo(`src/ops/${file}.ts`);
     assert(!source.includes(`'${DESTINATION_LOCK_DIRNAME}'`), `src/ops/${file}.ts does not spell the name`);
-    assert(!source.includes('.catalog-retention.lock'), `src/ops/${file}.ts does not spell the old name either`);
   }
   assert(DESTINATION_LOCK_CONTENTION.includes('ops:complete-backup')
     && DESTINATION_LOCK_CONTENTION.includes('ops:complete-restore')
@@ -313,6 +363,8 @@ interface Scenario {
   /** `outer` holds and `inner` contends, or the other way round. */
   readonly direction?: 'outer-holds' | 'inner-holds';
   readonly thenCrash?: true;
+  /** Where the holder stops. `before-verify` is the Correction 1 window. */
+  readonly holdAt?: HoldPoint;
 }
 
 function contenderList(projectRoot: string, destination: string, dir: string): ContenderConfig[] {
@@ -353,6 +405,7 @@ function runScenario(scenario: Scenario): { evidence: HoldEvidence; shared: Retu
     destination: holderDestination,
     setName: scenario.holder === 'complete-backup' ? 'holder-set' : 'set-a',
     ...(scenario.thenCrash === true ? { thenCrash: true as const } : {}),
+    ...(scenario.holdAt === undefined ? {} : { holdAt: scenario.holdAt }),
     contenders: contenderList(contenderRoot, contenderDestination, WORK)
       .map((contender) => ({ ...contender, resultFile: `${contender.resultFile}.${scenario.name}` })),
     evidenceFile,
@@ -423,15 +476,166 @@ for (const scenario of [
     });
 }
 
-test('the operator surface refuses a shared destination with one JSON document and the refused exit code', () => {
+test('the locks are STILL HELD after publication and before the verification verdict', () => {
+  // ---- CORRECTION 1, RELEASE-BLOCKER 1 -------------------------------------------------------------
+  //
+  // THE DEFECT. `runVerifiedCompleteBackup` called `takeCompleteBackupWithoutVerifying`, which releases both
+  // locks in its own `finally`, and only THEN read every byte of the set back to decide whether to tell the
+  // operator `ok`. Between the publication and the verdict this project held nothing at all, so another
+  // project could quarantine the set, delete it, or move something else into its name — and this command
+  // would then report success about a set that had gone, failure about a set somebody else removed, or a
+  // verdict about a directory it did not take.
+  //
+  // A SOURCE ORDERING ASSERTION CANNOT PROVE THIS. What has to be true is that a lock DIRECTORY EXISTS ON
+  // DISK at a particular instant, and that other processes really are refused at it. So a real process is
+  // stopped at `before-verify` — the set published, the verdict not yet computed — and five real contenders
+  // are started from another project against the same physical destination from inside that instant.
+  const { evidence, shared } = runScenario({
+    name: 'hold-backup-before-verify', holder: 'complete-backup', holdAt: 'before-verify',
+  });
+  assertEq(evidence.publishedAtBoundary, true,
+    'the holder had already PUBLISHED its set at its final name when the contenders ran');
+  assertEq(evidence.lockHeldAtBoundary, true,
+    'and it was still holding the shared destination lock, which is the whole correction');
+  assertEq(evidence.projectLockHeldAtBoundary, true, 'and its own project lock');
+  assertEq(evidence.results.length, 5, 'every contender ran');
+  for (const result of evidence.results) {
+    assertContenderRefusedWithoutEffect(result, `before-verify/${result.label}`);
+  }
+  assert(sameTree(evidence.destinationBefore, evidence.destinationAfter),
+    'and the published set was still byte-identical when the verification was allowed to start: '
+    + treeDifference(evidence.destinationBefore, evidence.destinationAfter).join(', '));
+
+  // AND THE COMMAND FINISHED NORMALLY afterwards, releasing both locks: holding longer must not mean
+  // holding forever.
+  assertEq(existsSync(join(shared.destination, DESTINATION_LOCK_DIRNAME)), false,
+    'the destination lock was released once the verdict existed');
+  assertEq(existsSync(join(shared.outer, MAINTENANCE_LOCK_DIRNAME)), false, 'and so was the project lock');
+  assert(existsSync(join(shared.destination, 'holder-set')), 'and the verified set is where it was published');
+});
+
+test('holding past the verdict does not mean holding forever: every path out releases both locks', () => {
+  // ---- THE OTHER HALF OF EXTENDING THE WINDOW ------------------------------------------------------
+  //
+  // Correction 1 made the ordinary command hold both locks through the verification. The risk a change
+  // like that carries is the opposite of the one it fixes: a path that now leaves a lock behind. So every
+  // way out is driven for real — success, a failure INSIDE the quiesced window, and a verification that
+  // blows up because the set it was about to read has gone — and after each one both lock directories must
+  // be gone, whatever the command answered.
+  const root = makeMaintenanceProject(join(WORK, 'release-paths'));
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  const destination = join(root, 'backups');
+  const bothReleased = (what: string): void => {
+    assertEq(existsSync(join(destination, DESTINATION_LOCK_DIRNAME)), false, `${what}: the destination lock`);
+    assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, `${what}: the project lock`);
+  };
+
+  // 1. SUCCESS.
+  takeSharedSet(root, 'backups', 'set-ok', new Date('2020-01-01T00:00:00.000Z'));
+  bothReleased('after a verified success');
+
+  // 2. A FAILURE INSIDE THE QUIESCED WINDOW. Nothing is published and both locks come back.
+  const broken = fakeToolchain({ failWhen: [{ contains: 'pg_dump', status: 1 }] });
+  let refused = false;
+  try {
+    runVerifiedCompleteBackup({
+      projectRoot: root, destination: 'backups', setName: 'set-fails', custodian: 'inline',
+      secrets: 'secrets', promotionRecords: 'promotion-records',
+    }, { runner: broken.runner, fileRunner: broken.fileRunner, ledger: broken.ledger });
+  } catch { refused = true; }
+  assertEq(refused, true, 'a dump that does not run refuses');
+  assertEq(existsSync(join(destination, 'set-fails')), false, 'and publishes nothing');
+  bothReleased('after a failure inside the window');
+
+  // 3. THE VERIFICATION ITSELF GOES WRONG. The set is renamed away at `after-publish`, so what the
+  //    verification reaches is not what was taken — which is exactly the state the OLD code could reach by
+  //    losing the lock, and is produced here deliberately to drive the release path. Whether the command
+  //    throws or answers `ok: false`, it must not keep a lock.
+  const tools = fakeToolchain();
+  let outcome: { readonly ok: boolean } | null = null;
+  let threw = false;
+  try {
+    outcome = runVerifiedCompleteBackup({
+      projectRoot: root, destination: 'backups', setName: 'set-vanishes', custodian: 'inline',
+      secrets: 'secrets', promotionRecords: 'promotion-records',
+    }, {
+      runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger,
+      at: (point) => {
+        if (point === 'after-publish') renameSync(join(destination, 'set-vanishes'), join(root, 'taken-away'));
+      },
+    });
+  } catch { threw = true; }
+  assert(threw || (outcome !== null && !outcome.ok),
+    'a set that is not there when it is verified is never a success');
+  bothReleased('after a verification that could not read the set');
+});
+
+test('a nested failure releases nothing of the caller\'s, because it took nothing', () => {
+  // PARTIAL FAILURE UNDER A CAPABILITY. The restore holds both locks across its whole operation; a safety
+  // set that fails must leave that window exactly as it found it. If the nested backup released anything
+  // on its way out, the restore would carry on destroying volumes with nothing holding the destination.
+  const root = makeMaintenanceProject(join(WORK, 'nested-failure'));
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  const destination = resolveBackupDestination(root, 'backups').destinationDir;
+  const claim = `.pre-restore-claim-${'f'.repeat(24)}`;
+  mkdirSync(join(destination, claim));
+  const locks = MaintenanceLocks.open(root);
+  try {
+    locks.lockDestination(destination);
+    const held = locks.heldDestination();
+    const broken = fakeToolchain({ failWhen: [{ contains: 'pg_dump', status: 1 }] });
+    let refused = false;
+    try {
+      runVerifiedCompleteBackup({
+        projectRoot: root, destination: `backups/${claim}`, setName: 'pre-restore-set-a',
+        custodian: 'inline', secrets: 'secrets', promotionRecords: 'promotion-records',
+      }, {
+        runner: broken.runner, fileRunner: broken.fileRunner, ledger: broken.ledger,
+        held, requireExistingDestination: true,
+      });
+    } catch { refused = true; }
+    assertEq(refused, true, 'the nested backup failed');
+    // AND THE CALLER STILL HOLDS EVERYTHING.
+    assert(existsSync(join(destination, DESTINATION_LOCK_DIRNAME)), 'the destination lock is still held');
+    assert(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), 'and so is the project lock');
+    assertEq(existsSync(join(destination, claim, 'pre-restore-set-a')), false, 'and nothing was published');
+    // AND THE CAPABILITY IS STILL GOOD, so the caller can recover rather than being locked out by a failure.
+    assertHeldDestination(held, root, join(destination, claim));
+  } finally {
+    locks.release();
+  }
+  assertEq(existsSync(join(destination, DESTINATION_LOCK_DIRNAME)), false, 'and the caller released at the end');
+});
+
+test('the verified command never routes through the step that owns and drops its own locks', () => {
+  // THE STRUCTURAL HALF OF THE SAME FACT, which is cheap and catches a refactor that reintroduces the
+  // window without changing behaviour under test. `takeCompleteBackupWithoutVerifying` releases in its own
+  // `finally` — correctly, it is the unverified entry point — so the verified command must not call it.
+  const source = readRepo('src/ops/complete-backup.ts');
+  const verified = source.slice(source.indexOf('export function runVerifiedCompleteBackup'));
+  assert(!verified.includes('takeCompleteBackupWithoutVerifying('),
+    'the verified command does not call the entry point that releases the locks before it returns');
+  assert(verified.includes('performBackup(resolved, deps)') && verified.includes('verifyWhatWasTaken('),
+    'it takes and verifies inside one locked region');
+  assert(verified.lastIndexOf('locks.release()') > verified.indexOf('verifyWhatWasTaken('),
+    'and releases only after the verification');
+});
+
+test('the operator surface refuses a shared destination with exit 3, an empty stdout and one sentence', () => {
+  // ---- CORRECTION 1, ITEM 4: THIS TEST NOW SAYS WHAT IT CHECKS -------------------------------------
+  //
+  // It was titled "one JSON document" and asserted the opposite — an EMPTY stdout and a prose sentence on
+  // stderr. Both cannot be true, and the assertions were the honest half. THE ACTUAL CONTRACT, unchanged by
+  // this tranche and stated here rather than dressed up: a refusal that happens BEFORE any effect has no
+  // report to serialise, so `--json` produces NO document at all. stdout stays empty — which is what a
+  // machine parsing stdout needs, because zero documents is unambiguous and a document of prose is not —
+  // the sentence goes to stderr, and the exit code is this family's `3`. The `--json` document contract
+  // belongs to the REPORT paths (`ok`/`INCOMPLETE`/`PARTIAL`/post-effect failures) and those are asserted,
+  // as exactly one document each, in `test/backup-retention.ts`. Nothing here claims a document was made.
   const { evidence } = runScenario({ name: 'hold-retention-json', holder: 'backup-retention' });
   const cli = evidence.results.find((result) => result.label === 'backup-retention-cli');
   assert(cli !== undefined, 'the CLI contender ran');
   assertEq(cli!.exitCode, 3, 'the exit code is this family\'s "refused"');
-  // THE STREAM DISCIPLINE THIS FAMILY ALREADY PROMISES, UNCHANGED BY THE NEW REFUSAL. A refusal before any
-  // effect has no report, so `--json` emits NOTHING on stdout — a machine reading stdout reads zero
-  // documents rather than one document of prose — and the sentence goes to stderr with exit 3. A lock
-  // refusal is not allowed to be the one refusal that breaks that.
   assertEq(cli!.stdout.trim(), '', '--json put nothing on stdout, because there is no report to put there');
   assert(cli!.message.includes('already working in this backup destination'),
     'and the refusal an operator has to read went to stderr');
@@ -482,28 +686,105 @@ function runRetentionIn(projectRoot: string, destination: string): ReturnType<ty
     { kind: 'run', confirm: plan.digest });
 }
 
-test('a destination lock an EARLIER build left behind is refused by name and never worked around', () => {
-  const shared = makeSharedDestination(WORK, 'legacy-lock');
+function runLifecycleIn(projectRoot: string, destination: string): ReturnType<typeof runSafetySetLifecycle> {
+  const policy = { ...DEFAULT_SAFETY_SET_POLICY, keepLast: 1, minAgeDays: 0 };
+  const now = new Date('2026-07-31T12:00:00.000Z');
+  const plan = planSafetySetLifecycle(resolveSafetySetRequest({ projectRoot, destination }), policy, now);
+  return runSafetySetLifecycle({ projectRoot, destination }, policy, { now: () => now },
+    { kind: 'run', confirm: plan.digest });
+}
+
+/** A real `ops:complete-restore` run, planned by itself, against the fake stack. */
+function restoreFrom(projectRoot: string, destination: string, setName: string): unknown {
+  const setDir = join(projectRoot, destination, setName);
+  const world = restoreStack({
+    buildSchema: MIGRATION_VERSION,
+    moments: [{ dumpDigest: setDumpDigest(setDir), keystoreDigest: setKeystoreDigest(setDir) }],
+  });
+  const request = {
+    projectRoot, destination, setName, custodian: 'inline' as const,
+    secrets: 'secrets', promotionRecords: 'promotion-records',
+  };
+  const plan = planCompleteRestore(resolveCompleteRestoreRequest(request),
+    { safetySet: true, acceptDataLoss: false });
+  return runCompleteRestore(request, {
+    runner: world.runner,
+    fileRunner: world.inputRunner,
+    backupFileRunner: world.outputRunner,
+    ledger: world.ledger,
+    suffix: () => 'aaaaaaaaaaaa',
+    now: () => new Date('2026-07-31T12:00:00.000Z'),
+  }, { kind: 'run', confirm: plan.digest, acceptDataLoss: null });
+}
+
+/**
+ * Exactly what an OLDER build did to take the destination lock: one `mkdir`, at `.catalog-retention.lock`.
+ *
+ * It is spelled as a literal here on purpose. The point of the compatibility test is that the two builds
+ * agree on a NAME ON DISK; importing this build's constant would make the test pass by construction even if
+ * a future change renamed it, which is the exact failure mode Correction 1 exists for.
+ */
+function oldStyleAcquire(destinationDir: string): boolean {
+  try { mkdirSync(join(destinationDir, '.catalog-retention.lock')); return true; } catch { return false; }
+}
+
+test('an OLD-STYLE holder excludes every new command, atomically and by the same name', () => {
+  // ---- CORRECTION 1: THE CROSS-VERSION CONTRACT IS A FILENAME -------------------------------------
+  //
+  // An `ops:backup-retention` or `ops:safety-set-lifecycle` from a build before this tranche takes the
+  // destination lock by `mkdir`ing `.catalog-retention.lock`. Every command of THIS build takes the same
+  // name with the same call, so the old holder and the new contender contend on one directory entry with
+  // no window between a check and a create — because there is no check.
+  const shared = makeSharedDestination(WORK, 'compat-old-holds');
   takeSharedSet(shared.outer, shared.outerDestination, 'set-a', new Date('2020-01-01T00:00:00.000Z'));
   takeSharedSet(shared.outer, shared.outerDestination, 'set-b', new Date('2021-01-01T00:00:00.000Z'));
-  for (const legacy of LEGACY_DESTINATION_LOCK_DIRNAMES) {
-    mkdirSync(join(shared.destination, legacy));
-    refuses(() => runRetentionIn(shared.inner, 'backups'), legacy,
-      `a ${legacy} left by an older build is refused, by name`);
-    refuses(() => takeSharedSet(shared.inner, 'backups', 'after-legacy'), legacy,
-      'and so is a backup, which would otherwise publish into a destination an old prune is half way through');
-    assert(existsSync(join(shared.destination, legacy)), 'and nothing removed it');
-    assertEq(existsSync(join(shared.destination, DESTINATION_LOCK_DIRNAME)), false,
-      'and no NEW lock was taken beside it');
-    rmSync(join(shared.destination, legacy), { recursive: true });
-  }
-  // ONCE IT IS GONE, the destination works normally again. A compatibility guard that could not be cleared
-  // would be a wedge rather than a guard.
-  takeSharedSet(shared.inner, 'backups', 'after-legacy');
-  assert(existsSync(join(shared.destination, 'after-legacy')), 'the set is published once the old lock is gone');
+  assertEq(oldStyleAcquire(shared.destination), true, 'the old-style holder took the lock');
+
+  const before = snapshotTree(shared.destination);
+  refuses(() => runRetentionIn(shared.inner, 'backups'), 'already working in this backup destination',
+    'a new prune is excluded by an old holder');
+  refuses(() => runLifecycleIn(shared.inner, 'backups'), 'already working in this backup destination',
+    'and so is a new safety-set lifecycle run');
+  refuses(() => takeSharedSet(shared.inner, 'backups', 'after-old'), 'already working in this backup destination',
+    'and so is a new complete backup, which the OLD build would not have excluded at all');
+  refuses(() => restoreFrom(shared.inner, 'backups', 'set-a'), 'already working in this backup destination',
+    'and so is a new complete restore');
+  assert(sameTree(before, snapshotTree(shared.destination)),
+    `and none of them changed the destination: ${treeDifference(before, snapshotTree(shared.destination)).join(', ')}`);
+  assert(existsSync(join(shared.destination, '.catalog-retention.lock')), 'nothing removed the old holder\'s lock');
+
+  // AND IT IS NOT A WEDGE. The old holder finishing releases it the way it always did, and the destination
+  // works again immediately.
+  rmSync(join(shared.destination, '.catalog-retention.lock'), { recursive: true });
+  takeSharedSet(shared.inner, 'backups', 'after-old');
+  assert(existsSync(join(shared.destination, 'after-old')), 'the set is published once the old lock is gone');
 });
 
-test('every destination lock name, current and historical, is excluded from both inventories', () => {
+test('a NEW holder excludes an OLD-STYLE acquisition, proved from inside a real held boundary', () => {
+  // THE OTHER DIRECTION, and it needs a real holder rather than a hand-made lock: what is being proved is
+  // that a command of THIS build leaves, at the name an older build will try, a directory that older
+  // build's own `mkdir` fails on. The old-style acquisition is attempted from inside the holder's boundary.
+  const shared = makeSharedDestination(WORK, 'compat-new-holds');
+  takeSharedSet(shared.outer, shared.outerDestination, 'set-a', new Date('2020-01-01T00:00:00.000Z'));
+  takeSharedSet(shared.outer, shared.outerDestination, 'set-b', new Date('2021-01-01T00:00:00.000Z'));
+
+  const holder = MaintenanceLocks.open(shared.outer);
+  try {
+    holder.lockDestination(resolveBackupDestination(shared.outer, shared.outerDestination).destinationDir);
+    assertEq(oldStyleAcquire(shared.destination), false,
+      'an older build\'s mkdir of .catalog-retention.lock fails while this build holds the destination');
+    assert(existsSync(join(shared.destination, '.catalog-retention.lock')),
+      'because that IS the directory this build created — one name, one entry, no second lock beside it');
+    assertEq(readdirSync(shared.destination).filter((name) => name.endsWith('.lock')).length, 1,
+      'and there is exactly one lock in the destination, not one per version');
+  } finally {
+    holder.release();
+  }
+  assertEq(oldStyleAcquire(shared.destination), true, 'and the old-style acquisition succeeds once it is released');
+  rmSync(join(shared.destination, '.catalog-retention.lock'), { recursive: true });
+});
+
+test('the destination lock name is excluded from both inventories', () => {
   const shared = makeSharedDestination(WORK, 'inventory');
   takeSharedSet(shared.outer, shared.outerDestination, 'set-a', new Date('2020-01-01T00:00:00.000Z'));
   const policy = { ...DEFAULT_RETENTION_POLICY, keepLast: 1, minAgeDays: 0 };
@@ -739,12 +1020,329 @@ test('a restore taking its safety set holds exactly one project lock and one des
   assert(existsSync(setDir), 'and the set being restored is untouched');
 });
 
-test('nothing else in src/ tells a backup that its caller already holds the locks', () => {
-  for (const file of readdirSync(join(repoRoot, 'src', 'ops')).filter((name) => name.endsWith('.ts'))) {
-    if (file === 'complete-restore.ts' || file === 'complete-backup.ts') continue;
-    assert(!readRepo(`src/ops/${file}`).includes('holdingLock'),
-      `src/ops/${file} passes holdingLock, and exactly one caller may`);
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 1, RELEASE-BLOCKER 2: the nested authority is a capability, not a boolean and not a grep
+// -----------------------------------------------------------------------------------------------------------
+//
+// `holdingLock: true` named no project, no destination and no holder, so ANY caller could suppress BOTH
+// locks for ANY project and ANY destination; a suite grepping `src/` for the word was the only thing between
+// that flag and an unlocked backup, and a source allowlist is a lint rule rather than an authority. Every
+// check below is BEHAVIOURAL: a real backup is really attempted, and what stops it is the capability check.
+
+/** A destination, a claim directory inside it, and a live capability for the destination. */
+function heldFixture(name: string): {
+  readonly root: string;
+  readonly destination: string;
+  readonly claim: string;
+  readonly locks: MaintenanceLocks;
+  readonly held: HeldDestination;
+} {
+  const root = makeMaintenanceProject(join(WORK, name));
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  const destination = resolveBackupDestination(root, 'backups').destinationDir;
+  const claim = '.pre-restore-claim-aaaaaaaaaaaaaaaaaaaaaaaa';
+  mkdirSync(join(destination, claim), { recursive: true });
+  const locks = MaintenanceLocks.open(root);
+  locks.lockDestination(destination);
+  return { root, destination, claim, locks, held: locks.heldDestination() };
+}
+
+/** Attempt a nested backup under a capability, and answer with what happened. */
+function nestedBackup(root: string, destination: string, setName: string, held: HeldDestination): {
+  readonly refusal: string | null; readonly commands: readonly string[];
+} {
+  const tools = fakeToolchain();
+  try {
+    runVerifiedCompleteBackup({
+      projectRoot: root, destination, setName, custodian: 'inline',
+      secrets: 'secrets', promotionRecords: 'promotion-records',
+    }, {
+      runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger,
+      now: () => new Date('2026-07-31T12:00:00.000Z'), held,
+    });
+  } catch (err) {
+    return { refusal: (err as Error).message, commands: tools.ledger.flat() };
   }
+  return { refusal: null, commands: tools.ledger.flat() };
+}
+
+test('a capability minted by a real holder authorises the nested backup it was minted for', () => {
+  const fixture = heldFixture('cap-legitimate');
+  try {
+    const outcome = nestedBackup(fixture.root, `backups/${fixture.claim}`, 'pre-restore-set-a', fixture.held);
+    assertEq(outcome.refusal, null, 'the legitimate nested backup ran');
+    assert(existsSync(join(fixture.destination, fixture.claim, 'pre-restore-set-a')),
+      'and published its set inside the claim directory');
+    // AND IT TOOK NO SECOND LOCK. One lock, in the destination the caller is holding — never one inside the
+    // claim, which would be a lock on the wrong directory and a stray entry in a set's own claim.
+    assertEq(readdirSync(fixture.destination).filter((name) => name.endsWith('.lock')).length, 1,
+      'exactly one lock in the destination');
+    assertEq(existsSync(join(fixture.destination, fixture.claim, DESTINATION_LOCK_DIRNAME)), false,
+      'and none inside the claim');
+  } finally {
+    fixture.locks.release();
+  }
+});
+
+test('a FORGED capability is refused at runtime, before a directory exists', () => {
+  const fixture = heldFixture('cap-forged');
+  try {
+    // THE ONE FORGERY TYPESCRIPT CANNOT STOP: a plain object with the right shape, cast. The runtime
+    // identity check is what catches it — the object was never minted, so it is not in the private set.
+    const forged = { projectRoot: fixture.root, destination: fixture.destination,
+      destinationDir: fixture.destination } as unknown as HeldDestination;
+    const outcome = nestedBackup(fixture.root, 'forged-destination', 'set-forged', forged);
+    assert(outcome.refusal !== null && outcome.refusal.includes('not one this product minted'),
+      `a cast object is refused: ${String(outcome.refusal)}`);
+    assertEq(outcome.commands.length, 0, 'and no child command was issued');
+    assertEq(existsSync(join(fixture.root, 'forged-destination')), false,
+      'and the destination it named was never created — the refusal is before the first effect');
+  } finally {
+    fixture.locks.release();
+  }
+});
+
+test('a capability for ANOTHER project authorises nothing here', () => {
+  const shared = makeSharedDestination(WORK, 'cap-other-project');
+  const locks = MaintenanceLocks.open(shared.outer);
+  try {
+    locks.lockDestination(resolveBackupDestination(shared.outer, shared.outerDestination).destinationDir);
+    const held = locks.heldDestination();
+    // The destination is the SAME physical directory. Only the project differs, and that is enough.
+    const outcome = nestedBackup(shared.inner, 'backups', 'set-cross-project', held);
+    assert(outcome.refusal !== null && outcome.refusal.includes('DIFFERENT project'),
+      `a lock on one project is not permission in another: ${String(outcome.refusal)}`);
+    assertEq(outcome.commands.length, 0, 'and nothing ran');
+    assertEq(existsSync(join(shared.destination, 'set-cross-project')), false, 'and nothing was published');
+  } finally {
+    locks.release();
+  }
+});
+
+test('a capability for one destination authorises nothing in a sibling or a parent of it', () => {
+  const fixture = heldFixture('cap-wrong-destination');
+  mkdirSync(join(fixture.root, 'other-backups'), { recursive: true });
+  try {
+    const sibling = nestedBackup(fixture.root, 'other-backups', 'set-sibling', fixture.held);
+    assert(sibling.refusal !== null && sibling.refusal.includes('DIFFERENT backup destination'),
+      `a sibling destination is refused: ${String(sibling.refusal)}`);
+    assertEq(existsSync(join(fixture.root, 'other-backups', 'set-sibling')), false, 'and nothing was published');
+
+    // A DESTINATION THAT DOES NOT EXIST YET IS REFUSED BEFORE IT IS CREATED, which is the ordering that
+    // matters: the capability check runs ahead of every filesystem effect, including the destination mkdir.
+    const absent = nestedBackup(fixture.root, 'not-there-yet', 'set-absent', fixture.held);
+    assert(absent.refusal !== null && absent.refusal.includes('DIFFERENT backup destination'),
+      `an unborn destination is refused too: ${String(absent.refusal)}`);
+    assertEq(existsSync(join(fixture.root, 'not-there-yet')), false, 'and was never created');
+
+    // ---- AND A DESCENDANT IS NOT A TARGET JUST BECAUSE IT IS UNDERNEATH ---------------------------
+    //
+    // The permitted set is closed: the held destination, or one EXISTING claim directly inside it. An
+    // ordinary subdirectory, a deeper path, and a claim-shaped name nested two levels down are each
+    // refused, because none of them is the one directory the legitimate caller publishes into.
+    mkdirSync(join(fixture.destination, 'ordinary'), { recursive: true });
+    const ordinary = nestedBackup(fixture.root, 'backups/ordinary', 'set-descendant', fixture.held);
+    assert(ordinary.refusal !== null && ordinary.refusal.includes('DIFFERENT backup destination'),
+      `an ordinary descendant is refused: ${String(ordinary.refusal)}`);
+    assertEq(existsSync(join(fixture.destination, 'ordinary', 'set-descendant')), false, 'and published nothing');
+
+    const deep = join(fixture.destination, fixture.claim, `.pre-restore-claim-${'b'.repeat(24)}`);
+    mkdirSync(deep, { recursive: true });
+    const nested = nestedBackup(fixture.root,
+      `backups/${fixture.claim}/.pre-restore-claim-${'b'.repeat(24)}`, 'set-deep', fixture.held);
+    assert(nested.refusal !== null && nested.refusal.includes('DIFFERENT backup destination'),
+      `a claim-shaped name TWO levels down is refused: ${String(nested.refusal)}`);
+    assertEq(existsSync(join(deep, 'set-deep')), false, 'and published nothing');
+    assertEq(ordinary.commands.length + nested.commands.length, 0, 'and neither ran a child command');
+  } finally {
+    fixture.locks.release();
+  }
+});
+
+test('a standalone backup is refused a claim-shaped destination, before any effect', () => {
+  // ---- CORRECTION 1 ADDENDUM: THE CLAIM NAMESPACE IS NOT AN OPERATOR DESTINATION ------------------
+  //
+  // The first cut listed this as an open risk. The destination lock is taken in the directory a command
+  // publishes into, so a hand-run `ops:complete-backup --destination backups/.pre-restore-claim-<nonce>`
+  // locks INSIDE the claim while `ops:backup-retention` and `ops:safety-set-lifecycle` lock the
+  // destination ABOVE it — two commands in one destination, each holding a lock the other never looks at.
+  const root = makeMaintenanceProject(join(WORK, 'claim-namespace'));
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  const claim = `.pre-restore-claim-${'c'.repeat(24)}`;
+  mkdirSync(join(root, 'backups', claim));
+  const before = snapshotTree(join(root, 'backups'));
+
+  for (const [what, destination] of [
+    ['an existing claim', `backups/${claim}`],
+    ['a claim that does not exist', `backups/.pre-restore-claim-${'d'.repeat(24)}`],
+    ['a directory inside a claim', `backups/${claim}/deeper`],
+  ] as const) {
+    const tools = fakeToolchain();
+    refuses(() => runVerifiedCompleteBackup({
+      projectRoot: root, destination, setName: 'manual-set', custodian: 'inline',
+      secrets: 'secrets', promotionRecords: 'promotion-records',
+    }, { runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger }),
+      'safety-set claim namespace', `${what} is refused as a destination`);
+    assertEq(tools.ledger.flat().length, 0, `${what}: and no child command was issued`);
+    // The UNVERIFIED entry point is refused for the same reason, so there is no second door into a claim.
+    const also = fakeToolchain();
+    refuses(() => takeCompleteBackupWithoutVerifying({
+      projectRoot: root, destination, setName: 'manual-set', custodian: 'inline',
+      secrets: 'secrets', promotionRecords: 'promotion-records',
+    }, { runner: also.runner, fileRunner: also.fileRunner, ledger: also.ledger }),
+      'safety-set claim namespace', `${what} is refused by the unverified entry point too`);
+  }
+  assert(sameTree(before, snapshotTree(join(root, 'backups'))),
+    `and nothing changed: ${treeDifference(before, snapshotTree(join(root, 'backups'))).join(', ')}`);
+  assertEq(existsSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME)), false, 'not even a lock was taken');
+
+  // AND THE ORDINARY DESTINATION STILL WORKS, so this is a refusal of a namespace and not of a project.
+  takeSharedSet(root, 'backups', 'ordinary-set', new Date('2020-01-01T00:00:00.000Z'));
+  assert(existsSync(join(root, 'backups', 'ordinary-set')), 'an ordinary destination is unaffected');
+});
+
+test('a capability is bound to the DIRECTORY, so a renamed-away destination rebuilt at its path is refused', () => {
+  // ---- CORRECTION 1 ADDENDUM: PATH REUSE DOES NOT SATISFY "PHYSICAL" -----------------------------
+  //
+  // THE DEFECT THIS CLOSES, which was in the correction's own first cut: the check compared the directory
+  // currently at a path with the directory currently at that same path — a tautology. Rename the held
+  // destination away and create a new directory at the original path and every string still lines up,
+  // while the lock that was actually taken sits in the inode that moved. The capability now carries the
+  // `ino`/`dev` of the destination AND of the lock directory, captured when `lockDestination` acquired.
+  const root = makeMaintenanceProject(join(WORK, 'identity-rebound'));
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  const destination = resolveBackupDestination(root, 'backups').destinationDir;
+  const claim = `.pre-restore-claim-${'e'.repeat(24)}`;
+  const locks = MaintenanceLocks.open(root);
+  let held: HeldDestination;
+  try {
+    locks.lockDestination(destination);
+    held = locks.heldDestination();
+    mkdirSync(join(destination, claim));
+    // It authorises the claim it was minted for, right now, while the directory is the one it was minted in.
+    assertHeldDestination(held, root, join(destination, claim));
+
+    // THE DESTINATION IS RENAMED AWAY — taking this run's lock directory with it — AND A NEW ONE IS BUILT
+    // AT THE SAME PATH, complete with a claim of the same name and even a lock directory of its own.
+    renameSync(destination, join(root, 'backups-moved'));
+    mkdirSync(destination);
+    mkdirSync(join(destination, claim));
+    mkdirSync(join(destination, DESTINATION_LOCK_DIRNAME));
+    const replacement = snapshotTree(destination);
+
+    refuses(() => assertHeldDestination(held, root, join(destination, claim)),
+      'not the directory that is at that path now',
+      'the capability does not authorise a directory that merely reuses the path');
+    const outcome = nestedBackup(root, `backups/${claim}`, 'pre-restore-set-a', held);
+    assert(outcome.refusal !== null && outcome.refusal.includes('not the directory that is at that path now'),
+      `and a real backup under it refuses: ${String(outcome.refusal)}`);
+    assertEq(outcome.commands.length, 0, 'having issued no child command');
+    assert(sameTree(replacement, snapshotTree(destination)),
+      `and left the replacement untouched: ${treeDifference(replacement, snapshotTree(destination)).join(', ')}`);
+    assertEq(existsSync(join(destination, claim, 'pre-restore-set-a')), false, 'nothing was published');
+  } finally {
+    // ---- AND RELEASE MUST NOT DELETE SOMEBODY ELSE'S LOCK -----------------------------------------
+    //
+    // THE DEFECT THIS PINS, which this very fixture found. Release used to `rmdir` whatever was at the
+    // remembered PATH. Here that path now holds a DIFFERENT lock directory — the replacement's — while
+    // this run's real lock sits inside the destination that was renamed away. A path-based release would
+    // delete a live lock belonging to whoever built the replacement, and leave its own behind. Release is
+    // bound to the directory identity captured at acquisition and to a token inside it, so it does
+    // nothing here.
+    locks.release();
+  }
+  assert(existsSync(join(destination, DESTINATION_LOCK_DIRNAME)),
+    'the REPLACEMENT lock is still there: this run released a path it no longer owned, so it released nothing');
+  assert(existsSync(join(root, 'backups-moved', DESTINATION_LOCK_DIRNAME)),
+    'and the lock this run took is still where it went, stale — reported by the next run, never swept');
+  assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false,
+    'while the PROJECT lock, whose directory nobody moved, released normally — reverse order, both attempted');
+
+  // EXPLICIT CLEANUP, because this fixture deliberately leaves two locks nothing owns.
+  rmSync(join(destination, DESTINATION_LOCK_DIRNAME), { recursive: true, force: true });
+  rmSync(join(root, 'backups-moved'), { recursive: true, force: true });
+});
+
+test('a lock whose directory was rebuilt by somebody else is never released by the run that lost it', () => {
+  // THE SAME OWNERSHIP RULE, ASKED DIRECTLY OF THE PRIMITIVE, so it is pinned for the PROJECT lock too and
+  // not only for the destination lock that happened to expose it.
+  const root = makeMaintenanceProject(join(WORK, 'release-ownership'));
+  const locks = MaintenanceLocks.open(root);
+  const lockPath = join(root, MAINTENANCE_LOCK_DIRNAME);
+  assert(existsSync(lockPath), 'the project lock is held');
+
+  // Somebody renames the lock away and puts a different directory at its name — a second run that took it
+  // after a rename, or an operator tidying up. Either way, what is at that path is not this run's lock.
+  renameSync(lockPath, join(root, 'lock-moved-aside'));
+  mkdirSync(lockPath);
+  writeFileSync(join(lockPath, 'holder.txt'), `pid=999999\ntoken=${'b'.repeat(32)}\n`, 'utf8');
+
+  locks.release();
+  assert(existsSync(lockPath), 'the foreign lock at that path is untouched');
+  assertEq(readFileSync(join(lockPath, 'holder.txt'), 'utf8').includes('b'.repeat(32)), true,
+    'including its holder note, which still names its own owner');
+  assert(existsSync(join(root, 'lock-moved-aside')), 'and the moved original is left stale rather than hidden');
+  rmSync(lockPath, { recursive: true, force: true });
+});
+
+test('a capability whose owner has RELEASED authorises nothing', () => {
+  const fixture = heldFixture('cap-released');
+  const held = fixture.held;
+  fixture.locks.release();
+  // The claim directory is still there, the project is still a project, and the capability object still
+  // exists in this process — and it is worth nothing, because the locks it described are gone.
+  const outcome = nestedBackup(fixture.root, `backups/${fixture.claim}`, 'pre-restore-set-a', held);
+  assert(outcome.refusal !== null && outcome.refusal.includes('already released its locks'),
+    `a capability that outlived its locks is refused: ${String(outcome.refusal)}`);
+  assertEq(outcome.commands.length, 0, 'and nothing ran');
+  assertEq(existsSync(join(fixture.destination, fixture.claim, 'pre-restore-set-a')), false,
+    'and nothing was published');
+});
+
+test('a capability cannot be minted speculatively, and one stack mints one', () => {
+  const root = makeMaintenanceProject(join(WORK, 'cap-minting'));
+  mkdirSync(join(root, 'backups'), { recursive: true });
+  const destination = resolveBackupDestination(root, 'backups').destinationDir;
+  const locks = MaintenanceLocks.open(root);
+  try {
+    refuses(() => locks.heldDestination(), 'has not taken the destination lock',
+      'no capability exists before the destination lock does');
+    locks.lockDestination(destination);
+    const first = locks.heldDestination();
+    assertEq(locks.heldDestination(), first, 'and one stack mints one capability, not a new one each time');
+    assertHeldDestination(first, root, destination);
+    const claim = join(destination, `.pre-restore-claim-${'a'.repeat(24)}`);
+    refuses(() => assertHeldDestination(first, root, claim), 'claim directory that is not there',
+      'a claim that has not been created is not a target, because creating it is what owns it');
+    mkdirSync(claim);
+    assertHeldDestination(first, root, claim);
+    refuses(() => assertHeldDestination(first, root, join(destination, 'anything-else')),
+      'DIFFERENT backup destination',
+      'and an ordinary subdirectory is NOT authorised — the permitted set is closed, not "everything under"');
+    refuses(() => assertHeldDestination(first, join(root, 'secrets'), destination), 'DIFFERENT project',
+      'the bound project is compared exactly');
+    refuses(() => locks.lockDestination(destination), 'asked twice',
+      'and one stack holds one destination');
+  } finally {
+    locks.release();
+  }
+  refuses(() => locks.heldDestination(), 'after the locks were released',
+    'a released stack mints nothing');
+});
+
+test('no module under src/ can suppress the locks with a flag, because there is no flag', () => {
+  // THE SOURCE SCAN THAT REMAINS IS NOT THE AUTHORITY — the capability is. This asserts the boolean is
+  // GONE rather than that only one caller passes it, which is a different and much weaker claim.
+  for (const file of readdirSync(join(repoRoot, 'src', 'ops')).filter((name) => name.endsWith('.ts'))) {
+    const source = readRepo(`src/ops/${file}`);
+    assert(!source.includes('holdingLock:'), `src/ops/${file} still passes a holdingLock flag`);
+    assert(!source.includes('MaintenanceLocks.inherited'),
+      `src/ops/${file} uses a public no-lock factory, and there is not supposed to be one`);
+  }
+  const owner = readRepo('src/ops/maintenance-safety.ts');
+  assert(!owner.includes('static inherited('), 'the no-lock factory is gone from the lock stack itself');
+  assert(owner.includes('const MINTED = new WeakSet'),
+    'and the identity of a capability is runtime membership, not a shape TypeScript can be cast into');
 });
 
 // -----------------------------------------------------------------------------------------------------------
@@ -811,7 +1409,7 @@ test('this tranche adds no scheduler and no force flag', () => {
   }
   // AND NOTHING REMOVES A LOCK IT DID NOT TAKE.
   const owner = readRepo('src/ops/maintenance-safety.ts');
-  const acquire = owner.slice(owner.indexOf('export function acquireDestinationLock'));
+  const acquire = owner.slice(owner.indexOf('function acquireDestinationLock'));
   const scope = acquire.slice(0, acquire.indexOf('export class MaintenanceLocks'));
   assert(!scope.includes('rmSync') && !scope.includes('rmdirSync'),
     'acquiring a destination lock never removes one');

@@ -76,6 +76,7 @@ function runContenders(config: HoldConfig): HoldEvidence {
   return {
     lockHeldAtBoundary: existsSync(join(destinationDir, DESTINATION_LOCK_DIRNAME)),
     projectLockHeldAtBoundary: existsSync(join(config.projectRoot, MAINTENANCE_LOCK_DIRNAME)),
+    publishedAtBoundary: existsSync(join(destinationDir, config.setName ?? '')),
     destinationBefore: before,
     destinationAfter: after,
     results,
@@ -129,6 +130,15 @@ function main(): number {
       }
       case 'complete-backup': {
         const tools = fakeToolchain();
+        // ---- THE CORRECTION 1 BOUNDARY ------------------------------------------------------------
+        //
+        // `before-verify` stops this process AFTER the set has been published at its final name and BEFORE
+        // the verification that decides what the operator is told. The first cut released both locks
+        // between those two instants, so another project could have removed the set this run was about to
+        // read back. Holding here is the only way to prove that window is gone: a source ordering
+        // assertion cannot tell you whether a lock directory exists on disk at a given moment, and this
+        // does, because the contenders are real processes started from inside it.
+        const holdBeforeVerify = config.holdAt === 'before-verify';
         runVerifiedCompleteBackup({
           projectRoot: config.projectRoot,
           destination: config.destination,
@@ -137,10 +147,14 @@ function main(): number {
           secrets: 'secrets',
           promotionRecords: 'promotion-records',
         }, {
-          runner: (command) => { holdOnStop(command); return tools.runner(command); },
+          runner: (command) => {
+            if (!holdBeforeVerify) holdOnStop(command);
+            return tools.runner(command);
+          },
           fileRunner: tools.fileRunner,
           ledger: tools.ledger,
           now: () => NOW,
+          at: (point) => { if (holdBeforeVerify && point === 'before-verify') hold(); },
         });
         break;
       }

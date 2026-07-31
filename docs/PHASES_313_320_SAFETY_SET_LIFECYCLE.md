@@ -240,11 +240,12 @@ destination after the project lock, and shared by these two commands only. Both 
 destination and both count what it holds, so sharing it made "two commands cannot be half way through one
 destination at once" true rather than hoped for. Same domains, same order, **no new deadlock**.
 
-**Phases 321-328 replaced it.** The lock is now `.catalog-destination.lock`, defined once in
-`maintenance-safety.ts`, and taken by **all four** backup-family commands — `ops:complete-backup` and
-`ops:complete-restore` included — so the shared-destination boundary this document describes below as a
-documented limit is closed. The old name is still refused by name so a lock left by a build before that
-change cannot become invisible. See
+**Phases 321-328 widened it.** The lock is defined once in `maintenance-safety.ts` and taken by **all four**
+backup-family commands — `ops:complete-backup` and `ops:complete-restore` included — so the
+shared-destination boundary this document describes below as a documented limit is closed. **The filename is
+unchanged on purpose**: `.catalog-retention.lock` is what every shipped build already `mkdir`s, so a build
+from before that change and a build after it contend on one atomic directory entry rather than on two names
+with a race between them. See
 [PHASES_321_328_SHARED_DESTINATION_LOCK.md](PHASES_321_328_SHARED_DESTINATION_LOCK.md).
 
 ### The refusal is one-way, on purpose

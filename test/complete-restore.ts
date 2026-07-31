@@ -18,7 +18,9 @@ import {
 import {
   DESTINATION_LOCK_DIRNAME,
   MAINTENANCE_LOCK_DIRNAME,
+  MaintenanceLocks,
   MaintenanceRefused,
+  resolveBackupDestination,
   assertPermittedCommand,
   CommandLedger,
 } from '../src/ops/maintenance-safety.js';
@@ -1156,14 +1158,23 @@ test('the suite inventory and package scripts know about this suite and this com
 });
 
 test('nothing else under src/ takes a backup while holding a lock it did not acquire', () => {
-  // `holdingLock` is a narrow seam with exactly one legitimate caller. A second one would mean a module
-  // taking a backup inside somebody else's exclusive window without that window being this restore's.
+  // THE SEAM IS NO LONGER A FLAG — PHASES 321-328 CORRECTION 1. It used to be `holdingLock: true`, a
+  // boolean naming no project, no destination and no holder, and this test was the only thing standing
+  // between it and any future module suppressing both locks for anything. It is now a capability that only
+  // a `MaintenanceLocks` really holding both can mint, bound to that project and that physical destination,
+  // refused at runtime if forged, and dead the moment its owner releases — so the property this test
+  // asserts is that the flag is GONE rather than that only one caller passes it. The behavioural checks for
+  // every rejected misuse live in `test/shared-destination-lock.ts`.
   const files = readdirSync(join(repoRoot, 'src/ops')).filter((name) => name.endsWith('.ts'));
-  const callers = files.filter((name) => {
-    if (name === 'complete-restore.ts' || name === 'complete-backup.ts') return false;
-    return readFileSync(join(repoRoot, 'src/ops', name), 'utf8').includes('holdingLock');
-  });
-  assertEq(callers.join(','), '', 'only the restore passes holdingLock');
+  const flagged = files.filter((name) =>
+    readFileSync(join(repoRoot, 'src/ops', name), 'utf8').includes('holdingLock:'));
+  assertEq(flagged.join(','), '', 'no module passes a holdingLock flag, because there is no such flag');
+  const restore = readFileSync(join(repoRoot, 'src/ops/complete-restore.ts'), 'utf8');
+  assert(restore.includes('held: authority'),
+    'the restore authorises its nested safety-set backup with the capability its own lock stack minted');
+  const backup = readFileSync(join(repoRoot, 'src/ops/complete-backup.ts'), 'utf8');
+  assert(backup.includes('assertNestedAuthority(deps.held, resolved)'),
+    'and the backup validates it before it does anything at all');
 });
 
 
@@ -4092,21 +4103,44 @@ test('ops:complete-backup will not RECREATE a claimed destination that has gone'
   const root = makeProject('claim-no-recreate');
   const setDir = takeSet(root, 'set-1');
   const world = worldFor(setDir);
-  const destination = `backups/${safetySetClaimDirName('a'.repeat(24))}`;
-  refuses(() => runVerifiedCompleteBackup({
-    projectRoot: root,
-    destination,
-    setName: 'pre-restore-set-1',
-    custodian: 'inline',
-    secrets: 'secrets',
-  }, {
+  const claim = safetySetClaimDirName('a'.repeat(24));
+  const destination = `backups/${claim}`;
+  const deps = {
     runner: world.runner,
     fileRunner: world.outputRunner,
     ledger: world.ledger,
     requireExistingDestination: true,
-  }), 'is not there', 'the backup refuses a destination it would have to create');
-  assertEq(existsSync(join(root, 'backups', safetySetClaimDirName('a'.repeat(24)))), false,
-    'AND IT DID NOT CREATE IT');
+  };
+  const request = {
+    projectRoot: root,
+    destination,
+    setName: 'pre-restore-set-1',
+    custodian: 'inline' as const,
+    secrets: 'secrets',
+  };
+
+  // ---- WITH NOTHING AUTHORISING IT, A CLAIM IS NOT A DESTINATION AT ALL — Phases 321-328 Correction 1.
+  // A hand-run backup pointed inside a claim namespace would take its destination lock BELOW the lock
+  // ops:backup-retention and ops:safety-set-lifecycle hold on the destination above it, so it is refused
+  // before the project lock and before anything is created.
+  refuses(() => runVerifiedCompleteBackup(request, deps), 'safety-set claim namespace',
+    'a standalone backup is refused a claim destination outright');
+
+  // ---- AND EVEN THE ONE CALLER THAT MAY PUBLISH INTO A CLAIM MAY NOT INVENT ONE ------------------
+  // The claim IS the `mkdir`. A backup that quietly recreated a missing claim would take this
+  // installation's safety set into a directory nothing owns, at a path written down in the project —
+  // behind the back of the recovery that had already decided to abandon it. So the restore's own
+  // capability, minted while it really holds the enclosing destination, still refuses this one.
+  const locks = MaintenanceLocks.open(root);
+  try {
+    locks.lockDestination(resolveBackupDestination(root, 'backups').destinationDir);
+    refuses(() => runVerifiedCompleteBackup(request, { ...deps, held: locks.heldDestination() }),
+      'claim directory that is not there',
+      'and the authorised caller refuses a claim that has gone rather than recreating it');
+  } finally {
+    locks.release();
+  }
+  assertEq(existsSync(join(root, 'backups', claim)), false, 'AND NEITHER OF THEM CREATED IT');
 });
 
 

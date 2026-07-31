@@ -80,11 +80,22 @@ export interface ContenderResult {
   readonly exitCode: number;
 }
 
+/**
+ * Where a holder stops, when its command offers more than one post-lock boundary.
+ *
+ *   `first-effect`   — the earliest primitive after `lockDestination` returns. The default.
+ *   `before-verify`  — CORRECTION 1: `ops:complete-backup` only. The set is PUBLISHED at its final name and
+ *                      the verification verdict does not exist yet. This is the window the first cut left
+ *                      unlocked, and the only way to prove it is closed is to stand in it.
+ */
+export type HoldPoint = 'first-effect' | 'before-verify';
+
 export interface HoldConfig {
   readonly command: FamilyCommand;
   readonly projectRoot: string;
   readonly destination: string;
   readonly setName?: string;
+  readonly holdAt?: HoldPoint;
   /** After the contenders have run: stop existing, leaving both locks exactly as a kill would. */
   readonly thenCrash?: true;
   readonly contenders: readonly ContenderConfig[];
@@ -98,6 +109,8 @@ export interface HoldEvidence {
   /** Proof the holder really had the lock at the moment the contenders ran. */
   readonly lockHeldAtBoundary: boolean;
   readonly projectLockHeldAtBoundary: boolean;
+  /** True when the holder's own set was already published at its final name when the contenders ran. */
+  readonly publishedAtBoundary: boolean;
   /** The destination, hashed, immediately before and immediately after every contender ran. */
   readonly destinationBefore: Readonly<Record<string, string>>;
   readonly destinationAfter: Readonly<Record<string, string>>;

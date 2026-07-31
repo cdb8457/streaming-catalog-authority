@@ -17,6 +17,8 @@ import {
   CommandLedger,
   MaintenanceLocks,
   MaintenanceRefused,
+  assertHeldDestination,
+  assertNotSafetyClaimNamespace,
   assertPlainTree,
   assertUsableName,
   createPrivateDirectory,
@@ -34,6 +36,7 @@ import {
   writePrivateFile,
   type CommandRunner,
   type FileOutputRunner,
+  type HeldDestination,
   type MaintenanceCommand,
 } from './maintenance-safety.js';
 import { verifyBackupSet, type BackupVerificationReport } from './backup-set-verification.js';
@@ -187,25 +190,36 @@ export interface CompleteBackupDeps {
   /** Injected so a suite can produce a set with a fixed timestamp. Never used for a name or a decision. */
   readonly now?: () => Date;
   /**
-   * The caller ALREADY HOLDS BOTH LOCKS covering this backup, so take neither. Phase 300, widened in 321-328.
+   * PROOF that the caller already holds both locks covering this backup, so take neither. Phase 300, widened
+   * in 321-328, and made non-forgeable in Correction 1.
    *
-   * THERE IS EXACTLY ONE CALLER AND IT IS NAMED: `ops:complete-restore`, taking the safety set of the
-   * installation it is about to destroy. The alternative — taking that set before acquiring the restore's own
-   * locks — would leave a window in which another maintenance command could act between the safety set and
-   * the `down -v`, which is precisely the interleaving the locks exist to prevent, and the restore's digest
-   * re-proof would then be checking a moment that had already passed.
+   * THERE IS EXACTLY ONE LEGITIMATE CALLER AND IT IS NAMED: `ops:complete-restore`, taking the safety set of
+   * the installation it is about to destroy, into a claim directory INSIDE the destination it is holding.
+   * The alternative — taking that set before acquiring the restore's own locks — would leave a window in
+   * which another maintenance command could act between the safety set and the `down -v`, which is precisely
+   * the interleaving the locks exist to prevent.
    *
-   * IT NOW COVERS THE DESTINATION LOCK TOO, and it has to. The restore holds the destination lock on the
-   * BACKUP DESTINATION; this backup publishes into a claim directory INSIDE it. A destination lock taken
-   * here would be a lock on the claim directory — a different directory, excluding nothing that matters —
-   * and it would put a lock directory inside a claim whose contents are later proved entry by entry.
+   * IT COVERS THE DESTINATION LOCK TOO, and it has to. The restore holds the destination lock on the BACKUP
+   * DESTINATION; this backup publishes into a claim directory inside it. A destination lock taken here would
+   * be a lock on the claim directory — a different directory, excluding nothing that matters — and it would
+   * put a lock directory inside a claim whose contents are later proved entry by entry.
    *
-   * IT IS NOT A BYPASS. Both locks are still held for the whole of this backup — by the restore — so the
-   * exclusion property is unchanged; what is removed is a self-deadlock, because `mkdir` as a lock is not
-   * reentrant. A suite asserts that exactly one project lock and one destination lock exist while a safety
-   * set is being taken, and that no other module under `src/` passes this flag.
+   * WHAT CORRECTION 1 CHANGED. This used to be a `holdingLock` boolean. A boolean names no project, no
+   * destination and no holder, so any caller could set it and suppress BOTH locks for ANY project and ANY
+   * destination; the only thing standing between that and an unlocked backup was a suite grepping `src/` for
+   * the word, which is a lint rule and not an authority. A `HeldDestination` can only be minted by a
+   * `MaintenanceLocks` that is really holding both, is bound to that project and that physical destination,
+   * is refused at runtime if it was forged by a cast, and stops authorising anything the moment its owner
+   * releases. It is validated BEFORE this command creates a directory, writes anything or runs a child.
    */
-  readonly holdingLock?: true;
+  readonly held?: HeldDestination;
+  /**
+   * Named boundaries a suite can stop a real process at. Production passes nothing and this does nothing.
+   *
+   * It exists for one property that cannot be observed any other way: that the locks are still held AFTER
+   * the set is published and BEFORE its verification verdict exists. See `runVerifiedCompleteBackup`.
+   */
+  readonly at?: (point: CompleteBackupFailpoint) => void;
 }
 
 /**
@@ -215,6 +229,15 @@ export interface CompleteBackupDeps {
  * being stopped. Every refusal in this function happens before anything is created and before any service is
  * touched.
  */
+/**
+ * Where a suite may stop a real process, by name.
+ *
+ *   `after-publish` — the set is at its final name and NOTHING has verified it yet.
+ *   `before-verify` — the taking step has returned its report and the verification has not started.
+ *   `after-verify`  — the verdict exists and the locks have not been released.
+ */
+export type CompleteBackupFailpoint = 'after-publish' | 'before-verify' | 'after-verify';
+
 export interface ResolvedBackupRequest {
   readonly projectRoot: string;
   readonly destinationDir: string;
@@ -365,6 +388,92 @@ function withOutage(err: unknown, stillStopped: readonly string[]): unknown {
 }
 
 /**
+ * Everything between taking the project lock and the first effect: re-resolve, ensure, lock the destination.
+ *
+ * SEPARATE BECAUSE TWO ENTRY POINTS NEED IT AND NEITHER MAY DRIFT FROM THE OTHER. `runVerifiedCompleteBackup`
+ * is the ordinary command and must hold its locks past the verification; `takeCompleteBackupWithoutVerifying`
+ * is the unverified taking step a suite drives directly. Both arrive here, in this order, or not at all.
+ */
+function enterDestination(
+  request: CompleteBackupRequest,
+  deps: CompleteBackupDeps,
+  resolved: ResolvedBackupRequest,
+  locks: MaintenanceLocks,
+): void {
+  // ---- RE-ESTABLISHED UNDER THE PROJECT LOCK, BEFORE THE DESTINATION LOCK IS ASKED FOR -------------
+  //
+  // Everything resolved before the lock was resolved in a moment that has now passed. A secrets directory
+  // that has been replaced by a link, a destination that has become a file, a sidecar state directory that
+  // has gone: each of those refuses again here, and each refuses BEFORE this run creates anything at all.
+  const underLock = resolveCompleteBackupRequest(request);
+  if (underLock.destinationDir !== resolved.destinationDir
+    || underLock.finalDir !== resolved.finalDir
+    || underLock.secretsDir !== resolved.secretsDir
+    || underLock.sidecarStateDir !== resolved.sidecarStateDir
+    || underLock.promotionRecordsDir !== resolved.promotionRecordsDir) {
+    throw new MaintenanceRefused(
+      'the directories this backup resolved changed between resolving them and taking this project\'s lock, '
+      + 'so what was checked is not what would have been copied. Nothing was written.');
+  }
+  ensureDestinationExists(resolved, deps);
+  // ---- THE SHARED DESTINATION LOCK, BEFORE THE FIRST STAGING DIRECTORY AND THE FIRST COMMAND -------
+  //
+  // PHASES 321-328. Until this existed, a second Compose project pointed at the same physical directory
+  // could publish a set, prune one, or claim a safety-set directory while this run was building its own
+  // — and `ops:backup-retention` counting that destination mid-publication counts a destination that does
+  // not exist. It is taken here, which is BEFORE the staging directory is created, BEFORE the first
+  // service is stopped and BEFORE `pg_dump` is started: a contender refuses having done nothing at all.
+  locks.lockDestination(provePhysicalDestination(resolved.projectRoot, resolved.destinationDir));
+}
+
+/**
+ * Create the destination if this caller is allowed to, and tolerate losing the race to create it.
+ *
+ * Creating it is the ONE thing that necessarily happens outside the destination lock, and it is the one
+ * thing that cannot hurt: `mkdir` is atomic, so a second project racing this one either loses the race and
+ * finds a directory, or wins it and this one does — and both then contend for the lock inside it. A
+ * destination that does not exist is a destination nothing else can be half way through.
+ */
+function ensureDestinationExists(resolved: ResolvedBackupRequest, deps: CompleteBackupDeps): void {
+  if (existsSync(resolved.destinationDir)) return;
+  if (deps.requireExistingDestination === true) {
+    throw new MaintenanceRefused(
+      'the destination this backup was told to publish into is not there. The caller requires an existing '
+      + 'directory — creating it would produce a directory nothing owns at a path something else has '
+      + 'written down. Nothing was taken.');
+  }
+  try {
+    createPrivateDirectory(resolved.destinationDir, 'backup destination');
+  } catch (err) {
+    // A SECOND CREATOR IS NOT A COLLISION. `createPrivateDirectory` refuses an existing name because most
+    // of its callers are claiming one; a backup destination is a directory operators and other projects
+    // legitimately share, so an `EEXIST` that is a plain directory means the race was lost, not that
+    // something is wrong. Anything else — a file, a link, an unwritable parent — still refuses.
+    const beat = lstatSync(resolved.destinationDir, { throwIfNoEntry: false });
+    if (beat === undefined || !beat.isDirectory() || beat.isSymbolicLink()) throw err;
+  }
+}
+
+/**
+ * Validate the caller's proof that it is already holding both locks for this backup. CORRECTION 1.
+ *
+ * BEFORE ANY EFFECT, ALWAYS — before a directory is created, before a claim or journal is touched, before a
+ * staging tree exists and before a child command runs. A forged object, a capability for another project, a
+ * capability for a sibling or an enclosing destination, and one whose owner has already released are each
+ * refused here, and the backup never reaches the filesystem.
+ */
+function assertNestedAuthority(held: HeldDestination, resolved: ResolvedBackupRequest): void {
+  // THE PHYSICAL DESTINATION, NOT THE NAMED ONE. The legitimate caller publishes into a claim directory
+  // INSIDE the destination it holds, so the check has to be against the real path of the directory this
+  // backup would actually write in. A target that does not exist is passed through as the name it would
+  // have had — and is refused there, which is what makes "refused before the destination is created" true.
+  const physical = existsSync(resolved.destinationDir)
+    ? provePhysicalDestination(resolved.projectRoot, resolved.destinationDir)
+    : resolved.destinationDir;
+  assertHeldDestination(held, resolved.projectRoot, physical);
+}
+
+/**
  * Take a complete backup. INTERNAL — see `runVerifiedCompleteBackup`, which is the only way to a verdict.
  *
  * THE SHAPE OF THE FUNCTION IS THE GUARANTEE. Everything that can refuse happens before the first service is
@@ -375,6 +484,10 @@ function withOutage(err: unknown, stillStopped: readonly string[]): unknown {
  * IT IS EXPORTED UNDER A NAME THAT SAYS WHAT IT IS NOT. A suite drives it directly to exercise the refusals of
  * the taking step, and naming it this way — with no `ok` on what it returns — means no caller can hold its
  * result and believe a backup succeeded. A suite asserts that nothing else under `src/` calls it.
+ *
+ * IT TAKES ITS OWN LOCKS AND RELEASES THEM WHEN IT RETURNS, which is why the VERIFIED command below does not
+ * call it: an unverified set that has been published while the locks are already gone is precisely the window
+ * Correction 1 closed. `runVerifiedCompleteBackup` reaches `performBackup` directly, inside its own locks.
  */
 export function takeCompleteBackupWithoutVerifying(
   request: CompleteBackupRequest,
@@ -386,14 +499,36 @@ export function takeCompleteBackupWithoutVerifying(
   // name, a missing secrets directory, a destination outside the project — refuses without making anything
   // else wait, that one because a check made before a lock is a check about a moment that has passed.
   const resolved = resolveCompleteBackupRequest(request);
-  const now = deps.now ?? (() => new Date());
+  if (deps.held !== undefined) {
+    assertNestedAuthority(deps.held, resolved);
+    ensureDestinationExists(resolved, deps);
+    return performBackup(resolved, deps);
+  }
+  // NOBODY AUTHORISED A CLAIM, SO A CLAIM IS NOT A DESTINATION. Refused before the project lock, before the
+  // destination exists and before anything is created.
+  assertNotSafetyClaimNamespace(request.destination);
+  const locks = MaintenanceLocks.open(resolved.projectRoot);
+  try {
+    enterDestination(request, deps, resolved, locks);
+    return performBackup(resolved, deps);
+  } finally {
+    locks.release();
+  }
+}
 
-  // NOTHING TAKEN ONLY WHEN THE CALLER ALREADY HOLDS BOTH. `mkdir` as a lock is not reentrant, and the one
-  // caller that legitimately arrives already holding this project's lock AND the destination's is the restore
-  // taking its safety set into a claim directory inside the destination it holds.
-  const locks = deps.holdingLock === true
-    ? MaintenanceLocks.inherited()
-    : MaintenanceLocks.open(resolved.projectRoot);
+/**
+ * The taking itself, with BOTH LOCKS ALREADY HELD BY THE CALLER and the destination known to exist.
+ *
+ * Every path out of here leaves the locks exactly as it found them: this function neither takes nor releases
+ * one, so the caller decides how far past the publication the exclusive window extends. That is the whole
+ * correction — `runVerifiedCompleteBackup` extends it past the verdict.
+ */
+function performBackup(
+  resolved: ResolvedBackupRequest,
+  deps: CompleteBackupDeps,
+): CompleteBackupReport {
+  const now = deps.now ?? (() => new Date());
+  const at = deps.at ?? ((): void => { /* production does nothing here */ });
   const stagingDir = join(resolved.destinationDir, `.${resolved.setName}.staging-${stagingSuffix()}`);
   const notes: string[] = [];
   /**
@@ -407,57 +542,7 @@ export function takeCompleteBackupWithoutVerifying(
   let restarted = false;
   let published = false;
   try {
-    // ---- RE-ESTABLISHED UNDER THE PROJECT LOCK, BEFORE THE DESTINATION LOCK IS ASKED FOR -------------
-    //
-    // Everything resolved above was resolved in a moment that has now passed. A secrets directory that has
-    // been replaced by a link, a destination that has become a file, a sidecar state directory that has gone:
-    // each of those refuses again here, and each of them refuses BEFORE this run creates anything at all.
-    const underLock = resolveCompleteBackupRequest(request);
-    if (underLock.destinationDir !== resolved.destinationDir
-      || underLock.finalDir !== resolved.finalDir
-      || underLock.secretsDir !== resolved.secretsDir
-      || underLock.sidecarStateDir !== resolved.sidecarStateDir
-      || underLock.promotionRecordsDir !== resolved.promotionRecordsDir) {
-      throw new MaintenanceRefused(
-        'the directories this backup resolved changed between resolving them and taking this project\'s lock, '
-        + 'so what was checked is not what would have been copied. Nothing was written.');
-    }
-
-    // ---- THE DESTINATION MUST EXIST BEFORE A LOCK CAN BE TAKEN IN IT ---------------------------------
-    //
-    // Creating it is the ONE thing that necessarily happens outside the destination lock, and it is the one
-    // thing that cannot hurt: `mkdir` is atomic, so a second project racing this one either loses the race
-    // and finds a directory, or wins it and this one does — and both then contend for the lock inside it.
-    // A destination that does not exist is a destination nothing else can be half way through.
-    if (!existsSync(resolved.destinationDir)) {
-      if (deps.requireExistingDestination === true) {
-        throw new MaintenanceRefused(
-          'the destination this backup was told to publish into is not there. The caller requires an existing '
-          + 'directory — creating it would produce a directory nothing owns at a path something else has '
-          + 'written down. Nothing was taken.');
-      }
-      try {
-        createPrivateDirectory(resolved.destinationDir, 'backup destination');
-      } catch (err) {
-        // A SECOND CREATOR IS NOT A COLLISION. `createPrivateDirectory` refuses an existing name because most
-        // of its callers are claiming one; a backup destination is a directory operators and other projects
-        // legitimately share, so an `EEXIST` that is a plain directory means the race was lost, not that
-        // something is wrong. Anything else — a file, a link, an unwritable parent — still refuses.
-        const beat = lstatSync(resolved.destinationDir, { throwIfNoEntry: false });
-        if (beat === undefined || !beat.isDirectory() || beat.isSymbolicLink()) throw err;
-      }
-    }
-
-    // ---- THE SHARED DESTINATION LOCK, BEFORE THE FIRST STAGING DIRECTORY AND THE FIRST COMMAND -------
-    //
-    // PHASES 321-328. Until this existed, a second Compose project pointed at the same physical directory
-    // could publish a set, prune one, or claim a safety-set directory while this run was building its own
-    // — and `ops:backup-retention` counting that destination mid-publication counts a destination that does
-    // not exist. It is taken here, which is BEFORE the staging directory is created, BEFORE the first
-    // service is stopped and BEFORE `pg_dump` is started: a contender refuses having done nothing at all.
-    locks.lockDestination(provePhysicalDestination(resolved.projectRoot, resolved.destinationDir));
-
-    // ---- AND THE NAME IS CHECKED UNDER THE LOCK THAT MAKES THE ANSWER STAY TRUE ----------------------
+    // ---- THE NAME IS CHECKED UNDER THE LOCK THAT MAKES THE ANSWER STAY TRUE --------------------------
     if (existsSync(resolved.finalDir)) {
       throw new MaintenanceRefused(
         'a backup set of that name is already there. This command will not write into or replace one: choose a new '
@@ -583,6 +668,9 @@ export function takeCompleteBackupWithoutVerifying(
 
     publishDirectory(stagingDir, resolved.finalDir, 'backup set');
     published = true;
+    // THE SET IS AT ITS FINAL NAME AND NOTHING HAS VERIFIED IT. Production passes no `at` and this does
+    // nothing; a suite stops a real process here to prove both locks are still held at this instant.
+    at('after-publish');
 
     if (!components.some((component) => component.id === 'promotion-records' && component.present)) {
       notes.push('This installation has no promotion record artifacts. That is a correct and permanent state for '
@@ -614,10 +702,6 @@ export function takeCompleteBackupWithoutVerifying(
     // is the window and everything after it: a restart that failed while the set was being described leaves
     // exactly the same outage as one that failed while the dump was running.
     throw withOutage(err, stillStopped);
-  } finally {
-    // Locks this call did not take are locks this call does not release: releasing the restore's would end
-    // its exclusive window in the middle of it. Destination first, then project — the stack's order.
-    locks.release();
   }
 }
 
@@ -643,13 +727,73 @@ export interface CompleteBackupOutcome {
   readonly failures: readonly string[];
 }
 
+/**
+ * Take a complete backup and verify it, WITH BOTH LOCKS HELD FROM BEFORE THE FIRST EFFECT UNTIL AFTER THE
+ * VERDICT EXISTS.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE DEFECT CORRECTION 1 CLOSES, EXACTLY.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * This function used to call `takeCompleteBackupWithoutVerifying`, which releases both locks in its own
+ * `finally` — and then verify. So the ordinary, documented, operator-facing command dropped the shared
+ * destination lock at the instant its set was published and reacquired nothing before reading every byte of
+ * that set back. In that window another project could quarantine it, delete it, or rename something else
+ * into its name, and this command would then report `ok: true` about a set that no longer exists, report
+ * "does not verify" about a set somebody else removed, or verify a directory it did not take. The lock was
+ * correct for the whole dangerous part and absent for the part that decides what to tell the operator.
+ *
+ * SO THE OWNERSHIP MOVED UP. The locks are taken here, the taking step runs under them through publication,
+ * the verification runs under them, and only then — after the verdict exists or after a throw — are they
+ * released, destination first and project second. `takeCompleteBackupWithoutVerifying` is NOT called: it
+ * owns its own locks, and calling it would either self-deadlock or reintroduce the window.
+ *
+ * THE NESTED CASE IS THE SAME PROPERTY, ONE LEVEL UP. When `ops:complete-restore` hands this a
+ * `HeldDestination`, this function takes nothing and releases nothing: the restore's locks cover the whole
+ * of the safety set INCLUDING its verification, and they are held until the restore is over.
+ */
 export function runVerifiedCompleteBackup(
   request: CompleteBackupRequest,
   deps: CompleteBackupDeps,
 ): CompleteBackupOutcome {
-  const backup = takeCompleteBackupWithoutVerifying(request, deps);
   const resolved = resolveCompleteBackupRequest(request);
+  const at = deps.at ?? ((): void => { /* production does nothing here */ });
+
+  if (deps.held !== undefined) {
+    // NESTED, UNDER THE CALLER'S LOCKS. Validated before any effect; nothing is taken and nothing released.
+    assertNestedAuthority(deps.held, resolved);
+    ensureDestinationExists(resolved, deps);
+    return verifyWhatWasTaken(performBackup(resolved, deps), resolved, at);
+  }
+  // NOBODY AUTHORISED A CLAIM, SO A CLAIM IS NOT A DESTINATION. Refused before the project lock, before the
+  // destination exists and before anything is created.
+  assertNotSafetyClaimNamespace(request.destination);
+
+  const locks = MaintenanceLocks.open(resolved.projectRoot);
+  try {
+    enterDestination(request, deps, resolved, locks);
+    const backup = performBackup(resolved, deps);
+    return verifyWhatWasTaken(backup, resolved, at);
+  } finally {
+    // AFTER THE VERDICT, OR AFTER THE THROW THAT REPLACED IT. Destination then project — the stack's order.
+    locks.release();
+  }
+}
+
+/**
+ * Read back what was just published and turn it into the one `ok` this module produces.
+ *
+ * IT RUNS INSIDE THE CALLER'S LOCKS. Separated only so both entry paths above verify the same way; it takes
+ * no lock of its own precisely because the point is that one is already held.
+ */
+function verifyWhatWasTaken(
+  backup: CompleteBackupReport,
+  resolved: ResolvedBackupRequest,
+  at: (point: CompleteBackupFailpoint) => void,
+): CompleteBackupOutcome {
+  at('before-verify');
   const verification = verifyBackupSet(join(resolved.destinationDir, resolved.setName));
+  at('after-verify');
   const failures: string[] = [];
   if (!backup.restarted) {
     failures.push('the stack did not come back up after the backup, and it is down now');

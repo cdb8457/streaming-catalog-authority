@@ -37,7 +37,8 @@ import {
   type ClaimMarkerRefusal,
 } from '../src/ops/maintenance-identity.js';
 import {
-  DESTINATION_LOCK_DIRNAME, MAINTENANCE_LOCK_DIRNAME, MaintenanceRefused,
+  DESTINATION_LOCK_DIRNAME, MAINTENANCE_LOCK_DIRNAME, MaintenanceLocks, MaintenanceRefused,
+  resolveBackupDestination,
 } from '../src/ops/maintenance-safety.js';
 import {
   CLAIM_MARKER_EXPECTATION,
@@ -193,9 +194,30 @@ function takeSetInto(root: string, destination: string, setName: string, options
     projectRoot: root, destination, setName, custodian: 'inline',
     secrets: 'secrets', promotionRecords: 'promotion-records',
   };
-  const outcome = runVerifiedCompleteBackup(request, {
-    runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger, now: () => takenAt,
-  });
+  // PUBLISHING INTO A CLAIM IS THE RESTORE'S PATH, SO THE FIXTURE TAKES THE RESTORE'S ROUTE — Phases
+  // 321-328 Correction 1. An ordinary backup is refused a destination inside a `.pre-restore-claim-<nonce>`
+  // namespace, because its lock would sit BELOW the one this command and ops:backup-retention take on the
+  // destination above it. Only a capability minted by a run that is really holding the enclosing
+  // destination authorises it, and that is exactly what a real `ops:complete-restore` does — so the fixture
+  // holds those locks itself rather than asking for an exemption.
+  const enclosing = destination.split('/').filter((part) => part !== '' && part !== '.');
+  const claimAt = enclosing.findIndex((part) => CLAIM_NAME_RE.test(part));
+  const locks = claimAt <= 0 ? null : MaintenanceLocks.open(root);
+  let outcome;
+  try {
+    let held;
+    if (locks !== null) {
+      const holding = resolveBackupDestination(root, enclosing.slice(0, claimAt).join('/'));
+      locks.lockDestination(holding.destinationDir);
+      held = locks.heldDestination();
+    }
+    outcome = runVerifiedCompleteBackup(request, {
+      runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger, now: () => takenAt,
+      ...(held === undefined ? {} : { held }),
+    });
+  } finally {
+    locks?.release();
+  }
   const setDir = join(root, destination, setName);
   if (options.rollbackPoint === true) {
     // THE MANIFEST HAS TO AGREE THAT IT IS OLDER, which is exactly the shape a set taken by the previous

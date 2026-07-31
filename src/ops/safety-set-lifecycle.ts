@@ -26,6 +26,7 @@ import {
 import {
   DESTINATION_LOCK_DIRNAMES,
   MaintenanceLocks,
+  SAFETY_CLAIM_DIR_RE,
   MaintenanceRefused,
   assertUsableName,
   createPrivateDirectory,
@@ -188,7 +189,10 @@ export const SAFETY_SUFFIX_RE = /^[0-9a-f]{12}$/;
  * is reported as `MALFORMED` too, with `MARKER_NAME_DISAGREES`, because a claim somebody moved is a claim
  * whose relationship to the run that made it nobody here can reconstruct.
  */
-export const CLAIM_NAME_RE = /^\.pre-restore-claim-[0-9a-f]{24}$/;
+// ONE DEFINITION, on the shared floor — Correction 1. `ops:complete-backup` refuses a destination inside
+// this namespace and the held-destination capability authorises exactly one directory of this shape, so the
+// pattern cannot live in this file alone any more.
+export const CLAIM_NAME_RE = SAFETY_CLAIM_DIR_RE;
 
 /** What `readRestoreClaimMarker` needs to know about the build whose claims this is reading. */
 export const CLAIM_MARKER_EXPECTATION: ClaimMarkerExpectation = Object.freeze({

@@ -40,8 +40,8 @@ changed except the destination-lock sentence itself, which had to.
   **No behaviour change** except the one refusal sentence
 - `src/ops/safety-set-lifecycle.ts` — same, and it no longer imports a lock name from retention
 - `src/ops/complete-backup.ts` — re-resolves under the project lock, ensures the destination exists, takes
-  the destination lock **before** staging and **before** the first command; `holdingLock` widened to cover
-  both locks
+  the destination lock **before** staging and **before** the first command, and (Correction 1) holds both
+  through the **verification**; refuses a claim-namespace destination; validates the nested capability
 - `src/ops/complete-restore.ts` — takes the destination lock immediately after the journal is re-read and
   proved unchanged, from the **journal's** destination, and holds it across the whole destructive protocol;
   `--abandon` takes it too, and proceeds without it rather than stranding a recovery when the destination
@@ -60,9 +60,10 @@ changed except the destination-lock sentence itself, which had to.
 
 ## Closed invariants
 
-1. **One primitive, one name, one vocabulary.** `.catalog-destination.lock` is a literal in exactly one
-   module. No command module spells it, and none calls `acquireDestinationLock` — a suite scans every file
-   under `src/ops/` for both.
+1. **One primitive, one name, one vocabulary.** `.catalog-retention.lock` — the name every shipped build
+   already uses — is a literal in exactly one module, `DESTINATION_LOCK_DIRNAMES` has exactly one entry, and
+   acquiring it is one `mkdir` with nothing inspected first. `acquireDestinationLock` is **not exported**,
+   so no command module can reach it.
 2. **The order is structural, not conventional.** The only way to reach the destination lock is through a
    `MaintenanceLocks` obtained by taking the project lock; `release()` releases destination-then-project
    regardless of what a call site remembers, and does so in a `finally` so a destination lock that would not
@@ -74,15 +75,16 @@ changed except the destination-lock sentence itself, which had to.
 5. **A contender refuses before its first effect.** No staging directory, no claim, no rename, no delete, no
    journal, no child command, no network — asserted against the argv ledger and a byte-level snapshot of the
    destination taken either side of five real contender processes.
-6. **`ops:complete-backup` does not start `pg_dump` before the lock.** The lock precedes the staging
-   directory, the first `docker compose stop` and the dump.
+6. **`ops:complete-backup` does not start `pg_dump` before the lock**, and does not release it until the
+   VERIFICATION VERDICT EXISTS. The lock precedes the staging directory, the first `docker compose stop` and
+   the dump, and outlives the publication and the read-back.
 7. **`ops:complete-restore` creates no claim and stops nothing before the lock.** The lock precedes the
    under-lock re-verification of the set, the claim `mkdir`, the safety set and `compose down -v`.
 8. **A resume and an abandon lock the destination the JOURNAL names**, never a caller flag.
 9. **A crash leaves both locks, no false success, and nothing removes them.** The stale-lock recovery is
    manual, deterministic and documented, and the suite performs it.
-10. **A lock left by an EARLIER build is refused by name.** `.catalog-retention.lock` still stops all four
-    commands, is never removed, and never has a new lock taken beside it.
+10. **An older build and this one contend on ONE atomic name**, in both directions, with no window — and
+    release only ever removes the lock the calling run created.
 11. **A plan takes no lock.** Reading one is never refused by another project's run, and the plan-only Unraid
     and operator-UI surfaces are unchanged and still non-destructive.
 12. **Retention and safety-set lifecycle lost nothing.** Their authority, quarantine, journal,
@@ -94,9 +96,9 @@ changed except the destination-lock sentence itself, which had to.
 
 | Command | Path | Project lock taken | Destination lock taken | Released |
 | --- | --- | --- | --- | --- |
-| `ops:complete-backup` | `--confirm` (a run) | before anything is created | after re-resolving under the project lock and ensuring the destination exists — before staging, before `compose stop`, before `pg_dump` | destination, then project, in `finally` |
+| `ops:complete-backup` | `--confirm` (a run) | before anything is created | after re-resolving under the project lock and ensuring the destination exists — before staging, before `compose stop`, before `pg_dump` | destination, then project, in `finally`, **after the verification verdict** |
 | `ops:complete-backup` | `--plan` | none | none | — |
-| `ops:complete-backup` | nested safety set (`holdingLock`) | inherited, none taken | inherited, none taken | inherited |
+| `ops:complete-backup` | nested safety set (`HeldDestination`) | none: the caller's | none: the caller's | nothing — a nested failure releases none of the caller's locks |
 | `ops:complete-restore` | `--confirm` (a run) | before the journal is re-read | immediately after the journal is re-read and proved identical — before the set is re-verified, before the claim, before the safety set, before `down -v` | destination, then project, in `finally`, after the verdict, the staging cleanup and the journal clear |
 | `ops:complete-restore` | `--resume` | as above | as above, from the **journal's** destination | as above |
 | `ops:complete-restore` | `--abandon` | after a pre-lock journal read | from the **journal's** destination, after the journal is re-read under the lock; **skipped with a note** if that destination no longer resolves | destination, then project, in `finally` |
@@ -261,11 +263,9 @@ so is a different tranche and would put unrelated changes in this diff.
    comments that say *there is no `--force`*, and "the plan-only surfaces never confirm" tripped over prose
    explaining what `--confirm` is. Both now ask the behaviour: each CLI is really run with each flag and must
    answer with a usage error, and only lines that actually invoke a command are scanned for `--confirm`.
-5. **A renamed lock would have made an older build's crashed run invisible.** Renaming
-   `.catalog-retention.lock` to `.catalog-destination.lock` is right — the old name was a lie from the second
-   command onward — but an operator upgrading with an interrupted prune on disk would have had the new
-   commands walk straight past a directory the old ones refused for. The old name is refused by name, loudly,
-   and is still never removed.
+5. **A renamed lock would have made an older build's crashed run invisible**, so the first cut kept the old
+   name working with a pre-check. **Correction 1 found that the pre-check was itself the bug** and the rename
+   was abandoned — see below.
 6. **The restore's abandon could have been wedged by the lock I was adding.** A destination that has been
    unmounted, renamed or removed since the crash would have made the one command that puts an installation
    back refuse forever, on the strength of a directory it does not need. Resolution failure is a note;
@@ -294,30 +294,178 @@ so is a different tranche and would put unrelated changes in this diff.
 
 ## Remaining risks
 
-1. **The lock is the directory a command was told to publish into.** An operator who points
-   `ops:complete-backup --destination` at a *claim namespace inside* a destination by hand locks that
-   directory rather than the destination above it. No shipped flow and no documented operator action does
-   that — the restore's nested backup inherits the enclosing lock — but the product does not refuse it
-   either, and a reviewer should decide whether a dot-prefixed destination leaf should be refused outright.
-2. **`ops:complete-backup` resolves its request twice** — once before the project lock for the cheap
+1. **`ops:complete-backup` resolves its request twice** — once before the project lock for the cheap
    refusals, once under it because a check made before a lock is about a moment that has passed. That doubles
    an `assertPlainTree` walk bounded at 5000 entries over the secrets and promotion-records directories.
    Cheap in practice; nobody has measured it against a large promotion-records tree.
-3. **The lock is exactly as strong as the destination's filesystem.** Two hosts sharing a destination over a
+2. **The lock is exactly as strong as the destination's filesystem.** Two hosts sharing a destination over a
    network filesystem without correct atomic directory creation are not covered. This is a property of
    `mkdir`, is stated in the design document, and cannot be closed from inside this product.
-4. **The contender matrix drives a fresh `--confirm` for every command, not a `--resume`.** Resume and
+3. **The contender matrix drives a fresh `--confirm` for every command, not a `--resume`.** Resume and
    abandon contention is covered behaviourally for `ops:backup-retention` (a real interrupted journal) and
    for `ops:complete-restore --abandon`, and structurally for the rest. A restore `--resume` under
    contention is not driven end to end, because reaching its lock requires a real interrupted restore in the
    contender project; the code path is the same one the fresh run takes, three lines earlier.
-5. **`ops:complete-restore` runs one read-only `docker compose ps` before the lock**, as part of classifying
+4. **`ops:complete-restore` runs one read-only `docker compose ps` before the lock**, as part of classifying
    the target state its plan digest binds. It starts nothing and changes nothing, and it is stated rather
    than papered over — but it means "no command at all before the lock" is true of the backup and not,
    strictly, of the restore.
-6. **A shared destination is now safe, not sensible.** Two installations' backups in one directory still
+5. **A shared destination is now safe, not sensible.** Two installations' backups in one directory still
    share free space, a blast radius, and one operator's `--keep-last` deciding about another's sets. The
    product no longer corrupts that configuration; it still does not recommend it, and a reviewer may decide
    it should refuse one outright.
-7. **Three pre-existing suite failures remain** (table above). They are unrelated and untouched, and a
+6. **Three pre-existing suite failures remain** (table above). They are unrelated and untouched, and a
    reviewer running the full gate on a clean checkout will see the same three.
+
+---
+
+# Correction 1 — five defects found by independent review, all reachable, all fixed
+
+Independent review returned four release-blocking findings; two more came out of the fixes themselves, one
+of them found by a test written for a different bug. Every one is behavioural, and every one now has a
+behavioural test rather than a source assertion.
+
+## 1. RELEASE-BLOCKER — the ordinary command dropped both locks before it verified
+
+`runVerifiedCompleteBackup` called `takeCompleteBackupWithoutVerifying`, which releases both locks in its
+own `finally`, and only then read every byte of the set back to decide the verdict. **The documented,
+operator-facing command therefore held nothing at all between publishing its set and verifying it.** Inside
+that window another project could quarantine the set, delete it, or move something else into its name — and
+this command would report `ok: true` about a set that had gone, "does not verify" about a set somebody else
+removed, or a verdict about a directory it had not taken.
+
+**Fixed** by moving lock ownership up. `runVerifiedCompleteBackup` opens the stack, an internal
+`performBackup` does the taking, `verifyWhatWasTaken` runs **inside the same locked region**, and the
+release happens after the verdict exists or after a throw. The verified command no longer calls the
+unverified entry point at all — that one keeps its own locks because it is the step a suite drives directly.
+
+**Proved** by a real `ops:complete-backup` child stopped at a new `before-verify` boundary — set published,
+verdict not yet computed — with five real contender processes started from another project against the same
+physical destination from inside that instant. All five refuse; the published set is byte-identical either
+side; the command then finishes and releases both locks.
+
+## 2. RELEASE-BLOCKER — `holdingLock: true` was an unbound no-lock bypass
+
+A boolean names no project, no destination and no holder. Any caller could set it and suppress **both**
+locks for **any** project and **any** destination, and the only thing standing between that and an unlocked
+backup was a suite grepping `src/` for the word. A source allowlist is a lint rule, not an authority.
+
+**Fixed** with a `HeldDestination` capability. `MaintenanceLocks.inherited()` — the public no-lock factory —
+is deleted. A capability can only be minted by a stack that is really holding both locks; its identity is
+membership of a module-private `WeakSet`, so the one forgery TypeScript cannot stop (a cast) is refused at
+runtime; it is bound to the canonical project root; and it is invalidated when its owner releases.
+`acquireDestinationLock` is no longer exported, so the acquisition order cannot be expressed backwards.
+
+## 3. RELEASE-BLOCKER — the legacy-lock migration was check-then-create
+
+`acquireDestinationLock` `lstat`ed `.catalog-retention.lock` and then `mkdir`ed `.catalog-destination.lock`.
+**A check of one name followed by a create of another is not a lock**: an older `ops:backup-retention` could
+take the old name inside that window and both processes would believe they held the destination — so the
+rename returned *less* exclusion than the two commands already had.
+
+**Fixed** by keeping `.catalog-retention.lock` as the canonical filename. One name, one `mkdir`, one atomic
+operation; the vocabulary around it moved to "destination" and the name on disk did not. The docs now scope
+cross-version protection honestly: **older `ops:complete-backup` and `ops:complete-restore` took no
+destination lock at all**, so a mixed-build fleet is covered for the two commands that always took it and
+not for the two that did not — no filename can fix that.
+
+**Proved** in both directions, with the old-style acquisition spelled as a literal `mkdir` rather than
+imported, so the test cannot pass by construction if the name ever changes again.
+
+## 4. TEST/DOC ACCURACY — a test titled for a document it did not assert
+
+The CLI test was called "one JSON document on lock refusal" and asserted an **empty stdout** plus a prose
+stderr sentence. Both cannot be true. The assertions were the honest half: a refusal before any effect has
+no report to serialise, so `--json` emits no document, stdout stays empty, the sentence goes to stderr and
+the exit code is `3`. The test and the report now say that, and neither claims a document was produced. The
+one-document contract belongs to the report paths and is unchanged, still asserted in
+`test/backup-retention.ts`.
+
+## 5. The capability authorised too much, and proved containment from the wrong things
+
+Two defects in the fix for #2, both raised in review:
+
+* **It authorised every descendant** of the held destination, and a test asserted that as if it were the
+  requirement. The legitimate caller publishes into exactly one directory, so the permitted set is now
+  closed: the held destination itself, or **one already-existing** `.pre-restore-claim-<nonce>` directory
+  **directly** inside it. An ordinary subdirectory, a deeper path, a claim two levels down, and a claim that
+  does not exist are all refused.
+* **It folded case whenever `process.platform` was `win32` or `darwin`.** That is a guess about a host when
+  the question is about a directory — macOS ships case-sensitive APFS volumes, Windows supports
+  per-directory case sensitivity — and on a case-sensitive volume it would have treated two different
+  directories as one. Containment is now an exact comparison of canonical paths, corroborated by the
+  filesystem's own `ino`/`dev`, which can only ever reject.
+
+The same review closed the candidate's **remaining risk #1**: a standalone `ops:complete-backup` pointed
+into a claim namespace would lock *inside* the claim while retention and lifecycle lock the destination
+*above* it. Both entry points now refuse any destination with a claim-shaped component, before the project
+lock and before anything is created; only a capability authorises that namespace.
+
+## 6. A capability bound to a path is not bound to a directory — and release was not ownership-bound
+
+Two more, the second found by the test written for the first:
+
+* **`HeldDestination` compared the directory currently at a path with the directory currently at that same
+  path** — a tautology. Rename the held destination away, build a new directory at the original path, and
+  the check passed while the lock that was actually taken sat in the inode that moved. The capability now
+  carries the `ino`/`dev` of the destination **and of the lock directory inside it**, captured when
+  `lockDestination` acquired, and fails closed when the filesystem reports no usable inode.
+* **`acquireLockDirectory(...).release()` stored only a path.** In exactly that renamed-and-replaced state,
+  the `finally` would `unlink` and `rmdir` the **foreign** replacement lock and leave this run's real lock
+  stale inside the directory that moved — one command tidying up would silently unlock a destination another
+  command was working in. Release is now bound to the directory identity captured at acquisition **and** to
+  an unguessable token written inside the lock; on missing, mismatched or replaced state it does nothing.
+  This covers the **project** lock and every other user of the primitive, not only the destination lock, and
+  the reverse release order is unchanged.
+
+**Proved** by renaming a held destination away, rebuilding it at the same path complete with a same-named
+claim and a lock directory of its own, and asserting that the old capability refuses before any effect, that
+the replacement is byte-identical afterwards, that `release()` leaves the replacement lock untouched, and
+that the moved original stays stale — with explicit cleanup, because the fixture deliberately leaves two
+locks nothing owns.
+
+## Correction 1 gates
+
+| Gate | Result |
+| --- | --- |
+| `npx tsc -p tsconfig.json --noEmit` | **PASS**, 0 errors |
+| `npm run test:shared-destination-lock` | **47 passed, 0 failed** (was 31) |
+| `npm run test:complete-backup` | 49 passed, 0 failed |
+| `npm run test:complete-restore` | 136 passed, 0 failed |
+| `npm run test:backup-retention` | 114 passed, 0 failed |
+| `npm run test:safety-set-lifecycle` | 98 passed, 0 failed |
+| `npm run test:inventory` | **PASS**, `ok: true` |
+| `npx tsx test/release-readiness.ts` | 44 passed, 0 failed |
+| `npx tsx test/doctor-monitor.ts` | 19 passed, 0 failed |
+| `npx tsx test/kek-rotation.ts` | 12 passed, 0 failed |
+| `npx tsx test/upgrade-rehearsal.ts` | 49 passed, 0 failed |
+| `npx tsx test/backup-components.ts` | 41 passed, 0 failed |
+| `npx tsx test/custody-cutover.ts` | 22 passed, 2 failed — **pre-existing**, identical on merged `origin/master` |
+| `npx tsx test/custody-transition.ts` | 14 passed, 1 failed — **pre-existing**, identical on merged `origin/master` |
+
+The three suites that touch the lock primitive without belonging to this family — `doctor-monitor`,
+`kek-rotation`, `custody-*` — were re-run specifically because Correction 1 changed
+`acquireLockDirectory`, which every one of them uses.
+
+## What Correction 1 did NOT change
+
+- **No lock filename changed**, so no operator's interrupted run became invisible.
+- **No journal schema was versioned**; still no persisted field or semantic has changed.
+- **No refusal wording changed** except the destination-lock sentence, which was already this tranche's.
+- **No scheduler, no `--force`, no `--break-lock`.** A plan still takes no lock.
+- **Retention and safety-set lifecycle kept every protection**: 114 and 98 checks, unchanged in substance.
+
+## Remaining risks after Correction 1
+
+1. **The nested capability is checked, but the claim it authorises is only checked for shape and existence.**
+   `ops:safety-set-lifecycle` proves a claim's ownership from the marker inside it; the capability check does
+   not re-prove that, because at the moment a restore publishes, the marker is the restore's own and the
+   directory is one it just created. A reviewer may want the two ownership proofs unified.
+2. **A filesystem that reports no usable inode refuses the nested safety-set backup outright.** That is the
+   fail-closed choice and it means a restore on such a filesystem cannot take a safety set at all, rather
+   than taking one unprotected. Nobody has found a filesystem this build runs on where that happens.
+3. **`releaseOwnedLock` leaves a stale lock when it cannot prove ownership.** That is deliberate — the
+   alternative deletes somebody else's — but it means a renamed-and-replaced destination accumulates a lock
+   an operator has to remove by hand, and nothing reports it until the next run.
+4. Risks 1-6 from the candidate report above stand as written, minus the claim-namespace risk, which is
+   closed.
