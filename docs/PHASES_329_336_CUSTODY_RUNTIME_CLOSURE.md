@@ -194,7 +194,7 @@ No source-text gate in this repository could have caught it. Nothing about that 
 
 ## Part 3 — The new suite
 
-`test/custody-runtime-closure.ts`, registered as `test:phase329-local` and as a required CI gate. 37 checks.
+`test/custody-runtime-closure.ts`, registered as `test:phase329-local` and as a required CI gate. 38 checks.
 
 **The extractors, held to their contract** — the same region from the same script under LF, CRLF and CR;
 refusal (not a wrong region) when a function, arm or `case` is missing, duplicated or unclosed; an arm chosen

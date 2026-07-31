@@ -352,6 +352,44 @@ esac
     `a quoted esac does not truncate the block: ${fallback}`);
 });
 
+await test('the mask blanks quoted text with a character that is not whitespace, written as an escape', () => {
+  // CORRECTION 3, AND BOTH HALVES MATTER.
+  //
+  // THE BEHAVIOUR. The mask replaces quoted and escaped characters so that `;;`, `esac` and `$(` are found
+  // in CODE rather than in text. The replacement must not be a SPACE: the mask is searched with
+  // `(^|\s)esac(\s|;|$)`, and blanking to spaces would MANUFACTURE the word boundary that expression needs.
+  // `x"y"esac` is one word to the shell — `xyesac`, not the keyword — but masked with spaces it reads as
+  // `x"  esac` and matches, ending the block early. A truncated block is how an arm's later contents stop
+  // being searched at all, which is this module's original fail-open wearing yet another hat.
+  const script = parseShellSource(`case "\${ACTION}" in
+  bootstrap)
+    x"y"esac
+    chmod 0644 "\${SECRETS_DIR}/custodian_root_key"
+    ;;
+  *)
+    exit 3
+    ;;
+esac
+`, 'mask-placeholder');
+  const arm = shellText(caseArm(caseBlock(script, 'ACTION'), 'bootstrap'));
+  assert(arm.includes('chmod 0644'), `a quoted-adjacent "esac" does not close the block: ${arm}`);
+  assert(!arm.includes('exit 3'), 'and the arm still stops before the next one');
+
+  // THE SOURCE FORM. That character was written as a LITERAL NUL — invisible in a diff, a patch, an editor
+  // and a terminal. The repository's own guard caught it, in `test/operator-ui-import-endpoint.ts`; this is
+  // the same rule held locally, over the files this tranche owns, so a reintroduction fails here too rather
+  // than only in a suite that needs a database.
+  for (const file of ['test/helpers/shell-source.ts', 'test/custody-runtime-closure.ts']) {
+    const text = readRepo(file);
+    for (let index = 0; index < text.length; index += 1) {
+      const code = text.charCodeAt(index);
+      const allowed = code === 0x09 || code === 0x0a || code === 0x0d;
+      assert(code >= 0x20 || allowed,
+        `${file} carries a literal control byte ${code} at offset ${index}: write it as an escape`);
+    }
+  }
+});
+
 await test('a nested case does not end the arm that contains it', () => {
   // CORRECTION 1, FINAL ROUND — CONFIRMED FAIL-OPEN. The arm ended at the FIRST `;;` after its pattern, and
   // an inner `case` supplies one long before the outer arm is over. Probed against the working tree, the

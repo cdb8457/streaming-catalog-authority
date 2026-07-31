@@ -199,6 +199,29 @@ function commentAt(lexed: Lexed): number {
 }
 
 /**
+ * The character quoted and escaped text is replaced with in a mask.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHY NUL, AND WHY IT IS WRITTEN AS AN ESCAPE.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * NOT A SPACE, because `\s` matches a space and the mask is searched with `(^|\s)esac(\s|;|$)`. Blanking
+ * quoted text to spaces would MANUFACTURE word boundaries: `x"y"esac` is one word to the shell — `xyesac`,
+ * not the keyword — but masked with spaces it reads as `x"  esac`, whose `esac` is preceded by whitespace
+ * and matches. `closesCase` would then end a block early, and a truncated block is how an arm's later
+ * contents stop being searched at all. NUL is whitespace to none of these expressions, so a mask can only
+ * ever remove a match — never invent one.
+ *
+ * AND IT IS AN ESCAPE, NOT A RAW BYTE. Correction 3: this was written as a literal NUL between two quotes.
+ * That byte is invisible in a diff, a patch, an editor and a terminal, and this repository already had a
+ * gate saying so in as many words — "no TypeScript source in this repository carries a literal control
+ * byte: write it as an escape instead: it is the same character to the compiler and it survives being moved
+ * around". The gate was right and it caught this. `'\u0000'` is that same character, written so it cannot
+ * be lost.
+ */
+const MASKED = '\u0000';
+
+/**
  * A copy of the line in which every quoted or escaped character is blanked out.
  *
  * Offsets are preserved 1:1, so an `indexOf` or a regular expression run against the mask finds only
@@ -208,7 +231,7 @@ function commentAt(lexed: Lexed): number {
 function maskQuoted(lexed: Lexed): string {
   let out = '';
   for (let index = 0; index < lexed.text.length; index += 1) {
-    out += bare(lexed, index) ? lexed.text[index]! : ' ';
+    out += bare(lexed, index) ? lexed.text[index]! : MASKED;
   }
   return out;
 }

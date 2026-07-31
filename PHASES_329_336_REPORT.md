@@ -36,7 +36,7 @@ fixed here.
 | File | Change |
 | --- | --- |
 | `test/helpers/shell-source.ts` | **New.** Structural reader for the shipped shell scripts: brace-matched function bodies, `case` blocks and arms, word-split call sites across `\` continuations and into `$( … )`, quote-aware comment stripping. Every extractor **refuses rather than returning a region it is unsure of**. *Correction 1:* all extraction now goes through one validating door, `logicalLines`, which refuses unterminated quotes and substitutions, dangling final continuations, duplicate function definitions, unterminated heredocs and expanding heredoc bodies — and validates on the **logical** line, which also fixed a silent truncation of the custody helper. |
-| `test/custody-runtime-closure.ts` | **New**, 37 checks. The phase329 suite. |
+| `test/custody-runtime-closure.ts` | **New**, 38 checks. The phase329 suite. |
 | `test/kek-correction-gates.ts` | The custody-helper gate is brace-matched, plus a contrast assertion that `write_secret_if_absent` *does* chmod — so an empty region cannot pass. |
 | `test/custody-transition.ts` | The command-line gate counts **arguments** instead of asserting an LF terminator, and now also counts the helper's real argv and rejects value-producing substitutions in it. |
 | `test/custody-cutover.ts` | The overlay gate **parses the YAML**; the marker gate uses `caseArm(caseBlock(src, 'ACTION'), …)` plus a contrast assertion on the `bootstrap` arm. |
@@ -195,6 +195,31 @@ launcher-independence test now genuinely supplies the hostile environment its co
 after-publish shim uses `command -p mv "$@"` with **no fallback retry**, since a real first failure must not
 be attempted again before the signal is sent.
 
+## Correction 3 — a literal NUL in the parser's source
+
+Independent DB acceptance found a real regression introduced by correction 1: `test/helpers/shell-source.ts`
+carried a **raw NUL byte** as the mask placeholder, failing this repository's own standing invariant in
+`test/operator-ui-import-endpoint.ts` — *"no TypeScript source in this repository carries a literal control
+byte: write it as an escape instead."* That suite reported 60 passed, **1 failed**. The gate was right.
+
+**The character is correct; the way it was written was not.** The mask replaces quoted and escaped text so
+that `;;`, `esac` and `$(` are located in code rather than in text, and the placeholder must **not** be a
+space: the mask is searched with `(^|\s)esac(\s|;|$)`, so blanking to spaces would *manufacture* the word
+boundary that expression needs. `x"y"esac` is one word to the shell — `xyesac`, not the keyword — but masked
+with spaces it reads as `x"  esac` and matches, ending a block early; a truncated block is how an arm's later
+contents stop being searched, which is this module's original fail-open in yet another guise. So the fix is
+`const MASKED = '\u0000'` — the same character to the compiler, written so it survives a diff, a patch, an
+editor and a terminal.
+
+Both halves are now asserted locally in `test/custody-runtime-closure.ts`, so a reintroduction fails in this
+tranche's own gate rather than only in a suite that needs a database: the behaviour (a quoted-adjacent `esac`
+does not close the block) and the source form (no literal C0 byte other than tab, LF or CR in either
+`shell-source.ts` or the suite itself). The complete tracked TypeScript surface — **899 files** — was scanned
+and is clean.
+
+No parser behaviour or refusal guarantee from corrections 1 and 2 changed: the substitution is
+runtime-equivalent, and every gate that consumes the reader was re-run.
+
 ## The two defects, stated plainly
 
 ### 1. The PowerShell setup wrote a root wrapping key it could not protect
@@ -308,7 +333,7 @@ It is recorded as a flake on this evidence, not assumed to be one:
 
 | Suite | Result |
 | --- | --- |
-| `test/custody-runtime-closure.ts` (new) | **37 passed, 0 failed** (22 at `43f854a`; correction 1 added 14, correction 2 added 1) |
+| `test/custody-runtime-closure.ts` (new) | **38 passed, 0 failed** (22 at `43f854a`; correction 1 added 14, correction 2 added 1, correction 3 added 1) |
 | `test/promotion-chain-operator-ui.ts` | **19 passed, 0 failed** — includes the PowerShell setup **executed** on this host |
 | `test/release-readiness.ts` | **44 passed, 0 failed** — the mutation test removes each required suite command in turn and requires a BLOCK; it now covers `test:phase329-local` |
 | `test/deploy.ts`, `test/o4-o5-runtime-acceptance.ts`, `test/consumer-release-image.ts`, `test/arcane-install.ts`, `test/managed-custody-lifecycle.ts`, `test/custodian-contract.ts`, `test/backup-inspect.ts`, `test/complete-backup.ts` | all **exit 0** within the offline group |
