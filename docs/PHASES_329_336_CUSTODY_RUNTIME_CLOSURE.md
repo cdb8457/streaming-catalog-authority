@@ -194,7 +194,7 @@ No source-text gate in this repository could have caught it. Nothing about that 
 
 ## Part 3 — The new suite
 
-`test/custody-runtime-closure.ts`, registered as `test:phase329-local` and as a required CI gate. 38 checks.
+`test/custody-runtime-closure.ts`, registered as `test:phase329-local` and as a required CI gate. 39 checks.
 
 **The extractors, held to their contract** — the same region from the same script under LF, CRLF and CR;
 refusal (not a wrong region) when a function, arm or `case` is missing, duplicated or unclosed; an arm chosen
@@ -230,9 +230,19 @@ platform it permits is not tested.
 refusal printed in the helper's own words, and a re-run that does not relent).
 
 **The marker, executed** — a relative project directory refused before anything is touched; bootstrap
-succeeds *and says so*; exactly one file appears and no temporary survives; the marker is private from the
-instant it exists; rollback to root-only removes it and writes nothing on the way; every action idempotent in
-both status and effect.
+succeeds *and says so*; exactly one file appears and no temporary survives; rollback to root-only removes it
+and writes nothing on the way; every action idempotent in both status and effect.
+
+**And the marker's mode lifecycle, which is not what an earlier version of this gate claimed.** The published
+marker is **0644**, deliberately and since 019a97d7: it names which of two compose files the stack runs under
+and the app reads it, so it is not a secret. The security claim is about the **window** — `mktemp` under
+`umask 077` means the file is private *from the instant it exists*, so a half-written marker is never
+readable by another account, and the widening afterwards is a decision the script makes on purpose about a
+file whose contents are one word. Proving that needs a look *while it is happening*, so a `chmod` shim
+records the mode of its target before handing over to the real `chmod`, and that recording is a receipt: no
+receipt, no conclusion. The gate asserts the private mode before the widening, that `chmod` is asked for
+`0644` and applied to the unpredictable **temporary** rather than to the published name, and that the marker
+ends at 0644 with no temporary left.
 
 ## What was deliberately not done
 

@@ -1,7 +1,7 @@
 import { spawnSync, type SpawnSyncReturns } from 'node:child_process';
 import {
   chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync,
-  statSync, symlinkSync, writeFileSync,
+  statSync, symlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -709,9 +709,15 @@ await test('a directory at the custody path is refused, not written into or arou
   const dir = join(WORK, 'directory-at-name');
   mkdirSync(join(dir, 'custodian_root_key'), { recursive: true });
   const [uid, gid] = ids();
+  // THE REFUSAL THE HELPER REALLY GIVES. Correction 4: this asserted "could not be created", which is the
+  // message for a failed `open`. A directory does not fail to open — on Linux `O_RDONLY|O_NOFOLLOW` on a
+  // directory SUCCEEDS — so the helper gets a descriptor and then refuses on what `fstat` says it is. The
+  // check is `!before.isFile()`, and the refusal names that. The test was asserting a different failure from
+  // the one the product has, and it only ever ran on Linux, so nothing local could see it.
   refuses(() => helper.writeCustodySecret(join(dir, 'custodian_root_key'), A_ROOT_KEY, uid, gid),
-    'could not be created', 'a directory standing at the custody path');
+    'not a regular file', 'a directory standing at the custody path');
   assertEq(readdirSync(join(dir, 'custodian_root_key')).length, 0, 'and nothing was written inside it');
+  assert(statSync(join(dir, 'custodian_root_key')).isDirectory(), 'and it is still the directory it was');
 });
 
 await test('an existing custody file that fails verification is refused and left exactly as it was', () => {
@@ -743,22 +749,33 @@ await test('a write that fails part-way leaves NO file at the custody path', () 
   // A writer that writes the first chunk and then stalls. A root wrapping key truncated this way is bytes
   // that look like a key: the setup exits, the sidecar starts, and the ring is sealed under something nobody
   // can reproduce. The only safe residue is none.
+  // `writeSync` IS IMPORTED, NOT `require`d. Correction 4: these two injected writers called
+  // `require('node:fs')` inside an ES module. On Windows the whole test is skipped, so the only host that
+  // reached the line was Linux — where it threw `require is not defined` and the injected writer never ran.
+  // The refusals below were being produced by a ReferenceError rather than by the partial-write path they
+  // exist to exercise, which is a gate proving nothing while reporting a pass.
   const path = join(dir, 'stalls');
   let calls = 0;
+  let stallCalls = 0;
   refuses(() => helper.writeCustodySecret(path, A_ROOT_KEY, uid, gid, (fd, b, off, _len, pos) => {
     calls += 1;
-    return calls === 1 ? require('node:fs').writeSync(fd, b, off, 8, pos) : 0;
+    stallCalls += 1;
+    return calls === 1 ? writeSync(fd, b, off, 8, pos) : 0;
   }), 'could not be written in full', 'a writer that stalls after the first chunk');
+  assert(stallCalls >= 2, `the injected writer really ran (${stallCalls} calls), so this is the write path`);
   assertEq(existsSync(path), false, 'and nothing is left at that name for the next run to adopt');
 
   // A writer that writes the RIGHT NUMBER of bytes and the WRONG ONES. The length check alone would pass it;
   // the read-back from the same descriptor is what does not.
   const swapped = join(dir, 'swapped');
+  let swapCalls = 0;
   refuses(() => helper.writeCustodySecret(swapped, A_ROOT_KEY, uid, gid, (fd, b, off, len, pos) => {
+    swapCalls += 1;
     const forged = Buffer.from(b.subarray(off, off + len));
     forged[0] = forged[0]! ^ 0xff;
-    return require('node:fs').writeSync(fd, forged, 0, len, pos);
+    return writeSync(fd, forged, 0, len, pos);
   }), 'not the value that was written', 'a writer that writes the wrong bytes at the right length');
+  assert(swapCalls >= 1, `the forging writer really ran (${swapCalls} calls), so the read-back is what refused`);
   assertEq(existsSync(swapped), false, 'and that file is gone too');
 
   // AND THE SAME PATH SUCCEEDS ONCE THE WRITER IS HONEST, so every refusal above was the failure injected
@@ -1133,10 +1150,9 @@ await test('the marker script, EXECUTED, publishes atomically and leaves no temp
   // NO TEMPORARY SURVIVES. `mktemp` plus `trap cleanup EXIT` plus an atomic `mv` means a reader either sees
   // the old state or the new one, and never a half-written name an attacker could have planted first.
   assertEq(after.filter((name) => /\.tmp|XXXX|\.[0-9]+$/.test(name)).length, 0, 'and no temporary is left behind');
-  if (POSIX) {
-    assertEq(statSync(join(project, after[0]!)).mode & 0o077, 0,
-      'the marker is private from the instant it exists (umask 077)');
-  }
+  // THE MODE LIFECYCLE IS PROVED IN ITS OWN GATE BELOW, with a shim that can see the temporary before the
+  // script deliberately opens it up. Asserting a mode on the PUBLISHED marker here would be asserting the
+  // wrong end of that lifecycle — see the comment there.
 
   const status = run('status');
   assertEq(status.status, 0, `status reads it back — ${describeRun(status)}`);
@@ -1279,6 +1295,68 @@ await test('a TERM after publication still fails, and tells the truth about the 
     `the operator is told the marker is there: ${run.stderr ?? ''}`);
   assert((run.stderr ?? '').includes("'status'"), 'and how to find out which mode is in force');
   assert(!(run.stdout ?? '').includes('custody mode: bootstrap'), 'while the run still does not claim success');
+});
+
+await test('the marker is private while it is a temporary, and deliberately readable once published', () => {
+  // CORRECTION 4, AND THE TEST WAS ASSERTING THE WRONG SECURITY CLAIM.
+  //
+  // The old gate required the PUBLISHED marker to be owner-only. It is not, deliberately: the script does
+  // `chmod 0644` on the temporary before the atomic rename, and has since 019a97d7. A custody-mode marker is
+  // not a secret — it names which of two compose files the stack runs under, and the app reads it.
+  //
+  // THE CLAIM THAT IS REAL is about the WINDOW: `mktemp` under `umask 077` means the file is private FROM THE
+  // INSTANT IT EXISTS, so there is never a moment when a half-written marker sits in the project directory
+  // readable by other accounts. Widening it afterwards is a decision the script makes on purpose, on a file
+  // whose contents are one word.
+  //
+  // So this proves the LIFECYCLE rather than an endpoint, and the only way to see the private half is to look
+  // while it is still happening — a `chmod` shim that records the mode of its target BEFORE handing over to
+  // the real chmod. The recording is a RECEIPT: if the shim never ran, there is no file, and this fails
+  // rather than concluding anything.
+  const shell = usableBash();
+  if (shell === null) { console.log('        (skipped: no usable bash on this host)'); return; }
+  const staged = stageMarkerProject('mode-lifecycle');
+  if (staged === null) {
+    console.log('        (skipped: a real probe of this exact mechanism could not deliver a signal here)');
+    return;
+  }
+  const modeReceipt = join(staged.project, 'mode-before-chmod');
+  const argvReceipt = join(staged.project, 'chmod-argv');
+  const run = staged.runWithShim('chmod', [
+    'target="${!#}"',
+    // GNU and BSD spell this differently, and neither is universal.
+    `stat -c '%a' "\${target}" > "${hostPath(modeReceipt)}" 2>/dev/null \\`,
+    `  || stat -f '%Lp' "\${target}" > "${hostPath(modeReceipt)}" 2>/dev/null || true`,
+    `printf '%s\\n' "$*" > "${hostPath(argvReceipt)}"`,
+    'command -p chmod "$@"',
+    '',
+  ].join('\n'), 'bootstrap');
+
+  assertEq(run.status, 0, `the bootstrap still succeeds under the shim — ${describeRun(run)}`);
+  assert(staged.shimRan(), 'the shim really ran — otherwise nothing below is a statement about modes');
+  assert(existsSync(argvReceipt), 'and it recorded what chmod was asked to do');
+
+  // WHAT IT WAS ASKED TO DO, AND TO WHAT. The widening is applied to the TEMPORARY, never to the published
+  // name — a chmod of the marker itself would be a second window, after a reader could already see it.
+  const argv = readFileSync(argvReceipt, 'utf8').trim();
+  assert(argv.startsWith('0644 '), `chmod is asked for 0644: ${argv}`);
+  assert(/\.custody-mode\.[A-Za-z0-9]{10}\b/.test(argv), `and applied to the unpredictable temporary: ${argv}`);
+  assert(!argv.includes(CUSTODY_MODE_FILENAME), `and never to the published marker: ${argv}`);
+
+  // THE PUBLISHED END OF THE LIFECYCLE, on every host: the marker exists, and nothing temporary survives.
+  assertEq(existsSync(join(staged.project, CUSTODY_MODE_FILENAME)), true, 'the marker is published');
+  assertEq(staged.temporaries().length, 0, 'and no temporary is left behind');
+
+  if (!POSIX) {
+    console.log('        (the numeric modes below are POSIX-only; the argv and receipt proofs above are not)');
+    return;
+  }
+  assert(existsSync(modeReceipt), 'the shim could read the temporary it was about to widen');
+  const before = Number.parseInt(readFileSync(modeReceipt, 'utf8').trim(), 8);
+  assertEq(before & 0o077, 0,
+    `the temporary was private from the instant it existed, before the deliberate widening (0${before.toString(8)})`);
+  assertEq(statSync(join(staged.project, CUSTODY_MODE_FILENAME)).mode & 0o777, 0o644,
+    'and the published marker is the 0644 the script deliberately asks for — it is not a secret');
 });
 
 await test('the marker temp name is unpredictable, and no process id ever names a file', () => {

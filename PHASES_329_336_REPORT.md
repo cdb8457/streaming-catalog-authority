@@ -36,7 +36,7 @@ fixed here.
 | File | Change |
 | --- | --- |
 | `test/helpers/shell-source.ts` | **New.** Structural reader for the shipped shell scripts: brace-matched function bodies, `case` blocks and arms, word-split call sites across `\` continuations and into `$( … )`, quote-aware comment stripping. Every extractor **refuses rather than returning a region it is unsure of**. *Correction 1:* all extraction now goes through one validating door, `logicalLines`, which refuses unterminated quotes and substitutions, dangling final continuations, duplicate function definitions, unterminated heredocs and expanding heredoc bodies — and validates on the **logical** line, which also fixed a silent truncation of the custody helper. |
-| `test/custody-runtime-closure.ts` | **New**, 38 checks. The phase329 suite. |
+| `test/custody-runtime-closure.ts` | **New**, 39 checks. The phase329 suite. |
 | `test/kek-correction-gates.ts` | The custody-helper gate is brace-matched, plus a contrast assertion that `write_secret_if_absent` *does* chmod — so an empty region cannot pass. |
 | `test/custody-transition.ts` | The command-line gate counts **arguments** instead of asserting an LF terminator, and now also counts the helper's real argv and rejects value-producing substitutions in it. |
 | `test/custody-cutover.ts` | The overlay gate **parses the YAML**; the marker gate uses `caseArm(caseBlock(src, 'ACTION'), …)` plus a contrast assertion on the `bootstrap` arm. |
@@ -220,6 +220,34 @@ and is clean.
 No parser behaviour or refusal guarantee from corrections 1 and 2 changed: the substitution is
 runtime-equivalent, and every gate that consumes the reader was re-run.
 
+## Correction 4 — three test defects that only Linux could see
+
+PR 44 CI (run 30670894779, job 91288198598) ran `test:phase329-local` on Linux: **35 passed, 3 failed**. Six
+other required jobs passed, including every real-browser and Compose gate. All three failures were in
+**POSIX-only blocks that Windows skips**, so no amount of local running would have found them — which is the
+honest limit of the three corrections before this one.
+
+| # | Defect | Fix |
+| --- | --- | --- |
+| 1 | The directory-at-custody-path gate asserted the refusal `could not be created`. The helper really refuses with **`the custody secret path is not a regular file`** — on Linux `O_RDONLY\|O_NOFOLLOW` on a directory *succeeds*, so the helper gets a descriptor and refuses on what `fstat` says it is. The test was asserting a different failure from the one the product has. | Assert the real refusal, plus the directory left empty **and still a directory**. Fail-closed behaviour unchanged. |
+| 2 | Both injected partial-write writers called `require('node:fs')` inside an **ES module**. Only Linux reached the line, where it threw `require is not defined` — so the refusals were produced by a `ReferenceError`, not by the partial-write path. A gate proving nothing while reporting a pass. | Use the imported `writeSync`, and **count the injected calls**, so each writer must actually execute for the gate to pass. |
+| 3 | The marker gate required the **published** marker to be private. It is 0644, deliberately, since 019a97d7 — the marker names which compose file the stack runs under and the app reads it. | Prove the **lifecycle** instead, with a `chmod` shim and a receipt (below). The shipped product mode was **not** changed to satisfy a test. |
+
+**On defect 3, what the claim actually is.** Not "the published marker stays 0600" — it is that `mktemp` under
+`umask 077` makes the file private *from the instant it exists*, so a half-written marker is never readable by
+another account; widening it afterwards is a deliberate decision about a one-word, non-secret file. Seeing the
+private half requires looking while it is happening, so a `chmod` shim records its target's mode before
+handing over to the real `chmod`. That recording is a **receipt**: if the shim missed, there is no file and
+the gate fails rather than concluding anything. It now asserts the mode before the widening, that `chmod` is
+asked for `0644` and applied to the unpredictable **temporary** and never to the published name, and that the
+marker ends at 0644 with no temporary left.
+
+**Verified on real Linux, not predicted.** The suite was run in a `node:22` container against this working
+tree (shell scripts converted to LF, as a Linux checkout has them): **39 passed, 0 failed**, with every
+POSIX-only block executing — the three fixed gates among them. The measured lifecycle there was temp `600`
+→ `chmod 0644 …/.custody-mode.XXXXXXXXXX` → published `644`, no temporaries. That container run is also the
+review for further Windows-skipped mistakes: every skipped path ran.
+
 ## The two defects, stated plainly
 
 ### 1. The PowerShell setup wrote a root wrapping key it could not protect
@@ -333,7 +361,7 @@ It is recorded as a flake on this evidence, not assumed to be one:
 
 | Suite | Result |
 | --- | --- |
-| `test/custody-runtime-closure.ts` (new) | **38 passed, 0 failed** (22 at `43f854a`; correction 1 added 14, correction 2 added 1, correction 3 added 1) |
+| `test/custody-runtime-closure.ts` (new) | **39 passed, 0 failed** on Windows AND on Linux (22 at `43f854a`; corrections 1-4 added 17) |
 | `test/promotion-chain-operator-ui.ts` | **19 passed, 0 failed** — includes the PowerShell setup **executed** on this host |
 | `test/release-readiness.ts` | **44 passed, 0 failed** — the mutation test removes each required suite command in turn and requires a BLOCK; it now covers `test:phase329-local` |
 | `test/deploy.ts`, `test/o4-o5-runtime-acceptance.ts`, `test/consumer-release-image.ts`, `test/arcane-install.ts`, `test/managed-custody-lifecycle.ts`, `test/custodian-contract.ts`, `test/backup-inspect.ts`, `test/complete-backup.ts` | all **exit 0** within the offline group |
