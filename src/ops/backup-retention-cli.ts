@@ -4,6 +4,7 @@ import {
   reportRefusal,
 } from './maintenance-cli-shared.js';
 import {
+  RetentionAbandonFailed,
   RetentionFailed,
   abandonRetention,
   planRetention,
@@ -203,6 +204,20 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
       const report = abandonRetention(args.projectRoot);
       if (args.json) console.log(JSON.stringify(report, null, 2));
       else console.log(renderRetentionAbandon(report));
+      // A CLEAN UNWIND IS THE ONLY ZERO. An abandon that put one set back while another is gone for good is
+      // not a success, and the exit code is the thing a scheduler reads: `ABANDONED_WITH_LOSS` and `PARTIAL`
+      // both exit 1, because in both cases this destination is not what the operator asked to have back.
+      if (!report.ok) {
+        console.log('');
+        if (report.state === 'ABANDONED_WITH_LOSS') {
+          console.log('THIS WAS NOT A CLEAN UNWIND. Everything that could be put back was, and the sets named');
+          console.log('above as GONE FOREVER had already been deleted before you asked. A rename cannot bring');
+          console.log('them back; another backup can.');
+        } else {
+          console.log('THIS ABANDON DID NOT PUT EVERYTHING BACK. The journal was kept and the destination is');
+          console.log('part way through. Deal with what is named above, then run --abandon again.');
+        }
+      }
       return report.ok ? RETENTION_EXIT_OK : RETENTION_EXIT_FAILED;
     }
 
@@ -243,6 +258,13 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     if (err instanceof RetentionFailed) {
       if (args.json) console.error(JSON.stringify(err.report, null, 2));
       else console.error(renderRetention(err.report));
+      console.error('');
+      console.error(err.message);
+      return RETENTION_EXIT_FAILED;
+    }
+    if (err instanceof RetentionAbandonFailed) {
+      if (args.json) console.error(JSON.stringify(err.report, null, 2));
+      else console.error(renderRetentionAbandon(err.report));
       console.error('');
       console.error(err.message);
       return RETENTION_EXIT_FAILED;

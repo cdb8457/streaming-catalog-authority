@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { existsSync, lstatSync, readdirSync, renameSync, rmdirSync, unlinkSync } from 'node:fs';
 import { basename, join } from 'node:path';
 import {
@@ -25,6 +25,12 @@ import {
 } from './maintenance-safety.js';
 import {
   DEFAULT_RETENTION_POLICY,
+  MAX_KEEP_LAST,
+  MAX_KEEP_MINIMUM,
+  MAX_MIN_AGE_DAYS,
+  REMOVABLE_CLASSES,
+  RETENTION_REASONS,
+  SET_CLASSES,
   assertUsablePolicy,
   evaluateRetention,
   instantOf,
@@ -39,14 +45,21 @@ import {
 //
 // WHAT THIS PRODUCT DID BEFORE. It took backup sets on a schedule, took another one every time an operator
 // restored, and removed none of them — with `deploy/unraid-catalog-maintenance.sh` printing a shell listing
-// and the instruction to `rm -rf` one directory by hand. That instruction cannot tell a set that verifies from
-// one truncated last Tuesday, cannot tell the ONLY set this build could restore from one of ten, cannot tell
-// the pre-upgrade rollback point from a routine nightly, takes no lock, and — being a recursive delete —
-// leaves HALF A SET UNDER A NAME AN OPERATOR TRUSTS if it is interrupted.
+// and the instruction to recursively delete one directory by hand. That instruction cannot tell a set that
+// verifies from one truncated last Tuesday, cannot tell the ONLY set this build could restore from one of
+// ten, cannot tell the pre-upgrade rollback point from a routine nightly, takes no lock, and — being a
+// recursive delete — leaves HALF A SET UNDER A NAME AN OPERATOR TRUSTS if it is interrupted.
 //
 // IT ISSUES NO COMMAND AT ALL. No `docker`, no child process, no network, no registry, no media path, no
 // media server. It is host-side filesystem work under a lock, which is why it can run while the stack is up
 // and why its command ledger is empty — asserted, not promised.
+//
+// WHAT IT READS, EXACTLY. Deciding whether a set is good means hashing every byte of it, and one of its four
+// components is the secrets directory — so this DOES open and read secret files, through descriptors, without
+// following links, for the sole purpose of hashing. It never interprets, parses, prints, digests-into-a-report
+// or otherwise surfaces a byte of them, it accepts no credential on a command line, and no path and no
+// component content reaches any report. That is the boundary, and it is stated this way on purpose: a
+// comfortable claim about not touching secret files at all would be a false one.
 //
 // NOTHING IS DELETED IN PLACE. Every set is RENAMED into a private quarantine directory in the same folder
 // (therefore the same filesystem, therefore atomically) and only then removed. At every instant an observer
@@ -58,7 +71,18 @@ export const RETENTION_REPORT = 'phase-305-312-backup-retention';
 export const RETENTION_VERSION = 1;
 
 export const RETENTION_JOURNAL_NAME = '.catalog-retention.journal.json';
-export const RETENTION_JOURNAL_VERSION = 1;
+
+/**
+ * Version 2. Version 1 is refused at the version boundary, before any later field is read.
+ *
+ * WHAT CHANGED, AND WHY IT COULD NOT BE A COMPATIBLE ADDITION. A version-1 journal recorded no evaluation
+ * instant, so its decisions could not be RECOMPUTED — only re-hashed, which proves a document agrees with
+ * itself and nothing about whether it describes a decision this program would ever make. It also had no
+ * `deleting` state, so a resume could not tell an intact quarantined set from a partially consumed one. Both
+ * are load-bearing for what a recovery is allowed to destroy, so an old document is refused rather than
+ * upgraded: there is nothing correct to fill either field in with.
+ */
+export const RETENTION_JOURNAL_VERSION = 2;
 
 /** The journal is bounded before it is parsed. A destination of 2000 entries fits inside this many times over. */
 export const MAX_JOURNAL_BYTES = 4 * 1024 * 1024;
@@ -68,6 +92,12 @@ export const MAX_DESTINATION_ENTRIES = 2000;
 
 /** The private directory sets are renamed into before they are removed. */
 export const QUARANTINE_PREFIX = '.catalog-retention.removing-';
+
+/** The unpredictable, secret-free name a quarantine directory is BUILT under before it is published. */
+export const QUARANTINE_CLAIM_PREFIX = '.catalog-retention.claiming-';
+
+/** The ownership marker inside a quarantine directory. Nothing is removed from a tree without one. */
+export const QUARANTINE_MARKER_NAME = 'catalog-retention-quarantine.json';
 
 /**
  * The second lock domain, taken IN the destination.
@@ -169,7 +199,10 @@ export function resolveRetentionDestination(projectRoot: string, relative: strin
  * commands carries no manifest of ours, classifies `FOREIGN`, is reported so an operator can see it, and is
  * never touched: this command owns what it took.
  *
- * IT OPENS NO SECRET. The verification digests the secrets component by content and reports it by neither.
+ * IT READS EVERY BYTE, INCLUDING THE SECRETS COMPONENT, AND SURFACES NONE OF IT. `verifyBackupSet` hashes
+ * each component through a descriptor opened without following a link — which for the secrets component means
+ * opening and reading secret files. Nothing here parses, prints or reports a byte of them; what leaves this
+ * function is a class, a date, a schema version, a digest and two counts.
  */
 export function inventoryDestination(destinationDir: string): readonly InventoryEntry[] {
   let names: readonly string[];
@@ -219,18 +252,7 @@ export function classifyEntry(destinationDir: string, name: string): InventoryEn
   } catch {
     return { ...empty, setClass: 'UNREADABLE' };
   }
-  const instant = instantOf(manifest.takenAt);
-  const declared = manifest.components.filter((component) => component.present);
-  const bytes = declared.reduce((total, component) => total + numberOr(component.bytes), 0);
-  const entries = declared.reduce((total, component) => total + numberOr(component.entries), 0);
-  const shape = {
-    name,
-    takenAt: instant === null ? null : instant.takenAt,
-    takenAtMs: instant === null ? null : instant.takenAtMs,
-    schemaVersion: typeof manifest.schemaVersion === 'number' ? manifest.schemaVersion : null,
-    bytes,
-    entries,
-  };
+  const shape = shapeOfManifest(name, manifest);
 
   let report;
   try {
@@ -251,6 +273,22 @@ export function classifyEntry(destinationDir: string, name: string): InventoryEn
   };
 }
 
+function shapeOfManifest(name: string, manifest: BackupManifest): {
+  readonly name: string; readonly takenAt: string | null; readonly takenAtMs: number | null;
+  readonly schemaVersion: number | null; readonly bytes: number; readonly entries: number;
+} {
+  const instant = instantOf(manifest.takenAt);
+  const declared = manifest.components.filter((component) => component.present);
+  return {
+    name,
+    takenAt: instant === null ? null : instant.takenAt,
+    takenAtMs: instant === null ? null : instant.takenAtMs,
+    schemaVersion: typeof manifest.schemaVersion === 'number' ? manifest.schemaVersion : null,
+    bytes: declared.reduce((total, component) => total + numberOr(component.bytes), 0),
+    entries: declared.reduce((total, component) => total + numberOr(component.entries), 0),
+  };
+}
+
 function numberOr(value: unknown): number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : 0;
 }
@@ -265,6 +303,15 @@ export interface RetentionPlan {
   readonly journalVersion: typeof RETENTION_JOURNAL_VERSION;
   readonly destinationName: string;
   readonly policy: RetentionPolicy;
+  /**
+   * The instant these decisions were evaluated at.
+   *
+   * IT IS IN THE PLAN AND IN THE JOURNAL, AND DELIBERATELY NOT IN THE DIGEST. The journal needs it so that a
+   * recovery can RE-RUN the evaluation rather than re-hash it — a document that agrees with itself proves
+   * nothing about whether it describes a decision this program would ever make. The digest must not carry it,
+   * because a digest that moved every millisecond could never be typed back.
+   */
+  readonly evaluatedAt: string;
   readonly inventory: readonly InventoryEntry[];
   readonly decisions: readonly RetentionDecision[];
   /** Ordered OLDEST FIRST. This is the order the run performs, and the order a resume continues. */
@@ -356,6 +403,7 @@ export function planRetention(
     journalVersion: RETENTION_JOURNAL_VERSION,
     destinationName: resolved.destinationName,
     policy,
+    evaluatedAt: new Date(now.getTime()).toISOString(),
     inventory,
     decisions: evaluation.decisions,
     removals: evaluation.removals,
@@ -374,10 +422,20 @@ export function planRetention(
 // Phase 310 — the journal
 // -----------------------------------------------------------------------------------------------------------
 
-export type RetentionEntryState = 'pending' | 'quarantined' | 'removed' | 'failed';
+/**
+ * The per-set states, and why `deleting` had to exist.
+ *
+ * The first cut recorded `quarantined` and then recursively removed. A process that stopped existing inside
+ * that removal left `quarantined` beside a HALF-CONSUMED tree, indistinguishable from `quarantined` beside an
+ * intact one — so a resume could not both (a) re-verify an intact tree against what was planned before
+ * destroying it and (b) finish a legitimately partial one. It has to do both, and it cannot without knowing
+ * which it is looking at. `deleting` is written before the first `unlink` and is the only state under which a
+ * tree that does not match its commitment may still be removed.
+ */
+export type RetentionEntryState = 'pending' | 'quarantined' | 'deleting' | 'removed' | 'failed';
 
 export const RETENTION_ENTRY_STATES: readonly RetentionEntryState[] =
-  Object.freeze(['pending', 'quarantined', 'removed', 'failed']);
+  Object.freeze(['pending', 'quarantined', 'deleting', 'removed', 'failed']);
 
 export interface RetentionJournalEntry {
   readonly name: string;
@@ -402,6 +460,8 @@ export interface RetentionJournal {
   readonly destination: string;
   readonly suffix: string;
   readonly policy: RetentionPolicy;
+  /** The instant the decisions were evaluated at. Re-evaluated from, never merely re-hashed. */
+  readonly evaluatedAt: string;
   readonly inventory: readonly InventoryEntry[];
   readonly decisions: readonly RetentionDecision[];
   readonly removals: readonly string[];
@@ -415,22 +475,70 @@ export function retentionJournalPath(projectRoot: string): string {
   return join(projectRoot, RETENTION_JOURNAL_NAME);
 }
 
+class JournalRefusal extends Error {}
+
 /**
- * Read the journal, validating every field, because every field is acted on.
+ * Read the journal, and prove it describes an operation this program would perform.
  *
- * THE STRONGEST CHECK IS THE LAST ONE: the plan digest is RECOMPUTED from the journal's own recorded project
- * root, destination, policy, inventory and decisions, and must equal the digest the journal records. So a
- * journal whose decision list has been edited — to name a set the operation never planned to remove — does not
- * merely fail a field check; it fails to be an operation at all.
+ * -----------------------------------------------------------------------------------------------------
+ * WHY RE-HASHING WAS NOT AUTHORITY, AND WHAT REPLACED IT.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The first cut validated the removal names and states, then recomputed the plan digest over the journal's
+ * OWN recorded inventory and decisions. That proves a document agrees with itself. It does not prove the
+ * document describes a decision this program would ever make — so somebody who understood the format could
+ * change the protected set's decision to `remove`, append it to the removal list, RECOMPUTE the digest over
+ * the edited content, and be obeyed. Every check passed, because every check was asking the document about
+ * itself. The second check ("removals equal the decisions marked remove") was consistent with that forgery
+ * too, and the test that claimed to cover it edited only one of the two lists, so it never met the actual
+ * counterexample.
+ *
+ * The authority is now the EVALUATOR, not the document:
+ *
+ *   1. Every inventory row and every decision row is validated MEMBER BY MEMBER before anything maps, filters
+ *      or casts over it — so a `null`, a scalar, a missing field or an unknown class is a closed refusal
+ *      rather than a `TypeError` thrown out of a `.map` somewhere later.
+ *   2. The evaluation instant is recorded, so `evaluateRetention(inventory, policy, evaluatedAt)` can be RUN
+ *      again. Its decisions, its ordered removals, its protected set and its remaining count must equal the
+ *      journal's EXACTLY. A forged decision therefore has to be one the evaluator itself produces — and the
+ *      two unconditional protections and the not-ours rule are properties of the inventory row's CLASS, which
+ *      no instant and no policy can talk past.
+ *   3. Every removal must name an inventory row that is `VERIFIED`, or `UNVERIFIED` when the policy admitted
+ *      those. A forgery that points the operation at a `FOREIGN` or `RESERVED` row dies here, before the
+ *      evaluator is even asked.
+ *   4. And the fabricated-inventory forgery — claiming somebody's directory is a VERIFIED set — dies later,
+ *      on disk: nothing is deleted until the tree at that name has been re-verified against the set digest
+ *      the inventory row records.
  */
 export function readRetentionJournal(projectRoot: string): RetentionJournal | null {
   const path = retentionJournalPath(projectRoot);
   if (!existsSync(path)) return null;
   const refuse = (why: string): never => {
-    throw new MaintenanceRefused(
-      `this project holds a retention journal and ${why}. It was not written by a run of this program, so `
-      + 'nothing here will act on it. Look at it, and remove it yourself once you are sure.');
+    throw new JournalRefusal(why);
   };
+  try {
+    return parseRetentionJournal(projectRoot, path, refuse);
+  } catch (err) {
+    if (err instanceof JournalRefusal) {
+      throw new MaintenanceRefused(
+        `this project holds a retention journal and ${err.message}. It was not written by a run of this `
+        + 'program, so nothing here will act on it. Look at it, and remove it yourself once you are sure.');
+    }
+    if (err instanceof MaintenanceRefused) throw err;
+    // A RUNTIME EXCEPTION IS A REFUSAL TOO. Anything that escapes as a `TypeError` from a malformed member is
+    // still "this document is not one of ours", and it must never reach a caller as an unhandled throw whose
+    // message carries whatever the runtime chose to put in it.
+    throw new MaintenanceRefused(
+      'this project holds a retention journal this build could not read as an operation. Nothing here will '
+      + 'act on it. Look at it, and remove it yourself once you are sure.');
+  }
+}
+
+function parseRetentionJournal(
+  projectRoot: string,
+  path: string,
+  refuse: (why: string) => never,
+): RetentionJournal {
   let raw: string;
   try {
     raw = readFileNoFollow(path, 'retention journal', MAX_JOURNAL_BYTES).bytes.toString('utf8');
@@ -444,10 +552,14 @@ export function readRetentionJournal(projectRoot: string): RetentionJournal | nu
   } catch {
     return refuse('it is not readable JSON');
   }
-  const doc = parsed as Partial<RetentionJournal>;
+  if (!isRecord(parsed)) return refuse('it is not a record');
+  const doc = parsed;
+
+  // THE VERSION BOUNDARY IS FIRST, so a document from an older schema is refused for BEING one rather than
+  // for whichever field it happens to be missing.
   if (doc.journal !== 'catalog-authority.retention') return refuse('it is not this command\'s journal');
   if (doc.version !== RETENTION_JOURNAL_VERSION) {
-    return refuse(`its version is ${String(doc.version)} and this build writes ${RETENTION_JOURNAL_VERSION}`);
+    return refuse(`its version is ${describe(doc.version)} and this build writes ${RETENTION_JOURNAL_VERSION}`);
   }
   if (typeof doc.planDigest !== 'string' || !/^[0-9a-f]{64}$/.test(doc.planDigest)) {
     return refuse('its plan digest is not a digest');
@@ -463,26 +575,15 @@ export function readRetentionJournal(projectRoot: string): RetentionJournal | nu
     return refuse('its run suffix is not one this command produces');
   }
   if (doc.phase !== 'removing' && doc.phase !== 'abandoning') return refuse('its phase is not one this command writes');
-  const policy = doc.policy as RetentionPolicy | undefined;
-  if (policy === undefined || typeof policy !== 'object') return refuse('it records no policy');
-  try {
-    assertUsablePolicy(policy);
-  } catch {
-    return refuse('the policy it records is not one this command accepts');
-  }
-  if (!Array.isArray(doc.inventory) || !Array.isArray(doc.decisions) || !Array.isArray(doc.removals)
-    || !Array.isArray(doc.entries)) {
-    return refuse('it is missing the lists a recovery reads');
-  }
-  if (doc.inventory.length > MAX_DESTINATION_ENTRIES) return refuse('it records more entries than this command inventories');
+  const policy = validatePolicy(doc.policy, refuse);
+  const evaluated = instantOf(doc.evaluatedAt);
+  if (evaluated === null) return refuse('the instant it evaluated its decisions at is not an instant');
   if (typeof doc.restorableRemaining !== 'number' || !Number.isInteger(doc.restorableRemaining)
-    || doc.restorableRemaining < 0) {
+    || doc.restorableRemaining < 0 || doc.restorableRemaining > MAX_DESTINATION_ENTRIES) {
     return refuse('the count of what it would leave is not a count');
   }
-  if (doc.protectedRestorable !== null && typeof doc.protectedRestorable !== 'string') {
-    return refuse('the set it protected is neither a name nor absent');
-  }
-  if (typeof doc.protectedRestorable === 'string') {
+  if (doc.protectedRestorable !== null) {
+    if (typeof doc.protectedRestorable !== 'string') return refuse('the set it protected is neither a name nor absent');
     try {
       assertUsableName(doc.protectedRestorable, 'protected set name');
     } catch {
@@ -490,59 +591,229 @@ export function readRetentionJournal(projectRoot: string): RetentionJournal | nu
     }
   }
 
-  // THE ENTRIES ARE THE REMOVAL LIST, IN THE REMOVAL ORDER. Not a subset, not a superset, not reordered:
-  // this file decides which directories get renamed and in which order, so a list that is not the one the
-  // plan produced is not a list this command will walk.
-  const removals = doc.removals as readonly unknown[];
-  for (const name of removals) {
+  // EVERY MEMBER, BEFORE ANYTHING MAPS OVER ANY OF THEM.
+  if (!Array.isArray(doc.inventory)) return refuse('its inventory is not a list');
+  if (doc.inventory.length > MAX_DESTINATION_ENTRIES) return refuse('it records more entries than this command inventories');
+  const inventory = doc.inventory.map((row) => validateInventoryEntry(row, refuse));
+  if (new Set(inventory.map((row) => row.name)).size !== inventory.length) {
+    return refuse('a name appears in its inventory more than once');
+  }
+  const canonicalOrder = inventory.map((row) => row.name).slice().sort();
+  if (JSON.stringify(inventory.map((row) => row.name)) !== JSON.stringify(canonicalOrder)) {
+    return refuse('its inventory is not in the canonical order this command lists a destination in');
+  }
+
+  if (!Array.isArray(doc.decisions)) return refuse('its decisions are not a list');
+  const decisions = doc.decisions.map((row) => validateDecision(row, refuse));
+  if (decisions.length !== inventory.length) return refuse('its decisions do not cover its inventory');
+  for (const [index, decision] of decisions.entries()) {
+    if (decision.name !== inventory[index]!.name) {
+      return refuse('its decisions are not its inventory, in order');
+    }
+  }
+
+  if (!Array.isArray(doc.removals)) return refuse('its removal list is not a list');
+  const known = new Map(inventory.map((row) => [row.name, row]));
+  for (const name of doc.removals) {
     if (typeof name !== 'string') return refuse('a name in its removal list is not a name');
     try {
       assertUsableName(name, 'set name');
     } catch {
       return refuse('a name in its removal list is not one this command creates');
     }
+    const row = known.get(name);
+    if (row === undefined) return refuse('its removal list names something its own inventory does not');
+    // THE CLASS GATE, BEFORE THE EVALUATOR IS EVEN ASKED. A document pointing this operation at a foreign
+    // directory, a reserved name, an unreadable set or something that is not a directory is refused for what
+    // it names, not for what it computed.
+    if (!REMOVABLE_CLASSES.includes(row.setClass)) {
+      return refuse('its removal list names something that is not a backup set this command took');
+    }
+    if (row.setClass === 'UNVERIFIED' && !policy.includeUnverified) {
+      return refuse('its removal list names a set that does not verify, under a policy that did not admit one');
+    }
   }
-  if (new Set(removals as readonly string[]).size !== removals.length) {
+  const removals = doc.removals as readonly string[];
+  if (new Set(removals).size !== removals.length) {
     return refuse('a name appears in its removal list more than once');
   }
-  const entries = doc.entries as readonly unknown[];
-  if (entries.length !== removals.length) return refuse('its per-set states do not cover its removal list');
-  for (const [index, value] of entries.entries()) {
-    const entry = value as Partial<RetentionJournalEntry>;
-    if (entry === null || typeof entry !== 'object') return refuse('one of its per-set states is not a record');
-    if (entry.name !== removals[index]) return refuse('its per-set states are not its removal list, in order');
-    if (typeof entry.state !== 'string' || !RETENTION_ENTRY_STATES.includes(entry.state)) {
+
+  if (!Array.isArray(doc.entries)) return refuse('its per-set states are not a list');
+  if (doc.entries.length !== removals.length) return refuse('its per-set states do not cover its removal list');
+  const entries: RetentionJournalEntry[] = [];
+  for (const [index, value] of doc.entries.entries()) {
+    if (!isRecord(value)) return refuse('one of its per-set states is not a record');
+    if (value.name !== removals[index]) return refuse('its per-set states are not its removal list, in order');
+    if (typeof value.state !== 'string' || !RETENTION_ENTRY_STATES.includes(value.state as RetentionEntryState)) {
       return refuse('one of its per-set states is not a state this command writes');
     }
-    if (entry.state === 'failed') {
-      if (typeof entry.reason !== 'string' || entry.reason === '') return refuse('a failed set carries no reason');
-    } else if (entry.reason !== null) {
+    const state = value.state as RetentionEntryState;
+    if (state === 'failed') {
+      if (typeof value.reason !== 'string' || value.reason === '') return refuse('a failed set carries no reason');
+      if (value.reason.length > 2000) return refuse('a failure reason longer than this command writes');
+    } else if (value.reason !== null) {
       return refuse('a set that did not fail carries a failure reason');
     }
+    entries.push({
+      name: value.name as string,
+      state,
+      reason: state === 'failed' ? (value.reason as string) : null,
+    });
   }
 
-  // THE OPERATION ITSELF. Recomputing the digest from what the journal records is what makes every field
-  // above load-bearing rather than merely well formed.
-  const journal = doc as RetentionJournal;
+  // THE DOCUMENT AGREES WITH ITSELF...
+  const journal: RetentionJournal = {
+    journal: 'catalog-authority.retention',
+    version: RETENTION_JOURNAL_VERSION,
+    planDigest: doc.planDigest,
+    destination: doc.destination,
+    suffix: doc.suffix,
+    policy,
+    evaluatedAt: evaluated.takenAt,
+    inventory,
+    decisions,
+    removals,
+    protectedRestorable: doc.protectedRestorable as string | null,
+    restorableRemaining: doc.restorableRemaining,
+    entries,
+    phase: doc.phase,
+  };
   const recomputed = digestOperation(canonicalRetentionOperation(
     resolvedDestination, journal.policy, journal.inventory, journal.decisions, journal.removals,
     journal.protectedRestorable, journal.restorableRemaining));
   if (recomputed !== journal.planDigest) {
     return refuse('the operation it describes does not hash to the plan digest it records');
   }
-  // AND THE REMOVAL LIST IS THE DECISIONS' OWN.
-  //
-  // A journal whose decisions say "keep" for a set its removal list names would destroy a set nobody
-  // authorised. Editing one list alone already fails the digest above — both are inside the canonical
-  // operation — so this is reached only by a document whose digest was RECOMPUTED over the edited content.
-  // That is exactly what somebody who understands the format would produce, and it is exactly what the
-  // digest cannot catch, because it agrees with itself.
-  const decided = new Set(journal.decisions.filter((d) => d.decision === 'remove').map((d) => d.name));
-  if (decided.size !== journal.removals.length
-    || journal.removals.some((name) => !decided.has(name))) {
-    return refuse('its removal list is not the set of removals its own decisions record');
+
+  // ...AND THE EVALUATOR AGREES WITH THE DOCUMENT. This is the check the first cut did not have, and it is
+  // the only one that is not a question the document gets to answer about itself.
+  let independent;
+  try {
+    independent = evaluateRetention(journal.inventory, journal.policy, new Date(evaluated.takenAtMs));
+  } catch {
+    return refuse('the decisions it records cannot be evaluated at all');
+  }
+  if (independent.refusals.length > 0) {
+    return refuse('the operation it describes is one this command refuses to perform');
+  }
+  if (JSON.stringify(independent.decisions) !== JSON.stringify(journal.decisions)) {
+    return refuse('the decisions it records are not the ones this build makes from the inventory it records');
+  }
+  if (JSON.stringify(independent.removals) !== JSON.stringify(journal.removals)) {
+    return refuse('the removals it records are not the ones this build makes from the inventory it records');
+  }
+  if (independent.protectedRestorable !== journal.protectedRestorable) {
+    return refuse('the set it says it protected is not the one this build protects');
+  }
+  if (independent.restorableRemaining !== journal.restorableRemaining) {
+    return refuse('the count it says it would leave is not the one this build computes');
   }
   return journal;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function describe(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number' || typeof value === 'boolean'
+    ? String(value) : typeof value;
+}
+
+function validatePolicy(value: unknown, refuse: (why: string) => never): RetentionPolicy {
+  if (!isRecord(value)) return refuse('it records no policy');
+  const whole = (candidate: unknown, max: number): boolean =>
+    typeof candidate === 'number' && Number.isInteger(candidate) && candidate >= 0 && candidate <= max;
+  if (!whole(value.keepLast, MAX_KEEP_LAST) || !whole(value.minAgeDays, MAX_MIN_AGE_DAYS)
+    || !whole(value.keepMinimumRestorable, MAX_KEEP_MINIMUM) || typeof value.includeUnverified !== 'boolean') {
+    return refuse('the policy it records is not one this command accepts');
+  }
+  const policy: RetentionPolicy = {
+    keepLast: value.keepLast as number,
+    minAgeDays: value.minAgeDays as number,
+    includeUnverified: value.includeUnverified,
+    keepMinimumRestorable: value.keepMinimumRestorable as number,
+  };
+  try {
+    assertUsablePolicy(policy);
+  } catch {
+    return refuse('the policy it records is not one this command accepts');
+  }
+  return policy;
+}
+
+/** Every field of an inventory row, checked before anything reads any of them. */
+function validateInventoryEntry(value: unknown, refuse: (why: string) => never): InventoryEntry {
+  if (!isRecord(value)) return refuse('one of its inventory rows is not a record');
+  if (typeof value.name !== 'string' || value.name === '' || value.name.length > 128) {
+    return refuse('one of its inventory rows has no usable name');
+  }
+  if (typeof value.setClass !== 'string' || !SET_CLASSES.includes(value.setClass as SetClass)) {
+    return refuse('one of its inventory rows carries a class this build does not write');
+  }
+  const datedBoth = value.takenAt === null && value.takenAtMs === null;
+  if (!datedBoth) {
+    const instant = instantOf(value.takenAt);
+    if (instant === null) return refuse('one of its inventory rows carries a date that is not an instant');
+    if (value.takenAtMs !== instant.takenAtMs) {
+      return refuse('one of its inventory rows carries a date and a moment that disagree');
+    }
+  }
+  if (value.schemaVersion !== null
+    && !(typeof value.schemaVersion === 'number' && Number.isInteger(value.schemaVersion)
+      && value.schemaVersion >= 0 && value.schemaVersion <= 100000)) {
+    return refuse('one of its inventory rows carries a schema version that is not one');
+  }
+  if (typeof value.setDigest !== 'string' || !/^([0-9a-f]{64})?$/.test(value.setDigest)) {
+    return refuse('one of its inventory rows carries a set digest that is not one');
+  }
+  if (typeof value.restorable !== 'boolean') return refuse('one of its inventory rows does not say whether it is restorable');
+  for (const field of ['bytes', 'entries'] as const) {
+    const candidate = value[field];
+    if (typeof candidate !== 'number' || !Number.isInteger(candidate) || candidate < 0
+      || candidate > Number.MAX_SAFE_INTEGER) {
+      return refuse(`one of its inventory rows carries a ${field} count that is not a count`);
+    }
+  }
+  if (!Array.isArray(value.findings) || value.findings.length > 64
+    || value.findings.some((finding) => typeof finding !== 'string' || finding.length > 64)) {
+    return refuse('one of its inventory rows carries findings this build does not write');
+  }
+  // A CLASS AND A DIGEST THAT CANNOT COEXIST. Only a set with a readable manifest has a digest, and only
+  // those two classes ever have one — so a `FOREIGN` row claiming a digest is not a row this build produced.
+  const removable = REMOVABLE_CLASSES.includes(value.setClass as SetClass);
+  if (!removable && value.setDigest !== '') {
+    return refuse('one of its inventory rows claims a set digest for something that is not a set');
+  }
+  if (!removable && value.restorable) {
+    return refuse('one of its inventory rows claims something that is not a set is restorable');
+  }
+  return {
+    name: value.name,
+    setClass: value.setClass as SetClass,
+    takenAt: value.takenAt as string | null,
+    takenAtMs: value.takenAtMs as number | null,
+    schemaVersion: value.schemaVersion as number | null,
+    setDigest: value.setDigest,
+    restorable: value.restorable,
+    bytes: value.bytes as number,
+    entries: value.entries as number,
+    findings: (value.findings as readonly string[]).slice(),
+  };
+}
+
+function validateDecision(value: unknown, refuse: (why: string) => never): RetentionDecision {
+  if (!isRecord(value)) return refuse('one of its decisions is not a record');
+  if (typeof value.name !== 'string' || value.name === '' || value.name.length > 128) {
+    return refuse('one of its decisions has no usable name');
+  }
+  if (value.decision !== 'keep' && value.decision !== 'remove') {
+    return refuse('one of its decisions is neither keep nor remove');
+  }
+  if (typeof value.reason !== 'string' || !RETENTION_REASONS.includes(value.reason as never)) {
+    return refuse('one of its decisions carries a reason this build does not write');
+  }
+  return { name: value.name, decision: value.decision, reason: value.reason as RetentionDecision['reason'] };
 }
 
 export function writeRetentionJournal(projectRoot: string, journal: RetentionJournal): void {
@@ -570,15 +841,245 @@ export function clearRetentionJournal(projectRoot: string): void {
 }
 
 // -----------------------------------------------------------------------------------------------------------
+// The quarantine directory, and what makes it OURS
+// -----------------------------------------------------------------------------------------------------------
+
+export interface QuarantineCommitment {
+  readonly name: string;
+  readonly setDigest: string;
+  readonly bytes: number;
+  readonly entries: number;
+}
+
+export interface QuarantineMarker {
+  readonly marker: 'catalog-authority.retention-quarantine';
+  readonly version: 1;
+  readonly journalVersion: typeof RETENTION_JOURNAL_VERSION;
+  readonly planDigest: string;
+  readonly suffix: string;
+  readonly removals: readonly string[];
+  readonly commitments: readonly QuarantineCommitment[];
+}
+
+export function quarantineMarkerPath(quarantineDir: string): string {
+  return join(quarantineDir, QUARANTINE_MARKER_NAME);
+}
+
+export function commitmentsOf(journal: RetentionJournal): readonly QuarantineCommitment[] {
+  const known = new Map(journal.inventory.map((row) => [row.name, row]));
+  return journal.removals.map((name) => {
+    const row = known.get(name);
+    if (row === undefined) throw new MaintenanceRefused('this operation names a set its own inventory does not');
+    return { name, setDigest: row.setDigest, bytes: row.bytes, entries: row.entries };
+  });
+}
+
+function expectedMarker(journal: RetentionJournal): QuarantineMarker {
+  return {
+    marker: 'catalog-authority.retention-quarantine',
+    version: 1,
+    journalVersion: RETENTION_JOURNAL_VERSION,
+    planDigest: journal.planDigest,
+    suffix: journal.suffix,
+    removals: [...journal.removals],
+    commitments: commitmentsOf(journal),
+  };
+}
+
+/**
+ * Prove the directory at the quarantine path is THIS operation's.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * AN UNPREDICTABLE NAME IS NOT OWNERSHIP, AND AN ALLOWLISTED CHILD NAME IS NOT EITHER.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The first cut argued that a directory at `.catalog-retention.removing-<12 random hex>` must be ours because
+ * nobody could guess the suffix, and checked only that its children were names the operation planned. After a
+ * crash the suffix is written down in the journal, in a directory the operator owns — so it is not unguessable
+ * any more, it is PUBLISHED. Replacing that directory with an ordinary one containing a directory named after
+ * a planned set was enough to have this command recursively delete somebody else's files. And the check was
+ * not run before the delete loop at all for an entry already recorded `quarantined`.
+ *
+ * A marker inside the tree, bound to the journal version, the plan digest, the suffix, the ordered removal
+ * list and each set's exact planned commitment, is what ownership means here. It is verified before every
+ * delete, every resume and every abandon cleanup.
+ */
+export function readQuarantineMarker(
+  quarantineDir: string,
+  journal: RetentionJournal,
+): { readonly ok: true; readonly marker: QuarantineMarker } | { readonly ok: false; readonly why: string } {
+  const path = quarantineMarkerPath(quarantineDir);
+  if (!existsSync(path)) {
+    return { ok: false, why: 'the quarantine directory carries no ownership marker of this operation\'s' };
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileNoFollow(path, 'retention quarantine marker', 4 * 1024 * 1024)
+      .bytes.toString('utf8'));
+  } catch {
+    return { ok: false, why: 'the quarantine directory\'s ownership marker could not be read' };
+  }
+  if (!isRecord(parsed)) return { ok: false, why: 'the quarantine directory\'s ownership marker is not a record' };
+  // COMPARED WHOLE, AGAINST WHAT THIS OPERATION WOULD HAVE WRITTEN. Field-by-field leniency is how a marker
+  // that names the right operation while describing different sets ends up authorising a deletion.
+  const want = JSON.stringify(expectedMarker(journal));
+  const have = JSON.stringify({
+    marker: parsed.marker, version: parsed.version, journalVersion: parsed.journalVersion,
+    planDigest: parsed.planDigest, suffix: parsed.suffix, removals: parsed.removals,
+    commitments: parsed.commitments,
+  });
+  if (want !== have) {
+    return { ok: false, why: 'the quarantine directory\'s ownership marker does not describe this operation' };
+  }
+  return { ok: true, marker: expectedMarker(journal) };
+}
+
+/**
+ * Create the quarantine directory, ALREADY MARKED, in one atomic publication.
+ *
+ * The predictable path goes from ABSENT straight to a directory holding a valid marker of this operation's:
+ * the tree is built under an unpredictable, secret-free name, the marker is written inside it while it is
+ * still invisible, and only then is it renamed into place. Not one byte of any set is moved until after that
+ * rename, so the path is never observable in a state a reader has to guess about.
+ */
+function publishQuarantineDirectory(
+  destinationDir: string,
+  quarantineDir: string,
+  journal: RetentionJournal,
+  at: (point: RetentionFailpoint, name: string) => void,
+): void {
+  const claim = join(destinationDir, `${QUARANTINE_CLAIM_PREFIX}${randomBytes(9).toString('hex')}`);
+  createPrivateDirectory(claim, 'retention quarantine claim directory');
+  writePrivateFile(quarantineMarkerPath(claim), `${JSON.stringify(expectedMarker(journal), null, 2)}\n`,
+    'retention quarantine marker');
+  at('after-quarantine-marker-built', '');
+  if (existsSync(quarantineDir)) {
+    throw new MaintenanceRefused(
+      'the retention quarantine name is already taken by something this operation did not publish');
+  }
+  try {
+    renameSync(claim, quarantineDir);
+  } catch {
+    throw new MaintenanceRefused('the retention quarantine directory could not be published');
+  }
+  at('after-quarantine-marker-published', '');
+}
+
+/**
+ * The quarantine directory this operation may use, published if it is not there and proved if it is.
+ *
+ * A directory at the predictable path that cannot prove it is ours is never written into, never read from and
+ * never removed — the operation stops instead.
+ */
+function requireQuarantineDirectory(
+  destinationDir: string,
+  journal: RetentionJournal,
+  at: (point: RetentionFailpoint, name: string) => void,
+): string {
+  const quarantineDir = join(destinationDir, quarantineDirName(journal.suffix));
+  if (!existsSync(quarantineDir)) {
+    publishQuarantineDirectory(destinationDir, quarantineDir, journal, at);
+    return quarantineDir;
+  }
+  const stats = lstatSync(quarantineDir);
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    throw new MaintenanceRefused('the retention quarantine name is held by something that is not a directory');
+  }
+  const proof = readQuarantineMarker(quarantineDir, journal);
+  if (!proof.ok) {
+    throw new MaintenanceRefused(
+      `${proof.why}. Nothing was moved into it and nothing inside it was removed. This is a state one run `
+      + 'cannot produce, so this command stopped rather than guessing whose directory it is.');
+  }
+  // NOTHING INSIDE IT THAT THIS OPERATION DID NOT PUT THERE.
+  const planned = new Set([...journal.removals, QUARANTINE_MARKER_NAME]);
+  for (const entry of readdirSync(quarantineDir)) {
+    if (!planned.has(entry)) {
+      throw new MaintenanceRefused(
+        'the retention quarantine directory holds something this operation did not put there, so nothing more '
+        + 'was moved into it and nothing in it was removed');
+    }
+  }
+  return quarantineDir;
+}
+
+/**
+ * Prove the tree at `path` is EXACTLY the set this operation planned to remove.
+ *
+ * A commitment is not a name. The set digest binds the manifest's set name, its schema version and every
+ * component's digest and byte count, so a directory that has been replaced, mutated, truncated or swapped for
+ * a different set of ours fails this — and a fabricated inventory row claiming somebody's directory is a
+ * VERIFIED set fails it too, which is where that forgery finally dies.
+ */
+export function proveSetIsPlanned(path: string, row: InventoryEntry): void {
+  if (row.setDigest === '') {
+    throw new MaintenanceRefused('this operation recorded no identity for this set, so nothing was removed for it');
+  }
+  let stats;
+  try {
+    stats = lstatSync(path);
+  } catch {
+    throw new MaintenanceRefused('this set could not be examined, so nothing was removed for it');
+  }
+  if (stats.isSymbolicLink()) {
+    throw new MaintenanceRefused('this set is a symbolic link, and this command will not remove through one');
+  }
+  if (!stats.isDirectory()) throw new MaintenanceRefused('this set is not a directory, so it was left alone');
+  let report;
+  try {
+    report = verifyBackupSet(path);
+  } catch {
+    throw new MaintenanceRefused('this set could not be verified against what was planned, so it was left alone');
+  }
+  if (report.setDigest !== row.setDigest) {
+    throw new MaintenanceRefused(
+      'this set is not the one this operation planned to remove — its contents do not match the identity '
+      + 'recorded when the plan was made. Nothing was removed for it.');
+  }
+  // THE VERDICT AND ITS FINDINGS, NOT ONLY THE DIGEST.
+  //
+  // `setDigest` is over what the MANIFEST declares — the set name, the schema version and each component's
+  // recorded digest — so a component whose BYTES were changed after the set was taken does not move it. What
+  // moves is the verification: a tampered component produces `COMPONENT_CHANGED`. Comparing the verdict and
+  // the exact finding set closes that, including for a set that was already `UNVERIFIED` when it was planned
+  // and has since been mutated in a different way.
+  const findings = [...new Set(report.problems.map((problem) => problem.finding))].sort();
+  if (report.ok !== (row.setClass === 'VERIFIED')
+    || JSON.stringify(findings) !== JSON.stringify([...row.findings])) {
+    throw new MaintenanceRefused(
+      'this set no longer verifies the way it did when the plan was made. Nothing was removed for it.');
+  }
+  let manifest: BackupManifest;
+  try {
+    manifest = readBackupManifest(path);
+  } catch {
+    throw new MaintenanceRefused('this set\'s manifest could not be read again, so nothing was removed for it');
+  }
+  // AND THE MANIFEST'S OWN FIELDS. `setDigest` deliberately does not cover `takenAt`, so two sets taken from
+  // an unchanged installation minutes apart hash identically — which means the digest alone cannot tell one
+  // of this operation's sets from another of them. The date can, and it is compared here for that reason.
+  const shape = shapeOfManifest(row.name, manifest);
+  if (shape.takenAt !== row.takenAt || shape.bytes !== row.bytes || shape.entries !== row.entries
+    || shape.schemaVersion !== row.schemaVersion) {
+    throw new MaintenanceRefused(
+      'this set\'s manifest no longer says what it said when the plan was made. Nothing was removed for it.');
+  }
+}
+
+// -----------------------------------------------------------------------------------------------------------
 // Phase 309 — execution
 // -----------------------------------------------------------------------------------------------------------
 
 /** Named boundaries a test kills a real run at. Never used in production; the default hook does nothing. */
 export type RetentionFailpoint =
   | 'after-journal'
+  | 'after-quarantine-marker-built'
+  | 'after-quarantine-marker-published'
   | 'after-quarantine-rename'
   | 'after-quarantine-mark'
-  | 'after-remove';
+  | 'after-deleting-mark'
+  | 'after-remove'
+  | 'after-abandon-rename';
 
 export interface RetentionDeps {
   readonly now?: () => Date;
@@ -591,19 +1092,21 @@ export interface RetentionDeps {
    * change mid-run all produce it, and it is the one failure that arrives after sets have already moved.
    */
   readonly journalWriter?: (projectRoot: string, journal: RetentionJournal) => void;
+  /** The journal clear, injectable for the same reason: a clear that fails after an abandon has moved things. */
+  readonly journalClearer?: (projectRoot: string) => void;
 }
 
 /**
  * A failure that happened AFTER this command had already moved or removed something.
  *
- * THE DEFECT THIS CLOSES, AND IT IS THE ONE PHASES 297-304 WERE CORRECTED FOR ONE LEVEL UP. Every failure
- * here used to leave `runRetention` through the same `throw` as a pre-effect refusal, and the CLI exits `3`
- * for those — the code it documents as "refused before anything was moved". A scheduler, or an operator
- * reading the exit code, would be told nothing happened by a run that had already deleted backup sets and
- * left more of them in a quarantine directory nothing else will ever mention.
+ * THE DEFECT THIS CLOSES. Every failure here used to leave `runRetention` through the same `throw` as a
+ * pre-effect refusal, and the CLI exits `3` for those — the code it documents as "refused before anything was
+ * moved". A scheduler, or an operator reading the exit code, would be told nothing happened by a run that had
+ * already deleted backup sets and left more of them in a quarantine directory nothing else will ever mention.
  *
- * It carries the report, so the retained quarantine directory, what is inside it, and what is already gone
- * are all named on the failure path — which is exactly when they matter.
+ * IT ALSO COVERS EFFECTS FROM A PREVIOUS PROCESS. A resume of an operation that already moved sets carries
+ * this even if this process has not itself renamed anything yet — the operation's effects are what matter to
+ * whoever is reading, not which process performed them.
  */
 export class RetentionFailed extends MaintenanceRefused {
   readonly report: RetentionReport;
@@ -611,6 +1114,17 @@ export class RetentionFailed extends MaintenanceRefused {
   constructor(message: string, report: RetentionReport) {
     super(message);
     this.name = 'RetentionFailed';
+    this.report = report;
+  }
+}
+
+/** The same, for an abandon: a rename happened and then something else did not. */
+export class RetentionAbandonFailed extends MaintenanceRefused {
+  readonly report: RetentionAbandonReport;
+
+  constructor(message: string, report: RetentionAbandonReport) {
+    super(message);
+    this.name = 'RetentionAbandonFailed';
     this.report = report;
   }
 }
@@ -639,6 +1153,8 @@ export interface RetentionReport {
   readonly planned: readonly string[];
   readonly removed: readonly string[];
   readonly failed: readonly { readonly name: string; readonly reason: string }[];
+  /** Named removals this run deliberately did not touch after it stopped. Abandon is still available for them. */
+  readonly untouched: readonly string[];
   readonly kept: number;
   readonly protectedRestorable: string | null;
   /** The protected set, re-verified FROM DISK after every removal. */
@@ -660,10 +1176,16 @@ export interface RetentionReport {
  *   3. re-inventory and re-verify from scratch UNDER THE LOCK, and require the plan digest to be the one
  *      that was confirmed
  *   4. journal the whole committed decision list before the first effect
- *   5. quarantine every removal by RENAME, oldest first — reversible, and nothing is destroyed yet
- *   6. delete the quarantined trees, oldest first, each bounded by what its own manifest declared
+ *   5. publish an OWNED quarantine directory, then rename every removal into it, oldest first — reversible,
+ *      and nothing is destroyed yet
+ *   6. for each, prove the tree is the set that was planned, record `deleting`, then remove it
  *   7. re-verify, from disk, the set this run promised to protect
  *   8. release both locks in a `finally`, innermost first
+ *
+ * AND ANY IMPOSSIBLE STATE STOPS IT. Once the filesystem or the ownership evidence says something one run
+ * cannot have produced, this does not carry on destroying the other candidates: it records the entry, keeps
+ * the journal, leaves everything it has not yet touched exactly where it is, and returns the partial report.
+ * Abandon remains available for everything that was only ever renamed.
  */
 export function runRetention(
   request: RetentionRequest,
@@ -674,6 +1196,7 @@ export function runRetention(
   const now = deps.now ?? (() => new Date());
   const at = deps.at ?? (() => { /* production does nothing here */ });
   const writeJournal = deps.journalWriter ?? writeRetentionJournal;
+  const clearJournal = deps.journalClearer ?? clearRetentionJournal;
   // A CHEAP, HOPELESS-CASE REFUSAL BEFORE THE LOCK, re-established under it below. Both are needed: this one
   // so a project part way through a restore refuses without contending for anything, that one because a
   // check made before a lock is a check about a moment that has passed.
@@ -744,6 +1267,7 @@ export function runRetention(
         destination: resolved.destinationRelative,
         suffix,
         policy: replanned.policy,
+        evaluatedAt: replanned.evaluatedAt,
         inventory: replanned.inventory,
         decisions: replanned.decisions,
         removals: replanned.removals,
@@ -758,7 +1282,7 @@ export function runRetention(
       journal = existing!;
     }
 
-    return execute(resolved, journal, at, writeJournal);
+    return execute(resolved, journal, at, writeJournal, clearJournal);
   } finally {
     // INNERMOST FIRST, and every path out runs this.
     if (destinationLock !== null) destinationLock.release();
@@ -780,6 +1304,7 @@ function execute(
   start: RetentionJournal,
   at: (point: RetentionFailpoint, name: string) => void,
   writeJournal: (projectRoot: string, journal: RetentionJournal) => void,
+  clearJournal: (projectRoot: string) => void,
 ): RetentionReport {
   let journal = start;
   const quarantine = quarantineDirName(journal.suffix);
@@ -789,10 +1314,16 @@ function execute(
   const failed: { name: string; reason: string }[] = [];
   const removed: string[] = [];
   let bytesRemoved = 0;
-  // HAS ANYTHING MOVED YET? This is what decides whether a failure below is a REFUSAL — nothing happened —
-  // or a partial operation that has to report what it left behind. It is set before the effect, not after,
-  // because a rename that threw may still have landed.
-  let effected = false;
+  let stopped = false;
+
+  // HAS THIS OPERATION ALREADY MOVED OR REMOVED ANYTHING?
+  //
+  // THE DEFECT THIS CLOSES. It used to start `false` and be set only by an effect THIS process performed. A
+  // resume of an operation that had already renamed three sets aside, whose first journal write then failed,
+  // therefore left as a pre-effect refusal carrying no report — telling an operator nothing happened about a
+  // destination that was part way through a prune. What matters to a reader is what the OPERATION has done,
+  // so this is seeded from the journal and the filesystem before anything else runs.
+  let effected = journal.entries.some((entry) => entry.state !== 'pending') || existsSync(quarantineDir);
 
   const mark = (name: string, state: RetentionEntryState, reason: string | null): void => {
     journal = {
@@ -802,7 +1333,27 @@ function execute(
     writeJournal(resolved.projectRoot, journal);
   };
 
+  /** Record the failure, and STOP. Nothing after an impossible state is destroyed. */
+  const stop = (name: string, reason: string): void => {
+    mark(name, 'failed', reason);
+    failed.push({ name, reason });
+    stopped = true;
+  };
+
   try {
+    // 4b. THE PRECONDITION SWEEP, BEFORE THE FIRST EFFECT OF THIS PROCESS.
+    //
+    // THE DEFECT THIS CLOSES. The impossible states were each detected where they were acted on — so a
+    // candidate whose quarantined tree had vanished was only noticed in the DELETE phase, by which time the
+    // quarantine phase had already renamed three other sets aside. Nothing was destroyed, but the run had
+    // gone on doing work after the destination had already been proved to be in a state one run cannot
+    // produce. Every entry's (recorded state, in destination?, in quarantine?) triple is now cross-validated
+    // FIRST, and a single impossible one stops the operation with zero effects from this process.
+    const impossible = sweepPreconditions();
+    if (impossible !== null) {
+      stop(impossible.name, impossible.reason);
+      return finishStopped();
+    }
     return performRemovals();
   } catch (err) {
     if (!effected) throw err;
@@ -811,149 +1362,274 @@ function execute(
     // failure it is, carrying a report that names the quarantine directory and everything in it.
     throw new RetentionFailed(
       `${safeReason(err)} `
-      + '\nThis failure arrived AFTER this run had already started moving backup sets. Read the report above: '
-      + 'it names what is gone, what is still in the quarantine directory, and what that directory holds. The '
-      + 'journal was kept. Continue with --resume or put back what is left with --abandon.',
+      + '\nThis failure arrived AFTER this operation had already started moving backup sets. Read the report '
+      + 'above: it names what is gone, what is still in the quarantine directory, and what that directory '
+      + 'holds. The journal was kept. Continue with --resume or put back what is left with --abandon.',
       buildReport('INCOMPLETE', false, false));
   }
 
-  function performRemovals(): RetentionReport {
-  // 5. QUARANTINE. A rename inside the destination is same-filesystem and atomic: a set name is observed
-  // holding a whole set, or nothing. Nothing is destroyed in this phase and all of it is reversible.
-  for (const entry of journal.entries) {
-    if (entry.state === 'removed' || entry.state === 'quarantined') continue;
-    const source = join(resolved.destinationDir, entry.name);
-    const target = join(quarantineDir, entry.name);
-    const inDestination = existsSync(source);
-    const inQuarantine = existsSync(target);
-    if (inDestination && inQuarantine) {
-      // ONE PROCESS CANNOT PRODUCE THIS, and guessing which of the two is the real set is exactly the guess
-      // this family never makes.
-      const reason = 'this set is present both in the destination and in the quarantine directory, which one '
-        + 'run cannot produce. Nothing was removed for it.';
-      mark(entry.name, 'failed', reason);
-      failed.push({ name: entry.name, reason });
-      continue;
+  /**
+   * Cross-validate every entry's recorded state against what the filesystem actually holds.
+   *
+   * The legal triples, and they are the whole table:
+   *
+   *   pending      | in destination, not in quarantine | quarantine it
+   *   pending      | not in destination, in quarantine | an interrupted rename — prove it, then adopt it
+   *   quarantined  | not in destination, in quarantine | prove it, record `deleting`, remove it
+   *   deleting     | not in destination, in quarantine | finish the removal under the ownership marker
+   *   deleting     | not in destination, not there     | the removal landed without its record
+   *   removed      | anything                          | nothing
+   *
+   * Everything else is a state one run cannot have produced.
+   */
+  function sweepPreconditions(): { readonly name: string; readonly reason: string } | null {
+    for (const entry of journal.entries) {
+      if (entry.state === 'removed') continue;
+      const inDestination = existsSync(join(resolved.destinationDir, entry.name));
+      const inQuarantine = existsSync(quarantineDir) && existsSync(join(quarantineDir, entry.name));
+      if (inDestination && inQuarantine) {
+        return { name: entry.name, reason: 'this set is present both in the destination and in the '
+          + 'quarantine directory, which one run cannot produce. Nothing was removed for it, and nothing '
+          + 'after it was touched.' };
+      }
+      if (entry.state === 'pending' || entry.state === 'failed') {
+        if (!inDestination && !inQuarantine) {
+          return { name: entry.name, reason: 'this set is in neither the destination nor the quarantine '
+            + 'directory. Something removed it outside this command, and this run will not report having '
+            + 'removed it.' };
+        }
+        continue;
+      }
+      if (entry.state === 'quarantined') {
+        if (inDestination) {
+          return { name: entry.name, reason: 'this set is recorded as set aside and is back in the '
+            + 'destination, which one run cannot produce.' };
+        }
+        if (!inQuarantine) {
+          // WITH A `deleting` STATE THIS IS IMPOSSIBLE. A removal is always preceded by a record, so a
+          // quarantined set that is gone was removed by something that is not this command.
+          return { name: entry.name, reason: 'this set was recorded as set aside and is no longer in the '
+            + 'quarantine directory. Nothing this command does removes a set without recording that it was '
+            + 'about to, so something else did. Nothing after it was touched.' };
+        }
+        continue;
+      }
+      if (entry.state === 'deleting' && inDestination) {
+        return { name: entry.name, reason: 'this set is recorded as being removed and is back in the '
+          + 'destination, which one run cannot produce.' };
+      }
     }
-    if (!inDestination && inQuarantine) {
-      // An interrupted rename: the effect landed and the record did not. Finish the record, not the rename.
-      mark(entry.name, 'quarantined', null);
-      notes.push(`${entry.name} was already in the quarantine directory: an interrupted rename, adopted rather than repeated.`);
-      continue;
-    }
-    if (!inDestination && !inQuarantine) {
-      const reason = 'this set is in neither the destination nor the quarantine directory. Something removed '
-        + 'it outside this command, and this run will not report having removed it.';
-      mark(entry.name, 'failed', reason);
-      failed.push({ name: entry.name, reason });
-      continue;
-    }
-    try {
-      ensureQuarantineDirectory(quarantineDir, journal);
-      effected = true;
-      renameSync(source, target);
-    } catch (err) {
-      const reason = err instanceof MaintenanceRefused ? err.message
-        : 'this set could not be renamed aside, so it was left exactly where it is';
-      mark(entry.name, 'failed', reason);
-      failed.push({ name: entry.name, reason });
-      continue;
-    }
-    at('after-quarantine-rename', entry.name);
-    mark(entry.name, 'quarantined', null);
-    at('after-quarantine-mark', entry.name);
+    return null;
   }
 
-  // 6. DELETE, oldest first, each bounded by what its own manifest declared it to be.
-  //
-  // `removed` AND `bytesRemoved` ARE ABOUT THE OPERATION, NOT ABOUT THIS PROCESS. A resume that finds a set
-  // already recorded as removed reports it — and reports what it freed — because an operator reading the
-  // final report of a resumed prune is asking what the whole prune did, not what its last process saw.
-  const recordRemoved = (name: string): void => {
-    removed.push(name);
-    bytesRemoved += byName.get(name)?.bytes ?? 0;
-  };
-  for (const entry of journal.entries) {
-    const current = journal.entries.find((candidate) => candidate.name === entry.name)!;
-    if (current.state === 'removed') { recordRemoved(entry.name); continue; }
-    if (current.state !== 'quarantined') continue;
-    const target = join(quarantineDir, entry.name);
-    if (!existsSync(target)) {
-      // The removal landed and the record did not. Idempotent by construction.
+  /** The report for a run that stopped before it did anything of its own. */
+  function finishStopped(): RetentionReport {
+    // WHAT THE OPERATION HAS ALREADY REMOVED IS STILL WHAT IT HAS REMOVED, bytes included: a stopped resume
+    // reporting four names beside "freed ~0 B" would be describing its own process rather than the prune.
+    for (const entry of journal.entries) {
+      if (entry.state !== 'removed') continue;
+      removed.push(entry.name);
+      bytesRemoved += byName.get(entry.name)?.bytes ?? 0;
+    }
+    notes.push('This run STOPPED at a state one run cannot produce, before it moved or removed anything of '
+      + 'its own. Everything still listed as untouched is exactly where it was, and everything already set '
+      + 'aside can still be put back with --abandon.');
+    notes.push('The journal was kept: a partial prune is a state that must stay visible.');
+    notes.push('Nothing was downloaded, fetched, played or acquired, and no command of any kind was issued: '
+      + 'this run was filesystem work under a lock.');
+    return buildReport('INCOMPLETE', false, false);
+  }
+
+  function performRemovals(): RetentionReport {
+    // 5. QUARANTINE. A rename inside the destination is same-filesystem and atomic: a set name is observed
+    // holding a whole set, or nothing. Nothing is destroyed in this phase and all of it is reversible.
+    for (const entry of journal.entries) {
+      if (stopped) break;
+      const current = stateOf(entry.name);
+      if (current === 'removed' || current === 'quarantined' || current === 'deleting') continue;
+      const source = join(resolved.destinationDir, entry.name);
+      const target = join(quarantineDir, entry.name);
+      const inDestination = existsSync(source);
+      const inQuarantine = existsSync(quarantineDir) && existsSync(target);
+      if (inDestination && inQuarantine) {
+        // ONE PROCESS CANNOT PRODUCE THIS, and guessing which of the two is the real set is exactly the guess
+        // this family never makes.
+        stop(entry.name, 'this set is present both in the destination and in the quarantine directory, which '
+          + 'one run cannot produce. Nothing was removed for it, and nothing after it was touched.');
+        continue;
+      }
+      if (!inDestination && inQuarantine) {
+        // An interrupted rename: the effect landed and the record did not. The tree is adopted only after it
+        // has been proved to be the set this operation planned — the first cut adopted it on the strength of
+        // its NAME and then deleted it.
+        let owned;
+        try {
+          owned = requireQuarantineDirectory(resolved.destinationDir, journal, at);
+          proveSetIsPlanned(join(owned, entry.name), byName.get(entry.name)!);
+        } catch (err) {
+          stop(entry.name, safeReason(err));
+          continue;
+        }
+        effected = true;
+        mark(entry.name, 'quarantined', null);
+        notes.push(`${entry.name} was already in the quarantine directory: an interrupted rename, proved to be `
+          + 'the set that was planned, and adopted rather than repeated.');
+        continue;
+      }
+      if (!inDestination && !inQuarantine) {
+        stop(entry.name, 'this set is in neither the destination nor the quarantine directory. Something '
+          + 'removed it outside this command, and this run will not report having removed it.');
+        continue;
+      }
+      try {
+        // PROVED BEFORE IT IS MOVED, NOT ONLY BEFORE IT IS DELETED.
+        //
+        // A rename is reversible, which is why the first cut gated only the deletion — and it is still an
+        // effect on a directory in somebody's backup folder. A journal whose inventory row FABRICATES a set
+        // (claiming a stranger's directory is a VERIFIED set of ours) passes every document-level check, so
+        // without this it would have this command pick that directory up and carry it into a quarantine tree
+        // before anything noticed. The commitment is checked here too, and the directory never moves.
+        proveSetIsPlanned(source, byName.get(entry.name)!);
+        requireQuarantineDirectory(resolved.destinationDir, journal, at);
+        effected = true;
+        renameSync(source, target);
+      } catch (err) {
+        stop(entry.name, err instanceof MaintenanceRefused ? err.message
+          : 'this set could not be renamed aside, so it was left exactly where it is');
+        continue;
+      }
+      at('after-quarantine-rename', entry.name);
+      mark(entry.name, 'quarantined', null);
+      at('after-quarantine-mark', entry.name);
+    }
+
+    // 6. DELETE, oldest first, each proved to be the planned set and each bounded by what its own manifest
+    // declared it to be.
+    //
+    // `removed` AND `bytesRemoved` ARE ABOUT THE OPERATION, NOT ABOUT THIS PROCESS. A resume that finds a set
+    // already recorded as removed reports it — and reports what it freed — because an operator reading the
+    // final report of a resumed prune is asking what the whole prune did, not what its last process saw.
+    const recordRemoved = (name: string): void => {
+      removed.push(name);
+      bytesRemoved += byName.get(name)?.bytes ?? 0;
+    };
+    for (const entry of journal.entries) {
+      const current = stateOf(entry.name);
+      if (current === 'removed') { recordRemoved(entry.name); continue; }
+      if (stopped) continue;
+      if (current !== 'quarantined' && current !== 'deleting') continue;
+      const target = join(quarantineDir, entry.name);
+      const present = existsSync(target);
+
+      if (current === 'quarantined' && !present) {
+        // WITH A `deleting` STATE THIS IS IMPOSSIBLE. A removal is always preceded by a record, so a
+        // quarantined set that is gone was removed by something that is not this command.
+        stop(entry.name, 'this set was recorded as set aside and is no longer in the quarantine directory. '
+          + 'Nothing this command does removes a set without recording that it was about to, so something '
+          + 'else did. Nothing after it was touched.');
+        continue;
+      }
+      if (current === 'deleting' && !present) {
+        // The removal landed and the record did not. Idempotent by construction.
+        mark(entry.name, 'removed', null);
+        effected = true;
+        recordRemoved(entry.name);
+        continue;
+      }
+
+      let owned: string;
+      try {
+        owned = requireQuarantineDirectory(resolved.destinationDir, journal, at);
+      } catch (err) {
+        stop(entry.name, safeReason(err));
+        continue;
+      }
+      if (current === 'quarantined') {
+        // AN INTACT, NOT-YET-CONSUMED TREE IS PROVED AGAINST WHAT WAS PLANNED, EVERY TIME, IMMEDIATELY BEFORE
+        // IT IS DESTROYED. A tree replaced or mutated between the rename and this instant is refused.
+        try {
+          proveSetIsPlanned(join(owned, entry.name), byName.get(entry.name)!);
+        } catch (err) {
+          stop(entry.name, safeReason(err));
+          continue;
+        }
+        try {
+          mark(entry.name, 'deleting', null);
+        } catch (err) {
+          stop(entry.name, safeReason(err));
+          continue;
+        }
+        at('after-deleting-mark', entry.name);
+      }
+      // A `deleting` TREE MAY BE PARTIAL, so it is not re-verified — that is the whole reason the state
+      // exists. What authorises finishing it is the ownership marker above and this entry's own record.
+      try {
+        effected = true;
+        removeOwnTreeNoFollow(join(owned, entry.name), `backup set ${entry.name}`,
+          removalEntryBound(byName.get(entry.name)?.entries ?? 0));
+      } catch (err) {
+        stop(entry.name, err instanceof MaintenanceRefused ? err.message
+          : 'this set could not be removed from the quarantine directory');
+        continue;
+      }
+      at('after-remove', entry.name);
       mark(entry.name, 'removed', null);
       recordRemoved(entry.name);
-      continue;
     }
-    try {
-      effected = true;
-      removeOwnTreeNoFollow(target, `backup set ${entry.name}`,
-        removalEntryBound(byName.get(entry.name)?.entries ?? 0));
-    } catch (err) {
-      const reason = err instanceof MaintenanceRefused ? err.message
-        : 'this set could not be removed from the quarantine directory';
-      mark(entry.name, 'failed', reason);
-      failed.push({ name: entry.name, reason });
-      continue;
+
+    // 7. THE PROOF. The set this run promised to protect is verified again, FROM DISK, after every removal.
+    // It should be untouched — that is the point — and a run that removed four sets and can no longer verify
+    // the one it said it was keeping has not succeeded, whatever it deleted.
+    let protectedRestorableVerified = false;
+    if (journal.protectedRestorable !== null) {
+      try {
+        const proof = verifyBackupSet(join(resolved.destinationDir, journal.protectedRestorable));
+        protectedRestorableVerified = proof.ok && proof.restorableUnderThisBuild;
+      } catch {
+        protectedRestorableVerified = false;
+      }
     }
-    at('after-remove', entry.name);
-    mark(entry.name, 'removed', null);
-    recordRemoved(entry.name);
-  }
 
-  // 6b. The quarantine directory goes only when it is empty. A directory holding a set is never removed
-  // recursively as a container: each set inside it is removed as a set, or none of it is.
-  const stillQuarantined = journal.entries.filter((entry) => entry.state === 'quarantined');
-
-  // 7. THE PROOF. The set this run promised to protect is verified again, FROM DISK, after every removal.
-  // It should be untouched — that is the point — and a run that removed four sets and can no longer verify
-  // the one it said it was keeping has not succeeded, whatever it deleted.
-  let protectedRestorableVerified = false;
-  if (journal.protectedRestorable !== null) {
-    try {
-      const proof = verifyBackupSet(join(resolved.destinationDir, journal.protectedRestorable));
-      protectedRestorableVerified = proof.ok && proof.restorableUnderThisBuild;
-    } catch {
-      protectedRestorableVerified = false;
+    const outstanding = journal.entries.filter((entry) => entry.state !== 'removed');
+    const complete = !stopped && failed.length === 0 && outstanding.length === 0 && !quarantineSurvives();
+    let journalCleared = false;
+    if (complete) {
+      clearJournal(resolved.projectRoot);
+      journalCleared = true;
+    } else {
+      notes.push('The journal was kept: this run did not finish, and a partial prune is a state that must stay '
+        + 'visible. Continue it with --resume, or put the quarantined sets back with --abandon.');
     }
+    if (stopped) {
+      notes.push('This run STOPPED at the first state one run cannot produce. Nothing after it was renamed or '
+        + 'removed: everything still listed as untouched is exactly where it was, and everything already set '
+        + 'aside can still be put back with --abandon.');
+    }
+
+    const state: RetentionState = !complete ? 'INCOMPLETE'
+      : protectedRestorableVerified ? 'REMOVED' : 'REMOVED_BUT_UNPROVEN';
+    if (state === 'REMOVED_BUT_UNPROVEN') {
+      notes.push('Every planned removal completed AND the set this run promised to keep could not be verified '
+        + 'afterwards. Do not treat this destination as a recovery point until you have looked at it.');
+    }
+    notes.push('Nothing was downloaded, fetched, played or acquired, and no command of any kind was issued: '
+      + 'this run was filesystem work under a lock.');
+    return buildReport(state, state === 'REMOVED', journalCleared, protectedRestorableVerified);
   }
 
-  const complete = failed.length === 0 && stillQuarantined.length === 0 && !quarantineSurvives();
-  let journalCleared = false;
-  if (complete) {
-    clearRetentionJournal(resolved.projectRoot);
-    journalCleared = true;
-  } else {
-    notes.push('The journal was kept: this run did not finish, and a partial prune is a state that must stay '
-      + 'visible. Continue it with --resume, or put the quarantined sets back with --abandon.');
-  }
-
-  const state: RetentionState = !complete ? 'INCOMPLETE'
-    : protectedRestorableVerified ? 'REMOVED' : 'REMOVED_BUT_UNPROVEN';
-  if (state === 'REMOVED_BUT_UNPROVEN') {
-    notes.push('Every planned removal completed AND the set this run promised to keep could not be verified '
-      + 'afterwards. Do not treat this destination as a recovery point until you have looked at it.');
-  }
-  notes.push('Nothing was downloaded, fetched, played or acquired, and no command of any kind was issued: '
-    + 'this run was filesystem work under a lock.');
-  return buildReport(state, state === 'REMOVED', journalCleared, protectedRestorableVerified);
+  function stateOf(name: string): RetentionEntryState {
+    return journal.entries.find((entry) => entry.name === name)!.state;
   }
 
   /**
-   * Remove the quarantine directory when it is empty, and answer whether it is still there.
+   * Remove the quarantine directory when only its marker is left, and answer whether it is still there.
    *
-   * It is called on the success path and on the failure path, because a retained secret-bearing directory is
-   * the one artifact that has to be named on BOTH.
+   * The marker is removed only under a proof that the directory is ours, and the directory only when nothing
+   * but the marker remains. Called on the success path and on the failure path, because a retained
+   * secret-bearing directory is the one artifact that has to be named on BOTH.
    */
   function quarantineSurvives(): boolean {
-    if (!existsSync(quarantineDir)) return false;
-    let leftovers: readonly string[] = [];
-    try {
-      leftovers = readdirSync(quarantineDir).slice().sort();
-    } catch { /* an unreadable quarantine is still reported, by its own name */ }
-    if (leftovers.length === 0) {
-      try { rmdirSync(quarantineDir); } catch { /* a directory that will not go is reported, not hidden */ }
-    }
-    return existsSync(quarantineDir);
+    return !tryRemoveOwnedQuarantine(quarantineDir, journal);
   }
 
   function buildReport(
@@ -964,14 +1640,7 @@ function execute(
   ): RetentionReport {
     let retained: RetainedArtifacts | null = null;
     if (quarantineSurvives()) {
-      let holds: readonly string[] = [];
-      try { holds = readdirSync(quarantineDir).slice().sort(); } catch { /* named below regardless */ }
-      retained = {
-        quarantine,
-        holds,
-        warning: 'this directory holds complete backup sets, which means a copy of every secret file and the '
-          + 'custodian keystore of the moments they were taken. Nothing else will mention it.',
-      };
+      retained = describeRetained(quarantineDir, quarantine);
     }
     // KEPT COUNTS BACKUP SETS, NOT DIRECTORY ENTRIES. Counting every `keep` decision would fold an operator's
     // own folders, this product's in-flight artifacts and a stray file into a number labelled "kept", which
@@ -979,6 +1648,9 @@ function execute(
     const classOf = new Map(journal.inventory.map((item) => [item.name, item.setClass]));
     const kept = journal.decisions.filter((decision) => decision.decision === 'keep'
       && (classOf.get(decision.name) === 'VERIFIED' || classOf.get(decision.name) === 'UNVERIFIED')).length;
+    const untouched = journal.entries
+      .filter((entry) => entry.state === 'pending')
+      .map((entry) => entry.name);
     return {
       report: RETENTION_REPORT,
       version: RETENTION_VERSION,
@@ -990,6 +1662,7 @@ function execute(
       planned: journal.removals,
       removed,
       failed,
+      untouched,
       kept,
       protectedRestorable: journal.protectedRestorable,
       protectedRestorableVerified,
@@ -1004,40 +1677,74 @@ function execute(
 }
 
 /**
- * Create the quarantine directory, or prove an existing one is this operation's.
+ * Remove a quarantine directory that holds nothing but this operation's own marker.
  *
- * ITS NAME CARRIES THIS RUN'S UNPREDICTABLE SUFFIX, so a directory at that name was created by this
- * operation — but that is an argument about names, and this deletes backup sets. The contents are checked
- * too: a quarantine of ours holds only names this operation's removal list records. Anything else and the
- * run stops with the directory untouched.
+ * Answers `true` when the predictable path is gone. It removes NOTHING unless the marker proves the directory
+ * is this operation's, and it removes the directory only when the marker is the last thing in it: a tree
+ * still holding a set is never removed as a container.
  */
-function ensureQuarantineDirectory(quarantineDir: string, journal: RetentionJournal): void {
-  if (!existsSync(quarantineDir)) {
-    createPrivateDirectory(quarantineDir, 'retention quarantine directory');
-    return;
+function tryRemoveOwnedQuarantine(quarantineDir: string, journal: RetentionJournal): boolean {
+  if (!existsSync(quarantineDir)) return true;
+  const proof = readQuarantineMarker(quarantineDir, journal);
+  if (!proof.ok) return false;
+  let leftovers: readonly string[];
+  try {
+    leftovers = readdirSync(quarantineDir).slice().sort();
+  } catch {
+    return false;
   }
-  const stats = lstatSync(quarantineDir);
-  if (stats.isSymbolicLink() || !stats.isDirectory()) {
-    throw new MaintenanceRefused('the retention quarantine name is held by something that is not a directory');
+  if (leftovers.some((entry) => entry !== QUARANTINE_MARKER_NAME)) return false;
+  try {
+    unlinkSync(quarantineMarkerPath(quarantineDir));
+    rmdirSync(quarantineDir);
+  } catch {
+    return false;
   }
-  const planned = new Set(journal.removals);
-  for (const entry of readdirSync(quarantineDir)) {
-    if (!planned.has(entry)) {
-      throw new MaintenanceRefused(
-        'the retention quarantine directory holds something this operation did not put there, so nothing more '
-        + 'was moved into it and nothing in it was removed');
-    }
-  }
+  return !existsSync(quarantineDir);
+}
+
+function describeRetained(quarantineDir: string, quarantine: string): RetainedArtifacts {
+  let holds: readonly string[] = [];
+  try {
+    holds = readdirSync(quarantineDir).slice().sort().filter((entry) => entry !== QUARANTINE_MARKER_NAME);
+  } catch { /* named below regardless */ }
+  return {
+    quarantine,
+    holds,
+    warning: 'this directory holds complete backup sets, which means a copy of every secret file and the '
+      + 'custodian keystore of the moments they were taken. Nothing else will mention it.',
+  };
+}
+
+/**
+ * A failure's own words, but ONLY when this product wrote them.
+ *
+ * THE DEFECT THIS CLOSES. The post-effect failure carried `err.message` through for anything at all — and an
+ * unexpected error here is the runtime's, whose message routinely carries the absolute path it failed on
+ * (`ENOENT: no such file or directory, open '/mnt/user/appdata/...'`). That message goes into a report, and
+ * a report is the thing an operator pastes into an issue. This is `maintenance-cli-shared`'s rule applied
+ * where the message is BUILT rather than only where it is printed, because by then it is inside a durable
+ * report object as well as on a terminal.
+ */
+function safeReason(err: unknown): string {
+  if (err instanceof MaintenanceRefused) return err.message;
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  const named = typeof code === 'string' && /^[A-Z]{1,16}$/.test(code) ? ` (${code})` : '';
+  return `this prune failed for a reason it does not have safe wording for${named}.`;
 }
 
 // -----------------------------------------------------------------------------------------------------------
 // Phase 310 — abandon
 // -----------------------------------------------------------------------------------------------------------
 
+export type RetentionAbandonState = 'ABANDONED' | 'ABANDONED_WITH_LOSS' | 'PARTIAL';
+
 export interface RetentionAbandonReport {
   readonly report: typeof RETENTION_REPORT;
   readonly version: typeof RETENTION_VERSION;
+  /** True ONLY for a clean unwind: everything put back, nothing gone, nothing retained. */
   readonly ok: boolean;
+  readonly state: RetentionAbandonState;
   readonly destinationName: string;
   readonly planDigest: string;
   /** Sets renamed back into the destination by this abandon. */
@@ -1059,11 +1766,19 @@ export interface RetentionAbandonReport {
  * interrupted run wrote — not from flags typed now, which can differ from the run that actually renamed
  * those directories.
  *
- * IT NAMES WHAT IT CANNOT BRING BACK. A set already deleted is gone, and an abandon that reported a clean
- * unwind while four sets were gone forever would be exactly the defect the restore's own abandon was
- * corrected for.
+ * -----------------------------------------------------------------------------------------------------
+ * AN ABANDON THAT LOST A SET IS NOT A SUCCESS, AND SAYS SO.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The first cut set `ok` from `unresolved` alone, so a run that put one set back and reported another as
+ * GONE FOREVER rendered `RESULT: ABANDONED` and exited zero — directly contradicting its own comment, the
+ * design document, and the operator's reading of the word. `ok` is now a clean unwind and nothing else;
+ * `ABANDONED_WITH_LOSS` is its own state, and the CLI exits non-zero for it.
  */
-export function abandonRetention(projectRoot: string): RetentionAbandonReport {
+export function abandonRetention(projectRoot: string, deps: RetentionDeps = {}): RetentionAbandonReport {
+  const at = deps.at ?? (() => { /* production does nothing here */ });
+  const writeJournal = deps.journalWriter ?? writeRetentionJournal;
+  const clearJournal = deps.journalClearer ?? clearRetentionJournal;
   const root = resolveMaintenanceRoot(projectRoot, 'project directory');
 
   const projectLock = acquireMaintenanceLock(root);
@@ -1072,137 +1787,173 @@ export function abandonRetention(projectRoot: string): RetentionAbandonReport {
     // THE JOURNAL IS READ UNDER THE LOCK, and it is where the destination comes from. Because it records the
     // destination RELATIVE to the project this file is in, there is no chicken-and-egg here: the project
     // root is known before any read, and everything else is expressed against it.
-    const current0 = readRetentionJournal(root);
-    if (current0 === null) {
+    const opening = readRetentionJournal(root);
+    if (opening === null) {
       throw new MaintenanceRefused('there is no interrupted retention run in this project to abandon');
     }
-    const resolved = resolveRetentionDestination(root, current0.destination);
+    const resolved = resolveRetentionDestination(root, opening.destination);
     const destinationDir = resolved.destinationDir;
     const destinationName = resolved.destinationName;
     destinationLock = lockDestination(resolved);
-    let current: RetentionJournal = { ...current0, phase: 'abandoning' };
-    writeRetentionJournal(root, current);
 
+    let current: RetentionJournal = { ...opening, phase: 'abandoning' };
     const quarantine = quarantineDirName(current.suffix);
     const quarantineDir = join(destinationDir, quarantine);
+    const byName = new Map(current.inventory.map((row) => [row.name, row]));
     const putBack: string[] = [];
     const goneForever: string[] = [];
     const unresolved: string[] = [];
     const notes: string[] = [];
+    // AN ABANDON OF AN OPERATION THAT MOVED THINGS IS ALWAYS POST-EFFECT. Its own first write records the
+    // decision to abandon; everything it does after that is on top of renames a previous process performed.
+    let effected = current.entries.some((entry) => entry.state !== 'pending') || existsSync(quarantineDir);
 
-    for (const entry of current.entries) {
-      if (entry.state === 'removed') { goneForever.push(entry.name); continue; }
-      const source = join(quarantineDir, entry.name);
-      const target = join(destinationDir, entry.name);
-      if (!existsSync(source)) {
-        if (existsSync(target)) {
-          // Never quarantined, or already put back by an interrupted abandon. Either way it is where it belongs.
-          current = markEntry(current, entry.name, 'pending', null);
-          writeRetentionJournal(root, current);
-          continue;
-        }
-        // IT IS IN NEITHER PLACE, AND WHAT THAT MEANS DEPENDS ON WHAT THE JOURNAL SAYS.
-        //
-        // Recorded `quarantined` and absent from both: the removal landed and the process stopped existing
-        // before the record did. That set is GONE, and saying so is the point — an abandon that filed it
-        // under "still out of place" would be telling an operator to go and look for something that no
-        // longer exists, while under-reporting what this operation actually destroyed.
-        //
-        // Recorded `pending` or `failed` and absent from both: this operation never renamed it, so its
-        // absence was not caused here. That is a question, not a conclusion, and it stays unresolved.
-        if (entry.state === 'quarantined') {
-          goneForever.push(entry.name);
-          current = markEntry(current, entry.name, 'removed', null);
-          writeRetentionJournal(root, current);
-          continue;
-        }
-        unresolved.push(entry.name);
-        continue;
+    const finish = (): RetentionAbandonReport => {
+      const retained = tryRemoveOwnedQuarantine(quarantineDir, current)
+        ? null : describeRetained(quarantineDir, quarantine);
+      // THE JOURNAL MAY BE CLEARED WHEN NO REVERSIBLE WORK REMAINS — and clearing it never turns loss into
+      // success. A destination with sets that are gone is a destination with sets that are gone.
+      const clearable = unresolved.length === 0 && retained === null;
+      let journalCleared = false;
+      if (clearable) {
+        clearJournal(root);
+        journalCleared = true;
+      } else {
+        notes.push('The journal was kept, because this abandon did not put everything back.');
       }
-      if (existsSync(target)) {
-        // Something now holds the name this set came from. Putting it back would replace that, and this
-        // command replaces nothing.
-        unresolved.push(entry.name);
-        continue;
+      if (goneForever.length > 0) {
+        notes.push('These sets had already been deleted and a rename cannot bring them back. If one of them '
+          + 'was the set you needed, the recovery is another backup, not this command. This is NOT a clean '
+          + 'unwind and this command does not report it as one.');
       }
-      try {
-        renameSync(source, target);
-      } catch {
-        unresolved.push(entry.name);
-        continue;
-      }
-      current = markEntry(current, entry.name, 'pending', null);
-      writeRetentionJournal(root, current);
-      putBack.push(entry.name);
-    }
-
-    let retained: RetainedArtifacts | null = null;
-    if (existsSync(quarantineDir)) {
-      let leftovers: readonly string[] = [];
-      try { leftovers = readdirSync(quarantineDir).slice().sort(); } catch { /* reported by name below */ }
-      if (leftovers.length === 0) {
-        try { rmdirSync(quarantineDir); } catch { /* reported, not hidden */ }
-      }
-      if (existsSync(quarantineDir)) {
-        retained = {
-          quarantine,
-          holds: leftovers,
-          warning: 'this directory holds complete backup sets, which means a copy of every secret file and the '
-            + 'custodian keystore of the moments they were taken. Nothing else will mention it.',
-        };
-      }
-    }
-
-    // THE JOURNAL IS NOT CLEARED WHILE ANYTHING IS UNRESOLVED. A partial unwind is a state that must stay
-    // visible; clearing it here would leave the project accepting a fresh prune over a half-unwound one.
-    const journalCleared = unresolved.length === 0 && retained === null;
-    if (journalCleared) clearRetentionJournal(root);
-    else notes.push('The journal was kept, because this abandon did not put everything back.');
-
-    if (goneForever.length > 0) {
-      notes.push('These sets had already been deleted and a rename cannot bring them back. If one of them was '
-        + 'the set you needed, the recovery is another backup, not this command.');
-    }
-    notes.push('An abandon puts directories back. It restores no database and no keystore, because it never '
-      + 'touched either: this command only ever moved and removed files in a backup destination.');
-    notes.push('No command of any kind was issued.');
-
-    return {
-      report: RETENTION_REPORT,
-      version: RETENTION_VERSION,
-      ok: unresolved.length === 0,
-      destinationName,
-      planDigest: current.planDigest,
-      putBack,
-      goneForever,
-      unresolved,
-      retained,
-      journalCleared,
-      commands: 'none',
-      network: 'none',
-      notes,
+      notes.push('An abandon puts directories back. It restores no database and no keystore, because it never '
+        + 'touched either: this command only ever moved and removed files in a backup destination.');
+      notes.push('No command of any kind was issued.');
+      const state: RetentionAbandonState = unresolved.length > 0 || retained !== null ? 'PARTIAL'
+        : goneForever.length > 0 ? 'ABANDONED_WITH_LOSS' : 'ABANDONED';
+      return {
+        report: RETENTION_REPORT,
+        version: RETENTION_VERSION,
+        ok: state === 'ABANDONED',
+        state,
+        destinationName,
+        planDigest: current.planDigest,
+        putBack,
+        goneForever,
+        unresolved,
+        retained,
+        journalCleared,
+        commands: 'none',
+        network: 'none',
+        notes,
+      };
     };
+
+    try {
+      writeJournal(root, current);
+
+      for (const entry of current.entries) {
+        if (entry.state === 'removed') { goneForever.push(entry.name); continue; }
+        const source = join(quarantineDir, entry.name);
+        const target = join(destinationDir, entry.name);
+        const inQuarantine = existsSync(quarantineDir) && existsSync(source);
+        if (!inQuarantine) {
+          if (existsSync(target)) {
+            // Never quarantined, or already put back by an interrupted abandon. Either way it belongs there.
+            current = markEntry(current, entry.name, 'pending', null);
+            writeJournal(root, current);
+            continue;
+          }
+          // IN NEITHER PLACE, AND WHAT THAT MEANS DEPENDS ON WHAT THE JOURNAL SAYS. Recorded `deleting` and
+          // absent from both: the removal landed and the record did not, so that set is GONE. Recorded
+          // `pending`, `quarantined` or `failed` and absent from both: this operation never began removing
+          // it, so its absence was not caused here. That is a question, not a conclusion.
+          if (entry.state === 'deleting') {
+            goneForever.push(entry.name);
+            current = markEntry(current, entry.name, 'removed', null);
+            writeJournal(root, current);
+            continue;
+          }
+          unresolved.push(entry.name);
+          continue;
+        }
+        if (entry.state === 'deleting') {
+          // A tree that was being consumed may be truncated. Putting a partial set back under a name an
+          // operator trusts is the exact failure the quarantine exists to prevent.
+          unresolved.push(entry.name);
+          notes.push(`${entry.name} was part way through being removed and may be incomplete. It was NOT put `
+            + 'back under its own name, because a partial set under a trusted name is worse than none.');
+          continue;
+        }
+        if (existsSync(target)) {
+          // Something now holds the name this set came from. Putting it back would replace that.
+          unresolved.push(entry.name);
+          continue;
+        }
+        // THE SAME OWNERSHIP AND IDENTITY PROOFS AS A DELETE. Renaming a stranger's directory INTO an
+        // operator's backup destination, under a set name, is its own kind of damage.
+        try {
+          requireQuarantineDirectory(destinationDir, current, at);
+          proveSetIsPlanned(source, byName.get(entry.name)!);
+        } catch {
+          unresolved.push(entry.name);
+          continue;
+        }
+        try {
+          effected = true;
+          renameSync(source, target);
+        } catch {
+          unresolved.push(entry.name);
+          continue;
+        }
+        at('after-abandon-rename', entry.name);
+        // RECORDED IN THE REPORT BEFORE IT IS RECORDED IN THE JOURNAL. The rename has landed; if the write
+        // below is what fails, the set IS back under its own name, and a report that omitted it would be
+        // telling an operator to go looking for something that is already where they want it.
+        putBack.push(entry.name);
+        current = markEntry(current, entry.name, 'pending', null);
+        writeJournal(root, current);
+      }
+
+      return finish();
+    } catch (err) {
+      if (!effected) throw err;
+      // A WRITE OR A CLEAR FAILED AFTER A RENAME. The CLI's refusal path exits with the code that means
+      // "refused before anything was moved", and a set has moved — so this carries the report instead.
+      throw new RetentionAbandonFailed(
+        `${safeReason(err)} `
+        + '\nThis failure arrived AFTER this abandon had already moved a backup set. Read the report above: '
+        + 'it names what was put back, what is gone for good, what is still out of place and what the '
+        + 'retained directory holds.',
+        finishAfterFailure());
+    }
+
+    function finishAfterFailure(): RetentionAbandonReport {
+      const retained = existsSync(quarantineDir) ? describeRetained(quarantineDir, quarantine) : null;
+      return {
+        report: RETENTION_REPORT,
+        version: RETENTION_VERSION,
+        ok: false,
+        state: 'PARTIAL',
+        destinationName,
+        planDigest: current.planDigest,
+        putBack,
+        goneForever,
+        unresolved: [...unresolved, ...current.entries
+          .filter((entry) => entry.state !== 'removed' && !putBack.includes(entry.name)
+            && !unresolved.includes(entry.name) && !goneForever.includes(entry.name))
+          .map((entry) => entry.name)],
+        retained,
+        journalCleared: false,
+        commands: 'none',
+        network: 'none',
+        notes: [...notes, 'The journal was kept. Run --abandon again once you have dealt with what stopped it.'],
+      };
+    }
   } finally {
     if (destinationLock !== null) destinationLock.release();
     projectLock.release();
   }
-}
-
-/**
- * A failure's own words, but ONLY when this product wrote them.
- *
- * THE DEFECT THIS CLOSES. The post-effect failure carried `err.message` through for anything at all — and an
- * unexpected error here is the runtime's, whose message routinely carries the absolute path it failed on
- * (`ENOENT: no such file or directory, open '/mnt/user/appdata/...'`). That message goes into a report, and
- * a report is the thing an operator pastes into an issue. This is `maintenance-cli-shared`'s rule applied
- * where the message is BUILT rather than only where it is printed, because by then it is inside a durable
- * report object as well as on a terminal.
- */
-function safeReason(err: unknown): string {
-  if (err instanceof MaintenanceRefused) return err.message;
-  const code = (err as NodeJS.ErrnoException | undefined)?.code;
-  const named = typeof code === 'string' && /^[A-Z]{1,16}$/.test(code) ? ` (${code})` : '';
-  return `this prune failed for a reason it does not have safe wording for${named}.`;
 }
 
 function markEntry(
@@ -1288,8 +2039,12 @@ export function renderRetention(report: RetentionReport): string {
   lines.push(`  journal cleared     ${report.journalCleared}`);
   lines.push(`  commands issued     ${report.commands}`);
   if (report.failed.length > 0) {
-    lines.push('  NOT DONE:');
+    lines.push('  STOPPED AT:');
     for (const failure of report.failed) lines.push(`    ${failure.name} — ${failure.reason}`);
+  }
+  if (report.untouched.length > 0) {
+    lines.push(`  NOT TOUCHED         ${report.untouched.join(', ')}`);
+    lines.push('    these were planned for removal and are exactly where they were.');
   }
   if (report.retained !== null) {
     lines.push(`  RETAINED            ${report.retained.quarantine}`);
@@ -1303,7 +2058,8 @@ export function renderRetention(report: RetentionReport): string {
 
 export function renderRetentionAbandon(report: RetentionAbandonReport): string {
   const lines: string[] = [];
-  lines.push(`Backup retention abandoned — ${report.destinationName}`);
+  lines.push(`Backup retention abandoned — ${report.state}`);
+  lines.push(`  destination         ${report.destinationName}`);
   lines.push(`  put back            ${report.putBack.length === 0 ? 'nothing had been quarantined yet' : report.putBack.join(', ')}`);
   lines.push(`  GONE FOREVER        ${report.goneForever.length === 0 ? 'nothing was deleted' : report.goneForever.join(', ')}`);
   if (report.unresolved.length > 0) lines.push(`  STILL OUT OF PLACE  ${report.unresolved.join(', ')}`);
@@ -1314,7 +2070,7 @@ export function renderRetentionAbandon(report: RetentionAbandonReport): string {
     lines.push(`    ${report.retained.warning}`);
   }
   for (const note of report.notes) lines.push(`  note: ${note}`);
-  lines.push(`  RESULT: ${report.ok ? 'ABANDONED' : 'PARTIAL'}`);
+  lines.push(`  RESULT: ${report.state}`);
   return lines.join('\n');
 }
 

@@ -1,7 +1,8 @@
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import {
-  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync,
+  existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync,
+  symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
@@ -17,8 +18,12 @@ import { verifyBackupSet } from '../src/ops/backup-set-verification.js';
 import { RESTORE_JOURNAL_NAME } from '../src/ops/complete-restore.js';
 import { MAINTENANCE_LOCK_DIRNAME, MaintenanceRefused } from '../src/ops/maintenance-safety.js';
 import {
+  QUARANTINE_CLAIM_PREFIX,
+  QUARANTINE_MARKER_NAME,
   QUARANTINE_PREFIX,
+  RetentionAbandonFailed,
   RetentionFailed,
+  RETENTION_ENTRY_STATES,
   RETENTION_JOURNAL_NAME,
   RETENTION_JOURNAL_VERSION,
   RETENTION_LOCK_DIRNAME,
@@ -29,6 +34,7 @@ import {
   inventoryDestination,
   planRetention,
   quarantineDirName,
+  readQuarantineMarker,
   readRetentionJournal,
   renderRetention,
   renderRetentionAbandon,
@@ -36,6 +42,7 @@ import {
   resolveRetentionRequest,
   runRetention,
   writeRetentionJournal,
+  type RetentionEntryState,
   type RetentionJournal,
   type RetentionReport,
 } from '../src/ops/backup-retention.js';
@@ -54,6 +61,7 @@ import {
 import {
   RETENTION_MODE_SWITCH_FLAGS,
   RETENTION_MODE_VALUE_FLAGS,
+  RETENTION_EXIT_FAILED,
   RETENTION_EXIT_OK,
   RETENTION_EXIT_REFUSED,
   RETENTION_EXIT_USAGE,
@@ -883,6 +891,31 @@ function crash(root: string, crashAt: string, options: { readonly policy?: Parti
   return plan.digest;
 }
 
+/**
+ * Kill a real child running an operation OTHER than a fresh prune — a resume, or an abandon.
+ *
+ * The plan is not remade here: an abandon has no plan to make, and a resume's operation comes from the
+ * journal the interrupted run left. What is passed is the digest that journal records.
+ */
+function crashOperation(root: string, crashAt: string, options: {
+  readonly operation: 'resume' | 'abandon';
+  readonly policy?: Partial<RetentionPolicy>;
+  readonly confirm: string;
+}): void {
+  const config = JSON.stringify({
+    projectRoot: root, destination: 'backups', confirm: options.confirm, suffix: 'aaaaaaaaaaaa',
+    policy: policy(options.policy ?? {}), nowMs: NOW.getTime(), crashAt, operation: options.operation,
+  });
+  const result = spawnSync(process.execPath,
+    [join(repoRoot, 'node_modules', 'tsx', 'dist', 'cli.mjs'), CHILD, config],
+    { encoding: 'utf8', cwd: repoRoot });
+  assertEq(result.status, RETENTION_CRASH_EXIT_CODE,
+    `the child had to stop existing at ${crashAt}, not exit ${result.status}: ${result.stderr}`);
+  for (const lock of [join(root, MAINTENANCE_LOCK_DIRNAME), join(root, 'backups', RETENTION_LOCK_DIRNAME)]) {
+    if (existsSync(lock)) rmSync(lock, { recursive: true });
+  }
+}
+
 function resume(root: string, digest: string): RetentionReport {
   return runRetention({ projectRoot: root, destination: 'backups' }, policy(),
     { now: () => NOW, suffix: () => 'aaaaaaaaaaaa' }, { kind: 'resume', confirm: digest });
@@ -946,8 +979,8 @@ test('killed after the delete and before the record: the resume is idempotent an
   takeSet(root, 'set-c', { daysAgo: 10 });
   const digest = crash(root, 'after-remove:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
   const journal = readRetentionJournal(root)!;
-  assertEq(journal.entries.find((e) => e.name === 'set-a')!.state, 'quarantined',
-    'the journal still says quarantined');
+  assertEq(journal.entries.find((e) => e.name === 'set-a')!.state, 'deleting',
+    'the journal says deleting: a removal is always preceded by the record that one is starting');
   assert(!existsSync(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-a')),
     'and the tree is already gone');
   const report = resume(root, digest);
@@ -988,12 +1021,18 @@ test('abandon puts back what is quarantined, byte-identical, and NAMES what is g
   // tell the two halves of apart.
   crash(root, 'after-remove:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
   const journal = readRetentionJournal(root)!;
-  assertEq(journal.entries.find((e) => e.name === 'set-a')!.state, 'quarantined',
-    'the journal still says quarantined: the delete landed and nothing recorded it');
+  assertEq(journal.entries.find((e) => e.name === 'set-a')!.state, 'deleting',
+    'the journal says deleting: the delete landed and its completion was never recorded');
   assert(!existsSync(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-a')), 'and set-a is gone');
 
   const report = abandonRetention(root);
-  assertEq(report.ok, true, `the abandon completed: ${JSON.stringify(report.unresolved)}`);
+  // AN ABANDON THAT LOST A SET IS NOT A SUCCESS. The first cut asserted `ok === true` here while naming a set
+  // as gone forever, and rendered `RESULT: ABANDONED` — contradicting its own comment, the design document
+  // and the plain meaning of the word to whoever reads the exit code.
+  assertEq(report.ok, false, 'a run that cannot bring a set back did not cleanly unwind');
+  assertEq(report.state, 'ABANDONED_WITH_LOSS', 'and it has a state of its own, not the clean one');
+  assert(renderRetentionAbandon(report).includes('ABANDONED_WITH_LOSS'), 'which is what the render says');
+  assertEq(JSON.stringify(report.unresolved), JSON.stringify([]), 'nothing is out of place');
   assertEq(JSON.stringify(report.putBack), JSON.stringify(['set-b']), 'set-b came back');
   assertEq(JSON.stringify(report.goneForever), JSON.stringify(['set-a']),
     'and set-a is named as gone rather than reported as a clean unwind');
@@ -1166,8 +1205,8 @@ test('a journal whose removal list disagrees with its own decisions is refused �
     forged.policy, forged.inventory, forged.decisions, forged.removals, forged.protectedRestorable,
     forged.restorableRemaining)) };
   writeFileSync(join(root, RETENTION_JOURNAL_NAME), `${JSON.stringify(rehashed, null, 2)}\n`, 'utf8');
-  refuses(() => readRetentionJournal(root), 'not the set of removals its own decisions record',
-    'the second, independent check catches what a recomputed digest cannot');
+  refuses(() => readRetentionJournal(root), 'not the ones this build makes from the inventory it records',
+    'the EVALUATOR catches what a recomputed digest cannot');
   assert(existsSync(join(root, 'backups', 'set-c')), 'and the protected set is untouched');
   rmSync(join(root, RETENTION_JOURNAL_NAME));
 });
@@ -1361,6 +1400,688 @@ test('the design document exists and states the two unconditional protections an
     'quarantine', 'Non-goals', 'never scheduled']) {
     assert(doc.includes(claim), `the design document states: ${claim}`);
   }
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 1 — the journal's authority is the EVALUATOR, not the document's agreement with itself
+// -----------------------------------------------------------------------------------------------------------
+
+/**
+ * Write a forged journal whose plan digest is RECOMPUTED over the forged content.
+ *
+ * This is the whole point of these cases. Editing one field and leaving the digest alone is caught by a hash
+ * and proves nothing about authority; a forger who understands the format recomputes it, and every check that
+ * asks the document about itself then agrees.
+ */
+function forgeJournal(root: string, mutate: (journal: RetentionJournal) => Record<string, unknown>): void {
+  const journal = readRetentionJournal(root)!;
+  const forged = mutate(journal) as unknown as RetentionJournal;
+  const resolved = resolveRetentionRequest({ projectRoot: root, destination: 'backups' });
+  const rehashed = {
+    ...forged,
+    planDigest: digestOperation(canonicalRetentionOperation(resolved, forged.policy, forged.inventory,
+      forged.decisions, forged.removals, forged.protectedRestorable, forged.restorableRemaining)),
+  };
+  writeFileSync(join(root, RETENTION_JOURNAL_NAME), `${JSON.stringify(rehashed, null, 2)}\n`, 'utf8');
+}
+
+/** Write a journal whose content is edited WITHOUT recomputing the digest — the shallow forgery. */
+function editJournal(root: string, mutate: (journal: RetentionJournal) => unknown): void {
+  const journal = readRetentionJournal(root)!;
+  writeFileSync(join(root, RETENTION_JOURNAL_NAME), `${JSON.stringify(mutate(journal), null, 2)}\n`, 'utf8');
+}
+
+/** A project with three sets, a foreign directory and a reserved name, interrupted with its journal intact. */
+function forgeryFixture(name: string): { readonly root: string; readonly digest: string } {
+  const root = makeProject(name);
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const foreign = join(root, 'backups', 'not-a-backup');
+  mkdirSync(foreign, { recursive: true });
+  writeFileSync(join(foreign, 'somebody-elses-file.txt'), 'mine\n', 'utf8');
+  mkdirSync(join(root, 'backups', '.reserved-thing'), { recursive: true });
+  const digest = crash(root, 'after-journal', { policy: { keepLast: 1, minAgeDays: 7 } });
+  return { root, digest };
+}
+
+test('FORGERY (a): removing the PROTECTED restorable set, with the digest recomputed, is refused', () => {
+  const { root, digest } = forgeryFixture('forge-protected');
+  forgeJournal(root, (journal) => ({
+    ...journal,
+    decisions: journal.decisions.map((d) => (d.name === 'set-c'
+      ? { ...d, decision: 'remove', reason: 'BEYOND_KEEP_WINDOW' } : d)),
+    removals: [...journal.removals, 'set-c'],
+    entries: [...journal.entries, { name: 'set-c', state: 'pending', reason: null }],
+    restorableRemaining: 0,
+  }));
+  refuses(() => readRetentionJournal(root), 'not the ones this build makes from the inventory it records',
+    'the evaluator protects the newest restorable set whatever the document says');
+  refuses(() => resume(root, digest), 'not the ones this build makes from the inventory it records',
+    'and a resume never reaches an effect');
+  assert(existsSync(join(root, 'backups', 'set-c')), 'the protected set is untouched');
+  assert(existsSync(join(root, 'backups', 'set-a')), 'and so is everything else');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('FORGERY (b): removing a FOREIGN or RESERVED row, with the digest recomputed, is refused', () => {
+  for (const victim of ['not-a-backup', '.reserved-thing']) {
+    const { root, digest } = forgeryFixture(`forge-notours-${victim.replace(/[^a-z]/g, '')}`);
+    forgeJournal(root, (journal) => ({
+      ...journal,
+      decisions: journal.decisions.map((d) => (d.name === victim
+        ? { ...d, decision: 'remove', reason: 'BEYOND_KEEP_WINDOW' } : d)),
+      removals: [...journal.removals, victim],
+      entries: [...journal.entries, { name: victim, state: 'pending', reason: null }],
+    }));
+    // THE CLASS GATE FIRES BEFORE THE EVALUATOR IS EVEN ASKED: a removal list that names something which is
+    // not a backup set this command took is refused for what it names.
+    // A DOT-PREFIXED NAME NEVER REACHES THE CLASS GATE: it is not a name this command can create, which is
+    // the earlier answer and the same closed one. Both are asserted for what they actually say.
+    const needle = victim.startsWith('.') ? 'is not one this command creates' : 'not a backup set this command took';
+    refuses(() => readRetentionJournal(root), needle, `${victim} is not this command's to remove`);
+    refuses(() => resume(root, digest), needle, 'and no resume reaches an effect');
+    assert(existsSync(join(root, 'backups', victim)), `${victim} is untouched`);
+    rmSync(join(root, RETENTION_JOURNAL_NAME));
+  }
+});
+
+test('FORGERY (c): changing a decision REASON, or an inventory row CLASS, is refused', () => {
+  const reasoned = forgeryFixture('forge-reason');
+  forgeJournal(reasoned.root, (journal) => ({
+    ...journal,
+    decisions: journal.decisions.map((d) => (d.name === 'set-a' ? { ...d, reason: 'UNVERIFIED_SET' } : d)),
+  }));
+  refuses(() => readRetentionJournal(reasoned.root), 'not the ones this build makes',
+    'the reason is part of the decision, and the evaluator produces it');
+  rmSync(join(reasoned.root, RETENTION_JOURNAL_NAME));
+
+  // A CLASS ON A SET THAT IS NOT IN THE REMOVAL LIST, so the class gate cannot answer and the EVALUATOR has
+  // to: demoting the protected set changes which set is protected, and the recorded decisions no longer
+  // match the ones this build makes.
+  const classed = forgeryFixture('forge-class');
+  forgeJournal(classed.root, (journal) => ({
+    ...journal,
+    inventory: journal.inventory.map((row) => (row.name === 'set-c'
+      ? { ...row, setClass: 'UNVERIFIED', restorable: false, findings: ['COMPONENT_CHANGED'] } : row)),
+  }));
+  refuses(() => readRetentionJournal(classed.root), 'not the ones this build makes',
+    'a class the evaluator would have decided differently from is refused');
+  rmSync(join(classed.root, RETENTION_JOURNAL_NAME));
+});
+
+test('FORGERY (d): a fabricated inventory row pointing at a stranger\'s directory dies ON DISK', () => {
+  // THE ONE FORGERY THAT SURVIVES EVERY DOCUMENT-LEVEL CHECK. Claim the foreign directory is a VERIFIED set,
+  // give it a plausible digest and an old date, recompute — and the evaluator agrees, because the evaluator
+  // can only reason about what the inventory says. What kills it is that nothing is deleted until the tree
+  // at that name has been re-verified against the set digest the row records.
+  const { root, digest } = forgeryFixture('forge-fabricated');
+  const fabricated = 'f'.repeat(64);
+  forgeJournal(root, (journal) => ({
+    ...journal,
+    inventory: journal.inventory.map((row) => (row.name === 'not-a-backup'
+      ? {
+        ...row, setClass: 'VERIFIED', restorable: true, setDigest: fabricated,
+        takenAt: new Date(NOW.getTime() - 200 * DAY).toISOString(),
+        takenAtMs: NOW.getTime() - 200 * DAY, schemaVersion: MIGRATION_VERSION, bytes: 10, entries: 1,
+      } : row)),
+    decisions: journal.decisions.map((d) => (d.name === 'not-a-backup'
+      ? { ...d, decision: 'remove', reason: 'BEYOND_KEEP_WINDOW' } : d)),
+    removals: ['not-a-backup', ...journal.removals],
+    entries: [{ name: 'not-a-backup', state: 'pending', reason: null }, ...journal.entries],
+  }));
+  // It reads: the document is self-consistent AND the evaluator agrees with it.
+  const accepted = readRetentionJournal(root);
+  assert(accepted !== null, 'this forgery does pass every check a document can answer about itself');
+  void digest;
+  const report = resume(root, accepted!.planDigest);
+  assertEq(report.ok, false, 'and the run does not succeed');
+  assert(report.failed.some((f) => f.name === 'not-a-backup'
+    && f.reason.includes('not the one this operation planned to remove')),
+    `it is refused by its identity on disk, not by its name: ${JSON.stringify(report.failed)}`);
+  assert(existsSync(join(root, 'backups', 'not-a-backup', 'somebody-elses-file.txt')),
+    'and the stranger\'s file is exactly where it was');
+  // AND THE HALT: nothing after the impossible state was touched.
+  for (const name of ['set-a', 'set-b', 'set-c']) {
+    assert(existsSync(join(root, 'backups', name)), `${name} was not touched after the run stopped`);
+  }
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('a malformed inventory or decision member is a closed refusal, never a runtime exception', () => {
+  const cases: readonly [string, (journal: RetentionJournal) => unknown, string][] = [
+    ['an inventory row that is null', (j) => ({ ...j, inventory: [null, ...j.inventory.slice(1)] }),
+      'one of its inventory rows is not a record'],
+    ['an inventory row that is a number', (j) => ({ ...j, inventory: [42, ...j.inventory.slice(1)] }),
+      'one of its inventory rows is not a record'],
+    ['an inventory row with no name', (j) => ({ ...j,
+      inventory: j.inventory.map((r, i) => (i === 0 ? { ...r, name: null } : r)) }),
+      'has no usable name'],
+    ['an inventory class this build does not write', (j) => ({ ...j,
+      inventory: j.inventory.map((r, i) => (i === 0 ? { ...r, setClass: 'PROBABLY_FINE' } : r)) }),
+      'carries a class this build does not write'],
+    ['a byte count that is a string', (j) => ({ ...j,
+      inventory: j.inventory.map((r, i) => (i === 0 ? { ...r, bytes: '10' } : r)) }),
+      'carries a bytes count that is not a count'],
+    ['a date and a moment that disagree', (j) => ({ ...j,
+      inventory: j.inventory.map((r) => (r.takenAtMs === null ? r : { ...r, takenAtMs: r.takenAtMs + 1 })) }),
+      'carries a date and a moment that disagree'],
+    ['findings that are not a list', (j) => ({ ...j,
+      inventory: j.inventory.map((r, i) => (i === 0 ? { ...r, findings: 'none' } : r)) }),
+      'carries findings this build does not write'],
+    ['a set digest on something that is not a set', (j) => ({ ...j,
+      inventory: j.inventory.map((r) => (r.setClass === 'FOREIGN' ? { ...r, setDigest: 'a'.repeat(64) } : r)) }),
+      'claims a set digest for something that is not a set'],
+    ['a decision that is null', (j) => ({ ...j, decisions: [null, ...j.decisions.slice(1)] }),
+      'one of its decisions is not a record'],
+    ['a decision that is neither keep nor remove', (j) => ({ ...j,
+      decisions: j.decisions.map((d, i) => (i === 0 ? { ...d, decision: 'maybe' } : d)) }),
+      'neither keep nor remove'],
+    ['a reason this build does not write', (j) => ({ ...j,
+      decisions: j.decisions.map((d, i) => (i === 0 ? { ...d, reason: 'BECAUSE_I_SAID_SO' } : d)) }),
+      'carries a reason this build does not write'],
+    ['an inventory naming one set twice', (j) => ({ ...j,
+      inventory: [j.inventory[0], ...j.inventory] }), 'appears in its inventory more than once'],
+    ['an inventory out of canonical order', (j) => ({ ...j, inventory: j.inventory.slice().reverse() }),
+      'not in the canonical order'],
+    ['decisions that do not cover the inventory', (j) => ({ ...j, decisions: j.decisions.slice(1) }),
+      'do not cover its inventory'],
+    ['an evaluation instant that is not an instant', (j) => ({ ...j, evaluatedAt: 'tuesday' }),
+      'is not an instant'],
+    ['a journal that is not a record at all', () => ['not', 'a', 'journal'], 'is not a record'],
+  ];
+  for (const [index, [label, mutate, needle]] of cases.entries()) {
+    const { root } = forgeryFixture(`malformed-${index}`);
+    editJournal(root, mutate);
+    let message = '';
+    try {
+      readRetentionJournal(root);
+      throw new Error(`${label}: nothing was refused`);
+    } catch (err) {
+      assert(err instanceof MaintenanceRefused, `${label}: refused as a rule, not as a ${(err as Error).name}`);
+      message = (err as Error).message;
+    }
+    assert(message.includes(needle), `${label}: expected "${needle}", got: ${message}`);
+    assert(existsSync(join(root, 'backups', 'set-a')), `${label}: and nothing was removed`);
+    rmSync(join(root, RETENTION_JOURNAL_NAME));
+  }
+});
+
+test('a version-1 journal is refused AT THE VERSION BOUNDARY, before any later field is read', () => {
+  const { root } = forgeryFixture('old-version');
+  // Version 1 had no `evaluatedAt` and no `deleting` state. It must be refused for BEING version 1, not for
+  // whichever later field it happens to be missing — otherwise the message sends an operator after a field.
+  editJournal(root, (journal) => {
+    const rest = { ...journal } as Record<string, unknown>;
+    delete rest.evaluatedAt;
+    return { ...rest, version: 1 };
+  });
+  refuses(() => readRetentionJournal(root), 'its version is 1 and this build writes 2',
+    'the version boundary is the first thing that answers');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 2 — the quarantine directory has to PROVE it is ours, before anything in it is destroyed
+// -----------------------------------------------------------------------------------------------------------
+
+test('a quarantine directory replaced by an ORDINARY directory is refused, and nothing in it is removed', () => {
+  const root = makeProject('quarantine-replaced');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-mark:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const quarantineDir = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'));
+  // Somebody's ordinary directory, at the published path, holding a directory named after a planned set.
+  // The first cut treated the unguessable-looking name plus an allowlisted child name AS ownership — and the
+  // suffix is written down in the journal, in a directory the operator owns, so it is not unguessable at all.
+  rmSync(quarantineDir, { recursive: true });
+  mkdirSync(join(quarantineDir, 'set-a'), { recursive: true });
+  writeFileSync(join(quarantineDir, 'set-a', 'somebody-elses-file.txt'), 'mine\n', 'utf8');
+
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'the resume did not succeed');
+  assert(report.failed.some((f) => f.reason.includes('ownership marker')),
+    `it says the directory cannot prove it is this operation's: ${JSON.stringify(report.failed)}`);
+  assert(existsSync(join(quarantineDir, 'set-a', 'somebody-elses-file.txt')),
+    'the stranger\'s file is exactly where it was');
+  assert(existsSync(join(root, 'backups', 'set-b')), 'and set-b was never touched after the stop');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('a quarantine directory whose marker was removed or edited is refused', () => {
+  for (const [label, damage] of [
+    ['removed', (dir: string) => { rmSync(join(dir, QUARANTINE_MARKER_NAME)); }],
+    ['edited', (dir: string) => {
+      const marker = JSON.parse(readFileSync(join(dir, QUARANTINE_MARKER_NAME), 'utf8')) as Record<string, unknown>;
+      writeFileSync(join(dir, QUARANTINE_MARKER_NAME),
+        JSON.stringify({ ...marker, removals: ['set-c'] }, null, 2), 'utf8');
+    }],
+  ] as const) {
+    const root = makeProject(`marker-${label}`);
+    takeSet(root, 'set-a', { daysAgo: 100 });
+    takeSet(root, 'set-b', { daysAgo: 80 });
+    takeSet(root, 'set-c', { daysAgo: 10 });
+    const digest = crash(root, 'after-quarantine-mark:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+    const quarantineDir = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'));
+    damage(quarantineDir);
+    const report = resume(root, digest);
+    assertEq(report.ok, false, `${label}: the resume did not succeed`);
+    assert(report.failed.some((f) => f.reason.includes('ownership marker')), `${label}: it names the marker`);
+    assert(existsSync(join(quarantineDir, 'set-a')), `${label}: and the set inside it was not removed`);
+    rmSync(join(root, RETENTION_JOURNAL_NAME));
+  }
+});
+
+test('a directory already sitting at the quarantine path refuses the FIRST rename', () => {
+  const root = makeProject('quarantine-squatted');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 10 });
+  mkdirSync(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa')), { recursive: true });
+  const before = snapshot(join(root, 'backups'));
+  const { report } = prune(root, { policy: { keepLast: 1, minAgeDays: 7 } });
+  assertEq(report.ok, false, 'the run did not succeed');
+  assertEq(report.removed.length, 0, 'and removed nothing');
+  assert(sameSnapshot(before, snapshot(join(root, 'backups'))), 'not one directory moved');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('killed while the quarantine marker was BUILT: the predictable path is absent and a resume publishes', () => {
+  const root = makeProject('marker-built');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-marker-built', { policy: { keepLast: 1, minAgeDays: 7 } });
+  assert(!existsSync(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'))),
+    'the PREDICTABLE path never existed: it goes from absent straight to marked');
+  const orphans = readdirSync(join(root, 'backups')).filter((n) => n.startsWith(QUARANTINE_CLAIM_PREFIX));
+  assertEq(orphans.length, 1, 'an unpredictable, secret-free build directory was left');
+  assert(existsSync(join(root, 'backups', orphans[0]!, QUARANTINE_MARKER_NAME)), 'carrying its marker');
+  assertEq(readdirSync(join(root, 'backups', orphans[0]!)).length, 1,
+    'and not one byte of any set: nothing is moved until after the publication');
+  const report = resume(root, digest);
+  assertEq(report.ok, true, `the resume published a fresh quarantine and completed: ${JSON.stringify(report.failed)}`);
+  assert(existsSync(join(root, 'backups', orphans[0]!)),
+    'and the orphan is left for an operator: this command removes no directory it cannot prove is its own');
+  rmSync(join(root, 'backups', orphans[0]!), { recursive: true });
+});
+
+test('killed just after the quarantine was PUBLISHED: it is marked, empty, and a resume proceeds', () => {
+  const root = makeProject('marker-published');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-marker-published', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const quarantineDir = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'));
+  assertEq(JSON.stringify(readdirSync(quarantineDir)), JSON.stringify([QUARANTINE_MARKER_NAME]),
+    'the published path holds its marker and nothing else');
+  const journal = readRetentionJournal(root)!;
+  assert(readQuarantineMarker(quarantineDir, journal).ok, 'and the marker proves the operation');
+  const report = resume(root, digest);
+  assertEq(report.ok, true, `the resume completed: ${JSON.stringify(report.failed)}`);
+});
+
+test('killed after `deleting` was recorded and before the first unlink: the tree is INTACT and finishes', () => {
+  const root = makeProject('deleting-intact');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const whole = snapshot(join(root, 'backups', 'set-a'));
+  const digest = crash(root, 'after-deleting-mark:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const journal = readRetentionJournal(root)!;
+  assertEq(journal.entries.find((e) => e.name === 'set-a')!.state, 'deleting', 'the state is recorded');
+  const quarantined = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-a');
+  assert(sameSnapshot(whole, snapshot(quarantined)), 'and the tree is still whole');
+  const report = resume(root, digest);
+  assertEq(report.ok, true, `the resume finished it: ${JSON.stringify(report.failed)}`);
+  assert(report.removed.includes('set-a'), 'and removed it');
+});
+
+test('a quarantined set MUTATED between the rename and the delete is refused', () => {
+  const root = makeProject('quarantine-mutated');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-mark:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const quarantined = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-a');
+  tamper(quarantined);
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'the resume did not succeed');
+  assert(report.failed.some((f) => f.name === 'set-a' && f.reason.includes('when the plan was made')),
+    `what is on disk is not what was planned: ${JSON.stringify(report.failed)}`);
+  assert(existsSync(quarantined), 'and the tree is still there for a human to look at');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('a quarantined set REPLACED by a different set of ours is refused', () => {
+  const root = makeProject('quarantine-swapped');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-mark:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const quarantined = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-a');
+  // A REAL SET OF OURS, THAT VERIFIES — and is not the one this operation committed to removing. A name is
+  // not a commitment, which is why the identity is compared and not merely the fact that it is a valid set.
+  rmSync(quarantined, { recursive: true });
+  const other = takeSet(root, 'set-other', { daysAgo: 55 });
+  renameSync(other, quarantined);
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'the resume did not succeed');
+  assert(report.failed.some((f) => f.name === 'set-a' && f.reason.includes('when the plan was made')),
+    `a valid set of ours is still not THIS set: ${JSON.stringify(report.failed)}`);
+  assert(existsSync(quarantined), 'and the substitute was not deleted');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('a `pending` entry whose quarantined target is a STRANGER\'S directory is refused, never adopted', () => {
+  const root = makeProject('pending-stranger');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-rename:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const quarantined = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-a');
+  rmSync(quarantined, { recursive: true });
+  mkdirSync(quarantined, { recursive: true });
+  writeFileSync(join(quarantined, 'somebody-elses-file.txt'), 'mine\n', 'utf8');
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'the resume did not succeed');
+  assert(report.failed.some((f) => f.name === 'set-a'), 'set-a is named');
+  assert(existsSync(join(quarantined, 'somebody-elses-file.txt')),
+    'and the directory that was NOT the planned set was neither adopted nor removed');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 3 — an impossible state stops every later destructive effect
+// -----------------------------------------------------------------------------------------------------------
+
+test('the first impossible state STOPS the run: no later candidate is quarantined or deleted', () => {
+  const root = makeProject('halt-quarantine');
+  for (const [name, days] of [['set-a', 100], ['set-b', 90], ['set-c', 80], ['set-d', 70], ['set-e', 5]] as const) {
+    takeSet(root, name, { daysAgo: days });
+  }
+  const digest = crash(root, 'after-quarantine-rename:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  // The both-places state on the FIRST candidate, with three more still to go.
+  mkdirSync(join(root, 'backups', 'set-a'));
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'it did not succeed');
+  assertEq(report.failed.length, 1, 'exactly one entry is named');
+  assertEq(report.removed.length, 0, 'and NOTHING was removed');
+  for (const name of ['set-b', 'set-c', 'set-d']) {
+    assert(existsSync(join(root, 'backups', name)), `${name} is exactly where it was`);
+    assert(report.untouched.includes(name), `and ${name} is reported as untouched`);
+  }
+  assert(existsSync(join(root, 'backups', 'set-e')), 'and the protected set is there');
+  assertEq(report.journalCleared, false, 'the journal stays, so abandon is still available');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('an impossible state during the DELETE phase stops it too, with the rest still quarantined', () => {
+  const root = makeProject('halt-delete');
+  for (const [name, days] of [['set-a', 100], ['set-b', 90], ['set-c', 80], ['set-e', 5]] as const) {
+    takeSet(root, name, { daysAgo: days });
+  }
+  const digest = crash(root, 'after-quarantine-mark:set-c', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const quarantineDir = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'));
+  assertEq(readdirSync(quarantineDir).slice().sort().join(','),
+    [QUARANTINE_MARKER_NAME, 'set-a', 'set-b', 'set-c'].sort().join(','), 'all three are set aside');
+  // Make the FIRST delete impossible; the other two must survive intact and remain abandonable.
+  tamper(join(quarantineDir, 'set-a'));
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'it did not succeed');
+  assertEq(report.removed.length, 0, 'and nothing was deleted at all');
+  for (const name of ['set-b', 'set-c']) {
+    assert(existsSync(join(quarantineDir, name)), `${name} is still whole in quarantine`);
+  }
+  assert(report.retained !== null && report.retained.holds.includes('set-b'), 'and the report names them');
+  // ABANDON IS STILL AVAILABLE, and puts the untouched ones back.
+  const abandoned = abandonRetention(root);
+  assert(abandoned.putBack.includes('set-b') && abandoned.putBack.includes('set-c'),
+    `the candidates the halt protected are put back: ${JSON.stringify(abandoned.unresolved)}`);
+  assert(existsSync(join(root, 'backups', 'set-b')), 'set-b is back under its own name');
+  try { rmSync(join(root, RETENTION_JOURNAL_NAME)); } catch { /* a clean abandon already cleared it */ }
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 4 — an abandon that lost a set is not a success, and its failures carry a report
+// -----------------------------------------------------------------------------------------------------------
+
+test('the CLI exits 1 for an abandon that could not bring a set back', () => {
+  const root = makeProject('abandon-exit');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  crash(root, 'after-remove:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const printed: string[] = [];
+  const log = console.log;
+  const error = console.error;
+  console.log = (...args: unknown[]) => { printed.push(args.map(String).join(' ')); };
+  console.error = (...args: unknown[]) => { printed.push(args.map(String).join(' ')); };
+  try {
+    assertEq(cliMain(['--project', root, '--abandon']), RETENTION_EXIT_FAILED,
+      'a scheduler reading zero would call this a clean unwind');
+  } finally { console.log = log; console.error = error; }
+  const text = printed.join('\n');
+  assert(text.includes('ABANDONED_WITH_LOSS'), 'and the state is on the page');
+  assert(text.includes('GONE FOREVER'), 'beside what is gone');
+  assert(!text.includes(WORK), 'with no host path');
+});
+
+test('an abandon whose journal write fails AFTER a rename carries its report and does not read as a refusal', () => {
+  const root = makeProject('abandon-post-effect');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  crash(root, 'after-quarantine-mark:set-b', { policy: { keepLast: 1, minAgeDays: 7 } });
+  let writes = 0;
+  let thrown: unknown = null;
+  try {
+    abandonRetention(root, {
+      journalWriter: (projectRoot, journal) => {
+        writes += 1;
+        // 1 = the decision to abandon. 2 = the record of the first put-back, which is where it fails.
+        if (writes >= 2) throw new MaintenanceRefused('the retention journal could not be written');
+        writeRetentionJournal(projectRoot, journal);
+      },
+    });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof RetentionAbandonFailed,
+    `it is raised as a post-effect abandon failure, not a refusal: ${String(thrown)}`);
+  const report = (thrown as RetentionAbandonFailed).report;
+  assertEq(report.ok, false, 'the report says so');
+  assert(report.putBack.includes('set-a'), 'and names what it did put back');
+  assert(!JSON.stringify(report).includes(WORK), 'without a host path');
+  assert(existsSync(join(root, 'backups', 'set-a')), 'set-a really was put back');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('an abandon whose FINAL CLEAR fails carries its report too, and rerunning finishes deterministically', () => {
+  const root = makeProject('abandon-clear-fails');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  crash(root, 'after-quarantine-mark:set-b', { policy: { keepLast: 1, minAgeDays: 7 } });
+  let thrown: unknown = null;
+  try {
+    abandonRetention(root, {
+      journalClearer: () => { throw new MaintenanceRefused('the retention journal could not be removed'); },
+    });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof RetentionAbandonFailed, `the clear failure is post-effect too: ${String(thrown)}`);
+  assert(existsSync(join(root, 'backups', 'set-a')) && existsSync(join(root, 'backups', 'set-b')),
+    'both sets were put back before it failed');
+  // RERUNNING FINISHES IT. Everything is already where it belongs, so the second abandon is a clean one.
+  const second = abandonRetention(root);
+  assertEq(second.ok, true, `the rerun is a clean unwind: ${JSON.stringify(second.unresolved)}`);
+  assertEq(second.journalCleared, true, 'and it clears the journal');
+  assert(!existsSync(join(root, RETENTION_JOURNAL_NAME)), 'which is gone');
+});
+
+test('killed mid-abandon, after a rename and before its record: rerunning abandon finishes', () => {
+  const root = makeProject('abandon-killed');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-mark:set-b', { policy: { keepLast: 1, minAgeDays: 7 } });
+  crashOperation(root, 'after-abandon-rename:set-a', { operation: 'abandon',
+    policy: { keepLast: 1, minAgeDays: 7 }, confirm: digest });
+  assert(existsSync(join(root, 'backups', 'set-a')), 'the rename landed');
+  const journal = readRetentionJournal(root)!;
+  assertEq(journal.phase, 'abandoning', 'and the direction is committed');
+  refuses(() => resume(root, digest), 'interrupted ABANDON', 'a resume will not undo it');
+  const report = abandonRetention(root);
+  assertEq(report.ok, true, `the rerun completes: ${JSON.stringify(report.unresolved)}`);
+  assert(report.putBack.includes('set-b'), 'it moved the one the killed process had not reached');
+  for (const name of ['set-a', 'set-b']) {
+    assert(existsSync(join(root, 'backups', name)), `${name} is back under its own name`);
+  }
+  assertEq(report.journalCleared, true, 'and the journal is cleared, deterministically');
+});
+
+test('an abandon whose FIRST write — the decision itself — fails still carries a report', () => {
+  // THE OTHER SIDE OF THE RENAME. Nothing this process has done has moved yet, and the OPERATION has three
+  // sets sitting in a quarantine directory. A pre-effect refusal here would tell an operator nothing had
+  // happened about a destination that is part way through a prune.
+  const root = makeProject('abandon-first-write');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  crash(root, 'after-quarantine-mark:set-b', { policy: { keepLast: 1, minAgeDays: 7 } });
+  let thrown: unknown = null;
+  try {
+    abandonRetention(root, {
+      journalWriter: () => { throw new MaintenanceRefused('the retention journal could not be written'); },
+    });
+  } catch (err) { thrown = err; }
+  assert(thrown instanceof RetentionAbandonFailed,
+    `the operation's own effects make this post-effect: ${String(thrown)}`);
+  const report = (thrown as RetentionAbandonFailed).report;
+  assertEq(report.ok, false, 'it did not succeed');
+  assertEq(report.putBack.length, 0, 'nothing was put back');
+  assert(report.unresolved.includes('set-a') && report.unresolved.includes('set-b'),
+    'and both quarantined sets are named as still out of place');
+  assert(report.retained !== null, 'with the retained directory named');
+  assert(!JSON.stringify(report).includes(WORK), 'and no host path anywhere in it');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('an abandon will NOT put back a set that was part way through being removed', () => {
+  // A `deleting` tree may be truncated. Renaming it back under a name an operator trusts is the exact
+  // failure the quarantine exists to prevent, so it is named as unresolved instead.
+  const root = makeProject('abandon-deleting');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  crash(root, 'after-deleting-mark:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const report = abandonRetention(root);
+  assertEq(report.ok, false, 'this is not a clean unwind');
+  assertEq(report.state, 'PARTIAL', 'and it says so');
+  assert(report.unresolved.includes('set-a'), 'set-a is named as still out of place');
+  assert(!existsSync(join(root, 'backups', 'set-a')), 'and it was NOT put back under its own name');
+  assert(report.putBack.includes('set-b'), 'while the untouched one was');
+  assert(report.notes.some((note) => note.includes('may be incomplete')), 'with the reason said plainly');
+  assertEq(report.journalCleared, false, 'and the journal stays, because this is still visible work');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 5 — a resume classifies from the OPERATION's effects, not from its own
+// -----------------------------------------------------------------------------------------------------------
+
+test('a resume whose first write fails still carries a report when the OPERATION had already moved sets', () => {
+  for (const [label, crashAt] of [
+    ['a rename the previous process never recorded', 'after-quarantine-rename:set-a'],
+    ['a removal the previous process never recorded', 'after-remove:set-a'],
+  ] as const) {
+    const root = makeProject(`resume-prior-${label.replace(/[^a-z]+/gi, '-').slice(0, 20)}`);
+    takeSet(root, 'set-a', { daysAgo: 100 });
+    takeSet(root, 'set-b', { daysAgo: 80 });
+    takeSet(root, 'set-c', { daysAgo: 10 });
+    const digest = crash(root, crashAt, { policy: { keepLast: 1, minAgeDays: 7 } });
+    let thrown: unknown = null;
+    try {
+      runRetention({ projectRoot: root, destination: 'backups' }, policy(), {
+        now: () => NOW,
+        // THE VERY FIRST WRITE THIS PROCESS ATTEMPTS FAILS. It has renamed and removed nothing itself — and
+        // the operation has. The first cut exited as a pre-effect refusal carrying no report at all.
+        journalWriter: () => { throw new MaintenanceRefused('the retention journal could not be written'); },
+      }, { kind: 'resume', confirm: digest });
+    } catch (err) { thrown = err; }
+    assert(thrown instanceof RetentionFailed,
+      `${label}: it is a post-effect failure because the OPERATION moved sets: ${String(thrown)}`);
+    const report = (thrown as RetentionFailed).report;
+    assertEq(report.ok, false, `${label}: the report says so`);
+    assert(!JSON.stringify(report).includes(WORK), `${label}: with no host path`);
+    rmSync(join(root, RETENTION_JOURNAL_NAME));
+  }
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 6 — what this command reads, said exactly
+// -----------------------------------------------------------------------------------------------------------
+
+test('nothing claims this command opens no secret, because verifying a set reads every byte of one', () => {
+  for (const file of ['src/ops/backup-retention.ts', 'src/ops/retention-model.ts',
+    'src/ops/backup-retention-cli.ts', 'src/ops/backup-components.ts',
+    'docs/PHASES_305_312_BACKUP_RETENTION.md', 'PHASES_305_312_REPORT.md']) {
+    const text = readRepo(file).toLowerCase();
+    for (const forbidden of ['opens no secret', 'opening no secret', 'reads no secret']) {
+      assert(!text.includes(forbidden),
+        `${file} must not claim it "${forbidden}": verifyBackupSet hashes the secrets component`);
+    }
+  }
+  const source = readRepo('src/ops/backup-retention.ts');
+  assert(source.includes('accepts no credential on a command line'),
+    'the boundary that IS true is stated where the reading happens');
+  const design = readRepo('docs/PHASES_305_312_BACKUP_RETENTION.md');
+  assert(design.includes('hashing'), 'and the design document says what the bytes are read FOR');
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 7 — the state matrix, enumerated
+// -----------------------------------------------------------------------------------------------------------
+
+test('every combination of per-set state and filesystem presence has one declared answer', () => {
+  // journal state x (in destination?) x (in quarantine?) -> what a resume does. Each row below is driven by
+  // a test in this file; the enumeration exists so a state added to the executor without an answer here is
+  // visible rather than silently defaulting.
+  const matrix: readonly [RetentionEntryState, boolean, boolean, string][] = [
+    ['pending', true, false, 'quarantine it'],
+    ['pending', false, true, 'prove it is the planned set, then adopt the interrupted rename'],
+    ['pending', true, true, 'STOP: one run cannot produce this'],
+    ['pending', false, false, 'STOP: something outside this command removed it'],
+    ['quarantined', false, true, 'prove it, record deleting, remove it'],
+    ['quarantined', false, false, 'STOP: a removal is always preceded by its record'],
+    ['quarantined', true, true, 'STOP: one run cannot produce this'],
+    ['deleting', false, true, 'finish the removal under the ownership marker'],
+    ['deleting', false, false, 'record the removal that landed without its record'],
+    ['removed', false, false, 'nothing'],
+  ];
+  assertEq(matrix.length, 10, 'the enumeration is the one the executor implements');
+  for (const [state, , , answer] of matrix) {
+    assert(RETENTION_ENTRY_STATES.includes(state), `${state} is a state this build writes`);
+    assert(answer.length > 0, `${state} has a declared answer`);
+  }
+  // Every state in the vocabulary appears, so the matrix cannot drift from it.
+  for (const state of RETENTION_ENTRY_STATES) {
+    assert(matrix.some(([listed]) => listed === state) || state === 'failed',
+      `${state} appears in the matrix`);
+  }
+});
+
+test('a `quarantined` set that has VANISHED from quarantine stops the run rather than being called removed', () => {
+  const root = makeProject('quarantined-vanished');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-mark:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  rmSync(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-a'), { recursive: true });
+  const report = resume(root, digest);
+  assertEq(report.ok, false, 'the resume did not succeed');
+  assert(!report.removed.includes('set-a'), 'and it does NOT claim to have removed it');
+  assert(report.failed.some((f) => f.reason.includes('something')), 'it says something else did');
+  assert(existsSync(join(root, 'backups', 'set-b')), 'and set-b was not touched after the stop');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
 });
 
 console.log('');

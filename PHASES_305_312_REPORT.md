@@ -27,7 +27,7 @@ Full design: `docs/PHASES_305_312_BACKUP_RETENTION.md`.
 
 | Phase | What it adds |
 | --- | --- |
-| 305 | The inventory — every entry in a destination classified from evidence, opening no secret |
+| 305 | The inventory — every entry in a destination classified from evidence |
 | 306 | The policy — `keep-last`, `min-age-days`, `include-unverified`, `keep-minimum-restorable`, evaluated purely |
 | 307 | The protection boundary — what no policy may remove, and when the whole run refuses |
 | 308 | The plan, and a digest over the **whole inventory it was computed from** |
@@ -64,7 +64,7 @@ rewritten.
 - `src/ops/retention-model.ts` — the six classes, the policy, the closed reason vocabulary, the pure evaluator
 - `src/ops/backup-retention.ts` — inventory, plan, digest, two locks, quarantine/delete, journal, abandon
 - `src/ops/backup-retention-cli.ts` — `ops:backup-retention`
-- `test/backup-retention.ts` — 78 checks
+- `test/backup-retention.ts` — 105 checks
 - `test/helpers/retention-crash-child.mts` — a real prune, killed at a named boundary
 - `docs/PHASES_305_312_BACKUP_RETENTION.md`
 
@@ -92,8 +92,9 @@ processes, against sets taken by the shipped `runVerifiedCompleteBackup`:
 - **The digest binds the list.** A set taken between plan and confirm, a set whose bytes changed, a different
   policy, a different project, and ten days of clock across `--min-age-days` each refuse the confirmation with
   the destination proved byte-identical afterwards.
-- **A forged journal.** Both the removal list and the decisions edited *and the digest recomputed over them* —
-  the one edit a digest cannot catch — is refused by the second, independent check.
+- **Forged journals with recomputed digests** — including one that removes the protected restorable set and
+  one that points at a stranger's directory — are refused by the EVALUATOR and by an on-disk identity proof.
+  See *Correction 1* below: the first implementation's answer here was not sound.
 - **A reparse point** swapped in for a quarantined set is refused rather than deleted through, and the
   directory it pointed at is untouched. Exercised on Windows via a junction rather than skipped.
 - **The command ledger is empty**: a source scan proves no `spawnSync`, `exec`, `child_process`, `fetch` or
@@ -127,7 +128,7 @@ locks released through a `finally` on every path.
 | Gate | Result |
 | --- | --- |
 | `npx tsc -p tsconfig.json --noEmit` | **PASS**, 0 errors |
-| `test/backup-retention.ts` | **78 passed, 0 failed** |
+| `test/backup-retention.ts` | **105 passed, 0 failed** (78 before Correction 1) |
 | `test/doctor-monitor.ts` | 19 passed, 0 failed |
 | `test/backup-components.ts` | 41 passed, 0 failed |
 | `test/complete-backup.ts` | 49 passed, 0 failed |
@@ -178,6 +179,126 @@ observed flake, not as a clean result.
   `--abandon`, is exercised end to end against real sets in temporary project roots.
 - **A real `pg_dump` binary** — the embedded PostgreSQL package ships none (pre-existing skip in
   `test/backup-inspect.ts`).
+
+## Correction 1 — journal authority, quarantine ownership, and abandon truth
+
+Codex rejected the first implementation at `b7ca164` after independent source review. Every finding was
+correct, and three of them were exploitable: a self-consistent forged journal could have this command delete
+a protected or foreign directory, a resumed run could recursively delete a directory that was not its own,
+and an abandon reported success while naming sets it had lost. What follows is what each one was and what
+replaced it.
+
+### 1. Re-hashing a document is not authority over it
+
+`readRetentionJournal` validated the removal names and states, then recomputed the plan digest over the
+journal's **own** inventory and decisions. That proves a document agrees with itself. A forger who understood
+the format could change the protected set's decision to `remove`, append it to the removal list, recompute
+the digest, and be obeyed — and the extra check ("removals equal the decisions marked remove") agreed with
+that forgery too. The test that claimed to cover it edited only one of the two lists, so it never met the
+counterexample. Malformed rows could also escape as a `TypeError` rather than a closed refusal.
+
+The authority is now the **evaluator**, in four layers: every inventory and decision member validated field
+by field before any `map`/`filter`/cast touches it (unique names, canonical order, exact one-for-one
+coverage); the **evaluation instant persisted** in journal schema **2** so
+`evaluateRetention(inventory, policy, evaluatedAt)` is *re-run* and must reproduce the decisions, the ordered
+removals, the protected set and the remaining count exactly; a class gate requiring every removal to name a
+`VERIFIED` row (or `UNVERIFIED` under a policy that admitted one) before the evaluator is even asked; and,
+for the one forgery a document can still be self-consistent about — a fabricated inventory row claiming a
+stranger's directory is a verified set — an on-disk identity proof before the directory is even moved.
+
+Version 1 is refused **at the version boundary**, before any later field is read.
+
+### 2. An unpredictable name is not ownership
+
+`ensureQuarantineDirectory` treated `.catalog-retention.removing-<12 random hex>` plus an allowlisted child
+name as proof the tree was ours — but after a crash that suffix is **written down in the journal**, so it is
+published, not unguessable. Replacing that directory with an ordinary one containing a directory named after
+a planned set was enough to have this command recursively delete somebody else's files, and the check was not
+run before the delete loop at all for an entry already recorded `quarantined`.
+
+The quarantine now carries a **marker** bound to the journal version, plan digest, suffix, ordered removals
+and every set's exact commitment, compared **whole**, published atomically (built under an unpredictable
+name, marker written inside while invisible, renamed onto the predictable path), and verified before every
+rename into it, every deletion out of it, every abandon and every cleanup — which is itself ownership-checked
+and reports the directory as retained if it cannot complete.
+
+A new persisted **`deleting`** state is written before the first `unlink`, so a resume can tell an intact,
+not-yet-consumed tree (re-verified against its commitment, every time, immediately before it is destroyed)
+from a legitimately partial one (finished only under the marker and that entry's own record). It also makes
+`quarantined` + gone impossible-by-construction, because this command never removes without first recording
+that it is about to.
+
+### 3. An impossible state now stops every later destructive effect
+
+A both-places, foreign-quarantine or commitment failure marked one entry failed and **carried on** quarantining
+and deleting the rest; the tests titled "stops the run" never asserted the other candidates survived. Every
+entry's (state, in destination?, in quarantine?) triple is now cross-validated **before this process performs
+a single effect**, and any impossible one stops the operation with the journal kept, every untouched candidate
+exactly where it was and **named in the report**, and everything already renamed still recoverable with
+`--abandon`. Multi-candidate tests assert zero later deletion.
+
+### 4. An abandon that lost a set is not a success
+
+The old suite explicitly asserted `report.ok === true` while `goneForever === ['set-a']`, and the render said
+`RESULT: ABANDONED` — contradicting the code's own comment and this design. There are now three states:
+`ABANDONED`, `ABANDONED_WITH_LOSS` and `PARTIAL`; only the first is `ok`, and the CLI exits `1` for the other
+two. Clearing the journal when no reversible work remains never converts loss into success. A new
+`RetentionAbandonFailed` carries the report when a write or the final clear fails after a rename, so those
+exit `1` instead of the code meaning "refused before anything was moved". A `deleting` tree is **not** put
+back — it may be truncated, and a partial set under a trusted name is worse than none.
+
+### 5. Resume failure classification accounts for the previous process's effects
+
+`effected` started `false` and was set only by an effect *this* process made, so a resume of an operation that
+had already renamed three sets aside exited as a pre-effect refusal carrying no report. It is now seeded from
+the journal and the filesystem: what matters to a reader is what the **operation** has done.
+
+### 6. The secret-reading claim was false
+
+Verifying a set hashes every byte of it, and one of its four components is the secrets directory — so this
+command **does** open and read secret files. Every claim in source, design and report that it never touches
+one is replaced with the boundary that is actually true: no credential on a command line; bytes read only through
+descriptors, without following links, for hashing; content and path never reaching a report.
+
+### 7. The state matrix is enumerated
+
+The legal (phase, per-entry state, marker, destination presence, quarantine presence, commitment) combinations
+are written down in the design document and asserted as a table in the suite, so a state added to the executor
+without an answer is visible rather than silently defaulting.
+
+### Correction gates
+
+| Gate | Result |
+| --- | --- |
+| `npx tsc -p tsconfig.json --noEmit` | **PASS**, 0 errors |
+| `npm run test:backup-retention` | **105 passed, 0 failed** (was 78) |
+| `npm run test:complete-restore` | 136 passed, 0 failed |
+| `npm run test:complete-backup` | 49 passed, 0 failed |
+| `npm run test:inventory` | **ok: true**, 323 suites, 6 helpers, no drift |
+| `test/doctor-monitor.ts` | 19 passed, 0 failed |
+| `test/backup-components.ts` | 41 passed, 0 failed |
+| `test/release-readiness.ts` | 44 passed, 0 failed |
+| `test/deploy.ts` | 210 passed, 0 failed |
+| `test/backup-inspect.ts` | 60 passed, 0 failed, 1 skipped (no `pg_dump` binary — pre-existing) |
+| `test/backup-verify.ts` | 17 passed, 0 failed |
+| `test/operator-ui-service.ts` | 5 passed, 0 failed |
+
+Broad `offline`/`db`/`docker` aggregates were **not** run for this correction, as instructed; Codex runs them
+after review.
+
+### What the 27 new checks drive
+
+Real forgeries with **recomputed digests** — removing the protected restorable set, removing a `FOREIGN` row,
+removing a `RESERVED` row, changing a decision's reason, changing an inventory row's class, and a fabricated
+row pointing at a stranger's directory (which passes every document-level check and dies on disk with the
+stranger's file untouched). Sixteen malformed members, each asserted to be a `MaintenanceRefused` and not a
+runtime exception. A version-1 journal at the boundary. A quarantine replaced by an **ordinary directory**, a
+marker removed, a marker edited, a directory squatting the quarantine path before the first rename. Real
+child-process kills at the marker build, the marker publication and the `deleting` transition. A quarantined
+set mutated, and one replaced by a **different valid set of ours**. Multi-candidate halt assertions in both
+phases, with `--abandon` proved still available afterwards. An abandon exiting `1`, an abandon failing on its
+first write, on a later write, and on its final clear, a real kill mid-abandon-rename with a deterministic
+rerun, and a `deleting` tree refused a put-back. Both resume-with-prior-effects cases.
 
 ## Remaining review risks
 

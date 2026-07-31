@@ -33,7 +33,7 @@ instruction this product gives.
 
 | Phase | What it adds | What it changes |
 | --- | --- | --- |
-| **305** | The inventory: every entry in a backup destination, classified from evidence, opening no secret | A backup folder stops being a listing |
+| **305** | The inventory: every entry in a backup destination, classified from evidence | A backup folder stops being a listing |
 | **306** | The policy: a declarative retention rule evaluated deterministically into one decision per set, each with a closed reason | "Which ones would go" is computed, not eyeballed |
 | **307** | The protection boundary: what no policy may remove, and the refusal when nothing good can be proved to remain | Retention cannot delete the backup you would need |
 | **308** | The plan, and a digest over the **whole operation including the inventory it was computed from** | An authorisation covers the exact list that was read |
@@ -66,7 +66,9 @@ obtained again from anywhere. The failures it is built against, in the order the
 | --- | --- |
 | Removing the last set that could actually restore this installation | The newest verified, restorable-under-this-build set is protected unconditionally, and the run **refuses entirely** if there is no such set to protect |
 | Removing the last pre-upgrade rollback point | The newest verified set older than this build's schema is protected unconditionally: it is the only thing that can roll this installation back, and it is by definition not restorable *here* |
-| Deleting on the strength of a **name** | Every candidate is verified — manifest, every component digest, entry and byte counts, the offline inspector's verdict — immediately before the plan, and **again under the lock** before anything is renamed |
+| Deleting on the strength of a **name** | Every candidate is verified — manifest, every component digest, entry and byte counts, the offline inspector's verdict — immediately before the plan, **again under the lock**, and **again against the recorded commitment immediately before it is renamed and immediately before it is deleted** |
+| A durable document that agrees with itself | The journal records the evaluation instant, and the decisions it claims are **recomputed** from its own inventory and policy; a forgery has to be a decision the evaluator itself produces |
+| A quarantine directory that is not ours | An ownership marker bound to the journal version, plan digest, suffix, ordered removals and every set's commitment, published atomically and verified before every rename, deletion, abandon and cleanup |
 | Authorising a list, then destroying a different one | The plan digest binds the whole inventory: every entry's name, class, date, schema version, set digest, decision and reason, plus the policy and the ordered removal list. A set taken, added or changed between plan and confirm changes the digest and the confirmation is refused |
 | Racing a backup being published, or a restore reading a set | The project maintenance lock — the same lock `ops:complete-backup` and `ops:complete-restore` take — plus a second lock in the destination for the case where the destination is shared |
 | Deleting out from under an in-flight restore | A restore journal in the project refuses the whole operation, before anything is read |
@@ -111,8 +113,14 @@ timestamp any file operation rewrites is not an ordering. A set whose `takenAt` 
 ISO instant is `PROTECTED_UNDATED`: a policy about "the newest seven" has nothing to say about a set that
 cannot be placed among them. Ties are broken by set name, so the order is total and deterministic.
 
-**It opens no secret.** The verification digests the secrets component by content and never reports it by
-content; nothing here reads a secret file, and nothing here reports a path.
+**What it reads, exactly.** Deciding whether a set is good means hashing every byte of it, and one of its
+four components is the secrets directory — so this **does open and read secret files**, through descriptors,
+without following links, for the sole purpose of hashing. It never interprets, parses, prints or otherwise
+surfaces a byte of them; it accepts **no credential on a command line**; and no path and no component content
+reaches any report. What leaves the inventory is a class, a date, a schema version, a digest and two counts.
+
+A claim that this command never touches a secret file at all would be comfortable and false, and an
+earlier version of this document made it. The boundary above is the one that holds.
 
 ## Phase 306 — the policy
 
@@ -200,16 +208,18 @@ sizes and reasons. It does not show where the destination is.
    changed between the plan and the lock stops here, with nothing renamed.
 3. **Write the journal**, in the project root, with the whole committed decision list, before the first
    effect.
-4. **Quarantine, oldest first.** Each set is `rename`d into a private `.catalog-retention.removing-<suffix>`
-   directory beside it in the destination — same directory, therefore same filesystem, therefore an atomic
-   rename rather than a copy. Nothing is deleted in this phase, and the whole phase is reversible by
-   `--abandon`.
-5. **Delete, oldest first.** Each quarantined tree is removed with `removeOwnTreeNoFollow`, which walks and
+4. **Publish an OWNED quarantine directory, then quarantine oldest first.** The tree is built under an
+   unpredictable name with its ownership marker inside it and renamed onto the predictable path in one
+   atomic publication. Each set is then proved to be the one that was planned and `rename`d into it — same
+   directory, therefore same filesystem, therefore an atomic rename rather than a copy. Nothing is deleted in
+   this phase, and the whole phase is reversible by `--abandon`.
+5. **Delete, oldest first.** Each tree is proved against its commitment again, `deleting` is recorded, and
+   only then is it removed with `removeOwnTreeNoFollow`, which walks and
    refuses the whole tree before unlinking anything if it holds a symbolic link, a device, a socket or a
    pipe, and whose entry bound comes from **the set's own manifest**: the declared entry counts of its
    components, doubled with a fixed margin for the directories the counts do not include. A set larger than
    what it declared itself to be is not a set this command will recursively delete.
-6. **Remove the quarantine directory** once it is empty.
+6. **Remove the quarantine directory** once its marker is the last thing in it, under that marker's own proof.
 7. **Prove what is left.** The set that was protected as `PROTECTED_NEWEST_RESTORABLE` is verified **again**,
    from disk, after the removals. It should be untouched — that is the point — and a run that removed four
    sets and can no longer verify the one it promised to keep reports `REMOVED_BUT_UNPROVEN` and exits
@@ -227,50 +237,175 @@ every set name means a whole set.
 
 The journal is `.catalog-retention.journal.json` in the project root — the same home, the same
 staged-and-renamed publication and the same privacy as the restore's. It is versioned
-(`RETENTION_JOURNAL_VERSION = 1`), and a version this build does not write is refused rather than guessed at.
+(`RETENTION_JOURNAL_VERSION = 2`), and a version this build does not write is refused **at the version
+boundary, before any later field is read**, so an old document is refused for *being* one rather than for
+whichever field it happens to be missing.
 
-**Every field is validated because every field is acted on**: the destination is re-resolved and must be the
-one recorded; the suffix must be exactly the twelve hex characters `stagingSuffix()` produces; every name
-must be a usable maintenance name; every entry must carry a known state; no name may be duplicated; a set
-recorded as `removed` may not also be recorded as still quarantined; and the recorded plan digest must be
-recomputable from the recorded decisions. A journal outside those shapes was not written by a run of this
-program and is refused rather than acted on.
+### Why re-hashing was not authority
 
-Each entry carries its own state and its declared recovery:
+The first implementation validated the removal names and states, then recomputed the plan digest over the
+journal's **own** recorded inventory and decisions. That proves a document agrees with itself. It does not
+prove the document describes a decision this program would ever make — so somebody who understood the format
+could change the protected set's decision to `remove`, append it to the removal list, **recompute the digest
+over the edited content**, and be obeyed. Every check passed, because every check was asking the document
+about itself. The one extra check it had ("the removal list equals the decisions marked remove") was
+consistent with that forgery too, and the test that claimed to cover it edited only one of the two lists, so
+it never met the actual counterexample.
+
+The authority is now the **evaluator**, in four layers:
+
+1. **Every member is validated before anything reads it.** Each inventory row and each decision is checked
+   field by field — name, class, date/moment agreement, schema version, digest shape, restorable flag, byte
+   and entry counts, findings — before any `map`, `filter` or cast touches the list. A `null`, a scalar, a
+   missing field or a class this build does not write is a closed refusal, never a `TypeError` thrown out of
+   something later. Names must be unique, in this command's canonical listing order, and the decisions must
+   cover the inventory one-for-one and in order.
+2. **The evaluation instant is recorded**, so `evaluateRetention(inventory, policy, evaluatedAt)` can be
+   **run again**. Its decisions, its ordered removals, its protected set and its remaining count must equal
+   the journal's exactly. A forged decision therefore has to be one the evaluator itself produces — and the
+   two unconditional protections and the not-ours rule are properties of an inventory row's **class**, which
+   no instant and no policy can talk past.
+3. **The removal list is class-gated before the evaluator is even asked.** Every name must refer to a
+   `VERIFIED` row, or an `UNVERIFIED` one when the policy admitted those. A document pointing this operation
+   at a `FOREIGN`, `RESERVED`, `UNREADABLE` or `NOT_A_DIRECTORY` row is refused for what it names.
+4. **And the fabricated-inventory forgery dies on disk.** Claiming a stranger's directory is a `VERIFIED` set
+   with a plausible digest survives every check a document can answer about itself — the evaluator can only
+   reason about what the inventory says. What kills it is that nothing is moved or removed until the tree at
+   that name has been proved to be the set that was planned.
+
+The evaluation instant is deliberately **not** in the plan digest. The journal needs it to re-run the
+evaluation; a digest that moved every millisecond could never be typed back.
+
+### The commitment, proved immediately before every effect
+
+`proveSetIsPlanned` is run **before the quarantine rename** and again **before the deletion**, against the
+inventory row the journal records. It compares the verification's `setDigest`, the verdict, the exact finding
+set, and the manifest's own `takenAt`, byte count, entry count and schema version.
+
+Each of those is load-bearing. `setDigest` is over what the manifest *declares*, so a component whose bytes
+were changed afterwards does not move it — the verdict and the findings do. And `setDigest` does not cover
+`takenAt`, so two sets taken from an unchanged installation minutes apart hash identically; the date is what
+tells one of this operation's own sets from another.
+
+A rename is reversible, which is why the first implementation gated only the deletion. It is still an effect
+on a directory in somebody's backup folder, and a forged inventory row would have had this command pick a
+stranger's directory up and carry it into a quarantine tree before anything noticed.
+
+### The quarantine directory has to prove it is ours
+
+An unpredictable name is not ownership. The first implementation argued that a directory at
+`.catalog-retention.removing-<12 random hex>` must be this operation's because nobody could guess the suffix,
+and checked only that its children were names the operation planned. After a crash the suffix is **written
+down in the journal**, in a directory the operator owns — so it is not unguessable, it is published.
+Replacing that directory with an ordinary one containing a directory named after a planned set was enough to
+have this command recursively delete somebody else's files. And the check was not run before the delete loop
+at all for an entry already recorded `quarantined`.
+
+The quarantine now carries a **marker**, bound to the journal version, the plan digest, the suffix, the
+ordered removal list and every set's exact planned commitment, and compared **whole** rather than field by
+field. It is verified before every rename into the tree, every deletion out of it, every abandon and every
+cleanup. A directory at the predictable path that cannot prove it is ours is never written into, never read
+from and never removed: the operation stops instead.
+
+**It is published atomically.** The tree is built under an unpredictable, secret-free
+`.catalog-retention.claiming-<18 hex>` name, the marker is written inside it while it is still invisible, and
+only then is it renamed onto the predictable path — so that path goes from *absent* straight to *a directory
+holding a valid marker of this operation's*, with nothing in between and not one byte of any set inside it. A
+death before the publication leaves an unmarked orphan under an unpredictable name, which blocks nothing, is
+secret-free, and is left alone: this command removes no directory it cannot prove is its own.
+
+**Cleanup is ownership-checked too.** The marker is unlinked and the directory removed only under that proof
+and only when the marker is the last thing in it; a tree still holding a set is never removed as a container.
+If either cannot be completed, the directory is **reported as retained**, by name, with what it holds.
+
+### Per-entry states, and why `deleting` had to exist
 
 | State | What it means | Recovery |
 | --- | --- | --- |
-| `pending` | Nothing has happened to it | Quarantine it |
-| `quarantined` | It has been renamed aside and not yet deleted | Delete it |
+| `pending` | Nothing has happened to it | Prove it, then quarantine it |
+| `quarantined` | Renamed aside, **intact**, not yet consumed | Prove it against the commitment, record `deleting`, remove it |
+| `deleting` | The removal has started; the tree may be partial | Finish it, authorised by the ownership marker and this entry's own record |
 | `removed` | It is gone | Nothing |
-| `failed` | A rename or a removal did not complete | Re-examined from the disk exactly as `pending` is, and reported as having failed before |
+| `failed` | The operation stopped here | Re-examined from the disk, and reported as having stopped before |
 
-A process that stops existing between the `rename` and the journal write leaves a set that is in quarantine
-and recorded as `pending`. So the recovery for `pending` **looks in both places** before it acts: a name
-absent from the destination and present in quarantine is an interrupted quarantine and is finished, not
-re-attempted. A name present in **both** is refused — that is a state one process cannot produce, and
-guessing which of the two is the real set is exactly the guess this family never makes.
+The first implementation recorded `quarantined` and then recursively removed. A process that stopped existing
+inside that removal left `quarantined` beside a **half-consumed** tree, indistinguishable from `quarantined`
+beside an intact one — so a resume could not both re-verify an intact tree before destroying it *and* finish a
+legitimately partial one. It has to do both, and it cannot without knowing which it is looking at. `deleting`
+is written before the first `unlink`, and it is the only state under which a tree that does not match its
+commitment may still be removed.
+
+It also makes one more state impossible-by-construction: a `quarantined` set that is **gone** was removed by
+something that is not this command, because this command never removes without first recording that it is
+about to.
+
+### Every action is cross-validated first, and one impossible state stops everything
+
+Before this process performs a single effect, every entry's (recorded state, in the destination?, in
+quarantine?) triple is checked against the table of states a run can actually produce:
+
+| State | In destination | In quarantine | What happens |
+| --- | --- | --- | --- |
+| `pending` | yes | no | prove it, then quarantine it |
+| `pending` | no | yes | an interrupted rename: prove it, then adopt it |
+| `pending` | yes | yes | **STOP** — one run cannot produce this |
+| `pending` | no | no | **STOP** — something outside this command removed it |
+| `quarantined` | no | yes | prove it, record `deleting`, remove it |
+| `quarantined` | no | no | **STOP** — a removal is always preceded by its record |
+| `quarantined` | yes | — | **STOP** — one run cannot produce this |
+| `deleting` | no | yes | finish the removal under the ownership marker |
+| `deleting` | no | no | the removal landed without its record |
+| `deleting` | yes | — | **STOP** — one run cannot produce this |
+| `removed` | — | — | nothing |
+
+**A stop is a stop.** The first implementation marked one entry failed and carried on quarantining and
+deleting the others; the tests that claimed it "stopped the run" never asserted that the remaining candidates
+survived. Once the filesystem or the ownership evidence says something one run cannot have produced, this
+does not continue destroying anything: it records the entry, keeps the journal, leaves every untouched
+candidate exactly where it is, **names them in the report**, and returns the partial result. Everything that
+was only ever renamed is still recoverable with `--abandon`.
 
 * **`--resume <digest>`** takes only `--project`. The destination, the suffix, the policy and every decision
   come from the journal; the digest is the plan digest the journal records, so a resume cannot be pointed at
-  a different operation.
-* **`--abandon`** takes only `--project`. It renames every still-quarantined set back to its original name in
-  the destination and clears the journal. A set already **deleted** cannot come back, and the report names
-  every one of them rather than reporting a clean unwind: an abandon that says "done" while four sets are
-  gone forever would be the same defect the restore's abandon was corrected for. The journal is **not
-  cleared** while any entry is unresolved.
+  a different operation. It is refused outright once an abandon has been committed.
+* **`--abandon`** takes only `--project`. It renames every still-quarantined set back to its original name —
+  under the same ownership and commitment proofs a deletion needs, because renaming a stranger's directory
+  *into* a backup destination under a set name is its own kind of damage. A set recorded `deleting` is **not**
+  put back: it may be truncated, and a partial set under a trusted name is worse than none.
+
+### An abandon that lost a set is not a success
+
+The first implementation set `ok` from the unresolved list alone, so a run that put one set back and reported
+another as **gone forever** rendered `RESULT: ABANDONED` and exited zero — contradicting its own comment,
+this document, and the plain meaning of the word to whoever reads the exit code.
+
+`ok` is now a clean unwind and nothing else. There are three states: `ABANDONED` (everything back, nothing
+lost, nothing retained), `ABANDONED_WITH_LOSS` (everything that *could* come back did, and some sets were
+already deleted), and `PARTIAL` (something is still out of place or retained). The CLI exits non-zero for
+both of the latter. The journal may be cleared when no reversible work remains — clearing it never turns loss
+into success, and the report names every set that is gone.
+
+**Every failure after a rename carries a report.** A journal write or the final clear that fails once a set
+has moved raises `RetentionAbandonFailed`, carrying what was put back, what is gone, what is still out of
+place and what the retained directory holds — so the CLI exits `1` rather than the code that means "refused
+before anything was moved". The same rule covers the prune: `RetentionFailed` is raised whenever **the
+operation** has already moved or removed something, seeded from the journal and the filesystem rather than
+from what this particular process has done, so a resume of an interrupted run never loses its report merely
+because it has not made a new effect yet.
 
 **Retained artifacts are always named.** A failed or abandoned run reports the quarantine directory's name,
 the sets inside it, and the fact that it holds backup sets — which means it holds a copy of every secret file
 and the custodian keystore of the moments those sets were taken. Nothing else would ever mention it. The
-quarantine directory is created `0700` and is only ever removed when it is empty.
+quarantine directory is created `0700`.
 
 **What "crash" means here.** The recovery is proved against a process that is *killed* — the suite runs real
-prunes in child processes and stops them at named boundaries with `process.exit`. That covers a kill, a
-runtime crash and a Ctrl-C. It does **not** claim power-loss durability, for the same reason and with the
-same honesty as Phases 297–304: the journal is `fsync`ed and published by rename, but the containing
-directory is not `fsync`ed after those renames. A power cut degrades to a redo — a rename that did not reach
-the disk leaves the set at its original name, which the `pending` recovery handles — not to a wedge.
+prunes and real abandons in child processes and stops them at named boundaries with `process.exit`: the
+marker being built, the marker being published, the rename, its record, the `deleting` transition, the
+removal, and an abandon's rename. That covers a kill, a runtime crash and a Ctrl-C. It does **not** claim
+power-loss durability, for the same reason and with the same honesty as Phases 297–304: the journal is
+`fsync`ed and published by rename, but the containing directory is not `fsync`ed after those renames. A power
+cut degrades to a redo — a rename that did not reach the disk leaves the set at its original name, which the
+`pending` recovery handles — not to a wedge.
 
 ## Phase 311 — the surfaces
 
@@ -300,11 +435,14 @@ the digest it prints is the one a human types into `--confirm`, on purpose, at a
 * **It does not decide your policy.** The defaults are conservative; the values are yours.
 * **It does not prove your Docker volumes hold anything.** It never starts a container. It reasons only about
   files in a backup destination.
-* **It reads every byte of every set it inventories**, at plan time and again under the lock, because a
-  retention decision made on a listing is a decision about names. On a destination holding many large sets
-  that takes real time, and that cost is a reason this is a human operation rather than a cron job.
+* **It reads every byte of every set it inventories**, at plan time and again under the lock — and every byte
+  of each set it is about to *act on* twice more, immediately before the rename and immediately before the
+  deletion, because a commitment checked at any earlier moment is a commitment about a moment that has
+  passed. A retention decision made on a listing is a decision about names. On a destination holding many
+  large sets that takes real time, and that cost is a reason this is a human operation rather than a cron job.
 * **A shared destination is only half covered.** The destination lock stops two retention runs; it does not
   stop another project's `ops:complete-backup`, which holds only its own project lock. Give each project its
   own destination.
-* **It takes no credential on a command line and opens no secret file.** Sets are digested through
-  descriptors and are never read into a report.
+* **It takes no credential on a command line**, and it never surfaces the bytes it reads. It DOES read them:
+  verifying a set hashes every component, including the secrets one, through descriptors opened without
+  following a link. Nothing is parsed, printed or carried into a report.

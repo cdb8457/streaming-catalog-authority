@@ -33,6 +33,10 @@ export type SetClass =
   | 'RESERVED'
   | 'NOT_A_DIRECTORY';
 
+/** Every class this build writes. Exported so a durable document can be validated against it before use. */
+export const SET_CLASSES: readonly SetClass[] =
+  Object.freeze(['VERIFIED', 'UNVERIFIED', 'UNREADABLE', 'FOREIGN', 'RESERVED', 'NOT_A_DIRECTORY']);
+
 /** The two classes a policy may even consider. Everything else is protected by what it is. */
 export const REMOVABLE_CLASSES: readonly SetClass[] = Object.freeze(['VERIFIED', 'UNVERIFIED']);
 
