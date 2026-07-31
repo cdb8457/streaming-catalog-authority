@@ -1049,7 +1049,11 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
       return refuse('its safety-set claim nonce is not the twenty-four hex characters this command draws');
     }
     if (typeof record.created !== 'boolean') return refuse('its safety-set claim does not say whether it was created');
-    if (doc.safetySetPlanned !== true && record.created === true) {
+    // THIS BUILD NEVER RECORDS A CLAIM IT DID NOT CREATE. The record is written after `mkdir` returned and
+    // after the ownership marker went in; there is no path that persists `created: false`. A journal
+    // carrying one was not written by a run of this program.
+    if (record.created !== true) return refuse('it records a claim this command did not create');
+    if (doc.safetySetPlanned !== true) {
       return refuse('it records a claim created for a safety set this operation never planned');
     }
   }
@@ -1141,6 +1145,43 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
     return refuse('its evidence records a safety set that this operation never planned');
   }
 
+  // ---- THE COMBINATIONS, not just the fields --------------------------------------------------------
+  //
+  // Every field above is individually well formed. That is not the same as the whole document describing a
+  // state a run of this program can be IN, and the difference matters because these fields are acted on
+  // together: a journal saying a safety set was taken while the step that takes one has never run sends a
+  // resume straight past the only thing standing between the installation and unrecoverable loss.
+  //
+  // WHAT THIS MUST NOT DO IS REJECT A GENUINE CRASH. Every rule below is stated over states the executor
+  // can actually persist, in the order it persists them — a claim recorded before the backup runs, a set
+  // recorded taken before its step is marked complete, an unwind recorded only once the direction is
+  // `abandoning`. A process that stops existing between any two of those writes lands inside these rules,
+  // not outside them.
+  const safetyStep = doc.steps.find((entry) => (entry as Record<string, unknown>).id === 'safety-set') as
+    Record<string, unknown> | undefined;
+  if (doc.safetySetTaken !== ev.safetySetTaken) {
+    // TWO FIELDS, ONE FACT. They are written from the same variable, so a journal in which they disagree
+    // has been edited — and the two are read by different code, which is how an edit would go unnoticed.
+    return refuse('it records one safety-set outcome in its evidence and a different one beside it');
+  }
+  if (doc.safetySetTaken === true) {
+    if (safetyStep === undefined || safetyStep.state === 'pending') {
+      return refuse('it records a safety set as taken by a step that has not run');
+    }
+    if (doc.safetySetClaim === null) {
+      return refuse('it records a safety set as taken with nowhere claimed to have published it into');
+    }
+  }
+  // THE STEP THAT COMPLETED IS THE STEP THAT TOOK ONE. `performStep` records the set before it returns and
+  // the executor marks the step complete afterwards, so complete-without-taken is not an interrupted
+  // ordering — it is a document that describes no run.
+  if (safetyStep !== undefined && safetyStep.state === 'complete' && doc.safetySetTaken !== true) {
+    return refuse('it records the safety-set step as complete without a safety set');
+  }
+  if (doc.safetySetPlanned !== true && safetyStep !== undefined) {
+    return refuse('it records a safety-set step for an operation that planned no safety set');
+  }
+
   // ---- the swaps ------------------------------------------------------------------------------------
   if (!Array.isArray(doc.swaps)) return refuse('its swap list is not a list');
   const swapped = new Set<string>();
@@ -1159,6 +1200,11 @@ export function readRestoreJournal(projectRoot: string): RestoreJournal | null {
       return refuse('a swap names a replaced directory this command would not have created');
     }
     if (typeof swap.undone !== 'boolean') return refuse('a swap does not say whether it was undone');
+    // ONLY AN ABANDON UNDOES A SWAP, and it writes the direction before its first rename. A `restoring`
+    // journal recording an unwind describes an operation going both ways at once.
+    if (swap.undone === true && doc.phase !== 'abandoning') {
+      return refuse('it records a swap as put back by an operation that is not abandoning');
+    }
   }
   return doc as unknown as RestoreJournal;
 }

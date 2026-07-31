@@ -1392,6 +1392,45 @@ test('a journal carrying a malicious suffix, an unknown step, or an impossible o
   refuses(() => readRestoreJournal(root), 'would not have created', 'a replaced name from another run is refused');
   write({ swaps: [{ component: 'nonsense', target: 'x', name: 'x', replaced: null, undone: false }] });
   refuses(() => readRestoreJournal(root), 'component this build does not have', 'a swap of nothing is refused');
+
+  // ---- COMBINATIONS, not fields ----------------------------------------------------------------------
+  //
+  // Every case below is made of individually well-formed fields, and every one of them describes a state no
+  // run of this program can be in. They matter because these fields are ACTED ON TOGETHER: a journal saying
+  // a safety set was taken by a step that never ran sends a resume straight past the only thing standing
+  // between this installation and unrecoverable loss.
+  write({ evidence: { custodyProven: false, safetySetTaken: false, safetySetVerified: false } });
+  refuses(() => readRestoreJournal(root), 'different one beside it',
+    'a journal whose two records of the safety set disagree is refused');
+  write({ steps: [{ id: 'safety-set', state: 'pending', detail: null }] });
+  refuses(() => readRestoreJournal(root), 'taken by a step that has not run',
+    'a safety set taken by a step that has not run is refused');
+  write({ safetySetClaim: null });
+  refuses(() => readRestoreJournal(root), 'nowhere claimed',
+    'a safety set taken with nowhere claimed to publish it is refused');
+  write({
+    safetySetTaken: false,
+    evidence: { custodyProven: false, safetySetTaken: false, safetySetVerified: false },
+  });
+  refuses(() => readRestoreJournal(root), 'complete without a safety set',
+    'a completed safety-set step that took no set is refused');
+  write({
+    safetySetPlanned: false, safetySetTaken: false, safetySetClaim: null,
+    steps: [{ id: 'safety-set', state: 'pending', detail: null }],
+    evidence: { custodyProven: false, safetySetTaken: false, safetySetVerified: false },
+  });
+  refuses(() => readRestoreJournal(root), 'planned no safety set',
+    'a safety-set step in an operation that planned none is refused');
+  write({ safetySetClaim: { nonce: 'a'.repeat(24), created: false } });
+  refuses(() => readRestoreJournal(root), 'did not create',
+    'a claim this command never created is refused');
+  write({ swaps: [{ component: 'secrets', target: 'secrets', name: 'secrets',
+    replaced: '.secrets.replaced-aaaaaaaaaaaa', undone: true }] });
+  refuses(() => readRestoreJournal(root), 'not abandoning',
+    'an unwind recorded by an operation that is not abandoning is refused');
+  // AND THE WELL-FORMED ONE STILL READS, so the audit is not simply refusing everything.
+  write({});
+  assert(readRestoreJournal(root) !== null, 'the state a real run produces is still accepted');
   rmSync(join(root, RESTORE_JOURNAL_NAME));
 });
 
@@ -4045,6 +4084,37 @@ test('ops:complete-backup will not RECREATE a claimed destination that has gone'
   }), 'is not there', 'the backup refuses a destination it would have to create');
   assertEq(existsSync(join(root, 'backups', safetySetClaimDirName('a'.repeat(24)))), false,
     'AND IT DID NOT CREATE IT');
+});
+
+
+test('the audit accepts every state a REAL death actually produces', () => {
+  // THE OTHER HALF OF A CONSISTENCY AUDIT, and the half that is easy to get wrong. Rules tight enough to
+  // catch an edited journal are also tight enough to refuse a genuine crash — and a refused crash state is
+  // a project that can neither resume nor abandon, which is strictly worse than the state it was in. Every
+  // boundary the publication protocols can be interrupted at is killed for real here, and the resulting
+  // journal must READ.
+  for (const boundary of [
+    'staging-phase:claim-built',
+    'staging-phase:claim-published',
+    'staging-phase:sealing',
+    'staging:secrets',
+    'command:compose stop app',
+    'complete:safety-set',
+    'after:safety-set',
+    'complete:stage-components',
+  ]) {
+    const root = makeProject(`audit-crash-${boundary.replace(/[^a-z]+/g, '-')}`);
+    const setDir = takeSet(root, 'set-1');
+    const { plan } = planFor(request(root, 'set-1'));
+    crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+      crashAt: boundary });
+    const journal = readRestoreJournal(root);
+    assert(journal !== null, `${boundary}: the journal a real death left is readable`);
+    // AND THE OPERATION CONTINUES FROM IT, which is the only thing that makes "readable" worth anything.
+    const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+      { kind: 'resume', confirm: plan.digest });
+    assertEq(report.ok, true, `${boundary}: and the resume completed: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------
