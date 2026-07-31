@@ -609,6 +609,28 @@ function prune(root: string, options: {
   return { report, digest: plan.digest };
 }
 
+test('time passing across --min-age-days refuses the confirmation, and the refusal says so', () => {
+  // A DIFFERENT DECISION ABOUT A DIFFERENT SET OF SETS. Nothing in the destination changed; the clock moved,
+  // and a set crossed the age bound. The digest binds the decisions, so this refuses like any other drift —
+  // and the refusal has to name the clock, or an operator hunts for a change that never happened.
+  const root = makeProject('clock-drift');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 30 });
+  takeSet(root, 'set-d', { daysAgo: 1 });
+  const pol = policy({ keepLast: 1, minAgeDays: 35 });
+  const resolved = resolveRetentionRequest({ projectRoot: root, destination: 'backups' });
+  const plan = planRetention(resolved, pol, NOW);
+  assertEq(JSON.stringify(plan.removals), JSON.stringify(['set-a', 'set-b']),
+    'set-c is 30 days old and inside the 35-day bound; set-d is the protected newest');
+  const later = new Date(NOW.getTime() + 10 * DAY);
+  const before = snapshot(join(root, 'backups'));
+  refuses(() => runRetention({ projectRoot: root, destination: 'backups' }, pol, { now: () => later },
+    { kind: 'run', confirm: plan.digest }), 'TIME has passed',
+    'a plan whose decisions the clock has changed is not confirmable');
+  assert(sameSnapshot(before, snapshot(join(root, 'backups'))), 'and nothing was removed');
+});
+
 test('a confirmed run removes exactly the planned sets and leaves everything else byte-identical', () => {
   const root = makeProject('run-1');
   takeSet(root, 'set-a', { daysAgo: 100 });
@@ -650,7 +672,7 @@ test('a wrong digest refuses and removes nothing', () => {
   takeSet(root, 'set-b', { daysAgo: 10 });
   const before = snapshot(join(root, 'backups'));
   refuses(() => prune(root, { policy: { keepLast: 1, minAgeDays: 7 }, confirm: 'f'.repeat(64) }),
-    'not the one the plan was read against', 'a digest that is not this operation\'s');
+    'is not the one the plan was read against', 'a digest that is not this operation\'s');
   assert(sameSnapshot(before, snapshot(join(root, 'backups'))), 'and nothing moved');
   assert(!existsSync(join(root, RETENTION_JOURNAL_NAME)), 'and no journal was written');
 });
@@ -666,7 +688,7 @@ test('a set taken between the plan and the confirmation refuses the confirmation
   takeSet(root, 'set-c', { daysAgo: 0 });
   const before = snapshot(join(root, 'backups'));
   refuses(() => runRetention({ projectRoot: root, destination: 'backups' }, pol, { now: () => NOW },
-    { kind: 'run', confirm: plan.digest }), 'not the one the plan was read against',
+    { kind: 'run', confirm: plan.digest }), 'is not the one the plan was read against',
     'the confirmation is against a destination that has changed');
   assert(sameSnapshot(before, snapshot(join(root, 'backups'))), 'and nothing was removed');
 });

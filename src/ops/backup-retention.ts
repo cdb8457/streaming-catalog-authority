@@ -727,9 +727,11 @@ export function runRetention(
       const replanned = planRetention(resolved, policy, now());
       if (replanned.digest !== mode.confirm) {
         throw new MaintenanceRefused(
-          'this destination is not the one the plan was read against — a set has been taken, removed or changed '
-          + 'since then, or the policy is not the one that was planned. Nothing was removed. Run --plan again '
-          + 'and read the new list.');
+          'this operation is not the one the plan was read against. Nothing was removed. A set has been taken, '
+          + 'removed or changed since then; or the policy flags are not the ones that were planned; or enough '
+          + 'TIME has passed that a set has crossed --min-age-days, which is a different decision about a '
+          + 'different set of sets and is refused for the same reason as any other. Run --plan again and read '
+          + 'the new list.');
       }
       const suffix = (deps.suffix ?? stagingSuffix)();
       if (!RETENTION_SUFFIX_RE.test(suffix)) {
