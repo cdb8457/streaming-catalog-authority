@@ -346,6 +346,18 @@ immediately before the first deletion.
 [docs/PHASES_313_320_SAFETY_SET_LIFECYCLE.md](docs/PHASES_313_320_SAFETY_SET_LIFECYCLE.md) has the nine
 classes, the threat model, the shared-destination boundary and the non-goals.
 
+**All four of these commands take turns in one backup destination.** `ops:complete-backup`,
+`ops:complete-restore`, `ops:backup-retention` and `ops:safety-set-lifecycle` serialise **one at a time per
+backup destination**, and that holds **across projects**: a second Compose project pointed at the same
+physical directory — a bind mount, a share, a nested project — is refused before it stages anything, claims
+anything, renames anything, deletes anything, writes a journal or starts a single child command. The lock is
+a directory (`.catalog-retention.lock`) inside the destination itself, which is what makes it physical
+rather than a name two projects could disagree about. The filename is deliberately the one earlier releases
+used, so a build from before this change and a build after it contend on the same single atomic `mkdir`. Nothing breaks a lock automatically: one left by a
+killed run is reported, with what to do, and removing it is your decision.
+[docs/PHASES_321_328_SHARED_DESTINATION_LOCK.md](docs/PHASES_321_328_SHARED_DESTINATION_LOCK.md) has the lock
+table, the crash boundaries and the limits.
+
 ```bash
 # On a schedule: runs the shipped read-only doctor and records one redacted state file.
 npm run ops:doctor-monitor -- --project /path/to/project --state monitor

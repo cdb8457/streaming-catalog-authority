@@ -16,8 +16,11 @@ import {
   type CompleteBackupRequest,
 } from '../src/ops/complete-backup.js';
 import {
+  DESTINATION_LOCK_DIRNAME,
   MAINTENANCE_LOCK_DIRNAME,
+  MaintenanceLocks,
   MaintenanceRefused,
+  resolveBackupDestination,
   assertPermittedCommand,
   CommandLedger,
 } from '../src/ops/maintenance-safety.js';
@@ -1155,14 +1158,23 @@ test('the suite inventory and package scripts know about this suite and this com
 });
 
 test('nothing else under src/ takes a backup while holding a lock it did not acquire', () => {
-  // `holdingLock` is a narrow seam with exactly one legitimate caller. A second one would mean a module
-  // taking a backup inside somebody else's exclusive window without that window being this restore's.
+  // THE SEAM IS NO LONGER A FLAG — PHASES 321-328 CORRECTION 1. It used to be `holdingLock: true`, a
+  // boolean naming no project, no destination and no holder, and this test was the only thing standing
+  // between it and any future module suppressing both locks for anything. It is now a capability that only
+  // a `MaintenanceLocks` really holding both can mint, bound to that project and that physical destination,
+  // refused at runtime if forged, and dead the moment its owner releases — so the property this test
+  // asserts is that the flag is GONE rather than that only one caller passes it. The behavioural checks for
+  // every rejected misuse live in `test/shared-destination-lock.ts`.
   const files = readdirSync(join(repoRoot, 'src/ops')).filter((name) => name.endsWith('.ts'));
-  const callers = files.filter((name) => {
-    if (name === 'complete-restore.ts' || name === 'complete-backup.ts') return false;
-    return readFileSync(join(repoRoot, 'src/ops', name), 'utf8').includes('holdingLock');
-  });
-  assertEq(callers.join(','), '', 'only the restore passes holdingLock');
+  const flagged = files.filter((name) =>
+    readFileSync(join(repoRoot, 'src/ops', name), 'utf8').includes('holdingLock:'));
+  assertEq(flagged.join(','), '', 'no module passes a holdingLock flag, because there is no such flag');
+  const restore = readFileSync(join(repoRoot, 'src/ops/complete-restore.ts'), 'utf8');
+  assert(restore.includes('held: authority'),
+    'the restore authorises its nested safety-set backup with the capability its own lock stack minted');
+  const backup = readFileSync(join(repoRoot, 'src/ops/complete-backup.ts'), 'utf8');
+  assert(backup.includes('assertNestedAuthority(deps.held, resolved)'),
+    'and the backup validates it before it does anything at all');
 });
 
 
@@ -1929,12 +1941,18 @@ function crashAt(config: Record<string, unknown>): void {
       + `${(child.stderr ?? '').slice(0, 400)}`);
   }
 
-  // A PROCESS THAT STOPPED EXISTING NEVER RELEASED THE LOCK. That is real, and this command deliberately
-  // does not break a lock on its own — so it names both facts, and the operator does what it says.
+  // A PROCESS THAT STOPPED EXISTING NEVER RELEASED EITHER LOCK. That is real, and this command deliberately
+  // breaks neither on its own — so it names the facts, and the operator does what it says. PHASES 321-328
+  // added the second one: a restore holds the shared destination lock for the whole operation, so a killed
+  // restore leaves a lock in the backup destination too, and the recovery a suite drives in-process must
+  // clear exactly what an operator would clear by hand.
   const root = String(config.projectRoot);
-  const lock = join(root, MAINTENANCE_LOCK_DIRNAME);
-  assert(existsSync(lock), `a killed run leaves ${MAINTENANCE_LOCK_DIRNAME} behind`);
-  rmSync(lock, { recursive: true, force: true });
+  const project = join(root, MAINTENANCE_LOCK_DIRNAME);
+  assert(existsSync(project), `a killed run leaves ${MAINTENANCE_LOCK_DIRNAME} behind`);
+  const destination = join(root, String(config.destination ?? 'backups'), DESTINATION_LOCK_DIRNAME);
+  assert(existsSync(destination), `a killed run leaves ${DESTINATION_LOCK_DIRNAME} behind too`);
+  rmSync(project, { recursive: true, force: true });
+  rmSync(destination, { recursive: true, force: true });
 }
 
 /** The refusal an operator meets first, before they clear the lock the dead process left. */
@@ -2267,8 +2285,8 @@ test('the finalization happens under the lock, so nothing can act on a completed
   // The property, asserted against the source rather than inferred: the verdict, the staging cleanup and the
   // journal clear are all INSIDE the try whose `finally` releases the lock.
   const source = readRepo('src/ops/complete-restore.ts');
-  const body = source.slice(source.indexOf('lock = acquireMaintenanceLock(resolved.projectRoot);'));
-  const release = body.indexOf('    lock.release();');
+  const body = source.slice(source.indexOf('locks = MaintenanceLocks.open(resolved.projectRoot);'));
+  const release = body.indexOf('    locks.release();');
   for (const marker of ['clearRestoreJournal(resolved.projectRoot)', 'removeOwnedStaging(stagingDir',
     'const everyStepHeld =', 'report = {']) {
     const at = body.indexOf(marker);
@@ -2276,7 +2294,7 @@ test('the finalization happens under the lock, so nothing can act on a completed
   }
   // AND ABANDON TAKES THE SAME LOCK.
   const abandon = source.slice(source.indexOf('export function abandonRestore'));
-  assert(abandon.slice(0, 2000).includes('acquireMaintenanceLock(projectRoot)'),
+  assert(abandon.slice(0, 2000).includes('MaintenanceLocks.open(projectRoot)'),
     'abandon serialises every effect it performs under the project lock');
 });
 
@@ -2626,7 +2644,7 @@ test('no stale pre-lock journal snapshot may drive an effect', () => {
   // reads (the seam IS the lock), so what is asserted is the guarantee itself: the re-read happens under the
   // lock, BEFORE any step runs, and a difference is a refusal.
   const source = readRepo('src/ops/complete-restore.ts');
-  const locked = source.slice(source.indexOf('lock = acquireMaintenanceLock(resolved.projectRoot);'));
+  const locked = source.slice(source.indexOf('locks = MaintenanceLocks.open(resolved.projectRoot);'));
   const reread = locked.indexOf('const underLock = readRestoreJournal(resolved.projectRoot);');
   const firstStep = locked.indexOf('for (const step of plan.steps)');
   const firstPersist = locked.indexOf('persist();');
@@ -2639,8 +2657,8 @@ test('no stale pre-lock journal snapshot may drive an effect', () => {
   // ABANDON HOLDS THE SAME RULE, and it is a separate function that had to be given it separately.
   const abandon = source.slice(source.indexOf('export function abandonRestore'));
   const scope = abandon.slice(0, abandon.indexOf('function abandonUnderLock'));
-  assert(scope.includes('acquireMaintenanceLock(projectRoot)'), 'abandon takes the project lock');
-  assert(scope.indexOf('const journal = readRestoreJournal(projectRoot);') > scope.indexOf('acquireMaintenanceLock'),
+  assert(scope.includes('MaintenanceLocks.open(projectRoot)'), 'abandon takes the project lock');
+  assert(scope.indexOf('const journal = readRestoreJournal(projectRoot);') > scope.indexOf('MaintenanceLocks.open'),
     'and re-reads the journal after taking it');
   assert(scope.includes('changed between reading it and taking the lock'),
     'refusing one that changed in between');
@@ -4085,21 +4103,44 @@ test('ops:complete-backup will not RECREATE a claimed destination that has gone'
   const root = makeProject('claim-no-recreate');
   const setDir = takeSet(root, 'set-1');
   const world = worldFor(setDir);
-  const destination = `backups/${safetySetClaimDirName('a'.repeat(24))}`;
-  refuses(() => runVerifiedCompleteBackup({
-    projectRoot: root,
-    destination,
-    setName: 'pre-restore-set-1',
-    custodian: 'inline',
-    secrets: 'secrets',
-  }, {
+  const claim = safetySetClaimDirName('a'.repeat(24));
+  const destination = `backups/${claim}`;
+  const deps = {
     runner: world.runner,
     fileRunner: world.outputRunner,
     ledger: world.ledger,
     requireExistingDestination: true,
-  }), 'is not there', 'the backup refuses a destination it would have to create');
-  assertEq(existsSync(join(root, 'backups', safetySetClaimDirName('a'.repeat(24)))), false,
-    'AND IT DID NOT CREATE IT');
+  };
+  const request = {
+    projectRoot: root,
+    destination,
+    setName: 'pre-restore-set-1',
+    custodian: 'inline' as const,
+    secrets: 'secrets',
+  };
+
+  // ---- WITH NOTHING AUTHORISING IT, A CLAIM IS NOT A DESTINATION AT ALL — Phases 321-328 Correction 1.
+  // A hand-run backup pointed inside a claim namespace would take its destination lock BELOW the lock
+  // ops:backup-retention and ops:safety-set-lifecycle hold on the destination above it, so it is refused
+  // before the project lock and before anything is created.
+  refuses(() => runVerifiedCompleteBackup(request, deps), 'safety-set claim namespace',
+    'a standalone backup is refused a claim destination outright');
+
+  // ---- AND EVEN THE ONE CALLER THAT MAY PUBLISH INTO A CLAIM MAY NOT INVENT ONE ------------------
+  // The claim IS the `mkdir`. A backup that quietly recreated a missing claim would take this
+  // installation's safety set into a directory nothing owns, at a path written down in the project —
+  // behind the back of the recovery that had already decided to abandon it. So the restore's own
+  // capability, minted while it really holds the enclosing destination, still refuses this one.
+  const locks = MaintenanceLocks.open(root);
+  try {
+    locks.lockDestination(resolveBackupDestination(root, 'backups').destinationDir);
+    refuses(() => runVerifiedCompleteBackup(request, { ...deps, held: locks.heldDestination() }),
+      'claim directory that is not there',
+      'and the authorised caller refuses a claim that has gone rather than recreating it');
+  } finally {
+    locks.release();
+  }
+  assertEq(existsSync(join(root, 'backups', claim)), false, 'AND NEITHER OF THEM CREATED IT');
 });
 
 

@@ -42,8 +42,9 @@ import {
 import {
   MAINTENANCE_LOCK_DIRNAME,
   MAINTENANCE_NAME_RE,
+  SAFETY_CLAIM_DIR_PREFIX,
+  MaintenanceLocks,
   MaintenanceRefused,
-  acquireMaintenanceLock,
   assertPlainTree,
   assertUsableName,
   copyFileNoFollow,
@@ -52,6 +53,7 @@ import {
   readFileNoFollow,
   removeOwnFileNoFollow,
   removeOwnTreeNoFollow,
+  resolveBackupDestination,
   resolveInsideRoot,
   resolveMaintenanceRoot,
   runGuarded,
@@ -61,6 +63,7 @@ import {
   type CommandLedger,
   type CommandOutcome,
   type CommandRunner,
+  type HeldDestination,
   type FileInputRunner,
   type FileOutputRunner,
   type MaintenanceCommand,
@@ -294,9 +297,16 @@ export interface SafetySetClaim {
 /** The shape a claim nonce must have. Validated wherever it is concatenated into a path. */
 export const SAFETY_CLAIM_NONCE_RE = /^[0-9a-f]{24}$/;
 
-/** Where a claim's directory sits, relative to the backup destination. */
+/**
+ * Where a claim's directory sits, relative to the backup destination.
+ *
+ * THE PREFIX IS THE SHARED ONE. Correction 1 moved it to `maintenance-safety.ts`, because
+ * `ops:complete-backup` now refuses to be pointed into a claim namespace and the held-destination
+ * capability authorises exactly one claim directory — so four commands have to agree about the shape, and
+ * they agree by importing it rather than by each spelling it.
+ */
 export function safetySetClaimDirName(nonce: string): string {
-  return `.pre-restore-claim-${nonce}`;
+  return `${SAFETY_CLAIM_DIR_PREFIX}${nonce}`;
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -1604,9 +1614,9 @@ export function runCompleteRestore(
   // is the worst possible command to be wrong about that in. What changes is that the two facts are reported
   // TOGETHER, so an operator is told the specific thing that happened rather than a generic contention
   // message that does not mention the interrupted restore sitting next to it.
-  let lock;
+  let locks;
   try {
-    lock = acquireMaintenanceLock(resolved.projectRoot);
+    locks = MaintenanceLocks.open(resolved.projectRoot);
   } catch (err) {
     if (existing !== null) {
       throw new MaintenanceRefused(
@@ -1638,6 +1648,45 @@ export function runCompleteRestore(
         + 'acted on this installation in between — it may have finished this restore, cleared it, or begun '
         + 'unwinding it. Nothing was changed. Look at the project and start again.');
     }
+
+    // ---- THE SHARED DESTINATION LOCK — PHASES 321-328 ------------------------------------------------
+    //
+    // -----------------------------------------------------------------------------------------------------
+    // BEFORE THE SET IS RELIED ON, BEFORE A CLAIM IS MADE, AND BEFORE ANYTHING IS DESTROYED.
+    // -----------------------------------------------------------------------------------------------------
+    //
+    // A restore reads a backup set it did not take, publishes a safety set into a directory it claims, and
+    // then destroys the installation those two things are the only record of. Until this lock existed, every
+    // one of those steps was open to ANOTHER PROJECT pointed at the same physical destination:
+    // `ops:backup-retention` could quarantine the set between its verification and its use;
+    // `ops:safety-set-lifecycle` could remove a claim this run had just published into; a second
+    // `ops:complete-backup` could be building a staging tree in the same directory a prune was counting.
+    // Holding it from here until the operation is over closes all three, and it is held ACROSS the
+    // destructive protocol rather than around each step, because releasing it between the safety set and the
+    // `down -v` is exactly the window that would let another family member invalidate the operation.
+    //
+    // THE DESTINATION IS THE JOURNAL'S ON EVERY PATH THAT HAS ONE. A resume takes only `--project`, so a
+    // destination flag would carry its default; re-deriving from it would point a recovery — and this lock —
+    // at a directory the interrupted run never touched. `underLock` has just been proved identical to the
+    // journal this operation was resolved against, so this is the operation's own destination.
+    const destinationRelative = underLock === null ? request.destination : underLock.destination;
+    if (destinationRelative !== resolved.destination) {
+      throw new MaintenanceRefused(
+        'this restore resolved one backup destination and its journal names another, which cannot happen. '
+        + 'Nothing was changed.');
+    }
+    locks.lockDestination(resolveBackupDestination(resolved.projectRoot, destinationRelative).destinationDir);
+
+    // ---- THE NESTED AUTHORITY IS MINTED HERE, BEFORE ANYTHING IS WRITTEN -----------------------------
+    //
+    // The safety-set step needs a `HeldDestination` to authorise the backup it publishes into its claim.
+    // Minting it is not free of consequence: it REFUSES when this filesystem reports no usable directory
+    // identity, because a capability that cannot name a directory cannot be checked against one. Asking
+    // for it at the point of use meant that refusal arrived INSIDE the step loop — after `mark(step,
+    // 'running')` had already written a journal recording a step that then never ran, leaving the project
+    // holding an interrupted restore it never began. So it is minted the instant both locks are held and
+    // before the first journal write, and the whole operation refuses with nothing on disk.
+    const authority = locks.heldDestination();
 
     // THE DIGEST IS RE-PROVED UNDER THE LOCK, over a FRESH verification of the set.
     const reResolved = existing === null
@@ -1787,7 +1836,7 @@ export function runCompleteRestore(
           onCustodyProven: (proven) => { custodyProven = proven; },
           onNote: (note) => { notes.push(note); },
           onClaim: (made) => { safetySetClaim = made; persist(); },
-        }, safetySetClaim);
+        }, safetySetClaim, authority);
       } catch (err) {
         detail = err instanceof MaintenanceRefused
           ? err.message
@@ -1890,14 +1939,14 @@ export function runCompleteRestore(
     };
 
   } finally {
-    // THE LOCK IS RELEASED ONLY WHEN THE OPERATION IS OVER.
+    // THE LOCKS ARE RELEASED ONLY WHEN THE OPERATION IS OVER, DESTINATION FIRST AND PROJECT SECOND.
     //
     // THE DEFECT THIS CLOSES. The verdict, the staging cleanup and the journal clear all happened AFTER
     // this `finally`. Between the last step committing and the journal being cleared, this project held a
     // journal describing a COMPLETE operation and NO LOCK — so a resume could start against it, an abandon
     // could begin unwinding a restore that had just succeeded, and either would race the cleanup still
     // running here. The window was small, it was real, and every effect inside it is destructive.
-    lock.release();
+    locks.release();
   }
 
   if (report === null) throw new MaintenanceRefused('this restore produced no report, which cannot happen');
@@ -2303,6 +2352,13 @@ function performStep(
   suffix: string,
   hooks: StepHooks,
   claim: SafetySetClaim | null,
+  /**
+   * PROOF, minted by this run's own lock stack, that both locks are held for this project and this
+   * destination. Only the safety-set step uses it, and only to authorise the nested `ops:complete-backup`
+   * that publishes into a claim directory INSIDE the destination this restore is holding. Correction 1
+   * replaced a `holdingLock` boolean here, which named nothing and could be set by anyone.
+   */
+  authority: HeldDestination,
 ): string | null {
   const step = plan.steps.find((candidate) => candidate.id === id)!;
   // `<staged>` IS SUBSTITUTED HERE AND NOWHERE ELSE, so the plan an operator confirmed and the command that
@@ -2387,7 +2443,11 @@ function performStep(
           runner: deps.runner,
           fileRunner: deps.backupFileRunner,
           ledger: deps.ledger,
-          holdingLock: true,
+          // THE PROOF, NOT A FLAG. `held` is bound to THIS project and to the physical destination this
+          // restore is holding; the backup validates it before it creates anything, and it stops
+          // authorising anything the moment this run releases its locks. A claim directory outside the held
+          // destination, or a capability from another project, is refused there rather than trusted here.
+          held: authority,
           // CREATING THE DIRECTORY WAS THE CLAIM. If it is gone, the claim is void — and a backup that
           // recreated it would publish into a path this project has written down and nothing owns.
           requireExistingDestination: true,
@@ -3151,9 +3211,9 @@ export function abandonRestore(projectRootRequested: string, deps: AbandonDeps =
     throw new MaintenanceRefused('there is no restore to abandon in this project: no journal is here.');
   }
 
-  let lock;
+  let locks;
   try {
-    lock = acquireMaintenanceLock(projectRoot);
+    locks = MaintenanceLocks.open(projectRoot);
   } catch {
     throw new MaintenanceRefused(
       'this project holds BOTH an interrupted restore journal and a maintenance lock. If nothing is running '
@@ -3175,9 +3235,44 @@ export function abandonRestore(projectRootRequested: string, deps: AbandonDeps =
     if (journal === null) {
       throw new MaintenanceRefused('there is no restore to abandon in this project: no journal is here.');
     }
-    return abandonUnderLock(projectRoot, journal, deps);
+
+    // ---- THE DESTINATION LOCK, FROM THE JOURNAL, AND NEVER AT THE COST OF THE RECOVERY ---------------
+    //
+    // AN ABANDON IS A RECOVERY, SO IT IS ALLOWED TO PROCEED WITHOUT IT. This unwind renames directories
+    // inside the PROJECT and removes a staging tree there; the one thing it names in the destination is the
+    // safety-set claim the interrupted run made, which it reports and never touches. Taking the lock is
+    // still right — the claim is the only record of the installation this restore was destroying, and
+    // `ops:safety-set-lifecycle` must not be part way through that destination while an operator is being
+    // told what is in it.
+    //
+    // BUT A DESTINATION THAT NO LONGER RESOLVES MUST NOT WEDGE THE UNWIND. A destination that has been
+    // renamed, unmounted or removed since the crash would otherwise make the ONE command that puts this
+    // installation back refuse forever, on the strength of a directory it does not need. So a resolution
+    // failure is a NOTE, not a refusal. A lock that is HELD by somebody else is still a refusal: that is a
+    // live command, not a missing directory.
+    // THE TWO FAILURES ARE DISTINGUISHED BY WHICH STEP THREW, not by reading a message. Resolution failing
+    // means the directory is not there to lock; ACQUISITION failing means somebody holds it, and that
+    // refusal propagates untouched.
+    let destinationDir: string | null;
+    try {
+      destinationDir = resolveBackupDestination(projectRoot, journal.destination).destinationDir;
+    } catch {
+      destinationDir = null;
+    }
+    if (destinationDir !== null) locks.lockDestination(destinationDir);
+
+    const report = abandonUnderLock(projectRoot, journal, deps);
+    if (destinationDir !== null) return report;
+    return {
+      ...report,
+      notes: [...report.notes,
+        'The backup destination this restore was reading from could not be resolved, so this unwind ran '
+        + 'without the destination lock. It renamed nothing there — an abandon only ever puts this '
+        + 'project\'s own directories back — but if this installation had a safety set, look for it before '
+        + 'you trust anything about that destination.'],
+    };
   } finally {
-    lock.release();
+    locks.release();
   }
 }
 

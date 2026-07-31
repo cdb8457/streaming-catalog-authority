@@ -68,18 +68,22 @@ jobs:
         # tells you nothing. A timeout here fails loudly with a readable log instead of occupying a runner.
         timeout-minutes: 15
         run: npm run test:runner
-      - name: Phases 313-320, 305-312, 297-304 — the destructive half of the backup lifecycle
+      - name: Phases 321-328, 313-320, 305-312, 297-304 — the destructive half of the backup lifecycle
         # These three commands are the only things this product ships that DESTROY state an operator cannot
         # get again from anywhere: ops:complete-restore stops the stack and destroys its volumes,
         # ops:backup-retention removes backup sets, and ops:safety-set-lifecycle removes the safety sets a
-        # restore took of an installation immediately before destroying it. Their suites drive the real
-        # planners, the real filesystem work and real child processes killed at named boundaries, against a
-        # temporary project root — no Docker daemon, no images and no network are needed or used. If any of
-        # them stops running, nothing else in a release can see that it broke.
+        # restore took of an installation immediately before destroying it. Phases 321-328 is the lock all
+        # FOUR backup-family commands share on one physical destination, including across projects, and its
+        # suite is the adversarial one: a real command held at a real post-lock boundary while real child
+        # processes run every other command against the destination it is holding. Their suites drive the
+        # real planners, the real filesystem work and real child processes killed at named boundaries,
+        # against a temporary project root — no Docker daemon, no images and no network are needed or used.
+        # If any of them stops running, nothing else in a release can see that it broke.
         run: |
           npm run test:phase297-local
           npm run test:phase305-local
           npm run test:phase313-local
+          npm run test:phase321-local
       - name: Phase 280, 279, 278, 277 — host-side maintenance automation
         # Phase 277 is the complete backup: the four irrecoverable components taken from one quiesced moment.
         # Phase 278 is the verification that follows every one of them, and the scheduled doctor monitor.

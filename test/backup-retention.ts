@@ -17,7 +17,7 @@ import {
 import { verifyBackupSet } from '../src/ops/backup-set-verification.js';
 import { RESTORE_JOURNAL_NAME } from '../src/ops/complete-restore.js';
 import {
-  MAINTENANCE_LOCK_DIRNAME, MaintenanceRefused, removeOwnTreeNoFollow,
+  DESTINATION_LOCK_DIRNAME, MAINTENANCE_LOCK_DIRNAME, MaintenanceRefused, removeOwnTreeNoFollow,
 } from '../src/ops/maintenance-safety.js';
 import {
   QUARANTINE_CLAIM_PREFIX,
@@ -29,7 +29,6 @@ import {
   RETENTION_ENTRY_STATES,
   RETENTION_JOURNAL_NAME,
   RETENTION_JOURNAL_VERSION,
-  RETENTION_LOCK_DIRNAME,
   abandonRetention,
   canonicalRetentionOperation,
   classifyEntry,
@@ -352,7 +351,7 @@ test('the destination lock is excluded from the inventory, so a plan and its re-
   const root = makeProject('inv-7');
   takeSet(root, 'set-a', { daysAgo: 30 });
   const before = inventoryDestination(join(root, 'backups')).map((e) => e.name);
-  mkdirSync(join(root, 'backups', RETENTION_LOCK_DIRNAME), { recursive: true });
+  mkdirSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME), { recursive: true });
   const after = inventoryDestination(join(root, 'backups')).map((e) => e.name);
   assertEq(JSON.stringify(after), JSON.stringify(before), 'the lock this command takes is not destination content');
 });
@@ -529,7 +528,7 @@ test('a plan writes nothing, locks nothing and leaves the destination byte-ident
   assertEq(plan.commands, 'none', 'and issued no command');
   assert(sameSnapshot(before, snapshot(join(root, 'backups'))), 'and the destination is unchanged');
   assert(!existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), 'no project lock was taken');
-  assert(!existsSync(join(root, 'backups', RETENTION_LOCK_DIRNAME)), 'no destination lock was taken');
+  assert(!existsSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME)), 'no destination lock was taken');
   assert(!existsSync(join(root, RETENTION_JOURNAL_NAME)), 'and no journal was written');
   assertEq(JSON.stringify(plan.removals), JSON.stringify(['set-a']), 'and it would remove the older one');
 });
@@ -672,7 +671,7 @@ test('a run leaves neither lock behind, and the quarantine directory is gone', (
   takeSet(root, 'set-b', { daysAgo: 10 });
   prune(root, { policy: { keepLast: 1, minAgeDays: 7 } });
   assert(!existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), 'the project lock is released');
-  assert(!existsSync(join(root, 'backups', RETENTION_LOCK_DIRNAME)), 'the destination lock is released');
+  assert(!existsSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME)), 'the destination lock is released');
   assert(!existsSync(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'))), 'and the quarantine is gone');
   assert(!existsSync(join(root, RETENTION_JOURNAL_NAME)), 'and so is the journal');
 });
@@ -719,11 +718,14 @@ test('a destination lock left by an interrupted run refuses a second prune of th
   const root = makeProject('run-6');
   takeSet(root, 'set-a', { daysAgo: 100 });
   takeSet(root, 'set-b', { daysAgo: 10 });
-  mkdirSync(join(root, 'backups', RETENTION_LOCK_DIRNAME));
+  mkdirSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME));
+  // PHASES 321-328 CHANGED THE SENTENCE, DELIBERATELY, AND NOT THE PROPERTY. The lock is now shared by all
+  // four backup-family commands, so the refusal names all four and the cross-project case rather than
+  // claiming the holder must be another prune — which was never something this command could know.
   refuses(() => prune(root, { policy: { keepLast: 1, minAgeDays: 7 } }),
-    'already pruning this backup destination', 'the second lock domain holds');
+    'already working in this backup destination', 'the second lock domain holds');
   assert(existsSync(join(root, 'backups', 'set-a')), 'and nothing was removed');
-  rmSync(join(root, 'backups', RETENTION_LOCK_DIRNAME), { recursive: true });
+  rmSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME), { recursive: true });
 });
 
 test('a project part way through a restore refuses retention entirely', () => {
@@ -887,7 +889,7 @@ function crash(root: string, crashAt: string, options: { readonly policy?: Parti
     `the child had to stop existing at ${crashAt}, not exit ${result.status}: ${result.stderr}`);
   // A KILLED RUN LEAVES BOTH LOCKS, exactly as a real one does. The recovery runs in-process, so they are
   // removed here the way an operator would after satisfying themselves nothing is running.
-  for (const lock of [join(root, MAINTENANCE_LOCK_DIRNAME), join(root, 'backups', RETENTION_LOCK_DIRNAME)]) {
+  for (const lock of [join(root, MAINTENANCE_LOCK_DIRNAME), join(root, 'backups', DESTINATION_LOCK_DIRNAME)]) {
     assert(existsSync(lock), `the crash left ${lock.endsWith(MAINTENANCE_LOCK_DIRNAME) ? 'the project' : 'the destination'} lock`);
     rmSync(lock, { recursive: true });
   }
@@ -914,7 +916,7 @@ function crashOperation(root: string, crashAt: string, options: {
     { encoding: 'utf8', cwd: repoRoot });
   assertEq(result.status, RETENTION_CRASH_EXIT_CODE,
     `the child had to stop existing at ${crashAt}, not exit ${result.status}: ${result.stderr}`);
-  for (const lock of [join(root, MAINTENANCE_LOCK_DIRNAME), join(root, 'backups', RETENTION_LOCK_DIRNAME)]) {
+  for (const lock of [join(root, MAINTENANCE_LOCK_DIRNAME), join(root, 'backups', DESTINATION_LOCK_DIRNAME)]) {
     if (existsSync(lock)) rmSync(lock, { recursive: true });
   }
 }
@@ -1043,7 +1045,7 @@ test('abandon puts back what is quarantined, byte-identical, and NAMES what is g
   assertEq(report.journalCleared, true, 'and the journal is cleared');
   assertEq(report.retained, null, 'and the quarantine directory is gone');
   assert(!existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), 'and both locks are released');
-  assert(!existsSync(join(root, 'backups', RETENTION_LOCK_DIRNAME)), 'both of them');
+  assert(!existsSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME)), 'both of them');
 });
 
 test('a journal recording an abandon refuses a resume — a decision to put back is not overridden', () => {

@@ -10,19 +10,18 @@ import { verifyBackupSet } from './backup-set-verification.js';
 import { RESTORE_JOURNAL_NAME } from './complete-restore.js';
 import { manifestShape, proveBackupSetIdentity } from './maintenance-identity.js';
 import {
+  DESTINATION_LOCK_DIRNAMES,
   MAINTENANCE_NAME_RE,
+  MaintenanceLocks,
   MaintenanceRefused,
-  acquireLockDirectory,
-  acquireMaintenanceLock,
   assertUsableName,
   createPrivateDirectory,
   readFileNoFollow,
   removeOwnTreeNoFollow,
-  resolveInsideRoot,
+  resolveBackupDestination,
   resolveMaintenanceRoot,
   stagingSuffix,
   writePrivateFile,
-  type MaintenanceLock,
 } from './maintenance-safety.js';
 import {
   DEFAULT_RETENTION_POLICY,
@@ -100,15 +99,13 @@ export const QUARANTINE_CLAIM_PREFIX = '.catalog-retention.claiming-';
 /** The ownership marker inside a quarantine directory. Nothing is removed from a tree without one. */
 export const QUARANTINE_MARKER_NAME = 'catalog-retention-quarantine.json';
 
-/**
- * The second lock domain, taken IN the destination.
- *
- * IT IS EXCLUDED FROM THE INVENTORY, and that is load-bearing rather than cosmetic. `--plan` takes no lock,
- * so the lock does not exist when the plan is read; `--confirm` takes it and then re-inventories under it, so
- * a run that counted its own lock as destination content would produce a different inventory from the plan
- * every single time, and no confirmation could ever succeed.
- */
-export const RETENTION_LOCK_DIRNAME = '.catalog-retention.lock';
+// THE SECOND LOCK DOMAIN IS NO LONGER THIS COMMAND'S. It is `DESTINATION_LOCK_DIRNAME`, defined once in
+// `maintenance-safety.ts` and taken by all four backup-family commands — see Phases 321-328. This module used
+// to define it, under a name that said "retention", and that name became a lie the moment a second command
+// took it. The names are still EXCLUDED FROM THE INVENTORY here, and that is load-bearing rather than
+// cosmetic: `--plan` takes no lock, so the lock does not exist when the plan is read; `--confirm` takes it and
+// then re-inventories under it, so a run that counted its own lock as destination content would produce a
+// different inventory from the plan every single time, and no confirmation could ever succeed.
 
 /** Exactly what `stagingSuffix()` produces. Validated wherever a suffix is concatenated into a path. */
 export const RETENTION_SUFFIX_RE = /^[0-9a-f]{12}$/;
@@ -176,17 +173,11 @@ export function assertNoRestoreInProgress(projectRoot: string, why: string): voi
  * expressed against it.
  */
 export function resolveRetentionDestination(projectRoot: string, relative: string): ResolvedRetention {
-  const destinationDir = resolveMaintenanceRoot(
-    resolveInsideRoot(projectRoot, relative, 'backup destination'), 'backup destination');
-  if (destinationDir === projectRoot) {
-    throw new MaintenanceRefused('the backup destination cannot be the project root itself');
-  }
-  return {
-    projectRoot,
-    destinationDir,
-    destinationRelative: relative,
-    destinationName: basename(destinationDir),
-  };
+  // ONE RESOLUTION, SHARED WITH THE OTHER THREE COMMANDS. Phases 321-328 moved it to `maintenance-safety.ts`
+  // verbatim — containment, no symbolic link at any component, `realpath` so two spellings of one directory
+  // are one directory, and the project-root refusal — because a lock is only exclusive between callers that
+  // agree on which directory they are naming.
+  return resolveBackupDestination(projectRoot, relative);
 }
 
 // -----------------------------------------------------------------------------------------------------------
@@ -218,7 +209,7 @@ export function inventoryDestination(destinationDir: string): readonly Inventory
       + 'command will inventory. Point it at a destination this product manages.');
   }
   return names
-    .filter((name) => name !== RETENTION_LOCK_DIRNAME)
+    .filter((name) => !DESTINATION_LOCK_DIRNAMES.includes(name))
     .map((name) => classifyEntry(destinationDir, name));
 }
 
@@ -1241,8 +1232,7 @@ export function runRetention(
   // check made before a lock is a check about a moment that has passed.
   const projectRoot = resolveRetentionProject(request.projectRoot);
 
-  const projectLock = acquireMaintenanceLock(projectRoot);
-  let destinationLock: MaintenanceLock | null = null;
+  const locks = MaintenanceLocks.open(projectRoot);
   try {
     assertNoRestoreInProgress(projectRoot,
       'a restore of this installation started while this command was waiting for the lock. Nothing was '
@@ -1277,12 +1267,13 @@ export function runRetention(
       ? resolveRetentionDestination(projectRoot, existing!.destination)
       : resolveRetentionDestination(projectRoot, request.destination);
 
-    // THE SECOND LOCK DOMAIN, AND EXACTLY WHAT IT COVERS. The project lock is the one every command in this
-    // family takes, so holding it is what stops this run racing a set being published or read IN THIS
-    // PROJECT. The destination lock exists for the case a destination is shared between projects, and it
-    // guarantees only that two RETENTION runs cannot both prune one destination — another project's backup
-    // holds its own project lock and not this one. That limit is real and is documented rather than blurred.
-    destinationLock = lockDestination(resolved);
+    // THE SECOND LOCK DOMAIN, AND EXACTLY WHAT IT COVERS SINCE PHASES 321-328. The project lock is the one
+    // every command in this family takes, so holding it is what stops this run racing a set being published
+    // or read IN THIS PROJECT. The destination lock is taken IN the destination, so it holds against ANOTHER
+    // PROJECT pointed at the same physical directory — and all four backup-family commands now take it, so
+    // "two commands cannot be half way through one destination at once" is true of `ops:complete-backup` and
+    // `ops:complete-restore` as well, which is exactly what the Phase 313-320 report recorded as open.
+    locks.lockDestination(resolved.destinationDir);
 
     let journal: RetentionJournal;
     if (mode.kind === 'run') {
@@ -1323,19 +1314,9 @@ export function runRetention(
 
     return execute(resolved, journal, at, writeJournal, clearJournal, remove);
   } finally {
-    // INNERMOST FIRST, and every path out runs this.
-    if (destinationLock !== null) destinationLock.release();
-    projectLock.release();
+    // INNERMOST FIRST, and every path out runs this. The order is the stack's, not this call site's.
+    locks.release();
   }
-}
-
-function lockDestination(resolved: ResolvedRetention): MaintenanceLock | null {
-  const path = join(resolved.destinationDir, RETENTION_LOCK_DIRNAME);
-  if (resolved.destinationDir === resolved.projectRoot) return null;
-  return acquireLockDirectory(path,
-    'another retention run is already pruning this backup destination, or one was interrupted and left its '
-    + 'lock behind (.catalog-retention.lock in the destination). Wait for it, or remove that directory once '
-    + 'you are sure nothing is running.');
 }
 
 function execute(
@@ -1801,8 +1782,7 @@ export function abandonRetention(projectRoot: string, deps: RetentionDeps = {}):
   const clearJournal = deps.journalClearer ?? clearRetentionJournal;
   const root = resolveMaintenanceRoot(projectRoot, 'project directory');
 
-  const projectLock = acquireMaintenanceLock(root);
-  let destinationLock: MaintenanceLock | null = null;
+  const locks = MaintenanceLocks.open(root);
   try {
     // THE JOURNAL IS READ UNDER THE LOCK, and it is where the destination comes from. Because it records the
     // destination RELATIVE to the project this file is in, there is no chicken-and-egg here: the project
@@ -1814,7 +1794,7 @@ export function abandonRetention(projectRoot: string, deps: RetentionDeps = {}):
     const resolved = resolveRetentionDestination(root, opening.destination);
     const destinationDir = resolved.destinationDir;
     const destinationName = resolved.destinationName;
-    destinationLock = lockDestination(resolved);
+    locks.lockDestination(resolved.destinationDir);
 
     let current: RetentionJournal = { ...opening, phase: 'abandoning' };
     const quarantine = quarantineDirName(current.suffix);
@@ -1981,8 +1961,7 @@ export function abandonRetention(projectRoot: string, deps: RetentionDeps = {}):
       };
     }
   } finally {
-    if (destinationLock !== null) destinationLock.release();
-    projectLock.release();
+    locks.release();
   }
 }
 

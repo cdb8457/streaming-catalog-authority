@@ -4,7 +4,7 @@ import {
   readSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync, writeSync,
 } from 'node:fs';
 import type { Stats } from 'node:fs';
-import { isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 
 // Phases 277-280 — the safety floor every host-side maintenance command stands on.
 //
@@ -729,6 +729,57 @@ export function publishDirectory(staging: string, final: string, what: string): 
 // The lock
 // -----------------------------------------------------------------------------------------------------------
 
+/**
+ * WHICH DIRECTORY THIS IS, as the filesystem answers it rather than as a path spells it.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * A PATH IS NOT AN IDENTITY, AND `process.platform` IS NOT A FILESYSTEM — CORRECTION 1.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * TWO WRONG ANSWERS WERE TRIED BEFORE THIS ONE, and both are worth writing down because both looked right.
+ *
+ *   1. FOLDING CASE ON `win32`/`darwin`. That is a guess about a HOST when the question is about a
+ *      DIRECTORY: macOS ships case-sensitive APFS volumes, Windows supports per-directory case sensitivity,
+ *      and a Linux host can mount a case-insensitive filesystem. On a case-SENSITIVE volume, `backups` and
+ *      `Backups` are two real different directories that a folded comparison treats as one — so a
+ *      capability for the first would have authorised writing into the second, which nothing holds a lock on.
+ *   2. COMPARING THE CURRENT DIRECTORY AT A PATH WITH THE CURRENT DIRECTORY AT THAT SAME PATH. That is a
+ *      tautology dressed as a proof. Rename the held destination away, create a new directory at the
+ *      original path, and the check passes — while the lock that was actually taken sits in the inode that
+ *      moved. The capability would authorise publishing into a directory nothing is holding.
+ *
+ * SO THE IDENTITY IS CAPTURED WHEN THE LOCK IS TAKEN and compared against the directory that is there NOW.
+ * `ino`/`dev` survive a rename and change when a name is reused, which is exactly the distinction a path
+ * cannot make.
+ */
+interface DirectoryIdentity {
+  readonly dev: bigint;
+  readonly ino: bigint;
+}
+
+/**
+ * The identity of a directory, or `null` when this filesystem will not say.
+ *
+ * A ZERO INODE PROVES NOTHING, and every caller of this treats `null` as a refusal rather than as a pass —
+ * so a filesystem that cannot answer stops the nested operation instead of silently authorising it. `dev`
+ * is NOT required to be non-zero: Windows reports `0` for it and a real, stable, rename-surviving `ino`.
+ */
+function directoryIdentity(path: string): DirectoryIdentity | null {
+  // `bigint`, AND IT IS NOT A STYLE CHOICE. A Windows file index is 64 bits and routinely exceeds 2^53 —
+  // this repository's own worktree reports one — so the default `number` inode is a LOSSY reading of it.
+  // Two distinct directories whose indices differ only below the float's precision would compare EQUAL,
+  // which is the one mistake an identity check may never make: it is what decides whether a capability
+  // authorises a directory and whether a release deletes a lock. Exact integers, or nothing.
+  const stats = lstatSync(path, { bigint: true, throwIfNoEntry: false });
+  if (stats === undefined || !stats.isDirectory() || stats.isSymbolicLink()) return null;
+  if (stats.ino === 0n) return null;
+  return { dev: stats.dev, ino: stats.ino };
+}
+
+function sameIdentity(a: DirectoryIdentity | null, b: DirectoryIdentity | null): boolean {
+  return a !== null && b !== null && a.ino === b.ino && a.dev === b.dev;
+}
+
 export interface MaintenanceLock {
   readonly path: string;
   release(): void;
@@ -745,6 +796,10 @@ export interface MaintenanceLock {
  * A STALE LOCK IS NOT BROKEN AUTOMATICALLY. A directory left by a killed run is reported, with what is inside
  * it, and removing it is an operator's decision. Automatic staleness detection means guessing whether another
  * process is alive, and guessing wrong here means two writers.
+ *
+ * AND A RUN ONLY EVER RELEASES ITS OWN. Release is bound to the identity of the directory this call created
+ * and to a token inside it, so a lock that has been renamed away and replaced at the same path is left
+ * exactly where it is rather than deleted out from under whoever now holds it. See `releaseOwnedLock`.
  */
 export function acquireMaintenanceLock(root: string): MaintenanceLock {
   return acquireLockDirectory(join(root, MAINTENANCE_LOCK_DIRNAME),
@@ -768,22 +823,679 @@ export function acquireLockDirectory(path: string, contention: string): Maintena
     if ((err as NodeJS.ErrnoException).code === 'EEXIST') throw new MaintenanceRefused(contention);
     throw new MaintenanceRefused('the maintenance lock could not be taken; check the directory it lives in is writable');
   }
-  // What is inside it is diagnostic only. No secret, no path: a pid and the moment it was taken.
+  // ---- WHAT THIS CALL OWNS, CAPTURED AT THE MOMENT IT OWNED IT ------------------------------------
+  //
+  // The identity of the directory the `mkdir` just created, and an unguessable token written inside it.
+  // Release is bound to BOTH — see below for the deletion this prevents.
+  const mine = directoryIdentity(path);
+  const token = randomBytes(16).toString('hex');
+  // What is inside it is diagnostic plus this one token. No secret, no path: a pid, the token, nothing else.
   try {
-    writePrivateFile(join(path, 'holder.txt'), `pid=${process.pid}\n`, 'maintenance lock holder file');
+    writePrivateFile(join(path, HOLDER_FILE_NAME), `pid=${process.pid}\ntoken=${token}\n`,
+      'maintenance lock holder file');
   } catch { /* the lock is the directory; a missing note inside it does not weaken it */ }
   return {
     path,
-    release: () => {
-      try { unlinkSync(join(path, 'holder.txt')); } catch { /* may not exist */ }
-      try { rmdirSync(path); } catch { /* a lock that will not release is reported by the next run, not hidden */ }
-    },
+    release: () => releaseOwnedLock(path, mine, token),
   };
+}
+
+/** The note a lock directory carries. Diagnostic, plus the token that says whose lock it is. */
+export const HOLDER_FILE_NAME = 'holder.txt';
+
+/**
+ * Release a lock ONLY IF IT IS STILL THE LOCK THIS CALL CREATED.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * A PATH IS NOT OWNERSHIP — CORRECTION 1.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * THE DEFECT THIS CLOSES, and it was found by a test written for a different bug. Release used to `unlink`
+ * and `rmdir` whatever was at the remembered PATH. Rename the directory a lock lives in — a backup
+ * destination moved aside, a project directory renamed — and create a new directory at the old path, and
+ * that path now holds SOMEBODY ELSE'S lock. The `finally` of the first run would then delete a live lock
+ * belonging to another process, while its own real lock sat, still held, inside the directory that moved.
+ * One command tidying up would silently unlock a destination another command was working in.
+ *
+ * SO RELEASE PROVES OWNERSHIP FIRST, two ways, and does NOTHING when either fails:
+ *
+ *   * THE DIRECTORY IDENTITY captured when the `mkdir` returned. `ino`/`dev` survive a rename and change
+ *     when a name is reused, which is exactly the distinction a path cannot make.
+ *   * A UNIQUE TOKEN written inside it. It covers the filesystems that report no usable inode, and it is
+ *     checked whenever the note is readable — so a lock directory that was emptied and rebuilt by another
+ *     process is not ours either.
+ *
+ * AND THE FAILURE MODE IS THE SAFE ONE. Refusing to release leaves a stale lock, which the next run reports
+ * and an operator removes deliberately. Releasing the wrong one removes a live lock and nobody finds out.
+ * Between "somebody has to clean up" and "two writers in one destination", this picks the first, every time.
+ */
+function releaseOwnedLock(path: string, mine: DirectoryIdentity | null, token: string): void {
+  const now = directoryIdentity(path);
+  if (mine !== null) {
+    // The normal case: we know which directory we made, so anything else at this path is not it.
+    if (!sameIdentity(mine, now)) return;
+  } else if (readHolderToken(path) !== token) {
+    // No usable identity from this filesystem, so the token is the only proof there is. No token, no removal.
+    return;
+  }
+  // A NOTE THAT IS THERE MUST BE OURS, AND MUST BE READABLE AS OURS. Three outcomes, three answers:
+  //
+  //   ABSENT      — fine. Writing it is best-effort at acquisition, and the identity above already proved
+  //                 this is the directory this call created.
+  //   OUR TOKEN   — fine.
+  //   ANYTHING ELSE — somebody else's token, a note that is a symbolic link, one larger than a note has any
+  //                 business being, or bytes that are not a note at all. Every one of those means this
+  //                 directory is not in the state this call left it in, and the safe answer to that is to
+  //                 remove NOTHING. A stale lock is reported by the next run; a wrongly deleted one is not.
+  const found = readHolderToken(path);
+  if (found !== HOLDER_ABSENT && found !== token) return;
+  try { unlinkSync(join(path, HOLDER_FILE_NAME)); } catch { /* may not exist */ }
+  try { rmdirSync(path); } catch { /* a lock that will not release is reported by the next run, not hidden */ }
+}
+
+/** There is nothing at the note's name. Distinct from "there is something and it is not ours". */
+const HOLDER_ABSENT = Symbol('catalog-authority.lock-holder-absent');
+/** There is something, and it is not a note this product wrote. Never equal to any token. */
+const HOLDER_UNREADABLE = Symbol('catalog-authority.lock-holder-unreadable');
+
+/** How large a lock's holder note may be. It is two short lines; anything more is not one of ours. */
+export const MAX_HOLDER_FILE_BYTES = 4096;
+
+/**
+ * The token inside a lock directory: our token, ABSENT, or UNREADABLE. Never throws.
+ *
+ * IT IS READ THE WAY EVERY OTHER FILE IN THIS MODULE IS READ — through `readFileNoFollow`, which opens the
+ * name once without following a symbolic link and refuses one larger than the bound. A lock directory sits
+ * in a backup destination an operator owns, and the note inside it decides whether this process DELETES a
+ * lock; reading it by name with no bound would mean a link at that name could point release at somebody
+ * else's file, and a large file at that name could be pulled whole into memory to answer a question about
+ * thirty-two hex characters.
+ *
+ * THE THREE OUTCOMES ARE KEPT APART on purpose. Absent is a legitimate state — writing the note is
+ * best-effort at acquisition — while unreadable is evidence that something touched this directory, and the
+ * caller must be able to tell those apart rather than treating both as "no token".
+ */
+function readHolderToken(path: string): string | typeof HOLDER_ABSENT | typeof HOLDER_UNREADABLE {
+  const notePath = join(path, HOLDER_FILE_NAME);
+  try {
+    // `throwIfNoEntry: false` COVERS ONLY ENOENT. `EACCES`, `EIO`, `ENOTDIR` and a path that has become
+    // something `lstat` will not answer about all still THROW — and this is called from a `finally`, so an
+    // escaping error would replace whatever result the command was carrying with a filesystem error about
+    // a lock note. Absence is the ONLY outcome of this probe that means "there is nothing here"; every
+    // other failure means "this cannot be read", which is not permission to delete anything.
+    if (lstatSync(notePath, { throwIfNoEntry: false }) === undefined) return HOLDER_ABSENT;
+    const raw = readFileNoFollow(notePath, 'maintenance lock holder file', MAX_HOLDER_FILE_BYTES)
+      .bytes.toString('utf8');
+    const match = /^token=([0-9a-f]{32})$/m.exec(raw);
+    return match === null ? HOLDER_UNREADABLE : match[1]!;
+  } catch {
+    // A link, a special file, one that changed size while it was read, one over the bound, or a name this
+    // process cannot examine at all.
+    return HOLDER_UNREADABLE;
+  }
 }
 
 /** A short, unguessable suffix for a staging directory beside its final name. */
 export function stagingSuffix(): string {
   return randomBytes(6).toString('hex');
+}
+
+// -----------------------------------------------------------------------------------------------------------
+// Phases 321-328 — the SECOND lock domain: one physical backup destination, across projects
+// -----------------------------------------------------------------------------------------------------------
+
+/**
+ * The lock every command that reads or writes a backup destination takes, by name.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHY IT IS HERE AND NOT IN ONE OF THE COMMANDS.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * It used to live in `ops:backup-retention` and be reachable only from there, and `ops:safety-set-lifecycle`
+ * imported it. That was already the wrong home by the second command and it became a hole with the third and
+ * fourth: `ops:complete-backup` and `ops:complete-restore` took only their own PROJECT lock, so a second
+ * Compose project pointed at the same physical directory could publish a set, claim a safety-set directory or
+ * destroy an installation while a prune held that directory mid-quarantine. The Phase 313-320 report named it
+ * as its first remaining risk. This is the one definition that closes it.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE NAME DID NOT CHANGE, AND THAT IS THE WHOLE POINT — CORRECTION 1.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The first cut renamed this to `.catalog-destination.lock` because the old name says "retention" and the
+ * lock is not retention's any more. It then had to keep the old name working, so it `lstat`ed
+ * `.catalog-retention.lock` first and `mkdir`ed `.catalog-destination.lock` afterwards. THAT IS A CHECK
+ * FOLLOWED BY A CREATE ON A DIFFERENT NAME, WHICH IS NOT A LOCK: an `ops:backup-retention` from an older
+ * build could `mkdir` the old name in the window between the two, and both processes would then believe they
+ * held the destination. The rename made a tidier word and a WEAKER guarantee than the one it inherited.
+ *
+ * So the FILENAME is the compatibility contract and it is frozen. One name, one `mkdir`, one atomic
+ * operation, and an old build and a new build contend on exactly the same directory entry with no window at
+ * all between them. What changed is the VOCABULARY around it — the constant, the type, the refusal sentence
+ * and the documentation all say "destination" — because a name on disk that two versions must agree on is
+ * not the same kind of thing as a name in the source that only this version reads.
+ *
+ * IT IS A DIRECTORY IN THE DESTINATION, WHICH IS WHY IT IS PHYSICAL. Two projects that reach one directory
+ * by two different relative paths still `mkdir` the same inode, so exclusion holds across projects without
+ * any registry, daemon, port or shared file anywhere.
+ */
+export const DESTINATION_LOCK_DIRNAME = '.catalog-retention.lock';
+
+/**
+ * Every name that is a destination lock to this build.
+ *
+ * ONE ENTRY, DELIBERATELY. A second name here would mean a second `mkdir` or a pre-check, and a pre-check of
+ * one name followed by an acquisition of another is exactly the race Correction 1 removed. The list exists
+ * because two inventories have to EXCLUDE the lock from what they count, and one list is better than two
+ * literals in two files.
+ */
+export const DESTINATION_LOCK_DIRNAMES: readonly string[] = Object.freeze([DESTINATION_LOCK_DIRNAME]);
+
+/**
+ * The ONE sentence an operator reads when a destination is busy, whichever of the four commands they ran.
+ *
+ * It names all four, and it names the cross-project case, because the whole point of this lock is that the
+ * command holding it may not be one in the project the operator is standing in.
+ */
+export const DESTINATION_LOCK_CONTENTION =
+  'another command is already working in this backup destination — ops:complete-backup, ops:complete-restore, '
+  + 'ops:backup-retention or ops:safety-set-lifecycle, in this project or in ANOTHER project pointed at the '
+  + `same directory — or one was interrupted and left its lock behind (${DESTINATION_LOCK_DIRNAME} in the `
+  + 'destination). Nothing was changed. Wait for it, or remove that directory once you are sure nothing is '
+  + 'running.';
+
+/** A destination resolved to the physical directory a lock would be taken in. */
+export interface ResolvedDestination {
+  readonly projectRoot: string;
+  readonly destinationDir: string;
+  /** Exactly what the operator wrote, relative to the project. This is what a journal records. */
+  readonly destinationRelative: string;
+  /** The destination's own leaf name. The only part of it that ever reaches a report. */
+  readonly destinationName: string;
+}
+
+/**
+ * Turn a named destination directory into the PHYSICAL one, and refuse the two shapes nothing may use.
+ *
+ * `realpath` narrows the ways two callers can disagree about which directory they mean — a symlinked
+ * ancestor, a `.` segment, a separator spelling. It is NOT what makes the lock exclusive: that is the
+ * `mkdir` inside the directory, which two spellings of one directory share whether or not `realpath`
+ * normalises them (Node's does not canonicalise case on Windows, and it does not need to).
+ *
+ * The caller has ALREADY proved containment with `resolveInsideRoot`, which refuses a symbolic link at every
+ * component — so this cannot be handed a name that resolves out of the project.
+ */
+export function provePhysicalDestination(projectRoot: string, destinationDir: string): string {
+  const real = resolveMaintenanceRoot(destinationDir, 'backup destination');
+  if (real === projectRoot) {
+    throw new MaintenanceRefused('the backup destination cannot be the project root itself');
+  }
+  return real;
+}
+
+/**
+ * Resolve a destination named RELATIVE to the project, to the physical directory a lock lives in.
+ *
+ * IT IS RELATIVE, AND THAT IS WHY A JOURNAL CAN RECORD IT. A durable file in an operator's project directory
+ * has no business carrying that operator's absolute appdata layout; the journal lives IN the project root,
+ * so the project root is the one path a reader always already has, and everything else is expressed against
+ * it. `destinationRelative` is therefore what the operator wrote, unchanged — never the resolved path.
+ */
+export function resolveBackupDestination(projectRoot: string, relative: string): ResolvedDestination {
+  const destinationDir = provePhysicalDestination(
+    projectRoot, resolveInsideRoot(projectRoot, relative, 'backup destination'));
+  return {
+    projectRoot,
+    destinationDir,
+    destinationRelative: relative,
+    destinationName: basename(destinationDir),
+  };
+}
+
+/**
+ * THE ONE DEFINITION of the namespace `ops:complete-restore` claims inside a backup destination.
+ *
+ * It lives here, on the floor every backup-family command already stands on, because THREE things now
+ * depend on agreeing about it exactly: the restore builds the name, `ops:safety-set-lifecycle` recognises
+ * it, and — since Correction 1 — `ops:complete-backup` refuses to be pointed at one and the capability
+ * check authorises exactly one of them. Three copies of a regular expression is how those four commands
+ * would eventually disagree about which directories are claims.
+ */
+export const SAFETY_CLAIM_DIR_PREFIX = '.pre-restore-claim-';
+
+/** `.pre-restore-claim-<24 hex>` and nothing else. The nonce shape is the restore's CSPRNG output. */
+export const SAFETY_CLAIM_DIR_RE = /^\.pre-restore-claim-[0-9a-f]{24}$/;
+
+/** Is this base name a restore's claim directory? Asked of a LEAF, never of a path. */
+export function isSafetyClaimDirName(name: string): boolean {
+  return SAFETY_CLAIM_DIR_RE.test(name);
+}
+
+/**
+ * Refuse an ordinary backup that was pointed INTO a restore's claim namespace.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHY A STANDALONE BACKUP MAY NOT PUBLISH INTO A CLAIM — CORRECTION 1.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * The destination lock is taken in the directory a command was told to publish into. So an operator who
+ * hand-points `ops:complete-backup --destination backups/.pre-restore-claim-<nonce>` takes a lock INSIDE
+ * the claim — while `ops:backup-retention` and `ops:safety-set-lifecycle` are locking the destination
+ * ABOVE it. Two commands would then be working in one destination at the same time, each holding a lock
+ * the other never looks at, and the lifecycle command would be counting and quarantining claim directories
+ * whose contents were being written underneath it. The first cut of this tranche listed exactly that as an
+ * open risk; it is closed here rather than described.
+ *
+ * EVERY COMPONENT IS CHECKED, not just the leaf. `backups/.pre-restore-claim-<nonce>/deeper` is inside a
+ * claim too, and the lock it would take is just as far below the one that matters.
+ *
+ * THE LEGITIMATE PATH IS UNAFFECTED, because it is not this path: `ops:complete-restore` publishes its
+ * safety set through a `HeldDestination` minted while it holds the enclosing destination, and that
+ * capability — not a flag and not a name — is what authorises the claim as a target.
+ */
+export function assertNotSafetyClaimNamespace(projectRoot: string, relativeDestination: string): void {
+  const segments = relativeDestination.split(/[\\/]/).filter((segment) => segment !== '' && segment !== '.');
+  let parent = projectRoot;
+  let claim = false;
+  for (const segment of segments) {
+    if (segmentNamesAClaim(parent, segment)) { claim = true; break; }
+    parent = join(parent, segment);
+  }
+  // ---- AND AGAIN OVER WHAT IS REALLY THERE ---------------------------------------------------------
+  //
+  // The literal request is what an operator typed; the resolved path is what the filesystem has. They can
+  // differ — a `.` segment, a separator spelling, a symlinked ancestor above the project root — and the
+  // question "is this inside a claim" is about the second one. `resolveInsideRoot` has already refused a
+  // link at any component below the root, so this is a cheap confirmation rather than a second policy.
+  if (!claim) {
+    const real = fullyExistingRealPath(join(projectRoot, ...segments));
+    if (real !== null) {
+      const inside = relative(projectRoot, real).split(/[\\/]/).filter((part) => part !== '' && part !== '.');
+      let realParent = projectRoot;
+      for (const segment of inside) {
+        if (segmentNamesAClaim(realParent, segment)) { claim = true; break; }
+        realParent = join(realParent, segment);
+      }
+    }
+  }
+  if (!claim) return;
+  throw new MaintenanceRefused(
+    'this backup was pointed at a directory inside a restore\'s safety-set claim namespace '
+    + `(${SAFETY_CLAIM_DIR_PREFIX}<nonce>). A claim belongs to the ops:complete-restore run that created `
+    + 'it, and publishing into one would take this command\'s destination lock BELOW the lock '
+    + 'ops:backup-retention and ops:safety-set-lifecycle take on the destination above it — so two commands '
+    + 'would be working in one destination at once. Name the backup destination itself. Nothing was taken.');
+}
+
+/**
+ * Is this one path segment a claim directory, ASKED OF THE FILESYSTEM THE PARENT IS ON?
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * CASE INSENSITIVITY IS A PROPERTY OF A DIRECTORY, NOT OF A HOST, AND NOT OF EVERY DIRECTORY.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * A literal match is the easy half. The hard half is `backups/.PRE-RESTORE-CLAIM-<nonce>`: on a
+ * case-insensitive volume that names the SAME directory as the lower-case claim and must be refused, and on
+ * a case-SENSITIVE volume it is a different directory an operator is entitled to use as a destination.
+ * Folding case for everyone breaks the second; folding it for `win32`/`darwin` guesses at a machine when
+ * the question is about a volume — macOS ships case-sensitive APFS and Windows supports per-directory case
+ * sensitivity.
+ *
+ * SO IT IS MEASURED, HERE, ON THIS PARENT. If the segment is a claim once lower-cased, the lower-cased name
+ * is looked up beside it: same directory by `ino`/`dev`, and the two spellings are one directory and this IS
+ * a claim; a different directory or no directory at all, and they are genuinely two names and this is not.
+ * Nothing is inferred from a platform and nothing is folded anywhere else.
+ */
+function segmentNamesAClaim(parent: string, segment: string): boolean {
+  if (isSafetyClaimDirName(segment)) return true;
+  const folded = segment.toLowerCase();
+  if (folded === segment || !isSafetyClaimDirName(folded)) return false;
+
+  // ---- IDENTITY FIRST, AS CORROBORATION AND NEVER AS THE ONLY DETECTOR ---------------------------
+  //
+  // When the filesystem answers with inodes, two spellings that resolve to one inode ARE one directory and
+  // two that resolve to different inodes are two. But `directoryIdentity` returns null on a filesystem
+  // that reports `ino` 0 — and a `sameIdentity` that is false because nothing could be measured would
+  // ALLOW the alias, which is failing OPEN in the one place the capability code deliberately fails closed.
+  const requested = directoryIdentity(join(parent, segment));
+  const lower = directoryIdentity(join(parent, folded));
+  if (sameIdentity(requested, lower)) return true;
+  if (requested !== null && lower !== null) return false;   // measured, and genuinely two directories
+
+  // ---- SO THE LISTING IS THE DETECTOR THAT STILL WORKS WITHOUT INODES ----------------------------
+  //
+  // A directory entry exists under exactly the spelling the filesystem stores. If the parent lists the
+  // requested spelling, that spelling is a real, distinct entry and this volume is case-sensitive here. If
+  // it lists only the lower-case claim while the requested spelling nevertheless RESOLVES, the two names
+  // reach one entry: an alias, and refused.
+  let names: readonly string[];
+  try {
+    names = readdirSync(parent);
+  } catch {
+    // Cannot tell. If the requested spelling resolves at all, refuse: an unanswerable question about a
+    // claim namespace is not permission to publish into one.
+    return entryExists(join(parent, segment));
+  }
+  if (names.includes(segment)) return false;
+  return names.includes(folded) && entryExists(join(parent, segment));
+}
+
+/** Is there anything at this name? Never throws — an unanswerable name is reported as absent to callers
+ * that treat absence as "not an alias", and every one of those has already required the name to resolve. */
+function entryExists(path: string): boolean {
+  try {
+    return lstatSync(path, { throwIfNoEntry: false }) !== undefined;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * The real path of this path when ALL of it exists, or `null`.
+ *
+ * It is deliberately not a deepest-existing-ancestor walk: the caller uses it to re-ask the claim question
+ * of what is really on disk, and a path that is not fully there has no components on disk to re-ask about.
+ */
+function fullyExistingRealPath(path: string): string | null {
+  try {
+    return realpathSync(path);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Take the destination lock. ONE `mkdir`, ONE name, no pre-check of anything.
+ *
+ * NOT EXPORTED — CORRECTION 1. A command module that could call this could take it before the project lock,
+ * or take it and forget to release it, and the ordering guarantee would be four files agreeing to be careful.
+ * The only route is `MaintenanceLocks`, which cannot exist without the project lock.
+ *
+ * A STALE LOCK IS NEVER BROKEN AUTOMATICALLY. Automatic staleness detection means guessing whether another
+ * process is alive, and the four commands behind this lock stop stacks, destroy volumes and delete the only
+ * copy of things nobody can produce again. Guessing wrong here means two writers in one destination.
+ */
+function acquireDestinationLock(destinationDir: string): MaintenanceLock {
+  return acquireLockDirectory(join(destinationDir, DESTINATION_LOCK_DIRNAME), DESTINATION_LOCK_CONTENTION);
+}
+
+
+/**
+ * PROOF THAT A CALLER HOLDS BOTH LOCKS FOR A NAMED PROJECT AND A NAMED PHYSICAL DESTINATION.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * WHAT THIS REPLACED, AND WHY A BOOLEAN COULD NOT DO THE JOB — CORRECTION 1.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * `ops:complete-backup` used to accept a `holdingLock` boolean. That is an unbound bypass: it names no project,
+ * no destination and no holder, so ANY caller could set it and suppress BOTH locks for ANY project and ANY
+ * destination. The only thing standing between that flag and an unlocked backup was a suite that grepped
+ * `src/` for the word — and a source allowlist is a lint rule, not an authority. A future route, a future
+ * scheduler or a copy-paste into a new module would have passed the grep and skipped the locks.
+ *
+ * A CAPABILITY IS THE ANSWER, AND IT IS NOT FORGEABLE.
+ *
+ *   * IT CAN ONLY BE MINTED BY A REAL `MaintenanceLocks` THAT ALREADY HOLDS BOTH. There is no exported
+ *     constructor and no exported factory; `MINTED` is a module-private `WeakSet` and membership in it is
+ *     the identity check. A plain object cast to this type — the one forgery TypeScript cannot stop — is
+ *     refused at runtime because it was never put in that set.
+ *   * IT IS BOUND TO A CANONICAL PROJECT ROOT AND A CLOSED SET OF TWO TARGETS: the held destination
+ *     itself, or ONE EXISTING `.pre-restore-claim-<nonce>` directory directly inside it. Not every
+ *     descendant — the one caller publishes into exactly one directory, and that is exactly what this
+ *     permits. A sibling, a parent, another project, an arbitrary subdirectory and a claim that does not
+ *     exist are all refused.
+ *   * IT IS BOUND TO A DIRECTORY, NOT TO A PATH. The `ino`/`dev` of the destination and of the lock
+ *     directory inside it are captured when the lock is TAKEN, so a destination renamed away and rebuilt
+ *     at the same path is a different directory and is refused. `physical` in the documentation means
+ *     this: path reuse does not satisfy it.
+ *   * IT DIES WITH ITS OWNER. `release()` invalidates it, so a scope that outlived the locks it describes
+ *     authorises nothing — which is the exact shape of the bug this whole correction exists for.
+ */
+export interface HeldDestination {
+  /** The canonical project root whose maintenance lock the holder is holding. */
+  readonly projectRoot: string;
+  /** The physical destination directory whose lock the holder is holding. */
+  readonly destinationDir: string;
+}
+
+/** Genuine capabilities. Membership is the identity: a cast object is not in here and never can be. */
+const MINTED = new WeakSet<object>();
+/** Every capability a given stack has minted, so `release()` can invalidate them all. */
+const LIVE = new WeakSet<object>();
+
+/**
+ * WHAT A CAPABILITY IS REALLY BOUND TO, kept where nothing outside this module can read or fabricate it.
+ *
+ * It is a `WeakMap` rather than fields on the object for one reason: the public shape stays the two strings
+ * a caller may legitimately want to read, and the part that decides authority — the identity of the
+ * directory the lock was taken in, and of the lock directory itself — cannot be spelled by a cast at all.
+ */
+interface CapabilityBinding {
+  /** The destination directory as it was when the lock was taken. */
+  readonly destination: DirectoryIdentity;
+  /** The lock directory this stack created inside it. The owner token, tied to the actual lock. */
+  readonly lock: DirectoryIdentity;
+}
+const BINDING = new WeakMap<object, CapabilityBinding>();
+
+/**
+ * Refuse anything that is not a live capability for exactly this project and this destination.
+ *
+ * CALLED BEFORE THE FIRST EFFECT, ALWAYS. The whole value of a capability is that the check happens before a
+ * directory is created, a journal or claim is written, a staging tree is built or a child command runs.
+ */
+export function assertHeldDestination(
+  held: HeldDestination,
+  projectRoot: string,
+  destinationDir: string,
+): void {
+  if (typeof held !== 'object' || held === null || !MINTED.has(held)) {
+    throw new MaintenanceRefused(
+      'this operation was handed something claiming to prove that its caller already holds this project\'s '
+      + 'lock and this destination\'s, and it is not one this product minted. Nothing was changed. Only a '
+      + 'command that is really holding both locks can authorise a nested operation to skip them.');
+  }
+  if (!LIVE.has(held)) {
+    throw new MaintenanceRefused(
+      'the caller that authorised this nested operation has already released its locks, so nothing is '
+      + 'holding this destination and this operation would run unprotected. Nothing was changed.');
+  }
+  if (held.projectRoot !== projectRoot) {
+    throw new MaintenanceRefused(
+      'this operation was authorised by a command holding a DIFFERENT project\'s lock. A lock on one project '
+      + 'is not permission to act in another. Nothing was changed.');
+  }
+  // ---- A CLOSED SET OF TWO TARGETS, NOT "ANYTHING UNDERNEATH" — CORRECTION 1 -----------------------
+  //
+  // The first cut authorised every descendant of the held destination. That is far more than the one
+  // caller needs and it is a real widening: a capability minted for `backups` would have authorised
+  // publishing into `backups/anything/at/all`, including a directory a future phase gives its own meaning
+  // to. What the legitimate caller actually does is publish into ONE directory — the claim it has already
+  // created — so that is what a capability authorises, and nothing else.
+  //
+  //   1. THE HELD DESTINATION ITSELF. Exactly the directory whose lock is held; there is nothing to widen.
+  //   2. ONE EXISTING CLAIM DIRECTORY DIRECTLY INSIDE IT. The leaf must be `.pre-restore-claim-<24 hex>`,
+  //      its parent must be the held destination, and it must ALREADY EXIST as a real directory — because
+  //      creating the claim is how the restore takes ownership of it, and a capability is permission to
+  //      publish into something owned, never permission to invent it.
+  const claimTarget = destinationDir !== held.destinationDir;
+  const enclosing = claimTarget ? dirname(destinationDir) : destinationDir;
+  if (claimTarget && !(isSafetyClaimDirName(basename(destinationDir)) && enclosing === held.destinationDir)) {
+    throw new MaintenanceRefused(
+      'this operation was authorised by a command holding a DIFFERENT backup destination. A held '
+      + 'destination permits exactly two targets: that directory itself, and one EXISTING safety-set claim '
+      + 'directory immediately inside it. A sibling, a parent, an arbitrary directory underneath it, or a '
+      + 'name that is not a claim is not covered by that lock. Nothing was changed.');
+  }
+
+  // ---- AND THE ENCLOSING DIRECTORY MUST STILL BE THE ONE THE LOCK IS IN -----------------------------
+  //
+  // The path matching is necessary and nowhere near sufficient. If the held destination were renamed away
+  // and a NEW directory created at the same path, every string here would still line up while the lock
+  // that was actually taken sat in the inode that moved — so this compares the directory that is there NOW
+  // against the identity captured when `lockDestination` acquired, AND against the identity of the lock
+  // directory itself, which is the owner token: a replacement directory does not contain this run's lock.
+  const binding = BINDING.get(held);
+  if (binding === undefined
+    || !sameIdentity(binding.destination, directoryIdentity(enclosing))
+    || !sameIdentity(binding.lock, directoryIdentity(join(enclosing, DESTINATION_LOCK_DIRNAME)))) {
+    throw new MaintenanceRefused(
+      'the backup destination this operation was authorised for is not the directory that is at that path '
+      + 'now — it has been renamed, replaced or unmounted since its lock was taken, so the lock is not in '
+      + 'the directory this would publish into. Nothing was changed.');
+  }
+
+  if (!claimTarget) return;
+  const claim = lstatSync(destinationDir, { throwIfNoEntry: false });
+  if (claim !== undefined && claim.isDirectory() && !claim.isSymbolicLink()) return;
+  throw new MaintenanceRefused(
+    'this operation was authorised to publish into a safety-set claim directory that is not there. '
+    + 'Creating the claim is how a restore takes ownership of it, so a claim that has gone is a claim '
+    + 'nothing owns, and this command will not recreate one behind that recovery\'s back. Nothing was '
+    + 'changed.');
+}
+
+/**
+ * The project lock and the destination lock, in the ONE order this product takes them.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * THE ORDER IS STRUCTURAL, NOT A CONVENTION FOUR FILES AGREE TO FOLLOW.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * PROJECT FIRST, DESTINATION SECOND, AND THE RELEASE IS THE EXACT REVERSE. Two projects sharing one
+ * destination is the whole reason the second lock exists, and it is also the shape that deadlocks: if one
+ * command took the destination first and another took the project first, two runs could each hold what the
+ * other is waiting for. There is no waiting here — `mkdir` refuses rather than blocks — so the failure would
+ * be mutual refusal rather than a hang, which is better and still wrong.
+ *
+ * SO THERE IS NO WAY TO EXPRESS THE OTHER ORDER. `acquireDestinationLock` is not exported; the only way to
+ * reach it is through an instance of this class, and the only way to get one of those is to take the project
+ * lock. `release()` releases what it holds innermost-first regardless of what a call site remembers.
+ *
+ * THE DESTINATION IS LOCKED LATE ON PURPOSE. Three of the four commands do not know which destination they
+ * are acting on until they have read a journal — and that journal may only be read under the project lock,
+ * because a journal read before the lock describes a moment that has passed. So this is acquired in two
+ * steps: the project at construction, the destination once the operation knows what it is.
+ */
+export class MaintenanceLocks {
+  /** Canonical. Every capability this stack mints is bound to it, and compared against it exactly. */
+  private readonly projectRoot: string;
+  private project: MaintenanceLock | null;
+  private destination: MaintenanceLock | null = null;
+  private destinationDir: string | null = null;
+  /** Captured when the lock was taken, not read again later. This is what a capability is bound to. */
+  private binding: CapabilityBinding | null = null;
+  private held: HeldDestination | null = null;
+  private released = false;
+
+  private constructor(projectRoot: string, project: MaintenanceLock) {
+    this.projectRoot = projectRoot;
+    this.project = project;
+  }
+
+  /**
+   * Take this project's maintenance lock. Everything else follows it.
+   *
+   * THE ROOT IS CANONICALISED HERE rather than trusted from the caller, so the project a capability is bound
+   * to is the project the lock is in — not a second spelling of it that a later comparison would reject, and
+   * not a first spelling that a later comparison would wrongly accept.
+   */
+  static open(projectRoot: string): MaintenanceLocks {
+    const canonical = resolveMaintenanceRoot(projectRoot, 'project directory');
+    return new MaintenanceLocks(canonical, acquireMaintenanceLock(canonical));
+  }
+
+  /** Whether this stack holds the destination lock. */
+  get holdsDestination(): boolean {
+    return this.destination !== null;
+  }
+
+  /**
+   * Take the destination lock, once, after the project lock.
+   *
+   * `destinationDir` must already be physical — see `provePhysicalDestination`.
+   */
+  lockDestination(destinationDir: string): void {
+    if (this.released) {
+      throw new MaintenanceRefused('a destination lock was asked for after the locks were released');
+    }
+    if (this.destination !== null) {
+      throw new MaintenanceRefused('one operation may hold one destination lock, and this one asked twice');
+    }
+    const lock = acquireDestinationLock(destinationDir);
+    this.destination = lock;
+    this.destinationDir = destinationDir;
+    // CAPTURED HERE, AT THE MOMENT THE `mkdir` SUCCEEDED, and never re-read. A capability minted from this
+    // stack is bound to THESE two inodes: the destination this lock is in, and the lock directory itself.
+    const destination = directoryIdentity(destinationDir);
+    const owner = directoryIdentity(lock.path);
+    this.binding = destination === null || owner === null ? null : { destination, lock: owner };
+  }
+
+  /**
+   * Mint the proof a NESTED operation needs in order to skip locks this stack is already holding.
+   *
+   * REFUSED UNLESS BOTH LOCKS ARE REALLY HELD. There is no way to obtain one of these speculatively, before
+   * the destination is locked, or after the locks are gone.
+   */
+  heldDestination(): HeldDestination {
+    if (this.released) {
+      throw new MaintenanceRefused('a held-destination proof was asked for after the locks were released');
+    }
+    if (this.destination === null || this.destinationDir === null) {
+      throw new MaintenanceRefused(
+        'a held-destination proof was asked for by a command that has not taken the destination lock');
+    }
+    if (this.held !== null) return this.held;
+    // FAIL CLOSED WHEN IDENTITY CANNOT BE PROVEN. A capability that could not say WHICH directory it is for
+    // could only ever be checked against a path, and a path can be renamed away and rebuilt. No capability
+    // is better than one that means nothing: the nested operation refuses rather than running unprotected.
+    if (this.binding === null) {
+      throw new MaintenanceRefused(
+        'this filesystem does not report a usable identity for the backup destination, so a nested '
+        + 'operation could not be tied to the directory the lock is actually in. Nothing was changed.');
+    }
+    const held: HeldDestination = Object.freeze({
+      projectRoot: this.projectRoot,
+      destinationDir: this.destinationDir,
+    });
+    MINTED.add(held);
+    LIVE.add(held);
+    BINDING.set(held, this.binding);
+    this.held = held;
+    return held;
+  }
+
+  /** Release what is held, innermost first. Safe to call twice; every path out of an operation runs it. */
+  release(): void {
+    this.released = true;
+    // THE CAPABILITY DIES FIRST. Anything still holding one must be refused from this instant, and it must
+    // be refused even if a lock below fails to release — an authorisation that outlives its locks is the
+    // whole class of defect this exists to close.
+    if (this.held !== null) {
+      LIVE.delete(this.held);
+      BINDING.delete(this.held);
+      this.held = null;
+    }
+    const destination = this.destination;
+    this.destination = null;
+    this.destinationDir = null;
+    this.binding = null;
+    const project = this.project;
+    this.project = null;
+    // DESTINATION FIRST, THEN PROJECT. A release that let go of the project first would open a window in
+    // which this project could start a second command while this one still held the shared destination.
+    //
+    // AND THE SECOND RELEASE HAPPENS EVEN IF THE FIRST FAILS. `acquireLockDirectory`'s release swallows its
+    // own failures today, so this `finally` is defence rather than a fix — but a lock that could not be
+    // released is exactly the moment a bare sequence would leave THIS PROJECT permanently locked by a
+    // process that has finished, which is a worse outcome than the stale destination lock that caused it.
+    try {
+      if (destination !== null) destination.release();
+    } finally {
+      if (project !== null) project.release();
+    }
+  }
 }
 
 // -----------------------------------------------------------------------------------------------------------

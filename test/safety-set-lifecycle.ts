@@ -26,7 +26,6 @@ import {
 } from '../src/ops/complete-restore.js';
 import {
   RETENTION_JOURNAL_NAME,
-  RETENTION_LOCK_DIRNAME,
   classifyEntry,
   inventoryDestination,
 } from '../src/ops/backup-retention.js';
@@ -38,7 +37,8 @@ import {
   type ClaimMarkerRefusal,
 } from '../src/ops/maintenance-identity.js';
 import {
-  MAINTENANCE_LOCK_DIRNAME, MaintenanceRefused,
+  DESTINATION_LOCK_DIRNAME, MAINTENANCE_LOCK_DIRNAME, MaintenanceLocks, MaintenanceRefused,
+  resolveBackupDestination,
 } from '../src/ops/maintenance-safety.js';
 import {
   CLAIM_MARKER_EXPECTATION,
@@ -194,9 +194,30 @@ function takeSetInto(root: string, destination: string, setName: string, options
     projectRoot: root, destination, setName, custodian: 'inline',
     secrets: 'secrets', promotionRecords: 'promotion-records',
   };
-  const outcome = runVerifiedCompleteBackup(request, {
-    runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger, now: () => takenAt,
-  });
+  // PUBLISHING INTO A CLAIM IS THE RESTORE'S PATH, SO THE FIXTURE TAKES THE RESTORE'S ROUTE — Phases
+  // 321-328 Correction 1. An ordinary backup is refused a destination inside a `.pre-restore-claim-<nonce>`
+  // namespace, because its lock would sit BELOW the one this command and ops:backup-retention take on the
+  // destination above it. Only a capability minted by a run that is really holding the enclosing
+  // destination authorises it, and that is exactly what a real `ops:complete-restore` does — so the fixture
+  // holds those locks itself rather than asking for an exemption.
+  const enclosing = destination.split('/').filter((part) => part !== '' && part !== '.');
+  const claimAt = enclosing.findIndex((part) => CLAIM_NAME_RE.test(part));
+  const locks = claimAt <= 0 ? null : MaintenanceLocks.open(root);
+  let outcome;
+  try {
+    let held;
+    if (locks !== null) {
+      const holding = resolveBackupDestination(root, enclosing.slice(0, claimAt).join('/'));
+      locks.lockDestination(holding.destinationDir);
+      held = locks.heldDestination();
+    }
+    outcome = runVerifiedCompleteBackup(request, {
+      runner: tools.runner, fileRunner: tools.fileRunner, ledger: tools.ledger, now: () => takenAt,
+      ...(held === undefined ? {} : { held }),
+    });
+  } finally {
+    locks?.release();
+  }
   const setDir = join(root, destination, setName);
   if (options.rollbackPoint === true) {
     // THE MANIFEST HAS TO AGREE THAT IT IS OLDER, which is exactly the shape a set taken by the previous
@@ -623,7 +644,7 @@ test('ordinary sets, this command\'s own artifacts and the shared lock are not c
   const root = makeProject('inv-12');
   takeTopSet(root, 'set-a', { daysAgo: 100 });
   makeClaim(root, 'only', { daysAgo: 100 });
-  mkdirSync(join(root, 'backups', RETENTION_LOCK_DIRNAME), { recursive: true });
+  mkdirSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME), { recursive: true });
   mkdirSync(join(root, 'backups', `${SAFETY_QUARANTINE_PREFIX}0123456789ab`), { recursive: true });
   mkdirSync(join(root, 'backups', `${SAFETY_QUARANTINE_CLAIM_PREFIX}0123456789abcdefgh`), { recursive: true });
   mkdirSync(join(root, 'backups', 'my-own-folder'), { recursive: true });
@@ -882,7 +903,7 @@ test('--plan changes nothing at all: the destination is byte-identical afterward
   assertEq(plan.wrote, 'nothing', 'and it says it wrote nothing');
   assert(sameSnapshot(before, snapshot(join(root, 'backups'))), 'and the destination is byte-identical');
   assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'no project lock was taken');
-  assertEq(existsSync(join(root, 'backups', RETENTION_LOCK_DIRNAME)), false, 'no destination lock either');
+  assertEq(existsSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME)), false, 'no destination lock either');
 });
 
 test('a refused evaluation prints no digest — there is nothing to confirm', () => {
@@ -1027,7 +1048,7 @@ test('a run kills its own quarantine directory and never leaves a marked one beh
   assertEq(leftovers.length, 0, `no quarantine artifact survives: ${leftovers.join(', ')}`);
   assertEq(existsSync(join(root, SAFETY_SET_JOURNAL_NAME)), false, 'and no journal');
   assertEq(existsSync(join(root, MAINTENANCE_LOCK_DIRNAME)), false, 'both locks were released');
-  assertEq(existsSync(join(root, 'backups', RETENTION_LOCK_DIRNAME)), false, 'including the shared one');
+  assertEq(existsSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME)), false, 'including the shared one');
 });
 
 test('a run refuses a project part way through a restore, or through a backup prune', () => {
@@ -1058,11 +1079,11 @@ test('the destination lock is the SAME one ops:backup-retention takes, so the tw
   makeClaim(root, 'a', { daysAgo: 300 });
   makeClaim(root, 'keeper', { daysAgo: 10 });
   const plan = planFor(root, { policy: { keepLast: 1, minAgeDays: 7 } });
-  mkdirSync(join(root, 'backups', RETENTION_LOCK_DIRNAME), { recursive: true });
+  mkdirSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME), { recursive: true });
   refuses(() => runSafetySetLifecycle({ projectRoot: root, destination: 'backups' },
     policy({ keepLast: 1, minAgeDays: 7 }), { now: () => NOW }, { kind: 'run', confirm: plan.digest }),
-    RETENTION_LOCK_DIRNAME, 'the shared destination lock is honoured');
-  rmSync(join(root, 'backups', RETENTION_LOCK_DIRNAME), { recursive: true });
+    DESTINATION_LOCK_DIRNAME, 'the shared destination lock is honoured');
+  rmSync(join(root, 'backups', DESTINATION_LOCK_DIRNAME), { recursive: true });
   mkdirSync(join(root, MAINTENANCE_LOCK_DIRNAME), { recursive: true });
   refuses(() => runSafetySetLifecycle({ projectRoot: root, destination: 'backups' },
     policy({ keepLast: 1, minAgeDays: 7 }), { now: () => NOW }, { kind: 'run', confirm: plan.digest }),
@@ -1086,7 +1107,7 @@ function spawnChild(config: Record<string, unknown>): ReturnType<typeof spawnSyn
 function clearLocks(root: string): void {
   // A KILLED RUN LEAVES BOTH LOCKS, exactly as a real one does. The recovery runs in-process, so they are
   // removed here the way an operator would after satisfying themselves nothing is running.
-  for (const lock of [join(root, MAINTENANCE_LOCK_DIRNAME), join(root, 'backups', RETENTION_LOCK_DIRNAME)]) {
+  for (const lock of [join(root, MAINTENANCE_LOCK_DIRNAME), join(root, 'backups', DESTINATION_LOCK_DIRNAME)]) {
     assert(existsSync(lock), `the crash left ${lock}`);
     rmSync(lock, { recursive: true });
   }

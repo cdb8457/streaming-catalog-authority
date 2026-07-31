@@ -658,6 +658,14 @@ export const REQUIRED_SUITE_SCRIPTS: readonly string[] = Object.freeze([
   // failed restore, and a release that could not see its suite stop running would be a release with no
   // evidence about it.
   'test:phase313-local',
+  // Phases 321-328 is not a fourth destructive command — it is the LOCK all four of them share on one
+  // physical backup destination, including across projects. It belongs here for a different reason from the
+  // three above: when a serialisation guarantee breaks, nothing fails. Two runs simply interleave, and the
+  // damage is a set that was published into a destination another run had already decided about, or a safety
+  // set removed between a restore verifying it and relying on it. There is no error message for that. The
+  // only evidence a release can have is that this suite still runs, and it is the one suite in the family
+  // whose failure mode is silence.
+  'test:phase321-local',
 ]);
 
 /**

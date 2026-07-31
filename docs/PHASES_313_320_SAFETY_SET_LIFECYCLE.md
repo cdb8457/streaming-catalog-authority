@@ -233,11 +233,20 @@ clock across `--min-age-days`.
 9. release both locks in a `finally`, innermost first
 ```
 
-### The destination lock is retention's
+### The destination lock is shared — SUPERSEDED BY PHASES 321-328
 
-`.catalog-retention.lock`, taken in the destination, after the project lock. Both commands rename directories
-inside one destination and both count what it holds, so sharing it is what makes "two commands cannot be half
-way through one destination at once" true rather than hoped for. Same domains, same order, **no new deadlock**.
+**As shipped in 313-320** the destination lock was retention's, named `.catalog-retention.lock`, taken in the
+destination after the project lock, and shared by these two commands only. Both rename directories inside one
+destination and both count what it holds, so sharing it made "two commands cannot be half way through one
+destination at once" true rather than hoped for. Same domains, same order, **no new deadlock**.
+
+**Phases 321-328 widened it.** The lock is defined once in `maintenance-safety.ts` and taken by **all four**
+backup-family commands — `ops:complete-backup` and `ops:complete-restore` included — so the
+shared-destination boundary this document describes below as a documented limit is closed. **The filename is
+unchanged on purpose**: `.catalog-retention.lock` is what every shipped build already `mkdir`s, so a build
+from before that change and a build after it contend on one atomic directory entry rather than on two names
+with a race between them. See
+[PHASES_321_328_SHARED_DESTINATION_LOCK.md](PHASES_321_328_SHARED_DESTINATION_LOCK.md).
 
 ### The refusal is one-way, on purpose
 
@@ -436,14 +445,17 @@ and left alone. For `pending` and `failed` there is nothing to distinguish: this
 
 ## Limits, stated rather than discovered
 
-1. **A shared destination is a limit, and here is the exact boundary.** The destination lock stops two
-   *destination-maintenance* runs — this command and `ops:backup-retention` — from overlapping. It does **not**
-   stop another **project's** `ops:complete-backup` or `ops:complete-restore`, which hold only their own
-   project locks. So a restore running in project B, publishing a safety set into a destination shared with
-   project A, is not excluded by A's lock. Three things narrow it: a claim being written into is
-   `OWNED_IN_FLIGHT` and protected; the default `--min-age-days 14` protects anything a running restore just
-   created; and the marker proves only that *a* restore of this build made the claim, not which project's.
-   **A destination shared between projects is not a configuration this command can make safe on its own.**
+1. ~~**A shared destination is a limit, and here is the exact boundary.**~~ **CLOSED BY PHASES 321-328.** As
+   shipped in this tranche, the destination lock stopped two *destination-maintenance* runs — this command and
+   `ops:backup-retention` — from overlapping, and did **not** stop another **project's** `ops:complete-backup`
+   or `ops:complete-restore`, which held only their own project locks. Three things narrowed it and none of
+   them closed it: a claim being written into is `OWNED_IN_FLIGHT` and protected; the default
+   `--min-age-days 14` protects anything a running restore just created; and the marker proves only that *a*
+   restore of this build made the claim, not which project's. **All four commands now take one shared lock in
+   the destination**, so a second project pointed at the same physical directory is refused before it stages,
+   claims, renames, deletes or runs anything. The three narrowings above are unchanged and still hold; they
+   are no longer the only thing holding. See
+   [PHASES_321_328_SHARED_DESTINATION_LOCK.md](PHASES_321_328_SHARED_DESTINATION_LOCK.md).
 2. **It reads every byte of every set in the destination — three times over a whole `--confirm`.** Once for
    the plan, once for the re-plan under the lock, and once for the live floor re-proof before the first
    deletion; plus each claim it is about to *act on* twice more, immediately before the rename and immediately
