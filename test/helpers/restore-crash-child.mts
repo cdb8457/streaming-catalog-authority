@@ -1,8 +1,9 @@
-import { renameSync } from 'node:fs';
+import { existsSync, renameSync } from 'node:fs';
+import { join } from 'node:path';
 import { isDirectRun } from '../../src/ops/direct-run.js';
 import { MIGRATION_VERSION } from '../../src/db/schema-version.js';
 import {
-  abandonRestore, realStagingCopier, runCompleteRestore, writeRestoreJournal,
+  STAGING_MARKER_NAME, abandonRestore, realStagingCopier, runCompleteRestore, writeRestoreJournal,
   type CompleteRestoreRequest, type RestoreJournal, type StagingCopier,
 } from '../../src/ops/complete-restore.js';
 import { restoreStack, setDumpDigest, setKeystoreDigest } from './fake-restore-stack.js';
@@ -30,6 +31,24 @@ import { restoreStack, setDumpDigest, setKeystoreDigest } from './fake-restore-s
 
 /** The exit code this child uses for a deliberate death, chosen not to collide with any real refusal. */
 export const CRASH_EXIT_CODE = 137;
+
+/**
+ * Does this rename place a component, as opposed to being the staging protocol's own bookkeeping?
+ *
+ * The claim publication and the atomic marker replacement both land on names this command owns and
+ * dot-prefixes; a placement lands on a `.restoring-`/`.replaced-` sibling or on the target itself.
+ */
+/** The last path segment, on either separator. Windows hands this command backslashes. */
+export function leafOf(value: string): string {
+  return value.split(/[\\/]/).pop() ?? '';
+}
+
+export function isPlacementRename(to: string): boolean {
+  const leaf = leafOf(to);
+  if (leaf.startsWith('.catalog-restore')) return false;
+  if (leaf.startsWith(STAGING_MARKER_NAME)) return false;
+  return true;
+}
 
 interface CrashConfig {
   readonly projectRoot: string;
@@ -84,9 +103,30 @@ function main(): number {
     if (config.crashAt === `staging:${id}`) die();
   };
 
+  // ONLY THE RENAMES THAT PLACE A COMPONENT ARE COUNTED. The staging protocol performs renames of its own —
+  // publishing the claim onto the predictable path, and replacing the marker atomically — and those are
+  // bookkeeping, not placement. Counting them would make `rename:n` mean something different every time the
+  // protocol changed.
   let renames = 0;
   const rename = (from: string, to: string): void => {
+    const leaf = leafOf(to);
+    // ---- THE STAGING OWNERSHIP TRANSITIONS, which are renames of their own ------------------------
+    if (config.crashAt === 'staging-phase:claim-built' && leaf.startsWith('.catalog-restore.staged-')) {
+      // The claim directory exists and carries its marker; the publication has NOT happened.
+      die();
+    }
     renameSync(from, to);
+    if (config.crashAt === 'staging-phase:claim-published' && leaf.startsWith('.catalog-restore.staged-')) {
+      // Published onto the predictable path, and not a byte of any component copied into it yet.
+      die();
+    }
+    if (config.crashAt === 'staging-phase:sealing' && leaf === STAGING_MARKER_NAME
+      && existsSync(join(config.projectRoot, `.catalog-restore.staged-${config.suffix}`,
+        'secrets-backup'))) {
+      // The sealed marker has just replaced the claimed one, atomically.
+      die();
+    }
+    if (!isPlacementRename(to)) return;
     renames += 1;
     if (config.crashAt === `rename:${renames}`) die();
   };

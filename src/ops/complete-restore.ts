@@ -2107,7 +2107,8 @@ function performStep(
       return null;
     }
     case 'stage-components':
-      return stageComponents(resolved, stagingDir, plan, suffix, deps.copier ?? realStagingCopier);
+      return stageComponents(resolved, stagingDir, plan, suffix, deps.copier ?? realStagingCopier,
+        deps.rename ?? renameSync);
     case 'stop-and-destroy': {
       hooks.onStopped();
       const outcome = runOne(step.commands[0]!);
@@ -2518,6 +2519,7 @@ export function stageComponents(
   plan: RestorePlan,
   suffix: string,
   copier: StagingCopier = realStagingCopier,
+  rename: Renamer = renameSync,
 ): string | null {
   if (existsSync(stagingDir)) {
     // A RESUME REACHES THIS ONLY IF THE STEP DID NOT COMPLETE, so a directory here is a partial stage from a
@@ -2536,7 +2538,27 @@ export function stageComponents(
         + 'running again: this command will not stage into a directory it did not just create.';
     }
   }
-  createPrivateDirectory(stagingDir, 'restore staging directory');
+  // ---- THE PREDICTABLE PATH NEVER EXISTS WITHOUT A VALID CLAIM ------------------------------------
+  //
+  // THE DEFECT THIS CLOSES. The claim marker was written INTO the staging directory after creating it, so a
+  // process that died between the `mkdir` and that write left the predictable path holding an unmarked
+  // directory — the exact wedge the claim protocol exists to eliminate, reintroduced two lines below the
+  // comment explaining it.
+  //
+  // THE FIX IS AN ATOMIC PUBLICATION. A uniquely named directory is built somewhere nothing predicts, its
+  // claimed marker is written INSIDE it while it is still invisible, and only then is it RENAMED onto the
+  // predictable path. A rename is atomic, so the predictable path goes from "absent" to "a directory holding
+  // a valid claimed marker" with no state in between. It is also SECRET-FREE while it is being built: not a
+  // byte of any component is copied until after the publication.
+  //
+  // PROCESS DEATH VERSUS POWER LOSS. Against a process that stops existing this is exact: every intermediate
+  // state is either the absent path or a fully claimed one, and the leftover build directory carries the
+  // same marker, so it is recognisable and removable. Against a POWER LOSS it is not claimed: the rename's
+  // metadata may not have reached the disk, because the containing directory is not fsynced afterwards. See
+  // The staging directory is never visible without a valid claim, in
+  // docs/PHASES_297_304_COMPLETE_RESTORE.md.
+  const building = join(resolved.projectRoot, `.catalog-restore.claiming-${randomBytes(9).toString('hex')}`);
+  createPrivateDirectory(building, 'restore staging claim');
 
   // ---- THE CLAIM, BEFORE A SINGLE BYTE IS COPIED --------------------------------------------------
   //
@@ -2548,12 +2570,23 @@ export function stageComponents(
   // A claim costs one small write and resolves it. A partial tree now carries proof of whose it is, so the
   // operation that made it may remove and rebuild it — and nothing else may.
   const claimed: StagingMarker['components'][number][] = componentsOfManifest(resolved.manifest);
-  const writeMarker = (state: StagingState): string | null => {
+  /**
+   * Write a marker into `directory`, replacing any there ATOMICALLY.
+   *
+   * THE SECOND DEFECT THIS CLOSES. Sealing used to REMOVE the claimed marker and then write the sealed one.
+   * A death in that gap left a populated, secret-bearing, UNMARKED tree — which the reader then refused
+   * forever, and which nothing was allowed to remove. The window was two filesystem calls wide and it
+   * undid the entire point of claiming.
+   *
+   * The complete marker is written to a private temporary file beside it and renamed over the top. A rename
+   * replaces atomically, so a reader sees either the old valid marker or the new valid one; there is no
+   * interval in which the marker is absent, and a death mid-way leaves the CLAIMED state, which is valid.
+   */
+  const writeMarker = (directory: string, state: StagingState): string | null => {
+    const path = join(directory, STAGING_MARKER_NAME);
+    const temporary = join(directory, `${STAGING_MARKER_NAME}.writing-${stagingSuffix()}`);
     try {
-      const path = stagingMarkerPath(stagingDir);
-      if (existsSync(path)) removeOwnFileNoFollow(path, digestFileNoFollow(path, 'staging marker').digest,
-        'staging marker');
-      writePrivateFile(path, `${JSON.stringify({
+      writePrivateFile(temporary, `${JSON.stringify({
         marker: 'catalog-authority.restore-staging',
         version: STAGING_MARKER_VERSION,
         journalVersion: RESTORE_JOURNAL_VERSION,
@@ -2562,14 +2595,24 @@ export function stageComponents(
         state,
         components: claimed,
       } satisfies StagingMarker, null, 2)}\n`, 'staging marker');
+      // ATOMIC REPLACE. Either the previous valid marker or this one — never neither.
+      rename(temporary, path);
     } catch {
       return 'the staging directory\'s ownership marker could not be written, so nothing later could prove '
         + 'the staged components are this command\'s. Nothing was destroyed.';
     }
     return null;
   };
-  const claimFailure = writeMarker('claimed');
+  const claimFailure = writeMarker(building, 'claimed');
   if (claimFailure !== null) return claimFailure;
+
+  // ---- PUBLISH THE CLAIM ONTO THE PREDICTABLE PATH, ATOMICALLY ------------------------------------
+  try {
+    rename(building, stagingDir);
+  } catch {
+    return 'this run\'s staging directory could not be published at its own name. Nothing was destroyed — '
+      + 'the half-built claim is beside it under a dot-prefixed name and carries this operation\'s marker.';
+  }
 
   const staged: StagingMarker['components'][number][] = [];
   for (const id of BACKUP_COMPONENT_IDS) {
@@ -2608,7 +2651,7 @@ export function stageComponents(
     return 'the staging directory does not hold every component this set declares, so it was not sealed. '
       + 'Nothing was destroyed.';
   }
-  return writeMarker('sealed');
+  return writeMarker(stagingDir, 'sealed');
 }
 
 /** The components a manifest declares present, in the model's own order, as a marker records them. */

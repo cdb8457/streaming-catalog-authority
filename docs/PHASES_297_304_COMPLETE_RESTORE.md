@@ -383,6 +383,47 @@ choice and the acknowledgement are now two different things — `--no-safety-set
 changes the plan and makes `--plan` print its digest loudly, and `--accept-data-loss <digest>` is execution
 only and is **refused at plan time rather than ignored**.
 
+### The staging directory is never visible without a valid claim
+
+The staging tree at `.catalog-restore.staged-<suffix>` is what authorises a later recursive deletion, so the
+question of what it means for it to exist has to have exactly one answer. The first cut created that
+directory and only THEN wrote the claimed marker into it, which meant a process that stopped existing between
+the two calls left the predictable path holding an **unmarked** directory — refused by every reader
+afterwards, removable by nothing, and requiring an operator to delete a secret-bearing tree by hand. That is
+the wedge the marker exists to prevent, reintroduced two lines below the comment explaining it.
+
+Both ownership transitions are now atomic renames:
+
+* **absent → claimed.** A directory with an unpredictable, secret-free name (`.catalog-restore.claiming-<18
+  hex>`) is created with `mkdir`, its claimed marker is written INSIDE it while it is still invisible, and
+  only then is it renamed onto the predictable path. Not a byte of any component is copied until after that
+  rename. So the predictable path goes from *absent* straight to *a directory holding a valid marker bound to
+  this operation*, with nothing in between.
+* **claimed → sealed.** Sealing used to remove the claimed marker and then write the sealed one — a two-call
+  window in which a **populated, secret-bearing tree carried no marker at all**. The complete sealed marker is
+  now written to a private temporary file inside the tree and renamed over the top. A rename replaces
+  atomically, so a reader sees the old valid marker or the new valid one, never neither, and a death mid-way
+  leaves the CLAIMED state, which is a state this build understands and this operation can rebuild from.
+
+**The exact guarantee, and its exact limit.** Against a **process that stops existing** — a kill, an
+`OOM`, a power-off of the container while the filesystem keeps running — this is complete: every state the
+predictable path can be observed in is either absent or a fully claimed/sealed directory of ours, the
+leftover build directory carries the same operation-bound marker so it is recognisable rather than mysterious,
+and a resume proceeds with no manual deletion. Against **power loss to the disk** it is not: `rename` is
+atomic with respect to other readers, but this command does not `fsync` the containing directory afterwards,
+so the rename's metadata may not have reached stable storage. After a power cut the predictable path may be
+absent when the run believed it published, or the marker may read `claimed` when it was sealed. Both of those
+are states the resume already handles — it rebuilds from claimed and republishes from absent — so a power cut
+degrades to a redo, not to a wedge. What it does **not** promise is that a torn directory entry is impossible
+on a filesystem that reorders metadata; that would require an `fsync` of the parent directory this command
+does not perform.
+
+The failpoints are tested three ways at each of the three boundaries — after the claim directory exists and
+before it is published, after publication and before the first component byte, and during the claimed→sealed
+replacement — by injection **and by a real child process calling `process.exit`**. Each test reads the
+resulting disk and journal state, resumes in-process with no manual deletion, and proves a foreign directory
+in the same project was neither removed nor consumed.
+
 ### Evidence outlives the process that produced it
 
 `custodyProven` lived only in the running process. A run that PROVED custody and then failed `prove-history`

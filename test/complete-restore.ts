@@ -38,6 +38,7 @@ import {
   prepareRuntimeRoleSql,
   readRestoreJournal,
   readStagingMarker,
+  realStagingCopier,
   removeOwnedStaging,
   stageComponents,
   verifyOwnedStaging,
@@ -71,7 +72,7 @@ import {
 } from '../src/ops/complete-restore-cli.js';
 import { fakeDumpText, fakeToolchain } from './helpers/fake-toolchain.js';
 import { restoreStack, setDumpDigest, setKeystoreDigest } from './helpers/fake-restore-stack.js';
-import { CRASH_EXIT_CODE } from './helpers/restore-crash-child.mjs';
+import { CRASH_EXIT_CODE, isPlacementRename } from './helpers/restore-crash-child.mjs';
 
 // Phases 297-304 — the restore, and every way it must refuse to perform one.
 //
@@ -2656,6 +2657,9 @@ for (const failAt of [2, 3] as const) {
     const failing = {
       ...depsFor(first),
       rename: (from: string, to: string): void => {
+        // ONLY PLACEMENT RENAMES ARE COUNTED — the staging protocol's own claim publication and atomic
+        // marker replacement are bookkeeping, not placement.
+        if (!isPlacementRename(to)) { renameSync(from, to); return; }
         renames += 1;
         if (renames === failAt) throw new Error('injected rename failure');
         renameSync(from, to);
@@ -2715,9 +2719,12 @@ test('a swap that landed onto an ABSENT target is recognised, not read as "nothi
     rename: (from: string, to: string): void => {
       renameSync(from, to);
       renames += 1;
-      // 1-3 are the secrets swap; 4 and 5 are the records swap onto an ABSENT target (staged -> in flight,
-      // in flight -> target). Fail immediately after the last one, before anything records it.
-      if (renames === 5) throw new Error('injected failure after the placement landed');
+      // THE BOUNDARY IS NAMED, NOT COUNTED: the instant the records placement lands on its own target, and
+      // before anything records that it did. Counting would break whenever the staging protocol changes how
+      // many renames of its own it performs.
+      if ((to.split(/[\\/]/).pop() ?? '') === 'promotion-records') {
+        throw new Error('injected failure after the placement landed');
+      }
     },
   };
   let thrown: unknown = null;
@@ -2759,6 +2766,7 @@ test('a target holding something that is NOT this set\'s component is never acce
     ...depsFor(first),
     rename: (from: string, to: string): void => {
       renameSync(from, to);
+      if (!isPlacementRename(to)) return;
       renames += 1;
       if (renames === 3) throw new Error('injected failure after the placement landed');
     },
@@ -3579,6 +3587,121 @@ test('an abandoning journal refuses run and resume with ZERO effects, even when 
   assertEq(finished.ok, true, 'the abandon finished without the set being present at all');
   assertEq(existsSync(join(root, RESTORE_JOURNAL_NAME)), false, 'and cleared the journal');
 });
+
+
+// ---------------------------------------------------------------------------------------------------------
+// The ownership-state transitions themselves
+// ---------------------------------------------------------------------------------------------------------
+
+test('the predictable staging path NEVER exists without a valid claimed marker', () => {
+  // THE DEFECT THIS PINS. `stageComponents` used to `mkdir` the predictable path and only THEN write the
+  // claimed marker into it. A death between those two calls left the predictable path holding an unmarked
+  // directory — the exact wedge the claim protocol exists to eliminate, two lines below the comment
+  // explaining it. The claim is now built somewhere unpredictable and RENAMED onto the path, which is atomic.
+  const root = makeProject('claim-publication');
+  const setDir = takeSet(root, 'set-1');
+  const { resolved, plan } = planFor(request(root, 'set-1'));
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+
+  // Die on the rename that publishes the claim: the predictable path must not exist yet.
+  let published = false;
+  const refusal = stageComponents(resolved, staging, plan, 'aaaaaaaaaaaa', realStagingCopier,
+    (from: string, to: string): void => {
+      if ((to.split(/[\\/]/).pop() ?? '').startsWith('.catalog-restore.staged-')) {
+        published = true;
+        throw new Error('injected death at the claim publication');
+      }
+      renameSync(from, to);
+    });
+  assertEq(published, true, 'the publication was attempted');
+  assert(refusal !== null && refusal.includes('could not be published'), 'and staging reported it');
+  assertEq(existsSync(staging), false, 'THE PREDICTABLE PATH DOES NOT EXIST — there is no unmarked wedge');
+
+  // The half-built claim is beside it, dot-prefixed, and carries this operation's marker.
+  const leftover = readdirSync(root).filter((entry) => entry.startsWith('.catalog-restore.claiming-'));
+  assertEq(leftover.length, 1, 'the half-built claim is beside it');
+  const marker = JSON.parse(readFileSync(join(root, leftover[0]!, 'catalog-restore-staging.json'), 'utf8')) as
+    { state: string; planDigest: string };
+  assertEq(marker.state, 'claimed', 'already claimed while it was still invisible');
+  assertEq(marker.planDigest, plan.digest, 'and bound to this operation');
+  // AND NOT A BYTE OF ANY COMPONENT WAS IN IT: the claim is built secret-free.
+  assertEq(existsSync(join(root, leftover[0]!, COMPONENT_ARTIFACT_NAMES.secrets)), false,
+    'no component had been copied into it');
+  rmSync(join(root, leftover[0]!), { recursive: true, force: true });
+});
+
+test('sealing has NO marker-absent interval: a death mid-seal leaves the valid CLAIMED state', () => {
+  // THE SECOND DEFECT THIS PINS. Sealing used to REMOVE the claimed marker and then write the sealed one. A
+  // death in that two-call gap left a populated, secret-bearing, UNMARKED tree — which the reader then
+  // refused forever and which nothing was allowed to remove. It is an atomic replace now.
+  const root = makeProject('seal-atomicity');
+  const setDir = takeSet(root, 'set-1');
+  const { resolved, plan } = planFor(request(root, 'set-1'));
+  const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+
+  let sealAttempted = false;
+  const refusal = stageComponents(resolved, staging, plan, 'aaaaaaaaaaaa', realStagingCopier,
+    (from: string, to: string): void => {
+      const leaf = to.split(/[\\/]/).pop() ?? '';
+      // The seal is the marker replacement that happens once the components are in place.
+      if (leaf === 'catalog-restore-staging.json' && existsSync(join(staging, COMPONENT_ARTIFACT_NAMES.secrets))) {
+        sealAttempted = true;
+        throw new Error('injected death at the seal');
+      }
+      renameSync(from, to);
+    });
+  assertEq(sealAttempted, true, 'the seal was attempted');
+  assert(refusal !== null, 'and staging reported it did not finish');
+
+  // THE MARKER IS STILL THERE, AND STILL VALID — the claimed state, not nothing.
+  const marker = readStagingMarker(staging, plan.digest, 'aaaaaaaaaaaa', resolved.manifest);
+  assert(!('refusal' in marker), 'the tree still carries a valid marker');
+  assertEq(marker.marker.state, 'claimed', 'in the CLAIMED state, which is a state this build understands');
+  // AND THE TREE IS POPULATED, so this is exactly the state the old delete/write gap made unrecoverable.
+  assert(existsSync(join(staging, COMPONENT_ARTIFACT_NAMES.secrets)), 'the tree holds components');
+  // WHICH MEANS THE SAME OPERATION CAN REBUILD IT, with no manual deletion.
+  assertEq(stageComponents(resolved, staging, plan, 'aaaaaaaaaaaa'), null, 'and staging rebuilds it cleanly');
+  rmSync(staging, { recursive: true, force: true });
+});
+
+for (const [where, boundary] of [
+  ['after the claim directory exists but before it is published', 'claim-built'],
+  ['after the claim is published but before the first component byte', 'claim-published'],
+  ['while the claimed marker is being replaced by the sealed one', 'sealing'],
+] as const) {
+  test(`a REAL death ${where} is recoverable without manual deletion`, () => {
+    const root = makeProject(`staging-death-${boundary}`);
+    const setDir = takeSet(root, 'set-1');
+    const { plan } = planFor(request(root, 'set-1'));
+    const before = readdirSync(root).sort().join(',');
+    crashAt({ projectRoot: root, setDir, setName: 'set-1', confirm: plan.digest, suffix: 'aaaaaaaaaaaa',
+      crashAt: `staging-phase:${boundary}` });
+
+    const staging = join(root, '.catalog-restore.staged-aaaaaaaaaaaa');
+    // WHATEVER IS AT THE PREDICTABLE PATH, IT CARRIES A VALID MARKER OF OURS. That is the invariant: the
+    // path is never visible in an unmarked state.
+    if (existsSync(staging)) {
+      const marker = JSON.parse(readFileSync(join(staging, 'catalog-restore-staging.json'), 'utf8')) as
+        { state: string; planDigest: string };
+      assert(marker.state === 'claimed' || marker.state === 'sealed', `${boundary}: a state this build has`);
+      assertEq(marker.planDigest, plan.digest, `${boundary}: bound to this operation`);
+    }
+    assertEq(readRestoreJournal(root)!.steps.find((step) => step.id === 'stage-components')!.state, 'running',
+      `${boundary}: the journal names the step the process was inside`);
+
+    // A FOREIGN DIRECTORY IN THE PROJECT IS UNTOUCHED BY ALL OF IT.
+    mkdirSync(join(root, 'someone-elses'), { recursive: true });
+    writeFileSync(join(root, 'someone-elses', 'keep'), 'untouched\n', 'utf8');
+
+    const report = runCompleteRestore(request(root, 'set-1'), depsFor(worldFor(setDir)),
+      { kind: 'resume', confirm: plan.digest });
+    assertEq(report.ok, true, `${boundary}: the resume completed with no manual deletion: ${report.steps.filter((s) => s.outcome === 'failed').map((s) => s.detail).join('; ')}`);
+    assertEq(readFileSync(join(root, 'someone-elses', 'keep'), 'utf8'), 'untouched\n',
+      `${boundary}: and no foreign directory was removed or consumed`);
+    assertEq(existsSync(staging), false, `${boundary}: the staging tree is gone once it completed`);
+    void before;
+  });
+}
 
 // ---------------------------------------------------------------------------------------------------------
 
