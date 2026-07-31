@@ -66,6 +66,8 @@ import {
   BACKUP_INSPECT_NOTE,
   BACKUP_RETENTION_COMMANDS,
   BACKUP_RETENTION_NOTE,
+  SAFETY_SET_LIFECYCLE_COMMANDS,
+  SAFETY_SET_LIFECYCLE_NOTE,
   BACKUP_SUMMARY,
   COMPLETE_RESTORE_COMMANDS,
   COMPLETE_RESTORE_NOTE,
@@ -1710,6 +1712,9 @@ ${renderCommands({ posix: COMPLETE_RESTORE_COMMANDS.posix, windows: COMPLETE_RES
 <h3>Remove old ones</h3>
 <p class="muted">${escapeHtml(BACKUP_RETENTION_NOTE)}</p>
 ${renderCommands({ posix: BACKUP_RETENTION_COMMANDS.posix, windows: BACKUP_RETENTION_COMMANDS.windows })}
+<h3>Remove the ones a restore left behind</h3>
+<p class="muted">${escapeHtml(SAFETY_SET_LIFECYCLE_NOTE)}</p>
+${renderCommands({ posix: SAFETY_SET_LIFECYCLE_COMMANDS.posix, windows: SAFETY_SET_LIFECYCLE_COMMANDS.windows })}
 </section>
 <section class="panel wide" id="trouble-panel">
 <h2>Troubleshooting</h2>

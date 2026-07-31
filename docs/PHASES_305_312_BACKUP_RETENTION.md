@@ -481,6 +481,13 @@ the digest it prints is the one a human types into `--confirm`, on purpose, at a
   implemented instead of merely observed.
 * **It removes nothing it did not take.** Foreign directories, hand-made backups and this product's own
   in-flight artifacts are reported and left alone.
+* **It never descends into a restore's safety-set claim**, and that has not changed. Every dot-prefixed name
+  is `RESERVED` here and always will be: one rule covers a backup staging tree, a restore in progress, a lock
+  directory and this command's own quarantine, without any of them being enumerated. The safety sets that
+  accumulate inside `.pre-restore-claim-<nonce>` are now removed by a **separate** command with a separate
+  ownership proof — `ops:safety-set-lifecycle`, Phases 313-320 — which takes this command's destination lock
+  so the two cannot both be half way through one destination. See
+  `PHASES_313_320_SAFETY_SET_LIFECYCLE.md`.
 * **It does not archive, compress, move or copy anything.** There is no `--move-to`. A retention command that
   also transferred sets would be a transfer command whose failures look like retention successes.
 * **It does not decide your policy.** The defaults are conservative; the values are yours.

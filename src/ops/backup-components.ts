@@ -374,6 +374,39 @@ export const BACKUP_RETENTION_COMMANDS: BackupCommands = {
   windows: 'npm run ops:backup-retention -- --project C:\\path\\to\\project --keep-last 7 --plan',
 };
 
+/**
+ * Phases 313-320 — removing the ones a RESTORE made.
+ *
+ * WHY THIS IS A SECOND ENTRY AND NOT A SENTENCE IN THE ONE ABOVE. Retention removes the nightly sets at the
+ * top level of a destination. It classifies every dot-prefixed name as an in-flight artifact and never
+ * descends into one — which is what keeps it away from a backup staging tree, a restore in progress, a lock
+ * directory and its own quarantine. A restore's safety set lives inside exactly such a name, so retention
+ * never sees it, and those accumulate one per restore.
+ *
+ * An operator reading the panel has to be told BOTH: that the other command deliberately leaves these alone,
+ * and that this one exists for them and proves ownership before it removes anything.
+ */
+export const SAFETY_SET_LIFECYCLE_NOTE =
+  'Remove the safety sets a RESTORE left behind. Every ops:complete-restore takes a verified backup of the '
+  + 'installation it is about to destroy and publishes it inside a directory that run claims exclusively, so '
+  + 'these build up one per restore. ops:backup-retention never touches them, and that is deliberate: it '
+  + 'treats every in-flight namespace as off limits, which is what keeps it away from a backup that is still '
+  + 'being written. This command is the one that owns them. Start with --plan: it lists every claim, checks '
+  + 'the ownership marker INSIDE each one, verifies the safety set it holds, and prints a decision and a '
+  + 'reason for each — then a digest. Running requires that digest back, recomputed under the same locks over '
+  + 'a fresh inventory. Two safety sets are protected by rules no flag reaches past: the newest one this '
+  + 'build could restore, and the newest one from BEFORE this build\'s schema. The floor is counted across '
+  + 'the WHOLE destination, so a destination whose only restorable set is a safety set keeps it. A claim that '
+  + 'cannot prove a restore of this build created it — no marker, a foreign one, one from another schema, one '
+  + 'that has been moved, or work still in flight inside it — is reported and never removed. Nothing is '
+  + 'deleted in place: each claim is renamed into a private quarantine directory and only then removed, and '
+  + 'an interrupted run can be put back with --abandon. It issues no command of any kind and contacts nothing.';
+
+export const SAFETY_SET_LIFECYCLE_COMMANDS: BackupCommands = {
+  posix: 'npm run ops:safety-set-lifecycle -- --project /path/to/project --keep-last 3 --plan',
+  windows: 'npm run ops:safety-set-lifecycle -- --project C:\\path\\to\\project --keep-last 3 --plan',
+};
+
 // -----------------------------------------------------------------------------------------------------------
 // Coverage against the shipped stacks
 // -----------------------------------------------------------------------------------------------------------

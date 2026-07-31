@@ -1447,6 +1447,12 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "safety-set-lifecycle.ts",
+      "group": "offline",
+      "args": [],
+      "requires": []
     }
   ]
 }

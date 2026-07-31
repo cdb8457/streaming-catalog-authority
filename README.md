@@ -324,6 +324,29 @@ through a restore refuses it outright.
 protections and the non-goals — including why it is never run on a timer.
 
 ```bash
+# Remove the safety sets a RESTORE left behind. Read the plan first; it changes nothing.
+npm run ops:safety-set-lifecycle -- --project /path/to/project --keep-last 3 --min-age-days 14 --plan
+npm run ops:safety-set-lifecycle -- --project /path/to/project --keep-last 3 --min-age-days 14 --confirm <digest>
+```
+
+Every restore publishes its safety set **inside a directory that run claims exclusively**
+(`.pre-restore-claim-<nonce>/pre-restore-<set>`), and `ops:backup-retention` never descends into a name like
+that — deliberately, because the same rule is what keeps it away from a backup that is still being written, a
+restore in progress and its own quarantine. So those built up one per restore and nothing removed them. This
+is the command that owns them.
+
+A claim is removable **only** when the ownership marker *inside* it proves an `ops:complete-restore` of this
+build created it, and the directory's own name agrees with the nonce in that marker — so a claim-shaped
+directory with no marker, one from another build, one that has been **moved**, one with a backup still in
+flight inside it, and a link at a claim's name are all reported and all survive. The **floor is counted across
+the whole destination**, which is the protection that matters: a destination whose only restorable set is a
+safety set keeps it, whatever `--keep-last` says. Nothing is deleted in place, an interrupted run is finished
+with `--resume` or put back with `--abandon`, and the floor is proved **again from what is on disk**
+immediately before the first deletion.
+[docs/PHASES_313_320_SAFETY_SET_LIFECYCLE.md](docs/PHASES_313_320_SAFETY_SET_LIFECYCLE.md) has the nine
+classes, the threat model, the shared-destination boundary and the non-goals.
+
+```bash
 # On a schedule: runs the shipped read-only doctor and records one redacted state file.
 npm run ops:doctor-monitor -- --project /path/to/project --state monitor
 ```
@@ -331,7 +354,8 @@ npm run ops:doctor-monitor -- --project /path/to/project --state monitor
 It **sends no alert** — it exits `0` healthy, `3` WARN, `1` FAIL, `4` the doctor could not be read, and your
 scheduler alerts from that. It never softens the doctor: a WARN is a WARN on the fiftieth consecutive run.
 `deploy/unraid-catalog-maintenance.sh` is a worked User Scripts/cron example with overlap locking, a bounded
-timeout, and a retention mode that runs the shipped `ops:backup-retention --plan` and still removes nothing.
+timeout, and two plan modes — one running the shipped `ops:backup-retention --plan` and one running
+`ops:safety-set-lifecycle --plan` — neither of which removes anything.
 Backups deleted on a timer are how the copy you needed goes away on the night the thing you needed it for
 happened, so the confirmation is always a person at a keyboard.
 
@@ -550,6 +574,7 @@ API/UI service. Operate one-shot tasks with `npm run ops:*` (or `docker compose 
 | `ops:custody-proof [-- --json] [--sample <n>]` | **read-only** proof that this installation can DECRYPT its own catalog, through the shipped authority and its own custodian. Exits 0 proven, 1 NOT proven, 4 nothing encrypted to prove — which is not a pass |
 | `ops:complete-restore -- --project <dir> --set <name> --custodian inline\|sidecar --plan` | puts a **complete set** back: safety set, teardown, all four components, then proofs including a **decryption**. Runs on the host. `--plan` changes nothing and prints the digest `--confirm` requires |
 | `ops:backup-retention -- --project <dir> [--keep-last <n>] [--min-age-days <n>] --plan` | removes old backup sets. Verifies every set in the destination, prints one decision and reason each, then a digest `--confirm` requires back and re-proves under the lock. The newest restorable set and the newest pre-upgrade rollback point are protected unconditionally; a destination with no restorable set refuses the run. Renames into quarantine before deleting; issues no command of any kind |
+| `ops:safety-set-lifecycle -- --project <dir> [--keep-last <n>] [--min-age-days <n>] --plan` | removes the safety sets a **restore** left behind, which `ops:backup-retention` deliberately never descends into. A claim goes only when the ownership marker inside it proves an `ops:complete-restore` of this build created it and its name agrees with that marker's nonce. The newest restorable safety set and the newest rollback point are protected unconditionally, and the floor is counted across the **whole** destination and re-proved from disk before the first deletion. Renames into quarantine before deleting; issues no command of any kind |
 | `ops:operator-ui-server -- --serve --host 0.0.0.0 --port 8099` | long-running read-only operator API/UI; `/api/status` and `/api/logs` require `X-Operator-UI-Secret` from `OPERATOR_UI_TOKEN_FILE` |
 | `ops:operator-ui-token -- --show-path/status/rotate` | safe operator UI token helper; rotation and status do not print the token, and printing requires `--print --confirm-print` |
 | `ops:operator-ui-live-check -- --json` | redaction-safe live operator UI check: health, auth rejection, authenticated status, and logs without printing the token |

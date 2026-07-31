@@ -611,7 +611,10 @@
     "test:custody-proof": "tsx test/custody-proof.ts 5467",
     "ops:backup-retention": "tsx src/ops/backup-retention-cli.ts",
     "test:backup-retention": "tsx test/backup-retention.ts",
-    "test:phase305-local": "npm run test:backup-retention"
+    "ops:safety-set-lifecycle": "tsx src/ops/safety-set-lifecycle-cli.ts",
+    "test:safety-set-lifecycle": "tsx test/safety-set-lifecycle.ts",
+    "test:phase305-local": "npm run test:backup-retention",
+    "test:phase313-local": "npm run test:safety-set-lifecycle"
   },
   "dependencies": {
     "pg": "^8.13.1",
