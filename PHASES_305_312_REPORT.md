@@ -64,7 +64,7 @@ rewritten.
 - `src/ops/retention-model.ts` — the six classes, the policy, the closed reason vocabulary, the pure evaluator
 - `src/ops/backup-retention.ts` — inventory, plan, digest, two locks, quarantine/delete, journal, abandon
 - `src/ops/backup-retention-cli.ts` — `ops:backup-retention`
-- `test/backup-retention.ts` — 105 checks
+- `test/backup-retention.ts` — 114 checks
 - `test/helpers/retention-crash-child.mts` — a real prune, killed at a named boundary
 - `docs/PHASES_305_312_BACKUP_RETENTION.md`
 
@@ -128,7 +128,7 @@ locks released through a `finally` on every path.
 | Gate | Result |
 | --- | --- |
 | `npx tsc -p tsconfig.json --noEmit` | **PASS**, 0 errors |
-| `test/backup-retention.ts` | **105 passed, 0 failed** (78 before Correction 1) |
+| `test/backup-retention.ts` | **114 passed, 0 failed** (78 at first cut, 105 after Correction 1) |
 | `test/doctor-monitor.ts` | 19 passed, 0 failed |
 | `test/backup-components.ts` | 41 passed, 0 failed |
 | `test/complete-backup.ts` | 49 passed, 0 failed |
@@ -299,6 +299,112 @@ set mutated, and one replaced by a **different valid set of ours**. Multi-candid
 phases, with `--abandon` proved still available afterwards. An abandon exiting `1`, an abandon failing on its
 first write, on a later write, and on its final clear, a real kill mid-abandon-rename with a deterministic
 rerun, and a `deleting` tree refused a put-back. Both resume-with-prior-effects cases.
+
+## Correction 2 — a lost commitment, a matrix that was not one, and a `--json` that was not machine-readable
+
+Codex's second review found three more, all correct and all reachable.
+
+### 1. A failed removal threw away the only thing that authorised finishing it
+
+`removeOwnTreeNoFollow` can unlink some children and then throw — a file another process holds open, a
+permission that changed under it, an `rmdir` that will not complete. The tree is then **partial**, and
+`deleting` is the only state under which finishing it is authorised. `stop()` rewrote that entry to `failed`,
+and a resume read `failed` beside a quarantined tree as an **intact** one and tried to prove it against its
+commitment — which a half-deleted set can never satisfy. The operation was stranded: it could not finish, and
+`--abandon` would not put a truncated tree back under a trusted name either.
+
+A failure now never moves an entry **out of** `deleting`. The reason travels in the report, which is where an
+operator reads it; the journal describes the state a recovery may act on, and after the first `unlink` that
+state is `deleting` whatever else went wrong. A new injected `remover` seam makes the partial removal
+deterministic — a kill cannot be aimed between two `unlink` calls inside a shipped primitive, and a removal
+that failed before touching anything is a different state. The test unlinks a real component, then throws, and
+asserts the journal still says `deleting`, that nothing was removed, that the later candidate is whole in
+quarantine, that the report is post-effect and incomplete with the tree named, and that a **second resume
+finishes it** and cleans the quarantine up.
+
+### 2. The "full" state matrix was ten rows out of twenty, and drove nothing
+
+Five states by two presences by two presences is twenty. The old table listed ten in a comment and a static
+tuple in the suite: `failed` was absent entirely, so were both `deleting`-back-in-the-destination cases,
+`quarantined` back in the destination, and every `removed` case except the ordinary one.
+
+The `removed` omission was the one that mattered. The sweep `continue`d past `removed` outright, so a set this
+operation had recorded as destroyed with something now sitting at its name produced an incomplete report
+naming **no failure at all** — and that combination is reachable without anybody doing anything wrong, because
+a deletion frees a name and a later backup can legitimately take it. It is now named, refused, and told how to
+close the operation.
+
+The table is now `preconditionRefusal`, an exported total function the executor calls and the suite
+enumerates, so the two cannot drift. Eight combinations are legal, twelve are not, and both-places is illegal
+in every state. `failed` has explicit semantics for all four presences, and they are sound **because** of the
+fix above: `failed` is never written over an entry that reached `deleting`, so a `failed` tree is always whole
+and can be retried from wherever it actually is.
+
+And the suite no longer asserts a tuple list. It builds twenty real projects, arranges the real filesystem and
+the real journal into each combination, runs the shipped resume, and requires the executor's own answer to be
+the table's — with a **witness** set proving that a stop really stopped and a completing run really continued.
+
+**One clarification the tests forced, which is now stated rather than implied.** "Nothing after it was
+touched" is exact for a stop during the sweep. A stop during the *delete* phase leaves later candidates
+renamed aside and whole, not at their original names — because the quarantine phase is the reversible one and
+completes first by design, which is what lets a single `--abandon` put everything back. What a stop guarantees
+is that nothing after it is **destroyed**.
+
+### 3. `--json` was parseable on exactly the runs nobody needs to parse
+
+`cliMain` printed the report as JSON and then appended blank lines and human remediation prose to the **same**
+stream for `INCOMPLETE`, `REMOVED_BUT_UNPROVEN`, `ABANDONED_WITH_LOSS`, `PARTIAL` and both post-effect thrown
+reports. A flag whose whole purpose is machine-readability has to hold on the failure paths or it is
+decoration.
+
+With `--json`, exactly one JSON document is emitted and nothing else goes on that stream. The report goes to
+**stdout** on the ordinary paths and to **stderr** on a post-effect failure — the same stream ownership
+`ops:complete-restore` uses, so the two commands automate the same way. Every remediation sentence dropped
+from JSON mode is already inside the report's `notes`. Without `--json` the human prose is unchanged, and a
+test asserts that too.
+
+The capture tests take **every byte** of both streams, `JSON.parse` the complete capture, assert it is trimmed
+with nothing before or after the document, and check the exit code: `INCOMPLETE`, `REMOVED_BUT_UNPROVEN`,
+`ABANDONED_WITH_LOSS`, `PARTIAL`, both post-effect thrown reports (stderr carrying the document, stdout
+carrying **nothing**), and both success paths.
+
+`main()` gained a documented `deps` test seam, defaulted to `{}` and never passed by the entry point, for the
+same reason `RetentionDeps` exists: the failures that arrive after sets have moved are the ones whose CLI
+behaviour matters most and the ones that cannot be produced from outside without one.
+
+### Re-review of the interactions
+
+* **`failed` × abandon** — a `failed` tree is whole, so an abandon puts it back under the same ownership and
+  commitment proofs a deletion needs.
+* **`deleting` × abandon** — never put back; named as unresolved with "may be incomplete" said plainly, and
+  the journal is kept.
+* **`removed` × abandon** — still reported as gone, and when something now occupies the name the report adds
+  the sentence that reconciles the two, so "gone forever" beside a directory that is plainly there is not a
+  contradiction an operator has to resolve alone.
+* **Retained marker cleanup** — unchanged and still ownership-checked: the marker must prove the directory is
+  this operation's and must be the last thing in it, so a partial `deleting` tree keeps the directory alive
+  and it is reported as retained by name.
+* **Report fields** — `untouched` continues to mean *never moved*; a delete-phase stop surfaces the
+  set-aside candidates through `retained.holds` and through `planned` minus `removed`.
+
+### Correction 2 gates
+
+| Gate | Result |
+| --- | --- |
+| `npx tsc -p tsconfig.json --noEmit` | **PASS**, 0 errors |
+| `npm run test:backup-retention` | **114 passed, 0 failed** (105 before Correction 2) |
+| `npm run test:complete-backup` | 49 passed, 0 failed |
+| `npm run test:complete-restore` | 136 passed, 0 failed |
+| `npm run test:inventory` | **ok: true**, 323 suites, 6 helpers, no drift |
+| `test/doctor-monitor.ts` | 19 passed, 0 failed |
+| `test/backup-components.ts` | 41 passed, 0 failed |
+| `test/release-readiness.ts` | 44 passed, 0 failed |
+| `test/deploy.ts` | 210 passed, 0 failed |
+| `test/backup-inspect.ts` | 60 passed, 0 failed, 1 skipped (no `pg_dump` binary — pre-existing) |
+| `test/backup-verify.ts` | 17 passed, 0 failed |
+| `test/operator-ui-service.ts` | 5 passed, 0 failed |
+
+Broad `offline`/`db`/`docker` aggregates were **not** run, as instructed.
 
 ## Remaining review risks
 

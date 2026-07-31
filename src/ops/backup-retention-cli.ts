@@ -13,6 +13,7 @@ import {
   renderRetentionPlan,
   resolveRetentionRequest,
   runRetention,
+  type RetentionDeps,
   type RetentionMode,
   type RetentionRequest,
 } from './backup-retention.js';
@@ -31,6 +32,23 @@ import { isDirectRun } from './direct-run.js';
 // is renamed. A backup taken since the plan was read changes the digest and refuses the confirmation.
 //
 // THERE IS NO `--force` AND NO `--yes`. The protections are not defaults.
+//
+// -----------------------------------------------------------------------------------------------------
+// `--json` MEANS EXACTLY ONE JSON DOCUMENT, ON ONE STREAM.
+// -----------------------------------------------------------------------------------------------------
+//
+// THE DEFECT THIS CLOSES. The first cut printed the report as JSON and then appended blank lines and human
+// remediation prose to the SAME stream for every outcome that was not a success — `INCOMPLETE`,
+// `REMOVED_BUT_UNPROVEN`, `ABANDONED_WITH_LOSS`, `PARTIAL` and both post-effect failures. So `--json` was
+// parseable on exactly the runs nobody needs to parse, and produced trailing garbage on the ones somebody
+// automating this would actually have to read. A flag whose whole purpose is machine-readability has to
+// hold on the failure paths or it is decoration.
+//
+// The report goes to STDOUT on the ordinary paths and to STDERR on a post-effect failure — the same stream
+// ownership `ops:complete-restore` uses, so the two commands can be automated the same way. Whichever
+// stream carries it carries one document and nothing after it. Every remediation sentence dropped from JSON
+// mode is already inside the report's own `notes`, so nothing is lost, it is merely no longer smuggled out
+// beside the thing that was supposed to be parseable.
 
 export const RETENTION_EXIT_OK = 0;
 export const RETENTION_EXIT_FAILED = 1;
@@ -66,7 +84,7 @@ function usage(): string {
     '                           verify may have failed for a transient reason, and it is also the evidence.',
     `  --keep-minimum-restorable <n>  refuse the whole run if it would leave fewer restorable sets than this`,
     `                           (default: ${DEFAULT_RETENTION_POLICY.keepMinimumRestorable})`,
-    '  --json                   print the machine-readable report',
+    '  --json                   print the machine-readable report, and NOTHING else on that stream',
     '',
     'WHAT NO POLICY CAN REMOVE. The newest verified set this build could restore, and the newest verified set',
     'from BEFORE this build\'s schema — the only thing that can roll this installation back. A destination',
@@ -187,7 +205,16 @@ export function parseRetentionArgs(argv: readonly string[]): ParsedRetentionArgs
   };
 }
 
-export function main(argv: readonly string[] = process.argv.slice(2)): number {
+/**
+ * `deps` is a TEST SEAM and nothing else. The entry point below passes none, so production always gets the
+ * real clock, the real suffix, the real journal writer and the real remover.
+ *
+ * It exists for the same reason `RetentionDeps` does: the failures that arrive AFTER sets have moved — a
+ * journal that cannot be written, a clear that will not complete — are precisely the ones whose CLI
+ * behaviour matters most (which stream, which exit code, is the JSON still one document) and precisely the
+ * ones that cannot be produced from outside without one.
+ */
+export function main(argv: readonly string[] = process.argv.slice(2), deps: RetentionDeps = {}): number {
   if (argv.includes('--help') || argv.includes('-h')) { console.log(usage()); return RETENTION_EXIT_OK; }
   let args: ParsedRetentionArgs;
   try {
@@ -201,9 +228,13 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
 
   try {
     if (args.mode === 'abandon') {
-      const report = abandonRetention(args.projectRoot);
-      if (args.json) console.log(JSON.stringify(report, null, 2));
-      else console.log(renderRetentionAbandon(report));
+      const report = abandonRetention(args.projectRoot, deps);
+      if (args.json) {
+        // EXACTLY ONE JSON DOCUMENT, AND NOTHING ELSE ON THIS STREAM. See the header note.
+        console.log(JSON.stringify(report, null, 2));
+        return report.ok ? RETENTION_EXIT_OK : RETENTION_EXIT_FAILED;
+      }
+      console.log(renderRetentionAbandon(report));
       // A CLEAN UNWIND IS THE ONLY ZERO. An abandon that put one set back while another is gone for good is
       // not a success, and the exit code is the thing a scheduler reads: `ABANDONED_WITH_LOSS` and `PARTIAL`
       // both exit 1, because in both cases this destination is not what the operator asked to have back.
@@ -236,9 +267,12 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     const mode: RetentionMode = args.mode === 'resume'
       ? { kind: 'resume', confirm: args.resume! }
       : { kind: 'run', confirm: args.confirm! };
-    const report = runRetention(request, args.policy, {}, mode);
-    if (args.json) console.log(JSON.stringify(report, null, 2));
-    else console.log(renderRetention(report));
+    const report = runRetention(request, args.policy, deps, mode);
+    if (args.json) {
+      console.log(JSON.stringify(report, null, 2));
+      return report.ok ? RETENTION_EXIT_OK : RETENTION_EXIT_FAILED;
+    }
+    console.log(renderRetention(report));
     if (!report.ok) {
       console.log('');
       if (report.state === 'REMOVED_BUT_UNPROVEN') {
@@ -256,15 +290,21 @@ export function main(argv: readonly string[] = process.argv.slice(2)): number {
     // documents as "refused before anything was moved". Anything reading that code would be told nothing
     // happened by a run that had already deleted backups.
     if (err instanceof RetentionFailed) {
-      if (args.json) console.error(JSON.stringify(err.report, null, 2));
-      else console.error(renderRetention(err.report));
+      if (args.json) {
+        console.error(JSON.stringify(err.report, null, 2));
+        return RETENTION_EXIT_FAILED;
+      }
+      console.error(renderRetention(err.report));
       console.error('');
       console.error(err.message);
       return RETENTION_EXIT_FAILED;
     }
     if (err instanceof RetentionAbandonFailed) {
-      if (args.json) console.error(JSON.stringify(err.report, null, 2));
-      else console.error(renderRetentionAbandon(err.report));
+      if (args.json) {
+        console.error(JSON.stringify(err.report, null, 2));
+        return RETENTION_EXIT_FAILED;
+      }
+      console.error(renderRetentionAbandon(err.report));
       console.error('');
       console.error(err.message);
       return RETENTION_EXIT_FAILED;

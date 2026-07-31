@@ -326,7 +326,7 @@ If either cannot be completed, the directory is **reported as retained**, by nam
 | `quarantined` | Renamed aside, **intact**, not yet consumed | Prove it against the commitment, record `deleting`, remove it |
 | `deleting` | The removal has started; the tree may be partial | Finish it, authorised by the ownership marker and this entry's own record |
 | `removed` | It is gone | Nothing |
-| `failed` | The operation stopped here | Re-examined from the disk, and reported as having stopped before |
+| `failed` | The operation stopped here, and it had NOT begun removing this set | Re-examined from the disk exactly as `pending` is — its tree is whole — and reported as having stopped before |
 
 The first implementation recorded `quarantined` and then recursively removed. A process that stopped existing
 inside that removal left `quarantined` beside a **half-consumed** tree, indistinguishable from `quarantined`
@@ -341,29 +341,70 @@ about to.
 
 ### Every action is cross-validated first, and one impossible state stops everything
 
-Before this process performs a single effect, every entry's (recorded state, in the destination?, in
-quarantine?) triple is checked against the table of states a run can actually produce:
+Before this process performs a single effect, **every** entry's (recorded state, in the destination?, in
+quarantine?) triple is checked against the table below — five states by two presences by two presences, and
+the table is exhaustive over all **twenty** of them. It is a real function, `preconditionRefusal`, which the
+executor calls and the suite enumerates, so the two cannot drift apart.
 
 | State | In destination | In quarantine | What happens |
 | --- | --- | --- | --- |
-| `pending` | yes | no | prove it, then quarantine it |
+| `pending` | yes | no | prove it against its commitment, then quarantine it |
 | `pending` | no | yes | an interrupted rename: prove it, then adopt it |
 | `pending` | yes | yes | **STOP** — one run cannot produce this |
 | `pending` | no | no | **STOP** — something outside this command removed it |
+| `quarantined` | yes | no | **STOP** — recorded set aside and back in the destination |
 | `quarantined` | no | yes | prove it, record `deleting`, remove it |
+| `quarantined` | yes | yes | **STOP** — one run cannot produce this |
 | `quarantined` | no | no | **STOP** — a removal is always preceded by its record |
-| `quarantined` | yes | — | **STOP** — one run cannot produce this |
-| `deleting` | no | yes | finish the removal under the ownership marker |
-| `deleting` | no | no | the removal landed without its record |
-| `deleting` | yes | — | **STOP** — one run cannot produce this |
-| `removed` | — | — | nothing |
+| `deleting` | yes | no | **STOP** — recorded as being removed and back in the destination |
+| `deleting` | no | yes | finish the removal under the ownership marker; the tree may be partial |
+| `deleting` | yes | yes | **STOP** — one run cannot produce this |
+| `deleting` | no | no | the removal landed without its record: record it |
+| `removed` | yes | no | **STOP** — recorded destroyed, and something is at its name again |
+| `removed` | no | yes | **STOP** — recorded destroyed, and something is in quarantine under its name |
+| `removed` | yes | yes | **STOP** — one run cannot produce this |
+| `removed` | no | no | nothing; this is the terminal state |
+| `failed` | yes | no | prove it against its commitment, then quarantine it |
+| `failed` | no | yes | prove it, then adopt it |
+| `failed` | yes | yes | **STOP** — one run cannot produce this |
+| `failed` | no | no | **STOP** — something outside this command removed it |
 
-**A stop is a stop.** The first implementation marked one entry failed and carried on quarantining and
-deleting the others; the tests that claimed it "stopped the run" never asserted that the remaining candidates
-survived. Once the filesystem or the ownership evidence says something one run cannot have produced, this
-does not continue destroying anything: it records the entry, keeps the journal, leaves every untouched
-candidate exactly where it is, **names them in the report**, and returns the partial result. Everything that
-was only ever renamed is still recoverable with `--abandon`.
+Eight combinations are states a run of this program can be in; twelve are not.
+
+The first implementation's table had ten rows and was called full. It omitted `failed` entirely, both
+`deleting`-back-in-the-destination cases, `quarantined` back in the destination, and every `removed` case
+except the ordinary one — and the suite asserted a static tuple list rather than driving the executor. The
+`removed` omission was the one that mattered: the sweep `continue`d past `removed` outright, so a set this
+operation had recorded as destroyed, with something now sitting at its name, produced an incomplete report
+naming no failure at all. That combination is reachable **without anyone doing anything wrong**: a deletion
+frees a name, and a later backup can legitimately take it. It is now named, refused, and told how to close
+the operation (`--abandon`, then plan again).
+
+**`failed` is `pending` with a history**, and that is only true because of the rule below it: `failed` is
+never written over an entry that had reached `deleting`, so a `failed` tree — wherever it is — is whole, and
+retrying it from where it actually is is safe.
+
+### `deleting` is a commitment that survives failure
+
+`removeOwnTreeNoFollow` can unlink some children and then throw: a file another process holds open, a
+permission that changed under it, an `rmdir` that will not complete. The tree is then **partial**, and
+`deleting` is the only thing that authorises finishing it.
+
+The first implementation's stop handler rewrote that entry to `failed`. A resume then read `failed` beside a
+quarantined tree as an *intact* one and tried to prove it against its commitment — which a half-deleted set
+can never satisfy. The operation was stranded: it could not finish, and `--abandon` would not put a truncated
+tree back under a trusted name either. So a failure never moves an entry **out of** `deleting`. The reason
+travels in the report, which is where an operator reads it; the journal's job is to describe the state a
+recovery is allowed to act on, and after the first `unlink` that state is `deleting` whatever else went wrong.
+
+**A stop is a stop — and what it guarantees is precise.** The first implementation marked one entry failed and
+carried on quarantining and deleting the others; the tests that claimed it "stopped the run" never asserted
+the remaining candidates survived. Nothing after an impossible state is now **destroyed**: the entry is
+recorded, the journal is kept, and the run returns its partial report. The quarantine phase is the
+*reversible* one and completes before any deletion begins, by design — that is what lets a single `--abandon`
+put everything back — so a stop during the delete phase leaves later candidates renamed aside and whole, named
+in the retained directory, rather than at their original names. A stop during the sweep, before any effect at
+all, leaves them exactly where they were and names them as untouched.
 
 * **`--resume <digest>`** takes only `--project`. The destination, the suffix, the policy and every decision
   come from the journal; the digest is the plan digest the journal records, so a resume cannot be pointed at
@@ -413,6 +454,16 @@ cut degrades to a redo — a rename that did not reach the disk leaves the set a
 command line, `--json` for the machine-readable report, refusals that name a rule and never a path, and modes
 that accept only their own flags — a flag this command would ignore is a usage error, because a flag that
 does nothing is a flag somebody believes did something.
+
+**`--json` means exactly one JSON document, on one stream.** The first implementation printed the report and
+then appended blank lines and human remediation prose to the *same* stream for every outcome that was not a
+success — `INCOMPLETE`, `REMOVED_BUT_UNPROVEN`, `ABANDONED_WITH_LOSS`, `PARTIAL` and both post-effect
+failures. So `--json` parsed cleanly on exactly the runs nobody needs to parse, and produced trailing garbage
+on the ones somebody automating this would actually have to read. The report goes to **stdout** on the
+ordinary paths and to **stderr** on a post-effect failure — the same stream ownership `ops:complete-restore`
+uses — and whichever stream carries it carries one document and nothing after it. Every remediation sentence
+dropped from JSON mode is already inside the report's own `notes`. Without `--json`, the human remediation is
+printed exactly as before.
 
 `backup-components.ts` gains `BACKUP_RETENTION_NOTE` and `BACKUP_RETENTION_COMMANDS` from the same model, so
 the operator UI's *Backup & restore* panel, the lifecycle document and the command cannot disagree about what

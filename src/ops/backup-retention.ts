@@ -1070,6 +1070,78 @@ export function proveSetIsPlanned(path: string, row: InventoryEntry): void {
 // Phase 309 — execution
 // -----------------------------------------------------------------------------------------------------------
 
+/**
+ * Every combination of a recorded per-set state and what the filesystem actually holds, and the one answer
+ * to each — `null` for a state a run of this program can be in, a closed sentence for one it cannot.
+ *
+ * -----------------------------------------------------------------------------------------------------
+ * TOTAL, AND EXPORTED, BECAUSE THE PREVIOUS TABLE WAS NEITHER.
+ * -----------------------------------------------------------------------------------------------------
+ *
+ * Five states times two presences times two presences is TWENTY combinations. The first cut enumerated ten
+ * of them in a comment and a static tuple list in the suite, called it the full matrix, and left out
+ * `failed` entirely, both `deleting`-back-in-the-destination cases, `quarantined` back in the destination,
+ * and every `removed` case except the ordinary one. `removed` beside a tree that has REAPPEARED was the
+ * worst of them: the sweep skipped `removed` outright, so a set this operation had recorded as destroyed,
+ * with something now sitting at its name, produced an incomplete report naming no failure at all.
+ *
+ * It is a function rather than a comment so the executor and the suite read the SAME table, and the suite
+ * can enumerate all twenty and then drive the executor through every one of them.
+ */
+export function preconditionRefusal(
+  state: RetentionEntryState,
+  inDestination: boolean,
+  inQuarantine: boolean,
+): string | null {
+  // BOTH PLACES IS NEVER LEGAL, in any state. One run cannot produce it, and guessing which of the two is
+  // the real set is exactly the guess this family never makes.
+  if (inDestination && inQuarantine) {
+    return 'this set is present both in the destination and in the quarantine directory, which one run '
+      + 'cannot produce. Nothing was removed for it, and nothing after it was touched.';
+  }
+  switch (state) {
+    case 'pending':
+    case 'failed':
+      // `failed` IS `pending` WITH A HISTORY. It is only ever written for an entry that had NOT reached
+      // `deleting` — see `stop` — so its tree, wherever it is, is whole. An operator who has dealt with
+      // whatever stopped the run resumes, and this entry is retried from wherever it actually is.
+      if (!inDestination && !inQuarantine) {
+        return 'this set is in neither the destination nor the quarantine directory. Something removed it '
+          + 'outside this command, and this run will not report having removed it.';
+      }
+      return null;
+    case 'quarantined':
+      if (inDestination) {
+        return 'this set is recorded as set aside and is back in the destination, which one run cannot '
+          + 'produce.';
+      }
+      if (!inQuarantine) {
+        // WITH A `deleting` STATE THIS IS IMPOSSIBLE. A removal is always preceded by a record, so a
+        // quarantined set that is gone was removed by something that is not this command.
+        return 'this set was recorded as set aside and is no longer in the quarantine directory. Nothing '
+          + 'this command does removes a set without recording that it was about to, so something else did. '
+          + 'Nothing after it was touched.';
+      }
+      return null;
+    case 'deleting':
+      if (inDestination) {
+        return 'this set is recorded as being removed and is back in the destination, which one run cannot '
+          + 'produce.';
+      }
+      // PRESENT: a tree that may be partial, finished under the ownership marker. ABSENT: the removal
+      // landed and its record did not. Both are states a kill really produces.
+      return null;
+    case 'removed':
+      if (inDestination || inQuarantine) {
+        return 'this set is recorded as REMOVED and something is at its name again. This operation destroyed '
+          + 'it, so whatever is there now is not the set that was planned and is not this command\'s to act '
+          + 'on — a deletion frees a name, and a later backup can legitimately take it. Nothing after it was '
+          + 'touched. Close this operation with --abandon, then plan a fresh one.';
+      }
+      return null;
+  }
+}
+
 /** Named boundaries a test kills a real run at. Never used in production; the default hook does nothing. */
 export type RetentionFailpoint =
   | 'after-journal'
@@ -1094,6 +1166,13 @@ export interface RetentionDeps {
   readonly journalWriter?: (projectRoot: string, journal: RetentionJournal) => void;
   /** The journal clear, injectable for the same reason: a clear that fails after an abandon has moved things. */
   readonly journalClearer?: (projectRoot: string) => void;
+  /**
+   * The recursive removal, injectable for one reason: a removal that unlinks SOME children and then throws
+   * is the state `deleting` exists for, and there is no other way to produce it deterministically. A kill
+   * cannot be aimed between two `unlink` calls inside a shipped primitive, and a removal that failed before
+   * touching anything is a different state.
+   */
+  readonly remover?: (path: string, what: string, maxEntries: number) => number;
 }
 
 /**
@@ -1197,6 +1276,7 @@ export function runRetention(
   const at = deps.at ?? (() => { /* production does nothing here */ });
   const writeJournal = deps.journalWriter ?? writeRetentionJournal;
   const clearJournal = deps.journalClearer ?? clearRetentionJournal;
+  const remove = deps.remover ?? removeOwnTreeNoFollow;
   // A CHEAP, HOPELESS-CASE REFUSAL BEFORE THE LOCK, re-established under it below. Both are needed: this one
   // so a project part way through a restore refuses without contending for anything, that one because a
   // check made before a lock is a check about a moment that has passed.
@@ -1282,7 +1362,7 @@ export function runRetention(
       journal = existing!;
     }
 
-    return execute(resolved, journal, at, writeJournal, clearJournal);
+    return execute(resolved, journal, at, writeJournal, clearJournal, remove);
   } finally {
     // INNERMOST FIRST, and every path out runs this.
     if (destinationLock !== null) destinationLock.release();
@@ -1305,6 +1385,7 @@ function execute(
   at: (point: RetentionFailpoint, name: string) => void,
   writeJournal: (projectRoot: string, journal: RetentionJournal) => void,
   clearJournal: (projectRoot: string) => void,
+  remove: (path: string, what: string, maxEntries: number) => number,
 ): RetentionReport {
   let journal = start;
   const quarantine = quarantineDirName(journal.suffix);
@@ -1333,9 +1414,26 @@ function execute(
     writeJournal(resolved.projectRoot, journal);
   };
 
-  /** Record the failure, and STOP. Nothing after an impossible state is destroyed. */
+  /**
+   * Record the failure, and STOP. Nothing after an impossible state is destroyed.
+   *
+   * -----------------------------------------------------------------------------------------------------
+   * `deleting` IS A COMMITMENT THAT SURVIVES FAILURE.
+   * -----------------------------------------------------------------------------------------------------
+   *
+   * THE DEFECT THIS CLOSES. `removeOwnTreeNoFollow` can unlink some children and then throw — a file another
+   * process holds open, a permission that changed under it, an `rmdir` that will not complete. The tree is
+   * then PARTIAL, and `deleting` is the only thing that authorises finishing it. Rewriting that entry to
+   * `failed` threw the authorisation away: a resume would treat `failed` beside a quarantined tree as an
+   * intact one and try to prove it against its commitment, which a half-deleted set can never satisfy. The
+   * operation was stranded — it could not finish, and `--abandon` would not put a truncated tree back either.
+   *
+   * So a failure never moves an entry OUT of `deleting`. The reason travels in the report, which is where an
+   * operator reads it; the journal's job is to describe the state a recovery is allowed to act on, and after
+   * the first `unlink` that state is `deleting` whatever else went wrong.
+   */
   const stop = (name: string, reason: string): void => {
-    mark(name, 'failed', reason);
+    if (stateOf(name) !== 'deleting') mark(name, 'failed', reason);
     failed.push({ name, reason });
     stopped = true;
   };
@@ -1371,53 +1469,16 @@ function execute(
   /**
    * Cross-validate every entry's recorded state against what the filesystem actually holds.
    *
-   * The legal triples, and they are the whole table:
-   *
-   *   pending      | in destination, not in quarantine | quarantine it
-   *   pending      | not in destination, in quarantine | an interrupted rename — prove it, then adopt it
-   *   quarantined  | not in destination, in quarantine | prove it, record `deleting`, remove it
-   *   deleting     | not in destination, in quarantine | finish the removal under the ownership marker
-   *   deleting     | not in destination, not there     | the removal landed without its record
-   *   removed      | anything                          | nothing
-   *
-   * Everything else is a state one run cannot have produced.
+   * The whole table is `preconditionRefusal`, which is total over all twenty combinations. This walks every
+   * entry — INCLUDING the ones recorded `removed`, which the first cut skipped — and returns the first
+   * combination a run of this program cannot be in.
    */
   function sweepPreconditions(): { readonly name: string; readonly reason: string } | null {
     for (const entry of journal.entries) {
-      if (entry.state === 'removed') continue;
       const inDestination = existsSync(join(resolved.destinationDir, entry.name));
       const inQuarantine = existsSync(quarantineDir) && existsSync(join(quarantineDir, entry.name));
-      if (inDestination && inQuarantine) {
-        return { name: entry.name, reason: 'this set is present both in the destination and in the '
-          + 'quarantine directory, which one run cannot produce. Nothing was removed for it, and nothing '
-          + 'after it was touched.' };
-      }
-      if (entry.state === 'pending' || entry.state === 'failed') {
-        if (!inDestination && !inQuarantine) {
-          return { name: entry.name, reason: 'this set is in neither the destination nor the quarantine '
-            + 'directory. Something removed it outside this command, and this run will not report having '
-            + 'removed it.' };
-        }
-        continue;
-      }
-      if (entry.state === 'quarantined') {
-        if (inDestination) {
-          return { name: entry.name, reason: 'this set is recorded as set aside and is back in the '
-            + 'destination, which one run cannot produce.' };
-        }
-        if (!inQuarantine) {
-          // WITH A `deleting` STATE THIS IS IMPOSSIBLE. A removal is always preceded by a record, so a
-          // quarantined set that is gone was removed by something that is not this command.
-          return { name: entry.name, reason: 'this set was recorded as set aside and is no longer in the '
-            + 'quarantine directory. Nothing this command does removes a set without recording that it was '
-            + 'about to, so something else did. Nothing after it was touched.' };
-        }
-        continue;
-      }
-      if (entry.state === 'deleting' && inDestination) {
-        return { name: entry.name, reason: 'this set is recorded as being removed and is back in the '
-          + 'destination, which one run cannot produce.' };
-      }
+      const refusal = preconditionRefusal(entry.state, inDestination, inQuarantine);
+      if (refusal !== null) return { name: entry.name, reason: refusal };
     }
     return null;
   }
@@ -1565,7 +1626,7 @@ function execute(
       // exists. What authorises finishing it is the ownership marker above and this entry's own record.
       try {
         effected = true;
-        removeOwnTreeNoFollow(join(owned, entry.name), `backup set ${entry.name}`,
+        remove(join(owned, entry.name), `backup set ${entry.name}`,
           removalEntryBound(byName.get(entry.name)?.entries ?? 0));
       } catch (err) {
         stop(entry.name, err instanceof MaintenanceRefused ? err.message
@@ -1853,7 +1914,17 @@ export function abandonRetention(projectRoot: string, deps: RetentionDeps = {}):
       writeJournal(root, current);
 
       for (const entry of current.entries) {
-        if (entry.state === 'removed') { goneForever.push(entry.name); continue; }
+        if (entry.state === 'removed') {
+          goneForever.push(entry.name);
+          // THE SET IS GONE AND ITS NAME MAY NOT BE FREE. A deletion frees a name and a later backup can take
+          // it, so an operator reading "gone forever" beside a directory that is plainly there deserves the
+          // sentence that reconciles the two. Nothing is touched either way.
+          if (existsSync(join(destinationDir, entry.name))) {
+            notes.push(`${entry.name} was destroyed by this operation and something is at its name again. `
+              + 'That is not the set this operation removed, and nothing here touched it.');
+          }
+          continue;
+        }
         const source = join(quarantineDir, entry.name);
         const target = join(destinationDir, entry.name);
         const inQuarantine = existsSync(quarantineDir) && existsSync(source);

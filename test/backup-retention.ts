@@ -16,10 +16,13 @@ import {
 } from '../src/ops/complete-backup.js';
 import { verifyBackupSet } from '../src/ops/backup-set-verification.js';
 import { RESTORE_JOURNAL_NAME } from '../src/ops/complete-restore.js';
-import { MAINTENANCE_LOCK_DIRNAME, MaintenanceRefused } from '../src/ops/maintenance-safety.js';
+import {
+  MAINTENANCE_LOCK_DIRNAME, MaintenanceRefused, removeOwnTreeNoFollow,
+} from '../src/ops/maintenance-safety.js';
 import {
   QUARANTINE_CLAIM_PREFIX,
   QUARANTINE_MARKER_NAME,
+  preconditionRefusal,
   QUARANTINE_PREFIX,
   RetentionAbandonFailed,
   RetentionFailed,
@@ -2041,34 +2044,6 @@ test('nothing claims this command opens no secret, because verifying a set reads
 // CORRECTION 7 — the state matrix, enumerated
 // -----------------------------------------------------------------------------------------------------------
 
-test('every combination of per-set state and filesystem presence has one declared answer', () => {
-  // journal state x (in destination?) x (in quarantine?) -> what a resume does. Each row below is driven by
-  // a test in this file; the enumeration exists so a state added to the executor without an answer here is
-  // visible rather than silently defaulting.
-  const matrix: readonly [RetentionEntryState, boolean, boolean, string][] = [
-    ['pending', true, false, 'quarantine it'],
-    ['pending', false, true, 'prove it is the planned set, then adopt the interrupted rename'],
-    ['pending', true, true, 'STOP: one run cannot produce this'],
-    ['pending', false, false, 'STOP: something outside this command removed it'],
-    ['quarantined', false, true, 'prove it, record deleting, remove it'],
-    ['quarantined', false, false, 'STOP: a removal is always preceded by its record'],
-    ['quarantined', true, true, 'STOP: one run cannot produce this'],
-    ['deleting', false, true, 'finish the removal under the ownership marker'],
-    ['deleting', false, false, 'record the removal that landed without its record'],
-    ['removed', false, false, 'nothing'],
-  ];
-  assertEq(matrix.length, 10, 'the enumeration is the one the executor implements');
-  for (const [state, , , answer] of matrix) {
-    assert(RETENTION_ENTRY_STATES.includes(state), `${state} is a state this build writes`);
-    assert(answer.length > 0, `${state} has a declared answer`);
-  }
-  // Every state in the vocabulary appears, so the matrix cannot drift from it.
-  for (const state of RETENTION_ENTRY_STATES) {
-    assert(matrix.some(([listed]) => listed === state) || state === 'failed',
-      `${state} appears in the matrix`);
-  }
-});
-
 test('a `quarantined` set that has VANISHED from quarantine stops the run rather than being called removed', () => {
   const root = makeProject('quarantined-vanished');
   takeSet(root, 'set-a', { daysAgo: 100 });
@@ -2082,6 +2057,370 @@ test('a `quarantined` set that has VANISHED from quarantine stops the run rather
   assert(report.failed.some((f) => f.reason.includes('something')), 'it says something else did');
   assert(existsSync(join(root, 'backups', 'set-b')), 'and set-b was not touched after the stop');
   rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 2 — `deleting` survives a failed removal, the state matrix is total, and --json is one document
+// -----------------------------------------------------------------------------------------------------------
+
+/**
+ * Force one journal entry into a given state.
+ *
+ * The per-entry states are deliberately NOT part of the canonical operation, so editing one leaves the plan
+ * digest — and every other check the reader makes — intact. That is what lets the matrix below drive the
+ * executor through states a kill would take far longer to reach, without weakening a single validation.
+ */
+function setEntryState(root: string, name: string, state: RetentionEntryState): void {
+  const journal = readRetentionJournal(root)!;
+  const edited = {
+    ...journal,
+    entries: journal.entries.map((entry) => (entry.name === name
+      ? { name, state, reason: state === 'failed' ? 'an earlier run stopped here' : null }
+      : entry)),
+  };
+  writeFileSync(join(root, RETENTION_JOURNAL_NAME), `${JSON.stringify(edited, null, 2)}\n`, 'utf8');
+}
+
+test('a removal that unlinks SOME children and then throws keeps its `deleting` commitment', () => {
+  // -------------------------------------------------------------------------------------------------
+  // THE STRANDING THIS CLOSES.
+  // -------------------------------------------------------------------------------------------------
+  // `removeOwnTreeNoFollow` can unlink some children and then throw — a file another process holds open, a
+  // permission that changed under it, an `rmdir` that will not complete. The tree is PARTIAL, and `deleting`
+  // is the only thing that authorises finishing it. The first cut's `stop()` rewrote that entry to `failed`,
+  // and a resume then treated `failed` beside a quarantined tree as an INTACT one and tried to prove it
+  // against its commitment — which a half-deleted set can never satisfy. The operation could neither finish
+  // nor be abandoned.
+  const root = makeProject('deleting-survives');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const pol = policy({ keepLast: 1, minAgeDays: 7 });
+  const resolved = resolveRetentionRequest({ projectRoot: root, destination: 'backups' });
+  const plan = planRetention(resolved, pol, NOW);
+
+  let removals = 0;
+  const partial = runRetention({ projectRoot: root, destination: 'backups' }, pol, {
+    now: () => NOW,
+    suffix: () => 'aaaaaaaaaaaa',
+    // THE FIRST REMOVAL REALLY UNLINKS SOMETHING AND THEN THROWS. Not a refusal before it touched anything —
+    // that is a different state — and not a whole removal either.
+    remover: (path, what, maxEntries) => {
+      removals += 1;
+      if (removals > 1) return removeOwnTreeNoFollow(path, what, maxEntries);
+      const victim = join(path, COMPONENT_ARTIFACT_NAMES.database);
+      assert(existsSync(victim), 'the tree really holds the component this test unlinks');
+      rmSync(victim);
+      throw new MaintenanceRefused('the quarantined set could not be removed: something is holding it open');
+    },
+  }, { kind: 'run', confirm: plan.digest });
+
+  assertEq(partial.ok, false, 'the run did not succeed');
+  assertEq(partial.state, 'INCOMPLETE', 'and it is incomplete, not a refusal');
+  assert(partial.failed.some((f) => f.name === 'set-a' && f.reason.includes('holding it open')),
+    `the reason travels in the REPORT: ${JSON.stringify(partial.failed)}`);
+
+  // THE JOURNAL STILL SAYS `deleting`. That is the whole point.
+  const journal = readRetentionJournal(root)!;
+  assertEq(journal.entries.find((e) => e.name === 'set-a')!.state, 'deleting',
+    'the durable commitment that authorises finishing a partial tree was NOT thrown away');
+  // AND THE LATER CANDIDATE IS NOT DELETED.
+  //
+  // The quarantine phase is the REVERSIBLE one and it completes first by design, so `set-b` has been renamed
+  // aside — which is exactly what makes a single `--abandon` able to put everything back. What a stop in the
+  // delete phase guarantees is that nothing after it is DESTROYED, and that is what is asserted.
+  assertEq(journal.entries.find((e) => e.name === 'set-b')!.state, 'quarantined',
+    'the later candidate was set aside and never consumed');
+  assert(!partial.removed.includes('set-b'), 'and nothing after the failure was removed');
+  assertEq(partial.removed.length, 0, 'in fact nothing was removed at all');
+  assert(sameSnapshot(snapshot(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-b')),
+    snapshot(join(root, 'backups', 'set-c'))) === false, 'set-b is whole in quarantine');
+  assert(existsSync(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-b',
+    COMPONENT_ARTIFACT_NAMES.database)), 'with every component still there');
+  const quarantined = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'), 'set-a');
+  assert(existsSync(quarantined), 'the partial tree is still there');
+  assert(!existsSync(join(quarantined, COMPONENT_ARTIFACT_NAMES.database)),
+    'and it really is partial: the component this test unlinked is gone');
+  assert(partial.retained !== null && partial.retained.holds.includes('set-a'), 'the report names the tree');
+
+  // A SECOND RESUME FINISHES IT. No proof is attempted against the commitment, because a `deleting` tree may
+  // be partial and the ownership marker plus this entry's own record are what authorise finishing it.
+  const finished = resume(root, plan.digest);
+  assertEq(finished.ok, true, `the second resume completed: ${JSON.stringify(finished.failed)}`);
+  assertEq(JSON.stringify(finished.removed), JSON.stringify(['set-a', 'set-b']), 'and both are gone');
+  assert(!existsSync(join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'))), 'quarantine cleaned up');
+  assertEq(finished.journalCleared, true, 'and the journal is cleared');
+});
+
+test('an ABANDON of a partial `deleting` tree still refuses to put it back, and says why', () => {
+  const root = makeProject('deleting-abandon');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const pol = policy({ keepLast: 1, minAgeDays: 7 });
+  const plan = planRetention(resolveRetentionRequest({ projectRoot: root, destination: 'backups' }), pol, NOW);
+  let removals = 0;
+  runRetention({ projectRoot: root, destination: 'backups' }, pol, {
+    now: () => NOW,
+    suffix: () => 'aaaaaaaaaaaa',
+    remover: (path, what, maxEntries) => {
+      removals += 1;
+      if (removals > 1) return removeOwnTreeNoFollow(path, what, maxEntries);
+      rmSync(join(path, COMPONENT_ARTIFACT_NAMES.database));
+      throw new MaintenanceRefused('the quarantined set could not be removed: something is holding it open');
+    },
+  }, { kind: 'run', confirm: plan.digest });
+
+  const report = abandonRetention(root);
+  assertEq(report.ok, false, 'this is not a clean unwind');
+  assertEq(report.state, 'PARTIAL', 'and it says so');
+  assert(report.unresolved.includes('set-a'), 'the partial tree is named as still out of place');
+  assert(!existsSync(join(root, 'backups', 'set-a')), 'and it was NOT put back under a name an operator trusts');
+  assert(report.notes.some((note) => note.includes('may be incomplete')), 'with the reason said plainly');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('the state matrix is TOTAL: all five states by both presences, with one declared answer each', () => {
+  // 5 states x in-destination x in-quarantine = 20. The first cut listed ten of them in a static tuple and
+  // called it full: `failed` was absent entirely, so were both `deleting`-back-in-the-destination cases,
+  // `quarantined` back in the destination, and every `removed` case except the ordinary one.
+  const states: readonly RetentionEntryState[] = RETENTION_ENTRY_STATES;
+  assertEq(states.length, 5, 'five states');
+  const combinations: Array<[RetentionEntryState, boolean, boolean]> = [];
+  for (const state of states) for (const dest of [true, false]) for (const quar of [true, false]) {
+    combinations.push([state, dest, quar]);
+  }
+  assertEq(combinations.length, 20, 'twenty combinations, enumerated rather than asserted to exist');
+
+  const legal: string[] = [];
+  const refused: string[] = [];
+  for (const [state, dest, quar] of combinations) {
+    const answer = preconditionRefusal(state, dest, quar);
+    assert(answer === null || (typeof answer === 'string' && answer.length > 20),
+      `${state}/${dest}/${quar} has one declared answer`);
+    (answer === null ? legal : refused).push(`${state}/${dest}/${quar}`);
+  }
+  // BOTH PLACES IS NEVER LEGAL, in any state.
+  for (const state of states) {
+    assert(preconditionRefusal(state, true, true) !== null, `${state} in both places is refused`);
+  }
+  assertEq(legal.length, 8, `eight combinations a run of this program can be in: ${legal.join(' ')}`);
+  assertEq(refused.length, 12, `twelve it cannot: ${refused.join(' ')}`);
+  // AND THE ONE THE FIRST CUT SKIPPED OUTRIGHT.
+  assert(preconditionRefusal('removed', true, false) !== null,
+    'a set recorded REMOVED whose name is occupied again is named, not silently skipped');
+  assert(preconditionRefusal('removed', false, true) !== null, 'and the same in quarantine');
+});
+
+test('the EXECUTOR is driven through every one of the twenty combinations, and agrees with the table', () => {
+  // Not a tuple list: each row builds a real project, arranges the real filesystem and the real journal into
+  // that combination, and runs the shipped resume. `set-a` is the subject; `set-b` is the witness that
+  // proves a stop really stopped.
+  const states: readonly RetentionEntryState[] = RETENTION_ENTRY_STATES;
+  let index = 0;
+  for (const state of states) for (const dest of [true, false]) for (const quar of [true, false]) {
+    index += 1;
+    const label = `${state}/dest=${dest}/quar=${quar}`;
+    const root = makeProject(`matrix-${index}`);
+    takeSet(root, 'set-a', { daysAgo: 100 });
+    takeSet(root, 'set-b', { daysAgo: 80 });
+    takeSet(root, 'set-c', { daysAgo: 10 });
+    // A published, marked, empty quarantine and two pending entries — the state a kill at the publication
+    // really leaves, so every arrangement below starts from something the executor produced.
+    const digest = crash(root, 'after-quarantine-marker-published', { policy: { keepLast: 1, minAgeDays: 7 } });
+    const quarantineDir = join(root, 'backups', quarantineDirName('aaaaaaaaaaaa'));
+    const atDestination = join(root, 'backups', 'set-a');
+    const inQuarantine = join(quarantineDir, 'set-a');
+
+    if (quar) renameSync(atDestination, inQuarantine);
+    if (dest && quar) mkdirSync(atDestination);
+    if (!dest && !quar) rmSync(atDestination, { recursive: true });
+    setEntryState(root, 'set-a', state);
+
+    const expected = preconditionRefusal(state, dest, quar);
+    const report = resume(root, digest);
+    if (expected !== null) {
+      assertEq(report.ok, false, `${label}: the run must not succeed`);
+      assert(report.failed.some((f) => f.name === 'set-a' && f.reason === expected),
+        `${label}: the executor gives the table's own reason, got ${JSON.stringify(report.failed)}`);
+      assert(existsSync(join(root, 'backups', 'set-b')),
+        `${label}: the WITNESS is untouched — a stop really stopped`);
+      assert(report.untouched.includes('set-b'), `${label}: and the report names it`);
+      assertEq(report.journalCleared, false, `${label}: the journal stays, so abandon is available`);
+      rmSync(join(root, RETENTION_JOURNAL_NAME));
+    } else {
+      assertEq(report.ok, true, `${label}: the run must complete, got ${JSON.stringify(report.failed)}`);
+      assert(!existsSync(join(root, 'backups', 'set-b')),
+        `${label}: and it really carried on — the witness was removed`);
+      assert(existsSync(join(root, 'backups', 'set-c')), `${label}: the protected set is untouched`);
+    }
+  }
+  assertEq(index, 20, 'all twenty were driven');
+});
+
+// -----------------------------------------------------------------------------------------------------------
+// CORRECTION 2 — `--json` is exactly one JSON document, on one stream, on every outcome
+// -----------------------------------------------------------------------------------------------------------
+
+interface Captured { readonly out: string; readonly err: string; readonly code: number }
+
+/** Run the CLI with every byte of both streams captured, so "and nothing else" can actually be asserted. */
+function captureCli(argv: readonly string[], deps: Parameters<typeof cliMain>[1] = {}): Captured {
+  const out: string[] = [];
+  const err: string[] = [];
+  const log = console.log;
+  const error = console.error;
+  console.log = (...args: unknown[]) => { out.push(args.map(String).join(' ')); };
+  console.error = (...args: unknown[]) => { err.push(args.map(String).join(' ')); };
+  let code: number;
+  try { code = cliMain(argv, deps); } finally { console.log = log; console.error = error; }
+  return { out: out.join('\n'), err: err.join('\n'), code };
+}
+
+/** The whole stream must parse, with nothing before or after the document. */
+function assertOneJsonDocument(text: string, label: string): Record<string, unknown> {
+  assert(text.length > 0, `${label}: the stream carries a document at all`);
+  assertEq(text, text.trim(), `${label}: no leading or trailing whitespace around the document`);
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text);
+  } catch (err) {
+    throw new Error(`${label}: the COMPLETE stream is not one JSON document — ${(err as Error).message}\n`
+      + `--- captured ---\n${text.slice(0, 600)}`);
+  }
+  assert(parsed !== null && typeof parsed === 'object', `${label}: and it is a report object`);
+  return parsed as Record<string, unknown>;
+}
+
+test('--json on an INCOMPLETE run emits one document on stdout, with nothing appended', () => {
+  const root = makeProject('json-incomplete');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-quarantine-rename:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  mkdirSync(join(root, 'backups', 'set-a')); // the both-places state: this run must stop
+  const captured = captureCli(['--project', root, '--resume', digest, '--json']);
+  assertEq(captured.code, RETENTION_EXIT_FAILED, 'it exits 1');
+  const report = assertOneJsonDocument(captured.out, 'INCOMPLETE stdout');
+  assertEq(report.state, 'INCOMPLETE', 'and the state is in the document');
+  assertEq(report.ok, false, 'which says it did not succeed');
+  assert(Array.isArray(report.notes) && (report.notes as string[]).some((n) => n.includes('--abandon')),
+    'the remediation dropped from the stream is inside the report, where a reader can find it');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('--json on REMOVED_BUT_UNPROVEN emits one document on stdout, with nothing appended', () => {
+  const root = makeProject('json-unproven');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const digest = crash(root, 'after-journal', { policy: { keepLast: 1, minAgeDays: 7 } });
+  // The set this run promised to keep stops verifying while the run is interrupted. Every removal still
+  // completes; the PROOF afterwards does not.
+  tamper(join(root, 'backups', 'set-c'));
+  const captured = captureCli(['--project', root, '--resume', digest, '--json']);
+  assertEq(captured.code, RETENTION_EXIT_FAILED, 'it exits 1');
+  const report = assertOneJsonDocument(captured.out, 'REMOVED_BUT_UNPROVEN stdout');
+  assertEq(report.state, 'REMOVED_BUT_UNPROVEN', 'the state is the one under test');
+  assertEq(report.protectedRestorableVerified, false, 'and the proof is recorded as not holding');
+});
+
+test('--json on ABANDONED_WITH_LOSS and on PARTIAL each emit one document on stdout', () => {
+  const withLoss = makeProject('json-abandon-loss');
+  takeSet(withLoss, 'set-a', { daysAgo: 100 });
+  takeSet(withLoss, 'set-b', { daysAgo: 80 });
+  takeSet(withLoss, 'set-c', { daysAgo: 10 });
+  crash(withLoss, 'after-remove:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const lossy = captureCli(['--project', withLoss, '--abandon', '--json']);
+  assertEq(lossy.code, RETENTION_EXIT_FAILED, 'a lossy abandon exits 1');
+  const lossReport = assertOneJsonDocument(lossy.out, 'ABANDONED_WITH_LOSS stdout');
+  assertEq(lossReport.state, 'ABANDONED_WITH_LOSS', 'the state is in the document');
+  assert(Array.isArray(lossReport.goneForever) && (lossReport.goneForever as string[]).includes('set-a'),
+    'and what is gone is named inside it');
+
+  const partial = makeProject('json-abandon-partial');
+  takeSet(partial, 'set-a', { daysAgo: 100 });
+  takeSet(partial, 'set-b', { daysAgo: 80 });
+  takeSet(partial, 'set-c', { daysAgo: 10 });
+  crash(partial, 'after-deleting-mark:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const partialRun = captureCli(['--project', partial, '--abandon', '--json']);
+  assertEq(partialRun.code, RETENTION_EXIT_FAILED, 'a partial abandon exits 1');
+  const partialReport = assertOneJsonDocument(partialRun.out, 'PARTIAL stdout');
+  assertEq(partialReport.state, 'PARTIAL', 'the state is in the document');
+  rmSync(join(partial, RETENTION_JOURNAL_NAME));
+});
+
+test('--json on a POST-EFFECT thrown failure emits one document on stderr, and nothing on stdout', () => {
+  const root = makeProject('json-post-effect');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const pol = policy({ keepLast: 1, minAgeDays: 7 });
+  const plan = planRetention(resolveRetentionRequest({ projectRoot: root, destination: 'backups' }), pol, NOW);
+  let writes = 0;
+  const captured = captureCli(
+    ['--project', root, '--confirm', plan.digest, '--keep-last', '1', '--min-age-days', '7', '--json'],
+    {
+      now: () => NOW,
+      suffix: () => 'aaaaaaaaaaaa',
+      journalWriter: (projectRoot, journal) => {
+        writes += 1;
+        if (writes >= 2) throw new MaintenanceRefused('the retention journal could not be written');
+        writeRetentionJournal(projectRoot, journal);
+      },
+    });
+  assertEq(captured.code, RETENTION_EXIT_FAILED, 'a post-effect failure exits 1, not 3');
+  assertEq(captured.out, '', 'stdout carries nothing at all');
+  const report = assertOneJsonDocument(captured.err, 'post-effect stderr');
+  assertEq(report.ok, false, 'the report says it did not succeed');
+  assertEq(report.state, 'INCOMPLETE', 'and names the state');
+  rmSync(join(root, RETENTION_JOURNAL_NAME));
+});
+
+test('--json on a POST-EFFECT abandon failure emits one document on stderr, and nothing on stdout', () => {
+  const root = makeProject('json-abandon-post-effect');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  crash(root, 'after-quarantine-mark:set-b', { policy: { keepLast: 1, minAgeDays: 7 } });
+  const captured = captureCli(['--project', root, '--abandon', '--json'], {
+    journalClearer: () => { throw new MaintenanceRefused('the retention journal could not be removed'); },
+  });
+  assertEq(captured.code, RETENTION_EXIT_FAILED, 'it exits 1');
+  assertEq(captured.out, '', 'stdout carries nothing at all');
+  const report = assertOneJsonDocument(captured.err, 'post-effect abandon stderr');
+  assertEq(report.ok, false, 'the report says it did not succeed');
+  assert(Array.isArray(report.putBack), 'and carries what it did put back');
+  try { rmSync(join(root, RETENTION_JOURNAL_NAME)); } catch { /* the abandon may have cleared it */ }
+});
+
+test('--json on the SUCCESS paths is one document too, and non-JSON mode keeps its remediation prose', () => {
+  const root = makeProject('json-success');
+  takeSet(root, 'set-a', { daysAgo: 100 });
+  takeSet(root, 'set-b', { daysAgo: 80 });
+  takeSet(root, 'set-c', { daysAgo: 10 });
+  const planned = captureCli(['--project', root, '--plan', '--keep-last', '1', '--min-age-days', '7', '--json']);
+  assertEq(planned.code, RETENTION_EXIT_OK, 'a plan exits 0');
+  const planDoc = assertOneJsonDocument(planned.out, 'plan stdout');
+  const digest = planDoc.digest as string;
+  const ran = captureCli(['--project', root, '--confirm', digest, '--keep-last', '1', '--min-age-days', '7',
+    '--json']);
+  assertEq(ran.code, RETENTION_EXIT_OK, 'the run exits 0');
+  const report = assertOneJsonDocument(ran.out, 'run stdout');
+  assertEq(report.ok, true, 'and succeeded');
+
+  // AND THE HUMAN PATH IS UNCHANGED: the remediation an operator reads is still printed without --json.
+  const human = makeProject('json-success-human');
+  takeSet(human, 'set-a', { daysAgo: 100 });
+  takeSet(human, 'set-b', { daysAgo: 80 });
+  takeSet(human, 'set-c', { daysAgo: 10 });
+  const digest2 = crash(human, 'after-quarantine-rename:set-a', { policy: { keepLast: 1, minAgeDays: 7 } });
+  mkdirSync(join(human, 'backups', 'set-a'));
+  const readable = captureCli(['--project', human, '--resume', digest2]);
+  assertEq(readable.code, RETENTION_EXIT_FAILED, 'it still exits 1');
+  assert(readable.out.includes('THIS PRUNE DID NOT FINISH'), 'and a person is still told what to do next');
+  assert(readable.out.includes('--abandon'), 'by name');
+  rmSync(join(human, RETENTION_JOURNAL_NAME));
 });
 
 console.log('');
