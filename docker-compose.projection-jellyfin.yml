@@ -16,7 +16,13 @@ name: projection-jellyfin-gate
 
 services:
   postgres:
-    image: postgres:16
+    # PINNED BY DIGEST, like every other external image this gate touches.
+    #
+    # `postgres:16` is a moving tag. The whole claim this gate makes rests on three consecutive runs, and
+    # three runs against a database that can change underneath them are not three runs of the same thing —
+    # the repetition would be measuring the registry as much as the product. The gate script already pins the
+    # media server, the Go toolchain and the verifier image; this is the one that was left mutable.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
     environment:
       POSTGRES_DB: catalog
       POSTGRES_USER: postgres

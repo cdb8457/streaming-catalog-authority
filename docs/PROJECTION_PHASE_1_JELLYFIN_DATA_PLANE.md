@@ -101,9 +101,21 @@ So the scan is made to **block on something the gate controls**:
    **again**. Both edges of the window are observed; neither is assumed.
 4. The hold is released and the scan completes normally.
 
-Two things stop this from being decorative. The endpoint counts requests that actually blocked, and the gate
-**fails if that count did not move** — a hold on an object nobody reads would otherwise pass silently. And the
-hold is bounded below the daemon's own request timeout, so a gate that died between hold and release degrades
+Three things stop this from being decorative, and the first is the one that took a review to get right.
+
+**A live gauge, not a lifetime counter.** The endpoint originally reported only `heldRequests` — how many
+requests had *ever* entered a hold. That number stays up after the hold's bound fires and the request
+proceeds, so the gate could have announced that a provider request was blocked across the publish when
+nothing had been blocked for some time. It now also reports `currentHeldWaiters` (how many are blocked at
+this instant) and `holdTimeouts` (how many holds lapsed rather than being released). The gate waits for the
+gauge to **rise** before it claims anything, requires it to still be up **after** the publish, and requires
+**zero timeouts across the window** — because a waiter that lapsed and a fresh one that replaced it would
+leave the gauge looking unchanged over a window that had a gap in it.
+
+**The release has to drain it.** After releasing, the gauge must return to zero, or every reading above was a
+leak rather than a live waiter and the next run would inherit a wedged endpoint.
+
+**The bound stays below the daemon's request timeout,** so a gate that died between hold and release degrades
 into a slow read rather than a failed one.
 
 ## 3.1 Two things this gate deliberately does **not** claim
@@ -172,6 +184,15 @@ share of the file arrived afterwards, since a fully pre-buffered body would make
 starts or after it finishes; either way the step passed while claiming a generation had been admitted *while a
 scan was running*. The scanning process now writes a marker at the moment it observes the scan in flight, the
 publishing half waits on that marker, and the step fails if it never appears.
+
+**A finished scan could look like a running one.** The in-flight predicate accepted any non-null
+`CurrentProgressPercentage` as motion, including alongside `State: 'Idle'`. On the pinned server a scheduled
+task's state is derived from whether it holds a cancellation token source, and completion clears that token
+source *before* it clears the progress figure — so a response serialized between those two writes reports
+`Idle` with a stale progress number. That is a scan which has just **ended**, and one such sample could raise
+the mid-scan marker, satisfy the pre-publish guard, and licence a publish into a scan that was already over.
+Only `Running` and `Cancelling` are accepted now; an unrecognised state keeps the wait going but claims
+nothing.
 
 **A fast-completed scan could still raise that marker.** The barrier tracked one flag for two different
 facts — "an execution happened" and "this process saw it running" — and set it in every branch, including the

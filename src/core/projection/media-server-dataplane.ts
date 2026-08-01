@@ -399,6 +399,22 @@ export interface ScanTaskSample {
 export type ScanPhase = 'not-started' | 'running' | 'complete';
 
 /**
+ * The scheduled-task states that mean an execution is UNDER WAY on the pinned media server.
+ *
+ * These two and nothing else. In particular NOT "a progress percentage is present": on the pinned server the
+ * task's state is derived from whether a cancellation token source exists, and completion clears that token
+ * source BEFORE it clears the progress figure. A response serialized between those two writes reports `Idle`
+ * with a stale non-null progress, which is a scan that has just ENDED. Treating it as motion would let a
+ * finished scan satisfy every "while the scan was running" claim in this gate.
+ */
+const IN_FLIGHT_TASK_STATES: ReadonlySet<string> = new Set(['Running', 'Cancelling']);
+
+/** Whether a scheduled-task state means the execution is under way right now. */
+export function isInFlightState(state: string | undefined): boolean {
+  return state !== undefined && IN_FLIGHT_TASK_STATES.has(state);
+}
+
+/**
  * Deciding when a library scan has ACTUALLY started and ACTUALLY finished.
  *
  * THE DEFECT THIS REPLACES. The previous version polled for `State === 'Idle'` and accepted the first one it
@@ -456,9 +472,19 @@ export class ScanBarrier {
     const start = sample.LastExecutionResult?.StartTimeUtc;
     const startedSinceBaseline = ScanBarrier.isAfter(start, this.baselineStart);
 
-    // POSITIVE, PRESENT-TENSE EVIDENCE OF MOTION. This is the only thing that may set `inFlightObserved`.
-    if (state === 'Running' || state === 'Cancelling'
-      || (sample.CurrentProgressPercentage !== null && sample.CurrentProgressPercentage !== undefined)) {
+    // POSITIVE, PRESENT-TENSE EVIDENCE OF MOTION, AND ONLY THE AUTHORITATIVE FIELD COUNTS.
+    //
+    // PROGRESS IS NOT MOTION, WHICH TOOK A THIRD REVIEW TO SEE. This used to accept any non-null
+    // `CurrentProgressPercentage` as running, including alongside `State: 'Idle'`. On the pinned server the
+    // task's `State` is derived from whether a cancellation token source exists, and completion clears that
+    // token source BEFORE it clears the progress figure — so a serialization that lands between the two
+    // legitimately reports Idle with a stale, non-null progress number. That sample is a scan that has just
+    // FINISHED, and reading it as motion is exactly the false positive this whole barrier exists to prevent.
+    //
+    // So only the state field, and only the two values that mean an execution is under way. If a future
+    // pinned server proves another state belongs here, it goes in with the evidence, not on the strength of
+    // a field that looks suggestive.
+    if (isInFlightState(state)) {
       this.executionObserved = true;
       this.inFlightObserved = true;
       return 'running';
@@ -474,10 +500,11 @@ export class ScanBarrier {
       this.finished = true;
       return 'complete';
     }
-    // A new execution has started and the task is not idle: it is mid-execution, which is motion.
+    // A new execution has been recorded under a state this code does not recognise. It is not complete (that
+    // needs Idle) and it is not evidence of motion (that needs Running or Cancelling), so the wait continues
+    // and NOTHING is claimed from it. `inFlightObserved` is deliberately untouched.
     if (startedSinceBaseline) {
       this.executionObserved = true;
-      this.inFlightObserved = true;
       return 'running';
     }
     return this.inFlightObserved ? 'running' : 'not-started';

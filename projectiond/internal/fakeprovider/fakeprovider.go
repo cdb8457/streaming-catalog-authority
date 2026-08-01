@@ -66,17 +66,21 @@ type Object struct {
 
 // Counters are read by the gates. Every one of them is a number a budget is asserted against.
 type Counters struct {
-	Resolutions       atomic.Int64
-	RangeRequests     atomic.Int64
-	HeldRequests      atomic.Int64
-	BytesServed       atomic.Int64
-	Served429         atomic.Int64
-	FullBodyServed    atomic.Int64
-	ExpiredRejected   atomic.Int64
-	PeakConcurrent    atomic.Int64
-	CurrentConcurrent atomic.Int64
-	PeakConns         atomic.Int64
-	CurrentConns      atomic.Int64
+	Resolutions   atomic.Int64
+	RangeRequests atomic.Int64
+	// HeldRequests is a LIFETIME count of requests that entered a hold. CurrentHeldWaiters is how many are
+	// blocked right now, and HoldTimeouts counts holds that lapsed instead of being released.
+	HeldRequests       atomic.Int64
+	CurrentHeldWaiters atomic.Int64
+	HoldTimeouts       atomic.Int64
+	BytesServed        atomic.Int64
+	Served429          atomic.Int64
+	FullBodyServed     atomic.Int64
+	ExpiredRejected    atomic.Int64
+	PeakConcurrent     atomic.Int64
+	CurrentConcurrent  atomic.Int64
+	PeakConns          atomic.Int64
+	CurrentConns       atomic.Int64
 }
 
 // Server is the fake endpoint.
@@ -147,12 +151,28 @@ func (s *Server) waitForHold(ref string) {
 	if !held {
 		return
 	}
+	// THREE NUMBERS, BECAUSE ONE OF THEM ANSWERS A QUESTION THE OTHERS CANNOT.
+	//
+	// HeldRequests is a lifetime counter: it says a request entered a hold AT SOME POINT. That is not what a
+	// gate asserting "the scan was blocked while the successor was published" needs to know, because the
+	// waiter may have stopped being blocked long before the publish — maxHold fires and the request proceeds
+	// while the hold entry is still sitting in the map, so the counter stays up and the block is over.
+	//
+	// CurrentHeldWaiters is the gauge that actually answers it: how many requests are blocked RIGHT NOW. A
+	// gate can wait for it to rise before acting and require it to still be up afterwards.
+	//
+	// HoldTimeouts closes the remaining gap. A waiter that timed out and a fresh waiter that arrived in its
+	// place would leave the gauge looking unchanged across the window; a timeout during the window says the
+	// hold did not hold for all of it.
 	s.counters.HeldRequests.Add(1)
+	s.counters.CurrentHeldWaiters.Add(1)
+	defer s.counters.CurrentHeldWaiters.Add(-1)
 	timer := time.NewTimer(s.maxHold)
 	defer timer.Stop()
 	select {
 	case <-ch:
 	case <-timer.C:
+		s.counters.HoldTimeouts.Add(1)
 	}
 }
 
@@ -355,29 +375,35 @@ func (s *Server) ObjectFor(ref string) (Object, bool) {
 type CountersSnapshot struct {
 	Resolutions   int64 `json:"resolutions"`
 	RangeRequests int64 `json:"rangeRequests"`
-	/** Requests that actually blocked on a hold. A gate proves its hold was HIT by this being non-zero. */
-	HeldRequests    int64 `json:"heldRequests"`
-	BytesServed     int64 `json:"bytesServed"`
-	Served429       int64 `json:"served429"`
-	FullBodyServed  int64 `json:"fullBodyServed"`
-	ExpiredRejected int64 `json:"expiredRejected"`
-	PeakConcurrent  int64 `json:"peakConcurrent"`
-	PeakConns       int64 `json:"peakConns"`
+	// HeldRequests is a lifetime count; CurrentHeldWaiters is how many are blocked at this instant, which is
+	// the only one that can support "a request was still blocked while X happened"; HoldTimeouts is how many
+	// holds lapsed rather than being released, which is how a gate detects that its window had a gap in it.
+	HeldRequests       int64 `json:"heldRequests"`
+	CurrentHeldWaiters int64 `json:"currentHeldWaiters"`
+	HoldTimeouts       int64 `json:"holdTimeouts"`
+	BytesServed        int64 `json:"bytesServed"`
+	Served429          int64 `json:"served429"`
+	FullBodyServed     int64 `json:"fullBodyServed"`
+	ExpiredRejected    int64 `json:"expiredRejected"`
+	PeakConcurrent     int64 `json:"peakConcurrent"`
+	PeakConns          int64 `json:"peakConns"`
 }
 
 // Snapshot reads every counter. It is not atomic across counters and does not need to be: each one is
 // asserted against its own budget.
 func (s *Server) Snapshot() CountersSnapshot {
 	return CountersSnapshot{
-		Resolutions:     s.counters.Resolutions.Load(),
-		RangeRequests:   s.counters.RangeRequests.Load(),
-		HeldRequests:    s.counters.HeldRequests.Load(),
-		BytesServed:     s.counters.BytesServed.Load(),
-		Served429:       s.counters.Served429.Load(),
-		FullBodyServed:  s.counters.FullBodyServed.Load(),
-		ExpiredRejected: s.counters.ExpiredRejected.Load(),
-		PeakConcurrent:  s.counters.PeakConcurrent.Load(),
-		PeakConns:       s.counters.PeakConns.Load(),
+		Resolutions:        s.counters.Resolutions.Load(),
+		RangeRequests:      s.counters.RangeRequests.Load(),
+		HeldRequests:       s.counters.HeldRequests.Load(),
+		CurrentHeldWaiters: s.counters.CurrentHeldWaiters.Load(),
+		HoldTimeouts:       s.counters.HoldTimeouts.Load(),
+		BytesServed:        s.counters.BytesServed.Load(),
+		Served429:          s.counters.Served429.Load(),
+		FullBodyServed:     s.counters.FullBodyServed.Load(),
+		ExpiredRejected:    s.counters.ExpiredRejected.Load(),
+		PeakConcurrent:     s.counters.PeakConcurrent.Load(),
+		PeakConns:          s.counters.PeakConns.Load(),
 	}
 }
 

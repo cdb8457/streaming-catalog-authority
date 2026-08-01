@@ -774,6 +774,7 @@ node "$REL/ctl.cjs" "http://127.0.0.1:${RANGE_PORT}/control/hold/${MIDSCAN_REF}"
 echo "  the endpoint is holding reads of the new remote entry"
 
 HOLD_BEFORE="$(node "$REL/counters.cjs" "http://127.0.0.1:${RANGE_PORT}/counters" heldRequests)"
+HOLD_TIMEOUTS_BEFORE="$(node "$REL/counters.cjs" "http://127.0.0.1:${RANGE_PORT}/counters" holdTimeouts)"
 
 rm -f "$WORK/out/scan-running"
 drive scan --state "$STATE" --expect-file "$REL/out/expected-2.json" \
@@ -810,6 +811,28 @@ fi
 release_hold() {
   node "$REL/ctl.cjs" "http://127.0.0.1:${RANGE_PORT}/control/release/${MIDSCAN_REF}" >/dev/null 2>&1 || true
 }
+held_now() { node "$REL/counters.cjs" "http://127.0.0.1:${RANGE_PORT}/counters" currentHeldWaiters; }
+hold_timeouts() { node "$REL/counters.cjs" "http://127.0.0.1:${RANGE_PORT}/counters" holdTimeouts; }
+
+# A REQUEST MUST BE BLOCKED RIGHT NOW, NOT MERELY HAVE BEEN BLOCKED ONCE.
+#
+# THE GAP THIS CLOSES. The lifetime `heldRequests` counter says a request entered a hold at SOME point. It
+# says nothing about whether that request is still waiting -- the hold has a bound, and once it lapses the
+# request proceeds while the hold entry stays in the map, so the counter remains up and the block is over.
+# The gate could therefore have printed that a provider request was blocked while the successor was published
+# when nothing had been blocked for some time. `currentHeldWaiters` is the live gauge that answers the actual
+# question, and this waits for it to RISE before anything is claimed.
+waiter=0
+for _ in $(seq 1 120); do
+  if [ "$(held_now)" -ge 1 ]; then waiter=1; break; fi
+  if ! kill -0 "$SCAN_PID" 2>/dev/null; then break; fi
+  sleep 0.25
+done
+if [ "$waiter" -ne 1 ]; then
+  release_hold; wait "$SCAN_PID" || true
+  die "no provider request ever blocked on the hold, so the scan was not deterministically stopped"
+fi
+echo "  a provider request is blocked on the hold right now"
 
 drive assert-scan-in-flight --state "$STATE" \
   || { release_hold; wait "$SCAN_PID" || true; die "the scan was not in flight before the mid-scan publish"; }
@@ -826,19 +849,47 @@ publish_added="$(field additions   < "$WORK/out/publish-midscan.json")"
 drive assert-scan-in-flight --state "$STATE" \
   || { release_hold; wait "$SCAN_PID" || true; die "the scan ended during the publish, so the publish did not land strictly inside it"; }
 
+# THE WAITER IS STILL BLOCKED, AND NOTHING LAPSED WHILE WE WERE LOOKING AWAY.
+#
+# Both halves are needed. The gauge alone could look unchanged if the original waiter timed out and a fresh
+# request arrived in its place, which would mean the hold had a gap in exactly the interval this step claims
+# to have covered. A timeout recorded anywhere in the window says so, and is a failure rather than a footnote.
+HELD_STILL="$(held_now)"
+HOLD_TIMEOUTS_AFTER="$(hold_timeouts)"
+if [ "${HELD_STILL:-0}" -lt 1 ]; then
+  release_hold; wait "$SCAN_PID" || true
+  die "the held provider request was no longer blocked after the publish, so the hold did not cover it"
+fi
+if [ "$(( HOLD_TIMEOUTS_AFTER - HOLD_TIMEOUTS_BEFORE ))" -ne 0 ]; then
+  release_hold; wait "$SCAN_PID" || true
+  die "a hold lapsed during the publish window, so the block had a gap in it"
+fi
+echo "  the same hold was still blocking $HELD_STILL request(s) after the publish, with no lapse in between"
+
 # ...and only now does the scan get to finish.
 release_hold
 echo "  the hold is released; the scan may finish"
+
+# AND THE RELEASE ACTUALLY RELEASED. A gauge that never came back down would mean every reading above was a
+# leak rather than a live waiter, and the next run would inherit a wedged endpoint.
+drained=0
+for _ in $(seq 1 120); do
+  if [ "$(held_now)" -eq 0 ]; then drained=1; break; fi
+  sleep 0.25
+done
+test "$drained" -eq 1 || die "a provider request is still blocked after the hold was released"
 
 test "$publish_outcome" = "published" || die "the mid-scan successor was not published"
 test "$publish_added"   = "1"         || die "the mid-scan successor should add exactly one entry"
 wait "$SCAN_PID" || die "the scan did not complete after the hold was released"
 
-# THE HOLD WAS ACTUALLY HIT, which is what makes "the scan was blocked, not merely slow" a measurement.
+# The lifetime counter as a cross-check on the live gauge readings above. It is the weakest of the three and
+# is stated last for that reason: what licensed the claim was the gauge being up before AND after the publish
+# with no lapse in between, not this number being non-zero.
 HOLD_AFTER="$(node "$REL/counters.cjs" "http://127.0.0.1:${RANGE_PORT}/counters" heldRequests)"
 test "$(( HOLD_AFTER - HOLD_BEFORE ))" -ge 1 \
   || die "no provider request was ever held, so the scan was not deterministically blocked and the mid-scan window was luck"
-echo "  $(( HOLD_AFTER - HOLD_BEFORE )) provider request(s) blocked on the hold while the successor was published"
+echo "  $(( HOLD_AFTER - HOLD_BEFORE )) provider request(s) entered the hold; one was still blocked across the publish"
 echo "  a generation was admitted while the scanner was provably walking the namespace"
 
 cat > "$WORK/out/expected-3.json" <<JSON

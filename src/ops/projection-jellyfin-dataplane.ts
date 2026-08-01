@@ -3,8 +3,8 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
   Deadline, GATE_CLIENT, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_POLL_INTERVAL_MS, ScanBarrier,
-  directPlayPath, forcedTranscodePath, hasQueryCredential, mediaServerAuthHeader, movieLibraryRequest,
-  opaqueRef, stripQueryCredentials,
+  directPlayPath, forcedTranscodePath, hasQueryCredential, isInFlightState, mediaServerAuthHeader,
+  movieLibraryRequest, opaqueRef, stripQueryCredentials,
   type GateResult, type ScanTaskSample,
 } from '../core/projection/media-server-dataplane.js';
 
@@ -355,9 +355,10 @@ export async function scanBaseline(state: GateState): Promise<string | undefined
 export async function scanIsRunningNow(state: GateState): Promise<boolean> {
   const task = await scanTask(state);
   if (task === undefined) return false;
-  const progress = task.CurrentProgressPercentage;
-  return task.State === 'Running' || task.State === 'Cancelling'
-    || (progress !== null && progress !== undefined);
+  // ONLY THE AUTHORITATIVE STATE FIELD. A non-null progress percentage alongside `Idle` is what a completing
+  // task looks like when the response is serialized between clearing its cancellation token source and
+  // clearing its progress — a scan that has just finished, not one that is running.
+  return isInFlightState(task.State);
 }
 
 interface RawItem {

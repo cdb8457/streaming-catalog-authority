@@ -10,7 +10,8 @@ import {
   Deadline, GATE_CLIENT, MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_POLL_INTERVAL_MS,
   PLAYBACK_ENDPOINT_IS_ANONYMOUS, ScanBarrier, TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC,
   atLeast, directPlayPath, exactly, findRedactionProblems, forcedTranscodePath, hasQueryCredential,
-  mediaServerAuthHeader, movieLibraryRequest, opaqueRef, stripQueryCredentials, withinBudget,
+  isInFlightState, mediaServerAuthHeader, movieLibraryRequest, opaqueRef, stripQueryCredentials,
+  withinBudget,
 } from '../src/core/projection/media-server-dataplane.js';
 import {
   absolutePath, awaitScanRunning, openPinnedStream, scanIsRunningNow,
@@ -202,6 +203,47 @@ await test('SCAN BARRIER: Running, then a terminal Idle with a new start time, i
   assert(barrier.observedInFlight, 'and having finished does not un-see what was seen');
 });
 
+await test('SCAN BARRIER: Idle PLUS A STALE PROGRESS FIGURE IS A FINISHED SCAN, NOT A RUNNING ONE', () => {
+  // THE FALSE POSITIVE THIS CLOSES, and it is a fact about the pinned server rather than a guess.
+  //
+  // A scheduled task's `State` is derived from whether it holds a cancellation token source. Completion
+  // clears that token source BEFORE it clears the progress figure — so a response serialized between those
+  // two writes reports `Idle` alongside a stale, non-null `CurrentProgressPercentage`. That is a scan that
+  // has just ENDED. The predicate used to accept any non-null progress as motion, so that one sample could
+  // raise the mid-scan marker, satisfy the pre-publish guard, and licence a publish into a scan that was
+  // already over — the precise thing the whole barrier exists to prevent.
+  const barrier = new ScanBarrier(T0);
+  assertEq(barrier.observe({ State: 'Idle', CurrentProgressPercentage: 97, LastExecutionResult: { StartTimeUtc: T1 } }),
+    'complete', 'idle with a new execution recorded is a completion, whatever the progress figure says');
+  assert(!barrier.observedInFlight, 'and it is NOT an in-flight observation');
+
+  // The same shape before any new execution is simply the pre-scan world, and still not motion.
+  const before = new ScanBarrier(T0);
+  assertEq(before.observe({ State: 'Idle', CurrentProgressPercentage: 3, LastExecutionResult: { StartTimeUtc: T0 } }),
+    'not-started', 'a stale idle with a progress figure has not started anything');
+  assert(!before.observedInFlight, 'and cannot raise the in-flight signal');
+  assert(!before.executionSeen, 'nor claim an execution happened');
+});
+
+await test('SCAN BARRIER: only Running and Cancelling are accepted as motion', () => {
+  for (const state of ['Running', 'Cancelling']) {
+    const barrier = new ScanBarrier(T0);
+    assertEq(barrier.observe({ State: state }), 'running', `${state} is an execution under way`);
+    assert(barrier.observedInFlight, `${state} is in-flight evidence`);
+  }
+  // Anything else must not be, however suggestive. An unrecognised state with a new execution keeps the wait
+  // going — it is not complete either — but claims nothing.
+  const unknown = new ScanBarrier(T0);
+  assertEq(unknown.observe({ State: 'Restarting', LastExecutionResult: { StartTimeUtc: T1 } }), 'running',
+    'an unrecognised state with a new execution is not a completion, so the wait continues');
+  assert(!unknown.observedInFlight,
+    'but an unrecognised state is not evidence of motion, and nothing may be claimed from it');
+  assert(isInFlightState('Running') && isInFlightState('Cancelling'), 'the predicate names exactly those two');
+  for (const notMotion of ['Idle', 'Restarting', '', undefined]) {
+    assert(!isInFlightState(notMotion), `${String(notMotion) || '(empty)'} is not motion`);
+  }
+});
+
 await test('SCAN BARRIER: A FAST COMPLETE IS A VALID COMPLETION AND AN INVALID IN-FLIGHT OBSERVATION', () => {
   // THE FALSE POSITIVE THIS SPLIT CLOSES, and it is the whole reason these are two properties.
   //
@@ -234,12 +276,11 @@ await test('SCAN BARRIER: a completed scan is not un-completed by a later ambigu
   assertEq(barrier.observe(undefined), 'complete', 'and a missing task does not reopen it');
 });
 
-await test('SCAN BARRIER: progress alone counts as running, and a slow start is not a completion', () => {
+await test('SCAN BARRIER: a slow start is not a completion, and a seen scan stays seen until it ends', () => {
   const barrier = new ScanBarrier(T0);
   assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } }), 'not-started', 'idle');
-  // Some versions report progress before the state flips.
-  assertEq(barrier.observe({ State: 'Idle', CurrentProgressPercentage: 5 }), 'running', 'progress is motion');
-  // ...and once running has been seen, a bare idle without a new start time is not a completion.
+  assertEq(barrier.observe({ State: 'Running' }), 'running', 'the state field is what says it started');
+  // Once running has been seen, a bare idle without a new start time is not a completion.
   assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } }), 'running',
     'the scan is still considered in flight until a NEW execution start is recorded');
   assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } }), 'complete', 'done');
@@ -314,6 +355,20 @@ await test('BEHAVIOURAL: awaitScanRunning refuses a scan that finished between p
   );
 });
 
+await test('BEHAVIOURAL: Idle-plus-progress cannot raise the marker or satisfy awaitScanRunning', async () => {
+  // The same completing-task sample, driven end to end. It must neither be mistaken for motion nor licence
+  // anything: `awaitScanRunning` sees a completion it never observed in flight and refuses by name.
+  await withScriptedScanTask(
+    [{ State: 'Idle', CurrentProgressPercentage: 88, LastExecutionResult: { StartTimeUtc: T1 } }],
+    async (baseUrl) => {
+      let threw = '';
+      try { await awaitScanRunning({ baseUrl, token: 'x' }, T0); } catch (error) { threw = (error as Error).message; }
+      assert(threw.includes('never observed in flight'),
+        `Idle with stale progress must be refused, got: ${threw || '(no throw)'}`);
+    },
+  );
+});
+
 await test('BEHAVIOURAL: awaitScanRunning succeeds on a genuinely running scan', async () => {
   await withScriptedScanTask(
     [{ State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } }, { State: 'Running' }],
@@ -328,9 +383,15 @@ await test('BEHAVIOURAL: the pre-publish guard reads the present, not the past',
   await withScriptedScanTask([{ State: 'Running' }], async (baseUrl) => {
     assertEq(await scanIsRunningNow({ baseUrl, token: 'x' }), true, 'a running task is running');
   });
-  // Progress reported without a Running state still counts as motion.
+  await withScriptedScanTask([{ State: 'Cancelling' }], async (baseUrl) => {
+    assertEq(await scanIsRunningNow({ baseUrl, token: 'x' }), true, 'a cancelling task is still executing');
+  });
+  // ADVERSARIAL: Idle with a stale progress figure. On the pinned server this is what a task looks like when
+  // the response is serialized between clearing its cancellation token source and clearing its progress — a
+  // scan that has just FINISHED. It must not pass the pre-publish guard.
   await withScriptedScanTask([{ State: 'Idle', CurrentProgressPercentage: 12 }], async (baseUrl) => {
-    assertEq(await scanIsRunningNow({ baseUrl, token: 'x' }), true, 'progress is motion');
+    assertEq(await scanIsRunningNow({ baseUrl, token: 'x' }), false,
+      'Idle plus a stale progress figure is a completing scan, and must NOT licence a mid-scan publish');
   });
   // FINISHED BETWEEN THE MARKER AND THE PUBLISH. This is the race the guard exists for: the marker was
   // legitimately written moments ago, and by now there is no scan to publish into.
@@ -404,19 +465,40 @@ await test('THE MID-SCAN WINDOW IS HELD OPEN DETERMINISTICALLY, not waited for a
   assert(block.includes('--version-key remote-held'), 'a fresh remote entry is registered for the purpose');
   assert(block.includes('publish-holdable.json'), 'and published before the raced scan starts');
 
-  // AND THE HOLD WAS ACTUALLY HIT. Without this the gate could hold an object nobody reads and still pass.
-  assert(block.includes('heldRequests'), 'the endpoint\'s held-request counter is read');
-  assert(/no provider request was ever held/.test(block),
-    'and zero held requests is a named failure: the window would have been luck rather than a measurement');
+  // A WAITER MUST BE BLOCKED RIGHT NOW, BEFORE AND AFTER, WITH NO LAPSE IN BETWEEN.
+  //
+  // The lifetime `heldRequests` counter says a request entered a hold at some point. It stays up after the
+  // bound fires and the request proceeds, so on its own it cannot support "a request was blocked while the
+  // successor was published". The live gauge is what does, and a timeout inside the window is what rules out
+  // the case where one waiter lapsed and another arrived to take its place.
+  const waitAt = block.indexOf('held_now');
+  const firstGuardAt = block.indexOf('drive assert-scan-in-flight');
+  assert(waitAt > 0 && waitAt < firstGuardAt, 'the gate waits for a LIVE waiter before it claims anything');
+  assert(/no provider request ever blocked on the hold/.test(block),
+    'and never seeing one blocked is a named failure');
+  assert(block.includes('HELD_STILL'), 'the gauge is read again after the publish');
+  assert(/the held provider request was no longer blocked after the publish/.test(block),
+    'and a waiter that stopped being blocked fails the step');
+  assert(block.includes('HOLD_TIMEOUTS_AFTER') && block.includes('HOLD_TIMEOUTS_BEFORE'),
+    'hold timeouts are compared across the window');
+  assert(/a hold lapsed during the publish window/.test(block),
+    'and a lapse inside the window is a failure, because the block would have had a gap in it');
+  // Non-wedging: the release must actually drain the waiters.
+  assert(/still blocked after the hold was released/.test(block),
+    'and the gauge is required to return to zero after the release');
 
   const provider = read('projectiond/internal/fakeprovider/fakeprovider.go');
   assert(provider.includes('func (s *Server) Hold('), 'the endpoint supports a hold');
-  assert(provider.includes('HeldRequests'), 'and counts requests that actually blocked on one');
+  assert(provider.includes('CurrentHeldWaiters'), 'and exposes how many requests are blocked right now');
+  assert(provider.includes('HoldTimeouts'), 'and how many holds lapsed rather than being released');
   assert(provider.includes('maxHold'), 'bounded, so a forgotten release degrades into a slow read');
-  assert(exists('projectiond/internal/fakeprovider/fileobject_test.go'), 'with Go tests behind it');
   const goSuite = read('projectiond/internal/fakeprovider/fileobject_test.go');
   assert(goSuite.includes('TestHoldBlocksARangeRequestUntilReleased'), 'that a hold blocks until released');
   assert(goSuite.includes('TestHoldIsBoundedSoAForgottenReleaseCannotWedgeAReader'), 'and that it is bounded');
+  assert(goSuite.includes('TestCurrentHeldWaitersTracksLiveWaitersAndReturnsToZero'),
+    'that the gauge tracks live waiters concurrently and comes back down');
+  assert(goSuite.includes('TestAHoldThatLapsesIsCountedAndFreesItsWaiter'),
+    'and that a lapsed hold is visible as a timeout while the lifetime counter stays up');
 });
 
 await test('the driver uses the barrier and takes its baseline BEFORE triggering the scan', () => {
@@ -839,6 +921,37 @@ await test('the gate exists, is pinned by digest, and isolates every port, name 
   const compose = read('docker-compose.projection-jellyfin.yml');
   assert(compose.includes('name: projection-jellyfin-gate'), 'its own compose project name');
   assert(compose.includes('tmpfs:'), 'and throwaway database storage');
+
+  // EVERY EXTERNAL IMAGE THIS GATE TOUCHES, INCLUDING THE ONE IN THE COMPOSE FILE.
+  //
+  // The digest check above covers the images the shell script names. The database was declared as
+  // `postgres:16` — a moving tag — and slipped through, which would have made "three consecutive runs" three
+  // runs against something that can change underneath them. The only image allowed to be unpinned is the
+  // one BUILT FROM THIS CHECKOUT, because a digest for a local build would be a digest of whatever was last
+  // built rather than of the reviewed source.
+  const localBuiltImage = 'projectiond:phase1-local';
+  for (const [file, source] of [
+    ['docker-compose.projection-jellyfin.yml', compose],
+    ['deploy/projection-jellyfin-dataplane-gate.sh', gate],
+  ] as const) {
+    for (const line of source.split('\n')) {
+      // URLs are stripped first. `postgresql://postgres:postgres@host/db` contains `postgres:postgres`,
+      // which looks exactly like a tagged image reference and is a database credential.
+      const trimmed = line.trim().replace(/[a-z][a-z0-9+.-]*:\/\/\S*/gi, '');
+      if (trimmed.startsWith('#')) continue;
+      // `image: x`, `IMAGE="x"` and `--image x` all land here; a bare word with a tag and no digest is what
+      // this is hunting.
+      const refs = trimmed.match(/\b(?:[a-z0-9.-]+\/)*[a-z0-9.-]+:[a-z0-9][a-z0-9._-]*(?:@sha256:[0-9a-f]{64})?/g) ?? [];
+      for (const ref of refs) {
+        if (!/^(?:[a-z0-9.-]+\/)*[a-z0-9.-]+:[a-z0-9][a-z0-9._-]*$/.test(ref)) continue;
+        if (ref.startsWith(localBuiltImage)) continue;
+        // Only things that actually look like image references: a known registry path or a known image name.
+        if (!/^(postgres|alpine|golang|jellyfin\/jellyfin|ghcr\.io\/|docker\.io\/)/.test(ref)) continue;
+        assert(false, `${file} names the mutable image reference "${ref}"; pin it by digest`);
+      }
+    }
+  }
+  assert(/postgres:16@sha256:[0-9a-f]{64}/.test(compose), 'the database is pinned by digest');
   assert(!gate.includes(':5432') && !gate.includes(':5470'), 'it takes no other stack\'s port');
   assert(/trap cleanup EXIT/.test(gate), 'it cleans up on success and on failure');
   assert(gate.indexOf('docker rm -f "$JELLYFIN_CONTAINER"') < gate.indexOf('docker rm -f "$MOUNT_CONTAINER"'),

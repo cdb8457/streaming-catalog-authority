@@ -226,6 +226,110 @@ func TestHoldBlocksARangeRequestUntilReleased(t *testing.T) {
 	}
 }
 
+// THE GAUGE MUST TRACK WHO IS BLOCKED RIGHT NOW, not who was ever blocked.
+//
+// A lifetime counter cannot support "a request was still blocked while the successor was published": the
+// waiter may have stopped being blocked long before, because maxHold fires and the request proceeds while the
+// hold entry is still in the map. Only a live gauge answers the present-tense question, and only a timeout
+// counter shows that the window had a gap in it.
+func TestCurrentHeldWaitersTracksLiveWaitersAndReturnsToZero(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-gauge", 8192)
+	server.Hold("obj-gauge")
+
+	const waiters = 3
+	done := make(chan error, waiters)
+	for i := 0; i < waiters; i++ {
+		go func() {
+			request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-gauge", nil)
+			request.Header.Set("Range", byteRange(0, 255))
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				done <- err
+				return
+			}
+			io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+			done <- nil
+		}()
+	}
+
+	// Wait, boundedly, for all three to be blocked at once.
+	deadline := time.Now().Add(5 * time.Second)
+	for server.Counters().CurrentHeldWaiters.Load() < waiters {
+		if time.Now().After(deadline) {
+			t.Fatalf("only %d of %d waiters ever blocked", server.Counters().CurrentHeldWaiters.Load(), waiters)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if timeouts := server.Counters().HoldTimeouts.Load(); timeouts != 0 {
+		t.Fatalf("a hold timed out while it was supposed to be holding: %d", timeouts)
+	}
+
+	server.Release("obj-gauge")
+	for i := 0; i < waiters; i++ {
+		if err := <-done; err != nil {
+			t.Fatalf("a released waiter failed: %v", err)
+		}
+	}
+	// THE GAUGE MUST COME BACK DOWN, or every later assertion built on it is reading a leak.
+	deadline = time.Now().Add(5 * time.Second)
+	for server.Counters().CurrentHeldWaiters.Load() != 0 {
+		if time.Now().After(deadline) {
+			t.Fatalf("the gauge did not return to zero: %d", server.Counters().CurrentHeldWaiters.Load())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if held := server.Counters().HeldRequests.Load(); held != waiters {
+		t.Fatalf("lifetime held requests: got %d, want %d", held, waiters)
+	}
+	if timeouts := server.Counters().HoldTimeouts.Load(); timeouts != 0 {
+		t.Fatalf("a released hold must not be counted as a timeout: %d", timeouts)
+	}
+}
+
+// A LAPSED HOLD IS COUNTED, AND THE GAUGE DROPS EVEN THOUGH NOBODY RELEASED IT.
+//
+// This is the exact shape the gate has to be able to detect: the counter that says "a request entered a hold"
+// stays up, while the request is no longer blocked at all. Without HoldTimeouts and the gauge, a gate could
+// print that a provider request was blocked across a publish when the block had already lapsed.
+func TestAHoldThatLapsesIsCountedAndFreesItsWaiter(t *testing.T) {
+	server, err := New(Options{MaxHold: 120 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-lapse", 4096)
+	server.Hold("obj-lapse")
+
+	request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-lapse", nil)
+	request.Header.Set("Range", byteRange(0, 511))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("ranged get: %v", err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+
+	if timeouts := server.Counters().HoldTimeouts.Load(); timeouts != 1 {
+		t.Fatalf("hold timeouts: got %d, want 1 — a lapsed hold must be visible", timeouts)
+	}
+	if live := server.Counters().CurrentHeldWaiters.Load(); live != 0 {
+		t.Fatalf("current waiters after a lapse: got %d, want 0", live)
+	}
+	// And the lifetime counter is still up, which is precisely why it cannot be the evidence on its own.
+	if held := server.Counters().HeldRequests.Load(); held != 1 {
+		t.Fatalf("lifetime held requests: got %d, want 1", held)
+	}
+	// THE HOLD ENTRY IS STILL IN THE MAP after a lapse, so a later request blocks again rather than the hold
+	// silently evaporating. A gate that released and re-checked would otherwise see an inconsistent world.
+	server.Release("obj-lapse")
+}
+
 func TestHoldIsBoundedSoAForgottenReleaseCannotWedgeAReader(t *testing.T) {
 	// A gate that crashed between Hold and Release must degrade into a slow read, not a failed one: the bound
 	// is deliberately shorter than the range adapter's default request timeout.
