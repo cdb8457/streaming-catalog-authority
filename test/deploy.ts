@@ -11189,6 +11189,55 @@ test('projection appliance - Projection Phase 0 freezes the product contract and
   }
 });
 
+test('projection appliance - Projection Phase 1 ships an isolated Go data plane without disturbing the control plane', () => {
+  for (const artifact of [
+    'projectiond/go.mod',
+    'projectiond/go.sum',
+    'projectiond/Dockerfile',
+    'projectiond/cmd/projectiond/main.go',
+    'projectiond/internal/fusefs/fusefs.go',
+    'projectiond/internal/contract/contract.generated.json',
+    'docker-compose.projectiond.yml',
+    'docker-compose.projectiond.operator.yml',
+    'deploy/projectiond-gates.sh',
+    'deploy/projectiond-fuse-smoke.sh',
+    'deploy/projectiond-image-smoke.sh',
+    'test/projectiond-wiring.ts',
+  ]) assert(exists(artifact), `Phase 1 artifact exists: ${artifact}`);
+
+  assert(typeof pkg.scripts['test:projectiond-wiring'] === 'string', 'Phase 1 wiring suite has a script');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/projectiond-wiring.ts'), 'Phase 1 suite in CI chain');
+  for (const script of ['go:gates', 'go:race', 'go:fuse-smoke', 'go:image-smoke']) {
+    assert(typeof pkg.scripts[script] === 'string', `Phase 1 defines ${script}`);
+  }
+
+  // THE GO MODULE IS ISOLATED. The TypeScript build and the aggregate suite must run on a machine with no Go
+  // and no Docker, exactly as they did before this tranche existed.
+  assert(!read('tsconfig.json').includes('projectiond'), 'the TypeScript build does not reach into the Go module');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('docker'), 'the aggregate suite needs no Docker');
+
+  // The daemon does not become a second control plane.
+  const daemonSource = read('projectiond/internal/daemon/daemon.go');
+  for (const forbidden of ['database/sql', 'sqlite', 'pgx', 'lib/pq']) {
+    assert(!daemonSource.includes(forbidden), `the data plane holds no database: ${forbidden}`);
+  }
+
+  // The operator harness is narrow and separate: no shipped stack references it.
+  for (const composeFile of ['docker-compose.yml', 'docker-compose.runtime.yml', 'docker-compose.unraid.yml',
+    'docker-compose.arcane.yml', 'docker-compose.deploy.yml']) {
+    if (!exists(composeFile)) continue;
+    assert(!read(composeFile).includes('projectiond'),
+      `${composeFile} must not reference the experimental data plane`);
+  }
+
+  // README describes it as experimental and names what is still unproved.
+  const readme = read('README.md');
+  assert(readme.includes('experimental vertical'), 'README calls the slice experimental');
+  for (const unproved of ['Plex', 'Jellyfin', 'Emby', 'Unraid']) {
+    assert(readme.includes(unproved), `README names ${unproved} among the unproved gates`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

@@ -1,0 +1,21 @@
+{
+  "mountPoint": "/mnt/projection",
+  "pointerPath": "/var/lib/projectiond/manifest/pointer.json",
+  "probeCacheDir": "/var/lib/projectiond/cache",
+  "statusAddr": "127.0.0.1:8130",
+  "localRoots": {
+    "media-root-a": "/var/lib/projectiond/media"
+  },
+  "endpoints": [
+    {
+      "id": "provider-a",
+      "resolverUrl": "https://api.example.invalid/resolve",
+      "allowedOrigins": [
+        "https://api.example.invalid",
+        "https://cdn.example.invalid"
+      ],
+      "tokenFile": "/run/secrets/provider_a_token",
+      "maxConnections": 4
+    }
+  ]
+}

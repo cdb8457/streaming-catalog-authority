@@ -13,8 +13,31 @@ README is the **control plane** for that — the part that decides what exists. 
 it is what you can run today.
 
 The **data plane** — a small Go daemon, `projectiond`, that serves a provider-agnostic, read-only namespace of
-regular files over FUSE from a manifest PostgreSQL publishes — is **not built yet**. No media server can open
-a file through this product today. That is the next and only tranche of work.
+regular files over FUSE from a manifest PostgreSQL publishes — now exists as an **experimental vertical
+slice**. It is not a release, it is not wired into any shipped Compose stack, and it has never been run
+against a real media server.
+
+**What actually works, and is proved by a gate you can run.** `projectiond` admits a manifest v1 artifact
+(refusing every one of the 28 adversarial fixtures with the same problem code the TypeScript validator emits),
+builds an immutable namespace, and serves it over low-level Linux FUSE. Both Phase 1 source adapters are
+implemented: **local passthrough** (root-confined by `openat`/`O_NOFOLLOW`, never following a symlink out) and
+**HTTP Range** (206-only, exact `Content-Range`, a `200` full body abandoned at the header, redirects refused,
+an egress allowlist by origin plus a dial-time address check, and stable `endpointId`+`objectRef` references
+resolved to **memory-only** expiring access leases with one single-flighted refresh per source per cooldown).
+A privileged Linux container gate mounts a mixed local + fake-remote manifest and asserts stat, list, read,
+seek, hash, refused mutations, a generation swap under an open handle, and unmount/remount.
+
+```bash
+npm run go:gates        # format, vet, build, test, race — through a pinned Go image, no host Go needed
+npm run go:fuse-smoke   # the privileged mount gate; skips with an explicit reason without /dev/fuse
+npm run go:image-smoke  # builds the image and runs it non-root on a read-only filesystem
+```
+
+**What is NOT proved, and is not claimed.** No **Plex**, **Jellyfin** or **Emby** scan, playback, seek or
+transcode has been run against this mount. No **Unraid** or other real-environment gate has been run. The
+amplification budgets are measured against the in-process fake endpoint, not a real provider. Those are the
+gates in [docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md](docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md), and until
+they pass on a real host this is a slice that works on a test bench.
 
 - The decision, and the earlier non-goals it narrows: [docs/ADR_002_PROJECTION_APPLIANCE.md](docs/ADR_002_PROJECTION_APPLIANCE.md)
 - The frozen contract the daemon is built against: [docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md](docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md)

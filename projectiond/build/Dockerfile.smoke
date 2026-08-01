@@ -1,0 +1,12 @@
+# The FUSE smoke image: the pinned Go toolchain plus the fusermount helper.
+#
+# WHY AN IMAGE RATHER THAN apt-get ON EVERY RUN. Installing the helper inside the gate made every smoke run
+# depend on a working package mirror, which turns a network hiccup into a failed gate that looks like a
+# product defect. Building it once pins what the gate runs on, exactly like the toolchain itself.
+FROM golang:1.26.5-bookworm
+
+RUN apt-get update \
+ && apt-get install -y --no-install-recommends fuse3 \
+ && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace/projectiond
