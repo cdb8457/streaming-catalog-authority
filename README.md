@@ -16,10 +16,14 @@ The **data plane** — a small Go daemon, `projectiond`, that serves a provider-
 regular files over FUSE — now exists as an **experimental vertical slice**. It is not a release, it is not
 wired into any shipped Compose stack, and it has never been run against a real media server.
 
-**The manifest publisher does not exist yet.** The manifest contract, its schema, its cross-language export
-and its fixtures are built and tested, and the daemon consumes them; what is missing is the production
-PostgreSQL path that turns the catalog into a published generation. Today a manifest comes from a test fixture
-or from the gate's fixture tool, so "PostgreSQL publishes the namespace" is the design, not the current state.
+**The manifest publisher now exists.** PostgreSQL turns the catalog into a published generation: a stable
+source registry (schema v10) that the control plane asserts through `ops:projection-register`, and a publisher
+(`ops:projection-publish`) that builds one generation from one consistent snapshot, commits its exact bytes
+and digest before touching the disk, writes the artifact under a name no reader watches, and publishes the
+pointer by `rename()` last. A second publisher is refused rather than queued, an unchanged catalog mints
+nothing, and a run interrupted at any of its three boundaries is finished — or repaired from PostgreSQL — by
+the next one. No access URL, token, header, expiry or lease can be stored anywhere in it, by two independent
+checks. Details in [docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md](docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md).
 
 **What actually works, and is proved by a gate you can run.** `projectiond` admits a manifest v1 artifact
 (refusing every one of the 28 adversarial fixtures with the same problem code the TypeScript validator emits),
@@ -37,11 +41,17 @@ npm run go:fuse-smoke   # the privileged mount gate; skips with an explicit reas
 npm run go:image-smoke  # builds the operator image; proves the SAME image mounts (root-in-container +
                         # CAP_SYS_ADMIN + /dev/fuse, by syscall, no fusermount helper) and that an ordinary
                         # NON-ROOT container can list, stat, hash and seek it while every mutation is refused
+
+npm run test:projection-publisher     # the publisher, offline: derivation, canonical bytes, every refusal
+npm run test:projection-publisher-db  # against a real migrated PostgreSQL: locking, idempotence, crash recovery
+npm run go:publisher-mount-gate       # PostgreSQL -> the production publisher -> the production image ->
+                                      # a mount -> both files hashed by a non-root container, a successor
+                                      # published under an open handle, and forged bad generations refused
 ```
 
 **What is NOT proved, and is not claimed.** No **Plex**, **Jellyfin** or **Emby** scan, playback, seek or
-transcode has been run against this mount. No **Unraid** or other real-environment gate has been run. There is
-no production manifest publisher.
+transcode has been run against this mount. No **Unraid** or other real-environment gate has been run. The
+publisher exists and its gates pass, but nothing downstream of the mount has been a real media server.
 
 The amplification numbers come from a **synthetic 50-entry harness** against an in-process fake endpoint: it
 reads the three fixed windows of the contract's own probe plan and measures range requests, resolution
@@ -54,6 +64,7 @@ and until they pass on a real host this is a slice that works on a test bench.
 
 - The decision, and the earlier non-goals it narrows: [docs/ADR_002_PROJECTION_APPLIANCE.md](docs/ADR_002_PROJECTION_APPLIANCE.md)
 - The frozen contract the daemon is built against: [docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md](docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md)
+- The producer, its registry and its crash-safety: [docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md](docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md)
 - What has to pass before anything else starts: [docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md](docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md)
 - The roadmap, and the rule that keeps it one item long: [docs/PROJECTION_ROADMAP.md](docs/PROJECTION_ROADMAP.md)
 
