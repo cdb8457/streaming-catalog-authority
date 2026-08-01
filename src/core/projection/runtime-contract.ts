@@ -184,7 +184,11 @@ export const PROJECTIOND_ACCESS_RESOLUTION = Object.freeze({
   /**
    * One refresh per source per cooldown, daemon-wide. Not per read, not per handle: twenty handles hitting an
    * expired lease at once cost ONE resolution, and a source whose resolutions keep failing cannot be made to
-   * resolve again for a minute however many readers ask.
+   * resolve again until REFRESH_COOLDOWN_MS has elapsed, however many readers ask.
+   *
+   * THE FIRST RESOLUTION OF A SOURCE IS NOT A REFRESH. Obtaining a lease for the first time is simply how a
+   * source becomes readable; charging it to this budget would mean the very first read spent the allowance
+   * the first expiry needs. Every later resolution — including replacing one that has lapsed — is a refresh.
    */
   MAX_REFRESHES_PER_SOURCE_PER_COOLDOWN: 1,
   REFRESH_COOLDOWN_MS: 30_000,
@@ -285,8 +289,19 @@ export const PROJECTIOND_CIRCUIT_BREAKER = Object.freeze({
 export const PROJECTIOND_CACHE_POLICY = Object.freeze({
   probePrefix: Object.freeze({
     PERSISTENT: true,
-    /** Per projected version. One probe window: what a scanner reads, and nothing beyond it. */
-    BYTES_PER_VERSION: 1_048_576,
+    /**
+     * Per projected version: the THREE fixed scan windows (head, middle, tail) of the manifest's own probe
+     * plan, and nothing beyond them.
+     *
+     * AMENDED IN PHASE 1. This was one window, on the assumption that a metadata pass reads a header and
+     * stops. Measured scanner behaviour is a header, something near the middle, and the tail — where a
+     * container keeps its index. With only the head persistent, the other two probes landed in ephemeral
+     * playback chunks that are dropped on release, so a second scan re-fetched them and "a re-scan costs
+     * zero provider requests" was unachievable by construction rather than by defect.
+     */
+    BYTES_PER_VERSION: 3 * 1_048_576,
+    /** How many fixed windows that is. The byte budget below is measured against this many per entry. */
+    SCAN_WINDOWS_PER_ENTRY: 3,
     MAX_TOTAL_BYTES: 2 * 1024 * 1024 * 1024,
     /** Keyed by projected-version id, never by path and never by source: a failover keeps its cache. */
     KEY: 'projected-version-id',
@@ -307,7 +322,12 @@ export const PROJECTIOND_CACHE_POLICY = Object.freeze({
  * player reads sequentially forever: not reading ahead for it is a stutter.
  */
 export const PROJECTIOND_READAHEAD_POLICY = Object.freeze({
-  /** No read-ahead at all inside the probe window. A scan must never pull more than it asked for. */
+  /**
+   * No read-ahead at all inside any of the three fixed scan windows. A scan must never pull more than it
+   * asked for, and the tail window is the one where naive read-ahead would be most expensive: a scanner
+   * seeking to the end must not drag the preceding chunks with it.
+   */
+  SUPPRESSED_WITHIN_SCAN_WINDOWS: true,
   SUPPRESSED_WITHIN_BYTES: 1_048_576,
   /** This many sequential, chunk-aligned reads past the probe window before read-ahead starts. */
   SEQUENTIAL_TRIGGER_READS: 3,
@@ -414,8 +434,16 @@ export const PROJECTIOND_PLATFORM_SUPPORT = Object.freeze({
 export const PROJECTION_PHASE_1_BUDGETS = Object.freeze({
   /** Provider requests during one library scan, as a multiple of the entry count. */
   MAX_REQUEST_MULTIPLIER: 1.2,
-  /** Provider bytes during one library scan, as a multiple of (probe window x entry count). */
+  /**
+   * Provider bytes during one library scan, as a multiple of
+   * (probe window x SCAN_WINDOWS_PER_ENTRY x entry count).
+   *
+   * AMENDED IN PHASE 1 to name the scan-window count explicitly. The denominator was previously one window
+   * per entry, which no real scanner matches; leaving it there would have meant either a budget that always
+   * failed or a harness quietly reading less than a media server does.
+   */
   MAX_BYTE_MULTIPLIER: 1.2,
+  SCAN_WINDOWS_PER_ENTRY: 3,
   /** Not "few". Zero. A 429 means the admission limits did not hold. */
   MAX_HTTP_429: 0,
   /** A re-scan of an unchanged library costs no provider request at all: the probe cache already has it. */

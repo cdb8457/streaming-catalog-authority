@@ -690,12 +690,21 @@ test('every deadline is bounded and the read deadline dominates the parts it is 
 test('the two caches answer two different questions, and the probe cache is keyed so failover keeps it', () => {
   assertEq(PROJECTIOND_CACHE_POLICY.probePrefix.PERSISTENT, true, 'the probe cache survives a restart');
   assertEq(PROJECTIOND_CACHE_POLICY.probePrefix.KEY, 'projected-version-id', 'keyed by version, not path or source');
-  assertEq(PROJECTIOND_CACHE_POLICY.probePrefix.BYTES_PER_VERSION, PROJECTION_PROBE_PLAN.WINDOW_BYTES,
-    'the probe cache holds exactly the probe window');
+  // AMENDED IN PHASE 1: three fixed windows per version, not one. A scanner reads a header, something near
+  // the middle, and the tail; with only the head persistent, a re-scan could never have been free.
+  assertEq(PROJECTIOND_CACHE_POLICY.probePrefix.SCAN_WINDOWS_PER_ENTRY, PROJECTION_PROBE_PLAN.OFFSETS.length,
+    'the scan cache covers every window the probe plan defines');
+  assertEq(PROJECTIOND_CACHE_POLICY.probePrefix.BYTES_PER_VERSION,
+    PROJECTION_PROBE_PLAN.WINDOW_BYTES * PROJECTION_PROBE_PLAN.OFFSETS.length,
+    'and holds exactly those windows');
+  assertEq(PROJECTION_PHASE_1_BUDGETS.SCAN_WINDOWS_PER_ENTRY, PROJECTION_PROBE_PLAN.OFFSETS.length,
+    'the byte budget is measured against the same window count');
   assertEq(PROJECTIOND_CACHE_POLICY.playback.PERSISTENT, false, 'the playback cache is ephemeral');
   assertEq(PROJECTIOND_CACHE_POLICY.playback.EVICTION, 'dropped-on-release', 'and goes when the handle does');
   assertEq(PROJECTIOND_READAHEAD_POLICY.SUPPRESSED_WITHIN_BYTES, PROJECTION_PROBE_PLAN.WINDOW_BYTES,
     'a scan never pulls more than the probe window');
+  assertEq(PROJECTIOND_READAHEAD_POLICY.SUPPRESSED_WITHIN_SCAN_WINDOWS, true,
+    'and that suppression covers the tail window too, where naive read-ahead would cost the most');
   assertEq(PROJECTIOND_READAHEAD_POLICY.ACTIVE_STREAM_PINNING, true, 'an active stream pins what it is using');
 });
 
