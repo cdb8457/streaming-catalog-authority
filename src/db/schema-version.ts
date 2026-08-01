@@ -35,7 +35,18 @@
 //                one-active-row-per-identity database invariant the per-item outbox has. The v8 per-item
 //                publish_ledger rows are NOT migrated, reinterpreted or touched: they remain per-item
 //                collections, still tracked, still revocable, and are reported as legacy wherever they matter.
-export const MIGRATION_VERSION = 9;
+// v10 (Projection Phase 1): the PROJECTION SOURCE REGISTRY and the published-generation ledger. The manifest
+//                names an exact byte length, an mtime, a stable source descriptor and a visibility state per
+//                entry, and nothing in v9 can answer any of them — `items` holds an opaque id and an encrypted
+//                identity blob, with no file, size, path or locator anywhere in it. Rather than let a
+//                publisher guess (a guessed size is a file a media server cannot play), the gap is closed with
+//                the narrowest boundary that keeps the control plane authoritative: projection_source_roots,
+//                projection_versions, projection_entries and projection_entry_sources are asserted through
+//                cat_projection_* commands, and projection_generations + projection_pointer hold the exact
+//                published artifact bytes, their digest and which generation is current — which is what makes
+//                recovery after a crash a rewrite of committed bytes rather than a reconstruction. No access
+//                URL, token, header, expiry or lease can be stored in any of them, by CHECK.
+export const MIGRATION_VERSION = 10;
 
 /**
  * The advisory-lock key `ops:bootstrap` serialises on.
