@@ -262,8 +262,11 @@ async function scanTask(state: GateState): Promise<ScheduledTask | undefined> {
 
 export interface ScanOutcome {
   readonly elapsedMs: number;
-  /** Whether the scanner was observed IN FLIGHT, as opposed to having started and finished between polls. */
-  readonly observedRunning: boolean;
+  /**
+   * Whether the scanner was observed IN FLIGHT — a sample that said it was running — as opposed to having
+   * started and finished between two polls. A fast-complete is a valid completion and is NOT this.
+   */
+  readonly observedInFlight: boolean;
 }
 
 /**
@@ -291,13 +294,16 @@ export async function scanLibrary(
   await json(state, 'POST', '/Library/Refresh');
   await until('the library scan to start and then finish', MEDIA_SERVER_DEADLINES_MS.LIBRARY_SCAN, async () => {
     const phase = barrier.observe(await scanTask(state));
-    if (phase !== 'not-started' && !announced) {
+    // ONLY `running`. A fast-complete must not raise the in-flight signal: the mid-scan gate publishes on it,
+    // and publishing after the scan has finished while claiming to have published during it is exactly the
+    // false positive this callback used to produce.
+    if (phase === 'running' && !announced) {
       announced = true;
       onRunning?.();
     }
     return phase === 'complete' ? true : undefined;
   });
-  return { elapsedMs: now() - startedAt, observedRunning: barrier.started };
+  return { elapsedMs: now() - startedAt, observedInFlight: barrier.observedInFlight };
 }
 
 /**
@@ -309,15 +315,49 @@ export async function scanLibrary(
  */
 export async function awaitScanRunning(state: GateState, baseline: string | undefined): Promise<void> {
   const barrier = new ScanBarrier(baseline);
-  await until('the library scan to be observed running', MEDIA_SERVER_DEADLINES_MS.LIBRARY_SCAN, async () => {
-    const phase = barrier.observe(await scanTask(state));
-    return phase === 'not-started' ? undefined : true;
-  });
+  // A DISCRIMINATED OUTCOME RATHER THAN A THROW INSIDE THE PROBE. `until` catches whatever a probe throws and
+  // retries it until the deadline, so raising from in there would have turned "the scan finished before I saw
+  // it" into a silent poll loop that eventually reported a timeout against the wrong wait.
+  const outcome = await until('the library scan to be observed running',
+    MEDIA_SERVER_DEADLINES_MS.LIBRARY_SCAN, async () => {
+      const phase = barrier.observe(await scanTask(state));
+      if (phase === 'running') return 'running' as const;
+      if (phase === 'complete') return 'finished-unseen' as const;
+      return undefined;
+    });
+  if (outcome !== 'running') {
+    // NOT A SUCCESS, AND NOT A TIMEOUT EITHER. The scan started and finished between two polls. That is a
+    // perfectly good completion for anything that only needed the scan to be over — and it is useless to a
+    // caller that has to act WHILE the scan is running, because there is no longer a while.
+    throw new GateFailure(
+      'the library scan completed between polls and was never observed in flight, so nothing can be '
+      + 'published "while a scan is running"');
+  }
 }
 
 /** The scan task's last execution start, for use as a barrier baseline. */
 export async function scanBaseline(state: GateState): Promise<string | undefined> {
   return (await scanTask(state))?.LastExecutionResult?.StartTimeUtc;
+}
+
+/**
+ * Is the scanner running RIGHT NOW? One sample, no baseline, no history.
+ *
+ * WHY A SECOND, SIMPLER QUESTION EXISTS. The mid-scan gate has two processes: one watches the scan and
+ * signals when it sees it running, the other publishes on that signal. Between the signal being written and
+ * the publish landing, the scan can finish — and the marker, being a file, cannot un-write itself. So the
+ * publishing side asks this immediately before it acts, and refuses if the answer is no.
+ *
+ * It deliberately takes no baseline and consults no barrier. "Is it running now" is a present-tense fact
+ * about one sample; involving history would only let a past observation vouch for a present claim, which is
+ * the whole family of mistake this is here to prevent.
+ */
+export async function scanIsRunningNow(state: GateState): Promise<boolean> {
+  const task = await scanTask(state);
+  if (task === undefined) return false;
+  const progress = task.CurrentProgressPercentage;
+  return task.State === 'Running' || task.State === 'Cancelling'
+    || (progress !== null && progress !== undefined);
 }
 
 interface RawItem {

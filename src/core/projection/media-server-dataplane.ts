@@ -426,37 +426,72 @@ export type ScanPhase = 'not-started' | 'running' | 'complete';
  * that are awkward to produce against a real server: the stale idle, the fast complete, the slow start.
  */
 export class ScanBarrier {
-  private sawRunning = false;
+  /**
+   * TWO FACTS, NOT ONE, AND CONFLATING THEM IS THE DEFECT THIS SPLIT CLOSES.
+   *
+   * `executionObserved` means AN EXECUTION HAPPENED — which a fast-complete proves perfectly well, and which
+   * is all an ordinary "wait for the scan to finish" needs.
+   *
+   * `inFlightObserved` means THIS PROCESS ACTUALLY SAW THE SCANNER RUNNING — a sample that said `Running`,
+   * or reported progress, or was mid-execution. A scan that started and finished between two polls sets the
+   * first and MUST NOT set the second.
+   *
+   * They used to be one flag. Every branch set it, including the fast-complete one, so a scan nobody ever saw
+   * in flight satisfied `started`; `onRunning` fired on it, the mid-scan gate's marker appeared, and the
+   * publish that followed was claimed to have landed WHILE A SCAN WAS RUNNING when it may well have landed
+   * after the scan was over. The claim was the strongest one in that gate and it was the one least supported.
+   */
+  private executionObserved = false;
+  private inFlightObserved = false;
+  private finished = false;
 
   constructor(private readonly baselineStart: string | undefined) {}
 
-  /** The phase implied by one sample. Monotonic: once `running` has been seen it is not forgotten. */
+  /** The phase implied by one sample. Monotonic: neither `running` nor `complete` is ever forgotten. */
   observe(sample: ScanTaskSample | undefined): ScanPhase {
-    if (sample === undefined) return this.sawRunning ? 'running' : 'not-started';
+    // Once a new execution has been seen to END, nothing later un-ends it.
+    if (this.finished) return 'complete';
+    if (sample === undefined) return this.inFlightObserved ? 'running' : 'not-started';
     const state = sample.State ?? '';
     const start = sample.LastExecutionResult?.StartTimeUtc;
     const startedSinceBaseline = ScanBarrier.isAfter(start, this.baselineStart);
 
+    // POSITIVE, PRESENT-TENSE EVIDENCE OF MOTION. This is the only thing that may set `inFlightObserved`.
     if (state === 'Running' || state === 'Cancelling'
       || (sample.CurrentProgressPercentage !== null && sample.CurrentProgressPercentage !== undefined)) {
-      this.sawRunning = true;
+      this.executionObserved = true;
+      this.inFlightObserved = true;
       return 'running';
     }
     // Idle AND a new execution has been recorded: the scan ran and is over. Both halves are required —
     // idle alone is the stale-idle trap, and a new start time alone could still be in flight.
+    //
+    // NOTE WHAT IS NOT SET HERE. If this is the first sample that moved, the scan started and finished
+    // between two polls and this process never saw it running. That is a valid COMPLETION and an invalid
+    // in-flight observation, and the two now say so separately.
     if (state === 'Idle' && startedSinceBaseline) {
-      this.sawRunning = true;
+      this.executionObserved = true;
+      this.finished = true;
       return 'complete';
     }
+    // A new execution has started and the task is not idle: it is mid-execution, which is motion.
     if (startedSinceBaseline) {
-      this.sawRunning = true;
+      this.executionObserved = true;
+      this.inFlightObserved = true;
       return 'running';
     }
-    return this.sawRunning ? 'running' : 'not-started';
+    return this.inFlightObserved ? 'running' : 'not-started';
   }
 
-  /** Whether an execution has been observed to start at all. */
-  get started(): boolean { return this.sawRunning; }
+  /** Whether an execution has been observed to have happened, in flight or between polls. */
+  get executionSeen(): boolean { return this.executionObserved; }
+
+  /**
+   * Whether the scanner was seen ACTUALLY RUNNING by this observer.
+   *
+   * This is the only property any "while a scan was running" claim may rest on.
+   */
+  get observedInFlight(): boolean { return this.inFlightObserved; }
 
   /**
    * Later-than comparison over the server's own timestamps.

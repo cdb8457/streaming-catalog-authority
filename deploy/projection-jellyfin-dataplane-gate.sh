@@ -126,6 +126,28 @@ createReadStream(process.argv[2], { start, end })
   .on('end', () => console.log(hash.digest('hex')));
 SHA
 
+cat > "$WORK/counters.cjs" <<'COUNTERS'
+// One counter from the endpoint, for the shell. Bounded, like everything else here.
+const controller = new AbortController();
+const timer = setTimeout(() => controller.abort(), 15000);
+fetch(process.argv[2], { signal: controller.signal })
+  .then((response) => response.json())
+  .then((snapshot) => { clearTimeout(timer); console.log(String(snapshot[process.argv[3]] ?? 0)); })
+  .catch((error) => { clearTimeout(timer); console.error(`counters failed: ${error.name}`); process.exit(1); });
+COUNTERS
+
+cat > "$WORK/ctl.cjs" <<'CTL'
+// Drive the fake endpoint's hold/release control surface. Bounded, and a non-2xx is a failure.
+const controller = new AbortController();
+const timer = setTimeout(() => controller.abort(), 15000);
+fetch(process.argv[2], { method: 'POST', signal: controller.signal })
+  .then((response) => {
+    clearTimeout(timer);
+    if (!response.ok) { console.error(`control answered ${response.status}`); process.exit(1); }
+  })
+  .catch((error) => { clearTimeout(timer); console.error(`control failed: ${error.name}`); process.exit(1); });
+CTL
+
 cat > "$WORK/objects.cjs" <<'OBJECTS'
 const { readFileSync } = require('node:fs');
 const objects = JSON.parse(readFileSync(process.argv[2], 'utf8'));
@@ -233,6 +255,17 @@ REMOTE_FILE="Projection Remote Two (2026).mp4"
 encode "media/$LOCAL_FILE" 40 testsrc 440 faststart
 encode "remote/$REMOTE_FILE" 8 testsrc2 660 moov-at-end
 
+# A THIRD, SEPARATE REMOTE OBJECT, GENERATED NOW AND PUBLISHED MUCH LATER.
+#
+# It exists for the mid-scan gate, which needs a library scan that is DETERMINISTICALLY still running while a
+# successor is published. The only way to get that without racing the scanner is to make the scan block on
+# something the gate controls: an entry whose probe windows are NOT yet in the daemon's cache, served by an
+# endpoint the gate can hold. It has to be a distinct object for exactly that reason -- once anything has been
+# scanned, its windows are cached and a later scan of it costs the provider nothing (which JD14 asserts), so
+# re-using an existing entry would produce a hold that is never hit.
+MIDSCAN_FILE="Projection Remote Held (2026).mp4"
+encode "remote/$MIDSCAN_FILE" 6 smptebars 550 faststart
+
 LOCAL_SIZE="$(wc -c < "$WORK/media/$LOCAL_FILE" | tr -d ' ')"
 REMOTE_SIZE="$(wc -c < "$WORK/remote/$REMOTE_FILE" | tr -d ' ')"
 test "$LOCAL_SIZE" -gt 3145728  || die "the local media is under 3 MiB, so the full probe plan would not apply"
@@ -262,6 +295,7 @@ step "starting the deterministic HTTP Range endpoint, serving the remote object 
 # deterministic content function has no container header. Its counters are what the amplification budgets are
 # measured against, and they are published on loopback so the driver can read them.
 REMOTE_REF="obj-projection-remote-two"
+MIDSCAN_REF="obj-projection-remote-held"
 
 # A REAL, EXPIRING ACCESS LEASE, WITH A SECRET THIS GATE CAN SEARCH FOR BY EXACT VALUE.
 #
@@ -284,7 +318,8 @@ docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fak
   -e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local -e CGO_ENABLED=0 \
   "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 --lease-prefix "$LEASE_MARKER" \
   --public-base-url "http://fakerange:8099" \
-  --file-object "${REMOTE_REF}=/remote/${REMOTE_FILE}" --emit /out/objects.json >/dev/null
+  --file-object "${REMOTE_REF}=/remote/${REMOTE_FILE}" \
+  --file-object "${MIDSCAN_REF}=/remote/${MIDSCAN_FILE}" --emit /out/objects.json >/dev/null
 
 echo "  waiting for the endpoint to answer a RANGED request"
 # THE PROBE SENDS A RANGE HEADER AND ASSERTS THE STATUS LINE. The endpoint is Range-only by construction — a
@@ -682,9 +717,63 @@ FOURTH_FILE="Projection Local Four (2026).mp4"
 encode "media/$FOURTH_FILE" 10 testsrc 990 faststart
 FOURTH_SIZE="$(wc -c < "$WORK/media/$FOURTH_FILE" | tr -d ' ')"
 FOURTH_SHA="$(node "$REL/sha.cjs" "$REL/media/$FOURTH_FILE")"
+# NOTE THE ORDER, WHICH IS LOAD-BEARING. The successor's rows are registered further down, AFTER the holdable
+# entry has been published — because `publish` mints one generation out of everything registered at the time,
+# and registering the successor first would sweep it into the holdable entry's generation. The mid-scan
+# publish would then have nothing to add, report `unchanged`, and the step would fail having proved nothing.
+
+# ----------------------------------------------------------------------------------------------------------
+# MAKING THE SCAN DETERMINISTICALLY LONG, WHICH IS WHAT MAKES THE REST OF THIS STEP EVIDENCE.
+#
+# A four-entry Jellyfin scan takes a couple of seconds, and the handshake below -- observe running, publish,
+# observe running again -- costs about as long. Timing it is a coin flip, and a coin flip with a retry loop
+# around it is still not evidence.
+#
+# So the scan is made to BLOCK on something this gate controls. A brand-new REMOTE entry is published first;
+# its probe windows are not in the daemon's cache, so the scanner's ffprobe of it must fetch from the
+# endpoint -- and the endpoint is told to hold that request. The scan is then provably still running for as
+# long as the hold lasts, the successor is published into it, and the hold is released afterwards.
+#
+# The entry has to be NEW for this to work at all. Anything already scanned has its windows cached, and JD14
+# asserts a re-scan costs the provider nothing -- so a hold on an existing entry would never be hit. That the
+# hold WAS hit is asserted below from the endpoint's own counter, not assumed.
+MIDSCAN_SIZE="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$MIDSCAN_REF" size)"
+MIDSCAN_SHA="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$MIDSCAN_REF" sha256)"
+MIDSCAN_PROBES="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$MIDSCAN_REF" probes)"
+MIDSCAN_PATH="Movies/Projection Remote Held (2026)/$MIDSCAN_FILE"
+MIDSCAN_ITEM="eeeeeeee-5555-4555-8555-eeeeeeeeeeee"
+
+MIDSCAN_PROBE_FLAGS=""
+for probe in $MIDSCAN_PROBES; do MIDSCAN_PROBE_FLAGS="$MIDSCAN_PROBE_FLAGS --probe $probe"; done
+# shellcheck disable=SC2086
+register version --key remote-held --size "$MIDSCAN_SIZE" --mtime 2026-06-01T10:00:00.000Z $MIDSCAN_PROBE_FLAGS
+register entry --item "$MIDSCAN_ITEM" --version-key remote-held --path "$MIDSCAN_PATH" \
+  --source "http-range:vault:${MIDSCAN_REF}"
+
+publish > "$WORK/out/publish-holdable.json"
+test "$(field outcome < "$WORK/out/publish-holdable.json")" = "published" || die "the holdable entry was not published"
+echo "  waiting for the holdable remote entry to be admitted"
+ready=0
+for _ in $(seq 1 120); do
+  if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -f "/mnt/$MIDSCAN_PATH" >/dev/null 2>&1; then
+    ready=1; break
+  fi
+  sleep 0.5
+done
+test "$ready" -eq 1 || die "the holdable remote entry never became visible"
+
+# NOW the successor's rows, so that the only thing the mid-scan publish can add is this one entry. Registering
+# is a database write and publishes nothing; the generation is minted by `publish` alone.
 register version --key local-four --size "$FOURTH_SIZE" --mtime 2026-06-01T10:00:00.000Z
 register entry --item "$FOURTH_ITEM" --version-key local-four \
   --path "Movies/Projection Local Four (2026)/$FOURTH_FILE" --source "local:media:$FOURTH_FILE"
+
+# HOLD IT. Every ranged request for this object now blocks at the endpoint until released.
+node "$REL/ctl.cjs" "http://127.0.0.1:${RANGE_PORT}/control/hold/${MIDSCAN_REF}" \
+  || die "the endpoint would not accept the hold"
+echo "  the endpoint is holding reads of the new remote entry"
+
+HOLD_BEFORE="$(node "$REL/counters.cjs" "http://127.0.0.1:${RANGE_PORT}/counters" heldRequests)"
 
 rm -f "$WORK/out/scan-running"
 drive scan --state "$STATE" --expect-file "$REL/out/expected-2.json" \
@@ -700,6 +789,10 @@ SCAN_PID=$!
 # observed to have happened. The marker below is written by the scanning process at the moment the media
 # server's own scheduled task is seen in flight, so the publish that follows it is a mid-scan publish as a
 # matter of observation. If it is never written, this fails rather than publishing anyway.
+#
+# THE MARKER IS WRITTEN ONLY FOR A GENUINELY IN-FLIGHT SAMPLE. A scan that starts and finishes between two
+# polls is a valid COMPLETION and is not an in-flight observation; it does not raise this marker, so it cannot
+# licence a publish that would land after the scan was already over.
 running=0
 for _ in $(seq 1 300); do
   if [ -f "$WORK/out/scan-running" ]; then running=1; break; fi
@@ -710,28 +803,66 @@ if [ "$running" -ne 1 ]; then
   wait "$SCAN_PID" || true
   die "the scanner was never observed running, so a mid-scan publish could not be performed"
 fi
-echo "  the scanner is observed in flight; publishing into it"
+# AND STILL IN FLIGHT AT THE MOMENT OF PUBLICATION. The marker records that the scan WAS running when the
+# other process looked; it is a file, and a file cannot un-write itself when the scan ends. So the last thing
+# before publishing is a fresh observation, and a scan that has finished in the meantime makes this step FAIL
+# rather than publish and claim it landed mid-scan. There is no sleep anywhere in this handshake.
+release_hold() {
+  node "$REL/ctl.cjs" "http://127.0.0.1:${RANGE_PORT}/control/release/${MIDSCAN_REF}" >/dev/null 2>&1 || true
+}
+
+drive assert-scan-in-flight --state "$STATE" \
+  || { release_hold; wait "$SCAN_PID" || true; die "the scan was not in flight before the mid-scan publish"; }
 
 publish > "$WORK/out/publish-midscan.json"
-test "$(field outcome   < "$WORK/out/publish-midscan.json")" = "published" || die "the mid-scan successor was not published"
-test "$(field additions < "$WORK/out/publish-midscan.json")" = "1"         || die "the mid-scan successor should add exactly one entry"
-wait "$SCAN_PID" || die "a scan raced against a publish did not complete"
-echo "  a generation was admitted while the scanner was walking the namespace"
+publish_outcome="$(field outcome   < "$WORK/out/publish-midscan.json")"
+publish_added="$(field additions   < "$WORK/out/publish-midscan.json")"
+
+# THE SECOND PRESENT-TENSE CHECK, AND IT IS NOT OPTIONAL. Passing it means the scanner was running BEFORE the
+# publish was issued and STILL running once it had returned -- so the publish landed strictly INSIDE the scan
+# window, with both edges observed rather than one edge observed and the other assumed. This is deterministic
+# rather than lucky only because the scan is blocked on the held read above; without the hold it would be a
+# race, and a race that passes sometimes is not evidence.
+drive assert-scan-in-flight --state "$STATE" \
+  || { release_hold; wait "$SCAN_PID" || true; die "the scan ended during the publish, so the publish did not land strictly inside it"; }
+
+# ...and only now does the scan get to finish.
+release_hold
+echo "  the hold is released; the scan may finish"
+
+test "$publish_outcome" = "published" || die "the mid-scan successor was not published"
+test "$publish_added"   = "1"         || die "the mid-scan successor should add exactly one entry"
+wait "$SCAN_PID" || die "the scan did not complete after the hold was released"
+
+# THE HOLD WAS ACTUALLY HIT, which is what makes "the scan was blocked, not merely slow" a measurement.
+HOLD_AFTER="$(node "$REL/counters.cjs" "http://127.0.0.1:${RANGE_PORT}/counters" heldRequests)"
+test "$(( HOLD_AFTER - HOLD_BEFORE ))" -ge 1 \
+  || die "no provider request was ever held, so the scan was not deterministically blocked and the mid-scan window was luck"
+echo "  $(( HOLD_AFTER - HOLD_BEFORE )) provider request(s) blocked on the hold while the successor was published"
+echo "  a generation was admitted while the scanner was provably walking the namespace"
 
 cat > "$WORK/out/expected-3.json" <<JSON
 [
-  { "key": "$LOCAL_FILE",  "sizeBytes": $LOCAL_SIZE,  "sha256": "$LOCAL_SHA",  "kind": "local" },
-  { "key": "$REMOTE_FILE", "sizeBytes": $REMOTE_SIZE, "sha256": "$REMOTE_SHA", "kind": "http-range" },
-  { "key": "$THIRD_FILE",  "sizeBytes": $THIRD_SIZE,  "sha256": "$THIRD_SHA",  "kind": "local" },
-  { "key": "$FOURTH_FILE", "sizeBytes": $FOURTH_SIZE, "sha256": "$FOURTH_SHA", "kind": "local" }
+  { "key": "$LOCAL_FILE",   "sizeBytes": $LOCAL_SIZE,   "sha256": "$LOCAL_SHA",   "kind": "local" },
+  { "key": "$REMOTE_FILE",  "sizeBytes": $REMOTE_SIZE,  "sha256": "$REMOTE_SHA",  "kind": "http-range" },
+  { "key": "$MIDSCAN_FILE", "sizeBytes": $MIDSCAN_SIZE, "sha256": "$MIDSCAN_SHA", "kind": "http-range" },
+  { "key": "$THIRD_FILE",   "sizeBytes": $THIRD_SIZE,   "sha256": "$THIRD_SHA",   "kind": "local" },
+  { "key": "$FOURTH_FILE",  "sizeBytes": $FOURTH_SIZE,  "sha256": "$FOURTH_SHA",  "kind": "local" }
 ]
 JSON
 
-# The convergence assertion, which is the one that matters.
+# THE CONVERGENCE ASSERTION, which is the one that matters, and it must be reached with the hold released and
+# the scan finished.
+#
+# TWO ADDITIONS, NOT ONE, AND BOTH ARE ACCOUNTED FOR. The holdable remote entry was published BEFORE the
+# raced scan so that its probe would be uncached and holdable; the successor was published DURING it. The
+# mid-scan publish itself is separately asserted above to have added exactly one. What this compares is the
+# last settled listing against the settled listing now: nothing removed, nothing duplicated, no item-id churn
+# for anything carried across, and exactly the two entries that were published.
 drive scan --state "$STATE" --expect-file "$REL/out/expected-3.json" \
   --out "$REL/out/items-7.json" --label scan7
 drive compare --before "$REL/out/items-5.json" --after "$REL/out/items-7.json" \
-  --gate JD16-midscan-swap --expect-added 1
+  --gate JD16-midscan-swap --expect-added 2
 
 # ----------------------------------------------------------------------------------------------------------
 step "a source outage is not a deletion, and does not shrink a published generation"
@@ -869,9 +1000,9 @@ docker run --rm -v "$WORK/cache:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE"
 # it rules out is an order of magnitude, not a byte.
 CACHE_BYTES="$(docker run --rm -v "$WORK/cache:/scan:ro" "$VERIFY_IMAGE" \
   sh -c 'du -sb /scan 2>/dev/null | cut -f1' | tr -d " \r\n")"
-# Three entries, at most three one-megabyte windows each, plus a record header per window and some slack.
-CACHE_CEILING=$(( 12 * 1048576 ))
-PUBLISHED_BYTES=$(( LOCAL_SIZE + REMOTE_SIZE + THIRD_SIZE + FOURTH_SIZE ))
+# Five entries, at most three one-megabyte windows each, plus a record header per window and some slack.
+CACHE_CEILING=$(( 18 * 1048576 ))
+PUBLISHED_BYTES=$(( LOCAL_SIZE + REMOTE_SIZE + MIDSCAN_SIZE + THIRD_SIZE + FOURTH_SIZE ))
 echo "  the probe cache holds $CACHE_BYTES bytes against $PUBLISHED_BYTES bytes published"
 test "${CACHE_BYTES:-0}" -le "$CACHE_CEILING" \
   || die "the probe cache holds $CACHE_BYTES bytes, which is more than a fixed window plan can account for"

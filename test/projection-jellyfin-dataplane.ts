@@ -12,8 +12,10 @@ import {
   atLeast, directPlayPath, exactly, findRedactionProblems, forcedTranscodePath, hasQueryCredential,
   mediaServerAuthHeader, movieLibraryRequest, opaqueRef, stripQueryCredentials, withinBudget,
 } from '../src/core/projection/media-server-dataplane.js';
-import { absolutePath, openPinnedStream, type GateState, type ItemRecord }
-  from '../src/ops/projection-jellyfin-dataplane.js';
+import {
+  absolutePath, awaitScanRunning, openPinnedStream, scanIsRunningNow,
+  type GateState, type ItemRecord,
+} from '../src/ops/projection-jellyfin-dataplane.js';
 
 // Projection Phase 1 — the offline half of the media-server data-plane gate.
 //
@@ -186,25 +188,50 @@ await test('SCAN BARRIER: a stale Idle left over from a previous scan never coun
     assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } }), 'not-started',
       'an Idle whose last execution is the baseline is the PRE-scan idle, not a completed one');
   }
-  assert(!barrier.started, 'and no execution has been observed');
+  assert(!barrier.executionSeen, 'no execution has been observed');
+  assert(!barrier.observedInFlight, 'AND a stale idle cannot pass the in-flight gate either');
 });
 
 await test('SCAN BARRIER: Running, then a terminal Idle with a new start time, is complete', () => {
   const barrier = new ScanBarrier(T0);
   assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } }), 'not-started', 'before');
   assertEq(barrier.observe({ State: 'Running', LastExecutionResult: { StartTimeUtc: T0 } }), 'running', 'in flight');
-  assert(barrier.started, 'the execution was observed');
+  assert(barrier.executionSeen && barrier.observedInFlight, 'seen running, so both facts hold');
   assertEq(barrier.observe({ State: 'Running', CurrentProgressPercentage: 40 }), 'running', 'still going');
   assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } }), 'complete', 'finished');
+  assert(barrier.observedInFlight, 'and having finished does not un-see what was seen');
 });
 
-await test('SCAN BARRIER: a scan that starts AND finishes between two polls is still complete', () => {
-  // THE FAST-COMPLETE CASE. A four-entry scan can be over before the next poll, so demanding that `Running`
-  // be observed would hang forever on a fast server. A new start timestamp proves an execution happened
-  // whether or not anybody saw it in flight.
+await test('SCAN BARRIER: A FAST COMPLETE IS A VALID COMPLETION AND AN INVALID IN-FLIGHT OBSERVATION', () => {
+  // THE FALSE POSITIVE THIS SPLIT CLOSES, and it is the whole reason these are two properties.
+  //
+  // A four-entry scan can start and finish between two polls. That is a perfectly good COMPLETION — anything
+  // waiting for the scan to be over is correctly satisfied, and demanding that `Running` be sampled would
+  // hang forever on a fast server. It is NOT an observation that the scanner was running, because nobody saw
+  // it running. The old barrier set one flag in both cases, so a fast-complete raised the mid-scan gate's
+  // marker and licensed a publish that could land after the scan was already finished, under a gate id
+  // claiming it had landed during it.
   const barrier = new ScanBarrier(T0);
   assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } }), 'complete',
     'a NEW execution start plus idle is a completed scan even though Running was never sampled');
+  assert(barrier.executionSeen, 'an execution demonstrably happened');
+  assert(!barrier.observedInFlight,
+    'but it was NEVER OBSERVED IN FLIGHT, and nothing may claim a mid-scan event on the strength of it');
+
+  // And it stays that way however long anyone keeps looking.
+  for (let i = 0; i < 5; i++) {
+    assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } }), 'complete', 'still over');
+    assert(!barrier.observedInFlight, 'and still never seen in flight');
+  }
+});
+
+await test('SCAN BARRIER: a completed scan is not un-completed by a later ambiguous sample', () => {
+  const barrier = new ScanBarrier(T0);
+  assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } }), 'complete', 'over');
+  // A later sample that looks like motion must not resurrect the wait: the NEXT scan's Running is not this
+  // scan's, and a barrier that flip-flopped would let a caller wait forever on a scan that already ended.
+  assertEq(barrier.observe({ State: 'Running' }), 'complete', 'once ended, ended');
+  assertEq(barrier.observe(undefined), 'complete', 'and a missing task does not reopen it');
 });
 
 await test('SCAN BARRIER: progress alone counts as running, and a slow start is not a completion', () => {
@@ -224,6 +251,172 @@ await test('SCAN BARRIER: a task that has never run has no baseline, and any rec
   assertEq(barrier.observe(undefined), 'not-started', 'a missing task is not a completed scan');
   assertEq(barrier.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } }), 'complete',
     'the first ever execution is newer than no baseline');
+  assert(!barrier.observedInFlight, 'and a first-ever fast-complete is still not an in-flight observation');
+});
+
+await test('THE IN-FLIGHT SIGNAL FIRES ONLY FOR A RUNNING SAMPLE, never for a fast complete', () => {
+  // The callback the mid-scan gate's marker is written from. Driven here over the two sequences that matter.
+  const driver = readCode('src/ops/projection-jellyfin-dataplane.ts');
+  const scan = driver.slice(driver.indexOf('export async function scanLibrary'),
+    driver.indexOf('export async function awaitScanRunning'));
+  assert(/if \(phase === 'running' && !announced\)/.test(scan),
+    'onRunning fires ONLY on a running phase — `phase !== \'not-started\'` would include a fast complete');
+  assert(scan.includes('observedInFlight: barrier.observedInFlight'),
+    'and the outcome reports the in-flight fact, not the weaker "an execution happened"');
+
+  // awaitScanRunning must refuse a fast complete rather than treating it as success.
+  const await_ = driver.slice(driver.indexOf('export async function awaitScanRunning'),
+    driver.indexOf('export async function scanBaseline'));
+  assert(await_.includes("'finished-unseen'"), 'a completion without an in-flight sample is its own outcome');
+  assert(/never observed in flight/.test(await_), 'and it fails with a message that says exactly that');
+  assert(!/return phase === 'not-started' \? undefined : true/.test(await_),
+    'the any-phase-but-not-started acceptance is gone');
+
+  // The present-tense guard used immediately before publishing takes no baseline and no history.
+  assert(driver.includes('export async function scanIsRunningNow'), 'a point-in-time check exists');
+  const now_ = driver.slice(driver.indexOf('export async function scanIsRunningNow'));
+  assert(!now_.slice(0, 400).includes('ScanBarrier'),
+    'and it consults no barrier, so a past observation cannot vouch for a present claim');
+});
+
+/** Serve a scripted `/ScheduledTasks` sequence, one sample per request, so the observers can be driven. */
+async function withScriptedScanTask(
+  samples: ReadonlyArray<Record<string, unknown>>,
+  body: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+  let index = 0;
+  await withHttpServer(
+    (_req, res) => {
+      const sample = samples[Math.min(index, samples.length - 1)];
+      index += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([{ Key: 'RefreshLibrary', ...sample }]));
+    },
+    body,
+  );
+}
+
+await test('BEHAVIOURAL: awaitScanRunning refuses a scan that finished between polls', async () => {
+  // The adversarial case, driven against a real socket rather than asserted about the source. The very first
+  // sample the observer sees is a terminal Idle with a NEW execution start — a fast complete. That is a
+  // completion and it is not an in-flight observation, so a caller that has to act WHILE the scan runs must
+  // be told no. The old implementation returned success for any phase but `not-started`.
+  await withScriptedScanTask(
+    [{ State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } }],
+    async (baseUrl) => {
+      const state: GateState = { baseUrl, token: 'x' };
+      let threw = '';
+      try { await awaitScanRunning(state, T0); } catch (error) { threw = (error as Error).message; }
+      assert(threw.includes('never observed in flight'),
+        `a fast complete must be refused by name, got: ${threw || '(no throw)'}`);
+      assert(!threw.includes('deadline'), 'and refused promptly, not by blowing a 300-second deadline');
+    },
+  );
+});
+
+await test('BEHAVIOURAL: awaitScanRunning succeeds on a genuinely running scan', async () => {
+  await withScriptedScanTask(
+    [{ State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } }, { State: 'Running' }],
+    async (baseUrl) => {
+      await awaitScanRunning({ baseUrl, token: 'x' }, T0);
+    },
+  );
+});
+
+await test('BEHAVIOURAL: the pre-publish guard reads the present, not the past', async () => {
+  // Running now -> may publish.
+  await withScriptedScanTask([{ State: 'Running' }], async (baseUrl) => {
+    assertEq(await scanIsRunningNow({ baseUrl, token: 'x' }), true, 'a running task is running');
+  });
+  // Progress reported without a Running state still counts as motion.
+  await withScriptedScanTask([{ State: 'Idle', CurrentProgressPercentage: 12 }], async (baseUrl) => {
+    assertEq(await scanIsRunningNow({ baseUrl, token: 'x' }), true, 'progress is motion');
+  });
+  // FINISHED BETWEEN THE MARKER AND THE PUBLISH. This is the race the guard exists for: the marker was
+  // legitimately written moments ago, and by now there is no scan to publish into.
+  await withScriptedScanTask([{ State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } }],
+    async (baseUrl) => {
+      assertEq(await scanIsRunningNow({ baseUrl, token: 'x' }), false,
+        'a scan that has just finished is NOT something a publish can land in the middle of');
+    });
+  // A task the server does not report at all is not a licence to publish either.
+  await withHttpServer(
+    (_req, res) => { res.writeHead(200, { 'Content-Type': 'application/json' }); res.end('[]'); },
+    async (baseUrl) => {
+      assertEq(await scanIsRunningNow({ baseUrl, token: 'x' }), false, 'an absent task is not a running one');
+    },
+  );
+});
+
+await test('THE MID-SCAN PUBLISH IS GUARDED BY A FRESH OBSERVATION, not by the marker alone', () => {
+  const cli = readCode('src/ops/projection-jellyfin-dataplane-cli.ts');
+  assert(cli.includes("case 'assert-scan-in-flight'"), 'there is a pre-publish guard command');
+  const guard = cli.slice(cli.indexOf("case 'assert-scan-in-flight'"), cli.indexOf("case 'provider-invariants'"));
+  assert(guard.includes('scanIsRunningNow'), 'it asks whether the scan is running NOW');
+  assert(/Refusing rather than publishing/.test(guard), 'and refuses rather than publishing a false claim');
+
+  const gate = read('deploy/projection-jellyfin-dataplane-gate.sh');
+  const block = gate.slice(gate.indexOf('step "a generation admitted WHILE A SCAN IS RUNNING"'),
+    gate.indexOf('step "a source outage is not a deletion'));
+
+  // THE SANDWICH. Running before the publish, running after it: both edges observed, so the publish landed
+  // strictly INSIDE the scan window rather than one edge observed and the other assumed.
+  const markerAt = block.indexOf('-f "$WORK/out/scan-running"');
+  const firstGuard = block.indexOf('drive assert-scan-in-flight');
+  const publishAt = block.indexOf('publish > "$WORK/out/publish-midscan.json"');
+  const secondGuard = block.indexOf('drive assert-scan-in-flight', publishAt);
+  assert(markerAt > 0 && firstGuard > markerAt && publishAt > firstGuard,
+    'the order is marker, then a fresh in-flight observation, then the publish');
+  assert(secondGuard > publishAt,
+    'AND a second present-tense observation AFTER the publish, closing the other edge of the window');
+  assertEq((block.match(/drive assert-scan-in-flight/g) ?? []).length, 2,
+    'exactly two present-tense checks, one either side of the publish');
+  assert(/did not land strictly inside it/.test(block),
+    'and a scan that ended during the publish is a named failure, not a quiet false positive');
+});
+
+await test('THE MID-SCAN WINDOW IS HELD OPEN DETERMINISTICALLY, not waited for and hoped over', () => {
+  // WHY A HOLD AND NOT A RETRY. A four-entry scan takes a couple of seconds and the observe-publish-observe
+  // handshake costs about as long, so timing it is a coin flip — and a coin flip with a retry loop around it
+  // is still not evidence. The gate instead blocks the scan on something it controls: a BRAND-NEW remote
+  // entry whose probe windows are not yet cached, served by an endpoint told to hold that read.
+  const gate = read('deploy/projection-jellyfin-dataplane-gate.sh');
+  const block = gate.slice(gate.indexOf('step "a generation admitted WHILE A SCAN IS RUNNING"'),
+    gate.indexOf('step "a source outage is not a deletion'));
+
+  assert(block.includes('/control/hold/'), 'the endpoint is told to hold the read');
+  assert(block.includes('/control/release/'), 'and to release it afterwards');
+  const holdAt = block.indexOf('/control/hold/');
+  const publishAt = block.indexOf('publish > "$WORK/out/publish-midscan.json"');
+  const secondGuardAt = block.indexOf('drive assert-scan-in-flight', publishAt);
+  // The release is a helper, so what matters is where it is CALLED on its own line, not where it is defined
+  // — and the line ending is whatever the checkout happens to use, which is why this is a regex.
+  const afterSecondGuard = block.slice(secondGuardAt);
+  const releaseCallOffset = afterSecondGuard.search(/\r?\nrelease_hold\r?\n/);
+  const releaseCallAt = releaseCallOffset === -1 ? -1 : secondGuardAt + releaseCallOffset;
+  assert(holdAt > 0 && holdAt < publishAt, 'the hold is set before the publish');
+  assert(secondGuardAt > publishAt && releaseCallAt > secondGuardAt,
+    'and released only after the publish AND after the second in-flight check, so the window it holds open '
+    + 'covers both observations');
+
+  // The held entry must be NEW. Anything already scanned has cached windows, and JD14 asserts a re-scan costs
+  // the provider nothing — so a hold on an existing entry would never be hit and the window would be luck.
+  assert(block.includes('--version-key remote-held'), 'a fresh remote entry is registered for the purpose');
+  assert(block.includes('publish-holdable.json'), 'and published before the raced scan starts');
+
+  // AND THE HOLD WAS ACTUALLY HIT. Without this the gate could hold an object nobody reads and still pass.
+  assert(block.includes('heldRequests'), 'the endpoint\'s held-request counter is read');
+  assert(/no provider request was ever held/.test(block),
+    'and zero held requests is a named failure: the window would have been luck rather than a measurement');
+
+  const provider = read('projectiond/internal/fakeprovider/fakeprovider.go');
+  assert(provider.includes('func (s *Server) Hold('), 'the endpoint supports a hold');
+  assert(provider.includes('HeldRequests'), 'and counts requests that actually blocked on one');
+  assert(provider.includes('maxHold'), 'bounded, so a forgotten release degrades into a slow read');
+  assert(exists('projectiond/internal/fakeprovider/fileobject_test.go'), 'with Go tests behind it');
+  const goSuite = read('projectiond/internal/fakeprovider/fileobject_test.go');
+  assert(goSuite.includes('TestHoldBlocksARangeRequestUntilReleased'), 'that a hold blocks until released');
+  assert(goSuite.includes('TestHoldIsBoundedSoAForgottenReleaseCannotWedgeAReader'), 'and that it is bounded');
 });
 
 await test('the driver uses the barrier and takes its baseline BEFORE triggering the scan', () => {
@@ -616,8 +809,10 @@ await test('THE MID-SCAN PUBLISH WAITS ON AN OBSERVED RUNNING SCAN, never on a s
   assert(markerWait > 0 && publishAt > markerWait, 'the publish happens strictly after the marker is seen');
 
   const cli = readCode('src/ops/projection-jellyfin-dataplane-cli.ts');
-  assert(cli.includes('scan-observed-running'),
-    'and the raced scan asserts it was actually observed running, or the race was not a race');
+  assert(cli.includes('scan-observed-in-flight'),
+    'and the raced scan asserts it was actually observed IN FLIGHT, or the race was not a race');
+  assert(cli.includes('outcome.observedInFlight'),
+    'from the explicit in-flight fact, not from the weaker "an execution happened"');
 });
 
 // ---------------------------------------------------------------------------------------------------------

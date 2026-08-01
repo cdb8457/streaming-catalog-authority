@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // A FILE-BACKED OBJECT MUST SERVE THE FILE, EXACTLY.
@@ -172,6 +173,105 @@ func TestCountersEndpointIsNotItselfCounted(t *testing.T) {
 	// asserting on the same numbers rather than two that happen to look alike.
 	if first.RangeRequests != server.Counters().RangeRequests.Load() {
 		t.Fatal("the snapshot disagrees with the counters it was taken from")
+	}
+}
+
+// A HOLD MUST ACTUALLY BLOCK, AND A RELEASE MUST ACTUALLY RELEASE.
+//
+// This is what lets a gate prove something happened "while a library scan was running" without racing a
+// scanner: the scan blocks in an uncached provider read for exactly as long as the gate holds it. If the hold
+// did not block, the gate would silently go back to being a coin flip; if the release did not release, every
+// later assertion would fail for an unrelated reason.
+func TestHoldBlocksARangeRequestUntilReleased(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-held", 8192)
+	server.Hold("obj-held")
+
+	done := make(chan int)
+	go func() {
+		request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-held", nil)
+		request.Header.Set("Range", byteRange(0, 1023))
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			done <- 0
+			return
+		}
+		body, _ := io.ReadAll(response.Body)
+		response.Body.Close()
+		done <- len(body)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("a held request was served without waiting for the release")
+	case <-time.After(250 * time.Millisecond):
+		// Still blocked, which is the point.
+	}
+	if held := server.Counters().HeldRequests.Load(); held != 1 {
+		t.Fatalf("held requests: got %d, want 1 — a gate proves its hold was HIT by this counter", held)
+	}
+
+	server.Release("obj-held")
+	select {
+	case n := <-done:
+		if n != 1024 {
+			t.Fatalf("after release the request returned %d bytes, want 1024", n)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the release did not release")
+	}
+}
+
+func TestHoldIsBoundedSoAForgottenReleaseCannotWedgeAReader(t *testing.T) {
+	// A gate that crashed between Hold and Release must degrade into a slow read, not a failed one: the bound
+	// is deliberately shorter than the range adapter's default request timeout.
+	server, err := New(Options{MaxHold: 150 * time.Millisecond})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-forgotten", 4096)
+	server.Hold("obj-forgotten")
+
+	started := time.Now()
+	request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-forgotten", nil)
+	request.Header.Set("Range", byteRange(0, 511))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("ranged get: %v", err)
+	}
+	body, _ := io.ReadAll(response.Body)
+	response.Body.Close()
+	if len(body) != 512 {
+		t.Fatalf("a self-released hold served %d bytes, want 512", len(body))
+	}
+	if elapsed := time.Since(started); elapsed < 100*time.Millisecond {
+		t.Fatalf("the hold did not block at all (%v)", elapsed)
+	}
+}
+
+func TestReleasingSomethingNotHeldIsNotAnError(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.Release("never-held")
+	server.AddObject("obj-a", 1024)
+	request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-a", nil)
+	request.Header.Set("Range", byteRange(0, 99))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("ranged get: %v", err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if held := server.Counters().HeldRequests.Load(); held != 0 {
+		t.Fatalf("an unheld request was counted as held: %d", held)
 	}
 }
 

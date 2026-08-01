@@ -7,7 +7,7 @@ import {
 import {
   GateFailure, addMovieLibrary, appendResult, awaitFile, awaitServer, bootstrap, directPlay,
   forcedTranscode, listMovies, openPinnedStream, rangeRead, readExpected, readResults, readState,
-  resolveLibraryId, scanLibrary, writeState, type GateState, type ItemRecord,
+  resolveLibraryId, scanIsRunningNow, scanLibrary, writeState, type GateState, type ItemRecord,
 } from './projection-jellyfin-dataplane.js';
 
 // The Projection Phase 1 media-server data-plane gate, from the command line.
@@ -160,10 +160,13 @@ async function main(): Promise<void> {
       if (args.flags.get('tolerant') === 'true') {
         // THE RACE MUST HAVE BEEN A RACE. If the scanner was never observed in flight, the publish that the
         // other half of the gate performed cannot be claimed to have landed mid-scan.
+        // IN FLIGHT, NOT MERELY "AN EXECUTION HAPPENED". A scan that started and finished between two polls
+        // satisfies the second and not the first, and only the first can support "a generation was admitted
+        // WHILE a scan was running".
         record(args, {
-          gate: `JD3-${label}-scan-observed-running`,
-          verdict: outcome.observedRunning ? 'pass' : 'fail',
-          note: 'the scanner was observed in flight, which is what makes the mid-scan publish a mid-scan publish',
+          gate: `JD3-${label}-scan-observed-in-flight`,
+          verdict: outcome.observedInFlight ? 'pass' : 'fail',
+          note: 'the scanner was seen actually running; a fast-complete between polls would not count',
         });
         record(args, {
           gate: `JD3-${label}-raced-scan-completed`, verdict: 'pass',
@@ -480,6 +483,20 @@ async function main(): Promise<void> {
         record(args, atLeast(`${gate}-range-requests-floor`, delta('rangeRequests'), Number(floor),
           'a scan that reached the provider zero times did not read the entry'));
       }
+      return;
+    }
+
+    case 'assert-scan-in-flight': {
+      // THE PRE-PUBLISH GUARD. The marker says the scan WAS running when another process looked; this asks
+      // whether it still is, at the last possible moment before the successor is published. A `sleep` here
+      // would be the very thing the mid-scan finding was about, so this is a fresh observation or nothing.
+      const state = readState(need(args, 'state'));
+      const running = await scanIsRunningNow(state);
+      if (!running) {
+        fail('the scan is no longer running, so a publish now would not be a mid-scan publish. '
+          + 'Refusing rather than publishing and claiming otherwise.');
+      }
+      console.log('  the scanner is still in flight at the moment of publication');
       return;
     }
 

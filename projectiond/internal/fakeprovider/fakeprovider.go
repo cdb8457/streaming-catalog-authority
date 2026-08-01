@@ -68,6 +68,7 @@ type Object struct {
 type Counters struct {
 	Resolutions       atomic.Int64
 	RangeRequests     atomic.Int64
+	HeldRequests      atomic.Int64
 	BytesServed       atomic.Int64
 	Served429         atomic.Int64
 	FullBodyServed    atomic.Int64
@@ -99,6 +100,60 @@ type Server struct {
 	// requireAuth makes the resolver refuse a request with no bearer credential.
 	requireAuth bool
 	token       string
+	// holds blocks range requests for one object until released. See Hold.
+	holds   map[string]chan struct{}
+	maxHold time.Duration
+}
+
+// Hold makes every subsequent ranged request for one object BLOCK until Release, or until maxHold elapses.
+//
+// WHY A GATE NEEDS THIS. Proving that something happened "while a library scan was running" against a real
+// media server is otherwise a race: a four-entry scan takes a couple of seconds, and the handshake that
+// observes it, publishes, and re-checks costs about as long. Retrying until the timing works is not evidence,
+// it is a coin flip with a loop around it.
+//
+// Holding a provider read turns the timing into a fact. A scanner probing an entry whose bytes are not yet
+// cached blocks in the read, so the scan is DETERMINISTICALLY still running for as long as the gate keeps the
+// hold — long enough to observe it running, publish into it, and observe it running again afterwards. The
+// hold is then released and the scan completes normally.
+//
+// THE BOUND IS NOT OPTIONAL. A gate that crashed between Hold and Release would otherwise wedge the daemon's
+// read until its own request timeout, and every later assertion would fail for an unrelated reason. maxHold
+// is deliberately shorter than the daemon's default request timeout so a forgotten release degrades into a
+// slow read rather than a failed one.
+func (s *Server) Hold(ref string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.holds[ref]; !exists {
+		s.holds[ref] = make(chan struct{})
+	}
+}
+
+// Release lets any held request for one object proceed. Releasing something not held is not an error.
+func (s *Server) Release(ref string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ch, exists := s.holds[ref]; exists {
+		close(ch)
+		delete(s.holds, ref)
+	}
+}
+
+// waitForHold blocks a request while its object is held, and counts the fact that it blocked.
+func (s *Server) waitForHold(ref string) {
+	s.mu.Lock()
+	ch, held := s.holds[ref]
+	s.mu.Unlock()
+	if !held {
+		return
+	}
+	s.counters.HeldRequests.Add(1)
+	timer := time.NewTimer(s.maxHold)
+	defer timer.Stop()
+	select {
+	case <-ch:
+	case <-timer.C:
+	}
 }
 
 type faultState struct {
@@ -129,7 +184,10 @@ type Options struct {
 	// mean something by finding none.
 	LeasePrefix string
 	TimeoutFor  time.Duration
-	MaxConns    int
+	// MaxHold bounds how long Hold can block one request. Zero means 15s, which is shorter than the range
+	// adapter's default request timeout on purpose.
+	MaxHold  time.Duration
+	MaxConns int
 	// Addr is where to listen. Empty means `127.0.0.1:0`, which is what every in-process test wants: an
 	// ephemeral port on loopback that nothing outside the test can reach. The publisher-to-mount gate runs
 	// this server in its own container and needs it reachable from the daemon's container, so it sets an
@@ -151,6 +209,8 @@ func New(opts Options) (*Server, error) {
 		listener:      listener,
 		objects:       map[string]Object{},
 		faults:        map[string]*faultState{},
+		holds:         map[string]chan struct{}{},
+		maxHold:       opts.MaxHold,
 		leases:        map[string]time.Time{},
 		leaseTTL:      opts.LeaseTTL,
 		leasePrefix:   opts.LeasePrefix,
@@ -166,11 +226,26 @@ func New(opts Options) (*Server, error) {
 	if s.timeoutFor == 0 {
 		s.timeoutFor = 2 * time.Second
 	}
+	if s.maxHold == 0 {
+		// Shorter than the HTTP range adapter's 20s default request timeout, so a forgotten release is a slow
+		// read rather than a failed one.
+		s.maxHold = 15 * time.Second
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("/resolve", s.handleResolve)
 	mux.HandleFunc("/object/", s.handleObject)
 	mux.HandleFunc("/direct/", s.handleDirect)
 	mux.HandleFunc("/counters", s.handleCounters)
+	// CONTROL, not traffic. These are how a gate outside this process drives the hold, and like /counters
+	// they are deliberately not counted as range requests or resolutions.
+	mux.HandleFunc("/control/hold/", func(w http.ResponseWriter, r *http.Request) {
+		s.Hold(strings.TrimPrefix(r.URL.Path, "/control/hold/"))
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("/control/release/", func(w http.ResponseWriter, r *http.Request) {
+		s.Release(strings.TrimPrefix(r.URL.Path, "/control/release/"))
+		w.WriteHeader(http.StatusNoContent)
+	})
 	s.server = &http.Server{
 		Handler:      mux,
 		ReadTimeout:  30 * time.Second,
@@ -278,8 +353,10 @@ func (s *Server) ObjectFor(ref string) (Object, bool) {
 // CountersSnapshot is the wire shape of Counters. It exists because a gate that runs this server in its own
 // container cannot read atomics across a process boundary, and a budget nobody can read is not a budget.
 type CountersSnapshot struct {
-	Resolutions     int64 `json:"resolutions"`
-	RangeRequests   int64 `json:"rangeRequests"`
+	Resolutions   int64 `json:"resolutions"`
+	RangeRequests int64 `json:"rangeRequests"`
+	/** Requests that actually blocked on a hold. A gate proves its hold was HIT by this being non-zero. */
+	HeldRequests    int64 `json:"heldRequests"`
 	BytesServed     int64 `json:"bytesServed"`
 	Served429       int64 `json:"served429"`
 	FullBodyServed  int64 `json:"fullBodyServed"`
@@ -294,6 +371,7 @@ func (s *Server) Snapshot() CountersSnapshot {
 	return CountersSnapshot{
 		Resolutions:     s.counters.Resolutions.Load(),
 		RangeRequests:   s.counters.RangeRequests.Load(),
+		HeldRequests:    s.counters.HeldRequests.Load(),
 		BytesServed:     s.counters.BytesServed.Load(),
 		Served429:       s.counters.Served429.Load(),
 		FullBodyServed:  s.counters.FullBodyServed.Load(),
@@ -450,6 +528,8 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 	}
 	defer s.counters.CurrentConcurrent.Add(-1)
 	s.counters.RangeRequests.Add(1)
+	// The request has arrived and is counted; holding it blocks the READER, which is the point.
+	s.waitForHold(ref)
 
 	s.mu.Lock()
 	object, known := s.objects[ref]
