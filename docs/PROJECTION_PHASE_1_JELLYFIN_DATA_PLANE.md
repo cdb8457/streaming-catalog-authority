@@ -51,10 +51,10 @@ and still is not.
 |---|---|
 | `JD1` / `JD2` | The server is stood up through its own API and the library points at the projected mount. |
 | `JD3` | Every published entry appears, with **the size the control plane published**, and Jellyfin's own view of it is an **ordinary file** — `Protocol=File`, `LocationType=FileSystem`, `IsRemote=false`, a real container, not a `.strm` placeholder and not a symlink. |
-| `JD4` | Direct play (`static=true`) returns the file's bytes, digest-compared against the value recorded outside the mount, for **both** the local and the HTTP Range entry. |
+| `JD4` | Direct play (`static=true`) returns the file's bytes, digest-compared against the value recorded outside the mount, for **both** the local and the HTTP Range entry. This is evidence about **bytes**, not about authorization — see §3.1. |
 | `JD5` | A ranged request answers **206** with the exact `Content-Range`, asserted **before the body is read**, and the bytes match a window hashed on the host. A 200-with-the-whole-file cannot pass as a successful seek. |
 | `JD6` | A forced transcode, proved by **decoding what came out**: the media is encoded as `mpeg4`, `h264` is demanded, and the segments Jellyfin produced are ffprobed and must be `h264` with decodable packets. |
-| `JD7` | A stream in flight while a successor is published **completes correctly**; a stream in flight across a daemon `SIGKILL` may fail, which is the behaviour §4 G12 of the acceptance plan explicitly permits, and is recorded as such rather than hidden. |
+| `JD7` | **One HTTP response body**, opened once and deliberately left partially consumed, is still mid-delivery when a successor is admitted — and then completes **from that same response**, with the digest taken over everything it delivered. A measured share of the file must arrive *after* the event, so a pre-buffered body cannot pass. Across a daemon `SIGKILL` that same held-open stream is permitted to fail; that outcome is recorded as `JD7-open-stream-interrupted`, is explicitly **not** counted as generation-pinning evidence, and resumability is asserted separately by a new request. |
 | `JD8` | After the daemon restarts and remounts, playback is **resumable** and the bytes are still the published ones. |
 | `JD9` | What one scan cost at the provider: ranged GETs, resolutions and **bytes as a fraction of the object's own length**. This is the budget that carries the product's argument — a scanner that downloaded the file to identify it would sit at 1.0. |
 | `JD10`–`JD13` | Across a successor, a daemon crash and recovery, a media-server restart and a plain re-scan: **zero removals, zero duplicates, zero item-id churn and zero metadata drift**. Identity, not just presence — a server that re-created an item under a new id has lost every piece of watch state attached to it. |
@@ -75,13 +75,90 @@ byte-identical size, inode and mode; a publish over the unmoved catalog is still
 so **no transient outage can produce a smaller published generation**; and once the provider returns, reads
 through the media server are correct again.
 
+| `JD16` | A generation admitted **while the scanner is observed in flight** — waited for against Jellyfin's own scheduled-task state, never against a sleep. What the raced scan saw is recorded, not asserted; nothing half-formed may appear in it; and the next scan must converge on the successor with zero removals and zero item-id churn. |
+
 Alongside them, outside the driver: every mutation attempted from **inside Jellyfin's own non-root container**
 is refused; the mount is deliberately **not** bound `:ro`, so what refuses the write is the daemon and not a
-Docker flag. The manifest directory, the daemon's probe cache and the media server's own state are searched
-for access material. The probe cache is additionally bounded in size, because a read path that started
-writing whole objects through it would pass every substring check ever written.
+Docker flag. The probe cache is additionally bounded in size, because a read path that started writing whole
+objects through it would pass every substring check ever written.
 
-## 4. Two defects this gate found in itself, and what they cost
+## 3.1 Two things this gate deliberately does **not** claim
+
+**It does not claim playback was authorized.** Measured against the pinned Jellyfin 10.10.7:
+`GET /Videos/{id}/stream?static=true` answers **200 with the whole file to a request carrying no credential at
+all**, and answers it just as happily to a deliberately invalid token. Every other endpoint the gate uses —
+`/Items`, `/Library/*`, `master.m3u8`, `DELETE /Videos/ActiveEncodings` — answers `401` without a valid one.
+So a passing direct-play gate is evidence that the **bytes** are right. Reading "authenticated playback" into
+it would be reading in something that was never measured.
+
+**It does not claim no token exists on disk.** The step that checks for leaks used to be headed *"no access
+URL, token, header or expiry was persisted anywhere"*, and that was **false as written**, in two ways:
+
+1. **This harness persists a Jellyfin access token on purpose.** Its phases run as separate processes and each
+   needs the credential, so it lives in `out/state.json` inside the run directory — which the cleanup trap
+   deletes on success and on failure. That is a property of the harness, not of the product.
+2. **Jellyfin persists its own authentication state.** A media server that did not could not survive a
+   restart, and this gate restarts it and then requires the library to still be there. Its database contains
+   its own device and token records, and it is supposed to.
+
+The claim the product actually makes is narrower and stronger: **no PROVIDER access lease — its URL, its
+header, its token or its expiry — reaches the manifest, the daemon's probe cache, or the media server's
+library state.** Phase 0 §7.6 says that material lives in the daemon's memory for the length of one read and
+nowhere else, and that is what the step now checks, under that heading.
+
+To make the check mean something it had to have a subject. The endpoint now runs in **resolver mode**, so the
+daemon really does exchange the stable `objectRef` for a short-lived access URL, header and expiry; the lease
+id carries a **per-run 16-byte random marker**; and all three locations are searched for **that exact value**.
+The run also asserts at least one resolution was served, because a run that minted no lease would pass a
+search for a secret that never existed. The previous version ran in direct mode and had no lease at all.
+
+## 4. Defects found in this gate, and what each one cost
+
+Independent review found four more after the first two below, every one of the same class: **a comment that
+described one behaviour while the code did another, or a check that could not fail.** They are recorded
+because that class is the reason this repository is where it is, not because the list is flattering.
+
+**A skipped run looked exactly like a passing one.** The gate exited `0` when `/dev/fuse` was absent, and the
+three-run wrapper looped over it. On a host without FUSE that produced *"3 consecutive runs completed"* and an
+exit status of `0`, having proved nothing whatsoever — which is precisely the shape a required Linux/Unraid
+acceptance invocation would have taken if it were ever run somewhere the mount could not exist. The gate now
+exits **77**; the wrapper counts completed runs, propagates 77, and cannot emit its completion message unless
+the count reaches the target. Hosts that genuinely want skip-as-success have their own entry point,
+`go:jellyfin-dataplane-gate:optional`, which maps 77 to 0 and nothing else — and which the acceptance plan
+does not name as evidence.
+
+**The scan barrier contradicted its own comment.** It claimed to require two consecutive `Idle` samples and to
+ignore the `Idle` that precedes a start. The code had no prior-state variable at all: it returned on the first
+`Idle` seen more than three seconds after the trigger. A scan slower to *start* than three seconds was
+therefore declared **complete before it began**, and every assertion made afterwards was made against a
+library the scanner had not yet walked. The three-second constant *was* the barrier. It is now a state machine
+over a baseline timestamp taken before the trigger — a new execution start plus terminal `Idle`, which also
+handles the fast-complete case a `Running`-must-be-observed rule would hang on — and it is tested against
+scripted samples rather than by reading its own comment.
+
+**"A stream in flight across the swap" was two separate requests.** `hold-stream` called `rangeRead` for a
+prefix and `rangeRead` again for the remainder. `rangeRead` drains and releases its response, so the first
+call *ended* the exchange: Jellyfin closed its file and `projectiond` saw a `RELEASE`. What the gate proved
+was that two requests succeed either side of a generation swap. What its gate id and its final report said was
+that an active stream survived one. It now opens a single response, consumes part of it, leaves the reader
+alone across the event, and resumes the *same* reader — with an anti-buffering assertion that a substantial
+share of the file arrived afterwards, since a fully pre-buffered body would make "held open" a fiction.
+
+**The mid-scan race was a `sleep 1`.** A publish one second after the trigger can land before the scanner
+starts or after it finishes; either way the step passed while claiming a generation had been admitted *while a
+scan was running*. The scanning process now writes a marker at the moment it observes the scan in flight, the
+publishing half waits on that marker, and the step fails if it never appears.
+
+**A live credential was duplicated into every playback URL.** The driver sent the `Authorization` header *and*
+`api_key=<token>` in the query of direct-play, transcode and stop-encoding requests. Measured against the
+pinned server, the header alone is accepted everywhere, so the query copy bought nothing and put a live
+credential in the most leak-prone place available — and worse, Jellyfin generates HLS child URLs *in the shape
+of the request that asked for them*, so an `api_key` in the parent propagated into every generated playlist
+body. With header-only auth, **no generated child URL contains a credential at all**. The gate now authors no
+URL with one, strips any the server hands back before following it, and asserts the count it had to strip
+is zero.
+
+### The first two, found while building it
 
 Both are recorded because the failure mode they share — **a check that cannot fail, or a failure that looks
 like a pass** — is the one this repository is trying to leave behind.
@@ -108,7 +185,7 @@ rule.
 
 | Environment | What the gate closes |
 |---|---|
-| **Windows / Docker Desktop** | Everything above, provided `/dev/fuse` is reachable from a container. **This is not Phase 1 closure and SHALL NOT be reported as one.** If `/dev/fuse` is absent the gate skips loudly and says the whole data plane went unproven. |
+| **Windows / Docker Desktop** | Everything above, provided `/dev/fuse` is reachable from a container. **This is not Phase 1 closure and SHALL NOT be reported as one.** If `/dev/fuse` is absent the gate exits **77**, the three-run wrapper propagates it, and no caller can read the result as a pass. |
 | **Linux CI** | The offline suite (`npm run test:projection-jellyfin-dataplane`) runs anywhere. The gate itself needs FUSE, mount propagation into a sibling container and a media server; it is **not** wired into a CI job, because a gate that is flaky in CI gets disabled and then gets deleted. |
 | **Linux / Unraid, operator-run** | The place the tranche actually closes, three consecutive times: `npm run go:jellyfin-dataplane-gate:three`. |
 

@@ -146,12 +146,24 @@ echo "  both parse"
 # ----------------------------------------------------------------------------------------------------------
 step "checking this host can host the gate at all"
 # ----------------------------------------------------------------------------------------------------------
-# A SKIP IS NOT A PASS, and it exits 0 only because a machine without /dev/fuse cannot be asked to prove
-# anything about a mount. It says loudly which half went unproven.
+# A SKIP IS NOT A PASS, AND IT NO LONGER EXITS 0.
+#
+# THE DEFECT THIS CLOSES. It used to exit 0, and the three-run wrapper looped over it. On a host with no
+# /dev/fuse that produced three "successful" runs, an exit status of 0, and a transcript whose only warning
+# was on stderr — which is exactly the shape a required Linux/Unraid acceptance invocation would have had if
+# somebody ran it somewhere the mount could not exist. A green tranche-closing command that proved nothing is
+# the single worst failure this repository can have, and it was one status code away.
+#
+# 77 is the conventional "skipped" status (automake, and the usual choice elsewhere). It is NOT 0, so anything
+# that treats zero as success — a shell, a CI step, the wrapper below — reports a skip as a non-success. A host
+# where skip-as-success is genuinely wanted has its own entry point:
+# `deploy/projection-jellyfin-dataplane-gate-optional.sh`, which maps 77 to 0 and nothing else.
+GATE_SKIP_STATUS=77
 if ! docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/fuse >/dev/null 2>&1; then
-  echo "SKIP: no /dev/fuse is reachable from a container on this host." >&2
-  echo "      The MEDIA-SERVER DATA PLANE is entirely UNPROVEN here. Nothing in this gate ran." >&2
-  exit 0
+  echo "SKIPPED (status ${GATE_SKIP_STATUS}): no /dev/fuse is reachable from a container on this host." >&2
+  echo "      The MEDIA-SERVER DATA PLANE is entirely UNPROVEN here. Nothing in this gate ran, and this" >&2
+  echo "      run closes NO acceptance gate. It is not a pass and must not be reported as one." >&2
+  exit "$GATE_SKIP_STATUS"
 fi
 echo "  /dev/fuse is reachable from a container"
 
@@ -250,11 +262,28 @@ step "starting the deterministic HTTP Range endpoint, serving the remote object 
 # deterministic content function has no container header. Its counters are what the amplification budgets are
 # measured against, and they are published on loopback so the driver can read them.
 REMOTE_REF="obj-projection-remote-two"
+
+# A REAL, EXPIRING ACCESS LEASE, WITH A SECRET THIS GATE CAN SEARCH FOR BY EXACT VALUE.
+#
+# The endpoint is run in RESOLVER mode rather than direct mode, so the daemon must exchange the stable
+# objectRef for short-lived access material -- a URL containing a lease id, a request header carrying it, and
+# an expiry. That is the shape Phase 0 section 7.6 says must live in the daemon's memory for the length of one
+# read and nowhere else, and until now this gate never created one, so its "no access material persisted"
+# check was searching for something that had never existed.
+#
+# The lease id is prefixed with a high-entropy marker minted here. `l1` occurs by chance in any few megabytes
+# of binary and could only ever produce false positives; a 32-hex marker cannot, so a search for it across the
+# manifest, the probe cache and the media server's own database is a search for THE ACTUAL SECRET and finding
+# none of it means something.
+LEASE_MARKER="PJDLEASE$(node -e "console.log(require('node:crypto').randomBytes(16).toString('hex'))" | tr -d ' \r\n')"
+echo "  the endpoint will mint leases prefixed with a per-run secret marker"
+
 docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fakerange \
   -p "127.0.0.1:${RANGE_PORT}:8099" \
   -v "$PWD:/workspace" -w /workspace/projectiond -v "$WORK/out:/out" -v "$WORK/remote:/remote:ro" \
   -e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local -e CGO_ENABLED=0 \
-  "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 \
+  "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 --lease-prefix "$LEASE_MARKER" \
+  --public-base-url "http://fakerange:8099" \
   --file-object "${REMOTE_REF}=/remote/${REMOTE_FILE}" --emit /out/objects.json >/dev/null
 
 echo "  waiting for the endpoint to answer a RANGED request"
@@ -334,7 +363,7 @@ cat > "$WORK/config.json" <<'JSON'
   "endpoints": [
     {
       "id": "vault",
-      "directBaseUrl": "http://fakerange:8099/direct",
+      "resolverUrl": "http://fakerange:8099/resolve",
       "allowedOrigins": ["http://fakerange:8099"],
       "allowInsecureHttp": true,
       "allowPrivateAddresses": true
@@ -657,11 +686,32 @@ register version --key local-four --size "$FOURTH_SIZE" --mtime 2026-06-01T10:00
 register entry --item "$FOURTH_ITEM" --version-key local-four \
   --path "Movies/Projection Local Four (2026)/$FOURTH_FILE" --source "local:media:$FOURTH_FILE"
 
+rm -f "$WORK/out/scan-running"
 drive scan --state "$STATE" --expect-file "$REL/out/expected-2.json" \
-  --out "$REL/out/items-6.json" --label scan6 --tolerant true &
+  --out "$REL/out/items-6.json" --label scan6 --tolerant true \
+  --running-marker "$REL/out/scan-running" &
 SCAN_PID=$!
-# Publish into the middle of it. The scan takes a few seconds; the publish takes well under one.
-sleep 1
+
+# WAIT FOR AN OBSERVED RUNNING SCAN, NOT FOR A SLEEP.
+#
+# THE DEFECT THIS CLOSES. This used to be `sleep 1` and then publish. A publish one second after the trigger
+# can land before the scanner starts or after it finishes, and in either case the step still passed while
+# claiming "a generation was admitted WHILE A SCAN IS RUNNING" -- a claim about a race that was never
+# observed to have happened. The marker below is written by the scanning process at the moment the media
+# server's own scheduled task is seen in flight, so the publish that follows it is a mid-scan publish as a
+# matter of observation. If it is never written, this fails rather than publishing anyway.
+running=0
+for _ in $(seq 1 300); do
+  if [ -f "$WORK/out/scan-running" ]; then running=1; break; fi
+  if ! kill -0 "$SCAN_PID" 2>/dev/null; then break; fi
+  sleep 0.2
+done
+if [ "$running" -ne 1 ]; then
+  wait "$SCAN_PID" || true
+  die "the scanner was never observed running, so a mid-scan publish could not be performed"
+fi
+echo "  the scanner is observed in flight; publishing into it"
+
 publish > "$WORK/out/publish-midscan.json"
 test "$(field outcome   < "$WORK/out/publish-midscan.json")" = "published" || die "the mid-scan successor was not published"
 test "$(field additions < "$WORK/out/publish-midscan.json")" = "1"         || die "the mid-scan successor should add exactly one entry"
@@ -750,11 +800,31 @@ MUT
 docker exec -i "$JELLYFIN_CONTAINER" sh -s "$LOCAL_PATH" < "$WORK/out/mutate.sh"
 
 # ----------------------------------------------------------------------------------------------------------
-step "no access URL, token, header or expiry was persisted anywhere"
+step "no PROVIDER access lease reached the manifest, the probe cache or the media server's library state"
 # ----------------------------------------------------------------------------------------------------------
-# The manifest artifact, the daemon's probe cache and the media server's own state, searched for the endpoint
-# the daemon actually contacted and for the shapes access material takes. The media server was handed a
-# FILESYSTEM PATH and nothing else; if it had been handed a URL, this is where it would show up.
+# WHAT THIS STEP CLAIMS, AND WHAT IT DOES NOT.
+#
+# THE CLAIM IS ABOUT PROVIDER ACCESS MATERIAL. During this run the daemon really did resolve a stable
+# objectRef into short-lived access material -- a URL containing a lease id, a header carrying it, and an
+# expiry -- because the endpoint is configured in resolver mode. Phase 0 section 7.6 says that material lives
+# in the daemon's memory for the length of one read and nowhere else. This step is the check on that: the
+# lease's per-run secret marker, the endpoint host, the lease header and the expiry field must appear in
+# NONE of the published manifest, the daemon's probe cache, or the media server's own library database.
+#
+# THE CLAIM IS NOT "NO TOKEN EXISTS ANYWHERE ON DISK", AND THE EARLIER VERSION OF THIS STEP SAID THAT.
+# It was false as written, in two ways that are worth naming rather than quietly narrowing:
+#
+#   1. THIS GATE PERSISTS A JELLYFIN TOKEN ON PURPOSE. `out/state.json` holds the access token the gate
+#      authenticated with, because the phases run as separate processes and each needs it. It lives in the
+#      run directory, which the cleanup trap deletes on success and on failure. That is a property of the
+#      HARNESS, not of the product, and pretending otherwise would be the exact kind of overclaim the rest of
+#      this gate exists to prevent.
+#   2. JELLYFIN PERSISTS ITS OWN AUTHENTICATION STATE. A media server that did not would not survive a
+#      restart, and this gate restarts it and requires the library to still be there. Its database therefore
+#      contains its own device and token records, and it is supposed to.
+#
+# Neither is provider access material, and neither is searched for below. What is searched for is the thing
+# the product actually promises never to persist.
 cat > "$WORK/out/leakcheck.sh" <<'LEAK'
 set -eu
 label="$1"
@@ -774,8 +844,8 @@ LEAK
 # publisher writes has any business containing one.
 docker run --rm -v "$WORK/manifest:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
   sh /out/leakcheck.sh "the published manifest directory" \
-  "fakerange" "://" "X-Fake-Lease" "expiresAtUnixMs" "Authorization:" "Bearer " \
-  || die "the manifest directory holds access material"
+  "$LEASE_MARKER" "fakerange" "://" "X-Fake-Lease" "expiresAtUnixMs" "Authorization:" "Bearer " \
+  || die "the manifest directory holds provider access material"
 
 # THE PROBE CACHE IS MEDIA BYTES, and `://` is not a usable signal against it. This is not a relaxation to get
 # a run green — it is a correction of a check that was measuring the wrong thing. A cached probe window is a
@@ -784,12 +854,14 @@ docker run --rm -v "$WORK/manifest:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMA
 # those is not evidence about access material; it is evidence that a 1-in-16-million byte pattern occurs in a
 # few megabytes of high-entropy data, which it does.
 #
-# So the cache is searched for the things that could only have got there from a leak: the endpoint's own host
-# name, a real URL scheme, the fake provider's lease header, an expiry field and an authorization header.
+# So the cache is searched for the things that could only have got there from a leak, and FIRST AMONG THEM
+# THE ACTUAL LEASE SECRET minted for this run. That marker is 16 random bytes rendered as hex behind a fixed
+# prefix; the probability of it occurring by chance in a few megabytes of video is nil, so unlike `://` it is
+# binary-safe and a hit would be conclusive rather than noise.
 docker run --rm -v "$WORK/cache:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
   sh /out/leakcheck.sh "the daemon probe cache" \
-  "fakerange" "http://" "https://" "X-Fake-Lease" "expiresAtUnixMs" "Authorization:" "Bearer " \
-  || die "the probe cache holds access material"
+  "$LEASE_MARKER" "fakerange" "http://" "https://" "X-Fake-Lease" "expiresAtUnixMs" "Authorization:" "Bearer " \
+  || die "the probe cache holds provider access material"
 
 # ...AND THE CACHE IS NOT A COPY OF THE LIBRARY. The scan-window cache is supposed to hold three fixed
 # megabyte windows per projected version, not the object. If a read path ever started writing whole files
@@ -805,13 +877,30 @@ test "${CACHE_BYTES:-0}" -le "$CACHE_CEILING" \
   || die "the probe cache holds $CACHE_BYTES bytes, which is more than a fixed window plan can account for"
 test "${CACHE_BYTES:-0}" -lt "$PUBLISHED_BYTES" \
   || die "the probe cache is as large as the library it is caching windows of"
-echo "  the manifest directory and the probe cache hold no access material"
+echo "  the manifest directory and the probe cache hold no provider access material"
 
-# The media server's own library database must hold the projected PATH and nothing about a provider.
-docker run --rm -v "$WORK/jf-config:/scan:ro" "$VERIFY_IMAGE" \
-  sh -c 'grep -rlF "fakerange" /scan 2>/dev/null | head -3' > "$WORK/out/jf-leak.txt" || true
-test ! -s "$WORK/out/jf-leak.txt" || { cat "$WORK/out/jf-leak.txt" >&2; die "the media server persisted the provider endpoint"; }
-echo "  the media server's own state names no provider endpoint"
+# THE MEDIA SERVER'S OWN LIBRARY STATE must hold the projected PATH and nothing about a provider. It DOES hold
+# its own device and access-token records -- it has to, or it could not survive the restart this gate performs
+# earlier -- and those are not searched for here, because they are Jellyfin's own credentials for its own API
+# and have nothing to do with the provider lease this step is about.
+docker run --rm -v "$WORK/jf-config:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE" \
+  sh /out/leakcheck.sh "the media server's library state" \
+  "$LEASE_MARKER" "fakerange" "X-Fake-Lease" "expiresAtUnixMs" \
+  || die "the media server persisted provider access material"
+echo "  the media server's library state names no provider endpoint and holds no lease"
+
+# AND THE LEASE REALLY EXISTED, or every search above was a search for nothing. The endpoint counts each
+# resolution it served; a run that resolved zero times never minted the secret these checks look for, and
+# would pass them by doing nothing at all.
+RESOLUTIONS="$(field resolutions < "$WORK/out/counters-final.json")"
+test "${RESOLUTIONS:-0}" -ge 1 \
+  || die "the endpoint served no access resolution, so the leak check searched for a secret that never existed"
+echo "  $RESOLUTIONS access lease(s) were minted during this run, so the searches above had a subject"
+
+# WHAT THIS RUN DOES PERSIST, STATED RATHER THAN OMITTED.
+echo "  NOTE: this harness persists a Jellyfin access token in its own scratch state file, which the cleanup"
+echo "        trap deletes; and Jellyfin persists its own device and token records, which it must in order to"
+echo "        survive the restart this gate performs. Neither is provider access material."
 
 # ----------------------------------------------------------------------------------------------------------
 step "stopping the daemon: the namespace goes away, and a stale one does not linger"
@@ -843,15 +932,24 @@ echo "  - a real library scan that found both items, with the sizes the control 
 echo "    server's own view of them as ORDINARY FILES -- not symlinks, not .strm placeholders, not remote"
 echo "    media sources."
 echo "  - direct play of both, digest-compared against values recorded OUTSIDE the mount; a real HTTP seek"
-echo "    whose 206 and Content-Range were asserted before the body was read."
+echo "    whose 206 and Content-Range were asserted before the body was read. This is evidence about BYTES."
+echo "    It is NOT evidence that the server authorized the request: on this Jellyfin version the direct-play"
+echo "    endpoint answers 200 to a request carrying no credential at all, which the gate measured."
 echo "  - a forced transcode proved by DECODING its output: mpeg4 in, h264 out."
-echo "  - a successor published mid-stream (the stream completed correctly), and a SIGKILL of the daemon"
-echo "    mid-stream followed by the ordinary restart-and-remount: playback resumable, the published"
-echo "    generation unmoved, and zero removals, zero duplicates and zero item-id churn on every re-scan."
+echo "  - a generation admitted while ONE HELD-OPEN RESPONSE BODY was mid-delivery -- partially consumed, not"
+echo "    drained -- which then completed from the SAME response with the whole file's digest, and with a"
+echo "    measured share of its bytes arriving AFTER the successor was admitted."
+echo "  - a generation admitted while the scanner was OBSERVED IN FLIGHT, not merely after a sleep."
+echo "  - a SIGKILL of the daemon mid-stream followed by the ordinary restart-and-remount. The held-open"
+echo "    stream is permitted to fail there and is recorded as INTERRUPTED, which is not open-handle evidence;"
+echo "    resumability is asserted separately, by a new request. The published generation did not move, and"
+echo "    every re-scan showed zero removals, zero duplicates and zero item-id churn."
 echo "  - every mutation from the media server's own non-root container refused BY THE DAEMON, against a"
 echo "    mount deliberately not bound read-only."
-echo "  - no access URL, token, header or expiry persisted in the manifest directory, the probe cache or the"
-echo "    media server's own state."
+echo "  - a real PROVIDER access lease was minted during the run, and its per-run secret marker appears in"
+echo "    NONE of the manifest directory, the probe cache or the media server's library state. This gate does"
+echo "    NOT claim that no token exists on disk: it persists a Jellyfin token in its own scratch state, which"
+echo "    cleanup deletes, and Jellyfin persists its own device and token records, which it must."
 echo
 echo "WHAT THIS GATE DOES NOT PROVE. A Docker Desktop pass is NOT Linux/Unraid closure and SHALL NOT be"
 echo "reported as one. Plex, Emby, a real Unraid host and a real provider endpoint remain entirely unproved,"

@@ -88,12 +88,14 @@ type Server struct {
 	// objects by reference
 	objects map[string]Object
 	// faults by reference; remaining>0 means "apply this many more times, then stop"
-	faults     map[string]*faultState
-	leaseTTL   time.Duration
-	leaseSeq   atomic.Uint64
-	leases     map[string]time.Time
-	now        func() time.Time
-	timeoutFor time.Duration
+	faults        map[string]*faultState
+	leaseTTL      time.Duration
+	leasePrefix   string
+	publicBaseURL string
+	leaseSeq      atomic.Uint64
+	leases        map[string]time.Time
+	now           func() time.Time
+	timeoutFor    time.Duration
 	// requireAuth makes the resolver refuse a request with no bearer credential.
 	requireAuth bool
 	token       string
@@ -109,9 +111,25 @@ type Options struct {
 	// expiry-mid-read gate.
 	LeaseTTL time.Duration
 	// Token, when non-empty, must be presented to the resolver as a bearer credential.
-	Token      string
-	TimeoutFor time.Duration
-	MaxConns   int
+	Token string
+	// PublicBaseURL is the origin a RESOLVED access URL names, when it differs from the listen address.
+	//
+	// WHY THIS IS NEEDED AT ALL. `BaseURL()` is derived from the listener, and a server told to listen on
+	// `0.0.0.0:8099` reports exactly that — so a resolver running in a container would hand back
+	// `http://0.0.0.0:8099/object/...`, which is not a host anything can dial and is not the origin the
+	// daemon's allowlist names. The resolved URL has to be the origin a CLIENT reaches this server at, which
+	// only the caller knows.
+	PublicBaseURL string
+	// LeasePrefix makes a minted lease id GREPPABLE.
+	//
+	// Leases are otherwise `l1`, `l2`, ... — fine for an in-process test that compares them directly, and
+	// useless to a gate that has to prove a lease never reached disk: `l1` occurs by chance in any few
+	// megabytes of binary, so a search for it can only produce false positives. A caller that supplies a
+	// high-entropy prefix gets a lease value it can search for EXACTLY, in a media file or a database, and
+	// mean something by finding none.
+	LeasePrefix string
+	TimeoutFor  time.Duration
+	MaxConns    int
 	// Addr is where to listen. Empty means `127.0.0.1:0`, which is what every in-process test wants: an
 	// ephemeral port on loopback that nothing outside the test can reach. The publisher-to-mount gate runs
 	// this server in its own container and needs it reachable from the daemon's container, so it sets an
@@ -130,15 +148,17 @@ func New(opts Options) (*Server, error) {
 		return nil, err
 	}
 	s := &Server{
-		listener:    listener,
-		objects:     map[string]Object{},
-		faults:      map[string]*faultState{},
-		leases:      map[string]time.Time{},
-		leaseTTL:    opts.LeaseTTL,
-		now:         time.Now,
-		timeoutFor:  opts.TimeoutFor,
-		token:       opts.Token,
-		requireAuth: opts.Token != "",
+		listener:      listener,
+		objects:       map[string]Object{},
+		faults:        map[string]*faultState{},
+		leases:        map[string]time.Time{},
+		leaseTTL:      opts.LeaseTTL,
+		leasePrefix:   opts.LeasePrefix,
+		publicBaseURL: strings.TrimRight(opts.PublicBaseURL, "/"),
+		now:           time.Now,
+		timeoutFor:    opts.TimeoutFor,
+		token:         opts.Token,
+		requireAuth:   opts.Token != "",
 	}
 	if s.leaseTTL == 0 {
 		s.leaseTTL = time.Hour
@@ -181,7 +201,17 @@ func (s *Server) Close() error {
 	return s.listener.Close()
 }
 
-func (s *Server) BaseURL() string    { return "http://" + s.listener.Addr().String() }
+func (s *Server) BaseURL() string { return "http://" + s.listener.Addr().String() }
+
+// AdvertisedBaseURL is the origin a RESOLVED access URL names: the caller's public base when it gave one,
+// and the listen address otherwise. Every in-process test takes the second branch and is unaffected.
+func (s *Server) AdvertisedBaseURL() string {
+	if s.publicBaseURL != "" {
+		return s.publicBaseURL
+	}
+	return s.BaseURL()
+}
+
 func (s *Server) ResolveURL() string { return s.BaseURL() + "/resolve" }
 func (s *Server) DirectURL() string  { return s.BaseURL() + "/direct" }
 func (s *Server) Host() string {
@@ -361,13 +391,13 @@ func (s *Server) handleResolve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	lease := "l" + strconv.FormatUint(s.leaseSeq.Add(1), 10)
+	lease := s.leasePrefix + "l" + strconv.FormatUint(s.leaseSeq.Add(1), 10)
 	expires := s.now().Add(s.leaseTTL)
 	s.mu.Lock()
 	s.leases[lease] = expires
 	s.mu.Unlock()
 	writeJSON(w, map[string]any{
-		"url":             s.BaseURL() + "/object/" + lease + "/" + body.ObjectRef,
+		"url":             s.AdvertisedBaseURL() + "/object/" + lease + "/" + body.ObjectRef,
 		"headers":         map[string]string{"X-Fake-Lease": lease},
 		"expiresAtUnixMs": expires.UnixMilli(),
 	})

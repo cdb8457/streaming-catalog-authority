@@ -52,6 +52,12 @@ type objectOut struct {
 func main() {
 	addr := flag.String("addr", "0.0.0.0:8099", "address to listen on")
 	emit := flag.String("emit", "", "write the object descriptor JSON here")
+	// A HIGH-ENTROPY LEASE PREFIX, so a gate can prove an access lease never reached disk by searching for
+	// its exact value. Default leases are `l1`, `l2`, ... which occur by chance in any binary.
+	leasePrefix := flag.String("lease-prefix", "", "prefix minted lease ids with this, to make them greppable")
+	// The origin a RESOLVED url names. Listening on 0.0.0.0 means the listener cannot describe itself in a
+	// way any client could dial, so a resolver mode server has to be told what it is reachable as.
+	publicBase := flag.String("public-base-url", "", "origin to advertise in resolved access URLs")
 	var objects objectList
 	var files fileList
 	flag.Var(&objects, "object", "ref:size, repeatable — bytes from the deterministic content function")
@@ -62,7 +68,9 @@ func main() {
 		fail("at least one --object ref:size or --file-object ref=path is required")
 	}
 
-	server, err := fakeprovider.New(fakeprovider.Options{Addr: *addr})
+	server, err := fakeprovider.New(fakeprovider.Options{
+		Addr: *addr, LeasePrefix: *leasePrefix, PublicBaseURL: *publicBase,
+	})
 	if err != nil {
 		fail(err.Error())
 	}

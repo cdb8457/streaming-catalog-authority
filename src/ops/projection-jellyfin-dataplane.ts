@@ -2,9 +2,10 @@ import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { dirname } from 'node:path';
 import {
-  Deadline, GATE_CLIENT, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_POLL_INTERVAL_MS,
-  directPlayPath, forcedTranscodePath, mediaServerAuthHeader, movieLibraryRequest, opaqueRef,
-  type GateResult,
+  Deadline, GATE_CLIENT, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_POLL_INTERVAL_MS, ScanBarrier,
+  directPlayPath, forcedTranscodePath, hasQueryCredential, mediaServerAuthHeader, movieLibraryRequest,
+  opaqueRef, stripQueryCredentials,
+  type GateResult, type ScanTaskSample,
 } from '../core/projection/media-server-dataplane.js';
 
 // Projection Phase 1 — driving a REAL Jellyfin against the projected mount.
@@ -250,29 +251,73 @@ export async function resolveLibraryId(state: GateState): Promise<string | undef
   return state.libraryId;
 }
 
-interface ScheduledTask { Key?: string; State?: string }
+interface ScheduledTask extends ScanTaskSample { Key?: string }
+
+const SCAN_TASK_KEY = 'RefreshLibrary';
+
+async function scanTask(state: GateState): Promise<ScheduledTask | undefined> {
+  const tasks = await json<ScheduledTask[]>(state, 'GET', '/ScheduledTasks?isHidden=false');
+  return tasks?.find((task) => task.Key === SCAN_TASK_KEY);
+}
+
+export interface ScanOutcome {
+  readonly elapsedMs: number;
+  /** Whether the scanner was observed IN FLIGHT, as opposed to having started and finished between polls. */
+  readonly observedRunning: boolean;
+}
 
 /**
- * Trigger a real scan and wait for the scanner to go idle.
+ * Trigger a real scan, wait for it to actually start, and wait for that execution to actually finish.
  *
  * WAITING FOR THE TASK, NOT FOR THE ITEM COUNT. An item-count wait passes the moment the expected number of
  * items exists, which can be BEFORE the scan finished — so a re-scan assertion made straight afterwards would
- * be racing a scanner that was still writing. The count is checked too, after the task is idle, because a
- * scanner that finished having found nothing is also a failure.
+ * be racing a scanner that was still writing. The count is checked too, by the caller, because a scanner that
+ * finished having found nothing is also a failure.
+ *
+ * `onRunning` fires the first time the scan is observed in flight. The mid-scan gate uses it as its
+ * synchronisation point: it is the only moment at which "publish a successor WHILE a scan is running" can be
+ * asserted rather than hoped for.
  */
-export async function scanLibrary(state: GateState): Promise<number> {
+export async function scanLibrary(
+  state: GateState, onRunning?: () => void,
+): Promise<ScanOutcome> {
+  // The baseline is read BEFORE the trigger. Everything the barrier concludes is relative to it, which is
+  // what makes a stale `Idle` left over from a previous scan unable to satisfy anything.
+  const baseline = (await scanTask(state))?.LastExecutionResult?.StartTimeUtc;
+  const barrier = new ScanBarrier(baseline);
   const startedAt = now();
+  let announced = false;
+
   await json(state, 'POST', '/Library/Refresh');
-  await until('the library scan to reach an idle state', MEDIA_SERVER_DEADLINES_MS.LIBRARY_SCAN, async () => {
-    const tasks = await json<ScheduledTask[]>(state, 'GET', '/ScheduledTasks?isHidden=false');
-    const scan = tasks?.find((task) => task.Key === 'RefreshLibrary');
-    if (!scan) return undefined;
-    // `Idle` twice in a row, one poll apart, because the task briefly reads Idle before it starts.
-    if (scan.State !== 'Idle') return undefined;
-    if (now() - startedAt < 3 * MEDIA_SERVER_POLL_INTERVAL_MS) return undefined;
-    return true;
+  await until('the library scan to start and then finish', MEDIA_SERVER_DEADLINES_MS.LIBRARY_SCAN, async () => {
+    const phase = barrier.observe(await scanTask(state));
+    if (phase !== 'not-started' && !announced) {
+      announced = true;
+      onRunning?.();
+    }
+    return phase === 'complete' ? true : undefined;
   });
-  return now() - startedAt;
+  return { elapsedMs: now() - startedAt, observedRunning: barrier.started };
+}
+
+/**
+ * Wait until the scan is observed IN FLIGHT, without waiting for it to finish.
+ *
+ * This is the seam the mid-scan gate publishes against. It exists separately from `scanLibrary` because the
+ * scan is driven by a different process there, and a second observer polling the same task is the honest way
+ * to synchronise two processes against one server-side fact.
+ */
+export async function awaitScanRunning(state: GateState, baseline: string | undefined): Promise<void> {
+  const barrier = new ScanBarrier(baseline);
+  await until('the library scan to be observed running', MEDIA_SERVER_DEADLINES_MS.LIBRARY_SCAN, async () => {
+    const phase = barrier.observe(await scanTask(state));
+    return phase === 'not-started' ? undefined : true;
+  });
+}
+
+/** The scan task's last execution start, for use as a barrier baseline. */
+export async function scanBaseline(state: GateState): Promise<string | undefined> {
+  return (await scanTask(state))?.LastExecutionResult?.StartTimeUtc;
 }
 
 interface RawItem {
@@ -373,9 +418,99 @@ async function drain(exchange: Exchange, maxBytes: number): Promise<StreamResult
   return { status: response.status, bytes: total, sha256: hash.digest('hex'), contentRange };
 }
 
+/**
+ * ONE response body, held open across an event, read in two halves from the SAME reader.
+ *
+ * THE DEFECT THIS REPLACES, AND WHY IT MATTERED. `hold-stream` used to call `rangeRead` for a prefix and
+ * `rangeRead` again for the remainder. `rangeRead` drains its response to completion and releases it — so the
+ * first call finished the HTTP exchange, Jellyfin closed its file, and projectiond saw a RELEASE. The gate
+ * then published a successor and issued a brand-new request. What it proved was that two requests succeed on
+ * either side of a swap. What it CLAIMED, in its own gate id and in the final report, was that an active
+ * stream survived one — which is a different and much stronger statement, and was not being measured at all.
+ *
+ * WHAT THIS PROVES INSTEAD. A single `GET` is opened and partially consumed. The reader is then left alone —
+ * not cancelled, not drained — while the gate publishes a successor and waits for the daemon to admit it.
+ * Consumption then resumes from the same reader and runs to the end, and the digest is taken over the WHOLE
+ * body. If the response had been closed, re-opened, or served from a different generation, that digest fails.
+ *
+ * SOCKET BUFFERING IS THE OBVIOUS WAY TO FOOL THIS, so it is measured rather than assumed. `bytesBefore`
+ * records how much had arrived when the gate paused; the caller asserts that a substantial share of the file
+ * arrived AFTER the event. A body that had already been buffered in full would show nothing arriving
+ * afterwards and would fail that assertion — which is exactly the case where "held open" would be a fiction.
+ */
+export interface PinnedStream {
+  /** Consume until at least `target` bytes have been read. Throws if the body ends first. */
+  readAtLeast(target: number): Promise<void>;
+  /** Bytes consumed so far. */
+  readonly bytesRead: number;
+  /** Whether the body has already ended. If this is true at the pause point, nothing was held open. */
+  readonly ended: boolean;
+  /** Consume the rest and return the digest over everything read from this one response. */
+  finish(): Promise<StreamResult>;
+  cancel(): Promise<void>;
+}
+
+export async function openPinnedStream(state: GateState, item: ItemRecord): Promise<PinnedStream> {
+  const exchange = await request(state, 'GET',
+    directPlayPath(item.itemId, item.mediaSourceId),
+    { timeoutMs: MEDIA_SERVER_DEADLINES_MS.DIRECT_PLAY, accept: '*/*' });
+  const { response } = exchange;
+  if (response.status !== 200) {
+    await response.body?.cancel().catch(() => undefined);
+    exchange.release();
+    throw new GateFailure(`opening a stream answered ${response.status}, not 200`);
+  }
+  if (response.body === null) {
+    exchange.release();
+    throw new GateFailure('the stream had no body');
+  }
+
+  const reader = response.body.getReader();
+  const hash = createHash('sha256');
+  let bytesRead = 0;
+  let ended = false;
+
+  const pump = async (): Promise<boolean> => {
+    const { done, value } = await reader.read();
+    if (done) { ended = true; return false; }
+    bytesRead += value.byteLength;
+    hash.update(value);
+    return true;
+  };
+
+  return {
+    get bytesRead() { return bytesRead; },
+    get ended() { return ended; },
+    async readAtLeast(target: number): Promise<void> {
+      while (bytesRead < target) {
+        if (!(await pump())) {
+          throw new GateFailure(`the stream ended after ${bytesRead} bytes, before the ${target} asked for`);
+        }
+      }
+    },
+    async finish(): Promise<StreamResult> {
+      try {
+        while (await pump()) { /* to the end of this one response */ }
+      } catch (error) {
+        throw new GateFailure(`the held-open stream failed after ${bytesRead} bytes: ${(error as Error).message}`);
+      } finally {
+        exchange.release();
+      }
+      return {
+        status: response.status, bytes: bytesRead, sha256: hash.digest('hex'),
+        contentRange: response.headers.get('content-range'),
+      };
+    },
+    async cancel(): Promise<void> {
+      await reader.cancel().catch(() => undefined);
+      exchange.release();
+    },
+  };
+}
+
 export async function directPlay(state: GateState, item: ItemRecord, maxBytes: number): Promise<StreamResult> {
   const exchange = await request(state, 'GET',
-    directPlayPath(item.itemId, item.mediaSourceId, state.token ?? ''),
+    directPlayPath(item.itemId, item.mediaSourceId),
     { timeoutMs: MEDIA_SERVER_DEADLINES_MS.DIRECT_PLAY, accept: '*/*' });
   if (exchange.response.status !== 200) {
     await exchange.response.body?.cancel().catch(() => undefined);
@@ -402,7 +537,7 @@ export async function rangeRead(
   const budgetMs = MEDIA_SERVER_DEADLINES_MS.RANGE_READ
     + Math.ceil(length / 262_144) * MEDIA_SERVER_POLL_INTERVAL_MS;
   const exchange = await request(state, 'GET',
-    directPlayPath(item.itemId, item.mediaSourceId, state.token ?? ''),
+    directPlayPath(item.itemId, item.mediaSourceId),
     { range: `bytes=${offset}-${last}`, timeoutMs: budgetMs, accept: '*/*' });
   const { response } = exchange;
   const abandon = async (message: string): Promise<never> => {
@@ -435,6 +570,8 @@ export interface TranscodeResult {
   readonly sessionSawTranscode: boolean;
   readonly transcodeReasons: readonly string[];
   readonly firstSegment: Uint8Array;
+  /** Server-generated playlist URLs that carried a live credential. Expected: zero. */
+  readonly credentialsInGeneratedUrls: number;
 }
 
 /**
@@ -449,7 +586,7 @@ export async function forcedTranscode(
   state: GateState, item: ItemRecord, maxSegments: number, maxBytes: number,
 ): Promise<TranscodeResult> {
   const playSessionId = `gate-${opaqueRef('session', item.itemId).slice(0, 16)}`;
-  const masterPath = forcedTranscodePath(item.itemId, item.mediaSourceId, state.token ?? '', playSessionId);
+  const masterPath = forcedTranscodePath(item.itemId, item.mediaSourceId, playSessionId);
   const master = await request(state, 'GET', masterPath,
     { timeoutMs: MEDIA_SERVER_DEADLINES_MS.TRANSCODE, accept: '*/*' });
   let masterBody: string;
@@ -461,13 +598,25 @@ export async function forcedTranscode(
   } finally {
     master.release();
   }
-  const variantPath = firstPlaylistLine(masterBody);
-  if (variantPath === undefined) throw new GateFailure('the transcode master playlist named no variant');
+  const variantRef = firstPlaylistLine(masterBody);
+  if (variantRef === undefined) throw new GateFailure('the transcode master playlist named no variant');
 
+  // EVERY SERVER-GENERATED URL THIS GATE FOLLOWS IS INSPECTED BEFORE IT IS FOLLOWED. Measured against the
+  // pinned Jellyfin, a header-authenticated request produces children with no credential in them, so this
+  // counter stays at zero; it is here because following a URL verbatim is how a token the server chose to
+  // embed would end up in this process's request path, and from there in any diagnostic that prints one.
+  let credentialsInGeneratedUrls = 0;
+  const follow = (from: string, reference: string): string => {
+    const resolved = absolutePath(from, reference);
+    if (hasQueryCredential(resolved)) credentialsInGeneratedUrls += 1;
+    return stripQueryCredentials(resolved);
+  };
+
+  const variantPath = follow(masterPath, variantRef);
   // The variant playlist is where the segments are, and asking for it is what actually starts the ffmpeg job.
   const variant = await until('the transcode variant playlist to list a segment',
     MEDIA_SERVER_DEADLINES_MS.TRANSCODE, async () => {
-      const exchange = await request(state, 'GET', absolutePath(masterPath, variantPath),
+      const exchange = await request(state, 'GET', variantPath,
         { timeoutMs: MEDIA_SERVER_DEADLINES_MS.API_REQUEST, accept: '*/*' });
       try {
         if (exchange.response.status !== 200) {
@@ -487,7 +636,10 @@ export async function forcedTranscode(
   let first: Uint8Array = new Uint8Array(0);
   const wanted = variant.slice(0, maxSegments);
   for (const segment of wanted) {
-    const exchange = await request(state, 'GET', absolutePath(masterPath, segment),
+    // Resolved against the VARIANT playlist, which is the document that named it — not against the master.
+    // Both happen to live in the same directory on this server, so the distinction costs nothing here and
+    // would be a wrong URL on any server that did not.
+    const exchange = await request(state, 'GET', follow(variantPath, segment),
       { timeoutMs: MEDIA_SERVER_DEADLINES_MS.TRANSCODE, accept: '*/*' });
     let buffer: Uint8Array;
     try {
@@ -510,10 +662,12 @@ export async function forcedTranscode(
   const mine = (sessions ?? []).find((session) => session.NowPlayingItem?.Id === item.itemId);
   const info = mine?.TranscodingInfo;
 
-  // Stop the job rather than leaving an ffmpeg running for the rest of the gate.
+  // Stop the job rather than leaving an ffmpeg running for the rest of the gate. Header-only, like every
+  // other authenticated call here; this endpoint answers 401 without a valid credential, so the header is
+  // doing real work and the token still never enters a URL.
   await request(state, 'DELETE',
     `/Videos/ActiveEncodings?deviceId=${encodeURIComponent(GATE_CLIENT.deviceId)}`
-    + `&playSessionId=${encodeURIComponent(playSessionId)}&api_key=${encodeURIComponent(state.token ?? '')}`,
+    + `&playSessionId=${encodeURIComponent(playSessionId)}`,
   ).then((exchange) => exchange.release()).catch(() => undefined);
 
   return {
@@ -522,6 +676,7 @@ export async function forcedTranscode(
     sessionSawTranscode: info !== undefined && info.IsVideoDirect !== true,
     transcodeReasons: info?.TranscodeReasons ?? [],
     firstSegment: first,
+    credentialsInGeneratedUrls,
   };
 }
 

@@ -163,16 +163,39 @@ export function movieLibraryRequest(mountPath: string): Record<string, unknown> 
  *
  * `static=true` is the whole assertion. Without it the server is free to remux, and a digest comparison
  * against the file recorded outside the mount would fail for a reason that has nothing to do with projection.
+ *
+ * NO CREDENTIAL IN THE QUERY, AND NONE IS NEEDED. An earlier version passed `api_key=<token>` here as well as
+ * sending the Authorization header, which put a live credential into a URL — and a URL is the single most
+ * leak-prone place to put one: it lands in access logs, in error messages, in playlists the server generates
+ * from it, and in anything that echoes a request path.
+ *
+ * Measured against the pinned media server this gate drives: the header alone is accepted everywhere, and
+ * particular endpoint accepts a request with NO credential at all — see PLAYBACK_ENDPOINT_IS_ANONYMOUS.
  */
-export function directPlayPath(itemId: string, mediaSourceId: string, token: string): string {
+export function directPlayPath(itemId: string, mediaSourceId: string): string {
   const query = new URLSearchParams({
     static: 'true',
     mediaSourceId,
-    api_key: token,
     deviceId: GATE_CLIENT.deviceId,
   });
   return `/Videos/${itemId}/stream?${query.toString()}`;
 }
+
+/**
+ * WHAT THE PINNED MEDIA SERVER DOES WITH CREDENTIALS ON THE BYTE PATH, measured rather than assumed.
+ *
+ * `GET /Videos/{id}/stream?static=true` on the pinned server answers **200 with the whole file to a request
+ * carrying no credential at all**, and answers it just as happily to a deliberately invalid token. Every other
+ * endpoint this gate touches — `/Items`, `/Library/*`, `master.m3u8`, `DELETE /Videos/ActiveEncodings` —
+ * answers 401 without a valid one.
+ *
+ * THIS IS RECORDED BECAUSE OF WHAT IT STOPS THE GATE FROM CLAIMING. The direct-play evidence is about
+ * BYTES — that what came through the mount is what was published. It is **not** evidence that the media
+ * server authorized the request, because on this version it would have served those bytes to anybody who
+ * asked. Reading "authenticated playback" into a passing direct-play gate would be reading in something that
+ * was never measured.
+ */
+export const PLAYBACK_ENDPOINT_IS_ANONYMOUS = true;
 
 /**
  * A FORCED-TRANSCODE request.
@@ -184,13 +207,19 @@ export function directPlayPath(itemId: string, mediaSourceId: string, token: str
  * server's own bookkeeping is exactly the kind of thing this repository has too much of already.
  *
  * The width and bitrate ceilings are here to keep the job small and bounded, not to force anything.
+ *
+ * NO CREDENTIAL IN THE QUERY, and this one matters more than direct play's did. The server GENERATES the child
+ * URLs of the playlists it returns — the variant playlist, then each segment — and it generates them in the
+ * shape of the request that asked for them. Ask with `api_key` in the query and every generated child URL
+ * carries the live token onward into a playlist body. Ask with the Authorization header and, measured against
+ * the pinned version, **no generated child URL contains a credential at all**. The least-exposure shape is
+ * therefore also the one that stops the credential propagating.
  */
 export function forcedTranscodePath(
-  itemId: string, mediaSourceId: string, token: string, playSessionId: string,
+  itemId: string, mediaSourceId: string, playSessionId: string,
 ): string {
   const query = new URLSearchParams({
     mediaSourceId,
-    api_key: token,
     deviceId: GATE_CLIENT.deviceId,
     playSessionId,
     videoCodec: TRANSCODE_TARGET_VIDEO_CODEC,
@@ -203,6 +232,46 @@ export function forcedTranscodePath(
     transcodeReasons: 'VideoCodecNotSupported',
   });
   return `/Videos/${itemId}/master.m3u8?${query.toString()}`;
+}
+
+/**
+ * The query parameters that carry a live credential on this media server's API.
+ *
+ * `api_key` is this server family's own; `ApiKey` and `X-Emby-Token` are the spellings still accepted for
+ * compatibility, and an Emby driver would meet the last one first. All three are listed because the point is
+ * to RECOGNISE a credential wherever the server chose to put one, not to describe what this gate sends — this
+ * gate sends none.
+ */
+const CREDENTIAL_QUERY_PARAMS = ['api_key', 'apikey', 'x-emby-token'] as const;
+
+/** Whether a path the SERVER generated has a credential in its query. */
+export function hasQueryCredential(pathAndQuery: string): boolean {
+  const query = pathAndQuery.split('?')[1];
+  if (query === undefined) return false;
+  return query.split('&').some((pair) => {
+    const name = (pair.split('=')[0] ?? '').toLowerCase();
+    return (CREDENTIAL_QUERY_PARAMS as readonly string[]).includes(name);
+  });
+}
+
+/**
+ * The same path with any credential parameter removed.
+ *
+ * DEFENCE IN DEPTH, NOT THE PRIMARY MECHANISM. Measured against the pinned server, a header-authenticated
+ * request produces playlists whose child URLs carry no credential, so in the passing case this function has
+ * nothing to do. It exists because the gate FOLLOWS server-generated URLs, and a future version — or another
+ * media server — could start embedding one; following it verbatim would put a live token into this process's
+ * request path, and from there into any diagnostic that prints one. The gate asserts separately that it had
+ * nothing to strip.
+ */
+export function stripQueryCredentials(pathAndQuery: string): string {
+  const [path, query] = pathAndQuery.split('?');
+  if (query === undefined) return pathAndQuery;
+  const kept = query.split('&').filter((pair) => {
+    const name = (pair.split('=')[0] ?? '').toLowerCase();
+    return !(CREDENTIAL_QUERY_PARAMS as readonly string[]).includes(name);
+  });
+  return kept.length === 0 ? (path as string) : `${path}?${kept.join('&')}`;
 }
 
 /** What the gate's media is encoded as, and what it asks the server to produce instead. */
@@ -314,6 +383,95 @@ export function atLeast(gate: string, measured: number, floor: number, note?: st
 
 export function exactly(gate: string, measured: number, expected: number, note?: string): GateResult {
   return { gate, verdict: measured === expected ? 'pass' : 'fail', measured, budget: expected, ...(note ? { note } : {}) };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The scan barrier
+// ---------------------------------------------------------------------------------------------------------
+
+/** The fields of a media-server scheduled task this gate reads. Everything is optional; servers vary. */
+export interface ScanTaskSample {
+  readonly State?: string;
+  readonly CurrentProgressPercentage?: number | null;
+  readonly LastExecutionResult?: { StartTimeUtc?: string; EndTimeUtc?: string; Status?: string } | null;
+}
+
+export type ScanPhase = 'not-started' | 'running' | 'complete';
+
+/**
+ * Deciding when a library scan has ACTUALLY started and ACTUALLY finished.
+ *
+ * THE DEFECT THIS REPLACES. The previous version polled for `State === 'Idle'` and accepted the first one it
+ * saw more than three seconds after the trigger. Its comment claimed it required two consecutive Idles and
+ * ignored the pre-start Idle; the code did neither — there was no prior-state variable at all. A scan that
+ * took longer than three seconds to *start* was therefore declared COMPLETE before it began, and every
+ * assertion made afterwards was made against a library the scanner had not yet walked. The three-second
+ * constant was the whole barrier, and a constant is not a barrier.
+ *
+ * WHAT THIS DOES INSTEAD. It watches for a genuine execution transition, relative to a baseline taken BEFORE
+ * the trigger:
+ *
+ *   - `running` when the task reports `Running`, or reports progress, or its last execution START time has
+ *     moved past the baseline while it is still going;
+ *   - `complete` only once a NEW execution has finished — the last execution's start time is later than the
+ *     baseline AND the task is back to `Idle`.
+ *
+ * THE FAST-COMPLETE CASE IS WHY THE BASELINE IS A TIMESTAMP AND NOT A FLAG. A scan of four entries can start
+ * and finish between two polls, so demanding that `Running` be *observed* would hang forever on a fast
+ * server. A new start timestamp proves an execution happened whether or not anybody saw it in flight — and
+ * a stale `Idle` from before the trigger can never satisfy it, because the baseline is that same field read
+ * a moment earlier.
+ *
+ * It is a pure state machine over samples so it can be tested against scripted sequences, including the ones
+ * that are awkward to produce against a real server: the stale idle, the fast complete, the slow start.
+ */
+export class ScanBarrier {
+  private sawRunning = false;
+
+  constructor(private readonly baselineStart: string | undefined) {}
+
+  /** The phase implied by one sample. Monotonic: once `running` has been seen it is not forgotten. */
+  observe(sample: ScanTaskSample | undefined): ScanPhase {
+    if (sample === undefined) return this.sawRunning ? 'running' : 'not-started';
+    const state = sample.State ?? '';
+    const start = sample.LastExecutionResult?.StartTimeUtc;
+    const startedSinceBaseline = ScanBarrier.isAfter(start, this.baselineStart);
+
+    if (state === 'Running' || state === 'Cancelling'
+      || (sample.CurrentProgressPercentage !== null && sample.CurrentProgressPercentage !== undefined)) {
+      this.sawRunning = true;
+      return 'running';
+    }
+    // Idle AND a new execution has been recorded: the scan ran and is over. Both halves are required —
+    // idle alone is the stale-idle trap, and a new start time alone could still be in flight.
+    if (state === 'Idle' && startedSinceBaseline) {
+      this.sawRunning = true;
+      return 'complete';
+    }
+    if (startedSinceBaseline) {
+      this.sawRunning = true;
+      return 'running';
+    }
+    return this.sawRunning ? 'running' : 'not-started';
+  }
+
+  /** Whether an execution has been observed to start at all. */
+  get started(): boolean { return this.sawRunning; }
+
+  /**
+   * Later-than comparison over the server's own timestamps.
+   *
+   * An ABSENT baseline means the task had never run before, so any recorded start is newer. An absent
+   * current start means nothing has been recorded yet, which is never newer than something.
+   */
+  private static isAfter(current: string | undefined, baseline: string | undefined): boolean {
+    if (current === undefined || current === '') return false;
+    if (baseline === undefined || baseline === '') return true;
+    const a = Date.parse(current);
+    const b = Date.parse(baseline);
+    if (Number.isNaN(a) || Number.isNaN(b)) return current !== baseline;
+    return a > b;
+  }
 }
 
 /** A deadline, expressed as an absolute moment, so every wait in a phase shares one budget. */

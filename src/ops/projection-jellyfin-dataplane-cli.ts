@@ -6,8 +6,8 @@ import {
 } from '../core/projection/media-server-dataplane.js';
 import {
   GateFailure, addMovieLibrary, appendResult, awaitFile, awaitServer, bootstrap, directPlay,
-  forcedTranscode, listMovies, rangeRead, readExpected, readResults, readState, resolveLibraryId,
-  scanLibrary, writeState, type GateState, type ItemRecord,
+  forcedTranscode, listMovies, openPinnedStream, rangeRead, readExpected, readResults, readState,
+  resolveLibraryId, scanLibrary, writeState, type GateState, type ItemRecord,
 } from './projection-jellyfin-dataplane.js';
 
 // The Projection Phase 1 media-server data-plane gate, from the command line.
@@ -133,7 +133,16 @@ async function main(): Promise<void> {
     case 'scan': {
       const state = readState(need(args, 'state'));
       const expected = readExpected(need(args, 'expect-file'));
-      const elapsed = await scanLibrary(state);
+      // THE SYNCHRONISATION POINT FOR THE MID-SCAN GATE. When asked for, this file is written the moment the
+      // scanner is observed IN FLIGHT — not after a sleep, which is what the mid-scan race used to rely on.
+      // The publishing half of the gate waits on it, so "a generation was admitted while a scan was running"
+      // is an observation rather than a hope.
+      const runningMarker = args.flags.get('running-marker');
+      const outcome = await scanLibrary(state, runningMarker === undefined ? undefined : () => {
+        mkdirSync(runningMarker.replace(/[^/\\]*$/, '') || '.', { recursive: true });
+        writeFileSync(runningMarker, `running\n`);
+      });
+      const elapsed = outcome.elapsedMs;
       // The library ITEM only exists once a scan has run, so this is the first point at which the id can be
       // picked up. Once known it is persisted, and every later listing is scoped to it.
       await resolveLibraryId(state);
@@ -149,6 +158,13 @@ async function main(): Promise<void> {
       // and zero item-id churn for everything carried. Recording what the raced scan saw is still worth
       // doing; pretending it was deterministic is not.
       if (args.flags.get('tolerant') === 'true') {
+        // THE RACE MUST HAVE BEEN A RACE. If the scanner was never observed in flight, the publish that the
+        // other half of the gate performed cannot be claimed to have landed mid-scan.
+        record(args, {
+          gate: `JD3-${label}-scan-observed-running`,
+          verdict: outcome.observedRunning ? 'pass' : 'fail',
+          note: 'the scanner was observed in flight, which is what makes the mid-scan publish a mid-scan publish',
+        });
         record(args, {
           gate: `JD3-${label}-raced-scan-completed`, verdict: 'pass',
           note: `a scan raced against a publish completed in ${Math.round(elapsed / 1000)}s and returned a `
@@ -252,6 +268,12 @@ async function main(): Promise<void> {
         verdict: result.bytes > 0 && result.firstSegment.byteLength > 0 ? 'pass' : 'fail',
         measured: result.bytes,
       });
+      // LEAST EXPOSURE, MEASURED AT RUNTIME. The gate authors no URL containing a credential; this asserts
+      // the server did not hand one back either, in the playlists it generated from a header-authenticated
+      // request. Anything it had found would have been stripped before the URL was followed.
+      record(args, exactly(`JD6-no-credential-in-generated-urls:${opaqueRef('entry', key).slice(0, 12)}`,
+        result.credentialsInGeneratedUrls, 0,
+        'server-generated playlist URLs carried no api key, so no credential propagated into a playlist body'));
       // Corroboration, recorded rather than relied on: the decode assertion is the evidence, and it happens
       // outside this process because the thing that can decode a transport stream is ffprobe.
       record(args, {
@@ -279,47 +301,71 @@ async function main(): Promise<void> {
       const releasePath = need(args, 'release');
       const allowInterrupt = args.flags.get('allow-interrupt') === 'true';
       const prefix = optionalNumber(args, 'prefix', 262_144);
+      const ref = opaqueRef('entry', key).slice(0, 12);
 
-      // Read the head first, so the stream is demonstrably live before anything is done to the daemon.
-      const head = await rangeRead(state, item, 0, prefix);
-      if (head.bytes !== prefix) throw new GateFailure('the stream did not deliver its opening window');
+      // ONE RESPONSE, OPENED ONCE. Not two ranged reads either side of the event — see `openPinnedStream`
+      // for why that difference is the whole gate.
+      const stream = await openPinnedStream(state, item);
+      await stream.readAtLeast(prefix);
+      const bytesBefore = stream.bytesRead;
+
+      // THE STREAM MUST STILL HAVE SOMETHING LEFT TO DELIVER. If the body already ended, nothing is being
+      // held open and every claim below would be about a completed download.
+      record(args, {
+        gate: `JD7-stream-open-at-event:${ref}`,
+        verdict: !stream.ended && bytesBefore < want.sizeBytes ? 'pass' : 'fail',
+        measured: bytesBefore, budget: want.sizeBytes,
+        note: 'one response body, partially consumed and deliberately not drained',
+      });
+
       mkdirSync(readyPath.replace(/[^/\\]*$/, '') || '.', { recursive: true });
-      writeFileSync(readyPath, `${head.bytes}\n`);
-      console.log(`  the stream is live: ${head.bytes} bytes read; waiting for the gate to act`);
+      writeFileSync(readyPath, `${bytesBefore}\n`);
+      console.log(`  the stream is live and unfinished: ${bytesBefore}/${want.sizeBytes} bytes consumed`);
       await awaitFile(releasePath, 'the gate to finish acting on the daemon',
         MEDIA_SERVER_DEADLINES_MS.HANDSHAKE);
 
-      // And now the rest of it, through a NEW request against the same item — which is what a player does
-      // when it seeks, and is the read that has to survive whatever just happened.
-      const rest = want.sizeBytes - prefix;
+      // Resume THE SAME reader and run it to the end. The digest is over everything this one response
+      // delivered, first half and second.
       let outcome: 'completed' | 'interrupted' = 'completed';
       let detail = '';
+      let result: { bytes: number; sha256: string } | undefined;
       try {
-        const tail = await rangeRead(state, item, prefix, rest);
-        if (tail.bytes !== rest) throw new GateFailure(`the tail returned ${tail.bytes} bytes, not ${rest}`);
+        result = await stream.finish();
       } catch (error) {
         outcome = 'interrupted';
         detail = (error as Error).message;
+        await stream.cancel();
       }
 
-      if (outcome === 'completed') {
+      if (outcome === 'completed' && result !== undefined) {
+        const correct = result.bytes === want.sizeBytes && result.sha256 === want.sha256;
         record(args, {
-          gate: `JD7-stream-across-event:${opaqueRef('entry', key).slice(0, 12)}`,
-          verdict: 'pass', note: 'the stream completed across the event',
+          gate: `JD7-open-stream-across-event:${ref}`,
+          verdict: correct ? 'pass' : 'fail',
+          measured: result.bytes, budget: want.sizeBytes,
+          note: 'one held-open response delivered the whole file correctly across the event',
+        });
+        // ANTI-BUFFERING. If the body had already been buffered in full before the pause, nothing would have
+        // arrived afterwards and "held open" would be a fiction. This measures the share that did.
+        const after = result.bytes - bytesBefore;
+        record(args, {
+          gate: `JD7-bytes-after-event:${ref}`,
+          verdict: after >= Math.floor(want.sizeBytes / 4) ? 'pass' : 'fail',
+          measured: after, budget: Math.floor(want.sizeBytes / 4),
+          note: 'bytes delivered by the same response AFTER the event, so the pause was real',
         });
       } else if (allowInterrupt) {
-        // THE DOCUMENTED ALLOWED BEHAVIOUR, and it is allowed only where the acceptance plan says it is: G12
-        // says playback is expected to fail across a SIGKILL and be resumable, and that the LIBRARY is not.
+        // THE DOCUMENTED ALLOWED BEHAVIOUR, and only where the acceptance plan says it is: G12 says playback
+        // is expected to fail across a SIGKILL and be resumable, and that the LIBRARY is not. Named for what
+        // it is — an interruption — and deliberately NOT counted as open-handle pinning evidence.
         record(args, {
-          gate: `JD7-stream-across-event:${opaqueRef('entry', key).slice(0, 12)}`,
+          gate: `JD7-open-stream-interrupted:${ref}`,
           verdict: 'pass',
-          note: `the stream failed, which the acceptance plan permits for this event: ${detail}`,
+          note: `the held-open stream failed, which the acceptance plan permits for this event. This is NOT `
+            + `evidence of generation pinning; resumability is asserted separately by a new request. ${detail}`,
         });
       } else {
-        record(args, {
-          gate: `JD7-stream-across-event:${opaqueRef('entry', key).slice(0, 12)}`,
-          verdict: 'fail', note: detail,
-        });
+        record(args, { gate: `JD7-open-stream-across-event:${ref}`, verdict: 'fail', note: detail });
       }
       return;
     }

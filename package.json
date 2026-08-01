@@ -113,6 +113,7 @@
     "go:publisher-mount-gate": "bash deploy/projection-publisher-mount-gate.sh",
     "go:jellyfin-dataplane-gate": "bash deploy/projection-jellyfin-dataplane-gate.sh",
     "go:jellyfin-dataplane-gate:three": "bash deploy/projection-jellyfin-dataplane-gate-three.sh",
+    "go:jellyfin-dataplane-gate:optional": "bash deploy/projection-jellyfin-dataplane-gate-optional.sh",
     "test:provider-availability-bridge": "tsx test/provider-availability-bridge.ts",
     "test:provider-availability-summary": "tsx test/provider-availability-summary.ts",
     "test:provider-availability-summary-cli": "tsx test/provider-availability-summary-cli.ts",
