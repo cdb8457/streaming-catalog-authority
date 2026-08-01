@@ -252,7 +252,12 @@ test('nothing the publisher touches can hold ephemeral access material', () => {
 });
 
 test('the publisher commits before it writes, and the pointer is written last', () => {
-  const service = read('src/core/projection/publish-service.ts');
+  // NORMALISED, because the needle below spans a line break. On a CRLF checkout — which is what git hands a
+  // Windows developer by default — the file's newlines are `\r\n`, `indexOf` returns -1, and this test fails
+  // claiming the publisher writes its artifact before it commits. It does not; the assertion could simply
+  // never hold on that platform. The contract-export test a few lines above already normalises for the same
+  // reason.
+  const service = read('src/core/projection/publish-service.ts').replace(/\r\n/g, '\n');
   const prepare = service.indexOf('cat_projection_generation_prepare');
   const artifact = service.indexOf('ensureArtifact(\n      options.manifestDir, artifactName');
   const dbPointer = service.indexOf('cat_projection_generation_publish($1)', prepare);

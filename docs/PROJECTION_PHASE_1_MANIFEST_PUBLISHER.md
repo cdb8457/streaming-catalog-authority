@@ -194,11 +194,16 @@ mount so that a hash which only proves "the file hashes to its own contents" can
 
 ## 6. What is still not proved
 
-**No real media server has read any of this.** The end-to-end gate mounts the production image and reads it
-with an ordinary non-root container, which is how a media server runs but is not one. Specifically still open:
+**This gate involves no media server.** It mounts the production image and reads it with an ordinary non-root
+container, which is how a media server runs but is not one. That half is now covered separately, by
+`npm run go:jellyfin-dataplane-gate` and `docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md`, which drives a
+real Jellyfin against the same mount; nothing below is closed by anything in *this* document.
 
-- **Plex, Jellyfin and Emby**: scan, direct play, seek, forced transcode, generation swap mid-playback, kill
-  and recover, and re-scan churn — Phase 1 gates G7–G13 and G18.
+Specifically still open:
+
+- **Plex and Emby**: scan, direct play, seek, forced transcode, generation swap mid-playback, kill and
+  recover, and re-scan churn — Phase 1 gates G7–G13 and G18. **Jellyfin** now has evidence for G7–G13 on
+  Windows / Docker Desktop only, which §6 of the acceptance plan says closes none of them.
 - **Unraid**: a real host, real shares, real mount propagation into real media-server containers.
 - **A real provider endpoint**: real TLS, real redirects refused, real `Content-Range`, real `429`.
 - **Three consecutive green runs on Linux or Unraid**, which is what the acceptance plan says "passing" means.

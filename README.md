@@ -47,17 +47,33 @@ npm run test:projection-publisher-db  # against a real migrated PostgreSQL: lock
 npm run go:publisher-mount-gate       # PostgreSQL -> the production publisher -> the production image ->
                                       # a mount -> both files hashed by a non-root container, a successor
                                       # published under an open handle, and forged bad generations refused
+
+npm run go:jellyfin-dataplane-gate    # ...and then a REAL, digest-pinned Jellyfin, non-root, with the mount
+                                      # as a library root: scan, direct play, a 206 seek, a forced transcode
+                                      # proved by decoding it, a successor mid-stream, a SIGKILL mid-stream,
+                                      # and zero library churn across every one of them
 ```
 
-**What is NOT proved, and is not claimed.** No **Plex**, **Jellyfin** or **Emby** scan, playback, seek or
-transcode has been run against this mount. No **Unraid** or other real-environment gate has been run. The
-publisher exists and its gates pass, but nothing downstream of the mount has been a real media server.
+**A real media server now reads this mount, and exactly one does.** The data-plane gate above stands up a real
+Jellyfin through its own first-run API, hands it the projected mount, and asserts what it found and what it
+played against digests recorded outside the mount — including a forced transcode proved by decoding the output
+rather than by believing the server. Its media is generated locally from ffmpeg's synthetic sources; nothing
+is downloaded. Details, and the two defects it found in itself, are in
+[docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md](docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md).
+
+**What is NOT proved, and is not claimed.** No **Plex** and no **Emby** scan, playback, seek or transcode has
+been run against this mount at all. No **Unraid** or other real-environment gate has been run, and every
+**Jellyfin** run so far has been on Windows / Docker Desktop — which the acceptance plan says closes none of
+G7–G13. No real provider endpoint, and therefore no **TorBox**, has been contacted by anything.
 
 The amplification numbers come from a **synthetic 50-entry harness** against an in-process fake endpoint: it
 reads the three fixed windows of the contract's own probe plan and measures range requests, resolution
 requests, bytes, 429s and peak concurrency against budgets whose denominators are stated. That is evidence
-about the daemon under a defined probe plan — it is **not** evidence about what a real media server's metadata
-pass does, and whether a real scanner stays inside those windows is an open question.
+about the daemon under a defined probe plan. What a **real** scanner costs is now measured separately, by the
+data-plane gate, against a budget expressed as a fraction of the object's own byte length. For one Jellyfin
+scan of one remote 13.9 MB object **whose index is deliberately at the end of the file**, it was **two ranged
+requests and 2 MiB** — the scanner sought to the far end of an object it was reading over HTTP Range, and
+fetched 15 % of it.
 
 Those are the gates in [docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md](docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md),
 and until they pass on a real host this is a slice that works on a test bench.

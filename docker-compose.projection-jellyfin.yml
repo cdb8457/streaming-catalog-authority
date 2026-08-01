@@ -1,0 +1,38 @@
+# Projection Phase 1 — a real, migrated PostgreSQL for the MEDIA-SERVER DATA-PLANE gate.
+#
+# WHY A THIRD DATABASE COMPOSE FILE. `docker-compose.yml` is the development stack and binds 5432.
+# `docker-compose.projection-publisher.yml` is the publisher-to-mount gate and binds 5470. This gate has to be
+# startable BESIDE both of them — the whole point of running it three times in a row is that a previous run,
+# or an installation, must not be able to lend it state. So it takes its own project name, its own network,
+# its own port, and throwaway storage.
+#
+# THE MEDIA SERVER IS NOT HERE, and neither is the daemon. Both are started by
+# `deploy/projection-jellyfin-dataplane-gate.sh`: the daemon with the narrow authority a FUSE mount needs
+# (/dev/fuse, CAP_SYS_ADMIN, root inside the container), and the media server as an ordinary NON-ROOT
+# container with the projected mount bind-propagated into it. Writing either into a Compose file next to a
+# database would make it look like a deployment shape somebody should copy. Neither is one.
+
+name: projection-jellyfin-gate
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_JELLYFIN_GATE_PG_PORT:-5480}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. Three consecutive runs mean three runs from nothing, or they mean very little.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-jellyfin-gate
