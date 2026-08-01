@@ -1,0 +1,41 @@
+# Projection Phase 1 — a real, migrated PostgreSQL for the publisher-to-mount gate.
+#
+# WHY A SEPARATE FILE FROM docker-compose.yml. That one is the ordinary development stack and it binds 5432,
+# which is very often already taken on a machine that runs this product. This gate has to be startable beside
+# a running installation without disturbing it, so it takes its own project name, its own network, its own
+# volume and a port the operator can move. Nothing in the shipped stacks references this file, and nothing
+# here is part of a deployment.
+#
+# THE SHAPE IS THE REPOSITORY'S NORMAL ONE: postgres:16, the same database name, the same roles, the same
+# health check. The publisher is run against it by `deploy/projection-publisher-mount-gate.sh` exactly as an
+# operator would run it against a production database — the same CLI, the same migration, the same commands.
+#
+# THE DAEMON IS NOT HERE. It is started by the gate with the narrow authority a FUSE mount needs
+# (/dev/fuse, CAP_SYS_ADMIN, root inside the container), and granting that in a Compose file next to a
+# database would make it look like a deployment shape somebody should copy. It is not one.
+
+name: projection-publisher-gate
+
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_GATE_PG_PORT:-5470}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # THE DATABASE IS THROWAWAY, and it says so in the only way that cannot be forgotten: its storage does
+      # not survive the container. A gate that left a volume behind would eventually be run against the
+      # previous run's state, and "it passed" would stop meaning "it passed from nothing".
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-publisher-gate

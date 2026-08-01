@@ -173,6 +173,138 @@ test('the daemon holds no database and no second manifest store', () => {
   }
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// The manifest publisher — the producer half of the slice
+// ---------------------------------------------------------------------------------------------------------
+
+test('the publisher exists as a control-plane component and the daemon still holds no database', () => {
+  for (const artifact of [
+    'src/core/projection/publisher.ts',
+    'src/core/projection/publish-service.ts',
+    'src/core/projection/artifact-store.ts',
+    'src/core/projection/source-registry.ts',
+    'src/ops/projection-publish-cli.ts',
+    'src/ops/projection-register-cli.ts',
+    'docker-compose.projection-publisher.yml',
+    'deploy/projection-publisher-mount-gate.sh',
+    'docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md',
+  ]) assert(exists(artifact), `publisher artifact exists: ${artifact}`);
+
+  // The producer is TypeScript and lives in the control plane. Nothing in the Go module may learn to author
+  // one: a data plane that can write a manifest is a data plane that can disagree with the control plane.
+  const walk = (dir: string): string[] => readdirSync(`${root}/${dir}`, { withFileTypes: true })
+    .flatMap((entry) => (entry.isDirectory() ? walk(`${dir}/${entry.name}`)
+      : entry.name.endsWith('.go') ? [`${dir}/${entry.name}`] : []));
+  for (const file of walk('projectiond')) {
+    if (file.includes('cmd/mkfixture') || file.includes('cmd/fakerange')) continue; // gate tools; see below
+    const source = read(file);
+    for (const forbidden of ['database/sql', 'sqlite', 'lib/pq', 'pgx', 'postgres']) {
+      assert(!source.toLowerCase().includes(forbidden), `${file} reaches for ${forbidden}`);
+    }
+  }
+});
+
+test('the gate tools are built by the toolchain image and are not in the shipped binary', () => {
+  const dockerfile = read('projectiond/Dockerfile');
+  assert(dockerfile.includes('./cmd/projectiond'), 'the image builds the daemon');
+  for (const tool of ['mkfixture', 'fakerange']) {
+    assert(exists(`projectiond/cmd/${tool}/main.go`), `${tool} exists`);
+    assert(!dockerfile.includes(tool), `the production image does not build ${tool}`);
+    assert(read(`projectiond/cmd/${tool}/main.go`).includes('//go:build linux'),
+      `${tool} is Linux-only, like the gates that use it`);
+  }
+});
+
+test('the producer derives every id through the shared contract, not a second implementation', () => {
+  const publisher = read('src/core/projection/publisher.ts');
+  for (const helper of ['deriveInode', 'deriveGenerationId', 'serializeManifestArtifact',
+    'manifestContentDigest', 'validateManifestV1', 'validateSuccession']) {
+    assert(publisher.includes(helper), `the producer calls the contract's ${helper}`);
+  }
+  // A producer that re-derived an inode, or re-implemented admission, could publish something the daemon
+  // refuses — and the refusal would surface at a mount rather than at the publish.
+  assert(!/function\s+deriveInode/.test(publisher), 'the producer does not define its own inode derivation');
+  assert(!/sha256\("projectiond\.ino/.test(publisher), 'nor its own ino domain');
+  const contract = read('src/core/projection/manifest-v1.ts');
+  for (const derivation of ['deriveProjectedEntryId', 'deriveProjectedVersionId', 'deriveSourceId',
+    'deriveGenerationId', 'deriveDeletionIntentId', 'serializeManifestArtifact']) {
+    assert(contract.includes(`export function ${derivation}`), `the contract owns ${derivation}`);
+  }
+});
+
+test('nothing the publisher touches can hold ephemeral access material', () => {
+  const migration = read('src/db/migrations.sql');
+  const registry = migration.slice(migration.indexOf('projection_source_roots'));
+  // The database refuses a URL shape in an object reference rather than trusting a caller not to send one.
+  assert(registry.includes("object_ref !~ '://'"), 'the object reference CHECK refuses a URL');
+  assert(registry.includes('[?&@\\\\]'), 'and a query, a userinfo or a backslash');
+  for (const forbidden of ['access_url', 'signed_url', 'token', 'expires_at TIMESTAMPTZ, -- access',
+    'lease', 'authorization']) {
+    assert(!registry.toLowerCase().includes(forbidden.toLowerCase().split(',')[0] as string)
+      || forbidden === 'token',
+    `the projection registry has no ${forbidden} column`);
+  }
+  // The registration boundary refuses it too, using the CONTRACT's own check rather than a local copy.
+  const sourceRegistry = read('src/core/projection/source-registry.ts');
+  assert(sourceRegistry.includes('checkLocatorValue'), 'registration uses the contract locator check');
+  assert(!/const\s+FORBIDDEN|LOCATOR_FORBIDDEN/.test(sourceRegistry),
+    'and does not keep its own list of forbidden words');
+});
+
+test('the publisher commits before it writes, and the pointer is written last', () => {
+  const service = read('src/core/projection/publish-service.ts');
+  const prepare = service.indexOf('cat_projection_generation_prepare');
+  const artifact = service.indexOf('ensureArtifact(\n      options.manifestDir, artifactName');
+  const dbPointer = service.indexOf('cat_projection_generation_publish($1)', prepare);
+  const filePointer = service.indexOf('writePointer(options.manifestDir, {');
+  assert(prepare > 0 && artifact > prepare, 'the bytes are committed before the artifact is written');
+  assert(dbPointer > artifact, 'the database moves after the artifact is on disk');
+  assert(filePointer > dbPointer, 'and the pointer file is written last of all');
+  const store = read('src/core/projection/artifact-store.ts');
+  for (const durability of ['fsyncSync', 'renameSync', 'syncDirectory']) {
+    assert(store.includes(durability), `the artifact store uses ${durability}`);
+  }
+  assert(store.includes('directorySynced'), 'and reports honestly where a directory cannot be synced');
+});
+
+test('the adversarial forge is a gate tool and is not an operator surface', () => {
+  assert(exists('src/ops/projection-forge-adversarial-cli.ts'), 'it exists');
+  const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
+  for (const [name, command] of Object.entries(pkg.scripts)) {
+    assert(!(name.startsWith('ops:') && command.includes('projection-forge')),
+      `${name} exposes the adversarial forge as an operator command`);
+  }
+  // ...and the only thing that runs it is the gate.
+  assert(read('deploy/projection-publisher-mount-gate.sh').includes('projection-forge-adversarial-cli'),
+    'the gate runs it');
+});
+
+test('the publisher-to-mount gate uses the ALREADY-MERGED production image and a non-root reader', () => {
+  const gate = read('deploy/projection-publisher-mount-gate.sh');
+  assert(gate.includes('docker build -t "$IMAGE" ./projectiond'), 'it builds the production image');
+  assert(gate.includes('--strict-direct-mount'), 'and mounts by syscall, refusing the fusermount helper');
+  assert(gate.includes('--user 65534:65534'), 'and reads it as an ordinary non-root user');
+  assert(gate.includes('sha256sum'), 'and hashes what it read');
+  assert(gate.includes('digests recorded OUTSIDE the mount') || gate.includes('recorded OUTSIDE the mount'),
+    'against digests recorded outside the thing being verified');
+  // The honest limits travel with the gate output, not only with the README.
+  for (const limit of ['Plex', 'Jellyfin', 'Emby', 'Unraid']) {
+    assert(gate.includes(limit), `the gate says ${limit} is still unproven`);
+  }
+});
+
+test('the publisher documentation states what is still unproved, in the same breath as what works', () => {
+  const doc = read('docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md');
+  for (const limit of ['Plex', 'Jellyfin', 'Emby', 'Unraid']) {
+    assert(doc.includes(limit), `the publisher doc names ${limit} among what is not yet proved`);
+  }
+  assert(/three consecutive/i.test(doc), 'and repeats what the acceptance plan means by passing');
+  const contract = read('docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md');
+  assert(contract.includes('1.8'), 'the contract carries the source-registry amendment');
+  assert(contract.includes('3.4.1'), 'and the id-derivation amendment');
+  assert(contract.includes('2.9'), 'and the canonical-bytes amendment');
+});
+
 test('README describes the slice as experimental rather than shipped', () => {
   const readme = read('README.md');
   assert(readme.includes('projectiond'), 'README names the daemon');
