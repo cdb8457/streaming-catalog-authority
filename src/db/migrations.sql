@@ -1385,6 +1385,439 @@ BEGIN
 END;
 $$;
 
+-- ------------------------------- v9 -> v10 (Projection Phase 1): the PROJECTION SOURCE REGISTRY ---
+--
+-- WHY THIS EXISTS AT ALL. The projection manifest names, per entry, an exact byte length, an mtime, a stable
+-- source descriptor (`{rootId, relativePath}` or `{endpointId, objectRef}`) and a visibility state. NOTHING in
+-- the schema above can answer any of those. `items` holds an opaque id and an encrypted identity blob; there
+-- is no file, no size, no path and no locator anywhere in it, and there is no honest way to derive one. A
+-- publisher that invented them would be publishing a guess, and a guessed size is a file a media server
+-- cannot play. So the gap is closed EXPLICITLY, with the narrowest boundary that makes the control plane the
+-- authority on the answer: a registration surface whose rows are exactly the fields the manifest needs.
+--
+-- WHAT IT IS NOT. It is not a scanner, not a provider client and not a catalog. Nothing here contacts
+-- anything: every row is asserted through a SECURITY DEFINER command by whatever registered it, exactly as
+-- `import_history` and `managed_collections` are. There is no TorBox-shaped column, no provider name, no API
+-- surface implied, and no code path in this database that could fetch a value it was not given.
+--
+-- WHAT IT MUST NEVER HOLD, AND CANNOT. An access URL, a signed link, a token, a header, an expiry, a lease or
+-- any other ephemeral access material. A locator is STABLE (Phase 0 §3.3.1): it names a CONFIGURED root or
+-- endpoint by label plus an opaque object reference, and turning that into something fetchable happens in the
+-- daemon, in memory. The `projection_entry_sources.object_ref` CHECK refuses `://`, `?`, `&`, `@` and `\`, so
+-- a URL cannot be stored here even by a caller that wanted to, and the manifest validator refuses a
+-- credential-shaped value on the way out as well. Two locks on the same door, deliberately.
+--
+-- IT IS IDENTITY-FREE ON THE SAME TERMS AS THE REST OF THIS SCHEMA — with one deliberate exception that is
+-- stated rather than hidden: a projected PATH is a file name an operator chose, and it is what the namespace
+-- is made of. It is not catalog identity (no title, no year, no external id, no provider ref, no ciphertext),
+-- but it is not nothing either, and the redaction rules elsewhere in this repository are why no path, locator
+-- or object reference ever appears in a problem code, a log line or a report.
+
+-- The configured roots and endpoints a locator may name. A manifest label that no deployment configures is a
+-- namespace the daemon answers EIO for, so the FK below makes an unconfigured label unregisterable.
+CREATE TABLE IF NOT EXISTS projection_source_roots (
+  root_id       TEXT PRIMARY KEY CHECK (root_id ~ '^[a-z0-9][a-z0-9._-]{0,63}$'),
+  kind          TEXT NOT NULL CHECK (kind IN ('local', 'http-range')),
+  registered_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- LAYER 2 OF THE IDENTITY MODEL: one exact byte stream. `sizeBytes`, `mtime` and the byte-identity proof
+-- belong here rather than to an entry, which is what makes "every entry naming this version agrees about all
+-- three" true by construction instead of by a check that could be forgotten.
+--
+-- THE TIMESTAMP IS TEXT, NOT TIMESTAMPTZ. The manifest carries `mtime` as exactly `....sssZ` and the artifact
+-- digest is over the exact bytes, so a microsecond that PostgreSQL preserved and JavaScript rounded would
+-- change the published bytes without anything changing. The column stores what will be published.
+CREATE TABLE IF NOT EXISTS projection_versions (
+  projected_version_id TEXT PRIMARY KEY CHECK (projected_version_id ~ '^pv_[0-9a-f]{64}$'),
+  -- The control plane's own stable key for this byte stream. Two entries share a projected version when, and
+  -- only when, whoever registered them said so by reusing this key.
+  version_key          TEXT NOT NULL UNIQUE CHECK (version_key ~ '^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$'),
+  size_bytes           BIGINT NOT NULL CHECK (size_bytes >= 0 AND size_bytes <= 9007199254740991),
+  mtime                TEXT NOT NULL CHECK (mtime ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'),
+  -- NULL together: byte identity is optional on a single-source entry and required as soon as an entry has a
+  -- second source or a version is shared (Phase 0 §3.6). The publisher enforces the "required" half.
+  probe_window_bytes   BIGINT CHECK (probe_window_bytes IS NULL OR probe_window_bytes = 1048576),
+  probes               JSONB  CHECK (probes IS NULL OR jsonb_typeof(probes) = 'array'),
+  CONSTRAINT projection_versions_identity_chk
+    CHECK ((probe_window_bytes IS NULL) = (probes IS NULL)),
+  registered_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- LAYER 1+3 OF THE IDENTITY MODEL: what appears in the namespace, at which path, in which visibility state.
+-- `item_id` is the manifest's `logicalMediaId` and it is the catalog record. There is deliberately NO foreign
+-- key to `items`, for the same reason `publish_ledger` has none: the row must survive a forget, because a
+-- projected entry whose record was forgotten still has to be retired and deleted VISIBLY rather than vanish.
+CREATE TABLE IF NOT EXISTS projection_entries (
+  projected_entry_id   TEXT PRIMARY KEY CHECK (projected_entry_id ~ '^pe_[0-9a-f]{64}$'),
+  item_id              TEXT NOT NULL CHECK (item_id ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'),
+  projected_version_id TEXT NOT NULL REFERENCES projection_versions (projected_version_id),
+  -- Relative, slash-separated, no leading or trailing slash, no traversal, no backslash, no control byte. The
+  -- full normalization rule is the contract's; this is the half a database can state.
+  path                 TEXT NOT NULL UNIQUE
+                         CHECK (length(path) BETWEEN 1 AND 4096
+                                AND path !~ '^/' AND path !~ '/$' AND path !~ '//'
+                                AND path !~ '\\' AND path !~ '[\x00-\x1f\x7f]'
+                                AND path <> '.' AND path <> '..'),
+  -- Case-fold uniqueness, computed by the database rather than supplied. On Unraid shares, macOS clients and
+  -- SMB, `A.mkv` and `a.mkv` are one file; two rows that fold together are refused here as well as at
+  -- admission.
+  --
+  -- IT IS `lower()` AND NOT `lower(normalize(path, NFC))`. `normalize()` RAISES unless the server encoding is
+  -- UTF8, so a migration that used it would fail outright on a database this product can otherwise run
+  -- against perfectly well — turning a defense-in-depth index into a deployment that cannot be migrated. The
+  -- NFC half of the rule is enforced where it is authoritative and portable: `normalizeProjectedPath` refuses
+  -- a non-NFC path at registration, and admission refuses a folded collision in both languages (the Go side
+  -- using full Unicode case folding, which collapses at least as much as this does).
+  path_fold            TEXT GENERATED ALWAYS AS (lower(path)) STORED,
+  visibility           TEXT NOT NULL DEFAULT 'available' CHECK (visibility IN ('available', 'degraded', 'retiring')),
+  degraded_reason      TEXT CHECK (degraded_reason IS NULL OR degraded_reason IN
+                         ('source-unreachable', 'source-rejected', 'byte-identity-mismatch',
+                          'access-resolution-failed', 'endpoint-circuit-open', 'operator-hold')),
+  degraded_since       TEXT CHECK (degraded_since IS NULL OR degraded_since ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'),
+  deletion_intent_id   TEXT CHECK (deletion_intent_id IS NULL OR deletion_intent_id ~ '^[0-9a-f]{32}$'),
+  retiring_declared_at TEXT CHECK (retiring_declared_at IS NULL OR retiring_declared_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'),
+  grace_deadline       TEXT CHECK (grace_deadline IS NULL OR grace_deadline ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'),
+  -- A DELETED ENTRY IS A TOMBSTONE, NOT A MISSING ROW. It is set only by a published deletion generation, and
+  -- the row stays so the id, the path and the fact that this installation removed it remain answerable.
+  deleted_in_sequence  BIGINT,
+  created_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  updated_at           TIMESTAMPTZ NOT NULL DEFAULT now(),
+  -- The lifecycle state and its evidence travel together or not at all. A `degraded` row without a reason, or
+  -- a `retiring` row without a grace deadline, is a state the manifest cannot express.
+  CONSTRAINT projection_entries_degraded_chk CHECK (
+    (visibility = 'degraded') = (degraded_reason IS NOT NULL AND degraded_since IS NOT NULL)),
+  CONSTRAINT projection_entries_retiring_chk CHECK (
+    (visibility = 'retiring') = (deletion_intent_id IS NOT NULL AND retiring_declared_at IS NOT NULL
+                                 AND grace_deadline IS NOT NULL)),
+  CONSTRAINT projection_entries_grace_chk CHECK (
+    grace_deadline IS NULL OR retiring_declared_at IS NULL OR grace_deadline > retiring_declared_at)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS projection_entries_path_fold_uk ON projection_entries (path_fold);
+CREATE INDEX IF NOT EXISTS projection_entries_version_idx ON projection_entries (projected_version_id);
+CREATE INDEX IF NOT EXISTS projection_entries_live_idx ON projection_entries (path) WHERE deleted_in_sequence IS NULL;
+
+-- LAYER 3: where the bytes are. One column holds the opaque reference for both kinds — a relative path under a
+-- configured local root, or an object reference at a configured endpoint — because a locator is one opaque
+-- value plus the label of the thing it is relative to, and two columns would only invite one to be populated
+-- for the wrong kind.
+CREATE TABLE IF NOT EXISTS projection_entry_sources (
+  projected_entry_id TEXT NOT NULL REFERENCES projection_entries (projected_entry_id) ON DELETE CASCADE,
+  source_id          TEXT NOT NULL CHECK (source_id ~ '^src_[0-9a-f]{32}$'),
+  kind               TEXT NOT NULL CHECK (kind IN ('local', 'http-range')),
+  -- A total order from zero with no tie: "which source do I try next" must never be a coin flip.
+  preference         INTEGER NOT NULL CHECK (preference >= 0 AND preference < 8),
+  source_generation  BIGINT NOT NULL DEFAULT 1 CHECK (source_generation >= 1),
+  root_id            TEXT NOT NULL REFERENCES projection_source_roots (root_id),
+  -- STABLE, OPAQUE, AND NOT A URL. The CHECK is what makes "an access URL cannot be stored here" a property of
+  -- the database rather than a habit of the caller.
+  object_ref         TEXT NOT NULL
+                       CHECK (length(object_ref) BETWEEN 1 AND 512
+                              AND object_ref !~ '://' AND object_ref !~ '[?&@\\]'
+                              AND object_ref ~ '^[\x21-\x7e][\x20-\x7e]*$'),
+  updated_at         TIMESTAMPTZ NOT NULL DEFAULT now(),
+  PRIMARY KEY (projected_entry_id, source_id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS projection_entry_sources_pref_uk
+  ON projection_entry_sources (projected_entry_id, preference);
+
+-- THE PUBLISHED GENERATION LEDGER, and the reason PostgreSQL stays the durable authority across a crash.
+--
+-- The artifact BYTES live here, next to their exact length and digest. That is what makes recovery
+-- deterministic rather than a reconstruction: if the file on disk is missing, short, or was never renamed,
+-- the publisher rewrites the bytes the database already committed, and they are the same bytes — not
+-- equivalent ones, the same ones. It is also what lets succession be validated against the predecessor the
+-- DATABASE recorded rather than against whatever a filesystem currently happens to hold.
+CREATE TABLE IF NOT EXISTS projection_generations (
+  sequence                    BIGINT PRIMARY KEY CHECK (sequence >= 1),
+  generation_id               TEXT NOT NULL UNIQUE CHECK (generation_id ~ '^gen_[0-9a-f]{32}$'),
+  created_at                  TEXT NOT NULL CHECK (created_at ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\.[0-9]{3}Z$'),
+  intent                      TEXT NOT NULL CHECK (intent IN ('routine', 'deletion')),
+  entry_count                 INTEGER NOT NULL CHECK (entry_count >= 0),
+  deletions                   TEXT[] NOT NULL DEFAULT '{}',
+  deletion_guard_acknowledged BOOLEAN NOT NULL DEFAULT FALSE,
+  deletion_guard_digest       TEXT CHECK (deletion_guard_digest IS NULL OR deletion_guard_digest ~ '^sha256:[0-9a-f]{64}$'),
+  predecessor_generation_id   TEXT CHECK (predecessor_generation_id IS NULL OR predecessor_generation_id ~ '^gen_[0-9a-f]{32}$'),
+  predecessor_sequence        BIGINT,
+  predecessor_manifest_digest TEXT CHECK (predecessor_manifest_digest IS NULL OR predecessor_manifest_digest ~ '^sha256:[0-9a-f]{64}$'),
+  -- The digest of the snapshot the generation was computed from, and the digest of what it SAYS. The second
+  -- is what makes a re-publish over an unmoved catalog a no-op instead of a new generation.
+  snapshot_digest             TEXT NOT NULL CHECK (snapshot_digest ~ '^sha256:[0-9a-f]{64}$'),
+  content_digest              TEXT NOT NULL CHECK (content_digest  ~ '^sha256:[0-9a-f]{64}$'),
+  artifact_name               TEXT NOT NULL UNIQUE CHECK (artifact_name ~ '^generation-[0-9]{1,19}-[0-9a-f]{32}\.json$'),
+  artifact                    BYTEA NOT NULL,
+  artifact_bytes              BIGINT NOT NULL CHECK (artifact_bytes > 0 AND artifact_bytes <= 268435456),
+  manifest_digest             TEXT NOT NULL CHECK (manifest_digest ~ '^sha256:[0-9a-f]{64}$'),
+  -- `prepared` is durable but NOT current: the bytes are committed and the pointer has not moved. A crash
+  -- there is resumable and can never have shown a media server half a generation.
+  state                       TEXT NOT NULL DEFAULT 'prepared' CHECK (state IN ('prepared', 'current', 'superseded')),
+  prepared_at                 TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at                TIMESTAMPTZ,
+  -- The recorded length is the length of the recorded bytes. Not a claim about them.
+  CONSTRAINT projection_generations_bytes_chk CHECK (artifact_bytes = octet_length(artifact)),
+  CONSTRAINT projection_generations_predecessor_chk CHECK (
+    (sequence = 1) = (predecessor_generation_id IS NULL)
+    AND (predecessor_generation_id IS NULL) = (predecessor_sequence IS NULL)
+    AND (predecessor_generation_id IS NULL) = (predecessor_manifest_digest IS NULL)
+    AND (predecessor_sequence IS NULL OR predecessor_sequence = sequence - 1)),
+  CONSTRAINT projection_generations_guard_chk CHECK (
+    deletion_guard_acknowledged = (deletion_guard_digest IS NOT NULL))
+);
+-- AT MOST ONE CURRENT GENERATION. Not a convention the publisher observes — an invariant the database holds,
+-- so no interleaving of two publishers can leave two rows both claiming to be what the daemon should serve.
+CREATE UNIQUE INDEX IF NOT EXISTS projection_generations_current_uk
+  ON projection_generations (state) WHERE state = 'current';
+
+-- The durable pointer: which generation the control plane says is current. The FILE that the daemon reads is
+-- a rendering of this row, and it is written LAST. When the two disagree, this one is right and the publisher
+-- repairs the file — never the other way round.
+CREATE TABLE IF NOT EXISTS projection_pointer (
+  id         INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  sequence   BIGINT REFERENCES projection_generations (sequence),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+INSERT INTO projection_pointer (id, sequence) VALUES (1, NULL) ON CONFLICT (id) DO NOTHING;
+
+-- Register a configured local root or HTTP Range endpoint by label. Idempotent; refuses to change the kind of
+-- an already-registered label, because a locator's shape is decided by it.
+CREATE OR REPLACE FUNCTION cat_projection_root_register(p_root_id TEXT, p_kind TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  INSERT INTO public.projection_source_roots (root_id, kind) VALUES (p_root_id, p_kind)
+  ON CONFLICT (root_id) DO NOTHING;
+  IF EXISTS (SELECT 1 FROM public.projection_source_roots WHERE root_id = p_root_id AND kind <> p_kind) THEN
+    RAISE EXCEPTION 'root % is already registered with a different kind', p_root_id;
+  END IF;
+END;
+$$;
+
+-- Assert one exact byte stream. Re-registering the same key with a DIFFERENT size, mtime or proof is refused
+-- rather than applied: `sizeBytes`, `mtime` and `inode` are immutable for a carried entry (admission check
+-- 11), so silently updating them here would produce a generation the daemon must refuse — and the refusal
+-- would surface far from the change that caused it.
+CREATE OR REPLACE FUNCTION cat_projection_version_register(
+  p_version_id TEXT, p_version_key TEXT, p_size BIGINT, p_mtime TEXT,
+  p_probe_window BIGINT, p_probes JSONB)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE existing public.projection_versions%ROWTYPE;
+BEGIN
+  SELECT * INTO existing FROM public.projection_versions WHERE projected_version_id = p_version_id;
+  IF FOUND THEN
+    IF existing.version_key <> p_version_key OR existing.size_bytes <> p_size OR existing.mtime <> p_mtime
+       OR existing.probe_window_bytes IS DISTINCT FROM p_probe_window
+       OR existing.probes IS DISTINCT FROM p_probes THEN
+      RAISE EXCEPTION 'projected version % is already registered with different bytes', p_version_id;
+    END IF;
+    RETURN;
+  END IF;
+  INSERT INTO public.projection_versions
+    (projected_version_id, version_key, size_bytes, mtime, probe_window_bytes, probes)
+  VALUES (p_version_id, p_version_key, p_size, p_mtime, p_probe_window, p_probes);
+END;
+$$;
+
+-- Register (or re-assert) a projected entry at a path, WITH its whole source set, in one statement.
+--
+-- THE ENTRY AND ITS SOURCES ARE ONE OPERATION, and they have to be. A caller that registered the row and then
+-- failed to attach its sources -- an unregistered root, a malformed payload, a duplicate preference -- would
+-- leave a SOURCE-LESS entry behind while reporting failure, and every subsequent publish would then be
+-- refused with PRODUCER_ENTRY_HAS_NO_SOURCE by a row nobody believes they created. A single SECURITY DEFINER
+-- call is atomic whether or not the caller owns a transaction, which is why the composition lives here rather
+-- than in the TypeScript.
+--
+-- THE PATH CANNOT MOVE. It is part of the entry's derived id, so a corrected path arrives as a different id --
+-- exactly the retire/delete/add model the contract requires -- and an attempt to re-register this id at
+-- another path is refused rather than applied.
+--
+-- NEITHER CAN THE CATALOG RECORD, WHILE THE ENTRY IS LIVE. `item_id` is the manifest's `logicalMediaId`, and
+-- admission check 11 makes it immutable for a carried entry: silently updating it here would produce a
+-- generation refused with LOGICAL_MEDIA_ID_CHANGED, and every publish afterwards would fail the same way
+-- against a registry that looks perfectly reasonable. It is refused at the point of the change instead. A
+-- TOMBSTONED entry may be re-registered against a different record, because that is a genuine re-addition of
+-- the path and the next generation reports it as one.
+DROP FUNCTION IF EXISTS public.cat_projection_entry_register(TEXT, TEXT, TEXT, TEXT);
+CREATE OR REPLACE FUNCTION cat_projection_entry_register(
+  p_entry_id TEXT, p_item_id TEXT, p_version_id TEXT, p_path TEXT, p_sources JSONB)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE existing public.projection_entries%ROWTYPE;
+BEGIN
+  SELECT * INTO existing FROM public.projection_entries WHERE projected_entry_id = p_entry_id;
+  IF FOUND THEN
+    IF existing.path <> p_path THEN
+      RAISE EXCEPTION 'projected entry % is registered at a different path', p_entry_id;
+    END IF;
+    IF existing.deleted_in_sequence IS NULL THEN
+      -- A LIVE ENTRY. Its identity is immutable, and re-asserting it must not disturb its lifecycle state:
+      -- an operator re-running a registration script has not un-degraded or un-retired anything, and a
+      -- registration that silently did would be a retirement quietly cancelled.
+      IF existing.projected_version_id <> p_version_id THEN
+        RAISE EXCEPTION 'projected entry % is already registered against a different projected version', p_entry_id;
+      END IF;
+      IF existing.item_id <> p_item_id THEN
+        RAISE EXCEPTION 'projected entry % is already registered against a different catalog record', p_entry_id;
+      END IF;
+      UPDATE public.projection_entries SET updated_at = now() WHERE projected_entry_id = p_entry_id;
+    ELSE
+      -- A TOMBSTONED ROW COMES BACK AS A NEW ENTRY, SO IT COMES BACK CLEAN. Clearing only the tombstone would
+      -- resurrect the path still wearing the lifecycle state it died in: a path that was retired and then
+      -- deleted would reappear `retiring`, against a deletion intent nobody re-declared and a grace deadline
+      -- that elapsed long ago -- which is to say, immediately deletable again by a generation that would look
+      -- perfectly well formed. The re-add is an addition, and an addition is `available`.
+      UPDATE public.projection_entries
+         SET item_id = p_item_id, projected_version_id = p_version_id,
+             deleted_in_sequence = NULL, visibility = 'available',
+             degraded_reason = NULL, degraded_since = NULL,
+             deletion_intent_id = NULL, retiring_declared_at = NULL, grace_deadline = NULL,
+             updated_at = now()
+       WHERE projected_entry_id = p_entry_id;
+    END IF;
+  ELSE
+    INSERT INTO public.projection_entries (projected_entry_id, item_id, projected_version_id, path)
+    VALUES (p_entry_id, p_item_id, p_version_id, p_path);
+  END IF;
+  PERFORM public.cat_projection_entry_set_sources(p_entry_id, p_sources);
+END;
+$$;
+
+-- Replace an entry's source set atomically. Passing the whole set rather than one source at a time is what
+-- keeps the preference order a contiguous total order at every instant a publisher could read it.
+CREATE OR REPLACE FUNCTION cat_projection_entry_set_sources(p_entry_id TEXT, p_sources JSONB)
+RETURNS INTEGER LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE n INTEGER;
+BEGIN
+  IF p_sources IS NULL OR jsonb_typeof(p_sources) <> 'array' OR jsonb_array_length(p_sources) = 0 THEN
+    RAISE EXCEPTION 'an entry needs at least one source';
+  END IF;
+  DELETE FROM public.projection_entry_sources WHERE projected_entry_id = p_entry_id;
+  INSERT INTO public.projection_entry_sources
+    (projected_entry_id, source_id, kind, preference, source_generation, root_id, object_ref)
+  SELECT p_entry_id,
+         s->>'sourceId', s->>'kind', (s->>'preference')::INTEGER,
+         COALESCE((s->>'sourceGeneration')::BIGINT, 1), s->>'rootId', s->>'objectRef'
+    FROM jsonb_array_elements(p_sources) AS s;
+  GET DIAGNOSTICS n = ROW_COUNT;
+  RETURN n;
+END;
+$$;
+
+-- The visibility lifecycle. Three commands, one per state, each of which writes the evidence its state needs.
+-- There is no command that removes an entry: removal is a published deletion generation and nothing else.
+-- IT FAILS CLOSED ON AN UNKNOWN ID, exactly as degrade and retire do. An operator un-retiring an entry they
+-- named slightly wrong must hear about it: a silent success here reads as "the mistaken retirement is
+-- undone" when nothing was undone at all, and the entry goes on marching toward a deletion generation.
+CREATE OR REPLACE FUNCTION cat_projection_entry_set_available(p_entry_id TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.projection_entries
+     SET visibility = 'available', degraded_reason = NULL, degraded_since = NULL,
+         deletion_intent_id = NULL, retiring_declared_at = NULL, grace_deadline = NULL, updated_at = now()
+   WHERE projected_entry_id = p_entry_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no such projected entry'; END IF;
+END;
+$$;
+
+-- A DEGRADED ENTRY IS PRESENT, NOT ABSENT. Its inode, size and mtime are untouched here, which is the whole
+-- reason a source outage cannot shrink a library.
+CREATE OR REPLACE FUNCTION cat_projection_entry_degrade(p_entry_id TEXT, p_reason TEXT, p_since TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.projection_entries
+     SET visibility = 'degraded', degraded_reason = p_reason, degraded_since = p_since,
+         deletion_intent_id = NULL, retiring_declared_at = NULL, grace_deadline = NULL, updated_at = now()
+   WHERE projected_entry_id = p_entry_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no such projected entry'; END IF;
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION cat_projection_entry_retire(
+  p_entry_id TEXT, p_intent_id TEXT, p_declared_at TEXT, p_grace_deadline TEXT)
+RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  UPDATE public.projection_entries
+     SET visibility = 'retiring', degraded_reason = NULL, degraded_since = NULL,
+         deletion_intent_id = p_intent_id, retiring_declared_at = p_declared_at,
+         grace_deadline = p_grace_deadline, updated_at = now()
+   WHERE projected_entry_id = p_entry_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no such projected entry'; END IF;
+END;
+$$;
+
+-- The publisher's exclusion. SESSION-scoped rather than transaction-scoped on purpose: a publish spans a
+-- database transaction, then filesystem work, then a second transaction, and a lock that ended at the first
+-- COMMIT would leave the interesting half unprotected. `pg_try_advisory_lock` rather than the blocking form,
+-- because a second publisher must be REFUSED and say so, not queue behind the first for an unbounded time.
+CREATE OR REPLACE FUNCTION cat_projection_publish_lock()
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  RETURN pg_try_advisory_lock(hashtextextended('projection_publisher', 0));
+END;
+$$;
+
+CREATE OR REPLACE FUNCTION cat_projection_publish_unlock()
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+BEGIN
+  RETURN pg_advisory_unlock(hashtextextended('projection_publisher', 0));
+END;
+$$;
+
+-- Commit a generation's BYTES, durably, without making it current. Idempotent on re-run: offering the same
+-- sequence with byte-identical content returns quietly, and offering it with different bytes RAISES rather
+-- than overwriting an artifact that may already be on disk under that name.
+CREATE OR REPLACE FUNCTION cat_projection_generation_prepare(
+  p_sequence BIGINT, p_generation_id TEXT, p_created_at TEXT, p_intent TEXT, p_entry_count INTEGER,
+  p_deletions TEXT[], p_guard_ack BOOLEAN, p_guard_digest TEXT,
+  p_predecessor_id TEXT, p_predecessor_sequence BIGINT, p_predecessor_digest TEXT,
+  p_snapshot_digest TEXT, p_content_digest TEXT, p_artifact_name TEXT, p_artifact BYTEA, p_manifest_digest TEXT)
+RETURNS TEXT LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE existing public.projection_generations%ROWTYPE;
+BEGIN
+  SELECT * INTO existing FROM public.projection_generations WHERE sequence = p_sequence;
+  IF FOUND THEN
+    IF existing.manifest_digest <> p_manifest_digest THEN
+      RAISE EXCEPTION 'generation % already exists with different bytes', p_sequence;
+    END IF;
+    RETURN existing.state;
+  END IF;
+  INSERT INTO public.projection_generations (
+    sequence, generation_id, created_at, intent, entry_count, deletions,
+    deletion_guard_acknowledged, deletion_guard_digest,
+    predecessor_generation_id, predecessor_sequence, predecessor_manifest_digest,
+    snapshot_digest, content_digest, artifact_name, artifact, artifact_bytes, manifest_digest, state)
+  VALUES (
+    p_sequence, p_generation_id, p_created_at, p_intent, p_entry_count, COALESCE(p_deletions, '{}'),
+    p_guard_ack, p_guard_digest,
+    p_predecessor_id, p_predecessor_sequence, p_predecessor_digest,
+    p_snapshot_digest, p_content_digest, p_artifact_name, p_artifact, octet_length(p_artifact),
+    p_manifest_digest, 'prepared');
+  RETURN 'prepared';
+END;
+$$;
+
+-- Make a prepared generation CURRENT: supersede the old one, move the durable pointer, and tombstone whatever
+-- this generation deleted. One transaction, so there is no instant at which the pointer names a generation
+-- whose deletions have not been recorded. The FILE the daemon reads is written after this commits.
+CREATE OR REPLACE FUNCTION cat_projection_generation_publish(p_sequence BIGINT)
+RETURNS BOOLEAN LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
+DECLARE v_state TEXT; v_deletions TEXT[];
+BEGIN
+  SELECT state, deletions INTO v_state, v_deletions
+    FROM public.projection_generations WHERE sequence = p_sequence FOR UPDATE;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no such generation'; END IF;
+  IF v_state = 'current' THEN RETURN FALSE; END IF;             -- already published; nothing to do
+  IF v_state = 'superseded' THEN RAISE EXCEPTION 'generation % has already been superseded', p_sequence; END IF;
+
+  UPDATE public.projection_generations SET state = 'superseded' WHERE state = 'current';
+  UPDATE public.projection_generations SET state = 'current', published_at = now() WHERE sequence = p_sequence;
+  UPDATE public.projection_pointer SET sequence = p_sequence, updated_at = now() WHERE id = 1;
+  IF array_length(v_deletions, 1) IS NOT NULL THEN
+    UPDATE public.projection_entries SET deleted_in_sequence = p_sequence, updated_at = now()
+     WHERE projected_entry_id = ANY (v_deletions) AND deleted_in_sequence IS NULL;
+  END IF;
+  RETURN TRUE;
+END;
+$$;
+
 -- ------------------------------------------------------------- privileges ----
 
 DO $$
@@ -1412,6 +1845,13 @@ REVOKE ALL ON managed_collections FROM PUBLIC;
 REVOKE ALL ON managed_collections FROM app;         -- owner-managed; app mutates ONLY via cat_collection_* fns
 REVOKE ALL ON managed_collection_members FROM PUBLIC;
 REVOKE ALL ON managed_collection_members FROM app;  -- owner-managed; app mutates ONLY via cat_collection_* fns
+REVOKE ALL ON projection_source_roots, projection_versions, projection_entries, projection_entry_sources,
+              projection_generations, projection_pointer FROM PUBLIC;
+-- Owner-managed, exactly like every other durable surface here: the app READS the registry and the generation
+-- ledger (the publisher's whole job is to read them) and mutates them ONLY through the cat_projection_*
+-- commands, so it cannot flip a pointer, rewrite an artifact or tombstone an entry by raw statement.
+REVOKE ALL ON projection_source_roots, projection_versions, projection_entries, projection_entry_sources,
+              projection_generations, projection_pointer FROM app;
 GRANT USAGE ON SCHEMA public TO app;
 GRANT SELECT ON events, items, provider_refs, item_key_control TO app;
 GRANT SELECT ON publish_ledger TO app;      -- identity-free; app/ops read it for reconcile + reporting
@@ -1419,6 +1859,8 @@ GRANT SELECT ON import_history TO app;      -- identity-free; the operator UI re
 GRANT SELECT ON collection_control_history TO app;  -- identity-free; the operator UI reads its own plan history
 GRANT SELECT ON managed_collections TO app;         -- identity-free; the planner, status and drift audit read it
 GRANT SELECT ON managed_collection_members TO app;  -- identity-free; membership is opaque catalog ids only
+GRANT SELECT ON projection_source_roots, projection_versions, projection_entries, projection_entry_sources,
+                projection_generations, projection_pointer TO app;
 
 REVOKE CREATE ON SCHEMA public FROM PUBLIC;
 REVOKE CREATE ON SCHEMA public FROM app;
@@ -1476,6 +1918,17 @@ REVOKE ALL ON FUNCTION
   cat_collection_recovery_proof(TEXT),
   cat_collection_rearm(BIGINT),
   cat_collection_touch(BIGINT),
+  cat_projection_root_register(TEXT, TEXT),
+  cat_projection_version_register(TEXT, TEXT, BIGINT, TEXT, BIGINT, JSONB),
+  cat_projection_entry_register(TEXT, TEXT, TEXT, TEXT, JSONB),
+  cat_projection_entry_set_sources(TEXT, JSONB),
+  cat_projection_entry_set_available(TEXT),
+  cat_projection_entry_degrade(TEXT, TEXT, TEXT),
+  cat_projection_entry_retire(TEXT, TEXT, TEXT, TEXT),
+  cat_projection_publish_lock(),
+  cat_projection_publish_unlock(),
+  cat_projection_generation_prepare(BIGINT, TEXT, TEXT, TEXT, INTEGER, TEXT[], BOOLEAN, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, BYTEA, TEXT),
+  cat_projection_generation_publish(BIGINT),
   set_completion_secret(TEXT),
   set_schema_version(INTEGER),
   set_app_role_password(TEXT),
@@ -1532,5 +1985,16 @@ GRANT EXECUTE ON FUNCTION
   cat_collection_reconcile_forgotten(),
   cat_collection_recovery_proof(TEXT),
   cat_collection_rearm(BIGINT),
-  cat_collection_touch(BIGINT)
+  cat_collection_touch(BIGINT),
+  cat_projection_root_register(TEXT, TEXT),
+  cat_projection_version_register(TEXT, TEXT, BIGINT, TEXT, BIGINT, JSONB),
+  cat_projection_entry_register(TEXT, TEXT, TEXT, TEXT, JSONB),
+  cat_projection_entry_set_sources(TEXT, JSONB),
+  cat_projection_entry_set_available(TEXT),
+  cat_projection_entry_degrade(TEXT, TEXT, TEXT),
+  cat_projection_entry_retire(TEXT, TEXT, TEXT, TEXT),
+  cat_projection_publish_lock(),
+  cat_projection_publish_unlock(),
+  cat_projection_generation_prepare(BIGINT, TEXT, TEXT, TEXT, INTEGER, TEXT[], BOOLEAN, TEXT, TEXT, BIGINT, TEXT, TEXT, TEXT, TEXT, BYTEA, TEXT),
+  cat_projection_generation_publish(BIGINT)
 TO app;

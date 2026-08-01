@@ -27,3 +27,9 @@ deploy/ci/acceptance/playwright-report/
 
 # Scratch directory for the projectiond image-mount gate.
 .projectiond-image-gate/
+
+# ...and for the publisher-to-mount gate, which needs one for the same reason: bind propagation requires a
+# host path on a shared mount, so the working directory has to live beside the repository rather than under
+# /tmp. Both gates remove their own on the way out; this is what keeps an INTERRUPTED run from leaving
+# untracked files behind, which is the only state where it matters.
+.projection-publisher-gate/

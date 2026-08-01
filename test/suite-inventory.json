@@ -376,6 +376,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-publisher.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },
@@ -1473,6 +1477,13 @@
       "group": "offline",
       "args": [],
       "requires": []
+    },
+    {
+      "file": "projection-publisher-db.ts",
+      "group": "db",
+      "args": [
+        "5460"
+      ]
     }
   ]
 }

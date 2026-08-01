@@ -41,6 +41,35 @@ entry. Every rule in §4 and §5 exists to make that structurally true rather th
 1.7 v1 exposes **no mutation surface**. There is no write, create, rename, delete, mkdir, rmdir, truncate,
 setattr, link, symlink, xattr-set or fallocate operation. Attempting one **SHALL** return **EROFS**.
 
+1.8 **The control plane SHALL hold a stable source registry, and it is where every manifest field comes
+from.** *(Amendment — Projection Phase 1, the publisher. Building the producer proved this decision was
+missing rather than merely unstated.)*
+
+A manifest names, per entry, an exact byte length, an mtime, a visibility state and a stable source
+descriptor. Nothing in the catalog schema before this amendment could answer any of them: `items` is an opaque
+id and an encrypted identity blob, with no file, size, path or locator anywhere in it. A producer that
+inferred them would be publishing a guess, and §2.7 already forbids a guessed size. So the boundary is
+explicit: `projection_source_roots`, `projection_versions`, `projection_entries` and
+`projection_entry_sources` (schema v10), written **only** through `cat_projection_*` commands by
+`src/core/projection/source-registry.ts`, and read by the publisher.
+
+1.8.1 The registry **SHALL NOT** store an access URL, a signed link, a token, a header, an expiry, a lease, a
+WebDAV credential or any other ephemeral access material. This restates §3.3.1 at the place where a producer
+could otherwise smuggle one in, and it is enforced twice: `checkLocatorValue` refuses it at registration, and
+a column CHECK refuses `://`, `?`, `&`, `@` and `\` in the database.
+
+1.8.2 The registry **SHALL NOT** contact anything. It is asserted state, exactly like `import_history` and
+`managed_collections`. No row in it is obtained by scanning a filesystem, calling a provider or scraping
+provider state, and nothing in Phase 1 adds a code path that could.
+
+1.9 **Publication SHALL be recoverable from PostgreSQL alone.** *(Amendment — Projection Phase 1.)* The exact
+artifact bytes, their length and their digest are committed to `projection_generations` **before** anything is
+written to the manifest directory, and the row that says which generation is current is updated **before** the
+pointer file a daemon reads. When the database and the directory disagree, the database is right and the
+publisher rewrites the directory from the committed bytes — never the reverse. A publisher that has repaired
+the directory **SHALL NOT** also publish a successor in the same run: §5 check 5 makes a skipped sequence a
+permanent refusal, so a repair that raced ahead would strand a running daemon.
+
 ---
 
 ## 2. The manifest artifact
@@ -76,6 +105,12 @@ entry whose exact size is not known is **not projectable** and **SHALL NOT** app
 
 2.8 `mode` **SHALL** be `0444` and `readOnly` **SHALL** be `true`.
 
+2.9 **The artifact bytes SHALL be canonical.** *(Amendment — Projection Phase 1.)* §2.3 makes the pointer's
+digest a digest over the exact bytes, which is only a contract if "the exact bytes" is a rule rather than a
+producer's choice. The rule is `serializeManifestArtifact()`: canonical JSON — recursively key-sorted, no
+whitespace — plus one trailing newline. Two producers of the same manifest therefore emit the same bytes down
+to the last one, and a retry emits the artifact it emitted before rather than an equivalent one.
+
 ---
 
 ## 3. Identity — three layers
@@ -102,6 +137,21 @@ from the path, never from the active source, never from a provider identifier. T
 `deriveInode()` in `src/core/projection/manifest-v1.ts`: the leading 8 bytes of
 `sha256("projectiond.ino.v1\n" || projectedVersionId)`, big-endian, top bit cleared, values below 1024
 displaced upward. Two different projected versions deriving one inode **SHALL** cause refusal.
+
+3.4.1 **Every id a producer emits SHALL be derived, by the shared helper, from a named input.** *(Amendment —
+Projection Phase 1.)* Phase 0 froze the SHAPE of each id and left HOW a producer arrives at one unstated,
+which is a gap: a second implementation of "how an id is computed" is exactly how the two halves of this
+boundary end up disagreeing about whether two generations name the same entry, and an id that is not a pure
+function of stated inputs cannot be recomputed by a reviewer or reproduced by a retry. The derivations live in
+`src/core/projection/manifest-v1.ts`, each under its own domain separator, and nowhere else:
+
+| Id | Derived from | Why that input |
+|---|---|---|
+| `projectedEntryId` | the projected `path` | Makes §3.5.1 and §3.5.2 structural. A carried entry cannot change its path without becoming a different entry, and a corrected path **is** a new entry by construction. |
+| `projectedVersionId` | an explicit control-plane **version key** | Deliberately **not** size-and-mtime: byte identity is optional on a single-source entry (§3.6), so a size-and-mtime derivation would collide two genuinely different byte streams that happen to share both — and a collision here is two files sharing one inode, which is the one failure a media server silently swallows. Two entries share a projected version when, and only when, the control plane says so. |
+| `sourceId` | the source `kind` and its `locator` | §3.3 says a source is replaceable and carries no identity, so its id is a function of what it points at and nothing else. |
+| `generationId` | the `sequence`, the content digest and the predecessor digest | A publish retried over an unchanged snapshot recomputes the same id and the same bytes, which is what makes a retry idempotent instead of a second generation saying what the first one said. |
+| `deletionIntentId` | the operator's intent key | Stable across the generations an entry spends `retiring`, which is what §5 check 11 compares. |
 
 3.5 `projectedEntryId` **SHALL** be stable across generations.
 

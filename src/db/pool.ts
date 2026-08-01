@@ -90,6 +90,8 @@ export const MIGRATED_TABLES: readonly string[] = [
   'events', 'items', 'provider_refs', 'item_key_control', 'crypto_config', 'aborted_operations',
   'publish_ledger', 'schema_meta', 'import_history', 'collection_control_history',
   'managed_collections', 'managed_collection_members',
+  'projection_source_roots', 'projection_versions', 'projection_entries', 'projection_entry_sources',
+  'projection_generations', 'projection_pointer',
 ];
 
 /**

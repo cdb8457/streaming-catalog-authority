@@ -358,6 +358,126 @@ export function deletionAcknowledgementDigest(deletions: readonly string[]): str
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// Producer-side identity derivation (Phase 1 amendment)
+// ---------------------------------------------------------------------------------------------------------
+//
+// WHY THESE LIVE HERE AND NOT IN THE PRODUCER. Phase 0 froze the SHAPE of every id (`pe_` + 64 hex, `pv_` +
+// 64 hex, `src_` + 32 hex, `gen_` + 32 hex) and the rule that `inode` is derived from the projected version
+// and nothing else — but it left HOW a producer arrives at those ids unstated. Building the publisher proved
+// that a gap: a second implementation of "how an id is computed" is exactly how the daemon and the control
+// plane end up disagreeing about whether two generations name the same entry, and an id that is not a pure
+// function of stated inputs cannot be recomputed by a reviewer or by a retry.
+//
+// So every id a producer emits is derived HERE, from a named, domain-separated input, and nowhere else. The
+// domain separator is part of the hash input so that a future rule can exist without ever colliding with this
+// one, exactly as `deriveInode` does it.
+//
+// WHAT EACH ONE IS DERIVED FROM, AND WHY THAT INPUT.
+//
+//   projectedEntryId <- the projected PATH. §3.5.1 makes a path immutable for a carried entry and §3.5.2
+//     models a corrected path as retire/delete/add. Deriving the entry id from the path makes both of those
+//     structural rather than remembered: a carried entry cannot change its path without becoming a different
+//     entry id, which admission already refuses, and a corrected path IS a new entry id by construction.
+//
+//   projectedVersionId <- an explicit, control-plane-assigned VERSION KEY. It is deliberately NOT derived
+//     from the size, the mtime or the byte-identity proof: byte identity is optional on a single-source entry
+//     (§3.6), so a size-and-mtime derivation would collide two genuinely different byte streams that happen
+//     to share both — and a collision here is two files sharing one inode, which is the one failure a media
+//     server silently swallows. Two entries share a projected version when, and only when, the control plane
+//     says so by giving them the same key.
+//
+//   sourceId <- the source KIND and its LOCATOR. §3.3 says a source is replaceable and carries no identity,
+//     so its id is a function of what it points at and nothing else. Re-registering the same locator is the
+//     same source; pointing an entry somewhere else is a different one.
+//
+//   generationId <- the sequence, the content digest and the predecessor digest. A publish that is retried
+//     over an unchanged snapshot therefore recomputes the SAME id and the same bytes, which is what makes a
+//     retry idempotent instead of a second generation that says the same thing.
+//
+//   deletionIntentId <- the operator's own intent key. It is stable across the generations an entry spends
+//     retiring, which is what admission check 11 compares (`RETIREMENT_INTENT_CHANGED`).
+
+/** The domain separators. Each one is the first line of its hash input; none of them is reused. */
+export const PROJECTION_ID_DOMAINS = Object.freeze({
+  ENTRY: 'projectiond.pe.v1',
+  VERSION: 'projectiond.pv.v1',
+  SOURCE: 'projectiond.src.v1',
+  GENERATION: 'projectiond.gen.v1',
+  DELETION_INTENT: 'projectiond.del.v1',
+} as const);
+
+function derive(domain: string, input: string): string {
+  return createHash('sha256').update(`${domain}\n${input}`, 'utf8').digest('hex');
+}
+
+/** `pe_<64 hex>` from the projected path. A corrected path is a different entry, by construction (§3.5.2). */
+export function deriveProjectedEntryId(path: string): string {
+  return `pe_${derive(PROJECTION_ID_DOMAINS.ENTRY, path)}`;
+}
+
+/** `pv_<64 hex>` from the control plane's own stable key for one exact byte stream. */
+export function deriveProjectedVersionId(versionKey: string): string {
+  return `pv_${derive(PROJECTION_ID_DOMAINS.VERSION, versionKey)}`;
+}
+
+/** `src_<32 hex>` from the kind and the locator. A source is replaceable and carries no identity of its own. */
+export function deriveSourceId(kind: ProjectionSourceKind, locator: LocalLocator | HttpRangeLocator): string {
+  return `src_${derive(PROJECTION_ID_DOMAINS.SOURCE, `${kind}\n${canonicalJson(locator)}`).slice(0, 32)}`;
+}
+
+/**
+ * `gen_<32 hex>` from the sequence, what the generation SAYS and what it succeeds. Two publishes of an
+ * unchanged snapshot at the same sequence derive one id and one artifact; that is the retry contract.
+ */
+export function deriveGenerationId(
+  sequence: number,
+  contentDigest: string,
+  predecessorDigest: string | null,
+): string {
+  const input = canonicalJson({ sequence, contentDigest, predecessorDigest });
+  return `gen_${derive(PROJECTION_ID_DOMAINS.GENERATION, input).slice(0, 32)}`;
+}
+
+/** `<32 hex>` from an operator's deletion-intent key. Stable for as long as the retirement is. */
+export function deriveDeletionIntentId(intentKey: string): string {
+  return derive(PROJECTION_ID_DOMAINS.DELETION_INTENT, intentKey).slice(0, 32);
+}
+
+/**
+ * The EXACT bytes of an artifact, and the only function permitted to produce them.
+ *
+ * The digest in a pointer is over the exact bytes, so "how a manifest is serialized" is part of the contract
+ * rather than a producer's choice. Canonical JSON — recursively key-sorted, no whitespace — plus one trailing
+ * newline, so the artifact is a well-formed text file and two producers of the same manifest emit the same
+ * bytes down to the last one.
+ */
+export function serializeManifestArtifact(manifest: ProjectionManifestV1): Buffer {
+  return Buffer.from(`${canonicalJson(manifest)}\n`, 'utf8');
+}
+
+/**
+ * `sha256:<hex>` over what a generation SAYS, ignoring which generation it is.
+ *
+ * This is the producer's "has anything actually changed" key, and it deliberately excludes `generationId`,
+ * `sequence`, `createdAt` and `predecessor` — all four of which change on every publish by construction and
+ * would therefore make every re-publish look like a change. Two runs over an unmoved catalog produce one
+ * content digest, and the publisher answers "unchanged" instead of minting a generation that says exactly
+ * what its predecessor already said.
+ */
+export function manifestContentDigest(
+  intent: ProjectionGenerationIntent,
+  entries: readonly ProjectedEntry[],
+  deletions: readonly string[],
+): string {
+  const body = canonicalJson({
+    intent,
+    entries: [...entries].sort((a, b) => (a.projectedEntryId < b.projectedEntryId ? -1 : 1)),
+    deletions: [...deletions].sort(),
+  });
+  return `sha256:${createHash('sha256').update(body, 'utf8').digest('hex')}`;
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // Static validation of a single manifest
 // ---------------------------------------------------------------------------------------------------------
 
@@ -425,6 +545,19 @@ function scanLocatorValue(value: string, at: string, p: Problems): void {
   for (const word of LOCATOR_FORBIDDEN_WORDS) {
     if (lowered.includes(word)) { p.add('LOCATOR_VALUE_CREDENTIAL_SHAPED', at); return; }
   }
+}
+
+/**
+ * The locator rules, exposed so a REGISTRATION can be refused at the boundary rather than at publish time.
+ *
+ * Returns the problem code, or null when the value is an acceptable opaque reference. It is the same function
+ * admission uses — deliberately, because an operator who registers a source and is told it is fine, and then
+ * discovers three generations later that no manifest can carry it, has been told something untrue.
+ */
+export function checkLocatorValue(value: string): string | null {
+  const p = new Problems();
+  scanLocatorValue(value, 'locator', p);
+  return p.any ? (p.all[0]?.code ?? 'LOCATOR_VALUE_LENGTH') : null;
 }
 
 function validateSource(value: unknown, sizeBytes: number, at: string, p: Problems): ProjectionSource | null {

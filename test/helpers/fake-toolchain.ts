@@ -12,6 +12,7 @@ import {
   type FileOutputRunner,
   type MaintenanceCommand,
 } from '../../src/ops/maintenance-safety.js';
+import { MIGRATION_VERSION } from '../../src/db/schema-version.js';
 
 // Phases 277-280 acceptance harness — a docker/compose/pg toolchain that is a VALUE, not a daemon.
 //
@@ -115,7 +116,14 @@ export function fakeDoctorJson(states: readonly ('pass' | 'warn' | 'fail')[]): s
 
 export function fakeToolchain(options: FakeToolchainOptions = {}): FakeToolchain {
   const ledger = new CommandLedger();
-  const dumpText = options.dumpText ?? fakeDumpText(9);
+  // THE DEFAULT DUMP CARRIES THE SCHEMA VERSION THIS BUILD REQUIRES, not a literal.
+  //
+  // It was `fakeDumpText(9)`, which was true on the day it was written and became false the next time a
+  // migration landed: a verified backup compares the dump's recorded schema version against MIGRATION_VERSION,
+  // so a hardcoded 9 made four suites fail with "the set that was taken does not verify" — a failure about
+  // the fixture, wearing the costume of a failure about the code under test. A suite that genuinely needs an
+  // older or newer dump still says so by passing `dumpText` explicitly, which several do.
+  const dumpText = options.dumpText ?? fakeDumpText(MIGRATION_VERSION);
   const doctorJson = options.doctorJson ?? fakeDoctorJson(['pass', 'pass']);
   const versionText = options.versionText ?? 'catalog-authority v1.1.4\n';
   const keystoreFiles = options.keystoreFiles ?? { 'keys/.keep': 'k\n', 'tombstones/.keep': 't\n' };

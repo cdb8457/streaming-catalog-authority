@@ -102,10 +102,20 @@ type Options struct {
 	Token      string
 	TimeoutFor time.Duration
 	MaxConns   int
+	// Addr is where to listen. Empty means `127.0.0.1:0`, which is what every in-process test wants: an
+	// ephemeral port on loopback that nothing outside the test can reach. The publisher-to-mount gate runs
+	// this server in its own container and needs it reachable from the daemon's container, so it sets an
+	// explicit address. Defaulting to loopback keeps that an opt-in rather than something a test could get by
+	// accident.
+	Addr string
 }
 
 func New(opts Options) (*Server, error) {
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	addr := opts.Addr
+	if addr == "" {
+		addr = "127.0.0.1:0"
+	}
+	listener, err := net.Listen("tcp", addr)
 	if err != nil {
 		return nil, err
 	}
