@@ -94,6 +94,7 @@
     "test:torbox-provider-adapter": "tsx test/torbox-provider-adapter.ts",
     "test:torbox-catalog-bridge": "tsx test/torbox-catalog-bridge.ts 5451",
     "test:provider-availability-policy": "tsx test/provider-availability-policy.ts",
+    "test:projection-manifest-v1": "tsx test/projection-manifest-v1.ts",
     "test:provider-availability-bridge": "tsx test/provider-availability-bridge.ts",
     "test:provider-availability-summary": "tsx test/provider-availability-summary.ts",
     "test:provider-availability-summary-cli": "tsx test/provider-availability-summary-cli.ts",

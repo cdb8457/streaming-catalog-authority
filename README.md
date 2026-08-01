@@ -5,6 +5,25 @@ and browsing, verifiable backup/support tooling, and an optional managed Jellyfi
 Provider and media-server network access is disabled by default; every external write path is separately
 gated and auditable.
 
+## What this is for, and what is not built yet
+
+The product being built is a **projection appliance**: a media library whose files are real to Plex, Jellyfin
+and Emby, and whose bytes do not have to be on the disk they appear to be on. Everything described in this
+README is the **control plane** for that — the part that decides what exists. It is built, it is tested, and
+it is what you can run today.
+
+The **data plane** — a small Go daemon, `projectiond`, that serves a provider-agnostic, read-only namespace of
+regular files over FUSE from a manifest PostgreSQL publishes — is **not built yet**. No media server can open
+a file through this product today. That is the next and only tranche of work.
+
+- The decision, and the earlier non-goals it narrows: [docs/ADR_002_PROJECTION_APPLIANCE.md](docs/ADR_002_PROJECTION_APPLIANCE.md)
+- The frozen contract the daemon is built against: [docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md](docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md)
+- What has to pass before anything else starts: [docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md](docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md)
+- The roadmap, and the rule that keeps it one item long: [docs/PROJECTION_ROADMAP.md](docs/PROJECTION_ROADMAP.md)
+
+Nothing in the projection appliance changes the guarantees below. Crypto-shredding, the append-only authority,
+the private-host media-server rule and the custody and backup lifecycle are all unchanged by it.
+
 ## Run the operator UI on an ordinary computer
 
 One authenticated web UI on `http://127.0.0.1:8099/`, including setup diagnostics, the **Promotion Record

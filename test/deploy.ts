@@ -11106,6 +11106,76 @@ test('Phase 230 guarded promotion implementation is approval-gated and reversibl
   ]) assert(!combined.includes(forbidden), `Phase 230 surface excludes ${forbidden}`);
 });
 
+test('projection appliance - Projection Phase 0 freezes the product contract and supersedes without deleting', () => {
+  for (const artifact of [
+    'docs/ADR_002_PROJECTION_APPLIANCE.md',
+    'docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md',
+    'docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md',
+    'docs/PROJECTION_ROADMAP.md',
+    'docs/schemas/projection-manifest-v1.schema.json',
+    'src/core/projection/manifest-v1.ts',
+    'src/core/projection/runtime-contract.ts',
+    'test/projection-manifest-v1.ts',
+    'test/fixtures/projection-manifest-v1/generation-1-baseline.json',
+    'test/fixtures/projection-manifest-v1/generation-2-routine-successor.json',
+    'test/fixtures/projection-manifest-v1/generation-3-deletion.json',
+    'test/fixtures/projection-manifest-v1/adversarial-index.json',
+  ]) assert(exists(artifact), `Projection Phase 0 artifact exists: ${artifact}`);
+
+  assert(typeof pkg.scripts['test:projection-manifest-v1'] === 'string', 'Projection Phase 0 test script present');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/projection-manifest-v1.ts'), 'Projection Phase 0 suite in CI chain');
+
+  const adr = read('docs/ADR_002_PROJECTION_APPLIANCE.md');
+  const contract = read('docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md');
+  const plan = read('docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md');
+  const roadmap = read('docs/PROJECTION_ROADMAP.md');
+  const combined = [adr, contract, plan, roadmap, read('README.md')].join('|');
+  for (const kw of [
+    'projection appliance',
+    'projectiond',
+    'control plane',
+    'data plane',
+    'read-only',
+    'FUSE',
+    'HTTP Range',
+    'local passthrough',
+    'manifest',
+    'generation',
+    'projected version',
+    'byte-identity',
+    'degraded',
+    'retiring',
+    'anti-detour',
+    'Unraid',
+  ]) assert(combined.includes(kw), `Projection Phase 0 covers ${kw}`);
+
+  // Superseded, never deleted: the boundary documents this narrows are still on disk and still readable.
+  for (const kept of [
+    'docs/PHASE_7_ADAPTER_BOUNDARY.md',
+    'docs/PHASE_31_TORBOX_BOUNDARY.md',
+    'docs/PHASE_55_PROVIDER_AVAILABILITY_POLICY.md',
+    'docs/PHASE_203_MEDIA_PLAYER_BOUNDARY_SELECTION.md',
+  ]) {
+    assert(exists(kept), `superseded boundary doc retained: ${kept}`);
+    assert(adr.includes(kept.replace('docs/', '').replace('.md', '')), `ADR names ${kept}`);
+  }
+
+  // The control-plane rules the projection appliance must not have relaxed.
+  assert(exists('src/core/adapters/jellyfin/url-policy.ts'), 'the media-server private-host URL policy still exists');
+  assert(exists('src/core/adapters/torbox-boundary.ts'), 'TORBOX_BOUNDARY_CONTRACT still exists');
+  const runtime = read('src/core/projection/runtime-contract.ts');
+  assert(runtime.includes('private-host-url-policy-unchanged'), 'the media-server rule is restated as unchanged');
+  assert(runtime.includes('PROJECTIOND_MAY_CONTACT_MEDIA_SERVER: false'), 'the data plane contacts no media server');
+
+  // The two projection modules are pure: they are contract, not runtime.
+  for (const rel of ['src/core/projection/manifest-v1.ts', 'src/core/projection/runtime-contract.ts']) {
+    const source = read(rel);
+    for (const forbidden of ['globalThis.fetch', 'process.env', 'readFileSync', "from 'pg'", 'child_process']) {
+      assert(!source.includes(forbidden), `${rel} excludes ${forbidden}`);
+    }
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

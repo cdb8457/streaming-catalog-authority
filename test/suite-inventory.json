@@ -368,6 +368,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-manifest-v1.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },
