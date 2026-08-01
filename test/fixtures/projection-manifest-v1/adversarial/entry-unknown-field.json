@@ -17,7 +17,6 @@
       "intent": "routine",
       "entryCount": 6,
       "deletions": [],
-      "relocations": [],
       "deletionGuardAcknowledged": false,
       "deletionGuardDigest": null
     }
@@ -74,8 +73,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-remote-a-primary",
-            "expiresAt": null
+            "objectRef": "obj-remote-a-primary"
           },
           "byteIdentity": {
             "sizeBytes": 8589934592,
@@ -109,8 +107,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-b",
-            "objectRef": "obj-remote-a-mirror",
-            "expiresAt": null
+            "objectRef": "obj-remote-a-mirror"
           },
           "byteIdentity": {
             "sizeBytes": 8589934592,
@@ -161,8 +158,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-shared",
-            "expiresAt": null
+            "objectRef": "obj-shared"
           },
           "byteIdentity": {
             "sizeBytes": 8589934592,
@@ -213,8 +209,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-shared",
-            "expiresAt": null
+            "objectRef": "obj-shared"
           },
           "byteIdentity": {
             "sizeBytes": 8589934592,
@@ -268,8 +263,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-degraded",
-            "expiresAt": null
+            "objectRef": "obj-degraded"
           },
           "byteIdentity": null
         }

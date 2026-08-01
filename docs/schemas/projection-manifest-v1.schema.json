@@ -5,15 +5,28 @@
   "description": "The immutable, versioned, digest-checked artifact the control plane publishes and projectiond admits. This schema is the portable rendering of the structural half of the contract. The rules a JSON Schema cannot express - path uniqueness under a case fold, inode derivation and collision, shared-version consistency, byte-identity proof, deletion succession and the shrink guard - are normative in src/core/projection/manifest-v1.ts and in docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md. A document that validates here is NOT admissible on that basis alone.",
   "type": "object",
   "additionalProperties": false,
-  "required": ["format", "version", "generation", "entries"],
+  "required": [
+    "format",
+    "version",
+    "generation",
+    "entries"
+  ],
   "properties": {
-    "format": { "const": "catalog-authority.projection-manifest" },
-    "version": { "const": 1 },
-    "generation": { "$ref": "#/$defs/generation" },
+    "format": {
+      "const": "catalog-authority.projection-manifest"
+    },
+    "version": {
+      "const": 1
+    },
+    "generation": {
+      "$ref": "#/$defs/generation"
+    },
     "entries": {
       "type": "array",
       "maxItems": 200000,
-      "items": { "$ref": "#/$defs/entry" }
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
     }
   },
   "$defs": {
@@ -21,12 +34,30 @@
       "type": "string",
       "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}\\.[0-9]{3}Z$"
     },
-    "sha256Label": { "type": "string", "pattern": "^sha256:[0-9a-f]{64}$" },
-    "idLabel": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
-    "projectedEntryId": { "type": "string", "pattern": "^pe_[0-9a-f]{64}$" },
-    "projectedVersionId": { "type": "string", "pattern": "^pv_[0-9a-f]{64}$" },
-    "generationId": { "type": "string", "pattern": "^gen_[0-9a-f]{32}$" },
-    "sourceId": { "type": "string", "pattern": "^src_[0-9a-f]{32}$" },
+    "sha256Label": {
+      "type": "string",
+      "pattern": "^sha256:[0-9a-f]{64}$"
+    },
+    "idLabel": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "projectedEntryId": {
+      "type": "string",
+      "pattern": "^pe_[0-9a-f]{64}$"
+    },
+    "projectedVersionId": {
+      "type": "string",
+      "pattern": "^pv_[0-9a-f]{64}$"
+    },
+    "generationId": {
+      "type": "string",
+      "pattern": "^gen_[0-9a-f]{32}$"
+    },
+    "sourceId": {
+      "type": "string",
+      "pattern": "^src_[0-9a-f]{32}$"
+    },
     "uuid": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
@@ -36,26 +67,53 @@
       "minLength": 1,
       "maxLength": 4096,
       "description": "Relative, slash-separated, NFC-normalized. No leading or trailing slash, no empty segment, no '.' or '..' segment, no backslash, no control character, each segment at most 255 bytes. Uniqueness within a generation - including under a case-and-form fold - is enforced by the validator, not here.",
-      "not": { "pattern": "(^/)|(/$)|(//)|(\\\\)|(^\\.\\./)|(/\\.\\./)|(/\\.\\.$)|(^\\./)|(/\\./)|(/\\.$)" }
+      "not": {
+        "pattern": "(^/)|(/$)|(//)|(\\\\)|(^\\.\\./)|(/\\.\\./)|(/\\.\\.$)|(^\\./)|(/\\./)|(/\\.$)"
+      }
     },
     "generation": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["generationId", "sequence", "createdAt", "predecessor", "provenance", "admission"],
+      "required": [
+        "generationId",
+        "sequence",
+        "createdAt",
+        "predecessor",
+        "provenance",
+        "admission"
+      ],
       "properties": {
-        "generationId": { "$ref": "#/$defs/generationId" },
-        "sequence": { "type": "integer", "minimum": 1 },
-        "createdAt": { "$ref": "#/$defs/timestamp" },
+        "generationId": {
+          "$ref": "#/$defs/generationId"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "createdAt": {
+          "$ref": "#/$defs/timestamp"
+        },
         "predecessor": {
           "oneOf": [
-            { "type": "null" },
+            {
+              "type": "null"
+            },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["generationId", "sequence", "manifestDigest"],
+              "required": [
+                "generationId",
+                "sequence",
+                "manifestDigest"
+              ],
               "properties": {
-                "generationId": { "$ref": "#/$defs/generationId" },
-                "sequence": { "type": "integer", "minimum": 1 },
+                "generationId": {
+                  "$ref": "#/$defs/generationId"
+                },
+                "sequence": {
+                  "type": "integer",
+                  "minimum": 1
+                },
                 "manifestDigest": {
                   "$ref": "#/$defs/sha256Label",
                   "description": "sha256 over the EXACT bytes of the predecessor artifact, as recorded when it was admitted."
@@ -67,43 +125,75 @@
         "provenance": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["producer", "producerVersion", "controlPlaneSchemaVersion", "sourceSnapshotDigest", "probeWindowBytes"],
+          "required": [
+            "producer",
+            "producerVersion",
+            "controlPlaneSchemaVersion",
+            "sourceSnapshotDigest",
+            "probeWindowBytes"
+          ],
           "properties": {
-            "producer": { "const": "catalog-authority" },
-            "producerVersion": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
-            "controlPlaneSchemaVersion": { "type": "integer", "minimum": 1, "maximum": 10000 },
-            "sourceSnapshotDigest": { "$ref": "#/$defs/sha256Label" },
-            "probeWindowBytes": { "const": 1048576 }
+            "producer": {
+              "const": "catalog-authority"
+            },
+            "producerVersion": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            },
+            "controlPlaneSchemaVersion": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000
+            },
+            "sourceSnapshotDigest": {
+              "$ref": "#/$defs/sha256Label"
+            },
+            "probeWindowBytes": {
+              "const": 1048576
+            }
           }
         },
         "admission": {
           "type": "object",
           "additionalProperties": false,
-          "required": ["intent", "entryCount", "deletions", "relocations", "deletionGuardAcknowledged", "deletionGuardDigest"],
+          "required": [
+            "intent",
+            "entryCount",
+            "deletions",
+            "deletionGuardAcknowledged",
+            "deletionGuardDigest"
+          ],
           "properties": {
-            "intent": { "enum": ["routine", "deletion"] },
-            "entryCount": { "type": "integer", "minimum": 0 },
+            "intent": {
+              "enum": [
+                "routine",
+                "deletion"
+              ]
+            },
+            "entryCount": {
+              "type": "integer",
+              "minimum": 0
+            },
             "deletions": {
               "type": "array",
               "uniqueItems": true,
-              "items": { "$ref": "#/$defs/projectedEntryId" },
+              "items": {
+                "$ref": "#/$defs/projectedEntryId"
+              },
               "description": "Empty for a routine generation. An entry leaves the namespace only by being named here, in a generation whose intent is 'deletion', after it was marked retiring and its grace deadline passed."
             },
-            "relocations": {
-              "type": "array",
-              "items": {
-                "type": "object",
-                "additionalProperties": false,
-                "required": ["projectedEntryId", "previousPath"],
-                "properties": {
-                  "projectedEntryId": { "$ref": "#/$defs/projectedEntryId" },
-                  "previousPath": { "$ref": "#/$defs/projectedPath" }
-                }
-              }
+            "deletionGuardAcknowledged": {
+              "type": "boolean"
             },
-            "deletionGuardAcknowledged": { "type": "boolean" },
             "deletionGuardDigest": {
-              "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256Label" }],
+              "oneOf": [
+                {
+                  "type": "null"
+                },
+                {
+                  "$ref": "#/$defs/sha256Label"
+                }
+              ],
               "description": "sha256 over the canonical JSON of the sorted deletions array. Required when the guard is acknowledged, forbidden otherwise."
             }
           }
@@ -113,58 +203,120 @@
     "probeDigest": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["position", "offset", "length", "sha256"],
+      "required": [
+        "position",
+        "offset",
+        "length",
+        "sha256"
+      ],
       "properties": {
-        "position": { "enum": ["head", "middle", "tail"] },
-        "offset": { "type": "integer", "minimum": 0 },
-        "length": { "type": "integer", "minimum": 1 },
-        "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+        "position": {
+          "enum": [
+            "head",
+            "middle",
+            "tail"
+          ]
+        },
+        "offset": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "length": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sha256": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
       }
     },
     "byteIdentity": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sizeBytes", "probeWindowBytes", "probes"],
+      "required": [
+        "sizeBytes",
+        "probeWindowBytes",
+        "probes"
+      ],
       "description": "The only permitted proof that two sources carry the same bytes: the exact size plus partial hashes at fixed, size-derived offsets. Offsets are fixed by the probe plan, not chosen by the producer.",
       "properties": {
-        "sizeBytes": { "type": "integer", "minimum": 0 },
-        "probeWindowBytes": { "const": 1048576 },
-        "probes": { "type": "array", "maxItems": 3, "items": { "$ref": "#/$defs/probeDigest" } }
+        "sizeBytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "probeWindowBytes": {
+          "const": 1048576
+        },
+        "probes": {
+          "type": "array",
+          "maxItems": 3,
+          "items": {
+            "$ref": "#/$defs/probeDigest"
+          }
+        }
       }
     },
     "localLocator": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["rootId", "relativePath"],
+      "required": [
+        "rootId",
+        "relativePath"
+      ],
       "properties": {
-        "rootId": { "$ref": "#/$defs/idLabel" },
-        "relativePath": { "$ref": "#/$defs/projectedPath" }
+        "rootId": {
+          "$ref": "#/$defs/idLabel"
+        },
+        "relativePath": {
+          "$ref": "#/$defs/projectedPath"
+        }
       }
     },
     "httpRangeLocator": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["endpointId", "objectRef", "expiresAt"],
-      "description": "Names a configured endpoint and an opaque object reference. Never a URL: no scheme, no query, no userinfo. The daemon composes the request and supplies the token from a secret file.",
+      "required": [
+        "endpointId",
+        "objectRef"
+      ],
+      "description": "A STABLE reference: a configured endpoint plus an opaque object reference. Never a URL, and deliberately never an expiry. Access URLs and leases expire on the provider schedule; turning this reference into one is transport resolution, done by the daemon in memory under PROJECTIOND_ACCESS_RESOLUTION, and it never appears in this document.",
       "properties": {
-        "endpointId": { "$ref": "#/$defs/idLabel" },
+        "endpointId": {
+          "$ref": "#/$defs/idLabel"
+        },
         "objectRef": {
           "type": "string",
           "minLength": 1,
           "maxLength": 512,
           "pattern": "^[\\x21-\\x7e][\\x20-\\x7e]*$",
-          "not": { "pattern": "(://)|[?&@\\\\]" }
-        },
-        "expiresAt": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/timestamp" }] }
+          "not": {
+            "pattern": "(://)|[?&@\\\\]"
+          }
+        }
       }
     },
     "source": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["sourceId", "kind", "preference", "sourceGeneration", "locator", "byteIdentity"],
+      "required": [
+        "sourceId",
+        "kind",
+        "preference",
+        "sourceGeneration",
+        "locator",
+        "byteIdentity"
+      ],
       "properties": {
-        "sourceId": { "$ref": "#/$defs/sourceId" },
-        "kind": { "enum": ["local", "http-range"] },
+        "sourceId": {
+          "$ref": "#/$defs/sourceId"
+        },
+        "kind": {
+          "enum": [
+            "local",
+            "http-range"
+          ]
+        },
         "preference": {
           "type": "integer",
           "minimum": 0,
@@ -177,20 +329,64 @@
           "description": "Bumped when the locator is refreshed. An open handle binds to the exact value it opened against."
         },
         "locator": {
-          "oneOf": [{ "$ref": "#/$defs/localLocator" }, { "$ref": "#/$defs/httpRangeLocator" }]
+          "oneOf": [
+            {
+              "$ref": "#/$defs/localLocator"
+            },
+            {
+              "$ref": "#/$defs/httpRangeLocator"
+            }
+          ]
         },
         "byteIdentity": {
-          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/byteIdentity" }]
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/byteIdentity"
+            }
+          ]
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "kind": { "const": "local" } }, "required": ["kind"] },
-          "then": { "properties": { "locator": { "$ref": "#/$defs/localLocator" } } }
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "local"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "locator": {
+                "$ref": "#/$defs/localLocator"
+              }
+            }
+          }
         },
         {
-          "if": { "properties": { "kind": { "const": "http-range" } }, "required": ["kind"] },
-          "then": { "properties": { "locator": { "$ref": "#/$defs/httpRangeLocator" } } }
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "http-range"
+              }
+            },
+            "required": [
+              "kind"
+            ]
+          },
+          "then": {
+            "properties": {
+              "locator": {
+                "$ref": "#/$defs/httpRangeLocator"
+              }
+            }
+          }
         }
       ]
     },
@@ -226,7 +422,10 @@
           "$ref": "#/$defs/projectedVersionId",
           "description": "Identity layer 2: this exact byte stream. Size, mtime and inode belong to it. Two sources may share it only with byte-identity proof."
         },
-        "path": { "$ref": "#/$defs/projectedPath" },
+        "path": {
+          "$ref": "#/$defs/projectedPath",
+          "description": "Immutable for a carried projectedEntryId. A successor that changes it is refused: a media server cannot discover a new path without reconciling, and a stable inode is not evidence that Plex, Jellyfin or Emby keep their item across a rename. A corrected path is modelled as retire, delete, add."
+        },
         "nodeKind": {
           "const": "file",
           "description": "v1 manifests carry files only. Directories are derived by the daemon from the file paths."
@@ -237,34 +436,53 @@
           "maximum": 9007199254740991,
           "description": "Exact. There is no estimate, no unknown and no placeholder: an entry whose size is not known exactly is not projectable and must not appear."
         },
-        "mtime": { "$ref": "#/$defs/timestamp" },
-        "mode": { "const": 292 },
-        "readOnly": { "const": true },
+        "mtime": {
+          "$ref": "#/$defs/timestamp"
+        },
+        "mode": {
+          "const": 292
+        },
+        "readOnly": {
+          "const": true
+        },
         "inode": {
           "type": "string",
           "pattern": "^[1-9][0-9]{0,19}$",
           "description": "Decimal. Derived deterministically from the projected-version id and from nothing else - never the path, never the active source."
         },
-        "visibility": { "enum": ["available", "degraded", "retiring"] },
+        "visibility": {
+          "enum": [
+            "available",
+            "degraded",
+            "retiring"
+          ]
+        },
         "degraded": {
           "oneOf": [
-            { "type": "null" },
+            {
+              "type": "null"
+            },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["reason", "since"],
+              "required": [
+                "reason",
+                "since"
+              ],
               "properties": {
                 "reason": {
                   "enum": [
                     "source-unreachable",
                     "source-rejected",
                     "byte-identity-mismatch",
-                    "locator-expired",
+                    "access-resolution-failed",
                     "endpoint-circuit-open",
                     "operator-hold"
                   ]
                 },
-                "since": { "$ref": "#/$defs/timestamp" }
+                "since": {
+                  "$ref": "#/$defs/timestamp"
+                }
               }
             }
           ],
@@ -272,15 +490,28 @@
         },
         "retiring": {
           "oneOf": [
-            { "type": "null" },
+            {
+              "type": "null"
+            },
             {
               "type": "object",
               "additionalProperties": false,
-              "required": ["deletionIntentId", "declaredAt", "graceDeadline"],
+              "required": [
+                "deletionIntentId",
+                "declaredAt",
+                "graceDeadline"
+              ],
               "properties": {
-                "deletionIntentId": { "type": "string", "pattern": "^[0-9a-f]{32}$" },
-                "declaredAt": { "$ref": "#/$defs/timestamp" },
-                "graceDeadline": { "$ref": "#/$defs/timestamp" }
+                "deletionIntentId": {
+                  "type": "string",
+                  "pattern": "^[0-9a-f]{32}$"
+                },
+                "declaredAt": {
+                  "$ref": "#/$defs/timestamp"
+                },
+                "graceDeadline": {
+                  "$ref": "#/$defs/timestamp"
+                }
               }
             }
           ],
@@ -290,19 +521,63 @@
           "type": "array",
           "minItems": 1,
           "maxItems": 8,
-          "items": { "$ref": "#/$defs/source" }
+          "items": {
+            "$ref": "#/$defs/source"
+          }
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "visibility": { "const": "degraded" } }, "required": ["visibility"] },
-          "then": { "properties": { "degraded": { "type": "object" } } },
-          "else": { "properties": { "degraded": { "type": "null" } } }
+          "if": {
+            "properties": {
+              "visibility": {
+                "const": "degraded"
+              }
+            },
+            "required": [
+              "visibility"
+            ]
+          },
+          "then": {
+            "properties": {
+              "degraded": {
+                "type": "object"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "degraded": {
+                "type": "null"
+              }
+            }
+          }
         },
         {
-          "if": { "properties": { "visibility": { "const": "retiring" } }, "required": ["visibility"] },
-          "then": { "properties": { "retiring": { "type": "object" } } },
-          "else": { "properties": { "retiring": { "type": "null" } } }
+          "if": {
+            "properties": {
+              "visibility": {
+                "const": "retiring"
+              }
+            },
+            "required": [
+              "visibility"
+            ]
+          },
+          "then": {
+            "properties": {
+              "retiring": {
+                "type": "object"
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "retiring": {
+                "type": "null"
+              }
+            }
+          }
         }
       ]
     }

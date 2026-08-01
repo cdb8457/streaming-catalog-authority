@@ -26,7 +26,7 @@ harness imports them; it does not restate them.
 | Corpus | Size | Purpose |
 |---|---|---|
 | **Local** | 10 real files on disk, 3 of them > 3 MiB so the full probe plan applies | The known-correct baseline. Anything the remote path does differently is a defect until proved otherwise. |
-| **Fake remote** | ~50 entries served by an in-harness HTTP Range server | Amplification, concurrency, re-scan and duplicate-probe measurement. Deterministic, offline, and the only corpus a CI job runs against. |
+| **Fake remote** | ~50 entries served by an in-harness HTTP Range server | Amplification, concurrency, re-scan and duplicate-probe measurement. Deterministic, offline, and the only corpus a CI job runs against. The server has **two modes**: direct reads against a stable `objectRef`, and an **expiring-lease** mode where the reference must first be resolved into a short-lived access URL that starts answering `401`/`410` once it lapses. |
 | **Real provider** | **1–3 files the operator is legally entitled to**, supplied by the operator | Correctness of the real transport: real TLS, real redirects refused, real `Content-Range`, real `429` behaviour. Never in CI. Never a load test. |
 
 The real-provider corpus is deliberately tiny. It exists to answer "does the HTTP Range adapter work against
@@ -37,9 +37,9 @@ is answered against the fake corpus, where the harness controls the answers and 
 
 | # | Gate | Passes when |
 |---|---|---|
-| G1 | **Manifest admission** | The three shipped generations admit; every one of the 25 adversarial fixtures is refused with its named problem; a refusal leaves the previously admitted generation serving. (`npm run test:projection-manifest-v1`) |
+| G1 | **Manifest admission** | The three shipped generations admit; every one of the 28 adversarial fixtures is refused with its named problem; a refusal leaves the previously admitted generation serving. (`npm run test:projection-manifest-v1`) |
 | G2 | **Metadata is local** | A full scan of the ~50-entry fake remote corpus issues **zero** database queries and **zero** provider requests for `getattr`, `lookup`, `readdir` and `statfs`. Counted at the harness's fake server and at the daemon's own counters. |
-| G3 | **Stable metadata** | Across two scans, a generation swap, a source failover, a source-generation bump and a daemon restart, every entry's `inode`, `sizeBytes` and `mtime` are byte-identical. Asserted per entry, not in aggregate. |
+| G3 | **Stable metadata** | Across two scans, a generation swap, a source failover, an access-lease refresh and a daemon restart, every entry's `inode`, `sizeBytes` and `mtime` are byte-identical. Asserted per entry, not in aggregate. |
 | G4 | **Degraded is present, not absent** | Marking 10 entries `degraded` keeps all 10 visible with unchanged `inode`/`size`/`mtime`; each read fails **EIO** in under 50 ms; the fake provider records **zero** requests for them. |
 | G5 | **Retiring is readable** | A retiring entry reads normally. Its grace deadline passing changes nothing. It disappears only when an explicit deletion generation names it. |
 | G6 | **Outage is not deletion** | Kill PostgreSQL. The namespace is unchanged for 30 minutes, reads keep working, and the media servers report **zero** removed items. Then publish an empty generation: it is **refused**, and the namespace is still unchanged. |
@@ -57,6 +57,10 @@ Run against **Plex, Jellyfin and Emby**, each with the mount as a library root.
 | G11 | **Generation swap mid-read** | A generation is admitted while a playback is in flight. The playback does not stutter, does not error, and finishes bound to the generation it opened against. |
 | G12 | **Kill and recover** | `SIGKILL` the daemon during playback, restart it, remount. The library shows **zero** added and **zero** removed items on the next scan across all three servers. Playback is expected to fail and be resumable; the library is not. |
 | G13 | **Re-scan churn** | A second full scan, with no manifest change, adds and removes **zero** items on all three servers. |
+| G24 | **A lease expires mid-read, and nothing notices** | Against the fake endpoint's expiring-lease mode, with a lease deliberately shorter than the read: a generation-pinned read is in flight when the access lease lapses; the daemon re-resolves the stable reference **once**; the read continues and completes with correct bytes; and `projectedEntryId`, `generationId`, `sourceId`, `sourceGeneration`, `inode`, `sizeBytes` and `mtime` are unchanged before and after. **No new manifest generation is published**, and the media server is told nothing. |
+| G25 | **A lease expiry does not stampede the resolver** | Twenty concurrent opens of the same entry meet the same expired lease. Resolution requests observed at the fake endpoint: **exactly one**. A twenty-first open inside the cooldown, after a *failed* resolution, produces **zero** further resolution requests and an **EIO**, and the namespace is unchanged. |
+| G26 | **A refreshed response is held to every rule the first one was** | The fake endpoint, after a refresh, answers with a mismatched `Content-Range`, then a short body, then a total size disagreeing with the manifest, then a `200` full body. Each is failed exactly as an un-refreshed response would be; bytes accepted from any of them: **0**. A resolved URL whose host is outside the endpoint allowlist is **not contacted at all**. |
+| G27 | **A path is immutable, and a corrected path is a delete and an add** | A successor that moves a carried entry's path is **refused** by admission and the namespace does not change. The retire → grace → delete → add sequence is then run end to end; all three servers show the removal and the addition. Whether a server preserves watch state across that pair is **recorded, not asserted** — this plan does not claim it. |
 
 ## 5. Hard gates — amplification
 
@@ -90,8 +94,8 @@ cost and would hide a real regression in the scan path.
 | Environment | Can close | Cannot close |
 |---|---|---|
 | **Windows / Docker Desktop, developer machine** | G1. The manifest contract, path normalization, inode derivation, admission, succession and the adversarial corpus — all pure, all offline. Go unit tests for the Range client against a fake server. | Everything involving a mount. No FUSE, no mount propagation, no media server, no page cache, no inode observed by a scanner. |
-| **Linux CI (GitHub-hosted runner, containerized)** | G1, plus G14–G17, G19, G20, G21, G23 against the fake corpus with a **synthetic** reader driving the mount instead of a media server. FUSE is available in a privileged container; mount propagation into a *sibling* container is not reliably testable here. | G7–G13, G18, G22 — all require real media servers reading a mount they can see. G6's PostgreSQL-outage leg is automatable; its media-server assertion is not. |
-| **Linux / Unraid real environment, operator-run** | Everything, including G7–G13, G18 and G22, and the real-provider correctness runs. | Nothing — but it is manual, so it is run at tranche close and before any release, not per commit. |
+| **Linux CI (GitHub-hosted runner, containerized)** | G1, plus G14–G17, G19, G20, G21, G23, G24, G25, G26 against the fake corpus with a **synthetic** reader driving the mount instead of a media server. The lease gates need no media server, so they run here. FUSE is available in a privileged container; mount propagation into a *sibling* container is not reliably testable here. | G7–G13, G18, G22 — all require real media servers reading a mount they can see. G6's PostgreSQL-outage leg is automatable; its media-server assertion is not. G27's admission-refusal half is automatable here; its three-server half is not. |
+| **Linux / Unraid real environment, operator-run** | Everything, including G7–G13, G18, G22 and G27, and the real-provider correctness runs — which are the only place a **real** expiring access URL is exercised. | Nothing — but it is manual, so it is run at tranche close and before any release, not per commit. |
 
 **This split is a statement about evidence, not a schedule.** A Windows green run is not a Phase 1 pass and
 **SHALL NOT** be reported as one. The tranche closes on a Linux/Unraid run, three times.
@@ -105,7 +109,11 @@ address. Same rule as every other report in this repository.
 ## 8. What Phase 1 explicitly does not do
 
 - No write path of any kind, in the daemon or the manifest.
-- No provider beyond a configured HTTP Range endpoint. No download creation, no link request the control
-  plane did not put in a manifest.
+- No provider beyond a configured HTTP Range endpoint. No download creation, and no access request for
+  anything the control plane did not already name as a stable reference in a manifest.
+- No TorBox-specific adapter. Phase 1 needs one generic HTTP Range adapter with transport resolution; that
+  the resulting contract is one a TorBox-shaped source could actually live inside is a design requirement,
+  not a Phase 1 deliverable.
+- No path relocation. v1 has none, by decision, and Phase 1 does not add one.
 - No operator UI, no packaging, no release, no Unraid template, no scheduler.
 - No third source adapter, no second frontend, no metrics backend, no evidence-packet phase.

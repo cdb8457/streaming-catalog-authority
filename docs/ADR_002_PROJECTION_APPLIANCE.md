@@ -76,10 +76,22 @@ Binding the namespace to it means the file identity a media server has learned i
 relationship. The source is a **locator**, three layers below identity, and this is the whole reason the
 identity model in `docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md` has three layers.
 
+Rejecting a provider-specific mount is **not** a claim that a provider's transport is somebody else's
+problem. A debrid or CDN access URL expires on the provider's schedule, and a playback routinely outlives
+one. So the split is drawn one level lower than it first appears: the control plane chooses the source and
+proves the byte identity, and the daemon resolves that stable reference into whatever ephemeral access
+material the endpoint requires, refreshing it in memory under bounded, single-flighted, cooldown-limited
+rules. That is transport, not policy. A first draft of the Phase 0 contract put an `expiresAt` on the
+manifest locator instead, which would have meant publishing a new namespace generation every time a lease
+lapsed — catalog churn driven by ordinary reads, and a generation-pinned handle broken by its own transport.
+`docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md` §7.6 is the corrected model.
+
 ### 4. (Chosen) A published manifest and a dumb, immutable data plane
 
 The control plane asserts a complete namespace; the daemon serves exactly that and nothing else. The daemon
-holds no database, makes no policy decision, and cannot invent, remove or rename an entry. Everything hard —
+holds no database, makes no catalog or source-selection decision, and cannot invent, remove or rename an
+entry. What it does decide is transport: how to reach the source it was given, and when to renew the
+ephemeral access material that reaching it requires. Everything hard —
 identity, deletion intent, admission — happens on the side that already has an append-only event log, an
 authority in the database and a test suite around both.
 
@@ -92,7 +104,7 @@ their scope.
 | Superseded | Was | Now |
 |---|---|---|
 | `docs/PHASE_7_ADAPTER_BOUNDARY.md` — "no adapter may make a network call" | A rule over the whole repository | A rule over the **control plane**. `src/core/adapters/**` still makes no network call, and the deploy suite still proves it. The data plane's HTTP Range adapter lives in `projectiond`, in Go, behind the manifest boundary. |
-| `docs/PHASE_31_TORBOX_BOUNDARY.md` — "no downloading, no playback, research only" | The TorBox surface is documentation | Still true of the control plane, and `TORBOX_BOUNDARY_CONTRACT` is unchanged. `projectiond` may perform **read-only ranged GETs against a configured endpoint**. It still creates nothing, deletes nothing, controls nothing, and requests no download link that the control plane did not put in a manifest. |
+| `docs/PHASE_31_TORBOX_BOUNDARY.md` — "no downloading, no playback, research only" | The TorBox surface is documentation | Still true of the control plane, and `TORBOX_BOUNDARY_CONTRACT` is unchanged. `projectiond` may perform **read-only ranged GETs against a configured endpoint**, and may ask that endpoint to turn a stable object reference the control plane put in a manifest into an ephemeral access URL, in memory, under §7.6. It still creates nothing, deletes nothing, controls nothing, chooses no source, and asks for access to nothing the control plane did not already name. |
 | `docs/PHASE_55_PROVIDER_AVAILABILITY_POLICY.md` — provider results are advisory only and never persisted | A blanket rule | Unchanged **as a control-plane rule**: an advisory availability result still becomes `candidate` / `skip` / `hold` and is still not persisted. What is new is that the control plane may publish a `degraded` **visibility** in a manifest — which is an assertion about a projected entry, made by the authority, not a cached provider answer. A `hold` never becomes a namespace change. |
 | `docs/PHASE_203_MEDIA_PLAYER_BOUNDARY_SELECTION.md` — Jellyfin first, Plex and Emby deferred | A selection for the **write** control plane | Unchanged for writes. The projection namespace is a filesystem, so it has no media-server-specific surface at all, and Phase 1 is validated against **Plex, Jellyfin and Emby together**. Collection writes remain Jellyfin-only and remain behind their four switches. |
 | README's "no media folder is scanned, no symbolic link is created" | Read as a product-wide promise | True, verbatim, of the command it describes (`ops:catalog-snapshot-produce`) and of the whole control plane. The data plane creates no symbolic link either — it creates a namespace of regular files, which is a different thing and the point of the design. |

@@ -23,6 +23,7 @@ import {
   type ProjectionManifestV1,
 } from '../src/core/projection/manifest-v1.js';
 import {
+  PROJECTIOND_ACCESS_RESOLUTION,
   PROJECTIOND_ADMISSION_LIMITS,
   PROJECTIOND_CACHE_POLICY,
   PROJECTIOND_CIRCUIT_BREAKER,
@@ -124,6 +125,7 @@ const g2Bytes = read(`${FIXTURES}/generation-2-routine-successor.json`);
 const g3Bytes = read(`${FIXTURES}/generation-3-deletion.json`);
 const g1Digest = manifestDigestOfBytes(g1Bytes);
 const g2Digest = manifestDigestOfBytes(g2Bytes);
+const g3Digest = manifestDigestOfBytes(g3Bytes);
 
 let g1!: ProjectionManifestV1;
 let g2!: ProjectionManifestV1;
@@ -190,31 +192,33 @@ test('a shared projected version means one inode, one size and one mtime at ever
   assert(shared > 0, 'the corpus actually exercises a shared version');
 });
 
-test('generation 1 to 2 is a routine succession: an addition, a relocation, a degradation, no removal', () => {
+test('generation 1 to 2 is a routine succession: an addition, a degradation, no removal and no moved path', () => {
   const result = validateSuccession({ manifest: g1, manifestDigest: g1Digest }, g2, g2.generation.createdAt);
   assert(result.ok, `succession holds (${codes(result.problems).join(', ')})`);
   assertEq(result.additions.length, 1, 'one addition');
   assertEq(result.deletions.length, 0, 'no removal in a routine generation');
-  assertEq(result.relocations.length, 1, 'one declared path correction');
   assertEq(result.degradedChanges.length, 2, 'one entry recovered and one degraded');
+  for (const before of g1.entries) {
+    const after = g2.entries.find((e) => e.projectedEntryId === before.projectedEntryId);
+    if (after !== undefined) assertEq(after.path, before.path, 'a carried entry keeps its path');
+  }
 
   const refresh = refreshRequestFor(result);
   assert(refresh.refreshRequired, 'an addition earns a refresh');
   assertEq(refresh.added.length, 1, 'the refresh names the addition');
   assertEq(refresh.removed.length, 0, 'the refresh removes nothing');
+  // There is no third channel. A refresh request is additions and completed deletions, and a reader of this
+  // object cannot be handed a namespace change it was not told to reconcile.
+  assertEq(canonicalJson(Object.keys(refresh).sort()), canonicalJson(['added', 'refreshRequired', 'removed']),
+    'a refresh request has exactly three fields');
 });
 
 test('a degraded transition, on its own, asks a media server for nothing at all', () => {
   const onlyDegraded = clone(g2) as unknown as { entries: Array<Record<string, unknown>>; generation: Record<string, unknown> };
-  // Strip the addition and the relocation so the ONLY difference from generation 1 is visibility.
+  // Strip the addition so the ONLY difference from generation 1 is visibility.
   onlyDegraded.entries = onlyDegraded.entries.filter((e) => g1.entries.some((p) => p.projectedEntryId === e['projectedEntryId']));
-  for (const entry of onlyDegraded.entries) {
-    const previous = g1.entries.find((p) => p.projectedEntryId === entry['projectedEntryId']);
-    if (previous !== undefined) entry['path'] = previous.path;
-  }
   const admission = onlyDegraded.generation['admission'] as Record<string, unknown>;
   admission['entryCount'] = onlyDegraded.entries.length;
-  admission['relocations'] = [];
 
   const validated = validateManifestV1(onlyDegraded);
   assert(validated.ok, `the degrade-only generation validates (${codes(validated.problems).join(', ')})`);
@@ -264,6 +268,124 @@ test('a passed grace deadline expires nothing: the entry stays until a deletion 
   assert(stillThere !== undefined, 'the retiring entry is still in the namespace');
 });
 
+test('no carried entry may move: every single-path mutation of the successor is refused', () => {
+  // A sweep rather than one fixture. For each entry generation 2 carries forward, move ONLY that entry's
+  // path and nothing else, and require a refusal. An earlier draft allowed this if the producer declared a
+  // "relocation" and claimed it earned no media-server refresh; that claim was not something this contract
+  // could make, because a media server has to reconcile to discover a path and nothing here reconciles it.
+  let swept = 0;
+  for (const before of g1.entries) {
+    if (!g2.entries.some((e) => e.projectedEntryId === before.projectedEntryId)) continue;
+    swept += 1;
+    const moved = clone(g2) as unknown as { entries: Array<Record<string, unknown>> };
+    const target = moved.entries.find((e) => e['projectedEntryId'] === before.projectedEntryId);
+    assert(target !== undefined, 'the carried entry is in the successor');
+    target!['path'] = `Corrected/${String(before.path)}`;
+
+    const validated = validateManifestV1(moved);
+    assert(validated.ok, `moving one path is still structurally legal (${codes(validated.problems).join(', ')})`);
+    const result = validateSuccession(
+      { manifest: g1, manifestDigest: g1Digest },
+      validated.manifest as ProjectionManifestV1,
+      g2.generation.createdAt,
+    );
+    assert(!result.ok, 'a moved path is refused');
+    assert(codes(result.problems).includes('PATH_CHANGED_FOR_CARRIED_ENTRY'), 'and is named as such');
+  }
+  assert(swept >= 5, `the sweep actually covered the carried entries (got ${swept})`);
+});
+
+test('no path change can pass while the refresh request stays quiet', () => {
+  // The property, stated directly: there is no successor that BOTH moves a carried entry's path AND is
+  // accepted. So there is no accepted succession whose refresh request omits a path the media server would
+  // have had to discover on its own.
+  for (const before of g1.entries) {
+    if (!g2.entries.some((e) => e.projectedEntryId === before.projectedEntryId)) continue;
+    const moved = clone(g2) as unknown as { entries: Array<Record<string, unknown>> };
+    const target = moved.entries.find((e) => e['projectedEntryId'] === before.projectedEntryId);
+    target!['path'] = `Sneaky/${String(before.path)}`;
+    const validated = validateManifestV1(moved);
+    if (!validated.ok) continue;
+    const result = validateSuccession(
+      { manifest: g1, manifestDigest: g1Digest },
+      validated.manifest as ProjectionManifestV1,
+      g2.generation.createdAt,
+    );
+    // If this ever became acceptable, the refresh request would be silent about it. Both halves are asserted
+    // so the test fails loudly rather than vacuously if the refusal is ever removed.
+    if (result.ok) {
+      const refresh = refreshRequestFor(result);
+      assert(false, `a moved path was accepted and the refresh reported ${refresh.added.length} added, `
+        + `${refresh.removed.length} removed`);
+    }
+  }
+
+  // And the accepted successions really do report everything: the union of what changed is exactly what the
+  // refresh names, because nothing else is permitted to change.
+  const routine = validateSuccession({ manifest: g1, manifestDigest: g1Digest }, g2, g2.generation.createdAt);
+  assert(routine.ok, 'the shipped routine succession holds');
+  const refresh = refreshRequestFor(routine);
+  const changedIds = new Set([...refresh.added, ...refresh.removed]);
+  for (const after of g2.entries) {
+    const before = g1.entries.find((e) => e.projectedEntryId === after.projectedEntryId);
+    if (before === undefined) { assert(changedIds.has(after.projectedEntryId), 'a new entry is reported'); continue; }
+    // Everything a media server could observe about a carried entry is unchanged, so there is nothing to report.
+    assertEq(after.path, before.path, 'path unchanged');
+    assertEq(after.inode, before.inode, 'inode unchanged');
+    assertEq(after.sizeBytes, before.sizeBytes, 'size unchanged');
+    assertEq(after.mtime, before.mtime, 'mtime unchanged');
+  }
+});
+
+test('a corrected path is modelled as retire, delete, add — and that refreshes', () => {
+  // The replacement for the relocation that no longer exists. The old path retires, its grace elapses, an
+  // explicit deletion generation removes it, and the corrected path arrives as a NEW entry. The media server
+  // is told about both halves, which is honest: it may well see a delete and an add rather than a move.
+  const retired = g2.entries.find((e) => e.visibility === 'retiring');
+  assert(retired !== undefined, 'the corpus carries the retiring entry this models');
+
+  const deletionResult = validateSuccession({ manifest: g2, manifestDigest: g2Digest }, g3, g3.generation.createdAt);
+  assert(deletionResult.ok, `the deletion half holds (${codes(deletionResult.problems).join(', ')})`);
+  assert(refreshRequestFor(deletionResult).removed.includes(retired!.projectedEntryId), 'the deletion is reported');
+
+  // Now the add half: the same logical media and the same projected version, at the corrected path, under a
+  // NEW projected entry id. The control plane may keep that relationship; the media server is still told.
+  const corrected = clone(g3) as unknown as { entries: Array<Record<string, unknown>>; generation: Record<string, unknown> };
+  const generation = corrected.generation as Record<string, unknown>;
+  generation['generationId'] = 'gen_000000000000000000000000000000aa';
+  generation['sequence'] = 4;
+  generation['createdAt'] = '2026-08-21T00:00:00.000Z';
+  generation['predecessor'] = { generationId: g3.generation.generationId, sequence: 3, manifestDigest: g3Digest };
+  generation['admission'] = {
+    intent: 'routine', entryCount: g3.entries.length + 1, deletions: [],
+    deletionGuardAcknowledged: false, deletionGuardDigest: null,
+  };
+  corrected.entries = [...corrected.entries, {
+    ...JSON.parse(JSON.stringify(retired)) as Record<string, unknown>,
+    projectedEntryId: `pe_${'c'.repeat(64)}`,
+    path: 'Movies/Retiring Feature (2017) [corrected]/Retiring Feature (2017).mkv',
+    visibility: 'available',
+    retiring: null,
+  }];
+
+  const validated = validateManifestV1(corrected);
+  assert(validated.ok, `the corrected-path generation validates (${codes(validated.problems).join(', ')})`);
+  const addResult = validateSuccession(
+    { manifest: g3, manifestDigest: g3Digest },
+    validated.manifest as ProjectionManifestV1,
+    '2026-08-21T00:00:00.000Z',
+  );
+  assert(addResult.ok, `the add half holds (${codes(addResult.problems).join(', ')})`);
+  const addRefresh = refreshRequestFor(addResult);
+  assert(addRefresh.refreshRequired, 'the corrected path earns a refresh');
+  assertEq(addRefresh.added.length, 1, 'exactly the new entry is reported');
+  // The projected version — and therefore the inode, size and mtime — is preserved across the pair. That is
+  // the control plane keeping its own relationship straight; it is NOT a promise about the media server.
+  const added = (validated.manifest as ProjectionManifestV1).entries.find((e) => e.projectedEntryId === addRefresh.added[0]);
+  assertEq(added?.projectedVersionId, retired?.projectedVersionId, 'the projected version is preserved');
+  assertEq(added?.inode, retired?.inode, 'and therefore so is the inode');
+});
+
 // ---------------------------------------------------------------------------------------------------------
 // The adversarial corpus
 // ---------------------------------------------------------------------------------------------------------
@@ -279,7 +401,7 @@ interface AdversarialCase {
 const corpus = (readJson(`${FIXTURES}/adversarial-index.json`) as { cases: AdversarialCase[] }).cases;
 
 test('the adversarial corpus covers every rule Phase 1 depends on, and covers both kinds', () => {
-  assert(corpus.length >= 25, `the corpus is not thin (got ${corpus.length})`);
+  assert(corpus.length >= 28, `the corpus is not thin (got ${corpus.length})`);
   assert(corpus.some((c) => c.kind === 'standalone'), 'standalone cases exist');
   assert(corpus.some((c) => c.kind === 'succession'), 'succession cases exist');
   for (const required of [
@@ -289,7 +411,7 @@ test('the adversarial corpus covers every rule Phase 1 depends on, and covers bo
     'SHRINK_GUARD_UNACKNOWLEDGED',
     'SUCCESSION_PREDECESSOR_DIGEST_MISMATCH',
     'PROJECTED_VERSION_ID_CHANGED',
-    'PATH_CHANGED_WITHOUT_RELOCATION',
+    'PATH_CHANGED_FOR_CARRIED_ENTRY',
     'INODE_COLLISION',
     'ENTRY_INODE_NOT_DERIVED',
     'DUPLICATE_PATH',
@@ -476,7 +598,8 @@ test('nothing transient maps to ENOENT, and nothing maps to a hang', () => {
   const enoent = Object.entries(PROJECTIOND_ERROR_MAP).filter(([, errno]) => errno === 'ENOENT');
   assertEq(enoent.length, 1, 'exactly one condition means ENOENT');
   assertEq(enoent[0]?.[0], 'path-not-in-generation', 'and it is the only one that means the file is not there');
-  for (const transient of ['source-unreachable', 'source-auth-refused', 'source-not-found', 'locator-expired',
+  for (const transient of ['source-unreachable', 'source-auth-refused', 'source-not-found', 'access-lease-expired',
+    'access-resolution-failed', 'source-reference-unknown', 'access-url-outside-endpoint-allowlist',
     'circuit-open', 'read-deadline-exceeded', 'admission-queue-timeout', 'entry-degraded'] as const) {
     assertEq(PROJECTIOND_ERROR_MAP[transient], 'EIO', `${transient} is EIO, never ENOENT`);
   }
@@ -506,15 +629,22 @@ test('a degraded entry costs the provider nothing, and an open circuit costs it 
   assert(contract.includes('per-entry backoff that ends in a provider request'), 'no per-entry backoff');
 });
 
-test('an expired locator is terminal, because only a new generation can supply a fresh one', () => {
+test('an expired ACCESS LEASE is recoverable in-band; an unresolvable stable reference is what is terminal', () => {
   const source = read('src/core/projection/runtime-contract.ts');
   const retryText = PROJECTIOND_RETRY_CLASSES_TEXT(source);
+  const refresh = retryText.slice(retryText.indexOf("'access-refresh-then-retry'"), retryText.indexOf('terminal:'));
   const terminal = retryText.slice(retryText.indexOf('terminal:'));
-  assert(terminal.includes("'locator-expired'"), 'an expired locator is terminal');
-  const refresh = retryText.slice(retryText.indexOf('credential-refresh-then-retry'), retryText.indexOf('terminal:'));
-  assert(!refresh.includes('locator-expired'), 'and is not something the daemon refreshes for itself');
-  assertEq(PROJECTIOND_READ_POLICY.MAX_CREDENTIAL_REFRESH_RETRIES_PER_SOURCE_GENERATION, 1,
-    'the one refresh the daemon does is a credential re-read, not a locator request');
+  // A debrid or CDN URL lapsing is the NORMAL end of a lease, not a failure, and a playback outlives one.
+  for (const recoverable of ['http-401', 'http-403', 'http-410', 'access-lease-expired']) {
+    assert(refresh.includes(`'${recoverable}'`), `${recoverable} is recoverable by re-resolving the reference`);
+    assert(!terminal.includes(`'${recoverable}'`), `${recoverable} is not terminal`);
+  }
+  // What a refresh cannot fix stays terminal, and only the control plane decides what it means.
+  for (const fatal of ['source-reference-unknown', 'access-resolution-failed', 'access-url-outside-endpoint-allowlist']) {
+    assert(terminal.includes(`'${fatal}'`), `${fatal} is terminal`);
+    assert(!refresh.includes(`'${fatal}'`), `${fatal} is not retried by refreshing`);
+  }
+  assertEq(PROJECTIOND_READ_POLICY.MAX_ACCESS_REFRESHES_PER_READ, 1, 'a read refreshes at most once');
 });
 
 test('the two manifest bounds are sized against each other, so neither is unreachable', () => {
@@ -550,7 +680,7 @@ test('every deadline is bounded and the read deadline dominates the parts it is 
   assert(p.FIRST_BYTE_DEADLINE_MS < p.READ_DEADLINE_MS, 'first byte is inside the read deadline');
   assert(p.MAX_HONOURED_RETRY_AFTER_MS < p.READ_DEADLINE_MS, 'a provider cannot extend a read past its deadline');
   assert(p.MAX_ATTEMPTS_PER_READ >= 1 && p.MAX_ATTEMPTS_PER_READ <= 5, 'retries are bounded and small');
-  assertEq(p.MAX_CREDENTIAL_REFRESH_RETRIES_PER_SOURCE_GENERATION, 1, 'a rotated credential is retried once');
+  assertEq(p.MAX_ACCESS_REFRESHES_PER_READ, 1, 'a read refreshes its access lease at most once');
   assert(PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS < p.READ_DEADLINE_MS, 'a queued read cannot outlive its deadline');
   assert(PROJECTIOND_ADMISSION_LIMITS.PER_ENDPOINT_MAX_INFLIGHT_REQUESTS
     <= PROJECTIOND_ADMISSION_LIMITS.GLOBAL_MAX_INFLIGHT_SOURCE_REQUESTS, 'per-endpoint is inside the global cap');
@@ -567,6 +697,104 @@ test('the two caches answer two different questions, and the probe cache is keye
   assertEq(PROJECTIOND_READAHEAD_POLICY.SUPPRESSED_WITHIN_BYTES, PROJECTION_PROBE_PLAN.WINDOW_BYTES,
     'a scan never pulls more than the probe window');
   assertEq(PROJECTIOND_READAHEAD_POLICY.ACTIVE_STREAM_PINNING, true, 'an active stream pins what it is using');
+});
+
+test('a manifest locator is STABLE: no expiry, no access URL, no lease, in any spelling', () => {
+  // The defect this replaces: an `expiresAt` on the manifest locator. A debrid or CDN access URL expires on
+  // the provider's schedule, so an expiring locator would have meant publishing a new namespace generation
+  // every time a lease lapsed — ordinary reads coupled to catalog churn, and a generation-pinned handle
+  // broken by its own transport.
+  const locator = defs['httpRangeLocator'] as { required: string[]; properties: Record<string, unknown> };
+  assertEq(canonicalJson(locator.required.slice().sort()), canonicalJson(['endpointId', 'objectRef']),
+    'a stable reference is an endpoint and an opaque object reference, and nothing else');
+  for (const forbidden of ['expiresAt', 'expiry', 'ttl', 'accessUrl', 'url', 'signedUrl', 'lease', 'token']) {
+    assert(!(forbidden in locator.properties), `the schema has no ${forbidden}`);
+  }
+  const validator = read('src/core/projection/manifest-v1.ts');
+  const iface = validator.slice(validator.indexOf('export interface HttpRangeLocator'), validator.indexOf('export interface ProjectionSource'));
+  assert(!iface.includes('expiresAt'), 'the validator type has no expiry either');
+
+  // And it is enforced, not merely absent: a producer that adds one is refused rather than ignored.
+  for (const [field, value] of [['expiresAt', '2026-07-02T00:00:00.000Z'], ['accessUrl', 'obj-x']] as Array<[string, string]>) {
+    const doc = clone(JSON.parse(g1Bytes) as Record<string, never>) as unknown as { entries: Array<Record<string, unknown>> };
+    const remote = doc.entries.find((e) => (e['sources'] as Array<Record<string, unknown>>)[0]?.['kind'] === 'http-range');
+    const source = (remote!['sources'] as Array<Record<string, unknown>>)[0] as Record<string, unknown>;
+    (source['locator'] as Record<string, unknown>)[field] = value;
+    const result = validateManifestV1(doc);
+    assert(!result.ok, `a locator carrying ${field} is refused`);
+    assert(codes(result.problems).includes('UNKNOWN_FIELD'), `and ${field} is named as unknown`);
+  }
+});
+
+test('transport resolution is the daemon\u2019s job and source selection is not', () => {
+  const a = PROJECTIOND_ACCESS_RESOLUTION;
+  assertEq(a.SOURCE_SELECTION_OWNER, 'control-plane', 'the control plane still chooses the source');
+  assertEq(a.DAEMON_SCOPE, 'transport-resolution-only', 'the daemon only resolves how to reach it');
+  // The separation has to survive contact with the read path: a resolution may not become a re-selection.
+  assertEq(a.REFRESH_MAY_TRIGGER_REFRESH, false, 'a refresh cannot cascade');
+  assertEq(PROJECTIOND_HANDLE_BINDING.ACCESS_REFRESH_REBINDS_HANDLE, false, 'a refresh is not a rebind');
+});
+
+test('an access refresh cannot leak, cannot stampede, cannot outrun a deadline, cannot move identity', () => {
+  const a = PROJECTIOND_ACCESS_RESOLUTION;
+
+  // LEAK. Ephemeral access material is a short-lived secret and is written down nowhere — including the
+  // probe-prefix cache, which is the one cache that is actually on disk.
+  assertEq(a.LEASE_STORAGE, 'memory-only', 'a lease lives in memory');
+  for (const place of ['manifest', 'disk', 'probe-prefix-cache', 'log', 'metric-label', 'argv', 'error-message']) {
+    assert(a.LEASE_NEVER_IN.includes(place as never), `a lease is never in ${place}`);
+    assert(PROJECTIOND_SECRET_AND_EGRESS_POLICY.ACCESS_MATERIAL_NEVER_IN.includes(place as never),
+      `and the secret policy says so too, for ${place}`);
+  }
+  assertEq(a.CREDENTIAL_SOURCE, 'secret-file', 'the credential that authorises a resolution is still a file');
+  assertEq(PROJECTIOND_SECRET_AND_EGRESS_POLICY.ACCESS_MATERIAL_STORAGE, 'memory-only', 'stated in both places');
+
+  // ALLOWLIST BYPASS. A resolved URL is provider-supplied data, so it is checked like any other input. Without
+  // this the provider would simply name the host it wanted contacted.
+  assertEq(a.RESOLVED_URL_HOST_MUST_BE_IN_ENDPOINT_ALLOWLIST, true, 'a resolved host is checked');
+  assertEq(a.RESOLVED_URL_REDIRECTS_FOLLOWED, false, 'and redirects are still not followed');
+  assertEq(a.RESOLVED_URL_TLS_VERIFICATION_REQUIRED, true, 'and TLS is still verified');
+  assertEq(PROJECTIOND_SECRET_AND_EGRESS_POLICY.PROVIDER_EGRESS.RESOLVED_ACCESS_URLS_CHECKED_AGAINST_ALLOWLIST, true,
+    'the egress policy carries the same rule');
+  assertEq(PROJECTIOND_ERROR_MAP['access-url-outside-endpoint-allowlist'], 'EIO', 'and a violation is EIO');
+
+  // PINNED IDENTITY. A refresh is a new envelope for the same bytes, or it is a failure.
+  for (const pinned of ['projectedEntryId', 'generationId', 'sourceId', 'sourceGeneration', 'projectedVersionId',
+    'inode', 'sizeBytes', 'mtime']) {
+    assert(a.PINNED_ACROSS_REFRESH.includes(pinned as never), `${pinned} does not move across a refresh`);
+  }
+  for (const bound of PROJECTIOND_HANDLE_BINDING.BINDS_TO) {
+    assert(a.PINNED_ACROSS_REFRESH.includes(bound as never), `every bound field is pinned: ${bound}`);
+  }
+  assertEq(a.POST_REFRESH_RESPONSE_RULES, 'identical-range-content-range-total-size-and-byte-identity',
+    'a refreshed response is held to every rule the first one was');
+
+  // DEADLINE. A resolution is bounded, and it is spent from the read's absolute budget rather than added to it.
+  assertEq(a.INSIDE_ABSOLUTE_READ_DEADLINE, true, 'a resolution is inside the read deadline');
+  assert(a.RESOLUTION_DEADLINE_MS < PROJECTIOND_READ_POLICY.READ_DEADLINE_MS, 'and strictly shorter than it');
+  assert(a.RESOLUTION_DEADLINE_MS + PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS
+    <= PROJECTIOND_READ_POLICY.READ_DEADLINE_MS, 'a resolution plus a retried first byte still fits');
+
+  // STAMPEDE. One resolution per source per cooldown, daemon-wide, with concurrent waiters sharing it.
+  assertEq(a.SINGLE_FLIGHT, true, 'concurrent waiters share one resolution');
+  assertEq(a.MAX_REFRESHES_PER_SOURCE_PER_COOLDOWN, 1, 'one refresh per source per cooldown');
+  assert(a.REFRESH_COOLDOWN_MS >= PROJECTIOND_READ_POLICY.READ_DEADLINE_MS,
+    'the cooldown outlasts a read, so a failing source cannot be re-resolved once per read');
+  assertEq(PROJECTIOND_READ_POLICY.MAX_ACCESS_REFRESHES_PER_READ, 1, 'and one per read');
+
+  // LOOP. Failure ends the read; it does not end the entry, and it does not move the namespace.
+  assertEq(a.ON_REFRESH_FAILURE, 'EIO-without-namespace-change', 'a failed refresh is EIO and nothing else');
+  assertEq(a.REFRESH_MAY_TRIGGER_REFRESH, false, 'and cannot start another one');
+
+  // SELF-INFLICTED OUTAGE. A short lease rotating normally must not trip the endpoint's own breaker, or the
+  // correction becomes the outage it was meant to prevent. A failed resolution still counts, because that
+  // really is an endpoint not answering.
+  assertEq(PROJECTIOND_CIRCUIT_BREAKER.SUCCESSFUL_ACCESS_REFRESH_COUNTS_AS_FAILURE, false,
+    'a healthy lease rotation does not trip the breaker');
+  assertEq(PROJECTIOND_CIRCUIT_BREAKER.FAILED_ACCESS_RESOLUTION_COUNTS_AS_FAILURE, true,
+    'a failed resolution does');
+  assert(read('docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md').includes('SHALL NOT** count toward the failure threshold'),
+    'and the contract says so normatively');
 });
 
 test('an open binds to one source generation, survives a swap, and fails over only on proof', () => {
@@ -629,8 +857,16 @@ test('the Phase 0 documents exist and are normative rather than aspirational', (
     assert(adr.includes(kw), `the ADR covers ${kw}`);
   }
   for (const kw of ['MUST', 'SHALL', 'projected version', 'degraded', 'retiring', 'byte-identity',
-    'single-flight', 'Circuit breaker', 'EROFS', 'ENOENT', 'EIO', 'probe']) {
+    'single-flight', 'Circuit breaker', 'EROFS', 'ENOENT', 'EIO', 'probe',
+    // The two correction-round subjects, stated normatively rather than in passing.
+    'Transport resolution', 'PATH_CHANGED_FOR_CARRIED_ENTRY', 'IMMUTABLE for a carried']) {
     assert(contract.includes(kw), `the contract covers ${kw}`);
+  }
+  for (const kw of ['transport', 'stable reference', 'access material']) {
+    assert(adr.includes(kw) || contract.includes(kw), `the corrected transport model is written down: ${kw}`);
+  }
+  for (const kw of ['expiring-lease', 'G24', 'G27', 'stampede']) {
+    assert(plan.includes(kw), `the plan gates the corrected model: ${kw}`);
   }
   for (const kw of ['anti-detour', 'Phase 1', 'vertical slice']) {
     assert(roadmap.includes(kw), `the roadmap covers ${kw}`);
@@ -642,6 +878,21 @@ test('the Phase 0 documents exist and are normative rather than aspirational', (
   for (const doc of [adr, contract, plan, roadmap]) {
     for (const vague of ['best effort', 'should eventually', 'will probably', 'in a future phase we may']) {
       assert(!doc.toLowerCase().includes(vague), `no vague claim: ${vague}`);
+    }
+  }
+
+  // And two claims this contract used to make and cannot: that a path correction earns no media-server
+  // refresh, and that an expired transport locator is something only a new generation can fix. The prose is
+  // checked as well as the code, because a stale sentence is how a corrected contract quietly un-corrects.
+  const everywhere = [adr, contract, plan, roadmap, read('src/core/projection/manifest-v1.ts'),
+    read('src/core/projection/runtime-contract.ts'), read('README.md')];
+  for (const doc of everywhere) {
+    for (const retracted of ['earns no refresh', 'no refresh request', 'observes it on its own next scan']) {
+      assert(!doc.includes(retracted), `the retracted refresh claim is gone: ${retracted}`);
+    }
+    for (const retracted of ['only a new generation can supply a fresh locator',
+      'only a new generation can supply a fresh one', 'expired locator is TERMINAL']) {
+      assert(!doc.includes(retracted), `the retracted locator claim is gone: ${retracted}`);
     }
   }
 });

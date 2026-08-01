@@ -83,7 +83,10 @@ export const PROJECTION_DEGRADED_REASONS = Object.freeze([
   'source-unreachable',
   'source-rejected',
   'byte-identity-mismatch',
-  'locator-expired',
+  // The endpoint would not turn the stable reference into anything readable. Note that this is the CONTROL
+  // PLANE's observation at production time; the daemon's own failure to resolve an access lease is a read
+  // failure, not a namespace change.
+  'access-resolution-failed',
   'endpoint-circuit-open',
   'operator-hold',
 ] as const);
@@ -146,10 +149,21 @@ export interface LocalLocator {
   readonly relativePath: string;
 }
 
+/**
+ * A STABLE reference, and deliberately not an access URL.
+ *
+ * This carried an `expiresAt` in the first draft of this contract, which was wrong in a way that would have
+ * made a debrid- or CDN-shaped source unworkable: access URLs expire on their own schedule, and tying
+ * that schedule to the manifest would mean a new namespace generation every time a transport lease lapsed.
+ * That couples ordinary reads to catalog churn, and it breaks a generation-pinned handle mid-playback.
+ *
+ * So there is no expiry here. `endpointId` plus `objectRef` names a thing that keeps meaning the same thing.
+ * Turning it into a signed URL with a lifetime is TRANSPORT RESOLUTION, it happens in the daemon, in memory,
+ * under the bounds in `PROJECTIOND_ACCESS_RESOLUTION` — and it never touches this document.
+ */
 export interface HttpRangeLocator {
   readonly endpointId: string;
   readonly objectRef: string;
-  readonly expiresAt: string | null;
 }
 
 export interface ProjectionSource {
@@ -203,16 +217,10 @@ export interface GenerationProvenance {
   readonly probeWindowBytes: number;
 }
 
-export interface GenerationRelocation {
-  readonly projectedEntryId: string;
-  readonly previousPath: string;
-}
-
 export interface GenerationAdmission {
   readonly intent: ProjectionGenerationIntent;
   readonly entryCount: number;
   readonly deletions: readonly string[];
-  readonly relocations: readonly GenerationRelocation[];
   readonly deletionGuardAcknowledged: boolean;
   readonly deletionGuardDigest: string | null;
 }
@@ -296,8 +304,12 @@ export function foldProjectedPath(path: string): string {
 
 /**
  * `ino` is derived from the projected-version id and from nothing else — never from the path, never from the
- * active source, never from a provider identifier. That is the whole reason a failover, a link refresh or a
- * path correction cannot make a media server treat a file it already knows as a new one.
+ * active source, never from a provider identifier. That is the whole reason a source failover or an access
+ * lease refresh cannot make a media server treat a file it already knows as a new one.
+ *
+ * It is NOT a claim about paths. A path is immutable for a carried entry in v1 (see `validateSuccession`),
+ * because a stable inode is not evidence that Plex, Jellyfin or Emby preserve their own item across a
+ * rename — and this contract does not get to assert things about software it does not control.
  *
  * The domain separator is part of the input so that a future ino rule can exist without ever colliding with
  * this one. The top bit is cleared because a signed 64-bit inode is what the FUSE ABI and every consumer of
@@ -444,7 +456,7 @@ function validateSource(value: unknown, sizeBytes: number, at: string, p: Proble
     if (!relative.ok) p.add('LOCATOR_RELATIVE_PATH_INVALID', `${at}.locator.relativePath`);
     else scanLocatorValue(relative.path ?? '', `${at}.locator.relativePath`, p);
   } else if (kind === 'http-range') {
-    checkNoUnknownKeys(locator, ['endpointId', 'objectRef', 'expiresAt'], `${at}.locator`, p);
+    checkNoUnknownKeys(locator, ['endpointId', 'objectRef'], `${at}.locator`, p);
     const endpointId = locator['endpointId'];
     if (typeof endpointId !== 'string' || !ID_LABEL.test(endpointId)) {
       p.add('LOCATOR_ENDPOINT_ID_INVALID', `${at}.locator.endpointId`);
@@ -452,8 +464,6 @@ function validateSource(value: unknown, sizeBytes: number, at: string, p: Proble
     const objectRef = locator['objectRef'];
     if (typeof objectRef !== 'string') p.add('LOCATOR_OBJECT_REF_INVALID', `${at}.locator.objectRef`);
     else scanLocatorValue(objectRef, `${at}.locator.objectRef`, p);
-    const expiresAt = locator['expiresAt'];
-    if (expiresAt !== null && !isTimestamp(expiresAt)) p.add('LOCATOR_EXPIRES_AT_INVALID', `${at}.locator.expiresAt`);
   }
 
   const byteIdentity = value['byteIdentity'];
@@ -650,7 +660,7 @@ function validateGeneration(value: unknown, entryCount: number, p: Problems): vo
   const admission = value['admission'];
   if (!isRecord(admission)) { p.add('ADMISSION_MALFORMED', 'generation.admission'); return; }
   checkNoUnknownKeys(admission, [
-    'intent', 'entryCount', 'deletions', 'relocations', 'deletionGuardAcknowledged', 'deletionGuardDigest',
+    'intent', 'entryCount', 'deletions', 'deletionGuardAcknowledged', 'deletionGuardDigest',
   ], 'generation.admission', p);
 
   const intent = admission['intent'];
@@ -693,26 +703,6 @@ function validateGeneration(value: unknown, entryCount: number, p: Problems): vo
       }
     } else if (guardDigest !== null) {
       p.add('ADMISSION_DELETION_GUARD_DIGEST_FORBIDDEN', 'generation.admission.deletionGuardDigest');
-    }
-  }
-
-  const relocations = admission['relocations'];
-  if (!Array.isArray(relocations)) {
-    p.add('ADMISSION_RELOCATIONS_MALFORMED', 'generation.admission.relocations');
-  } else {
-    const seen = new Set<string>();
-    for (let index = 0; index < relocations.length; index += 1) {
-      const at = `generation.admission.relocations[${index}]`;
-      const relocation = relocations[index];
-      if (!isRecord(relocation)) { p.add('ADMISSION_RELOCATION_MALFORMED', at); continue; }
-      checkNoUnknownKeys(relocation, ['projectedEntryId', 'previousPath'], at, p);
-      const id = relocation['projectedEntryId'];
-      if (typeof id !== 'string' || !/^pe_[0-9a-f]{64}$/.test(id)) p.add('ADMISSION_RELOCATION_ID_INVALID', `${at}.projectedEntryId`);
-      else if (seen.has(id)) p.add('ADMISSION_RELOCATION_ID_DUPLICATE', `${at}.projectedEntryId`);
-      else seen.add(id);
-      if (!normalizeProjectedPath(relocation['previousPath']).ok) {
-        p.add('ADMISSION_RELOCATION_PREVIOUS_PATH_INVALID', `${at}.previousPath`);
-      }
     }
   }
 }
@@ -815,16 +805,6 @@ export function validateManifestV1(input: unknown): ManifestValidation {
         p.add('DELETED_ENTRY_STILL_PRESENT', `generation.admission.deletions[${index}]`);
       }
     }
-    const relocations = Array.isArray(admission['relocations']) ? admission['relocations'] : [];
-    for (let index = 0; index < relocations.length; index += 1) {
-      const relocation = relocations[index];
-      if (isRecord(relocation)) {
-        const id = relocation['projectedEntryId'];
-        if (typeof id === 'string' && !byEntryId.has(id)) {
-          p.add('RELOCATED_ENTRY_ABSENT', `generation.admission.relocations[${index}].projectedEntryId`);
-        }
-      }
-    }
   }
 
   if (p.any) return { ok: false, problems: p.all, manifest: null };
@@ -848,8 +828,6 @@ export interface SuccessionValidation {
   readonly additions: readonly string[];
   /** Entries a media server should be told about: completed explicit deletions only. */
   readonly deletions: readonly string[];
-  /** Path corrections. Real in the namespace, and deliberately NOT a refresh trigger. */
-  readonly relocations: readonly string[];
   /** Entries that changed to or from `degraded`. Never a refresh trigger, in either direction. */
   readonly degradedChanges: readonly string[];
 }
@@ -867,7 +845,6 @@ export function validateSuccession(
   const p = new Problems();
   const additions: string[] = [];
   const deletions: string[] = [];
-  const relocations: string[] = [];
   const degradedChanges: string[] = [];
 
   const prev = previous.manifest;
@@ -895,7 +872,6 @@ export function validateSuccession(
   const prevById = new Map(prev.entries.map((entry) => [entry.projectedEntryId, entry]));
   const nextById = new Map(next.entries.map((entry) => [entry.projectedEntryId, entry]));
   const declaredDeletions = new Set(next.generation.admission.deletions);
-  const relocationByEntry = new Map(next.generation.admission.relocations.map((r) => [r.projectedEntryId, r]));
 
   for (const [entryId, before] of prevById) {
     const after = nextById.get(entryId);
@@ -927,11 +903,19 @@ export function validateSuccession(
     if (after.sizeBytes !== before.sizeBytes) p.add('SIZE_CHANGED', `previous:${entryId.slice(0, 11)}`);
     if (after.mtime !== before.mtime) p.add('MTIME_CHANGED', `previous:${entryId.slice(0, 11)}`);
 
+    // A PATH IS IMMUTABLE FOR A CARRIED ENTRY. An earlier draft of this contract allowed a declared
+    // "relocation" and claimed it earned no media-server refresh. That claim was not true and could not be
+    // made true here: a media server cannot discover a new path without reconciling, and a stable inode is
+    // not evidence that Plex, Jellyfin or Emby preserve their own item across a rename. Rather than assert
+    // something about software this project does not control, v1 takes the smaller contract.
+    //
+    // A corrected path is therefore modelled honestly and visibly: retire the entry at the old path, wait out
+    // its grace deadline, delete it in an explicit deletion generation, and add a NEW entry at the corrected
+    // path. That refreshes, because it is a delete and an add, and the media server may well see it as one.
+    // The control plane may keep the projected-version and logical-media relationship across the pair; what
+    // it may not do is promise the media server kept its item.
     if (after.path !== before.path) {
-      const relocation = relocationByEntry.get(entryId);
-      if (relocation === undefined || relocation.previousPath !== before.path) {
-        p.add('PATH_CHANGED_WITHOUT_RELOCATION', `previous:${entryId.slice(0, 11)}`);
-      } else relocations.push(entryId);
+      p.add('PATH_CHANGED_FOR_CARRIED_ENTRY', `previous:${entryId.slice(0, 11)}`);
     }
     // A retiring entry does NOT expire into deletion. Its grace deadline passing changes nothing on its own:
     // it stays readable, in the namespace, until an operator's explicit deletion generation removes it. An
@@ -964,7 +948,6 @@ export function validateSuccession(
     problems: p.all,
     additions: additions.sort(),
     deletions: deletions.sort(),
-    relocations: relocations.sort(),
     degradedChanges: degradedChanges.sort(),
   };
 }
@@ -972,10 +955,14 @@ export function validateSuccession(
 /**
  * What a media server is told after a swap. Additions and completed explicit deletions, and nothing else.
  *
- * A relocation is a real rename in the namespace and the media server will observe it on its own next scan;
- * it does not earn a refresh request, because a path correction is a correction and not new content. A
- * change to or from `degraded` earns nothing at all — that is the whole point of `degraded`, and a refresh
- * on it would be exactly the library churn this design exists to prevent.
+ * There is no third category, and in particular there is no silent one. A path cannot change under a carried
+ * entry (`validateSuccession` refuses it), so there is no namespace change that a media server would have to
+ * discover by reconciling and that this function does not report. A path correction reaches a media server as
+ * a deletion and an addition, both of which are here.
+ *
+ * A change to or from `degraded` earns nothing — that is the whole point of `degraded`, and a refresh on it
+ * would be exactly the library churn this design exists to prevent. `degraded` moves no path, no inode, no
+ * size and no mtime, so there is nothing for a media server to reconcile.
  */
 export function refreshRequestFor(succession: SuccessionValidation): {
   readonly refreshRequired: boolean;

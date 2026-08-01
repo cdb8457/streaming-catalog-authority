@@ -17,7 +17,6 @@
       "intent": "routine",
       "entryCount": 120,
       "deletions": [],
-      "relocations": [],
       "deletionGuardAcknowledged": false,
       "deletionGuardDigest": null
     }

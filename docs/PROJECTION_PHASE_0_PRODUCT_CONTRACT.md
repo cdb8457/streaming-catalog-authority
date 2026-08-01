@@ -61,7 +61,7 @@ pointer or the new one, never a prefix of either.
 2.4 A generation **SHALL** carry: `generationId`, a strictly increasing `sequence`, `createdAt`, a
 `predecessor` (`null` only at sequence 1) naming the previous generation's id, sequence and artifact digest,
 a `provenance` block (producer, producer version, control-plane schema version, source snapshot digest, probe
-window), and an `admission` block (intent, entry count, deletions, relocations, deletion-guard state).
+window), and an `admission` block (intent, entry count, deletions, deletion-guard state).
 
 2.5 An entry **SHALL** carry: `projectedEntryId`, `logicalMediaId`, `projectedVersionId`, `path`, `nodeKind`,
 `sizeBytes`, `mtime`, `mode`, `readOnly`, `inode`, `visibility`, `degraded`, `retiring`, `sources`. Every one
@@ -92,15 +92,39 @@ configured `rootId` (local) or `endpointId` (HTTP Range) plus an opaque referenc
 contain a URL scheme, a query string, userinfo, a backslash, or any credential-shaped word. A provider token
 is **never** a manifest field.
 
+3.3.1 **A locator is STABLE and SHALL NOT carry a lifetime.** There is no `expiresAt`, no TTL, no signed URL
+and no lease in a manifest, and a producer that emits one **SHALL** be refused rather than ignored. Access
+material expires; the reference to the object does not. Turning the reference into something fetchable is
+transport resolution (§7.6), it happens in the daemon, in memory, and it never reaches this document.
+
 3.4 `inode` **SHALL** be derived deterministically from `projectedVersionId` and from nothing else — never
 from the path, never from the active source, never from a provider identifier. The derivation is
 `deriveInode()` in `src/core/projection/manifest-v1.ts`: the leading 8 bytes of
 `sha256("projectiond.ino.v1\n" || projectedVersionId)`, big-endian, top bit cleared, values below 1024
 displaced upward. Two different projected versions deriving one inode **SHALL** cause refusal.
 
-3.5 `projectedEntryId` **SHALL** be stable across generations and across path corrections. A path correction
-**SHALL** be declared as a `relocation`; the entry's `projectedEntryId`, `projectedVersionId`, `inode`,
-`sizeBytes` and `mtime` **SHALL NOT** change with it.
+3.5 `projectedEntryId` **SHALL** be stable across generations.
+
+3.5.1 **`path` is IMMUTABLE for a carried `projectedEntryId`.** A successor that changes it **SHALL** be
+refused (`PATH_CHANGED_FOR_CARRIED_ENTRY`).
+
+An earlier draft of this contract permitted a declared "relocation" and stated that it earned no
+media-server refresh. That was not true and could not be made true here. A media server does not learn a new
+path without reconciling, and this contract has no mechanism that reconciles it; a stable inode is evidence
+about *this* namespace, not evidence that Plex, Jellyfin or Emby preserve their own library item across a
+rename. Rather than assert a property of software this project does not control, v1 takes the smaller
+contract that it can actually hold.
+
+3.5.2 **A corrected path is modelled as retire, delete, add.** The entry at the wrong path is marked
+`retiring` with a deletion intent, its grace deadline elapses, an explicit deletion generation removes it,
+and the corrected path arrives as a **new** `projectedEntryId`. Both halves are reported to the media server
+under §4.7, because both halves are real.
+
+3.5.3 The control plane **MAY** preserve the `logicalMediaId` and the `projectedVersionId` across that pair,
+and if it does, the new entry carries the same `inode`, `sizeBytes` and `mtime`. That is the control plane
+keeping its own relationship straight. It is **not** a guarantee that a media server preserved its item:
+Plex, Jellyfin and Emby **MAY** each see a deletion and an addition, and this contract does not claim
+otherwise.
 
 3.6 **Byte identity.** Two sources **MAY** share a `projectedVersionId` only with proof: the exact
 `sizeBytes` plus partial hashes at the fixed offsets of §3.7. Without identical proof on every source they
@@ -146,9 +170,14 @@ removes an entry. An entry **MAY** be un-retired, which is what makes a mistaken
 4.6 **Failed or partial discovery SHALL NOT remove an entry.** A routine generation that simply omits an
 entry its predecessor carried **SHALL** be refused (`ENTRY_DISAPPEARED_WITHOUT_DELETION`).
 
-4.7 **Media-server refresh.** `projectiond` **SHALL** request a refresh only for **additions** and for
-**completed explicit deletions**. A relocation is a real rename in the namespace and earns no refresh
-request — the media server observes it on its own next scan. A degraded transition earns nothing.
+4.7 **Media-server refresh.** `projectiond` **SHALL** request a refresh for **additions** and for
+**completed explicit deletions**, and there is no third category and no silent one.
+
+A degraded transition earns nothing, in either direction — `degraded` moves no path, no inode, no size and
+no mtime, so there is nothing for a media server to reconcile, and a refresh on it would be exactly the
+library churn this design exists to prevent. Nothing else can change under a carried entry: §3.5.1 makes a
+path immutable, and §5 check 11 makes identity immutable. So a refresh request naming only additions and
+deletions is a **complete** account of what a media server would otherwise have had to discover for itself.
 
 ---
 
@@ -177,8 +206,8 @@ step **SHALL** leave the currently admitted generation untouched and serving.
 11. **Succession** — every predecessor entry is present unless named in `admission.deletions` of a generation
     whose `intent` is `deletion`; every deleted entry was `retiring` in the predecessor with a
     `graceDeadline` at or before the admission clock; retained entries preserve `logicalMediaId`,
-    `projectedVersionId`, `inode`, `sizeBytes` and `mtime`; a changed path is declared as a relocation naming
-    the exact previous path.
+    `projectedVersionId`, `inode`, `sizeBytes` and `mtime`; and a carried entry's `path` is unchanged
+    (§3.5.1) — there is no declaration that makes a moved path admissible.
 12. **Shrink guard, defense in depth** — a deletion set larger than `max(50, 10% of the predecessor's entry
     count)` **SHALL** require `deletionGuardAcknowledged` with a `deletionGuardDigest` equal to the sha256 of
     the canonical JSON of the sorted deletion id set. An acknowledgement over any other set **SHALL** be
@@ -226,18 +255,55 @@ request SHALL be treated as a protocol violation**: the connection is aborted at
 buffered, and the source is failed. A short body is a truncation, not an EOF. A `Content-Range` total
 disagreeing with the manifest size means the bytes are not this projected version.
 
-7.6 **Retry classification.** Retryable: connection reset, connection timeout, body idle timeout, `408`,
-`429`, `500`, `502`, `503`, `504`. Credential-refresh-then-retry: `401`, `403`, `410` — the daemon **MAY**
-re-read its token from the secret file and retry the same ranged GET **once per source generation**. That is
-the whole of "link refresh" in v1: the daemon **SHALL NOT** request a new locator from a provider, because it
-has no such surface and acquiring one would put provider policy in the data plane. Terminal: `400`, `404`,
-`416`, unsupported range, range mismatch, short body, size disagreement, TLS verification failure, and an
-**expired locator** — only a new generation can supply a fresh one. A terminal classification fails the
-**source** for that read; the source **SHALL NOT** be retried. `Retry-After` is honoured up to 5 s and never
-past the read deadline.
+7.6 **Transport resolution.** A manifest locator is a **stable reference** (§3.3) and has no lifetime. The
+thing that has a lifetime is the **access material** — a signed URL, a redirect target, a lease — that a
+provider hands back when asked to make that reference readable. `projectiond` **MAY** resolve a stable
+reference into access material, and **MAY** re-resolve it when the material lapses, under §7.6.1 to §7.6.6.
+
+That is **transport resolution**, and it is the daemon's job. It is not source selection: the control plane
+chose the source and proved the byte identity, and nothing here re-opens either. The distinction is the
+whole point — an access URL expires on the provider's schedule, and a playback routinely outlives one, so
+requiring a new namespace generation for a lapsed lease would couple ordinary reads to catalog churn and
+break a generation-pinned handle mid-film.
+
+7.6.1 Access material **SHALL** be memory-only. It **SHALL NOT** be written to a manifest, to disk, to the
+probe-prefix cache, to a log line, to a metric label, to argv, or to an error message. The long-lived
+credential that authorises a resolution **SHALL** continue to come from a secret file.
+
+7.6.2 A resolved URL is provider-supplied data and **SHALL** be treated as untrusted input. Its host
+**SHALL** be checked against the endpoint's configured allowlist; a host outside it **SHALL** fail the read
+(`access-url-outside-endpoint-allowlist`) and **SHALL NOT** be contacted. Redirects are still never followed
+and TLS verification is still required.
+
+7.6.3 A refresh **SHALL NOT** change `projectedEntryId`, `generationId`, `sourceId`, `sourceGeneration`,
+`projectedVersionId`, `inode`, `sizeBytes` or `mtime`. The handle is not rebound and the player is not told.
+The refreshed response **SHALL** satisfy the identical Range, `Content-Range`, total-size and byte-identity
+rules of §7.5 — a refresh is a new envelope for the same bytes, or it is a failure.
+
+7.6.4 A refresh **SHALL** be single-flighted: concurrent waiters share one in-flight resolution and its
+result. At most **one** refresh per source per **30 s cooldown**, daemon-wide, and at most **one** per read.
+A refresh **SHALL NOT** trigger another refresh. Twenty handles meeting an expired lease at once therefore
+cost one resolution, and a source whose resolutions keep failing cannot be asked again for a minute however
+many readers want it.
+
+7.6.5 A resolution is itself bounded at 5 s and is spent **from** the read's absolute deadline, not added to
+it. If the resolution fails, is refused, or the budget is exhausted, the read **SHALL** return **EIO** and
+the namespace **SHALL NOT** change.
+
+7.6.6 **Retry classification.** Retryable: connection reset, connection timeout, body idle timeout, `408`,
+`429`, `500`, `502`, `503`, `504`. Access-refresh-then-retry: `401`, `403`, `410`, expired access lease —
+for a debrid or CDN-shaped source these are the normal end of a signed URL's life, not a failure. Terminal:
+`400`, `404`, `416`, unsupported range, range mismatch, short body, size disagreement, TLS verification
+failure, an unknown source reference, a failed resolution, and a resolved URL outside the allowlist. A
+terminal classification fails the **source** for that read; the source **SHALL NOT** be retried.
+`Retry-After` is honoured up to 5 s and never past the read deadline.
 
 7.7 **Circuit breaker.** Per endpoint: 5 failures in 30 s opens it for 60 s; half-open admits exactly one
 probe. While open, reads against that endpoint **SHALL** fail fast locally with **zero provider traffic**.
+
+7.7.1 A lease lapsing and being successfully re-resolved **SHALL NOT** count toward the failure threshold. It
+is the normal life of a signed URL, and counting it would mean a healthy endpoint with a short lease trips
+its own breaker during ordinary playback. A resolution that **fails** does count.
 
 7.8 **Admission limits.** At most 8 in-flight source requests globally, 4 per endpoint, 4 connections per
 endpoint. A read that cannot obtain a slot within 5 s **SHALL** return **EIO** — it **SHALL NOT** queue past
@@ -281,6 +347,10 @@ and nothing about it reaches a media server.
 9.1 A provider token **SHALL** be read from a **secret file** whose path comes from configuration, and
 composed into an `Authorization` header at request time. It **SHALL NOT** appear in argv, a log line, a
 manifest, an error message, a metric label, or any URL component.
+
+9.1.1 **Ephemeral access material is a short-lived secret and gets the same treatment** (§7.6.1). Memory
+only; never the manifest, never disk, never the probe-prefix cache — that one *is* on disk — never a log, a
+metric label, argv or an error message.
 
 9.2 **Provider egress and media-server egress are separate policies and SHALL remain separate.** A provider
 endpoint is a public host by design; its allowlist is the configured endpoint host set, redirects are never

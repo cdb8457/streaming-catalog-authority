@@ -8,7 +8,7 @@
     "predecessor": {
       "generationId": "gen_4c92ba5e5f909591a4c5209f88faeb9e",
       "sequence": 1,
-      "manifestDigest": "sha256:6fcc6739d1eef1d405174045c25c0c7c255744561883bd95d2d536c0862c1cd3"
+      "manifestDigest": "sha256:bcb39b28f0f997c9cc0ef3fdd450edb9d9fe058a8836d47c79211c85437f0a02"
     },
     "provenance": {
       "producer": "catalog-authority",
@@ -122,7 +122,6 @@
         "pe_64b68f13771060acdc488b4b93b8fd0a97e8de386bf4bde3d8f7fe0c9515d764",
         "pe_4a8b02abd6a57eaa8200e933d6a816e9b1f0083c9f1bc189c0e82c7afe8f88fb"
       ],
-      "relocations": [],
       "deletionGuardAcknowledged": false,
       "deletionGuardDigest": null
     }

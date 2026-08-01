@@ -8,7 +8,7 @@
     "predecessor": {
       "generationId": "gen_4c92ba5e5f909591a4c5209f88faeb9e",
       "sequence": 1,
-      "manifestDigest": "sha256:e4697baf2abd66029544278897e7c163e73b03cf617864d3c48a64d75e376e70"
+      "manifestDigest": "sha256:a38b1c2e3d68394ed5f2dbff0206e4182e998306ba33af9e7543ba3678db065b"
     },
     "provenance": {
       "producer": "catalog-authority",
@@ -21,12 +21,6 @@
       "intent": "routine",
       "entryCount": 7,
       "deletions": [],
-      "relocations": [
-        {
-          "projectedEntryId": "pe_8b26e3c8e16c64c9777b3ed825766d1dcd8dae3120b555788987709e83815ba4",
-          "previousPath": "Movies/Local Feature (2019)/Local Feature (2019).mkv"
-        }
-      ],
       "deletionGuardAcknowledged": false,
       "deletionGuardDigest": null
     }
@@ -36,7 +30,7 @@
       "projectedEntryId": "pe_8b26e3c8e16c64c9777b3ed825766d1dcd8dae3120b555788987709e83815ba4",
       "logicalMediaId": "88463e99-63a9-40fc-812e-6294b4b12885",
       "projectedVersionId": "pv_791a3950918e925ce515ee72d99af149c8ddb89a6472929a1c5c94bb1c3b0eaf",
-      "path": "Movies/Local Feature (2019) [Directors Cut]/Local Feature (2019).mkv",
+      "path": "Movies/Local Feature (2019)/Local Feature (2019).mkv",
       "nodeKind": "file",
       "sizeBytes": 1073741824,
       "mtime": "2026-06-01T10:00:00.000Z",
@@ -85,8 +79,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-remote-a-primary",
-            "expiresAt": null
+            "objectRef": "obj-remote-a-primary"
           },
           "byteIdentity": {
             "sizeBytes": 8589934592,
@@ -120,8 +113,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-b",
-            "objectRef": "obj-remote-a-mirror",
-            "expiresAt": null
+            "objectRef": "obj-remote-a-mirror"
           },
           "byteIdentity": {
             "sizeBytes": 8589934592,
@@ -172,8 +164,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-shared",
-            "expiresAt": null
+            "objectRef": "obj-shared"
           },
           "byteIdentity": {
             "sizeBytes": 8589934592,
@@ -224,8 +215,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-shared",
-            "expiresAt": null
+            "objectRef": "obj-shared"
           },
           "byteIdentity": {
             "sizeBytes": 8589934592,
@@ -276,8 +266,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-degraded",
-            "expiresAt": null
+            "objectRef": "obj-degraded"
           },
           "byteIdentity": null
         }
@@ -337,8 +326,7 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-added",
-            "expiresAt": null
+            "objectRef": "obj-added"
           },
           "byteIdentity": null
         }

@@ -51,6 +51,21 @@
       "expectedProblem": "LOCATOR_VALUE_URL_SHAPED"
     },
     {
+      "file": "adversarial/locator-carries-expiry.json",
+      "kind": "standalone",
+      "expectedProblem": "UNKNOWN_FIELD"
+    },
+    {
+      "file": "adversarial/locator-carries-access-url.json",
+      "kind": "standalone",
+      "expectedProblem": "UNKNOWN_FIELD"
+    },
+    {
+      "file": "adversarial/admission-carries-relocations.json",
+      "kind": "standalone",
+      "expectedProblem": "UNKNOWN_FIELD"
+    },
+    {
       "file": "adversarial/entry-degraded-without-state.json",
       "kind": "standalone",
       "expectedProblem": "ENTRY_DEGRADED_STATE_REQUIRED"
@@ -126,9 +141,9 @@
       "nowIso": "2026-07-15T00:00:00.000Z"
     },
     {
-      "file": "adversarial/successor-path-changed-without-relocation.json",
+      "file": "adversarial/successor-path-changed-for-carried-entry.json",
       "kind": "succession",
-      "expectedProblem": "PATH_CHANGED_WITHOUT_RELOCATION",
+      "expectedProblem": "PATH_CHANGED_FOR_CARRIED_ENTRY",
       "previous": "generation-1-baseline.json",
       "nowIso": "2026-07-15T00:00:00.000Z"
     },

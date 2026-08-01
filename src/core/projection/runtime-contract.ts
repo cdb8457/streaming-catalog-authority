@@ -55,7 +55,7 @@ export type ProjectiondOperationClass = (typeof PROJECTIOND_OPERATIONS)[keyof ty
  * that matter most: nothing maps to a hang, and nothing that is a transient failure maps to ENOENT.
  *
  * ENOENT means one thing only — the path is not in the admitted generation. A provider outage, an expired
- * locator, an open circuit breaker and an unreachable control plane all map to EIO, because a media server
+ * access lease, an open circuit breaker and an unreachable control plane all map to EIO, because a media server
  * treats ENOENT as "the file was deleted" and will happily remove the item from the library on the strength
  * of it. EIO it retries.
  */
@@ -65,7 +65,14 @@ export const PROJECTIOND_ERROR_MAP = Object.freeze({
   'source-unreachable': 'EIO',
   'source-auth-refused': 'EIO',
   'source-not-found': 'EIO',
-  'locator-expired': 'EIO',
+  // The ephemeral access material the daemon resolved has lapsed. Recoverable in-band; see
+  // PROJECTIOND_ACCESS_RESOLUTION. It reaches a caller as EIO only after a refresh has been tried and failed.
+  'access-lease-expired': 'EIO',
+  // The endpoint would not turn the stable reference into access material at all.
+  'access-resolution-failed': 'EIO',
+  // The endpoint says it does not know the stable reference. The namespace still does not change.
+  'source-reference-unknown': 'EIO',
+  'access-url-outside-endpoint-allowlist': 'EIO',
   'range-unsupported': 'EIO',
   'range-mismatch': 'EIO',
   'short-body': 'EIO',
@@ -96,14 +103,11 @@ export const PROJECTIOND_READ_POLICY = Object.freeze({
   /** Retries WITHIN one read, over all sources. */
   MAX_ATTEMPTS_PER_READ: 3,
   /**
-   * On a 401/403/410 the daemon MAY re-read its token from the secret file — a rotated credential — and retry
-   * the same ranged GET once per source generation. That is the whole of "link refresh" in v1.
-   *
-   * It is NOT a request for a new locator. The daemon has no endpoint it could ask, and asking one would be
-   * the daemon acquiring a provider surface the control plane did not give it. An `expiresAt` that has passed
-   * is TERMINAL for the source: the only thing that can produce a fresh locator is a new generation.
+   * Access-lease refreshes inside ONE read. See PROJECTIOND_ACCESS_RESOLUTION for the per-source budget the
+   * whole daemon shares; this is only the per-read ceiling, and it is one so that a read cannot become a
+   * refresh loop.
    */
-  MAX_CREDENTIAL_REFRESH_RETRIES_PER_SOURCE_GENERATION: 1,
+  MAX_ACCESS_REFRESHES_PER_READ: 1,
   BACKOFF_INITIAL_MS: 200,
   BACKOFF_MAX_MS: 4_000,
   BACKOFF_MULTIPLIER: 2,
@@ -123,13 +127,94 @@ export const PROJECTIOND_RETRY_CLASSES = Object.freeze({
     'connection-reset', 'connection-timeout', 'body-idle-timeout',
     'http-408', 'http-429', 'http-500', 'http-502', 'http-503', 'http-504',
   ] as const),
-  'credential-refresh-then-retry': Object.freeze(['http-401', 'http-403', 'http-410'] as const),
+  /**
+   * Re-resolve the STABLE reference into fresh access material, then retry the identical ranged request once.
+   * Bounded, single-flighted and cooldown-limited by PROJECTIOND_ACCESS_RESOLUTION.
+   *
+   * These statuses are here rather than in `terminal` because for a debrid/CDN-shaped source they are the
+   * NORMAL end of a signed URL's life, not a failure. A playback routinely outlives a lease.
+   */
+  'access-refresh-then-retry': Object.freeze([
+    'http-401', 'http-403', 'http-410', 'access-lease-expired',
+  ] as const),
   terminal: Object.freeze([
     'http-400', 'http-404', 'http-416', 'range-unsupported', 'range-mismatch',
     'short-body', 'size-disagrees-with-manifest', 'tls-verification-failed',
-    // Only a new generation can supply a fresh locator, so an expired one ends this source, here.
-    'locator-expired',
+    // The endpoint does not know the stable reference, or would not resolve it. A refresh cannot help, and
+    // only the control plane can decide what that means for the namespace.
+    'source-reference-unknown', 'access-resolution-failed',
+    // A resolved URL pointing somewhere outside the endpoint's configured hosts. Never followed, never
+    // retried: it is the one failure here that could otherwise be a redirect to an attacker.
+    'access-url-outside-endpoint-allowlist',
   ] as const),
+} as const);
+
+/**
+ * TRANSPORT RESOLUTION — turning a stable reference into something you can actually GET.
+ *
+ * THE DISTINCTION THIS WHOLE BLOCK EXISTS TO HOLD. The control plane decides *which source*, and proves the
+ * bytes are the projected version. That is catalog and source-selection policy, and it does not move. The
+ * daemon decides *how to reach* the source the control plane already chose — resolving `endpointId` plus
+ * `objectRef` into a signed URL, a redirect target, a lease with a lifetime. That is transport, and it has to
+ * live in the daemon, because a debrid or CDN access URL expires on the provider's schedule and a playback
+ * routinely outlives one.
+ *
+ * WHY IT CANNOT BE THE MANIFEST'S JOB. Putting the access URL in the manifest would mean publishing a new
+ * namespace generation every time a lease lapsed: ordinary reads coupled to catalog churn, a swap storm
+ * during a movie, and a generation-pinned handle broken by its own transport. The first draft of this
+ * contract did exactly that and it was wrong.
+ *
+ * WHAT A REFRESH MAY NOT DO. It may not change which source is being read, which entry, which generation,
+ * which source generation or which byte identity — the handle stays pinned to all five, and a refreshed
+ * response is held to the identical Range, Content-Range, total-size and byte-identity rules as the first
+ * one. A refresh is a new envelope for the same bytes, or it is a failure.
+ */
+export const PROJECTIOND_ACCESS_RESOLUTION = Object.freeze({
+  /** Who chose this source, and who may not re-choose it. */
+  SOURCE_SELECTION_OWNER: 'control-plane',
+  /** What the daemon is permitted to do on its own. */
+  DAEMON_SCOPE: 'transport-resolution-only',
+  /** Never written down. Not to the manifest, not to disk, not to a log, not to a metric, not to argv. */
+  LEASE_STORAGE: 'memory-only',
+  LEASE_NEVER_IN: Object.freeze([
+    'manifest', 'disk', 'probe-prefix-cache', 'log', 'metric-label', 'argv', 'error-message', 'core-dump-note',
+  ] as const),
+  /** The long-lived credential that authorises a resolution still comes from a secret file, as before. */
+  CREDENTIAL_SOURCE: 'secret-file',
+  /**
+   * One refresh per source per cooldown, daemon-wide. Not per read, not per handle: twenty handles hitting an
+   * expired lease at once cost ONE resolution, and a source whose resolutions keep failing cannot be made to
+   * resolve again for a minute however many readers ask.
+   */
+  MAX_REFRESHES_PER_SOURCE_PER_COOLDOWN: 1,
+  REFRESH_COOLDOWN_MS: 30_000,
+  /**
+   * Concurrent waiters share one in-flight resolution and its result. This is the anti-stampede rule, and it
+   * is the same shape as the read path's cross-open single-flight for exactly the same reason.
+   */
+  SINGLE_FLIGHT: true,
+  /** A resolution is itself a bounded request, and it is spent from the read's absolute deadline. */
+  RESOLUTION_DEADLINE_MS: 5_000,
+  INSIDE_ABSOLUTE_READ_DEADLINE: true,
+  /**
+   * A resolved URL is data from a provider, so it is treated as untrusted input. Its host must be in the
+   * endpoint's configured allowlist; otherwise the read fails and nothing is fetched. Redirects are still
+   * never followed, which is what stops a resolution from becoming an open redirect.
+   */
+  RESOLVED_URL_HOST_MUST_BE_IN_ENDPOINT_ALLOWLIST: true,
+  RESOLVED_URL_REDIRECTS_FOLLOWED: false,
+  RESOLVED_URL_TLS_VERIFICATION_REQUIRED: true,
+  /** Refreshing access material changes none of these. A refresh is transport, not identity. */
+  PINNED_ACROSS_REFRESH: Object.freeze([
+    'projectedEntryId', 'generationId', 'sourceId', 'sourceGeneration', 'projectedVersionId', 'inode',
+    'sizeBytes', 'mtime',
+  ] as const),
+  /** The refreshed response is held to every rule the first one was. */
+  POST_REFRESH_RESPONSE_RULES: 'identical-range-content-range-total-size-and-byte-identity',
+  /** Exhausted budget, failed resolution, or a deadline reached: EIO. The namespace does not move. */
+  ON_REFRESH_FAILURE: 'EIO-without-namespace-change',
+  /** There is no path on which a refresh triggers another refresh. */
+  REFRESH_MAY_TRIGGER_REFRESH: false,
 } as const);
 
 /**
@@ -176,6 +261,17 @@ export const PROJECTIOND_CIRCUIT_BREAKER = Object.freeze({
   HALF_OPEN_PROBES: 1,
   /** While open, reads against that endpoint answer EIO from local state. Zero packets leave the host. */
   WHILE_OPEN: 'fail-fast-locally-zero-provider-traffic',
+  /**
+   * A lease lapsing and being successfully re-resolved is NOT a failure and MUST NOT count toward the
+   * threshold. It is the normal life of a signed URL, and counting it would mean a healthy endpoint with a
+   * short lease trips its own breaker during ordinary playback — turning the correction in
+   * PROJECTIOND_ACCESS_RESOLUTION back into the outage it exists to prevent.
+   *
+   * A resolution that FAILS is a failure and does count: that is an endpoint not answering, which is what
+   * this breaker is for.
+   */
+  SUCCESSFUL_ACCESS_REFRESH_COUNTS_AS_FAILURE: false,
+  FAILED_ACCESS_RESOLUTION_COUNTS_AS_FAILURE: true,
 } as const);
 
 /**
@@ -237,6 +333,12 @@ export const PROJECTIOND_HANDLE_BINDING = Object.freeze({
    * worse than failing, because it looks like corruption and it is silent.
    */
   MID_HANDLE_FAILOVER: 'proven-byte-identical-sources-only',
+  /**
+   * Refreshing the ephemeral access material underneath a handle is NOT a failover and NOT a rebind. Nothing
+   * in BINDS_TO moves, and the player is never told. This is what makes a lease shorter than a film a
+   * non-event rather than a stutter, a re-open or a library refresh.
+   */
+  ACCESS_REFRESH_REBINDS_HANDLE: false,
 } as const);
 
 /**
@@ -250,6 +352,16 @@ export const PROJECTIOND_SECRET_AND_EGRESS_POLICY = Object.freeze({
   /** The token is composed into an Authorization header at request time. It is never a URL component. */
   TOKEN_PLACEMENT: 'authorization-header',
   /**
+   * Ephemeral access material — a signed URL, a lease, a redirect target the daemon resolved — is a SECRET
+   * with a short life, and gets the same treatment. It lives in memory for as long as it is useful and is
+   * written down nowhere: see PROJECTIOND_ACCESS_RESOLUTION.LEASE_NEVER_IN, which includes the probe-prefix
+   * cache, because that one IS on disk and holds bytes keyed by projected version.
+   */
+  ACCESS_MATERIAL_STORAGE: 'memory-only',
+  ACCESS_MATERIAL_NEVER_IN: Object.freeze([
+    'manifest', 'disk', 'probe-prefix-cache', 'log', 'metric-label', 'argv', 'error-message', 'core-dump-note',
+  ] as const),
+  /**
    * A provider endpoint is a PUBLIC host, by design. This is the opposite of the media-server rule and it is
    * a SEPARATE allowlist for exactly that reason: relaxing this one must not relax that one, and the Jellyfin
    * private-host URL policy is unchanged by anything here.
@@ -259,6 +371,12 @@ export const PROJECTIOND_SECRET_AND_EGRESS_POLICY = Object.freeze({
     PUBLIC_HOSTS_PERMITTED: true,
     REDIRECTS_FOLLOWED: false,
     TLS_VERIFICATION_REQUIRED: true,
+    /**
+     * A URL the daemon RESOLVED is provider-supplied data, so it is checked against the same allowlist as a
+     * URL the daemon composed. Without this, transport resolution would be a hole straight through the
+     * allowlist: the provider would simply hand back the host it wanted contacted.
+     */
+    RESOLVED_ACCESS_URLS_CHECKED_AGAINST_ALLOWLIST: true,
   }),
   /**
    * The media-server rule, restated so the separation is written down rather than assumed. projectiond does

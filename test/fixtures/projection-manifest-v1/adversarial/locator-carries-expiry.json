@@ -72,9 +72,33 @@
           "sourceGeneration": 1,
           "locator": {
             "endpointId": "provider-a",
-            "objectRef": "obj-remote-a-primary"
+            "objectRef": "obj-remote-a-primary",
+            "expiresAt": "2026-07-02T00:00:00.000Z"
           },
-          "byteIdentity": null
+          "byteIdentity": {
+            "sizeBytes": 8589934592,
+            "probeWindowBytes": 1048576,
+            "probes": [
+              {
+                "position": "head",
+                "offset": 0,
+                "length": 1048576,
+                "sha256": "1c0ce356bd84244d6b13fe87b47fd87239ef56b720f29a506c9d939dd84b1384"
+              },
+              {
+                "position": "middle",
+                "offset": 4294443008,
+                "length": 1048576,
+                "sha256": "766fd9b4911ff2451ec676774ee0973b8ec1da401cde11384d45f2e023f8c2c9"
+              },
+              {
+                "position": "tail",
+                "offset": 8588886016,
+                "length": 1048576,
+                "sha256": "fae1f72ad8ae69f4339e1a03e4b31121be3c481de511b37c7b77ae1224f63b97"
+              }
+            ]
+          }
         },
         {
           "sourceId": "src_09466a921c5197ae0d7098c5382b2c06",
@@ -85,7 +109,30 @@
             "endpointId": "provider-b",
             "objectRef": "obj-remote-a-mirror"
           },
-          "byteIdentity": null
+          "byteIdentity": {
+            "sizeBytes": 8589934592,
+            "probeWindowBytes": 1048576,
+            "probes": [
+              {
+                "position": "head",
+                "offset": 0,
+                "length": 1048576,
+                "sha256": "1c0ce356bd84244d6b13fe87b47fd87239ef56b720f29a506c9d939dd84b1384"
+              },
+              {
+                "position": "middle",
+                "offset": 4294443008,
+                "length": 1048576,
+                "sha256": "766fd9b4911ff2451ec676774ee0973b8ec1da401cde11384d45f2e023f8c2c9"
+              },
+              {
+                "position": "tail",
+                "offset": 8588886016,
+                "length": 1048576,
+                "sha256": "fae1f72ad8ae69f4339e1a03e4b31121be3c481de511b37c7b77ae1224f63b97"
+              }
+            ]
+          }
         }
       ]
     },

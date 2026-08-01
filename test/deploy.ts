@@ -11147,7 +11147,20 @@ test('projection appliance - Projection Phase 0 freezes the product contract and
     'retiring',
     'anti-detour',
     'Unraid',
+    // Correction round 1: the transport-resolution split, and the path rule that replaced relocation.
+    'Transport resolution',
+    'PATH_CHANGED_FOR_CARRIED_ENTRY',
   ]) assert(combined.includes(kw), `Projection Phase 0 covers ${kw}`);
+  // The two claims this contract retracted. A stale sentence is how a corrected contract un-corrects itself.
+  for (const retracted of ['earns no refresh', 'no refresh request', 'only a new generation can supply a fresh locator']) {
+    assert(!combined.includes(retracted), `Projection Phase 0 no longer claims: ${retracted}`);
+  }
+  // The two removed fields, checked as CODE rather than as prose: both modules still explain why they are
+  // gone, so the check is for the quoted key a validator would have to accept, not for the word.
+  const manifestModule = read('src/core/projection/manifest-v1.ts');
+  assert(!manifestModule.includes("'expiresAt'"), 'a manifest locator carries no lifetime');
+  assert(!manifestModule.includes("'relocations'"), 'a manifest admission block carries no relocations');
+  assert(!read('docs/schemas/projection-manifest-v1.schema.json').includes('expiresAt'), 'nor does the schema');
 
   // Superseded, never deleted: the boundary documents this narrows are still on disk and still readable.
   for (const kept of [
