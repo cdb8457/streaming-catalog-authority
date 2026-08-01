@@ -382,7 +382,10 @@ cat > "$WORK/out/pinned-read.sh" <<'PINNED'
 set -eu
 target="/mnt/Movies/Local One/Local One.bin"
 exec 3< "$target"
-head -c 1048576 <&3 > /out/pinned-part.bin
+# dd, NOT head -c. `head` may read ahead past the byte count it prints, and the descriptor is SHARED with the
+# second half of this read -- so an over-reading head would silently drop bytes from the middle of the file
+# and the digest at the end would fail for a reason that has nothing to do with generation pinning.
+dd bs=1024 count=1024 <&3 > /out/pinned-part.bin 2>/dev/null
 echo opened > /out/handle-open
 attempt=0
 while [ ! -f /out/swap-done ]; do
