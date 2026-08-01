@@ -152,11 +152,26 @@ docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fak
   "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 \
   --object "${REMOTE_REF}:${REMOTE_SIZE}" --emit /out/objects.json >/dev/null
 
-echo "  waiting for the endpoint to answer"
+echo "  waiting for the endpoint to answer a RANGED request"
+# THE PROBE SENDS A RANGE HEADER AND ASSERTS THE STATUS LINE, and both halves are load-bearing.
+#
+# The endpoint is Range-only by construction: a request without a Range header is answered 416, on purpose.
+# A probe that omitted the header would report a perfectly healthy endpoint as down forever.
+#
+# And busybox wget EXITS NON-ZERO ON A 206 -- "server returned error: HTTP/1.1 206 Partial Content" -- because
+# it considers anything but 200 an error. So the exit code is useless here in both directions, and the status
+# line is what gets asserted. Asking for exactly what the daemon asks for makes this evidence rather than a
+# liveness ping: a pass here is a 206 for a ranged GET of the object the manifest will name.
+cat > "$WORK/out/probe.sh" <<'PROBE'
+set -eu
+wget -S --header "Range: bytes=0-1023" -O /dev/null "$1" 2>&1 | grep -q "206 Partial Content"
+PROBE
+
 ready=0
 for _ in $(seq 1 90); do
-  if [ -f "$WORK/out/objects.json" ] && docker run --rm --network "$NETWORK" "$VERIFY_IMAGE" \
-       wget -q -O /dev/null "http://fakerange:8099/direct/${REMOTE_REF}" >/dev/null 2>&1; then
+  if [ -f "$WORK/out/objects.json" ] && docker run --rm --network "$NETWORK" \
+       -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
+       sh /probe/probe.sh "http://fakerange:8099/direct/${REMOTE_REF}" >/dev/null 2>&1; then
     ready=1
     break
   fi
@@ -494,6 +509,22 @@ step "unmounting"
 docker stop -t 15 "$MOUNT_CONTAINER" >/dev/null
 if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -d /mnt/Movies >/dev/null 2>&1; then
   die "the namespace is still visible after the daemon stopped"
+fi
+
+# ----------------------------------------------------------------------------------------------------------
+step "where this run obtained durability, and where it did not"
+# ----------------------------------------------------------------------------------------------------------
+# THE PUBLISHER RUNS ON THE HOST, and on a Windows development machine a directory cannot be opened for fsync.
+# The artifact and the pointer are still written to a temp file, fsync'd and renamed -- what is missing is the
+# fsync of the DIRECTORY, which is what makes the RENAME itself survive a power cut. The publisher reports
+# that as `directorySynced: false` rather than claiming a durability it did not obtain, and this gate prints
+# it rather than letting a reader assume. On the Linux host this appliance actually runs on it is true.
+SYNCED="$(field directorySynced < "$WORK/out/publish-successor.json")"
+echo "  directorySynced on this host: $SYNCED"
+if [ "$SYNCED" != "true" ]; then
+  echo "  NOTE: this host cannot fsync a directory, so the rename's own durability is UNPROVEN here."
+  echo "        Every other durability step -- temp file, fsync, rename, and the database commit that"
+  echo "        precedes all of them -- did run. Run this gate on Linux to close the remaining one."
 fi
 
 echo
