@@ -33,3 +33,8 @@ deploy/ci/acceptance/playwright-report/
 # /tmp. Both gates remove their own on the way out; this is what keeps an INTERRUPTED run from leaving
 # untracked files behind, which is the only state where it matters.
 .projection-publisher-gate/
+
+# ...and for the media-server data-plane gate, for the same reason again. This one also holds generated media
+# and a media server's whole config directory, so leaving it behind would be several megabytes of untracked
+# noise rather than a few files.
+.projection-jellyfin-gate/

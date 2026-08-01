@@ -380,6 +380,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-jellyfin-dataplane.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },

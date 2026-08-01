@@ -109,6 +109,29 @@ cost and would hide a real regression in the scan path.
 **This split is a statement about evidence, not a schedule.** A Windows green run is not a Phase 1 pass and
 **SHALL NOT** be reported as one. The tranche closes on a Linux/Unraid run, three times.
 
+### 6.1 What has actually been run, and against which server
+
+The table above says where a gate *can* be closed. This one says what has been *run*, because the two are not
+the same and only the second is evidence.
+
+| Gate | Jellyfin | Plex | Emby |
+|---|---|---|---|
+| G7 **Scan** | run — `npm run go:jellyfin-dataplane-gate`, against a real digest-pinned Jellyfin with the mount as a library root | not run | not run |
+| G8 **Play** | run — direct play, both entries, digest-compared against values recorded outside the mount | not run | not run |
+| G9 **Seek** | run — a ranged request per entry, `206` and `Content-Range` asserted before the body is read. **The plan's ten seeks including >90 % of duration are not yet run**; two windows are | not run | not run |
+| G10 **Transcode** | run — forced `mpeg4` → `h264`, proved by decoding the segments. **The plan's five-minute duration is not yet run**; a bounded segment count is | not run | not run |
+| G11 **Generation swap mid-read** | run — the in-flight stream completed correctly across an admitted successor | not run | not run |
+| G12 **Kill and recover** | run — `SIGKILL` mid-stream, restart, remount: zero added, zero removed, zero item-id churn; playback resumable | not run | not run |
+| G13 **Re-scan churn** | run — twice, plus across a media-server restart | not run | not run |
+| G18 **High-concurrency scan** | **not run** — it requires all three servers scanning simultaneously | not run | not run |
+| G22 **Comparison control** | **not run** | — | — |
+| G24–G26 **Lease gates** | **not run** through a media server; the fake endpoint supports the mode, this gate uses the direct one | — | — |
+| G27 **Path immutability** | admission half closed by `npm run test:projection-publisher`; **the three-server half is not run** | not run | not run |
+
+`docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md` describes the gate that produced the Jellyfin column. Every
+run of it so far has been on **Windows / Docker Desktop**, which §6 says closes none of G7–G13. The tranche
+still closes on Linux or Unraid, three consecutive times, and on **all three** media servers.
+
 ## 7. What the harness must record
 
 One redaction-safe report per run: gate id, verdict, and the measured number against its budget. Counts,
