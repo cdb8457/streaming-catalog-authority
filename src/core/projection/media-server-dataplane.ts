@@ -396,7 +396,21 @@ export interface ScanTaskSample {
   readonly LastExecutionResult?: { StartTimeUtc?: string; EndTimeUtc?: string; Status?: string } | null;
 }
 
-export type ScanPhase = 'not-started' | 'running' | 'complete';
+/**
+ * What one observation of the scan task means.
+ *
+ * `indeterminate` IS NOT A HAIR-SPLIT, IT IS THE FOURTH ANSWER THAT WAS MISSING. An execution has been
+ * recorded, but the task's state is not one this code recognises: it is therefore neither finished (that
+ * needs `Idle`) nor demonstrably under way (that needs `Running` or `Cancelling`).
+ *
+ * With only three phases that case had to be squeezed into one of them, and it was squeezed into `running` —
+ * the exact phase the in-flight callback fires on. So an unknown state such as `Restarting` alongside a new
+ * execution timestamp raised the mid-scan marker, even though the previous fix had made `observedInFlight`
+ * correctly stay false. The guard before the publish caught it, so no false publish could occur; but the
+ * callback contract said "only authoritative Running or Cancelling raises this" and the code did not, which
+ * makes the contract and its tests wrong regardless of what the next check happens to catch.
+ */
+export type ScanPhase = 'not-started' | 'running' | 'indeterminate' | 'complete';
 
 /**
  * The scheduled-task states that mean an execution is UNDER WAY on the pinned media server.
@@ -467,7 +481,10 @@ export class ScanBarrier {
   observe(sample: ScanTaskSample | undefined): ScanPhase {
     // Once a new execution has been seen to END, nothing later un-ends it.
     if (this.finished) return 'complete';
-    if (sample === undefined) return this.inFlightObserved ? 'running' : 'not-started';
+    if (sample === undefined) {
+      if (this.inFlightObserved) return 'running';
+      return this.executionObserved ? 'indeterminate' : 'not-started';
+    }
     const state = sample.State ?? '';
     const start = sample.LastExecutionResult?.StartTimeUtc;
     const startedSinceBaseline = ScanBarrier.isAfter(start, this.baselineStart);
@@ -502,12 +519,15 @@ export class ScanBarrier {
     }
     // A new execution has been recorded under a state this code does not recognise. It is not complete (that
     // needs Idle) and it is not evidence of motion (that needs Running or Cancelling), so the wait continues
-    // and NOTHING is claimed from it. `inFlightObserved` is deliberately untouched.
+    // and NOTHING is claimed from it — not `inFlightObserved`, and not the phase that fires the callback.
     if (startedSinceBaseline) {
       this.executionObserved = true;
-      return 'running';
+      return 'indeterminate';
     }
-    return this.inFlightObserved ? 'running' : 'not-started';
+    if (this.inFlightObserved) return 'running';
+    // An execution was recorded earlier under a state we could not read, and this sample adds nothing. Still
+    // waiting, still claiming nothing.
+    return this.executionObserved ? 'indeterminate' : 'not-started';
   }
 
   /** Whether an execution has been observed to have happened, in flight or between polls. */

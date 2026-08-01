@@ -14,7 +14,7 @@ import {
   withinBudget,
 } from '../src/core/projection/media-server-dataplane.js';
 import {
-  absolutePath, awaitScanRunning, openPinnedStream, scanIsRunningNow,
+  absolutePath, awaitScanRunning, openPinnedStream, scanIsRunningNow, scanLibrary,
   type GateState, type ItemRecord,
 } from '../src/ops/projection-jellyfin-dataplane.js';
 
@@ -234,10 +234,18 @@ await test('SCAN BARRIER: only Running and Cancelling are accepted as motion', (
   // Anything else must not be, however suggestive. An unrecognised state with a new execution keeps the wait
   // going — it is not complete either — but claims nothing.
   const unknown = new ScanBarrier(T0);
-  assertEq(unknown.observe({ State: 'Restarting', LastExecutionResult: { StartTimeUtc: T1 } }), 'running',
-    'an unrecognised state with a new execution is not a completion, so the wait continues');
+  assertEq(unknown.observe({ State: 'Restarting', LastExecutionResult: { StartTimeUtc: T1 } }), 'indeterminate',
+    'an unrecognised state with a new execution is neither a completion nor motion — it is its own answer');
   assert(!unknown.observedInFlight,
-    'but an unrecognised state is not evidence of motion, and nothing may be claimed from it');
+    'it is not evidence of motion, and nothing may be claimed from it');
+  assert(unknown.executionSeen, 'though an execution demonstrably happened');
+  // AND IT MUST NOT BE THE PHASE THE CALLBACK FIRES ON. That is the whole defect: with only three phases
+  // this case was reported as `running`, which raised the mid-scan marker reserved for authoritative states.
+  assert(unknown.observe({ State: 'Restarting' }) !== 'running',
+    'an unreadable state is never reported as running');
+  // A later sample that still says nothing keeps it indeterminate rather than resetting to not-started.
+  assertEq(unknown.observe({ State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } }), 'indeterminate',
+    'and an execution once recorded is not forgotten');
   assert(isInFlightState('Running') && isInFlightState('Cancelling'), 'the predicate names exactly those two');
   for (const notMotion of ['Idle', 'Restarting', '', undefined]) {
     assert(!isInFlightState(notMotion), `${String(notMotion) || '(empty)'} is not motion`);
@@ -300,8 +308,10 @@ await test('THE IN-FLIGHT SIGNAL FIRES ONLY FOR A RUNNING SAMPLE, never for a fa
   const driver = readCode('src/ops/projection-jellyfin-dataplane.ts');
   const scan = driver.slice(driver.indexOf('export async function scanLibrary'),
     driver.indexOf('export async function awaitScanRunning'));
-  assert(/if \(phase === 'running' && !announced\)/.test(scan),
-    'onRunning fires ONLY on a running phase — `phase !== \'not-started\'` would include a fast complete');
+  assert(/if \(barrier\.observedInFlight && !announced\)/.test(scan),
+    'onRunning is keyed on the in-flight FACT, not on a phase that merely tends to imply it');
+  assert(!/phase === 'running' && !announced/.test(scan),
+    'the phase-keyed form is gone: it was true for an unreadable state as well as an authoritative one');
   assert(scan.includes('observedInFlight: barrier.observedInFlight'),
     'and the outcome reports the in-flight fact, not the weaker "an execution happened"');
 
@@ -336,6 +346,92 @@ async function withScriptedScanTask(
     body,
   );
 }
+
+/**
+ * A scripted server that `scanLibrary` can be driven against end to end.
+ *
+ * It answers `/Library/Refresh` with 204 and serves one scripted task sample per `/ScheduledTasks` read, so
+ * a test can lay out the exact sequence the real thing would have polled — including the first read, which
+ * `scanLibrary` takes as its baseline BEFORE triggering the refresh.
+ */
+async function withScriptedScanServer(
+  samples: ReadonlyArray<Record<string, unknown>>,
+  body: (baseUrl: string) => Promise<void>,
+): Promise<void> {
+  let index = 0;
+  await withHttpServer(
+    (req, res) => {
+      if ((req.url ?? '').startsWith('/Library/Refresh')) {
+        res.writeHead(204);
+        res.end();
+        return;
+      }
+      const sample = samples[Math.min(index, samples.length - 1)];
+      index += 1;
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify([{ Key: 'RefreshLibrary', ...sample }]));
+    },
+    body,
+  );
+}
+
+await test('BEHAVIOURAL: an unknown state with a new timestamp NEVER fires the in-flight callback', async () => {
+  // THE DEFECT THIS CLOSES, driven through the real scanLibrary rather than asserted about the source.
+  //
+  // `Restarting` plus a new execution timestamp is an execution this code cannot read the state of. It used
+  // to be reported as phase `running`, which is what the callback fired on — so it raised the mid-scan
+  // marker that only an authoritative Running or Cancelling is allowed to raise, while `observedInFlight`
+  // correctly stayed false. The publish guard would have caught it, but the callback contract was false.
+  await withScriptedScanServer(
+    [
+      { State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } },                 // baseline
+      { State: 'Restarting', LastExecutionResult: { StartTimeUtc: T1 } },           // unreadable, mid-execution
+      { State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } },                 // and then it is over
+    ],
+    async (baseUrl) => {
+      let fired = 0;
+      const outcome = await scanLibrary({ baseUrl, token: 'x' }, () => { fired += 1; });
+      assertEq(fired, 0, 'the in-flight callback must NOT fire for a state this code cannot read');
+      assertEq(outcome.observedInFlight, false, 'and nothing was observed in flight');
+      assert(outcome.elapsedMs >= 0, 'while ordinary completion still succeeds rather than hanging');
+    },
+  );
+});
+
+await test('BEHAVIOURAL: a genuinely running scan fires the callback exactly once', async () => {
+  await withScriptedScanServer(
+    [
+      { State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } },  // baseline
+      { State: 'Running' },
+      { State: 'Running', CurrentProgressPercentage: 50 },
+      { State: 'Cancelling' },
+      { State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } },
+    ],
+    async (baseUrl) => {
+      let fired = 0;
+      const outcome = await scanLibrary({ baseUrl, token: 'x' }, () => { fired += 1; });
+      assertEq(fired, 1, 'exactly once — a historical in-flight observation must not re-fire on every poll');
+      assertEq(outcome.observedInFlight, true, 'and the run reports it was seen in flight');
+    },
+  );
+});
+
+await test('BEHAVIOURAL: a fast complete completes without firing the callback', async () => {
+  // Preserved from the previous fix: an execution that started and finished between two polls is a valid
+  // completion and is not an in-flight observation, so it must not raise the marker either.
+  await withScriptedScanServer(
+    [
+      { State: 'Idle', LastExecutionResult: { StartTimeUtc: T0 } },  // baseline
+      { State: 'Idle', LastExecutionResult: { StartTimeUtc: T1 } },  // over already
+    ],
+    async (baseUrl) => {
+      let fired = 0;
+      const outcome = await scanLibrary({ baseUrl, token: 'x' }, () => { fired += 1; });
+      assertEq(fired, 0, 'a fast complete raises no in-flight signal');
+      assertEq(outcome.observedInFlight, false, 'and claims no in-flight observation');
+    },
+  );
+});
 
 await test('BEHAVIOURAL: awaitScanRunning refuses a scan that finished between polls', async () => {
   // The adversarial case, driven against a real socket rather than asserted about the source. The very first

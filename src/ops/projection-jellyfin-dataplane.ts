@@ -294,10 +294,15 @@ export async function scanLibrary(
   await json(state, 'POST', '/Library/Refresh');
   await until('the library scan to start and then finish', MEDIA_SERVER_DEADLINES_MS.LIBRARY_SCAN, async () => {
     const phase = barrier.observe(await scanTask(state));
-    // ONLY `running`. A fast-complete must not raise the in-flight signal: the mid-scan gate publishes on it,
-    // and publishing after the scan has finished while claiming to have published during it is exactly the
-    // false positive this callback used to produce.
-    if (phase === 'running' && !announced) {
+    // KEYED ON THE IN-FLIGHT FACT ITSELF, NOT ON A PHASE THAT HAPPENS TO IMPLY IT.
+    //
+    // This used to read `phase === 'running'`, which was true for two different things: an authoritative
+    // Running/Cancelling sample, and — before `indeterminate` existed — any new execution under a state this
+    // code could not read. So `Restarting` plus a new timestamp raised the mid-scan marker that this callback
+    // exists to gate, while `observedInFlight` correctly stayed false. Reading the fact directly means the
+    // callback cannot drift from it again, whatever the phase vocabulary grows into. `announced` is what
+    // stops a historical true from re-firing on every later poll.
+    if (barrier.observedInFlight && !announced) {
       announced = true;
       onRunning?.();
     }
@@ -321,7 +326,9 @@ export async function awaitScanRunning(state: GateState, baseline: string | unde
   const outcome = await until('the library scan to be observed running',
     MEDIA_SERVER_DEADLINES_MS.LIBRARY_SCAN, async () => {
       const phase = barrier.observe(await scanTask(state));
-      if (phase === 'running') return 'running' as const;
+      // The same fact, read the same way. An `indeterminate` sample keeps the wait going and licenses
+      // nothing; only an authoritative in-flight observation succeeds here.
+      if (barrier.observedInFlight) return 'running' as const;
       if (phase === 'complete') return 'finished-unseen' as const;
       return undefined;
     });

@@ -194,6 +194,17 @@ the mid-scan marker, satisfy the pre-publish guard, and licence a publish into a
 Only `Running` and `Cancelling` are accepted now; an unrecognised state keeps the wait going but claims
 nothing.
 
+**An unreadable state could still raise that marker.** Tightening the in-flight predicate left a third case
+with nowhere to go: an execution recorded under a state this code does not recognise — `Restarting`, say,
+alongside a new timestamp. It is not finished (that needs `Idle`) and not demonstrably under way (that needs
+`Running` or `Cancelling`), but with only three phases it had to be reported as one of them, and it was
+reported as `running` — the exact phase the in-flight callback fires on. So `observedInFlight` correctly
+stayed false while the marker went up anyway. The pre-publish guard would have caught the consequence, but
+the callback's contract said one thing and its code did another, which is the defect whatever the next check
+happens to catch. There is now a fourth phase, `indeterminate`, and the callback is keyed on the in-flight
+**fact** rather than on a phase that merely tends to imply it — so it cannot drift from that fact again
+however the phase vocabulary grows.
+
 **A fast-completed scan could still raise that marker.** The barrier tracked one flag for two different
 facts — "an execution happened" and "this process saw it running" — and set it in every branch, including the
 one for a scan that started and finished between two polls. That is a valid *completion* and is not an
