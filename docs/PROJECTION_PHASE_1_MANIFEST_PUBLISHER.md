@@ -46,6 +46,32 @@ admission uses — refuses a URL-shaped or credential-shaped value at registrati
 `://`, `?`, `&`, `@` and `\` in the database. Access material is the daemon's, in memory, for the length of
 one read (Phase 0 §7.6).
 
+### What the registration boundary refuses, and why each one is a refusal rather than an update
+
+Every one of these exists because the alternative poisons the registry: the row that results looks perfectly
+reasonable, and every subsequent publish is refused by a rule enforced somewhere the operator was not looking.
+
+| Attempt | Refusal | What silently applying it would cause |
+|---|---|---|
+| the same entry id at a different path | `registered at a different path` | nothing — the id is derived from the path, so this can only be a caller confusion |
+| a **live** entry against a different projected version | `different projected version` | `PROJECTED_VERSION_ID_CHANGED` on every later publish |
+| a **live** entry against a different catalog record | `different catalog record` | `LOGICAL_MEDIA_ID_CHANGED` on every later publish |
+| a version key re-asserted with a different size, mtime or proof | `already registered with different bytes` | `SIZE_CHANGED` / `MTIME_CHANGED` / a moved inode |
+| degrade, retire or un-retire of an id that does not exist | `no such projected entry` | an operator believing a mistaken retirement was undone while the entry marches on toward deletion |
+
+Two more properties of the same surface:
+
+- **An entry and its source set are one operation.** They are composed inside a single `SECURITY DEFINER`
+  call, so it is atomic whether or not the caller owns a transaction. Two statements would leave a
+  source-less entry behind whenever the second failed — an unregistered root, a duplicate preference — and
+  every publish afterwards would be refused with `PRODUCER_ENTRY_HAS_NO_SOURCE` by a row nobody believes they
+  created.
+- **Re-asserting a live entry disturbs nothing.** An operator re-running a seeding script has not un-degraded
+  or un-retired anything. A **tombstoned** entry re-registered at the same path, by contrast, comes back
+  fully clean — `available`, with no deletion intent and no grace deadline — because it is an addition, and
+  resurrecting it still `retiring` against an elapsed deadline would make it immediately deletable again by a
+  generation that looked well formed.
+
 ## 2. How a generation is built
 
 `src/core/projection/publisher.ts` is a pure function: `(snapshot, predecessor, clock, intent) -> bytes, or
@@ -129,6 +155,21 @@ npm run ops:projection-publish  -- --manifest-dir <dir> --intent deletion --dele
 
 **Exit codes are the interface.** `0` published, unchanged, recovered or resumed; `3` refused (the snapshot
 cannot produce an admissible generation, and nothing changed); `4` another publisher holds the lock.
+
+**`--status` answers one question: does the directory say what the database says.** It compares the pointer's
+generation id, sequence, artifact name, byte length **and** digest — all five, because the daemon checks all
+five before it parses anything, and a status surface that disagreed with the thing it reports on would be
+worse than none. Two empties agree; a pointer **file** with no current generation behind it does not, and the
+test is the file rather than a successful read, because a malformed pointer is something the daemon sees,
+reads and refuses rather than something it experiences as absence. Exit `0` when they agree, `3` when they
+do not.
+
+**A failed directory `fsync` is an error, not a flag.** The rename is what publishes a generation and the
+directory sync is what makes the rename itself survive a power cut, so a publisher that could not perform it
+and still answered "published" would be claiming a durability it did not obtain. Windows cannot open a
+directory for `fsync` at all, so there it is reported as `directorySynced: false` — production is Linux
+(Phase 0 §10.1) — and anywhere else a failure raises. The artifact and pointer are already in place when it
+does, so the run is exactly as recoverable as any other interrupted one.
 
 **A source is `kind:rootId:objectRef` and nothing else.** There is no field for a URL, a token, a header or an
 expiry, so the shape of the argument makes ephemeral access material unrepresentable rather than merely

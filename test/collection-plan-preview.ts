@@ -718,7 +718,12 @@ async function main(): Promise<void> {
       }
       const version = (await admin.query('SELECT version FROM schema_meta WHERE id = 1')).rows[0].version as number;
       assertEq(version, MIGRATION_VERSION, 'the deployed version matches this build');
-      assertEq(MIGRATION_VERSION, 9, 'this phase is schema v9');
+      // AT LEAST v9, NOT EXACTLY v9. The managed-collection model landed in v9 and this suite exists to prove
+      // it is deployed; pinning the constant made that claim expire the moment any later migration landed,
+      // which is a fixture going stale rather than the model going missing. What is actually load-bearing is
+      // asserted above and around this line: the tables are in the verified set and the deployed version is
+      // the one this build requires.
+      assert(MIGRATION_VERSION >= 9, 'the collection model arrived in schema v9 and has not been rolled back');
     });
 
     await test('the durable model has no column that could hold identity', async () => {

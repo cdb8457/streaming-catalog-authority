@@ -77,7 +77,10 @@ async function main(): Promise<void> {
   if (argv.includes('--status')) {
     const status = await publishStatus({ manifestDir });
     console.log(JSON.stringify(status, null, 2));
-    process.exit(status.agrees || status.dbSequence === null ? 0 : 3);
+    // `agrees` already knows that two empties agree and that a pointer with no generation behind it does not,
+    // so the exit code is that one answer and nothing else. It used to add `|| dbSequence === null`, which
+    // reported a directory holding a stale pointer as healthy for as long as the database stayed empty.
+    process.exit(status.agrees ? 0 : 3);
   }
 
   const deletions = flags('delete').map(deletionId);

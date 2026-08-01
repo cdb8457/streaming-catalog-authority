@@ -47,8 +47,41 @@ export interface PointerDocument {
 export interface DurableWrite {
   readonly path: string;
   readonly bytes: number;
-  /** False only where the platform cannot sync a directory. Never silently true. */
+  /** False only where the PLATFORM cannot sync a directory. A failure anywhere else throws. */
   readonly directorySynced: boolean;
+}
+
+/**
+ * A directory sync that could not be performed, on a platform where it should have been.
+ *
+ * It is an error and not a flag. The rename is what publishes a generation, and the directory sync is what
+ * makes the rename itself survive a power cut; a publisher that skipped it and still answered "published"
+ * would be claiming a durability it did not obtain. The artifact and the pointer are already in place when
+ * this throws, so the run is exactly as recoverable as any other interrupted run — the next one finds the
+ * disagreement and finishes it.
+ */
+export class DirectorySyncFailedError extends Error {
+  readonly code = 'DIRECTORY_SYNC_FAILED';
+
+  constructor(readonly cause: NodeJS.ErrnoException) {
+    super(`the manifest directory could not be synced: ${cause.code ?? cause.message}`);
+    this.name = 'DirectorySyncFailedError';
+  }
+}
+
+/**
+ * Is a failed directory sync a fact about the PLATFORM, or a fact about this write?
+ *
+ * Windows has no way to open a directory for `fsync`, so the attempt fails there for every directory, always,
+ * and no amount of retrying changes it — that is `unsupported`, and Phase 0 §10.1 already says production is
+ * Linux, so a development machine reporting it is honest rather than broken. Anywhere else a failure is a
+ * REAL failure: the filesystem was asked to make a rename durable and said no.
+ *
+ * Split out and exported because it is the whole policy, and a policy buried inside a catch block is one
+ * nobody can test on the platform where it matters least and matters most.
+ */
+export function directorySyncFailureIsFatal(platform: NodeJS.Platform): boolean {
+  return platform !== 'win32';
 }
 
 function syncDirectory(dir: string): boolean {
@@ -60,7 +93,10 @@ function syncDirectory(dir: string): boolean {
     } finally {
       closeSync(fd);
     }
-  } catch {
+  } catch (error) {
+    if (directorySyncFailureIsFatal(process.platform)) {
+      throw new DirectorySyncFailedError(error as NodeJS.ErrnoException);
+    }
     return false;
   }
 }
@@ -145,6 +181,19 @@ export function serializePointer(pointer: PointerDocument): Buffer {
     artifactBytes: pointer.artifactBytes,
     manifestDigest: pointer.manifestDigest,
   }, null, 2)}\n`, 'utf8');
+}
+
+/**
+ * Is there a pointer FILE, whatever it contains?
+ *
+ * `readPointer` answers null for a directory with no pointer and for a directory holding a half-written or
+ * hand-edited one, which is right for the publisher — its job is the same either way — and wrong for anything
+ * reporting health. `projectiond` does not see "null" in the second case; it sees a file, reads it, and
+ * refuses it. A status surface that called those two states both empty would report a directory the daemon
+ * is actively rejecting as a clean installation.
+ */
+export function pointerFilePresent(dir: string): boolean {
+  return existsSync(join(dir, POINTER_FILE_NAME));
 }
 
 /**

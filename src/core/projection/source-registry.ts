@@ -210,9 +210,13 @@ export async function registerEntry(db: Queryable, entry: EntryRegistration): Pr
     }
   }
 
-  await db.query('SELECT cat_projection_entry_register($1, $2, $3, $4)',
-    [entryId, entry.itemId, versionId, path.path]);
-  await db.query('SELECT cat_projection_entry_set_sources($1, $2)', [entryId, JSON.stringify(payload)]);
+  // ONE CALL, because the entry and its sources are one fact. Two statements would leave a SOURCE-LESS entry
+  // behind whenever the second failed -- an unregistered root, a duplicate preference, a malformed payload --
+  // and this function would report the failure while the registry quietly kept a row that refuses every
+  // subsequent publish with PRODUCER_ENTRY_HAS_NO_SOURCE. The composition is in the database, so it is atomic
+  // whether or not the caller already owns a transaction.
+  await db.query('SELECT cat_projection_entry_register($1, $2, $3, $4, $5)',
+    [entryId, entry.itemId, versionId, path.path, JSON.stringify(payload)]);
   return entryId;
 }
 

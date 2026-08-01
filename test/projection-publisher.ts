@@ -21,7 +21,8 @@ import {
   type ProjectionManifestV1,
 } from '../src/core/projection/manifest-v1.js';
 import {
-  artifactMatches, ensureArtifact, readExact, readPointer, serializePointer, writeDurable, writePointer,
+  artifactMatches, directorySyncFailureIsFatal, ensureArtifact, readExact, readPointer, serializePointer,
+  writeDurable, writePointer,
   POINTER_FILE_NAME,
 } from '../src/core/projection/artifact-store.js';
 import {
@@ -606,6 +607,34 @@ test('an artifact whose bytes were tampered with stops matching its digest', () 
   const rewritten = ensureArtifact(work, name, built.artifact as Buffer, built.manifestDigest as string);
   assert(rewritten !== null, 'it was rewritten');
   assert(artifactMatches(work, name, (built.artifact as Buffer).length, built.manifestDigest as string), 'and matches again');
+});
+
+test('a directory sync that fails on a platform that supports it is fatal, not a flag', () => {
+  // THE POLICY, TESTED AS A POLICY. The rename is what publishes a generation and the directory sync is what
+  // makes the rename itself survive a power cut; a publisher that could not perform it and still answered
+  // "published" would be claiming a durability it did not obtain. Windows has no way to open a directory for
+  // fsync, so a failure there is a fact about the PLATFORM and is reported rather than raised — Phase 0 §10.1
+  // already says production is Linux. Anywhere else the filesystem was asked to make a rename durable and
+  // said no, and that is an error.
+  assertEq(directorySyncFailureIsFatal('linux'), true, 'a Linux failure is fatal');
+  assertEq(directorySyncFailureIsFatal('darwin'), true, 'so is a macOS one');
+  assertEq(directorySyncFailureIsFatal('freebsd'), true, 'and any other supported platform');
+  assertEq(directorySyncFailureIsFatal('win32'), false, 'Windows cannot do it at all, and says so instead');
+});
+
+test('a durable write to a directory that is not one raises rather than reporting success', () => {
+  // The nearest thing to an injectable fault without a seam: a path that cannot be a manifest directory. On a
+  // platform where the directory sync is fatal this must throw; on Windows it is reported instead, and the
+  // write itself still fails because the target is not writable as a directory either way.
+  const notADirectory = join(work, 'definitely-a-file.txt');
+  writeFileSync(notADirectory, 'not a directory\n');
+  let threw = false;
+  try {
+    writeDurable(notADirectory, 'child.json', Buffer.from('x\n', 'utf8'));
+  } catch {
+    threw = true;
+  }
+  assertEq(threw, true, 'writing into a non-directory fails rather than reporting a durable write');
 });
 
 test('the pointer carries exactly the five fields the daemon decodes, and nothing else', () => {

@@ -20,7 +20,8 @@ import {
   publishGeneration, publishStatus, PublishFaultInjected, type PublishReport,
 } from '../src/core/projection/publish-service.js';
 import {
-  degradeEntry, registerEntry, registerRoot, registerVersion, retireEntry, RegistrationError, withRegistry,
+  degradeEntry, registerEntry, registerRoot, registerVersion, restoreEntry, retireEntry, RegistrationError,
+  withRegistry,
 } from '../src/core/projection/source-registry.js';
 
 // Projection Phase 1 — the publisher against a real, migrated PostgreSQL.
@@ -118,6 +119,32 @@ async function main(): Promise<void> {
     'the app role cannot write the registry directly', /permission denied/i);
     await assertThrows(() => pool.query(`UPDATE public.projection_pointer SET sequence = 99 WHERE id = 1`),
       'the app role cannot move the pointer directly', /permission denied/i);
+  });
+
+  await test('an empty control plane agrees with an empty directory, and not with a pointer file', async () => {
+    // TWO EMPTIES AGREE -- that is a fresh installation. A POINTER FILE with no generation behind it does not:
+    // the daemon does not see "nothing", it sees a file, reads it and refuses it. And the test has to be the
+    // FILE rather than a successful read, because `readPointer` answers null for an absent pointer and for a
+    // malformed one alike; reporting a directory the daemon is actively rejecting as clean is the defect.
+    const emptyDir = freshDir('projection-empty-');
+    const fresh = await publishStatus({ manifestDir: emptyDir });
+    assertEq(fresh.dbSequence, null, 'nothing is published');
+    assertEq(fresh.pointerPresent, false, 'and there is no pointer file');
+    assertEq(fresh.agrees, true, 'so the two agree');
+
+    writeFileSync(path.join(emptyDir, POINTER_FILE_NAME), '{ "generationId": ');
+    const malformed = await publishStatus({ manifestDir: emptyDir });
+    assertEq(malformed.pointerPresent, true, 'a pointer file is there');
+    assertEq(malformed.pointerReadable, false, 'and it does not parse');
+    assertEq(malformed.agrees, false, 'which is a disagreement, not an empty installation');
+
+    writeFileSync(path.join(emptyDir, POINTER_FILE_NAME), JSON.stringify({
+      generationId: `gen_${hex64('stale').slice(0, 32)}`, sequence: 7, artifactName: 'generation-7-x.json',
+      artifactBytes: 10, manifestDigest: `sha256:${hex64('stale')}`,
+    }));
+    const stale = await publishStatus({ manifestDir: emptyDir });
+    assertEq(stale.pointerReadable, true, 'a well-formed but stale pointer');
+    assertEq(stale.agrees, false, 'is still a disagreement');
   });
 
   // -------------------------------------------------------------------------------------------------------
@@ -309,15 +336,88 @@ async function main(): Promise<void> {
   });
 
   await test('an entry cannot be moved: a corrected path is a different entry entirely', async () => {
+    const sources = JSON.stringify([{
+      sourceId: 'src_' + hex64('x').slice(0, 32), kind: 'local', preference: 0, sourceGeneration: 1,
+      rootId: 'media', objectRef: 'local-one.bin',
+    }]);
     await withRegistry(async (db) => {
       // Nothing in the registry can rename an entry. The closest a caller can get is registering the SAME id
       // at another path, which is refused outright.
-      await assertThrows(() => db.query('SELECT cat_projection_entry_register($1, $2, $3, $4)',
-        [deriveProjectedEntryId(LOCAL_PATH), localItem, deriveProjectedVersionId('local-one'), 'Movies/Renamed.bin']),
+      await assertThrows(() => db.query('SELECT cat_projection_entry_register($1, $2, $3, $4, $5)',
+        [deriveProjectedEntryId(LOCAL_PATH), localItem, deriveProjectedVersionId('local-one'),
+          'Movies/Renamed.bin', sources]),
       'a registered entry cannot change its path', /different path/);
     });
     const status = await publishStatus({ manifestDir });
     assertEq(status.dbSequence, 2, 'and nothing was published as a result');
+  });
+
+  await test('a LIVE entry cannot be re-registered against a different catalog record', async () => {
+    // logicalMediaId is immutable for a carried entry (admission check 11). Letting a registration change it
+    // would poison the registry: every subsequent publish would be refused with LOGICAL_MEDIA_ID_CHANGED, by
+    // a row that looks perfectly reasonable. It is refused at the point of the change instead.
+    await withRegistry(async (db) => {
+      await assertThrows(() => registerEntry(db, {
+        itemId: remoteItem, versionKey: 'local-one', path: LOCAL_PATH,
+        sources: [{ kind: 'local', rootId: 'media', objectRef: 'local-one.bin' }],
+      }), 'a live entry keeps its catalog record', /different catalog record/);
+    });
+    const owner = (await pool.query(
+      'SELECT item_id FROM public.projection_entries WHERE projected_entry_id = $1',
+      [deriveProjectedEntryId(LOCAL_PATH)])).rows[0].item_id;
+    assertEq(owner, localItem, 'and the row is unchanged');
+    const after = await publishGeneration({ manifestDir, now: () => new Date('2026-07-02T18:00:00.000Z') });
+    assertEq(after.outcome, 'unchanged', 'so publishing still works');
+  });
+
+  await test('re-registering a live entry does not disturb its lifecycle state', async () => {
+    const entryId = deriveProjectedEntryId(REMOTE_PATH);
+    await withRegistry(async (db) => {
+      await degradeEntry(db, entryId, 'operator-hold', '2026-07-02T00:00:00.000Z');
+      // The SAME registration again. An operator re-running their seeding script has not un-degraded anything.
+      await registerEntry(db, {
+        itemId: remoteItem, versionKey: 'remote-two', path: REMOTE_PATH,
+        sources: [{ kind: 'http-range', rootId: 'vault', objectRef: 'obj-remote-two' }],
+      });
+    });
+    const row = (await pool.query(
+      'SELECT visibility, degraded_reason FROM public.projection_entries WHERE projected_entry_id = $1',
+      [entryId])).rows[0];
+    assertEq(row.visibility, 'degraded', 'still degraded');
+    assertEq(row.degraded_reason, 'operator-hold', 'for the same reason');
+    await withRegistry(async (db) => { await restoreEntry(db, entryId); });
+  });
+
+  await test('an entry and its sources are registered atomically, or not at all', async () => {
+    // The failure mode this closes: the entry row lands, the source set fails, and the caller is told it
+    // failed while a SOURCE-LESS entry stays behind refusing every later publish with
+    // PRODUCER_ENTRY_HAS_NO_SOURCE. An unregistered root is the easiest way to make the second half fail.
+    const orphanPath = 'Movies/Never Registered/Never Registered.bin';
+    await withRegistry(async (db) => {
+      await registerVersion(db, { versionKey: 'orphan', sizeBytes: 4096, mtime: MTIME });
+      await assertThrows(() => registerEntry(db, {
+        itemId: extraItem, versionKey: 'orphan', path: orphanPath,
+        sources: [{ kind: 'local', rootId: 'nosuchroot', objectRef: 'orphan.bin' }],
+      }), 'an unregistered root fails the registration', /./);
+    });
+    const rows = Number((await pool.query(
+      'SELECT count(*) AS c FROM public.projection_entries WHERE path = $1', [orphanPath])).rows[0].c);
+    assertEq(rows, 0, 'no source-less entry was left behind');
+    const after = await publishGeneration({ manifestDir, now: () => new Date('2026-07-02T19:00:00.000Z') });
+    assertEq(after.outcome, 'unchanged', 'and publishing is not poisoned');
+  });
+
+  await test('un-retiring an entry that does not exist fails closed, like degrade and retire', async () => {
+    await withRegistry(async (db) => {
+      const ghost = deriveProjectedEntryId('Movies/Ghost/Ghost.bin');
+      // A silent success here reads as "the mistaken retirement is undone" when nothing was undone, and the
+      // entry goes on marching toward a deletion generation.
+      await assertThrows(() => restoreEntry(db, ghost), 'set-available on an unknown id', /no such projected entry/);
+      await assertThrows(() => degradeEntry(db, ghost, 'operator-hold', MTIME), 'degrade', /no such projected entry/);
+      await assertThrows(() => retireEntry(db, ghost, {
+        intentKey: 'ghost', declaredAt: MTIME, graceDeadline: '2026-09-01T00:00:00.000Z',
+      }), 'retire', /no such projected entry/);
+    });
   });
 
   // -------------------------------------------------------------------------------------------------------
@@ -403,6 +503,27 @@ async function main(): Promise<void> {
     const rewritten = readFileSync(path.join(manifestDir, current.artifact_name as string));
     assert(Buffer.compare(rewritten, current.artifact as Buffer) === 0, 'with the committed bytes');
     assertEq(manifestDigestOfBytes(rewritten), current.manifest_digest, 'digesting to what was recorded');
+  });
+
+  await test('a pointer with the right generation but a stale artifact claim is a disagreement', async () => {
+    // The daemon checks the artifact NAME, its exact BYTE LENGTH and its DIGEST before it parses anything.
+    // A status surface that compared only the generation id and the sequence would call a pointer healthy
+    // that projectiond refuses -- a status check that disagrees with the thing it reports on.
+    const good = readFileSync(path.join(manifestDir, POINTER_FILE_NAME), 'utf8');
+    const pointer = JSON.parse(good) as Record<string, unknown>;
+    for (const [field, value] of [
+      ['artifactBytes', (pointer.artifactBytes as number) + 1],
+      ['manifestDigest', `sha256:${'0'.repeat(64)}`],
+      ['artifactName', 'generation-9-ffffffffffffffffffffffffffffffff.json'],
+    ] as Array<[string, unknown]>) {
+      writeFileSync(path.join(manifestDir, POINTER_FILE_NAME),
+        JSON.stringify({ ...pointer, [field]: value }, null, 2));
+      const status = await publishStatus({ manifestDir });
+      assertEq(status.pointerSequence, pointer.sequence, `the ${field} case still names the right sequence`);
+      assertEq(status.agrees, false, `a stale ${field} is a disagreement`);
+    }
+    writeFileSync(path.join(manifestDir, POINTER_FILE_NAME), good);
+    assertEq((await publishStatus({ manifestDir })).agrees, true, 'and the good pointer agrees again');
   });
 
   await test('a healthy directory needs no repair, and says so', async () => {
@@ -498,17 +619,44 @@ async function main(): Promise<void> {
     assertEq(Number(tombstone.deleted_in_sequence), deleted.sequence, 'and the row is tombstoned, not removed');
   });
 
-  await test('re-registering the deleted path brings it back as an addition, honestly', async () => {
+  await test('re-registering the deleted path brings it back as an addition, and brings it back CLEAN', async () => {
     await withRegistry(async (db) => {
       await registerEntry(db, {
         itemId: extraItem, versionKey: 'local-three', path: EXTRA_PATH,
         sources: [{ kind: 'local', rootId: 'media', objectRef: 'local-three.bin' }],
       });
     });
+
+    // THE LIFECYCLE EVIDENCE IT DIED WITH MUST BE GONE. Clearing only the tombstone would resurrect the path
+    // still `retiring`, against a deletion intent nobody re-declared and a grace deadline that elapsed long
+    // ago -- which is to say, immediately deletable again by a generation that would look well formed.
+    const revived = (await pool.query(
+      `SELECT visibility, degraded_reason, degraded_since, deletion_intent_id, retiring_declared_at,
+              grace_deadline, deleted_in_sequence
+         FROM public.projection_entries WHERE projected_entry_id = $1`,
+      [deriveProjectedEntryId(EXTRA_PATH)])).rows[0];
+    assertEq(revived.visibility, 'available', 'a re-added entry is available');
+    assertEq(revived.deleted_in_sequence, null, 'the tombstone is cleared');
+    for (const column of ['degraded_reason', 'degraded_since', 'deletion_intent_id', 'retiring_declared_at',
+      'grace_deadline']) {
+      assertEq(revived[column], null, `${column} carries nothing from the entry that was deleted`);
+    }
+
     const report = await publishGeneration({ manifestDir, now: () => new Date('2026-08-03T00:00:00.000Z') });
     assertEq(report.outcome, 'published', 'published');
     assertEq(report.additions, 1, 'as an addition a media server is told about');
     assertEq(report.deletions, 0, 'and nothing else');
+    const manifest = JSON.parse(readFileSync(path.join(manifestDir, report.artifactName as string), 'utf8')) as ProjectionManifestV1;
+    assertEq(manifest.entries.find((entry) => entry.path === EXTRA_PATH)?.visibility, 'available',
+      'and it is available in the published generation, not retiring');
+
+    // ...so it is NOT immediately deletable: the re-added entry was never retired.
+    const refused = await publishGeneration({
+      manifestDir, intent: 'deletion', deletions: [deriveProjectedEntryId(EXTRA_PATH)],
+      now: () => new Date('2026-08-04T00:00:00.000Z'),
+    });
+    assertEq(refused.outcome, 'refused', 'a re-added entry cannot be deleted without a new retirement');
+    assert(refused.problems.some((p) => p.code === 'PRODUCER_DELETION_ENTRY_NOT_RETIRING'), 'and named');
   });
 
   await test('every published generation in the ledger is admissible, and the chain is unbroken', async () => {

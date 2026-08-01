@@ -3,7 +3,7 @@ import { Client } from 'pg';
 import { loadDbConfig } from '../../config/env.js';
 import { MIGRATION_VERSION } from '../../db/schema-version.js';
 import {
-  artifactMatches, ensureArtifact, readPointer, writePointer, type PointerDocument,
+  artifactMatches, ensureArtifact, pointerFilePresent, readPointer, writePointer, type PointerDocument,
 } from './artifact-store.js';
 import { validateManifestV1, type ManifestProblem, type ProjectionManifestV1 } from './manifest-v1.js';
 import {
@@ -160,6 +160,24 @@ function pointerFor(row: GenerationRow): PointerDocument {
   };
 }
 
+/**
+ * Does the published pointer say EXACTLY what the database says?
+ *
+ * ALL FIVE FIELDS, and there is one of these functions rather than two. An earlier version compared the
+ * generation id and the sequence here and all five in the recovery path, which meant `--status` could report
+ * a directory healthy while `projectiond` refused its pointer — a pointer carrying the right generation id
+ * with a stale artifact name, byte length or digest is one the daemon rejects and this surface called fine.
+ * A status check that disagrees with the thing it reports on is worse than no status check.
+ */
+function pointerAgrees(published: PointerDocument | null, wanted: PointerDocument): boolean {
+  return published !== null
+    && published.generationId === wanted.generationId
+    && published.sequence === wanted.sequence
+    && published.artifactName === wanted.artifactName
+    && published.artifactBytes === wanted.artifactBytes
+    && published.manifestDigest === wanted.manifestDigest;
+}
+
 const emptyReport = (outcome: PublishOutcome, extra: Partial<PublishReport> = {}): PublishReport => ({
   outcome, sequence: null, generationId: null, artifactName: null, artifactBytes: null,
   manifestDigest: null, contentDigest: null, snapshotDigest: null, entryCount: null,
@@ -272,13 +290,7 @@ function recoverDirectory(manifestDir: string, current: GenerationRow): {
 
   const published = readPointer(manifestDir);
   const wanted = pointerFor(current);
-  const agrees = published !== null
-    && published.generationId === wanted.generationId
-    && published.sequence === wanted.sequence
-    && published.artifactName === wanted.artifactName
-    && published.artifactBytes === wanted.artifactBytes
-    && published.manifestDigest === wanted.manifestDigest;
-  if (!agrees) {
+  if (!pointerAgrees(published, wanted)) {
     const write = writePointer(manifestDir, wanted);
     repaired.push('pointer');
     directorySynced = directorySynced && write.directorySynced;
@@ -473,6 +485,10 @@ export async function publishStatus(options: { manifestDir: string; connectionSt
   readonly dbGenerationId: string | null;
   readonly pointerSequence: number | null;
   readonly pointerGenerationId: string | null;
+  /** A pointer FILE exists, whatever it contains. Distinct from having read one. */
+  readonly pointerPresent: boolean;
+  /** The pointer file exists and parses into the five fields the daemon decodes. */
+  readonly pointerReadable: boolean;
   readonly artifactPresent: boolean;
   readonly preparedSequences: readonly number[];
   readonly agrees: boolean;
@@ -488,15 +504,26 @@ export async function publishStatus(options: { manifestDir: string; connectionSt
     const pointer = readPointer(options.manifestDir);
     const artifactPresent = current !== null
       && artifactMatches(options.manifestDir, current.artifact_name, current.artifact_bytes, current.manifest_digest);
+    // TWO EMPTIES AGREE. Nothing published and nothing in the directory is a coherent state — it is what a
+    // fresh installation looks like. A POINTER FILE with no current generation behind it is not, and the test
+    // is the FILE rather than a successful read: `readPointer` answers null for an absent pointer and for a
+    // malformed one alike, and the daemon does not see null in the second case — it sees a file, reads it and
+    // refuses it. Calling that state empty would report a directory the daemon is actively rejecting as a
+    // clean installation.
+    const pointerPresent = pointerFilePresent(options.manifestDir);
+    const agrees = current === null
+      ? !pointerPresent
+      : artifactPresent && pointerAgrees(pointer, pointerFor(current));
     return {
       dbSequence: current?.sequence ?? null,
       dbGenerationId: current?.generation_id ?? null,
       pointerSequence: pointer?.sequence ?? null,
       pointerGenerationId: pointer?.generationId ?? null,
+      pointerPresent,
+      pointerReadable: pointer !== null,
       artifactPresent,
       preparedSequences: prepared,
-      agrees: current !== null && pointer !== null && artifactPresent
-        && pointer.generationId === current.generation_id && pointer.sequence === current.sequence,
+      agrees,
     };
   } finally {
     await client.end().catch(() => undefined);

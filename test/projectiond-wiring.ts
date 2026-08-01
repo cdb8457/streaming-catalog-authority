@@ -293,6 +293,31 @@ test('the publisher-to-mount gate uses the ALREADY-MERGED production image and a
   }
 });
 
+test('the gate probes the range endpoint the way the daemon reads it, and judges it by the status line', () => {
+  // A REGRESSION TEST FOR A GATE THAT COULD NEVER PASS. The first three runs of the publisher-to-mount gate
+  // failed at "the range endpoint never answered" while the endpoint was healthy every time, for two
+  // independent reasons: the endpoint answers 416 to a request with no Range header, on purpose, and busybox
+  // wget exits NON-ZERO on a 206 because it treats anything but 200 as an error. A probe that drifts back to
+  // a bare `wget -q` would silently reintroduce a gate that can only fail.
+  const gate = read('deploy/projection-publisher-mount-gate.sh');
+  const probe = gate.slice(gate.indexOf('waiting for the endpoint to answer'), gate.indexOf('REMOTE_SHA='));
+  assert(probe.length > 0, 'the probe block is findable');
+  assert(/Range: bytes=/.test(probe), 'the probe sends a Range header, which is the only thing the endpoint serves');
+  assert(/206 Partial Content/.test(probe), 'and asserts the status line rather than trusting an exit code');
+});
+
+test('the gate reports where durability was obtained and where it was not', () => {
+  const gate = read('deploy/projection-publisher-mount-gate.sh');
+  assert(gate.includes('directorySynced'), 'the gate reads the publisher\'s own durability report');
+  assert(gate.includes('UNPROVEN here'), 'and says so plainly when a host cannot fsync a directory');
+  // The flag has to come from an ATTEMPT. A constant `true` would be a durability claim nobody made.
+  const store = read('src/core/projection/artifact-store.ts');
+  assert(store.includes('directorySynced: syncDirectory(dir)'),
+    'the durable write reports the result of actually syncing the directory');
+  assert(/function syncDirectory[\s\S]*?fsyncSync\(fd\)/.test(store),
+    'and syncDirectory really fsyncs a directory descriptor');
+});
+
 test('the publisher documentation states what is still unproved, in the same breath as what works', () => {
   const doc = read('docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md');
   for (const limit of ['Plex', 'Jellyfin', 'Emby', 'Unraid']) {

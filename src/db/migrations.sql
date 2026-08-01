@@ -1617,12 +1617,28 @@ BEGIN
 END;
 $$;
 
--- Register (or re-assert) a projected entry at a path. The path is part of the entry's derived id, so this can
--- never move a carried entry: a corrected path arrives as a different id, which is exactly the retire/delete/
--- add model the contract requires. Re-asserting an entry whose version changed is refused for the same reason
--- version re-registration is.
+-- Register (or re-assert) a projected entry at a path, WITH its whole source set, in one statement.
+--
+-- THE ENTRY AND ITS SOURCES ARE ONE OPERATION, and they have to be. A caller that registered the row and then
+-- failed to attach its sources -- an unregistered root, a malformed payload, a duplicate preference -- would
+-- leave a SOURCE-LESS entry behind while reporting failure, and every subsequent publish would then be
+-- refused with PRODUCER_ENTRY_HAS_NO_SOURCE by a row nobody believes they created. A single SECURITY DEFINER
+-- call is atomic whether or not the caller owns a transaction, which is why the composition lives here rather
+-- than in the TypeScript.
+--
+-- THE PATH CANNOT MOVE. It is part of the entry's derived id, so a corrected path arrives as a different id --
+-- exactly the retire/delete/add model the contract requires -- and an attempt to re-register this id at
+-- another path is refused rather than applied.
+--
+-- NEITHER CAN THE CATALOG RECORD, WHILE THE ENTRY IS LIVE. `item_id` is the manifest's `logicalMediaId`, and
+-- admission check 11 makes it immutable for a carried entry: silently updating it here would produce a
+-- generation refused with LOGICAL_MEDIA_ID_CHANGED, and every publish afterwards would fail the same way
+-- against a registry that looks perfectly reasonable. It is refused at the point of the change instead. A
+-- TOMBSTONED entry may be re-registered against a different record, because that is a genuine re-addition of
+-- the path and the next generation reports it as one.
+DROP FUNCTION IF EXISTS public.cat_projection_entry_register(TEXT, TEXT, TEXT, TEXT);
 CREATE OR REPLACE FUNCTION cat_projection_entry_register(
-  p_entry_id TEXT, p_item_id TEXT, p_version_id TEXT, p_path TEXT)
+  p_entry_id TEXT, p_item_id TEXT, p_version_id TEXT, p_path TEXT, p_sources JSONB)
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 DECLARE existing public.projection_entries%ROWTYPE;
 BEGIN
@@ -1631,19 +1647,36 @@ BEGIN
     IF existing.path <> p_path THEN
       RAISE EXCEPTION 'projected entry % is registered at a different path', p_entry_id;
     END IF;
-    IF existing.projected_version_id <> p_version_id AND existing.deleted_in_sequence IS NULL THEN
-      RAISE EXCEPTION 'projected entry % is already registered against a different projected version', p_entry_id;
+    IF existing.deleted_in_sequence IS NULL THEN
+      -- A LIVE ENTRY. Its identity is immutable, and re-asserting it must not disturb its lifecycle state:
+      -- an operator re-running a registration script has not un-degraded or un-retired anything, and a
+      -- registration that silently did would be a retirement quietly cancelled.
+      IF existing.projected_version_id <> p_version_id THEN
+        RAISE EXCEPTION 'projected entry % is already registered against a different projected version', p_entry_id;
+      END IF;
+      IF existing.item_id <> p_item_id THEN
+        RAISE EXCEPTION 'projected entry % is already registered against a different catalog record', p_entry_id;
+      END IF;
+      UPDATE public.projection_entries SET updated_at = now() WHERE projected_entry_id = p_entry_id;
+    ELSE
+      -- A TOMBSTONED ROW COMES BACK AS A NEW ENTRY, SO IT COMES BACK CLEAN. Clearing only the tombstone would
+      -- resurrect the path still wearing the lifecycle state it died in: a path that was retired and then
+      -- deleted would reappear `retiring`, against a deletion intent nobody re-declared and a grace deadline
+      -- that elapsed long ago -- which is to say, immediately deletable again by a generation that would look
+      -- perfectly well formed. The re-add is an addition, and an addition is `available`.
+      UPDATE public.projection_entries
+         SET item_id = p_item_id, projected_version_id = p_version_id,
+             deleted_in_sequence = NULL, visibility = 'available',
+             degraded_reason = NULL, degraded_since = NULL,
+             deletion_intent_id = NULL, retiring_declared_at = NULL, grace_deadline = NULL,
+             updated_at = now()
+       WHERE projected_entry_id = p_entry_id;
     END IF;
-    -- Re-registering a TOMBSTONED entry is a genuine re-addition of that path: it comes back as an addition
-    -- in the next generation, which is a thing a media server is told about.
-    UPDATE public.projection_entries
-       SET item_id = p_item_id, projected_version_id = p_version_id,
-           deleted_in_sequence = NULL, updated_at = now()
-     WHERE projected_entry_id = p_entry_id;
-    RETURN;
+  ELSE
+    INSERT INTO public.projection_entries (projected_entry_id, item_id, projected_version_id, path)
+    VALUES (p_entry_id, p_item_id, p_version_id, p_path);
   END IF;
-  INSERT INTO public.projection_entries (projected_entry_id, item_id, projected_version_id, path)
-  VALUES (p_entry_id, p_item_id, p_version_id, p_path);
+  PERFORM public.cat_projection_entry_set_sources(p_entry_id, p_sources);
 END;
 $$;
 
@@ -1670,6 +1703,9 @@ $$;
 
 -- The visibility lifecycle. Three commands, one per state, each of which writes the evidence its state needs.
 -- There is no command that removes an entry: removal is a published deletion generation and nothing else.
+-- IT FAILS CLOSED ON AN UNKNOWN ID, exactly as degrade and retire do. An operator un-retiring an entry they
+-- named slightly wrong must hear about it: a silent success here reads as "the mistaken retirement is
+-- undone" when nothing was undone at all, and the entry goes on marching toward a deletion generation.
 CREATE OR REPLACE FUNCTION cat_projection_entry_set_available(p_entry_id TEXT)
 RETURNS VOID LANGUAGE plpgsql SECURITY DEFINER SET search_path = pg_catalog, public, pg_temp AS $$
 BEGIN
@@ -1677,6 +1713,7 @@ BEGIN
      SET visibility = 'available', degraded_reason = NULL, degraded_since = NULL,
          deletion_intent_id = NULL, retiring_declared_at = NULL, grace_deadline = NULL, updated_at = now()
    WHERE projected_entry_id = p_entry_id;
+  IF NOT FOUND THEN RAISE EXCEPTION 'no such projected entry'; END IF;
 END;
 $$;
 
@@ -1883,7 +1920,7 @@ REVOKE ALL ON FUNCTION
   cat_collection_touch(BIGINT),
   cat_projection_root_register(TEXT, TEXT),
   cat_projection_version_register(TEXT, TEXT, BIGINT, TEXT, BIGINT, JSONB),
-  cat_projection_entry_register(TEXT, TEXT, TEXT, TEXT),
+  cat_projection_entry_register(TEXT, TEXT, TEXT, TEXT, JSONB),
   cat_projection_entry_set_sources(TEXT, JSONB),
   cat_projection_entry_set_available(TEXT),
   cat_projection_entry_degrade(TEXT, TEXT, TEXT),
@@ -1951,7 +1988,7 @@ GRANT EXECUTE ON FUNCTION
   cat_collection_touch(BIGINT),
   cat_projection_root_register(TEXT, TEXT),
   cat_projection_version_register(TEXT, TEXT, BIGINT, TEXT, BIGINT, JSONB),
-  cat_projection_entry_register(TEXT, TEXT, TEXT, TEXT),
+  cat_projection_entry_register(TEXT, TEXT, TEXT, TEXT, JSONB),
   cat_projection_entry_set_sources(TEXT, JSONB),
   cat_projection_entry_set_available(TEXT),
   cat_projection_entry_degrade(TEXT, TEXT, TEXT),
