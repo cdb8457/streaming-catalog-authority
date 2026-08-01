@@ -1,0 +1,9 @@
+# The FUSE smoke image: the pinned Go toolchain, and nothing else.
+#
+# IT INSTALLS NOTHING. An earlier version apt-got fuse3 for the fusermount suid helper, which was both
+# unpinned — so "reproducible" was not true of it — and unnecessary: the daemon mounts by syscall
+# (DirectMount), and the smoke asserts that strictly. If a future change makes the helper necessary again,
+# that is a regression in the mount path rather than a missing package.
+FROM golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
+
+WORKDIR /workspace/projectiond

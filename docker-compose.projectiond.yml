@@ -1,0 +1,73 @@
+# Projection Phase 1 — the Go toolchain, pinned, for a host that has no Go.
+#
+# WHY THIS EXISTS. Development happens on Windows, where there is no Go and no FUSE. Every Go gate therefore
+# runs inside this pinned image, so "it built on my machine" means the same thing on every machine. A Linux
+# host with Go installed can run the same commands natively; nothing here is required for that.
+#
+# THE MODULE CACHE IS A NAMED VOLUME, so the first run downloads dependencies once and every later run is
+# offline. `go.sum` is committed, so what gets downloaded is pinned by digest rather than by version range.
+#
+# THE IMAGE IS PINNED BY DIGEST, not by tag. `golang:1.26.5-bookworm` is mutable — it is rebuilt whenever its
+# base is patched — so a tag alone means "whatever that name pointed at when you happened to pull". The tag is
+# kept beside the digest for readability; the digest is what actually selects the image.
+
+services:
+  go-gate:
+    image: golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
+    working_dir: /workspace/projectiond
+    volumes:
+      - ./:/workspace
+      - projectiond-gomod:/go/pkg/mod
+      - projectiond-gocache:/root/.cache/go-build
+    environment:
+      GOFLAGS: -buildvcs=false
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+    command: ["go", "test", "./..."]
+
+  # The race detector needs cgo. Release builds stay CGO-disabled so the shipped binary is static; this one
+  # service turns cgo on for the sole purpose of running `go test -race`, which is otherwise impossible on
+  # linux/amd64 and would silently be a gate that never ran.
+  go-race:
+    image: golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
+    working_dir: /workspace/projectiond
+    volumes:
+      - ./:/workspace
+      - projectiond-gomod:/go/pkg/mod
+      - projectiond-gocache:/root/.cache/go-build
+    environment:
+      GOFLAGS: -buildvcs=false
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "1"
+    command: ["go", "test", "-race", "-count", "1", "./..."]
+
+  # The FUSE smoke run. It needs /dev/fuse and CAP_SYS_ADMIN, which is exactly why it is a separate service
+  # with a separate opt-in rather than something the ordinary gates inherit. It mounts by syscall and asserts
+  # so strictly, which is why the image needs no fusermount helper.
+  fuse-smoke:
+    build:
+      context: ./projectiond
+      dockerfile: build/Dockerfile.smoke
+    image: projectiond-fuse-smoke:1.26.5
+    working_dir: /workspace/projectiond
+    privileged: true
+    devices:
+      - /dev/fuse:/dev/fuse
+    cap_add:
+      - SYS_ADMIN
+    security_opt:
+      - apparmor:unconfined
+    volumes:
+      - ./:/workspace
+      - projectiond-gomod:/go/pkg/mod
+      - projectiond-gocache:/root/.cache/go-build
+    environment:
+      GOFLAGS: -buildvcs=false
+      GOTOOLCHAIN: local
+      CGO_ENABLED: "0"
+      PROJECTIOND_FUSE_SMOKE: "1"
+    command: ["go", "test", "-tags", "fusesmoke", "-count", "1", "-timeout", "150s", "-run", "FUSE", "-v", "./internal/fusefs/..."]
+
+volumes:
+  projectiond-gomod:
+  projectiond-gocache:

@@ -1,0 +1,23 @@
+# The projection manifest fixtures are DIGEST-BEARING CONTENT, not text.
+#
+# Generation 2 names generation 1 by a sha256 over generation 1's exact bytes, and generation 3 names
+# generation 2 the same way. That chain is the thing the succession rules are built on, so a checkout that
+# rewrote LF to CRLF would change the bytes, change the digest, and break the chain — on Windows only, with a
+# failure that reads like a contract defect rather than like a line-ending conversion.
+#
+# This is deliberately the NARROWEST possible rule. It covers one fixture directory whose files are content
+# addressed by their own bytes. It is not a repository-wide line-ending policy: every other file in this
+# repository is still handled exactly as it was, and the CRLF-tolerance the rest of the suites were written
+# for is unchanged. `test/projection-manifest-v1.ts` asserts these files really did arrive without CR, so a
+# future change that defeats this rule fails by name instead of by digest.
+test/fixtures/projection-manifest-v1/** -text
+
+# Go sources are LF, on every platform.
+#
+# gofmt treats CRLF as a formatting difference, so on a Windows checkout with core.autocrlf=true every Go file
+# would arrive with CRLF and `gofmt -l` — run inside the Linux gate container against the bind-mounted working
+# copy — would list all of them. That is a gate failing for a reason that has nothing to do with the code.
+*.go text eol=lf
+projectiond/go.mod text eol=lf
+projectiond/go.sum text eol=lf
+projectiond/internal/contract/contract.generated.json text eol=lf

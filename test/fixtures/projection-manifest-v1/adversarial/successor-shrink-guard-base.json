@@ -1,0 +1,3866 @@
+{
+  "format": "catalog-authority.projection-manifest",
+  "version": 1,
+  "generation": {
+    "generationId": "gen_4c92ba5e5f909591a4c5209f88faeb9e",
+    "sequence": 1,
+    "createdAt": "2026-07-01T00:00:00.000Z",
+    "predecessor": null,
+    "provenance": {
+      "producer": "catalog-authority",
+      "producerVersion": "1.2.6",
+      "controlPlaneSchemaVersion": 9,
+      "sourceSnapshotDigest": "sha256:e60daedda5962963b66ede3d208b14f416308d8aa96e77272255cd0497ebaeff",
+      "probeWindowBytes": 1048576
+    },
+    "admission": {
+      "intent": "routine",
+      "entryCount": 120,
+      "deletions": [],
+      "deletionGuardAcknowledged": false,
+      "deletionGuardDigest": null
+    }
+  },
+  "entries": [
+    {
+      "projectedEntryId": "pe_6eb0965070cc10a24515d07b0988db15aaf106984b498aa6360c4710606d0a67",
+      "logicalMediaId": "daae2bfb-21a3-45f3-83b1-4dcbc5157404",
+      "projectedVersionId": "pv_f647a64539c85f921a01e1127e10a5daf9721cfa6d9e0e6fee60ae167141589f",
+      "path": "Movies/Wide 000/Wide 000.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3046530883894995035",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_f420fc32d954e9e6f4fc7cfe6e6e8a0a",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-0/wide-0.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_df77d08bbe5aa9eb04c10cff6902283b679e8aba9da6146a00387b808d9fdfb6",
+      "logicalMediaId": "d97c49ad-fdc7-434c-839b-053c303fe0f1",
+      "projectedVersionId": "pv_7da7eb32dbba561764fa8445be8ee0ff016a05b04b0adabdc50a22aa513d9c37",
+      "path": "Movies/Wide 001/Wide 001.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5493840570979425965",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_d3b19fdcca641ea1d165a91e5644de1b",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-1/wide-1.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_cee0037864b5ee489774aae74a2e8af441d4f2546d688836f995974977146243",
+      "logicalMediaId": "42ae1d96-62fe-4c32-8a79-7b4333f7975b",
+      "projectedVersionId": "pv_bc0ab8d7bc99938fa079fbdaf1cabb7426620a3dfe953b57ebef809773d5b2a8",
+      "path": "Movies/Wide 002/Wide 002.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "9165923614181939845",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_3e3cde7cccfc090071367948754b6fae",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-2/wide-2.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_8ff43261693d8bf035e51bb2f3a8e51da6184875985c0c6413237baf8fe5e9de",
+      "logicalMediaId": "70b827c0-588b-42ce-8ae5-9691beda93d8",
+      "projectedVersionId": "pv_ba89c36f6961c2b71572f2e6f3743d2f6fcc6ee04ca7e922f1814edfbbd792f2",
+      "path": "Movies/Wide 003/Wide 003.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7063770372053435496",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_9e527604559c343897e46fbd90214497",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-3/wide-3.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_fe4c317cfe15dd66244350cd3df8604d10b2a22b299fda5ead588a68ce0d84eb",
+      "logicalMediaId": "2aec34a8-109d-4d55-8a2a-4fddb17f025a",
+      "projectedVersionId": "pv_78e21c2bbd4e8129ab5a03a5a491ab69cddbbd43b34943ebdeb9a771a980c84d",
+      "path": "Movies/Wide 004/Wide 004.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6263655142496688931",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_51c3ad46a88bf0b7651af92f9614a0e2",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-4/wide-4.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_d4f33fd704091416edc295d13c841ae85adc9ccfa9fd20a997db18fee13c2307",
+      "logicalMediaId": "8613816d-507b-4312-8c61-bb5076591a9a",
+      "projectedVersionId": "pv_87a038efd5f04796328d97250771fcbfa367b57c3b1fb26e26bff377a291fed8",
+      "path": "Movies/Wide 005/Wide 005.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8162827802983613527",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_bedef252e2cd89ea1b047aa8a80cc0d8",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-5/wide-5.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_ef00fdd5a2c4495451630c1bb02d6b30202f1a1802620ee53c5e5575f7d1bf71",
+      "logicalMediaId": "6e448e43-11a9-4945-8f56-08d4e95e5b93",
+      "projectedVersionId": "pv_ab79cd31871cdef17f237488b85d326cf09c88316e655cd91e4ae3ae6a1cb587",
+      "path": "Movies/Wide 006/Wide 006.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2917484056010042581",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_c89676d5425e80f8f1451649a5c9239d",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-6/wide-6.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_ac2d6271aaa3386160dbff888ea3d3d04f2d1146df6d39f3806254dc4b3fbf81",
+      "logicalMediaId": "39ae523f-4b15-4e93-87e1-d1cf02920a68",
+      "projectedVersionId": "pv_74578de33ca2dd74447269d0215f1a2980dad0c3cded0e67da08ba31e4b2621a",
+      "path": "Movies/Wide 007/Wide 007.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3475884799125020136",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_f174d309dd17d1f807c56833112b2156",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-7/wide-7.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_dd37d749dc05aa451f22db83da233c47c546a0e475b927d21f0929305fc719e5",
+      "logicalMediaId": "3612576a-7f21-488f-85c6-23e2cfdad3de",
+      "projectedVersionId": "pv_7e9846587647a173ab8889e07ebfa78338dd4dbe952aa193a42ff5c61f153bac",
+      "path": "Movies/Wide 008/Wide 008.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "605613141459776490",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2dc3bdac3c7df3e28182226b36148fb9",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-8/wide-8.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b4fbd69147558052321664f5768d36b86654b28413f061f1572123341ed6a237",
+      "logicalMediaId": "12921326-9fc7-41c8-820b-a14ec90b5a1b",
+      "projectedVersionId": "pv_6a1bbe27dbc0d438c080ca73debbfb8238f10cfe09e3fb830a4338c27788c126",
+      "path": "Movies/Wide 009/Wide 009.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "251769052984523256",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_0221c808006813e5118385e376752d93",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-9/wide-9.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_5867174abddadf9bd1d65bdab33f5f48269840dbdc39938e05bc63221fde6192",
+      "logicalMediaId": "a949c921-350f-41a8-80f2-e553da2895e2",
+      "projectedVersionId": "pv_1c5303890bf9320c49feb1edad3576a44b743769a48b14368d00c26062b52b34",
+      "path": "Movies/Wide 010/Wide 010.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7653162481514324912",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_7832121be068b20f12a56dcfe6e2ca89",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-10/wide-10.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b627e5da3618ecac28354780313a5228be7c32ef06ee25be5ac71657ecfc6377",
+      "logicalMediaId": "1ba809c1-048b-4de0-8293-5131320bb73b",
+      "projectedVersionId": "pv_20b7ccbf10d32c3075a4124716bf101c7257624dd7074187fbf1cd6f5d30bf12",
+      "path": "Movies/Wide 011/Wide 011.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2741321982394637388",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_d54bff05fcd7c89d6995d1240ded5df8",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-11/wide-11.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_08df75d0400e30356170b4feaefd7cbdcc3086288bc785d0eb4ad00dbe23aeb1",
+      "logicalMediaId": "fbeda843-86bd-46cf-83b9-f6f00f35cee7",
+      "projectedVersionId": "pv_1f32b10cbcc765a05961f5c328c46c65d36a541b58f55865524d4a4e9df9f80e",
+      "path": "Movies/Wide 012/Wide 012.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4298756795755180700",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_acdc1584da818921e2a5704b2c771614",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-12/wide-12.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_962353f26ef7ccf9a9d56fce31976a061dc9a2aad39c5c086eefb4f63963d71b",
+      "logicalMediaId": "be15622a-f42b-417a-8d7c-2aa29cfd0889",
+      "projectedVersionId": "pv_1780af041f089edbf440ac86f6b582a7adeacf1fdbe3d8e8008fa0e113e2af25",
+      "path": "Movies/Wide 013/Wide 013.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8746838272396310648",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_a2bb7be240e6cd367551922974df2f7d",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-13/wide-13.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_5f380470509a112cc5c944e250d7ee47f7be658c5f884b081d8484c5d834e6ef",
+      "logicalMediaId": "5db36f02-3d96-4be7-8a92-9c042dd0e667",
+      "projectedVersionId": "pv_3fa6a59bf00bb76d2db33046df54572a5c933cd5705f1713f2346c98009787cc",
+      "path": "Movies/Wide 014/Wide 014.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1207009287392952910",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_e6cd7bc18fe76ad4f834e53b6cc93c7d",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-14/wide-14.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b2ae188444b63da91fd6ff2a9ace85b7d9c8bd7ef601c69511915f27830f7fbc",
+      "logicalMediaId": "b31b9100-5805-4906-8603-545024c97ea0",
+      "projectedVersionId": "pv_4137a4d7dd958335eb6270df250f431e01a80ed271860aee58021153eb6a1d40",
+      "path": "Movies/Wide 015/Wide 015.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3394969745485755410",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_deb23a70b0ccfeb8ded55e27f81a31a3",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-15/wide-15.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_015465c00e53082121ee6aed9911b9a1c10c0fd5f57ea4ef64aee2a1c355b46b",
+      "logicalMediaId": "6ab38e43-49b4-42bc-8693-8c31b5c4aec4",
+      "projectedVersionId": "pv_48ac1f28cd1aa9b0590fbef10400380c47246862460c2bc7db7cd8b598d60b23",
+      "path": "Movies/Wide 016/Wide 016.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3639255816181504444",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_9250ba123e7900e79c08163f53b0530a",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-16/wide-16.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b7fdbb884580af1bc580210fb460cd563e54fb675025397af22284fcd42e58bc",
+      "logicalMediaId": "090f359c-60f1-4186-8357-463a61bcc7fa",
+      "projectedVersionId": "pv_c0903ab14394e2ea6f9d2e2448b682a138fe68e4b488695cfacb36ef050b4aa3",
+      "path": "Movies/Wide 017/Wide 017.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2691432061354442694",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_ee73398bdcb89c47fb230b184c45d40a",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-17/wide-17.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_3214d65213bf7525b3a9ee9b977ade84936648d0b35732da1fea9c0279502d73",
+      "logicalMediaId": "78ba4aad-f5c6-4db7-8e6f-0b627e196b24",
+      "projectedVersionId": "pv_deced3fbcfa405cbf1ad9564a9693b59e83151c5b0de70641fdd9a401b8ad8db",
+      "path": "Movies/Wide 018/Wide 018.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8782765904473346188",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_62ede5fbde69f7a994ebc19568643143",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-18/wide-18.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_8693390a296f0717e92ddae5a185a935db99e431defd043bc55d1639e9b5b5b5",
+      "logicalMediaId": "defd5a7b-46f6-4984-8e62-9b938349758d",
+      "projectedVersionId": "pv_9fc6f442763036e3cdfe15c42debb05d55d3f6403bc279fe870b1f07c955d224",
+      "path": "Movies/Wide 019/Wide 019.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2878694610417525459",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_ee3af1c6286be68c84bb321e251bff6e",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-19/wide-19.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_64e8036fec5d1c30c9b5841640481a5ea110cf806b05af1350901db1c1a1c74f",
+      "logicalMediaId": "4202fdbf-a1a8-489c-828b-fd973bba0010",
+      "projectedVersionId": "pv_bd20405275528ced68be6e4dd5013a36d828761c07ea268df2798fcff7ae593e",
+      "path": "Movies/Wide 020/Wide 020.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8323587628531026604",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_30a4e00a5687e13441789c692561ebc3",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-20/wide-20.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_dd1e1d2ffa152a75ab12bdb3bbe49dd085665a718863180a10d29f4430281651",
+      "logicalMediaId": "5b1c70cb-3526-43e2-8b97-0b1aa042d461",
+      "projectedVersionId": "pv_b5ded385ce84f74b72059deb25050a9c888bf9228db809b3c927d47ff717c915",
+      "path": "Movies/Wide 021/Wide 021.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4821957966899248981",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_fa19a2108c567fbf564e8b39e85da13c",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-21/wide-21.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_a811fb2dc277aff2c154d70f73a174a4cbdb97bd71174831d99d006a51c3f564",
+      "logicalMediaId": "098638d2-dad6-4eca-8493-53b9488251d1",
+      "projectedVersionId": "pv_e086cf649b9123ebbdad58c1b3cd8b3b64ac206ca5d2ab3e52bdb6550a3af1db",
+      "path": "Movies/Wide 022/Wide 022.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5770613689799710067",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_16690462bc13d541c1e0afefb673df25",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-22/wide-22.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_17aaa39e234409c0fdfa6f3dee9a1421b5345c5b4d629e3e68dfdb4c7fdc19d7",
+      "logicalMediaId": "6d70a321-e112-4013-89ba-29626f2563e3",
+      "projectedVersionId": "pv_8cedfc81b50e755be52265012b06d134e77d869464d348e4fb3e7f647fb983d6",
+      "path": "Movies/Wide 023/Wide 023.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5209582657372524561",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_f6b730d9aacd34858b73a4a055f0a49f",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-23/wide-23.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_0a23d55a6d341bc3e241fef2e1494277518b58fdb83ee942e44b4e1d6ae2d2e7",
+      "logicalMediaId": "5cc8beb5-0458-442c-8da9-83f26b23e905",
+      "projectedVersionId": "pv_258777299afef7ffcfd81330cacf87779f64e982fd54bff5ea5a3749bb5112b0",
+      "path": "Movies/Wide 024/Wide 024.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3318737547328908033",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_e0486899614e150ac5581ac646cd697f",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-24/wide-24.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b3d0e5e2a81c1a148956286f8ad63c4a6a7991fa5e613c6e50a9c3a376f78c25",
+      "logicalMediaId": "e53058a8-6349-4dc6-816c-8c2cc1f36af7",
+      "projectedVersionId": "pv_7afc5ce9a04cca08fff14ef5efde97e2579ee5a1c64e1eaf9ef43e5d28ca662a",
+      "path": "Movies/Wide 025/Wide 025.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "523053950852858288",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_c02b7fed9d897c9f37c41b0c2b652262",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-25/wide-25.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f3fcb0aac452f698d142b59cc7d37d32bfc74c630cbdc3653508abe9c453d95f",
+      "logicalMediaId": "ec1df8f5-f865-4898-87f7-09b8bf36ef81",
+      "projectedVersionId": "pv_decfc1bf31d402af7bb28220fe22e61263a9c39e2efc6ac90d6a01790a90f732",
+      "path": "Movies/Wide 026/Wide 026.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5136679235336855369",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_08ccfdfde05076c90b1768cc0f75e4d1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-26/wide-26.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_85e28aae2638f8061379e2bddaa36e554be04294e2c87f14d25cf61191619d97",
+      "logicalMediaId": "9832c50e-d3df-4703-858f-5f5a25a1f460",
+      "projectedVersionId": "pv_e493a834276c23541350543c48119f447de94136c32b14176f8b514d657725a7",
+      "path": "Movies/Wide 027/Wide 027.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3056571828666388438",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_6c0c506f2caf159a9d8e5bb7f7aee300",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-27/wide-27.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_49a6d13e6e4dee67ae292c9ed9978ccc65babdd5f334cbaa69ecdc51e735e484",
+      "logicalMediaId": "44d1e8fb-bfd6-4f73-8a6c-6be0a1ceab5f",
+      "projectedVersionId": "pv_352737cb08a702b6a5962002b4bc3d651dd273a301bfd1b09e5bd4e79d04ba29",
+      "path": "Movies/Wide 028/Wide 028.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5067143083642274410",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_aaba45e92a8971441536d92b6ebedfb8",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-28/wide-28.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b10e12ab7b3cdfc8218337548e73f24c15dd8187095cfd25210cc5caa7aee5ba",
+      "logicalMediaId": "51ac370d-66dc-467a-8b6a-a6b93a8d3f1a",
+      "projectedVersionId": "pv_380a1d25677eb6ce2af88caad898b5a830a7a8f8ae2c7799fbeb52ab227a50b4",
+      "path": "Movies/Wide 029/Wide 029.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6061948776423141409",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2edba44378a634d0b23a46b52bb30436",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-29/wide-29.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_6ffa482be7917a90ab80ccb27da6086246aa04262e574798d78ed15e641a72d9",
+      "logicalMediaId": "cb6f5077-9834-43d8-88c5-656575a4d775",
+      "projectedVersionId": "pv_789c0a1796c0aa46a79dd11365d5649b2c0c7aca5deb7fbad985e6e0f4091d04",
+      "path": "Movies/Wide 030/Wide 030.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2920761986266272880",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_6553b2977f485a8a63b714bdea969376",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-30/wide-30.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_44d0694213897fe2034785eb2cbbc3e3a43114a0881dec3f2070ff7389ee8ffa",
+      "logicalMediaId": "22d52796-9a24-43b7-8e08-60a54d1689fb",
+      "projectedVersionId": "pv_abbbf159e3bdc399454291d304946bcc8b334a18a88d716b82c4fc8ef0081969",
+      "path": "Movies/Wide 031/Wide 031.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2989272832114582034",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_98a714ffeae1b784d709cac7be688fe1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-31/wide-31.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_d8c3c8149a1ff06a9ad802b2f23d1df421c52c76cd8da7b557448d0efad2fa44",
+      "logicalMediaId": "58617134-d65a-4e0b-8aae-a4f1e63353c5",
+      "projectedVersionId": "pv_d32abbb08a2467a549aba5ae4c9eeafcd2fa331e2fd5519b44bc216b24e0958c",
+      "path": "Movies/Wide 032/Wide 032.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4744453747291293853",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2543b74e7438febae5b76d51daab1618",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-32/wide-32.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_a2c61dada4013b6273dba6996f45d5238a86b43b29e171fc1d53f1908557d2f8",
+      "logicalMediaId": "d5495be3-9ec6-4df8-8c52-c5ff65d25a28",
+      "projectedVersionId": "pv_c70e9e3a5907dc9f8a07c8e609a8188d9bb4d3c806e5fd9ac6015998fe3d975b",
+      "path": "Movies/Wide 033/Wide 033.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3813030277267139541",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_872a841357950542b1ba231c6129fce9",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-33/wide-33.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_4bc52245871ec90034663b87d524db8f9ebee5eb2b472091840ec473cc2ea3a1",
+      "logicalMediaId": "07efd169-2d2c-4e41-82de-53a3161fe4fd",
+      "projectedVersionId": "pv_e6f99081e9b2a00c3649df3c6061e464c92ba2d358d2eb79f7c5ec6a4aaf4f33",
+      "path": "Movies/Wide 034/Wide 034.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5945834720124063463",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_b8f2ad907047992fc78c97eb388bc523",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-34/wide-34.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f9636bbd9bf2a62994321e519d553ced34554d605968d1e0f555197019824c77",
+      "logicalMediaId": "08ff8aec-270e-403b-8386-29164911d9a8",
+      "projectedVersionId": "pv_152d9f4ff5ccc321e24741dd22fa9b7259aa798eaa8c036b3179bb541be36a30",
+      "path": "Movies/Wide 035/Wide 035.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "644088979924136930",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2d9e1825ede2df6a47602f9009522402",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-35/wide-35.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b28a4200aa4fb8e11d6177023a6f92f96b6565094390e54b341c203effcbf237",
+      "logicalMediaId": "31a950b5-75d7-4a78-8c95-a54819e1e67f",
+      "projectedVersionId": "pv_8deeafe545295b2ea01bc0709ba0d7f36ca08113fde4353d1cd47d7a73dd934f",
+      "path": "Movies/Wide 036/Wide 036.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "581218710896507718",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_6ec79d5ca9613b05a17ace320c500555",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-36/wide-36.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_780e8229a408017e83c67fc618415c845992b88c5121ee1aa6497212b76b3eea",
+      "logicalMediaId": "63fde494-8287-42fc-8497-36ef616aa356",
+      "projectedVersionId": "pv_53ce31317dbd4b3866626ccdfb41bf7098e84e2c2a37a83d22684c28576f7ce7",
+      "path": "Movies/Wide 037/Wide 037.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4428435061505151809",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_ad29be0313cdcf8ac87974902f957305",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-37/wide-37.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b0e9f768a72589beddd51ea0f24193a2c76413e6f3c7c1e2f01ab4116b23ce52",
+      "logicalMediaId": "3ad68fd6-0965-4be5-8272-2dff4956cabd",
+      "projectedVersionId": "pv_7682b4ee63735237932bd1a563f21eabb04654698ad22669be56710cd2296eef",
+      "path": "Movies/Wide 038/Wide 038.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3336288308527683628",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_74af95d6a7305859b6fc541c49ae219d",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-38/wide-38.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_5cc1e735b2d9fa0aa8d780488d5192592765f5bf7db2f5f13a23d8f5247f4673",
+      "logicalMediaId": "ed865998-2848-4532-881d-8ad3f57b00c7",
+      "projectedVersionId": "pv_0d3d6691beb717ee85e2946737f6ab547bbfc109eefc7d6d75c4e347f531a731",
+      "path": "Movies/Wide 039/Wide 039.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3316782641282675333",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_fe981eeac9dd1de38d7ffd86e4948620",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-39/wide-39.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_98bac16a78735a9833b5f9732d7660ef9ab449604d22348b9e05991e7de64eb5",
+      "logicalMediaId": "1702ea7a-15eb-42dc-80e0-d66515f7f747",
+      "projectedVersionId": "pv_ab1aee524426b702ee1602ff1c9546c57b4a4184da4fb8601c762ff6d32daf47",
+      "path": "Movies/Wide 040/Wide 040.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2560030266761699479",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_560c0f2d106894165ae91e646e6ff9e9",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-40/wide-40.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_a393968837589cf5e3f2a4babda3e7b6bab389cd5f74d832a1fe4deb9fa9768d",
+      "logicalMediaId": "d3951881-88ef-44dc-8d78-b6c80644e7ae",
+      "projectedVersionId": "pv_46e74c8b362e126df435d970d75f7652b37b52fdf8816d9c0633038c906f9561",
+      "path": "Movies/Wide 041/Wide 041.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6608112100145236661",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_bdbd809826d733013f00c2e8d286ee9a",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-41/wide-41.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_3dbb456ed6cd746a61e2c90eaecfc65b9488fb6a9bc0b59ca0a21fdb6659e713",
+      "logicalMediaId": "3b45b126-f61f-46ad-8ffa-8770e49febe2",
+      "projectedVersionId": "pv_2400973f8aa7b857c312f955a9ef08e72a1cad52c8b506c9a06c071e5fa23b55",
+      "path": "Movies/Wide 042/Wide 042.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6614666678431679534",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_84bcb197659efc8bd6fe2f0fbd263fad",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-42/wide-42.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_d2338f1d7b7bce3e9f5861665dd7c74dc2828de305ce382217f55d397abe9011",
+      "logicalMediaId": "743cfc72-58f1-43a3-8ca1-211e94f5beac",
+      "projectedVersionId": "pv_89cd4829c267c68e961b46cd70acaa81ece47191656fb3e2c29b84541c19f45f",
+      "path": "Movies/Wide 043/Wide 043.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "988944925601204102",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_26f5d9c34f77f4241fa819c07a7ee852",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-43/wide-43.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f656ef0aab617bb385f4a0a98dcc671a2a39152e4534ba3db656abb410318a8c",
+      "logicalMediaId": "72a10c73-7c3d-4331-8354-c5cfcdcc6bd2",
+      "projectedVersionId": "pv_3b321978030de9a079c2647ef13a62562f962c0107bf7dcdb8f37d97d59925ed",
+      "path": "Movies/Wide 044/Wide 044.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7817261599777099940",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_911f005097bacf6a5b1e1b647aec4abb",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-44/wide-44.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_deeeeae077c26e90eea23b5f6296d999da57eecd8b75ef44f4b79333839a2cf9",
+      "logicalMediaId": "352a9e2a-22a4-4c42-8607-4c71cb5ae234",
+      "projectedVersionId": "pv_2c8073eb10a0e555c59ec1065b6820e33cf9f904fb6d182392554afa22e22e84",
+      "path": "Movies/Wide 045/Wide 045.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6347199646121467989",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_ffb241d7a0f7f86f1f3ff35b1363cec0",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-45/wide-45.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_9115674fc801b04820c3d50931224a4a974a36e54b70297e58bc7322176c7b95",
+      "logicalMediaId": "d6d2a608-4aed-46b5-8ff4-831e52dfc651",
+      "projectedVersionId": "pv_4f7d85bb161a8f37ceab78d73a36bf4404bd9013edd69c8fc052ae35b5903677",
+      "path": "Movies/Wide 046/Wide 046.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3193616449925711863",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_43277718cb9c2918a29e472c58789222",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-46/wide-46.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b7a7360016e7a1c529bb78a06184d647adce82f97aee0e7743f532c644229b5f",
+      "logicalMediaId": "31fd3524-0226-4df1-8524-a8deffaa5dfb",
+      "projectedVersionId": "pv_9a6cddab6d84e7716830708926633c6f8409067c9b034f45ad2849fce61aa031",
+      "path": "Movies/Wide 047/Wide 047.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7311975059420901525",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2b820381215f2c845dc01de630c16aa3",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-47/wide-47.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f14470d04abbe07c097ca5a1a407b6746f354ff6e56e7f39ff667bc59d971467",
+      "logicalMediaId": "dd4eb6eb-22cf-49c3-8ad4-5b0fcc31485c",
+      "projectedVersionId": "pv_92fc537fa48c9f0d23b78d04df2f50cb8411b2288f2a3d5cd6adf799078b6547",
+      "path": "Movies/Wide 048/Wide 048.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "9214141035075811020",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_90de72ad276de82dc57b9fec3b99c68e",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-48/wide-48.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f46948e84ddc5d0b82a87fb1e64a9ac5f6fdea13868029fc2201c68549f788ca",
+      "logicalMediaId": "c39842e1-587b-4a07-85a4-d37778a40e20",
+      "projectedVersionId": "pv_b3574f433dd251434231eade98b224c15c8cd6cf7bd142cf2598841c48ca547f",
+      "path": "Movies/Wide 049/Wide 049.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7295180693250153828",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_77160469755580d67a0d07f61fe9afc9",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-49/wide-49.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_8231e561895dda132f4c9b93eb5f0d5fc9ac57d9dc48feac44d2b577bb618c97",
+      "logicalMediaId": "c30fa5f3-7efa-44c3-82bb-ff5bd17b4df8",
+      "projectedVersionId": "pv_a5a408afb6f4ae21aaf2d6df8cdddceda68779dcdf0569c8a0500e2c430e690e",
+      "path": "Movies/Wide 050/Wide 050.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7129305651032079673",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_6ac71a12bc938de92eecd0cd843360a1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-50/wide-50.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_143deb2bd2a050f37a13e4e5c03e20758ac98a79783075919f39f1911645af57",
+      "logicalMediaId": "db070c8c-e10b-4487-8772-62eac9069517",
+      "projectedVersionId": "pv_7d6744b8874740a65c382f23003b2273e049cdea9f059c0b298cfd9f7aa0be62",
+      "path": "Movies/Wide 051/Wide 051.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6356982895447932639",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_94f3158adf2db20331600f6c6554ea2e",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-51/wide-51.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_929368994e1d81e90c3de7353f76b128cd58ef15561ca7a941f655cccdfc7be4",
+      "logicalMediaId": "57739abf-59cf-4d8e-8798-f2b279136374",
+      "projectedVersionId": "pv_423c8ad7405dcf31d09a9e4f8d48cb4d96cd4c446fa8a02ee386997bdde9250b",
+      "path": "Movies/Wide 052/Wide 052.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4994578208185562994",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_19c8aa095b49b73c9609ec3a728ba1e9",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-52/wide-52.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b6225b9991231869bcb3a50d7ba2bef9a82fdd033199970a584b15154b1d5bcf",
+      "logicalMediaId": "a8f607f9-5df2-4133-8f07-2dd9b245db06",
+      "projectedVersionId": "pv_35b4b75095e924cf42e0a8d7431e08847d06c562e9145245bd4776e3e8f7ad95",
+      "path": "Movies/Wide 053/Wide 053.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3101301404610003538",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_61025437eed33a7c2352c8b303bea676",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-53/wide-53.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_2671519f8275fa98a1ed4292484880a5572903e231bc88f9323e887af1b65170",
+      "logicalMediaId": "f62c07c4-c053-4b36-8184-8f5c2f7bd513",
+      "projectedVersionId": "pv_a7fca5b69dc02db2a6ec159cc48efb1efbdda2f2a60ff42cad9506d6c97d2d41",
+      "path": "Movies/Wide 054/Wide 054.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5921584395103984064",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_0737ece4651d73e388cf7388bd478681",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-54/wide-54.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_9b855d4748561d460180d09b84620ebe52b370e6b8ae3cec62add6bec966063d",
+      "logicalMediaId": "c8016a83-b59d-4721-85d9-0340e2c8644d",
+      "projectedVersionId": "pv_a97630cecc0914bcdd58537db95841e1860c84f2975d07de33709d67d74aa3da",
+      "path": "Movies/Wide 055/Wide 055.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2589008163900493623",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_3c6f36c7b8a6c2ec8d2cb8ffc726abae",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-55/wide-55.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_1769a37a1395d8580a488259f1bff6f17f8cdeb95336181c2c13248be1dbb046",
+      "logicalMediaId": "4083669f-1531-4ea5-86e8-44d7ac05139d",
+      "projectedVersionId": "pv_e9604e5aef17a58313b77979a60dfa00ee59ff076bf8e8b66503d91d03dd1efd",
+      "path": "Movies/Wide 056/Wide 056.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2622329261419396876",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_12baf9358d27edbea037563aec29d3f3",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-56/wide-56.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_41bf7d4704b0a4e668c5749022e6915355379ff8d2f9665c68afaacc247477b9",
+      "logicalMediaId": "7beee83a-e733-4ca5-836d-c397d21eafbe",
+      "projectedVersionId": "pv_1c523b1e811061fb743ebcae70c82460ad2c0acae2531f0436d5235190c4298b",
+      "path": "Movies/Wide 057/Wide 057.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "70165622240778502",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_ddb5518a6f00c816493acd4e31ed8973",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-57/wide-57.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_bbf616f9c69f7921d0b090616860effea7c26f74542ed5b8227d113e4bde3d12",
+      "logicalMediaId": "3989e8eb-abe8-425b-8780-43f320cebc7f",
+      "projectedVersionId": "pv_d8ba3c159b3e8e13df56b91a7e76a55485111a4cf6097ba5f62722a58e8d539f",
+      "path": "Movies/Wide 058/Wide 058.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2057167906313950953",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_1f2e5d795a6c6243ecfe29fb51883367",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-58/wide-58.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_deaa1557e292e71f63081e66fe4ba13fba36c3d485bb31358c8aee28587cd5d0",
+      "logicalMediaId": "5c4a8238-3db9-4905-85a3-e8cf0a949301",
+      "projectedVersionId": "pv_ebdf4dd7e9a4d02c174de101b559a905995ca1510d85a5828ffbb527a941c4a5",
+      "path": "Movies/Wide 059/Wide 059.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1068803948677302265",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2f5c2a79f2caebb3656470d3280ea6d3",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-59/wide-59.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_3c3a5ae93f6878c4b4858d2b93422308ab00a0951880c8e6ba1f1764db266ea9",
+      "logicalMediaId": "66c67174-ced1-40a0-84a0-be9d17ee8075",
+      "projectedVersionId": "pv_7cbe807c29fe2f84bb83ebb5a1eda66074d21846701730f92df866649646008b",
+      "path": "Movies/Wide 060/Wide 060.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4793063191410731852",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_dbe2794a8c61bc19c0b3ac2767872e05",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-60/wide-60.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_90f5ddaad4cb1a4ef3ac6aa92812f0a1bbc112b3d996b57e11a64db57b341167",
+      "logicalMediaId": "ef37b9b7-8f9a-4e31-854d-9c8354d8bc4b",
+      "projectedVersionId": "pv_2b3e9afa51e6aa5a8bbc7ba40a421136898ba72e585874383d617a6eb932c542",
+      "path": "Movies/Wide 061/Wide 061.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7175692658099640917",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_50ddfc3bb6453aaddcd8677187dbfd6b",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-61/wide-61.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_73be8f2b6bfa9dee3e062d74f69a6c45d77847f4e90050a2f85b4d816b4b0a10",
+      "logicalMediaId": "d7c4ac84-627e-4b18-8684-a4eeb7c447e0",
+      "projectedVersionId": "pv_a75282714ebb23bcfb9ef3fd0827715383d0c61e084079761678c3acc93900ac",
+      "path": "Movies/Wide 062/Wide 062.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4896254627439288662",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_3672999310e681ef5c4c94dff79ebd2b",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-62/wide-62.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_fc574185f9eaee56be6cd1a994ad6a6e95a03c87bba66cd7b7e5618595b654f4",
+      "logicalMediaId": "3fe683f3-9fc6-43aa-8a6c-9f7efed358d5",
+      "projectedVersionId": "pv_1ae57acbcfbc0b9b87873a6130ca5dfebf54a94e50a4de7abaf98538a44e5caf",
+      "path": "Movies/Wide 063/Wide 063.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1526830088325873353",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_89e4183e28bc26335c886f2b21795fe1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-63/wide-63.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_fb08ebed913118f6b4883bc252a0826beb6c70aa0f6565179390f68d024510a8",
+      "logicalMediaId": "e6c251c9-4117-444b-83fc-63f370512478",
+      "projectedVersionId": "pv_5b7bc905fdccdf0b458c4f10696907ff59f708360cd78550994aec4d3d0909c8",
+      "path": "Movies/Wide 064/Wide 064.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4678081275172700744",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_633cd9e23b7a1989f7241ed19936b6c0",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-64/wide-64.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f8c8b38cfa5b7f92312e2436d785e044b121d9180802d3bc037abe082c2a4926",
+      "logicalMediaId": "d45aafba-d286-44b1-80e5-8db47e9d2a3a",
+      "projectedVersionId": "pv_b9a9850d090b2006bd08cd65d8275c4276dcdd9b959983d4b7e1233d6eedac35",
+      "path": "Movies/Wide 065/Wide 065.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1676231434603933552",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_deda946ea33552062de03238a0fa9801",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-65/wide-65.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_efcb52bf9f8d03d14258900d41d161c2bc044e861683cdc9cd4346d735bc56f1",
+      "logicalMediaId": "b888efcd-c2ab-4be0-8f5d-51a4e8dc1d50",
+      "projectedVersionId": "pv_455f4501088393b5e207fa932a3a807646d239d298c7c28ad0b00dabc155f2a1",
+      "path": "Movies/Wide 066/Wide 066.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2347328606320028652",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2b439cc61d78a1b5683135938dbb9af8",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-66/wide-66.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_193ed9a35eb617b2d15cfcd7e4ab18eb36973aad06b37531a8f7b026815802b3",
+      "logicalMediaId": "1284f42f-e73e-43b0-8500-6167ed487cb0",
+      "projectedVersionId": "pv_ba17a6aba4ec5e600e42ebf05a3663610acd72c04bc98e06f709bf6489d36ada",
+      "path": "Movies/Wide 067/Wide 067.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2879043831288313558",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_cd08af9b8782e0a95ac05206bc408eef",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-67/wide-67.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_610cef81951dfe13ec24728dd712341de0d9820038329790a43223dfed864dd8",
+      "logicalMediaId": "943fd4fc-b576-4579-8230-4c868cdfa65c",
+      "projectedVersionId": "pv_f2825d88a9b621a00a6b469f2a656058383986ed7c0c983a3e83dd795641fcaf",
+      "path": "Movies/Wide 068/Wide 068.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3926729428836778175",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_68a9b5ed43691ca4693cbc5e207a9f21",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-68/wide-68.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_c68a74ac739044b94de1765fb1a5a442da5826b30ebc3ae215aea9ca2167eb4f",
+      "logicalMediaId": "96726945-9c38-425e-85f0-decc5ea12683",
+      "projectedVersionId": "pv_0c8daf02f358b7c478936cb9bce381363b8ff0ba1a865c0b9314ef437ddb8c29",
+      "path": "Movies/Wide 069/Wide 069.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3018868190507745100",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_de2945ef30c5cde6fe6fdf34f8cf9965",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-69/wide-69.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_a8c1088d22377a468a876b45ea2ea8a431b8a42cb8f490b6bfb870eaf59447c3",
+      "logicalMediaId": "63c81a6b-682b-40dd-80c3-0622323244de",
+      "projectedVersionId": "pv_47601e89d6f1cdb84f434ea82cde02765fafbbbba54cfa0512c570b9febad17a",
+      "path": "Movies/Wide 070/Wide 070.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1885439812185582298",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_0cf706900e94fe30870ec8f954f520c1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-70/wide-70.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_ab989b86f1282e5752794275038e1cbfb4e630d41cbd59a1079fc813c4b20484",
+      "logicalMediaId": "2a110b1a-3e7f-4920-81a0-006471ac3589",
+      "projectedVersionId": "pv_467a5420eb619049f8c4b7d76ec658f38516b48509a02e2c1e22d5a696473831",
+      "path": "Movies/Wide 071/Wide 071.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "849549775617791715",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_90cb1bcd21a2708af7d7f30027ef3716",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-71/wide-71.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_bee746da85a8f2db255eb574565d420d95780f903901edd8a19dd855d7082c08",
+      "logicalMediaId": "2223910d-e712-41e8-8688-b9d26420e700",
+      "projectedVersionId": "pv_9a6273de5e0de03f538492fd393651d137fde18b8c088a0e85ea0d4ddee2150d",
+      "path": "Movies/Wide 072/Wide 072.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "9086859443722822685",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_35842054e90980a581a79982b15f9da3",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-72/wide-72.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_4af7cb0695ab27cf2901c2095176aaba66c165c4a185edf47f0e9188fb9c5a3c",
+      "logicalMediaId": "f053d5b2-eb2f-4c1c-8dae-ed7cdec13d16",
+      "projectedVersionId": "pv_63399b79d85be3d859958386f55f54639136f2ccdc6f50ad113fa82c950af35d",
+      "path": "Movies/Wide 073/Wide 073.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6938063433426178224",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_c977c2aedf7f7b5cbb7b34d82b2ae1b8",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-73/wide-73.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_4e04e1c2cf92151b293b6548ae3dcd91d9424e8a2c3f625f6cd980bd54469161",
+      "logicalMediaId": "d4797732-d5d6-476c-8d40-e8cccb1a7e99",
+      "projectedVersionId": "pv_0639bb0a27b4cba3947c8330da1fc46f7372c2650c13c36877dbcdbe56086ae1",
+      "path": "Movies/Wide 074/Wide 074.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8316812587596648788",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_5a6d7989f301b418c65abe9337bb36b1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-74/wide-74.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_2aac32ff23a9fa4b2ca3a646ce26a3ecf3ff0613fc63db55cf264a4a50d01361",
+      "logicalMediaId": "475a4e59-f827-4e07-8d95-18cf8dc6984f",
+      "projectedVersionId": "pv_801d591216b8a06e7aca1b8a970d407d2e98ae1f9f346313503ceab8c762a84a",
+      "path": "Movies/Wide 075/Wide 075.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7452498943009566333",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_bcbf09df5bf8d39bf9048c80c4191830",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-75/wide-75.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_5d8c1b8f097d78609c6bbaa00f6b9e4e29ff303e87aecb34081e37ab5dda05bf",
+      "logicalMediaId": "dd911ff4-105c-47c2-86b7-1b1a9e13971f",
+      "projectedVersionId": "pv_013763644b5048c78f0c385e071194ff82fd8b81ac992ae1e7b10e5dd99133cf",
+      "path": "Movies/Wide 076/Wide 076.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "437029808161699083",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_89033a8e8fd606317c90b47f7fc365f7",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-76/wide-76.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_da762127ed10cbd4c62fad90f6941adc88ba5345e25b09b292e932716a52b136",
+      "logicalMediaId": "9e639268-c138-46ec-8de5-693a1494b272",
+      "projectedVersionId": "pv_16daf0968914b6278949161885ca3c92cc0eb0b7b1c827075298630ae40efbbb",
+      "path": "Movies/Wide 077/Wide 077.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5394123072831620768",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_892eae544a3af3fd6a03f3c280eceba1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-77/wide-77.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_923fb8f76ccecf18f172d7f28ecd548581a2fce3a1bd959c88d4137fdfecc38b",
+      "logicalMediaId": "5c82a8e2-e39f-48c8-8ac1-b3fa6e3e8581",
+      "projectedVersionId": "pv_919541edcd6b87cc8314e50309f62d194a9bb8ccca6dfc034937398525951d53",
+      "path": "Movies/Wide 078/Wide 078.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4707096464569147539",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_7ee4148af54de0dded3fca9f2c5dd293",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-78/wide-78.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f3b8039a78ab1627319a581a63cebbd0d39d6c7b89b4286199dd36fb267af908",
+      "logicalMediaId": "70e3c737-c0e0-486b-8cfe-29a9b43714cc",
+      "projectedVersionId": "pv_41ade9be2ca4d8b6c72a96bcc9c5269c7281f7959ce46cc33db4353ff3c9012d",
+      "path": "Movies/Wide 079/Wide 079.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7492105610356108891",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2c4783a293c55592cc2818727112178e",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-79/wide-79.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_e59578f3f1fd35748e541cdae5e332276b1ed615fb044fc4bdf939fd3104bfa3",
+      "logicalMediaId": "7406587e-c8a2-4fa6-8409-4553722a3dda",
+      "projectedVersionId": "pv_9846b151cceb09dc191cf4e3e81b22f408e185edb7d37122b5077c13d0307444",
+      "path": "Movies/Wide 080/Wide 080.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4217601789213974226",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_2e29f54138a2ce33211b5dbc97255704",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-80/wide-80.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_6275dbcc75e91e9ed0ced56bfa4c2153c76f68f9b8d2fc87083a28306b7d1e44",
+      "logicalMediaId": "9a904d12-b634-4fdb-8e3a-57cb2d2c41ba",
+      "projectedVersionId": "pv_4405bbad3855330e2fe6e0cc842f4f9818c6eb80c3d180e6de170353f5c42292",
+      "path": "Movies/Wide 081/Wide 081.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7824254029066114078",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_bc702f004db9ebd8ea1b2523c83ce9ed",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-81/wide-81.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_ee96928473e0746601ea73a2039fb075ca32455864f8ce459bcb66a79487046a",
+      "logicalMediaId": "ea510166-fee4-4bfc-885b-63e8b7dd45bf",
+      "projectedVersionId": "pv_6f2d5adbe3f608a1269635413fa5b6c7b72e33db1fd4756212ab0747fddaf778",
+      "path": "Movies/Wide 082/Wide 082.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4344628422808269868",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_afaca5ba7dd9e8508a998da5c90c26e0",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-82/wide-82.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_51f3278c9a0848d4bdbcd9658a9c1df683b8f4538beed09ba3a4b51d4f7c0e7f",
+      "logicalMediaId": "f009a3f5-205c-44ab-81be-ab9985da2f69",
+      "projectedVersionId": "pv_474650323354be844fc3165aa995077958785d0a5cc0b3a2aa5e4f947e6d9db9",
+      "path": "Movies/Wide 083/Wide 083.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5421865185022193034",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_32556ca5b0f840ee43f6b9e8c2f40747",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-83/wide-83.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_3f7d91f2f37db9ac4f989b4af5afcdd6f97c605fcaf2a7032ae8268a0c11134e",
+      "logicalMediaId": "c6d95419-8644-4443-8a5f-e0dd813bd57b",
+      "projectedVersionId": "pv_af67e4d9a3d7783f915d93b2f43d2a6de04148a2b52829f386a72675ebc52776",
+      "path": "Movies/Wide 084/Wide 084.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2942312676811703339",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_bc5fba3eb269d9188f1d1fed8e2911c0",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-84/wide-84.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_26288b8cd31fff8e3bebc2614346690c12822e14210fbb7ef04f580465330968",
+      "logicalMediaId": "0f56cfc4-3dda-44c1-8eb4-2fd3c5daa68b",
+      "projectedVersionId": "pv_18598cc0a30294f97fd4b4b567b7dd5e9e0a31908e6678c93ac6d71593b218f3",
+      "path": "Movies/Wide 085/Wide 085.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "9077113742934069268",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_03e7686543a191b2e4eba7b14391b5c3",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-85/wide-85.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_6b4c859e3aab0df889b7095c5aa9986f4a2df85e5e3bf90481c95f1e272bd76b",
+      "logicalMediaId": "258c5372-ffab-4acf-8adb-327dfdd709c9",
+      "projectedVersionId": "pv_50a73b15584a7969d5fa7490287a2b7b31cd14540671211c1c2814ce31cc899b",
+      "path": "Movies/Wide 086/Wide 086.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5331221066422247806",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_7644e576b8b512c53fa2a83ab5e07956",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-86/wide-86.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_1873649833bb68abdf947619b57b56046837d827d722a75f437e0244cdc83c8d",
+      "logicalMediaId": "c797ede0-a270-445e-8615-89fd2e41203f",
+      "projectedVersionId": "pv_22e17c272798a107269e9009fc054c502f6cc42ec8617550fb99021d0cac4eec",
+      "path": "Movies/Wide 087/Wide 087.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1883654873072393929",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_28452aa579a58657c87d5748c88b83e5",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-87/wide-87.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_158b5719a208e14dee77f4f979b85e0cd4ed7d8dfabc45333299b8326e4b8199",
+      "logicalMediaId": "28ceb052-03cc-4d62-8a60-8f38cbff7388",
+      "projectedVersionId": "pv_762dbd082c7cfec9dc7d9bb99923f2bfdb89c61d697c8c0c62adb0be1143ca59",
+      "path": "Movies/Wide 088/Wide 088.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8535217933456700809",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_ff8912c9f3da5515b91a42b6c1e5c074",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-88/wide-88.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_716ed0a1b4f93c0632f4418cb391cdc6c0ad2ffe6e8bc2d4df01e5ad06f7f933",
+      "logicalMediaId": "fb20145c-72f3-400d-8f6f-7f6a07a4f3f6",
+      "projectedVersionId": "pv_62a10acbee8f3322757abe36b75d8b1c44ec13529c91a89b8d029ecddb3c9615",
+      "path": "Movies/Wide 089/Wide 089.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1226205141330177693",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_9673f5eaee8f008cb1891a9e3f936432",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-89/wide-89.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_0e30bb400e271b34eada54a4a70cd084f18aad6defef8e45369a0b1cb679ea83",
+      "logicalMediaId": "6425c985-7ac5-46e8-8582-8813c759b72e",
+      "projectedVersionId": "pv_3025dc2bb8ca295acd630d5165974af7f24bd6659dd414e023dd68ca30854737",
+      "path": "Movies/Wide 090/Wide 090.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4281338174061953310",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_f57369212f889cd2523ce1a4c09d74e5",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-90/wide-90.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_675e24e479a01fcd20b35feb7b6f1b7d793b0c9172115af40cd4f7f89ec39401",
+      "logicalMediaId": "dd519d72-0196-492c-8b2c-3dd859509e2e",
+      "projectedVersionId": "pv_75c69c066e99c01b8eb5be5ac4e59c878e1aba3b2348b4ff49cbf439c65954d6",
+      "path": "Movies/Wide 091/Wide 091.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8956157965566013043",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_0eddc878435228438b406bea7bfa86c0",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-91/wide-91.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_d05cfa850039bec5a22de5a553f6102a747c09a47a9cf131511bb16615f48402",
+      "logicalMediaId": "0076a41b-bca9-46b3-85d2-85afe854ea05",
+      "projectedVersionId": "pv_13c585e5112d966bfdc66a17ebdc43d33f5770c5f4e175400289bee9109ee512",
+      "path": "Movies/Wide 092/Wide 092.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1345524150505760135",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_8ee02e8db5b53f020b9473a06c0b5f50",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-92/wide-92.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_d16b8c87857e4902fe5e611e8d745ed39e66e00e09b450dd2381ab490c50af13",
+      "logicalMediaId": "10740816-725a-4750-8c1d-4c0b5425d0b9",
+      "projectedVersionId": "pv_32adf948e28908151edd420c9086e2416468f061a879c1047e3b5d92cb5bdb9b",
+      "path": "Movies/Wide 093/Wide 093.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6990431986160041486",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_cf1337e7b162cf820b1078459ee2a997",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-93/wide-93.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_e6522edfbce9dd67d8f6aef57e39bf4c17b99c272d29f86d1bf6aa5882208d86",
+      "logicalMediaId": "7d0207cf-7d11-47fe-8162-141310507a36",
+      "projectedVersionId": "pv_c6df2bde60828888d339b1d30b49e99d87aeaa0d7c1d8043b263a101270dba75",
+      "path": "Movies/Wide 094/Wide 094.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6831906292708421262",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_9fc2b5c733087fa6117c54ed25c74483",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-94/wide-94.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f539444e8acc15b1d815dfe36c185beaf69489300a61c9700241335a82679b49",
+      "logicalMediaId": "df062412-628d-46ab-8aaf-5eab2d0af569",
+      "projectedVersionId": "pv_4d30e6a6b6ea96cabab277272eb3b60c1e361dbf7285a40eed0be0f3ce821ae4",
+      "path": "Movies/Wide 095/Wide 095.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4506815943969542840",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_760264b7f6f402da59ac013afa207a1e",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-95/wide-95.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_a239556a75fc8a821091d2dce37bdeddd129136c33f146dba4f43df041d75aab",
+      "logicalMediaId": "e07a2b0f-005e-4a0d-8289-2443280ef504",
+      "projectedVersionId": "pv_29ed3e3cd069efd1b32e39dc1395e3531bc7aafd2af27de4b828b404d7267947",
+      "path": "Movies/Wide 096/Wide 096.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8550311577174834162",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_aea912df6238369865395eccbb703c78",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-96/wide-96.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_5cfc76058ce61a79d8523b8a3c5b11f96965fc41201ae864ea95cc7df9c519e6",
+      "logicalMediaId": "c42aedff-2259-4740-8c89-762235731aaa",
+      "projectedVersionId": "pv_64c3ebf28fc6eb3ebcb9050c4441b8ecfcaaf95864d8c1c88af43f69a424f655",
+      "path": "Movies/Wide 097/Wide 097.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1067578058893737387",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_08ebff83be9f6ab616419381ceed0135",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-97/wide-97.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_561736c0b1cc7463755f1ea6056369028534400d1ddf8f025582b7ca7b703837",
+      "logicalMediaId": "e0075301-c3bc-4010-88c7-b00589bb4860",
+      "projectedVersionId": "pv_bc02822ed9334aecbdbf42af58d0c32f7de1e6f3f50fd47f607e12ea31dc6931",
+      "path": "Movies/Wide 098/Wide 098.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "4373247578194507594",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_7cdf2125154473a7491e7c66ed25b120",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-98/wide-98.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_ed3428128367786f79b2b204ff17830925d4b6b2e29aa53c1618c01036486def",
+      "logicalMediaId": "1ee98927-8b30-41f0-82aa-236e161b0698",
+      "projectedVersionId": "pv_f29ca53c4fd70628732782061c3838986780c2f59ccbbd5f4529d4253b0902cf",
+      "path": "Movies/Wide 099/Wide 099.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7689670428353980696",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_e306597f75769ab3f95e1e464d32b1df",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-99/wide-99.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_28ef0334a62214d72e1aeb98b88da91f1a25abce48aa765f96f0c35074426a7c",
+      "logicalMediaId": "1113bf48-bad0-4dda-8e8c-cf94fec8a436",
+      "projectedVersionId": "pv_54aad0917ef4cf497842e66061aea440200b37266f43d454e6f82969a6de2d1d",
+      "path": "Movies/Wide 100/Wide 100.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "42211040690262817",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_1bfc9c4bd3c3ad52c4c106a2af201028",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-100/wide-100.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_698306fbac84f4852fe9c0015f5c6a625d255ae213e958fa211499c012c67325",
+      "logicalMediaId": "ab1f8b72-0d81-4214-8dd3-2ba4504ad4d6",
+      "projectedVersionId": "pv_3a914f4fbc2a18dc636b99d20f4a2097d5998454ba55f120998dbe7b9852a4b2",
+      "path": "Movies/Wide 101/Wide 101.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "790022762571250546",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_31fcf8d41c6e75f82a9fcc18aa1743ca",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-101/wide-101.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_f6ed576c11151113a71d5184dc2879db05660c78098c2f8871ee93b614d9554f",
+      "logicalMediaId": "0e656f34-4d83-465e-8e3e-2f8b48a69d0e",
+      "projectedVersionId": "pv_5d4dea7ddec8ec321bf172823aa1917e2f23893eaec3d0432f65362d52cc0793",
+      "path": "Movies/Wide 102/Wide 102.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2472648835025736720",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_5a72d6dd1551ce6671e34f5c98f8f114",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-102/wide-102.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_3f3e97c0eb040b1e6a622117c4ce3c909dfa02daf78ae6afa779f227209a087d",
+      "logicalMediaId": "c608c29e-664f-4be2-83f9-24c1c0f49ae4",
+      "projectedVersionId": "pv_ab480a1f8542166858fb234da0fbf9f9f5d004bb20e3267fda97a70e2a0ca999",
+      "path": "Movies/Wide 103/Wide 103.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8961916432396433470",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_ba073fd8e212a3420dbd748e35880c20",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-103/wide-103.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_c646d10a61fc3278ae378c0d6d405e6c7ddff7672fe66045c88bdfb92cb652e8",
+      "logicalMediaId": "b358f34e-f011-41c1-871c-9bea3d50a72c",
+      "projectedVersionId": "pv_8d6cffaaa21fee13a4bb71e0800f91200e459d66f0deb221360d79879d7aae28",
+      "path": "Movies/Wide 104/Wide 104.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5076619722527664638",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_03d5ba4776ef44fa5d93afde1e29094b",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-104/wide-104.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_d47a2f1bf0f6066b9b3aeb721bb2f5a8b3c0b86ada4c630f4cacd5e9c9c26616",
+      "logicalMediaId": "f0eddeff-3501-4b35-83d3-9626f0e06a77",
+      "projectedVersionId": "pv_ee9d6ca4fa84116f7326302f1fbfbdde5be3950ce07d3af2a2a74c2571948c94",
+      "path": "Movies/Wide 105/Wide 105.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1169018844325208430",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_163d035f228247ef36597ce54413946c",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-105/wide-105.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_03753af1dffed111fa22d2374a764cf93a372f282677a61349618b4a62a050ae",
+      "logicalMediaId": "984e21cc-9861-4669-82fd-21ec272b4fb1",
+      "projectedVersionId": "pv_1455f826a2778e5e79015ae73b59ccc2fccdb5d9e1ae6352e76444bd6900ccf7",
+      "path": "Movies/Wide 106/Wide 106.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1133559353845086070",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_6eb2d691de6134a2f3dc149538d3836b",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-106/wide-106.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_7d779b1c95d8c717f5edf195dbe68455447e7d3e021be54975481840f2a61d28",
+      "logicalMediaId": "79531be1-d9fd-4390-8a7b-4b59b4c8743e",
+      "projectedVersionId": "pv_47e8fbf93329e616240e26460cc041834456486f7a5e7daf97e0aa4c39f46ad2",
+      "path": "Movies/Wide 107/Wide 107.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7886505076413393523",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_083ff00441b95e62b7b6845ec0e6201b",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-107/wide-107.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_39fa502f5e16f46f52fd74848869a83683f8acb7c90db145955ececddb04a25b",
+      "logicalMediaId": "928d1b35-366b-426e-8b83-d6d755db563f",
+      "projectedVersionId": "pv_ef372bd71b576a259679ead336918f50b5aea902ae3f0756514c0669a65aded5",
+      "path": "Movies/Wide 108/Wide 108.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8552046473853258025",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_be3f500cfa1c9b2d0baa45dbd5effe86",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-108/wide-108.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_6d53cae0505c60ed597ba0670447a5efb588cfc2534e4b1b9425b4ad963ab5d7",
+      "logicalMediaId": "bc3710b2-b8bc-46aa-85b0-304abb8ad5b0",
+      "projectedVersionId": "pv_8011543bf9fbc56ebda479141c66b6f203f1f1e02ee2ec802c8abc79471d0de0",
+      "path": "Movies/Wide 109/Wide 109.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2398434906129189968",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_9295f66d0af705b0897b2a959473e054",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-109/wide-109.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_edaf48ccefcefd74aaffd744ae241ba1c238a1e32c82dcd461b13c524fb47d0f",
+      "logicalMediaId": "50b0ecb9-51f8-42ca-84d7-b893050e76a7",
+      "projectedVersionId": "pv_2c9f55dae73315a90e2338d7cf5d84302a455406a369f3bc66bfe79b61d55da0",
+      "path": "Movies/Wide 110/Wide 110.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7917690245425734502",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_94c285904555499985d9a91d52cd8035",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-110/wide-110.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_6438a263bf3e66aa329da4cd9d64ad2f2315328bd7cd121dceaf7356a37c482a",
+      "logicalMediaId": "bcdce3fa-8f6c-4e66-8472-af36c8b32816",
+      "projectedVersionId": "pv_61d463bd1d703c3d4cdf4b2bb1fc73f7f1b7d38c1830828871d52c9f134bc2f1",
+      "path": "Movies/Wide 111/Wide 111.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "5466095104788030250",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_969af7d8bbcaa761eebd6e8d3def7cfa",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-111/wide-111.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_1bed797ddb997ea2fd7a2789fb96b3701c370dedc1e3d4aa9d640f59b0e4242c",
+      "logicalMediaId": "5d107172-8f88-40f5-8120-7c8b0be7d834",
+      "projectedVersionId": "pv_e62dd3371986ec59ac2f51284ea3dc62c50d1501874db741b54c68f94dcc56dd",
+      "path": "Movies/Wide 112/Wide 112.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7665372918185585834",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_fa125f3c8db46b872ecd29772aaa7ab1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-112/wide-112.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_96bc1be875ee6804a53b83609780ecfb0282602fc406b00ec0b10ab8259e0daa",
+      "logicalMediaId": "c207aae2-94cf-406e-8371-367be3082aae",
+      "projectedVersionId": "pv_b4da2ae113d9f9783d064300e6c0bcca4e34f58a9aee039793e0bd671e50417a",
+      "path": "Movies/Wide 113/Wide 113.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2282681766433777376",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_47fd8a2517c6a2c6f6427348ecaad6ce",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-113/wide-113.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_6f75b8bff60f3a43e0255b073f153ce2f3632b12dd06fce8ac8782772cf649ce",
+      "logicalMediaId": "386c92b1-dd84-46db-8ff6-11ceed3c3aff",
+      "projectedVersionId": "pv_63349c17eb142153134c3071afad7e0bf6bde3b9fd0dd008d6c046420ad2d3cc",
+      "path": "Movies/Wide 114/Wide 114.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3011858608952531044",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_60334ef38e4858261a8edf453cc256b8",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-114/wide-114.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_52b423f4dff2818e05d483c21d9682a0f463a7d7f53fd2b5692c958ce59bb2eb",
+      "logicalMediaId": "1089e22a-1421-4b25-8da5-8b6cceeaa3d8",
+      "projectedVersionId": "pv_1b7689aff41cc1d9754e517ed69d271cc75660d9c2dd4cb5e3c649967d9b92cf",
+      "path": "Movies/Wide 115/Wide 115.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "946322965631253103",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_af685fdb9c759f81e7da4d49b3537be5",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-115/wide-115.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_d5fcec65a2843d3ca3c22401f9ec158a7807a8177366a3c8dd164cea2faf5b75",
+      "logicalMediaId": "e177ce56-630b-441b-812f-03c6398da935",
+      "projectedVersionId": "pv_88b42500c1279a206e7d44907840f508edeb86e1d1c81f1681805f01460bdda2",
+      "path": "Movies/Wide 116/Wide 116.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8437204180095865178",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_4be519bfb784757659235dd13401ebbe",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-116/wide-116.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_b6463a597b50b8a5699f8354b60c076246332545f9428fc755dfab3771a551ff",
+      "logicalMediaId": "a69058a6-3772-478e-86d6-79d50baaaf4d",
+      "projectedVersionId": "pv_e2b2bbfec6c770f9b757b3188bb28042e95050a1785a8fd7b3c4facf9f5cb213",
+      "path": "Movies/Wide 117/Wide 117.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8517002608359146615",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_33c2c4d49ede55875abd8f56fbd69f68",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-117/wide-117.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_64b68f13771060acdc488b4b93b8fd0a97e8de386bf4bde3d8f7fe0c9515d764",
+      "logicalMediaId": "a35b33cf-7400-435c-85c9-c3f2995031b6",
+      "projectedVersionId": "pv_e2fef6c6b3c3a89966a92140ed8501030eb8762306454b493e5359227e87fc7c",
+      "path": "Movies/Wide 118/Wide 118.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "1595446853359659847",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_b2e9c4085ec1b7076d10f2dbd3e3a8f4",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-118/wide-118.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_4a8b02abd6a57eaa8200e933d6a816e9b1f0083c9f1bc189c0e82c7afe8f88fb",
+      "logicalMediaId": "c34e7241-d274-41e6-86b1-6d831714a914",
+      "projectedVersionId": "pv_8da18756dbb82599de989473c173598dea03b0f4499350d624a6b4a6f39ca78b",
+      "path": "Movies/Wide 119/Wide 119.mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-06T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "6934900759011902325",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "1c7dc4eeeaa7ca4fd3263b85334e2f71",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_a3c04a83f03f5ca753d97e4235c7cab1",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/wide-119/wide-119.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    }
+  ]
+}

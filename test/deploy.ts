@@ -11106,6 +11106,138 @@ test('Phase 230 guarded promotion implementation is approval-gated and reversibl
   ]) assert(!combined.includes(forbidden), `Phase 230 surface excludes ${forbidden}`);
 });
 
+test('projection appliance - Projection Phase 0 freezes the product contract and supersedes without deleting', () => {
+  for (const artifact of [
+    'docs/ADR_002_PROJECTION_APPLIANCE.md',
+    'docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md',
+    'docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md',
+    'docs/PROJECTION_ROADMAP.md',
+    'docs/schemas/projection-manifest-v1.schema.json',
+    'src/core/projection/manifest-v1.ts',
+    'src/core/projection/runtime-contract.ts',
+    'test/projection-manifest-v1.ts',
+    'test/fixtures/projection-manifest-v1/generation-1-baseline.json',
+    'test/fixtures/projection-manifest-v1/generation-2-routine-successor.json',
+    'test/fixtures/projection-manifest-v1/generation-3-deletion.json',
+    'test/fixtures/projection-manifest-v1/adversarial-index.json',
+  ]) assert(exists(artifact), `Projection Phase 0 artifact exists: ${artifact}`);
+
+  assert(typeof pkg.scripts['test:projection-manifest-v1'] === 'string', 'Projection Phase 0 test script present');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/projection-manifest-v1.ts'), 'Projection Phase 0 suite in CI chain');
+
+  const adr = read('docs/ADR_002_PROJECTION_APPLIANCE.md');
+  const contract = read('docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md');
+  const plan = read('docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md');
+  const roadmap = read('docs/PROJECTION_ROADMAP.md');
+  const combined = [adr, contract, plan, roadmap, read('README.md')].join('|');
+  for (const kw of [
+    'projection appliance',
+    'projectiond',
+    'control plane',
+    'data plane',
+    'read-only',
+    'FUSE',
+    'HTTP Range',
+    'local passthrough',
+    'manifest',
+    'generation',
+    'projected version',
+    'byte-identity',
+    'degraded',
+    'retiring',
+    'anti-detour',
+    'Unraid',
+    // Correction round 1: the transport-resolution split, and the path rule that replaced relocation.
+    'Transport resolution',
+    'PATH_CHANGED_FOR_CARRIED_ENTRY',
+  ]) assert(combined.includes(kw), `Projection Phase 0 covers ${kw}`);
+  // The two claims this contract retracted. A stale sentence is how a corrected contract un-corrects itself.
+  for (const retracted of ['earns no refresh', 'no refresh request', 'only a new generation can supply a fresh locator']) {
+    assert(!combined.includes(retracted), `Projection Phase 0 no longer claims: ${retracted}`);
+  }
+  // The two removed fields, checked as CODE rather than as prose: both modules still explain why they are
+  // gone, so the check is for the quoted key a validator would have to accept, not for the word.
+  const manifestModule = read('src/core/projection/manifest-v1.ts');
+  assert(!manifestModule.includes("'expiresAt'"), 'a manifest locator carries no lifetime');
+  assert(!manifestModule.includes("'relocations'"), 'a manifest admission block carries no relocations');
+  assert(!read('docs/schemas/projection-manifest-v1.schema.json').includes('expiresAt'), 'nor does the schema');
+
+  // Superseded, never deleted: the boundary documents this narrows are still on disk and still readable.
+  for (const kept of [
+    'docs/PHASE_7_ADAPTER_BOUNDARY.md',
+    'docs/PHASE_31_TORBOX_BOUNDARY.md',
+    'docs/PHASE_55_PROVIDER_AVAILABILITY_POLICY.md',
+    'docs/PHASE_203_MEDIA_PLAYER_BOUNDARY_SELECTION.md',
+  ]) {
+    assert(exists(kept), `superseded boundary doc retained: ${kept}`);
+    assert(adr.includes(kept.replace('docs/', '').replace('.md', '')), `ADR names ${kept}`);
+  }
+
+  // The control-plane rules the projection appliance must not have relaxed.
+  assert(exists('src/core/adapters/jellyfin/url-policy.ts'), 'the media-server private-host URL policy still exists');
+  assert(exists('src/core/adapters/torbox-boundary.ts'), 'TORBOX_BOUNDARY_CONTRACT still exists');
+  const runtime = read('src/core/projection/runtime-contract.ts');
+  assert(runtime.includes('private-host-url-policy-unchanged'), 'the media-server rule is restated as unchanged');
+  assert(runtime.includes('PROJECTIOND_MAY_CONTACT_MEDIA_SERVER: false'), 'the data plane contacts no media server');
+
+  // The two projection modules are pure: they are contract, not runtime.
+  for (const rel of ['src/core/projection/manifest-v1.ts', 'src/core/projection/runtime-contract.ts']) {
+    const source = read(rel);
+    for (const forbidden of ['globalThis.fetch', 'process.env', 'readFileSync', "from 'pg'", 'child_process']) {
+      assert(!source.includes(forbidden), `${rel} excludes ${forbidden}`);
+    }
+  }
+});
+
+test('projection appliance - Projection Phase 1 ships an isolated Go data plane without disturbing the control plane', () => {
+  for (const artifact of [
+    'projectiond/go.mod',
+    'projectiond/go.sum',
+    'projectiond/Dockerfile',
+    'projectiond/cmd/projectiond/main.go',
+    'projectiond/internal/fusefs/fusefs.go',
+    'projectiond/internal/contract/contract.generated.json',
+    'docker-compose.projectiond.yml',
+    'docker-compose.projectiond.operator.yml',
+    'deploy/projectiond-gates.sh',
+    'deploy/projectiond-fuse-smoke.sh',
+    'deploy/projectiond-image-smoke.sh',
+    'test/projectiond-wiring.ts',
+  ]) assert(exists(artifact), `Phase 1 artifact exists: ${artifact}`);
+
+  assert(typeof pkg.scripts['test:projectiond-wiring'] === 'string', 'Phase 1 wiring suite has a script');
+  assert((AGGREGATE_SUITE_COMMAND ?? '').includes('test/projectiond-wiring.ts'), 'Phase 1 suite in CI chain');
+  for (const script of ['go:gates', 'go:race', 'go:fuse-smoke', 'go:image-smoke']) {
+    assert(typeof pkg.scripts[script] === 'string', `Phase 1 defines ${script}`);
+  }
+
+  // THE GO MODULE IS ISOLATED. The TypeScript build and the aggregate suite must run on a machine with no Go
+  // and no Docker, exactly as they did before this tranche existed.
+  assert(!read('tsconfig.json').includes('projectiond'), 'the TypeScript build does not reach into the Go module');
+  assert(!(AGGREGATE_SUITE_COMMAND ?? '').includes('docker'), 'the aggregate suite needs no Docker');
+
+  // The daemon does not become a second control plane.
+  const daemonSource = read('projectiond/internal/daemon/daemon.go');
+  for (const forbidden of ['database/sql', 'sqlite', 'pgx', 'lib/pq']) {
+    assert(!daemonSource.includes(forbidden), `the data plane holds no database: ${forbidden}`);
+  }
+
+  // The operator harness is narrow and separate: no shipped stack references it.
+  for (const composeFile of ['docker-compose.yml', 'docker-compose.runtime.yml', 'docker-compose.unraid.yml',
+    'docker-compose.arcane.yml', 'docker-compose.deploy.yml']) {
+    if (!exists(composeFile)) continue;
+    assert(!read(composeFile).includes('projectiond'),
+      `${composeFile} must not reference the experimental data plane`);
+  }
+
+  // README describes it as experimental and names what is still unproved.
+  const readme = read('README.md');
+  assert(readme.includes('experimental vertical'), 'README calls the slice experimental');
+  for (const unproved of ['Plex', 'Jellyfin', 'Emby', 'Unraid']) {
+    assert(readme.includes(unproved), `README names ${unproved} among the unproved gates`);
+  }
+});
+
 console.log(`\n${passed} passed, ${failed} failed.`);
 if (failed > 0) {
   console.log('\nFailures:');

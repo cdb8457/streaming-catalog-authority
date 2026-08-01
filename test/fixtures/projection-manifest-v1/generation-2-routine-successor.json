@@ -1,0 +1,336 @@
+{
+  "format": "catalog-authority.projection-manifest",
+  "version": 1,
+  "generation": {
+    "generationId": "gen_cc24daf9aab850604e1a0b210ab4f3f8",
+    "sequence": 2,
+    "createdAt": "2026-07-15T00:00:00.000Z",
+    "predecessor": {
+      "generationId": "gen_4c92ba5e5f909591a4c5209f88faeb9e",
+      "sequence": 1,
+      "manifestDigest": "sha256:a38b1c2e3d68394ed5f2dbff0206e4182e998306ba33af9e7543ba3678db065b"
+    },
+    "provenance": {
+      "producer": "catalog-authority",
+      "producerVersion": "1.2.6",
+      "controlPlaneSchemaVersion": 9,
+      "sourceSnapshotDigest": "sha256:d1c33897f71630ab2061ed97f5bd5115dadd9ef11062a1f491728913556f93e9",
+      "probeWindowBytes": 1048576
+    },
+    "admission": {
+      "intent": "routine",
+      "entryCount": 7,
+      "deletions": [],
+      "deletionGuardAcknowledged": false,
+      "deletionGuardDigest": null
+    }
+  },
+  "entries": [
+    {
+      "projectedEntryId": "pe_8b26e3c8e16c64c9777b3ed825766d1dcd8dae3120b555788987709e83815ba4",
+      "logicalMediaId": "88463e99-63a9-40fc-812e-6294b4b12885",
+      "projectedVersionId": "pv_791a3950918e925ce515ee72d99af149c8ddb89a6472929a1c5c94bb1c3b0eaf",
+      "path": "Movies/Local Feature (2019)/Local Feature (2019).mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-01T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "553160996976208050",
+      "visibility": "available",
+      "degraded": null,
+      "retiring": null,
+      "sources": [
+        {
+          "sourceId": "src_ea2ce1b82017134140c9db630fba93bc",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/local-feature-2019/local-feature-2019.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_a50b4bfc66dea50c6d61fa562ab56e0164b6fa1f41479a53d3e8e1a2a0c4df71",
+      "logicalMediaId": "4cd4a89a-41d7-459e-8de2-99cecc3ad204",
+      "projectedVersionId": "pv_a94620f4e7d877a6ea71d0c410a3fde0f476666b842e9d7d225fc6bb68662e4a",
+      "path": "Movies/Remote Feature (2021)/Remote Feature (2021).mkv",
+      "nodeKind": "file",
+      "sizeBytes": 8589934592,
+      "mtime": "2026-06-02T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "7756415431114591209",
+      "visibility": "degraded",
+      "degraded": {
+        "reason": "endpoint-circuit-open",
+        "since": "2026-07-15T00:00:00.000Z"
+      },
+      "retiring": null,
+      "sources": [
+        {
+          "sourceId": "src_dbb507468eae00e8a177e544679fe5b6",
+          "kind": "http-range",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "endpointId": "provider-a",
+            "objectRef": "obj-remote-a-primary"
+          },
+          "byteIdentity": {
+            "sizeBytes": 8589934592,
+            "probeWindowBytes": 1048576,
+            "probes": [
+              {
+                "position": "head",
+                "offset": 0,
+                "length": 1048576,
+                "sha256": "1c0ce356bd84244d6b13fe87b47fd87239ef56b720f29a506c9d939dd84b1384"
+              },
+              {
+                "position": "middle",
+                "offset": 4294443008,
+                "length": 1048576,
+                "sha256": "766fd9b4911ff2451ec676774ee0973b8ec1da401cde11384d45f2e023f8c2c9"
+              },
+              {
+                "position": "tail",
+                "offset": 8588886016,
+                "length": 1048576,
+                "sha256": "fae1f72ad8ae69f4339e1a03e4b31121be3c481de511b37c7b77ae1224f63b97"
+              }
+            ]
+          }
+        },
+        {
+          "sourceId": "src_09466a921c5197ae0d7098c5382b2c06",
+          "kind": "http-range",
+          "preference": 1,
+          "sourceGeneration": 1,
+          "locator": {
+            "endpointId": "provider-b",
+            "objectRef": "obj-remote-a-mirror"
+          },
+          "byteIdentity": {
+            "sizeBytes": 8589934592,
+            "probeWindowBytes": 1048576,
+            "probes": [
+              {
+                "position": "head",
+                "offset": 0,
+                "length": 1048576,
+                "sha256": "1c0ce356bd84244d6b13fe87b47fd87239ef56b720f29a506c9d939dd84b1384"
+              },
+              {
+                "position": "middle",
+                "offset": 4294443008,
+                "length": 1048576,
+                "sha256": "766fd9b4911ff2451ec676774ee0973b8ec1da401cde11384d45f2e023f8c2c9"
+              },
+              {
+                "position": "tail",
+                "offset": 8588886016,
+                "length": 1048576,
+                "sha256": "fae1f72ad8ae69f4339e1a03e4b31121be3c481de511b37c7b77ae1224f63b97"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_ce133479e2fee65bbae6cd026b4cbd2556c87884551e44821326e4c4e0470f5d",
+      "logicalMediaId": "50b3d28e-646c-4ec0-8d99-b4d50eedca50",
+      "projectedVersionId": "pv_68f3690306927cc8a426b88cd3186627b01f293236a964d3e58ba4a85887df2a",
+      "path": "Movies/Shared Feature (2020)/Shared Feature (2020).mkv",
+      "nodeKind": "file",
+      "sizeBytes": 8589934592,
+      "mtime": "2026-06-03T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2582884908215230534",
+      "visibility": "available",
+      "degraded": null,
+      "retiring": null,
+      "sources": [
+        {
+          "sourceId": "src_3ff21482d3dc5be37dd59088c296d701",
+          "kind": "http-range",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "endpointId": "provider-a",
+            "objectRef": "obj-shared"
+          },
+          "byteIdentity": {
+            "sizeBytes": 8589934592,
+            "probeWindowBytes": 1048576,
+            "probes": [
+              {
+                "position": "head",
+                "offset": 0,
+                "length": 1048576,
+                "sha256": "2db2d84d8bac88bc6b51be27dab8b2b7ded26ae59b9c0fa475cfc5d84fd724c7"
+              },
+              {
+                "position": "middle",
+                "offset": 4294443008,
+                "length": 1048576,
+                "sha256": "f743d77c59037535a0c394b654cd6fdba92274106e2621183a2177c6bf988ba5"
+              },
+              {
+                "position": "tail",
+                "offset": 8588886016,
+                "length": 1048576,
+                "sha256": "ed28317ebd94b65da96e26b48582c420c22b2441734c182a3917992f24ef23c5"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_3fc080a3fa84923806c6228a2a6a63f2115e1667f4ad46d1cdbb0a8e7cb15295",
+      "logicalMediaId": "50b3d28e-646c-4ec0-8d99-b4d50eedca50",
+      "projectedVersionId": "pv_68f3690306927cc8a426b88cd3186627b01f293236a964d3e58ba4a85887df2a",
+      "path": "Collections/Staff Picks/Shared Feature (2020).mkv",
+      "nodeKind": "file",
+      "sizeBytes": 8589934592,
+      "mtime": "2026-06-03T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "2582884908215230534",
+      "visibility": "available",
+      "degraded": null,
+      "retiring": null,
+      "sources": [
+        {
+          "sourceId": "src_f1eba82d719e881ad262da7088ed7f2d",
+          "kind": "http-range",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "endpointId": "provider-a",
+            "objectRef": "obj-shared"
+          },
+          "byteIdentity": {
+            "sizeBytes": 8589934592,
+            "probeWindowBytes": 1048576,
+            "probes": [
+              {
+                "position": "head",
+                "offset": 0,
+                "length": 1048576,
+                "sha256": "2db2d84d8bac88bc6b51be27dab8b2b7ded26ae59b9c0fa475cfc5d84fd724c7"
+              },
+              {
+                "position": "middle",
+                "offset": 4294443008,
+                "length": 1048576,
+                "sha256": "f743d77c59037535a0c394b654cd6fdba92274106e2621183a2177c6bf988ba5"
+              },
+              {
+                "position": "tail",
+                "offset": 8588886016,
+                "length": 1048576,
+                "sha256": "ed28317ebd94b65da96e26b48582c420c22b2441734c182a3917992f24ef23c5"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_d53398f7b1ccc97803718c2db93106af5ad021bd80b6d7d0b73131e5ab45ae03",
+      "logicalMediaId": "d86c3a06-e81b-4cc3-8df5-0d95bff54813",
+      "projectedVersionId": "pv_96caa27b20f305e4d361a16b32acf005b374eeb24e8bf327f54d1bda72f0c4b4",
+      "path": "Movies/Degraded Feature (2018)/Degraded Feature (2018).mkv",
+      "nodeKind": "file",
+      "sizeBytes": 8589934592,
+      "mtime": "2026-06-04T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "3369223921280324241",
+      "visibility": "available",
+      "degraded": null,
+      "retiring": null,
+      "sources": [
+        {
+          "sourceId": "src_c2e8a72336724ad615e1fc3077fb2f02",
+          "kind": "http-range",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "endpointId": "provider-a",
+            "objectRef": "obj-degraded"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_7eddead85b287a1183ca460fcf39efe5dcaa1185f57c174f45b7c0d40edfcced",
+      "logicalMediaId": "f59a9a42-a415-4228-8090-90b68e8c6f54",
+      "projectedVersionId": "pv_3d171a65bb335e0992f131899aff137105689fce102066a3e1ea4651ce51b181",
+      "path": "Movies/Retiring Feature (2017)/Retiring Feature (2017).mkv",
+      "nodeKind": "file",
+      "sizeBytes": 1073741824,
+      "mtime": "2026-06-05T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "886585907868827297",
+      "visibility": "retiring",
+      "degraded": null,
+      "retiring": {
+        "deletionIntentId": "8c67f61592ed64d87902a42becc5e367",
+        "declaredAt": "2026-07-01T00:00:00.000Z",
+        "graceDeadline": "2026-08-01T00:00:00.000Z"
+      },
+      "sources": [
+        {
+          "sourceId": "src_ef497b45a1a499215d31a4d09febd51e",
+          "kind": "local",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "rootId": "media-root-a",
+            "relativePath": "movies/retiring-feature-2017/retiring-feature-2017.mkv"
+          },
+          "byteIdentity": null
+        }
+      ]
+    },
+    {
+      "projectedEntryId": "pe_cab745bed942a854ec15b78520f63b20c67ee58db4bf04a7e050944b153af396",
+      "logicalMediaId": "6dc249e1-0b95-4fa6-8d39-266cb1991367",
+      "projectedVersionId": "pv_a3bd62cc15b6ca8e1f84056cfc1e13f61e6e8108e44696b7968d70fdfcb6c468",
+      "path": "Movies/Added Feature (2022)/Added Feature (2022).mkv",
+      "nodeKind": "file",
+      "sizeBytes": 8589934592,
+      "mtime": "2026-07-10T10:00:00.000Z",
+      "mode": 292,
+      "readOnly": true,
+      "inode": "8933581706913530614",
+      "visibility": "available",
+      "degraded": null,
+      "retiring": null,
+      "sources": [
+        {
+          "sourceId": "src_69848b8d33ed0e78f0551f85be9ce27b",
+          "kind": "http-range",
+          "preference": 0,
+          "sourceGeneration": 1,
+          "locator": {
+            "endpointId": "provider-a",
+            "objectRef": "obj-added"
+          },
+          "byteIdentity": null
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,43 @@
+# The operator harness for the NEXT gate: a real Linux or Unraid host, with real media servers.
+#
+# THIS IS NOT A RELEASE STACK. It is deliberately narrow: one service, bind mounts an operator supplies, and
+# no coupling to the catalog-authority Compose files. Nothing here is required to run the automated gates, and
+# nothing in the shipped stacks references it.
+#
+# WHAT IT NEEDS FROM THE HOST
+#   PROJECTIOND_MANIFEST_DIR  the directory the control plane publishes pointer.json + the artifact into
+#   PROJECTIOND_MEDIA_ROOT    the local media root the manifest's `local` sources are relative to
+#   PROJECTIOND_CACHE_DIR     a DURABLE directory for the scan-window cache (not /tmp: a re-scan being free
+#                             depends on it surviving a reboot)
+#   PROJECTIOND_MOUNT         the host directory the namespace appears at, and which media servers read
+#   PROJECTIOND_CONFIG        the daemon configuration file
+#
+# WHY IT IS PRIVILEGED-ISH. A FUSE mount needs /dev/fuse and CAP_SYS_ADMIN, and it needs bidirectional mount
+# propagation for the mount to be visible to other containers on the host. Those are granted explicitly here
+# rather than assumed by the image, which runs non-root by default.
+
+services:
+  projectiond:
+    image: ${PROJECTIOND_IMAGE:-projectiond:phase1-local}
+    build:
+      context: ./projectiond
+    # Root and CAP_SYS_ADMIN are needed to mount. Everything else is dropped.
+    user: "0:0"
+    cap_drop: ["ALL"]
+    cap_add: ["SYS_ADMIN"]
+    security_opt: ["apparmor:unconfined", "no-new-privileges:true"]
+    devices: ["/dev/fuse:/dev/fuse"]
+    read_only: true
+    tmpfs: ["/tmp:size=16m"]
+    command:
+      - --config=/etc/projectiond/config.json
+      - --poll=5s
+    volumes:
+      # The manifest directory is READ-ONLY to the daemon: it consumes generations, it never publishes one.
+      - ${PROJECTIOND_MANIFEST_DIR:?set PROJECTIOND_MANIFEST_DIR}:/var/lib/projectiond/manifest:ro
+      - ${PROJECTIOND_MEDIA_ROOT:?set PROJECTIOND_MEDIA_ROOT}:/var/lib/projectiond/media:ro
+      - ${PROJECTIOND_CACHE_DIR:?set PROJECTIOND_CACHE_DIR}:/var/lib/projectiond/cache
+      - ${PROJECTIOND_CONFIG:?set PROJECTIOND_CONFIG}:/etc/projectiond/config.json:ro
+      # rshared is what makes the mount visible to a media server in another container.
+      - ${PROJECTIOND_MOUNT:?set PROJECTIOND_MOUNT}:/mnt/projection:rshared
+    restart: unless-stopped

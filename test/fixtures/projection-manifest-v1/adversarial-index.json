@@ -1,0 +1,158 @@
+{
+  "cases": [
+    {
+      "file": "adversarial/entry-inode-not-derived.json",
+      "kind": "standalone",
+      "expectedProblem": "ENTRY_INODE_NOT_DERIVED"
+    },
+    {
+      "file": "adversarial/entry-inode-collision.json",
+      "kind": "standalone",
+      "expectedProblem": "INODE_COLLISION"
+    },
+    {
+      "file": "adversarial/entry-duplicate-path.json",
+      "kind": "standalone",
+      "expectedProblem": "DUPLICATE_PATH"
+    },
+    {
+      "file": "adversarial/entry-path-case-collision.json",
+      "kind": "standalone",
+      "expectedProblem": "PATH_CASE_COLLISION"
+    },
+    {
+      "file": "adversarial/entry-path-traversal.json",
+      "kind": "standalone",
+      "expectedProblem": "ENTRY_PATH_RELATIVE_SEGMENT"
+    },
+    {
+      "file": "adversarial/entry-shared-version-size-mismatch.json",
+      "kind": "standalone",
+      "expectedProblem": "SHARED_VERSION_SIZE_MISMATCH"
+    },
+    {
+      "file": "adversarial/entry-multi-source-without-byte-identity.json",
+      "kind": "standalone",
+      "expectedProblem": "MULTI_SOURCE_BYTE_IDENTITY_REQUIRED"
+    },
+    {
+      "file": "adversarial/entry-multi-source-byte-identity-mismatch.json",
+      "kind": "standalone",
+      "expectedProblem": "MULTI_SOURCE_BYTE_IDENTITY_MISMATCH"
+    },
+    {
+      "file": "adversarial/locator-credential-shaped.json",
+      "kind": "standalone",
+      "expectedProblem": "LOCATOR_VALUE_CREDENTIAL_SHAPED"
+    },
+    {
+      "file": "adversarial/locator-url-shaped.json",
+      "kind": "standalone",
+      "expectedProblem": "LOCATOR_VALUE_URL_SHAPED"
+    },
+    {
+      "file": "adversarial/locator-carries-expiry.json",
+      "kind": "standalone",
+      "expectedProblem": "UNKNOWN_FIELD"
+    },
+    {
+      "file": "adversarial/locator-carries-access-url.json",
+      "kind": "standalone",
+      "expectedProblem": "UNKNOWN_FIELD"
+    },
+    {
+      "file": "adversarial/admission-carries-relocations.json",
+      "kind": "standalone",
+      "expectedProblem": "UNKNOWN_FIELD"
+    },
+    {
+      "file": "adversarial/entry-degraded-without-state.json",
+      "kind": "standalone",
+      "expectedProblem": "ENTRY_DEGRADED_STATE_REQUIRED"
+    },
+    {
+      "file": "adversarial/entry-retiring-without-intent.json",
+      "kind": "standalone",
+      "expectedProblem": "ENTRY_RETIRING_STATE_REQUIRED"
+    },
+    {
+      "file": "adversarial/admission-routine-generation-deletes.json",
+      "kind": "standalone",
+      "expectedProblem": "ADMISSION_ROUTINE_GENERATION_DELETES"
+    },
+    {
+      "file": "adversarial/entry-size-not-exact.json",
+      "kind": "standalone",
+      "expectedProblem": "ENTRY_SIZE_INVALID"
+    },
+    {
+      "file": "adversarial/entry-unknown-field.json",
+      "kind": "standalone",
+      "expectedProblem": "UNKNOWN_FIELD"
+    },
+    {
+      "file": "adversarial/entry-writable-mode.json",
+      "kind": "standalone",
+      "expectedProblem": "ENTRY_MODE_INVALID"
+    },
+    {
+      "file": "adversarial/byte-identity-probe-offset-invented.json",
+      "kind": "standalone",
+      "expectedProblem": "BYTE_IDENTITY_PROBE_OFFSET"
+    },
+    {
+      "file": "adversarial/entry-no-sources.json",
+      "kind": "standalone",
+      "expectedProblem": "ENTRY_SOURCES_EMPTY"
+    },
+    {
+      "file": "adversarial/successor-routine-drops-entry.json",
+      "kind": "succession",
+      "expectedProblem": "ENTRY_DISAPPEARED_WITHOUT_DELETION",
+      "previous": "generation-1-baseline.json",
+      "nowIso": "2026-07-15T00:00:00.000Z"
+    },
+    {
+      "file": "adversarial/successor-deletes-entry-that-was-not-retiring.json",
+      "kind": "succession",
+      "expectedProblem": "DELETED_ENTRY_WAS_NOT_RETIRING",
+      "previous": "generation-2-routine-successor.json",
+      "nowIso": "2026-08-20T00:00:00.000Z"
+    },
+    {
+      "file": "adversarial/successor-deletes-before-grace-deadline.json",
+      "kind": "succession",
+      "expectedProblem": "DELETED_ENTRY_GRACE_NOT_ELAPSED",
+      "previous": "generation-2-routine-successor.json",
+      "nowIso": "2026-07-20T00:00:00.000Z"
+    },
+    {
+      "file": "adversarial/successor-predecessor-digest-mismatch.json",
+      "kind": "succession",
+      "expectedProblem": "SUCCESSION_PREDECESSOR_DIGEST_MISMATCH",
+      "previous": "generation-1-baseline.json",
+      "nowIso": "2026-07-15T00:00:00.000Z"
+    },
+    {
+      "file": "adversarial/successor-projected-version-id-changed.json",
+      "kind": "succession",
+      "expectedProblem": "PROJECTED_VERSION_ID_CHANGED",
+      "previous": "generation-1-baseline.json",
+      "nowIso": "2026-07-15T00:00:00.000Z"
+    },
+    {
+      "file": "adversarial/successor-path-changed-for-carried-entry.json",
+      "kind": "succession",
+      "expectedProblem": "PATH_CHANGED_FOR_CARRIED_ENTRY",
+      "previous": "generation-1-baseline.json",
+      "nowIso": "2026-07-15T00:00:00.000Z"
+    },
+    {
+      "file": "adversarial/successor-shrink-guard-unacknowledged.json",
+      "kind": "succession",
+      "expectedProblem": "SHRINK_GUARD_UNACKNOWLEDGED",
+      "previous": "adversarial/successor-shrink-guard-base.json",
+      "nowIso": "2026-08-20T00:00:00.000Z"
+    }
+  ]
+}
