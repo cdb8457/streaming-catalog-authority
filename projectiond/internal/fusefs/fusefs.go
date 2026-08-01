@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/hanwen/go-fuse/v2/fuse"
+	"golang.org/x/sys/unix"
 
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/daemon"
 	"github.com/cdb8457/streaming-catalog-authority/projectiond/internal/namespace"
@@ -439,23 +440,52 @@ type Mounted struct {
 	served chan struct{}
 }
 
+// MountSettings are the few knobs a caller has over how the mount is made.
+type MountSettings struct {
+	// Debug logs the FUSE protocol. Explicit, off by default, and a development switch: it is the one mode
+	// that prints paths.
+	Debug bool
+	// StrictDirectMount refuses to fall back to the `fusermount` suid helper.
+	//
+	// The default is to allow the fallback, because a deployment that runs unprivileged with fusermount3
+	// installed is a legitimate shape. The image gate turns this ON, which is how it proves the shipped
+	// image — which contains no helper at all — really did mount by syscall rather than quietly finding one.
+	StrictDirectMount bool
+}
+
 // Mount mounts the namespace and starts serving it.
 //
 // The mount is read-only at the kernel level, so every mutation syscall is refused before it reaches this
 // process. Mount returns only once the mount is live: a caller that gets a *Mounted can immediately stat it.
-func Mount(d *daemon.Daemon, mountpoint string, debug bool) (*Mounted, error) {
+func Mount(d *daemon.Daemon, mountpoint string, settings MountSettings) (*Mounted, error) {
 	fs := New(d)
 	opts := &fuse.MountOptions{
-		AllowOther:    false,
-		Debug:         debug,
+		// ALLOW OTHER USERS TO READ IT. A media server is the whole audience for this namespace, and one
+		// normally runs as an unprivileged user in a sibling container while the mount is made by root.
+		// Without allow_other the kernel hands every such reader EACCES, so the mount would succeed and the
+		// product would still not work. (Which servers those are is the control plane's business; the data
+		// plane deliberately does not know their names.)
+		//
+		// It is safe here in a way it would not be for a writable filesystem: every entry is 0444, there is no
+		// mutation surface at all, and `default_permissions` below has the KERNEL enforce those bits rather
+		// than trusting this process to.
+		AllowOther:    true,
+		Debug:         settings.Debug,
 		FsName:        "projectiond",
 		Name:          "projectiond",
 		DisableXAttrs: true,
-		Options:       []string{"ro", "noatime", "nosuid", "nodev", "noexec"},
+		// THESE OPTIONS ARE ONLY THE ONES A DIRECT MOUNT UNDERSTANDS. go-fuse converts exactly dev/nodev,
+		// suid/nosuid and exec/noexec from this list into mount flags; anything else it passes through as FUSE
+		// filesystem DATA, and the kernel rejects unknown data with EINVAL. `ro` and `noatime` used to be here,
+		// which made every direct mount fail with "invalid argument" and silently fall back to the fusermount
+		// suid helper — a helper the shipped distroless image does not contain, so the image could not mount at
+		// all. The read-only and noatime intent moved to DirectMountFlags below, where it belongs.
+		Options:       []string{"nosuid", "nodev", "noexec", "default_permissions"},
 		MaxBackground: 16,
-		// Prefer mount(2) directly when privileged, so a deployment needs no fusermount helper; go-fuse falls
-		// back to the helper when the syscall is unavailable.
-		DirectMount: true,
+		// Mount by syscall rather than through the suid helper, so the deployment needs no fusermount binary.
+		DirectMount:       true,
+		DirectMountStrict: settings.StrictDirectMount,
+		DirectMountFlags:  unix.MS_RDONLY | unix.MS_NOATIME | unix.MS_NOSUID | unix.MS_NODEV | unix.MS_NOEXEC,
 	}
 	server, err := fuse.NewServer(fs, mountpoint, opts)
 	if err != nil {

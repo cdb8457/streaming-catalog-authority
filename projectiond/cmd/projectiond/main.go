@@ -30,6 +30,8 @@ func main() {
 	checkOnly := flag.Bool("check-config", false, "validate the configuration and the pointer, then exit")
 	pollInterval := flag.Duration("poll", 5*time.Second, "how often to re-read the pointer file")
 	debug := flag.Bool("debug-fuse", false, "log the FUSE protocol (very verbose; never logs file bytes)")
+	strictMount := flag.Bool("strict-direct-mount", false,
+		"refuse to fall back to the fusermount suid helper; proves the mount was made by syscall")
 	showVersion := flag.Bool("version", false, "print the version and exit")
 	flag.Parse()
 
@@ -83,7 +85,9 @@ func main() {
 	}
 
 	// Mount returns a mount whose request loop is already running and whose INIT handshake has completed.
-	mount, err := fusefs.Mount(d, cfg.MountPoint, *debug)
+	mount, err := fusefs.Mount(d, cfg.MountPoint, fusefs.MountSettings{
+		Debug: *debug, StrictDirectMount: *strictMount,
+	})
 	if err != nil {
 		fail("mount refused: " + err.Error())
 	}

@@ -13,9 +13,13 @@ README is the **control plane** for that — the part that decides what exists. 
 it is what you can run today.
 
 The **data plane** — a small Go daemon, `projectiond`, that serves a provider-agnostic, read-only namespace of
-regular files over FUSE from a manifest PostgreSQL publishes — now exists as an **experimental vertical
-slice**. It is not a release, it is not wired into any shipped Compose stack, and it has never been run
-against a real media server.
+regular files over FUSE — now exists as an **experimental vertical slice**. It is not a release, it is not
+wired into any shipped Compose stack, and it has never been run against a real media server.
+
+**The manifest publisher does not exist yet.** The manifest contract, its schema, its cross-language export
+and its fixtures are built and tested, and the daemon consumes them; what is missing is the production
+PostgreSQL path that turns the catalog into a published generation. Today a manifest comes from a test fixture
+or from the gate's fixture tool, so "PostgreSQL publishes the namespace" is the design, not the current state.
 
 **What actually works, and is proved by a gate you can run.** `projectiond` admits a manifest v1 artifact
 (refusing every one of the 28 adversarial fixtures with the same problem code the TypeScript validator emits),
@@ -30,14 +34,23 @@ seek, hash, refused mutations, a generation swap under an open handle, and unmou
 ```bash
 npm run go:gates        # format, vet, build, test, race — through a pinned Go image, no host Go needed
 npm run go:fuse-smoke   # the privileged mount gate; skips with an explicit reason without /dev/fuse
-npm run go:image-smoke  # builds the image and runs it non-root on a read-only filesystem
+npm run go:image-smoke  # builds the operator image; proves the SAME image mounts (root-in-container +
+                        # CAP_SYS_ADMIN + /dev/fuse, by syscall, no fusermount helper) and that an ordinary
+                        # NON-ROOT container can list, stat, hash and seek it while every mutation is refused
 ```
 
 **What is NOT proved, and is not claimed.** No **Plex**, **Jellyfin** or **Emby** scan, playback, seek or
-transcode has been run against this mount. No **Unraid** or other real-environment gate has been run. The
-amplification budgets are measured against the in-process fake endpoint, not a real provider. Those are the
-gates in [docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md](docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md), and until
-they pass on a real host this is a slice that works on a test bench.
+transcode has been run against this mount. No **Unraid** or other real-environment gate has been run. There is
+no production manifest publisher.
+
+The amplification numbers come from a **synthetic 50-entry harness** against an in-process fake endpoint: it
+reads the three fixed windows of the contract's own probe plan and measures range requests, resolution
+requests, bytes, 429s and peak concurrency against budgets whose denominators are stated. That is evidence
+about the daemon under a defined probe plan — it is **not** evidence about what a real media server's metadata
+pass does, and whether a real scanner stays inside those windows is an open question.
+
+Those are the gates in [docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md](docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md),
+and until they pass on a real host this is a slice that works on a test bench.
 
 - The decision, and the earlier non-goals it narrows: [docs/ADR_002_PROJECTION_APPLIANCE.md](docs/ADR_002_PROJECTION_APPLIANCE.md)
 - The frozen contract the daemon is built against: [docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md](docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md)

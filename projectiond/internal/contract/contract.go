@@ -136,12 +136,20 @@ type HandleBinding struct {
 	AccessRefreshRebinds   bool     `json:"ACCESS_REFRESH_REBINDS_HANDLE"`
 }
 
+// Phase1Budgets: every multiplier names its denominator, because "1.2x" of an unnamed quantity is not a
+// budget, it is a number that gets loosened later by somebody who does not know what it counted.
 type Phase1Budgets struct {
-	MaxRequestMultiplier       float64 `json:"MAX_REQUEST_MULTIPLIER"`
-	MaxByteMultiplier          float64 `json:"MAX_BYTE_MULTIPLIER"`
-	MaxHTTP429                 int     `json:"MAX_HTTP_429"`
-	MaxRescanRequestMultiplier float64 `json:"MAX_RESCAN_REQUEST_MULTIPLIER"`
-	MaxLibraryChurnItems       int     `json:"MAX_LIBRARY_CHURN_ITEMS"`
+	// MaxByteMultiplier is against (probe window x scan windows x entries).
+	MaxByteMultiplier float64 `json:"MAX_BYTE_MULTIPLIER"`
+	// ScanWindowsPerEntry is how many fixed windows a synthetic scan reads per entry.
+	ScanWindowsPerEntry int `json:"SCAN_WINDOWS_PER_ENTRY"`
+	// MaxRangeRequestMultiplier is against (entries x scan windows). Ranged GETs only.
+	MaxRangeRequestMultiplier float64 `json:"MAX_RANGE_REQUEST_MULTIPLIER"`
+	// MaxResolutionRequestMultiplier is against entries. Access resolutions only.
+	MaxResolutionRequestMultiplier float64 `json:"MAX_RESOLUTION_REQUEST_MULTIPLIER"`
+	MaxHTTP429                     int     `json:"MAX_HTTP_429"`
+	MaxRescanRequestMultiplier     float64 `json:"MAX_RESCAN_REQUEST_MULTIPLIER"`
+	MaxLibraryChurnItems           int     `json:"MAX_LIBRARY_CHURN_ITEMS"`
 }
 
 type RetryClasses struct {

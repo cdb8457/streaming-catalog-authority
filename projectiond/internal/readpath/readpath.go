@@ -110,6 +110,10 @@ type Reader struct {
 	flight map[string]*flightCall
 	nextID atomic.Uint64
 	sleep  func(context.Context, time.Duration)
+	// onFetchComplete is a TEST SEAM, nil in production. It runs on the fetch goroutine after the transport
+	// has produced bytes and before they are published, which is the exact window a duplicate fetch could
+	// once slip through.
+	onFetchComplete func()
 }
 
 func NewReader(cfg Config, router Router, probe *cache.ProbeCache, playback *cache.PlaybackCache) (*Reader, error) {
@@ -147,14 +151,24 @@ type flightCall struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
-	mu      sync.Mutex
-	waiters int
+	mu        sync.Mutex
+	waiters   int
+	abandoned bool
 }
 
-func (c *flightCall) join() {
+// tryJoin adds a participant, unless the flight has already been abandoned.
+//
+// A CALLER MUST NOT JOIN A CANCELLED FLIGHT. Once the last participant leaves, the fetch is cancelled and
+// will fail; a newcomer that joined it anyway would inherit that failure even though nothing was wrong with
+// its own request. It starts a fresh flight instead.
+func (c *flightCall) tryJoin() bool {
 	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.abandoned {
+		return false
+	}
 	c.waiters++
-	c.mu.Unlock()
+	return true
 }
 
 // leave drops one participant. The fetch is cancelled when the last one goes.
@@ -162,6 +176,9 @@ func (c *flightCall) leave() {
 	c.mu.Lock()
 	c.waiters--
 	last := c.waiters <= 0
+	if last {
+		c.abandoned = true
+	}
 	c.mu.Unlock()
 	if last {
 		c.cancel()
@@ -563,25 +580,40 @@ func (r *Reader) blockBytesEpoch(ctx context.Context, h *Handle, b block, epoch 
 	// opens of the same file asking for the same block share one fetch.
 	r.mu.Lock()
 	call, joined := r.flight[name]
-	if joined {
-		call.join()
+	if joined && call.tryJoin() {
 		r.mu.Unlock()
 		r.Stats.SingleFlightJoin.Add(1)
 	} else {
+		// Either there was no flight, or the one there had been abandoned by its last participant and is on
+		// its way out. Replace it rather than waiting on a fetch that is already cancelled.
 		call = &flightCall{done: make(chan struct{}), waiters: 1}
 		// The fetch runs under its OWN deadline rather than any one participant's, and is cancelled when the
 		// last participant leaves. That is one goroutine per in-flight distinct block: bounded by the kernel's
 		// outstanding-request limit plus at most one prefetch per open handle.
 		call.ctx, call.cancel = context.WithTimeout(context.Background(), r.cfg.ReadDeadline)
+		started := call
 		r.flight[name] = call
 		r.mu.Unlock()
 		go func() {
-			data, err := r.fetchWithRetries(call.ctx, h, b)
-			call.data, call.err = data, err
+			data, err := r.fetchWithRetries(started.ctx, h, b)
+			if r.onFetchComplete != nil {
+				r.onFetchComplete()
+			}
+			// PUBLISHED BEFORE IT LEAVES THE MAP. An earlier draft deleted the flight, unlocked, and only then
+			// let a waiter wake up and populate the cache. A read arriving in that window found neither a
+			// flight to join nor a cache to read, and started a duplicate provider request — so "exactly one
+			// fetch" held only when nobody arrived at precisely the wrong moment.
+			if err == nil {
+				r.publish(h, b, key, data)
+			}
+			started.data, started.err = data, err
 			r.mu.Lock()
-			delete(r.flight, name)
+			// Only remove THIS flight: a newcomer may already have installed a replacement.
+			if r.flight[name] == started {
+				delete(r.flight, name)
+			}
 			r.mu.Unlock()
-			close(call.done)
+			close(started.done)
 		}()
 	}
 
@@ -600,9 +632,8 @@ func (r *Reader) blockBytesEpoch(ctx context.Context, h *Handle, b block, epoch 
 	if err != nil {
 		return nil, err
 	}
-	// A result produced for an epoch the handle has left is not cached, and neither is one for a handle that
-	// has been released. That is what stops a cancelled prefetch from populating the cache for a stream that
-	// seeked away, or for one that is gone.
+	// The bytes are already in the cache; what remains is this HANDLE's own pin, which is per-participant
+	// rather than per-fetch. A handle that has been released or has seeked away pins nothing.
 	select {
 	case <-h.closed:
 		return data, nil
@@ -613,15 +644,31 @@ func (r *Reader) blockBytesEpoch(ctx context.Context, h *Handle, b block, epoch 
 		return data, nil
 	}
 	if b.persistent {
-		_ = r.probe.Put(key, data)
 		r.probe.Pin(key)
 		h.mu.Lock()
 		h.pinnedKeys = append(h.pinnedKeys, key)
 		h.mu.Unlock()
-	} else {
-		r.playback.Put(h.ID, key, data)
 	}
 	return data, nil
+}
+
+// publish puts a completed block in the cache it belongs to.
+//
+// It runs on the fetch goroutine, BEFORE the flight leaves the map, so there is no instant at which a block
+// is neither in flight nor cached. A released handle still publishes to the persistent scan cache — those
+// bytes are keyed by byte identity and are useful to everyone — but not to the ephemeral playback cache,
+// whose entries belong to a handle that no longer exists.
+func (r *Reader) publish(h *Handle, b block, key cache.Key, data []byte) {
+	if b.persistent {
+		_ = r.probe.Put(key, data)
+		return
+	}
+	select {
+	case <-h.closed:
+		return
+	default:
+	}
+	r.playback.Put(h.ID, key, data)
 }
 
 // fetchWithRetries is the classified retry loop with bounded, proof-gated failover.

@@ -100,6 +100,38 @@ func Fail(cond string, class Class, detail string) *Failure {
 	return &Failure{Cond: cond, Class: class, Detail: detail}
 }
 
+// endpointHealthConditions are the failures that say something about the ENDPOINT rather than about one
+// object. Only these open the per-endpoint circuit breaker.
+//
+// WHY THE DISTINCTION IS LOAD-BEARING. An earlier draft counted every classified failure, so five entries
+// whose objects a provider no longer had — five ordinary 404s — opened the breaker and blacked out every
+// healthy title on that endpoint. A missing object is a fact about that object; the provider is fine. The
+// breaker exists to stop a DEAD ENDPOINT costing one failed request per file per scan, and that is the only
+// thing it should react to.
+var endpointHealthConditions = map[string]bool{
+	CondSourceUnreachable:   true, // connection, timeout, 429, 5xx
+	CondSourceAuthRefused:   true, // the credential is not working: endpoint-wide
+	CondAccessResolveFailed: true, // the resolver itself is not answering
+	CondRangeUnsupported:    true, // a server answering 200 to a ranged request is broken for EVERY object
+	CondRedirectRefused:     true, // the endpoint is redirecting where it was told not to
+	CondTLSVerifyFailed:     true,
+	CondAccessURLNotAllowed: true, // it handed back a destination it was never configured to name
+}
+
+// CountsTowardEndpointBreaker reports whether a condition is evidence about the endpoint.
+//
+// Deliberately absent, and therefore never able to open the breaker:
+//
+//   - source-reference-unknown, source-not-found — this OBJECT is gone; the endpoint answered correctly.
+//   - size-disagrees-with-manifest — this OBJECT is not what the manifest says it is.
+//   - range-mismatch, short-body — this OBJECT's response was wrong or truncated. A 416, a bad Content-Range
+//     or a cut-off body is a fact about one object's storage, and five such objects must not black out every
+//     healthy title on the endpoint. `range-unsupported` IS counted, because a server that answers 200 to a
+//     ranged request is broken for everything, not for one file.
+//   - access-lease-expired — the normal end of a signed URL's life.
+//   - circuit-open, admission-queue-timeout — the daemon's own back-pressure, not the endpoint's health.
+func CountsTowardEndpointBreaker(cond string) bool { return endpointHealthConditions[cond] }
+
 // AsFailure recovers a *Failure from an error chain, or synthesises an EIO one. Nothing escapes this package
 // as an unclassified error.
 func AsFailure(err error) *Failure {

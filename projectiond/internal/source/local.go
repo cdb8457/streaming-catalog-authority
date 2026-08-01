@@ -14,6 +14,16 @@ import (
 
 // LocalAdapter is the passthrough source: bytes that are already on a disk this host can see.
 //
+// THE DEADLINE HERE IS NOT ABSOLUTE, AND THAT LIMIT IS STATED RATHER THAN GLOSSED. `pread(2)` is a blocking
+// syscall with no cancellation: the context is checked before the open and between successive preads, so a
+// read is bounded by "the deadline plus at most one outstanding pread". On a local block-device-backed
+// filesystem that remainder is microseconds and the guarantee is effectively absolute. On a HUNG NETWORK
+// FILESYSTEM — an unresponsive NFS or SMB mount behind a configured root — a single pread can block in
+// uninterruptible sleep for far longer than the read deadline, and nothing in userspace can stop it.
+//
+// So a configured local root MUST be genuinely local. Pointing one at a network mount trades the anti-hang
+// contract for a convenience, and the contract is the more valuable of the two.
+//
 // IT IS ROOT-CONFINED BY CONSTRUCTION, NOT BY STRING CHECKING. Each configured root is opened once as a
 // directory file descriptor, and every subsequent open walks it one component at a time with `openat` and
 // `O_NOFOLLOW`. There is no point at which a path is concatenated and handed to the kernel, so there is no

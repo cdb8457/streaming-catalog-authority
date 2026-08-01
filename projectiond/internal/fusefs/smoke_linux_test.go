@@ -95,9 +95,13 @@ func TestFUSEMountServesTheNamespace(t *testing.T) {
 
 	// Mount starts the request loop and waits for INIT before returning; without a serve loop the first
 	// readdir below would hang forever.
-	mount, err := Mount(d, mountPoint, false)
+	// STRICT: the smoke proves the mount was made by syscall, not by finding a suid helper on the box.
+	mount, err := Mount(d, mountPoint, MountSettings{StrictDirectMount: true})
 	if err != nil {
-		t.Skipf("this host cannot mount FUSE: %v", err)
+		// NOT a skip. By this point PROJECTIOND_FUSE_SMOKE is set and /dev/fuse exists, so a strict
+		// direct-mount failure is a regression — an EINVAL from bad mount flags, or a silent fall back to a
+		// helper. Skipping here is how such a regression would have shown up as a green run.
+		t.Fatalf("strict direct mount failed on a host that has /dev/fuse: %v", err)
 	}
 	t.Logf("phase: %s", "MOUNTED")
 	// Readiness is only true once the mount is actually serving, which is after Mount returned.
@@ -300,7 +304,7 @@ func TestFUSEMountServesTheNamespace(t *testing.T) {
 		t.Fatal("the namespace is still readable after unmount")
 	}
 
-	remounted, err := Mount(d, mountPoint, false)
+	remounted, err := Mount(d, mountPoint, MountSettings{StrictDirectMount: true})
 	if err != nil {
 		t.Fatalf("remount: %v", err)
 	}

@@ -294,10 +294,14 @@ export const PROJECTIOND_CACHE_POLICY = Object.freeze({
      * plan, and nothing beyond them.
      *
      * AMENDED IN PHASE 1. This was one window, on the assumption that a metadata pass reads a header and
-     * stops. Measured scanner behaviour is a header, something near the middle, and the tail — where a
-     * container keeps its index. With only the head persistent, the other two probes landed in ephemeral
-     * playback chunks that are dropped on release, so a second scan re-fetched them and "a re-scan costs
-     * zero provider requests" was unachievable by construction rather than by defect.
+     * stops. The access pattern this contract CHOOSES TO SUPPORT is a header, something near the middle, and
+     * the tail — where a container keeps its index. With only the head persistent, the other two probes
+     * landed in ephemeral playback chunks that are dropped on release, so a second scan re-fetched them and
+     * "a re-scan costs zero provider requests" was unachievable by construction rather than by defect.
+     *
+     * THIS IS A DESIGN CHOICE, NOT A MEASUREMENT. No Plex, Jellyfin or Emby scan has been run against this
+     * namespace. The Phase 1 harness is a SYNTHETIC scanner that reads exactly these three windows; whether a
+     * real media server's metadata pass stays inside them is an open question and a later evidence gate.
      */
     BYTES_PER_VERSION: 3 * 1_048_576,
     /** How many fixed windows that is. The byte budget below is measured against this many per entry. */
@@ -432,18 +436,26 @@ export const PROJECTIOND_PLATFORM_SUPPORT = Object.freeze({
  * rather than only in the plan document so a suite can import them instead of copying them.
  */
 export const PROJECTION_PHASE_1_BUDGETS = Object.freeze({
-  /** Provider requests during one library scan, as a multiple of the entry count. */
-  MAX_REQUEST_MULTIPLIER: 1.2,
   /**
-   * Provider bytes during one library scan, as a multiple of
+   * Provider bytes during one synthetic scan, as a multiple of
    * (probe window x SCAN_WINDOWS_PER_ENTRY x entry count).
-   *
-   * AMENDED IN PHASE 1 to name the scan-window count explicitly. The denominator was previously one window
-   * per entry, which no real scanner matches; leaving it there would have meant either a budget that always
-   * failed or a harness quietly reading less than a media server does.
    */
   MAX_BYTE_MULTIPLIER: 1.2,
   SCAN_WINDOWS_PER_ENTRY: 3,
+  /**
+   * RANGE requests during one synthetic scan, as a multiple of (entry count x SCAN_WINDOWS_PER_ENTRY).
+   *
+   * AMENDED IN PHASE 1, AND THE DENOMINATOR IS THE WHOLE POINT. The budget was "1.2 x entry count", which is
+   * arithmetically unreachable: a scan that reads three separate windows makes at least three ranged requests
+   * per entry, so the gate could never have passed however well the daemon behaved. A budget that cannot be
+   * met is worse than no budget, because it gets quietly loosened later by someone who does not know why.
+   *
+   * This counts ranged GETs against the object endpoint, and nothing else — resolutions are counted
+   * separately below, because they are a different request to a different surface.
+   */
+  MAX_RANGE_REQUEST_MULTIPLIER: 1.2,
+  /** ACCESS-RESOLUTION requests during one synthetic scan, as a multiple of entry count. */
+  MAX_RESOLUTION_REQUEST_MULTIPLIER: 1.2,
   /** Not "few". Zero. A 429 means the admission limits did not hold. */
   MAX_HTTP_429: 0,
   /** A re-scan of an unchanged library costs no provider request at all: the probe cache already has it. */

@@ -147,20 +147,34 @@ func (p EgressPolicy) DialContext(base *net.Dialer) func(context.Context, string
 	}
 }
 
+// checkIP classifies a resolved address.
+//
+// THE OVERRIDE IS NARROW, AND DELIBERATELY SO. An earlier draft made AllowLoopback return nil before every
+// classification, which meant enabling the in-process fake also authorised 169.254.169.254 — the cloud
+// metadata service on every major provider — along with 0.0.0.0 and multicast. The switch is called
+// AllowPrivateAddresses and it now permits exactly that: loopback and RFC1918 private unicast. Link-local,
+// unspecified, multicast and anything else non-routable stay refused whatever it is set to, because no test
+// fixture has ever needed them and a switch that quietly widens past its own name is how a test convenience
+// becomes a server-side request forgery.
 func (p EgressPolicy) checkIP(ip net.IP) *Failure {
-	if p.AllowLoopback {
-		return nil
-	}
 	switch {
+	case ip.IsUnspecified():
+		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to an unspecified address")
+	case ip.IsMulticast(), ip.IsInterfaceLocalMulticast(), ip.IsLinkLocalMulticast():
+		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to a multicast address")
+	case ip.IsLinkLocalUnicast():
+		// 169.254.169.254 lives here. Never reachable, under any switch.
+		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to a link-local address")
 	case ip.IsLoopback():
+		if p.AllowLoopback {
+			return nil
+		}
 		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to a loopback address")
 	case ip.IsPrivate():
+		if p.AllowLoopback {
+			return nil
+		}
 		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to a private address")
-	case ip.IsLinkLocalUnicast(), ip.IsLinkLocalMulticast():
-		// 169.254.169.254 is the cloud metadata service on every major provider.
-		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to a link-local address")
-	case ip.IsUnspecified(), ip.IsMulticast(), ip.IsInterfaceLocalMulticast():
-		return Fail(CondAccessURLNotAllowed, ClassTerminal, "resolved to a non-routable address")
 	}
 	return nil
 }

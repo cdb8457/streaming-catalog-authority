@@ -64,21 +64,30 @@ Run against **Plex, Jellyfin and Emby**, each with the mount as a library root.
 
 ## 5. Hard gates — amplification
 
-Measured at the harness's fake HTTP Range server during one full scan of the ~50-entry corpus.
+Measured at the harness's fake HTTP Range server during one full **synthetic scan** of the ~50-entry corpus.
+A synthetic scan opens every entry and reads a small window at each of the three fixed probe offsets of the
+contract's own probe plan. It is not a real media server's metadata pass, and none of these numbers is
+evidence about one; see G7 and the environment table for where that is proved instead.
+
+**EVERY MULTIPLIER NAMES ITS DENOMINATOR.** "1.2x" of an unnamed quantity is not a budget. An earlier draft
+said "provider requests ≤ 1.2x the entry count", which was arithmetically unreachable against an
+implementation that necessarily makes one ranged request per scan window — three per entry — so the gate
+could never have passed however well the daemon behaved.
 
 | # | Gate | Budget |
 |---|---|---|
-| G14 | **Request multiplier** | Provider requests **≤ 1.2x** the entry count. |
-| G15 | **Byte multiplier** | Provider bytes **≤ 1.2x** (configured probe window x entry count). |
+| G14a | **Range-request multiplier** | Ranged GETs against the object endpoint **≤ 1.2x** (entry count x scan windows per entry). With three windows and 50 entries: **≤ 180**. |
+| G14b | **Resolution-request multiplier** | Access-resolution requests **≤ 1.2x** the entry count. With 50 entries: **≤ 60**. |
+| G15 | **Byte multiplier** | Provider bytes **≤ 1.2x** (probe window x scan windows per entry x entry count). |
 | G16 | **Rate limiting** | HTTP **429** responses observed: **0**. Not "few". Zero — a 429 means the admission limits did not hold. |
 | G17 | **Connection cap** | Concurrent provider connections never exceed the configured per-endpoint cap, sampled at the server on every accept. |
-| G18 | **High-concurrency scan** | All three servers scanning simultaneously: G14–G17 still hold, unchanged. |
-| G19 | **Re-scan** | A second scan with an unchanged manifest issues **zero** provider requests — the probe-prefix cache already holds every byte a scan reads. |
+| G18 | **High-concurrency scan** | All three servers scanning simultaneously: G14a–G17 still hold, unchanged. |
+| G19 | **Re-scan** | A second synthetic scan with an unchanged manifest issues **zero** ranged GETs and **zero** resolutions — the persistent scan-window cache already holds every byte such a scan reads, at all three windows, and survives a daemon restart. |
 | G20 | **Duplicate probe / single-flight** | Twenty concurrent opens of the same entry, each reading the same first chunk, produce **exactly one** provider request. |
 | G21 | **Range discipline** | A fake server that answers a ranged request with a full-body `200` causes the source to fail immediately; bytes read from that response: **0**. A server that returns a short body, a mismatched `Content-Range`, or a total size disagreeing with the manifest is likewise failed. |
 | G22 | **Comparison control** | The same corpus behind an rclone/WebDAV mount, measured the same way. This is **evidence, not architecture**: it exists to record what the naive approach costs. It has no pass threshold. |
 
-**What G14–G21 measure, and what they deliberately do not.** These budgets are the **daemon's** traffic while
+**What G14a–G21 measure, and what they deliberately do not.** These budgets are the **daemon's** traffic while
 a library is scanned and played. They do **not** include the traffic the **control plane** spends computing
 byte-identity probes when it produces a manifest — up to three probe windows per projected version, once,
 at production time, and zero thereafter for an unchanged version. That cost belongs to manifest production
@@ -94,7 +103,7 @@ cost and would hide a real regression in the scan path.
 | Environment | Can close | Cannot close |
 |---|---|---|
 | **Windows / Docker Desktop, developer machine** | G1. The manifest contract, path normalization, inode derivation, admission, succession and the adversarial corpus — all pure, all offline. Go unit tests for the Range client against a fake server. | Everything involving a mount. No FUSE, no mount propagation, no media server, no page cache, no inode observed by a scanner. |
-| **Linux CI (GitHub-hosted runner, containerized)** | G1, plus G14–G17, G19, G20, G21, G23, G24, G25, G26 against the fake corpus with a **synthetic** reader driving the mount instead of a media server. The lease gates need no media server, so they run here. FUSE is available in a privileged container; mount propagation into a *sibling* container is not reliably testable here. | G7–G13, G18, G22 — all require real media servers reading a mount they can see. G6's PostgreSQL-outage leg is automatable; its media-server assertion is not. G27's admission-refusal half is automatable here; its three-server half is not. |
+| **Linux CI (GitHub-hosted runner, containerized)** | G1, plus G14a, G14b, G15–G17, G19, G20, G21, G23, G24, G25, G26 against the fake corpus with a **synthetic** reader driving the mount instead of a media server. The lease gates need no media server, so they run here. FUSE is available in a privileged container; mount propagation into a *sibling* container is not reliably testable here. | G7–G13, G18, G22 — all require real media servers reading a mount they can see. G6's PostgreSQL-outage leg is automatable; its media-server assertion is not. G27's admission-refusal half is automatable here; its three-server half is not. |
 | **Linux / Unraid real environment, operator-run** | Everything, including G7–G13, G18, G22 and G27, and the real-provider correctness runs — which are the only place a **real** expiring access URL is exercised. | Nothing — but it is manual, so it is run at tranche close and before any release, not per commit. |
 
 **This split is a statement about evidence, not a schedule.** A Windows green run is not a Phase 1 pass and

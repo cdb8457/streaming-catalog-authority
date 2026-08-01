@@ -164,10 +164,9 @@ func (a *HTTPRangeAdapter) recordFailure(err error) {
 	if a.breaker == nil {
 		return
 	}
-	f := AsFailure(err)
-	// A successful lease rotation never reaches here. A resolution or a fetch that actually failed does, and
-	// that is what the breaker is for.
-	if f.Cond == CondCircuitOpen || f.Cond == CondAdmissionQueue {
+	// ONLY ENDPOINT-HEALTH FAILURES OPEN THE BREAKER. A handful of objects a provider no longer has must not
+	// black out every healthy title on the endpoint; see CountsTowardEndpointBreaker.
+	if !CountsTowardEndpointBreaker(AsFailure(err).Cond) {
 		return
 	}
 	a.breaker.RecordFailure()

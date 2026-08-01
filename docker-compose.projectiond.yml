@@ -6,10 +6,14 @@
 #
 # THE MODULE CACHE IS A NAMED VOLUME, so the first run downloads dependencies once and every later run is
 # offline. `go.sum` is committed, so what gets downloaded is pinned by digest rather than by version range.
+#
+# THE IMAGE IS PINNED BY DIGEST, not by tag. `golang:1.26.5-bookworm` is mutable — it is rebuilt whenever its
+# base is patched — so a tag alone means "whatever that name pointed at when you happened to pull". The tag is
+# kept beside the digest for readability; the digest is what actually selects the image.
 
 services:
   go-gate:
-    image: golang:1.26.5-bookworm
+    image: golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
     working_dir: /workspace/projectiond
     volumes:
       - ./:/workspace
@@ -25,7 +29,7 @@ services:
   # service turns cgo on for the sole purpose of running `go test -race`, which is otherwise impossible on
   # linux/amd64 and would silently be a gate that never ran.
   go-race:
-    image: golang:1.26.5-bookworm
+    image: golang:1.26.5-bookworm@sha256:1ecb7edf62a0408027bd5729dfd6b1b8766e578e8df93995b225dfd0944eb651
     working_dir: /workspace/projectiond
     volumes:
       - ./:/workspace
@@ -38,7 +42,8 @@ services:
     command: ["go", "test", "-race", "-count", "1", "./..."]
 
   # The FUSE smoke run. It needs /dev/fuse and CAP_SYS_ADMIN, which is exactly why it is a separate service
-  # with a separate opt-in rather than something the ordinary gates inherit.
+  # with a separate opt-in rather than something the ordinary gates inherit. It mounts by syscall and asserts
+  # so strictly, which is why the image needs no fusermount helper.
   fuse-smoke:
     build:
       context: ./projectiond

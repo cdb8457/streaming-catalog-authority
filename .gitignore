@@ -24,3 +24,6 @@ _wire.py
 # deploy/ci/acceptance/redact-artifacts.sh exists to keep out of anything shared.
 deploy/ci/acceptance/test-results/
 deploy/ci/acceptance/playwright-report/
+
+# Scratch directory for the projectiond image-mount gate.
+.projectiond-image-gate/

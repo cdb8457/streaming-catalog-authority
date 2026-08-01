@@ -842,12 +842,20 @@ test('the platform table says what a Windows box can and cannot prove', () => {
 });
 
 test('the Phase 1 budgets are the numbers the plan states', () => {
-  assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_REQUEST_MULTIPLIER, 1.2, 'request multiplier');
+  // EVERY MULTIPLIER NAMES ITS DENOMINATOR. "1.2x the entry count" for requests was arithmetically
+  // unreachable against an implementation that necessarily reads three windows per entry.
+  assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_RANGE_REQUEST_MULTIPLIER, 1.2, 'range-request multiplier');
+  assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_RESOLUTION_REQUEST_MULTIPLIER, 1.2, 'resolution multiplier');
   assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_BYTE_MULTIPLIER, 1.2, 'byte multiplier');
+  assert(!('MAX_REQUEST_MULTIPLIER' in PROJECTION_PHASE_1_BUDGETS),
+    'the ambiguous request multiplier is gone rather than sitting beside its replacement');
+  assert(PROJECTION_PHASE_1_BUDGETS.MAX_RANGE_REQUEST_MULTIPLIER
+    * PROJECTION_PHASE_1_BUDGETS.SCAN_WINDOWS_PER_ENTRY >= PROJECTION_PHASE_1_BUDGETS.SCAN_WINDOWS_PER_ENTRY,
+    'the range budget is reachable by an implementation that reads every scan window once');
   assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_HTTP_429, 0, '429 count');
   assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_LIBRARY_CHURN_ITEMS, 0, 'library churn');
   const plan = read('docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md');
-  for (const stated of ['1.2x', '429', 'entry count', 'probe window']) {
+  for (const stated of ['1.2x', '429', 'entry count', 'probe window', 'synthetic']) {
     assert(plan.includes(stated), `the plan states ${stated}`);
   }
 });

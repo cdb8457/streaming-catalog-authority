@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -178,6 +179,11 @@ type leaseSlot struct {
 	mu       sync.Mutex
 	lease    *Lease
 	inflight *resolveCall
+	// lastUsed and active are guarded by the RESOLVER's lock, not this slot's, because they are eviction
+	// bookkeeping rather than lease state. `active` is how many callers currently hold this slot; a slot with
+	// an active holder is never evictable, which is what stops eviction from defeating single-flight.
+	lastUsed time.Time
+	active   int
 	// resolvedOnce distinguishes the FIRST-EVER resolution from every later one. The first is not a refresh:
 	// it is simply how a source becomes readable, and charging it to the expiry-recovery budget would mean the
 	// very first read spent the allowance the first expiry needs.
@@ -202,22 +208,106 @@ type Resolver struct {
 	now   func() time.Time
 }
 
+// MaxLeaseSlots bounds how many transport identities a resolver remembers.
+//
+// A slot is small, but one per source identity held forever is a leak with a library-sized coefficient: a
+// 200 000-entry manifest with a mirror each is 400 000 slots, and a generation swap that bumps source
+// generations creates a fresh set beside the old one. Least-recently-used slots are dropped once the bound is
+// passed; dropping one costs at most one extra resolution later, which is the cheapest possible failure mode.
+const MaxLeaseSlots = 8192
+
 func NewResolver(cfg EndpointConfig, policy EgressPolicy, client *http.Client, secret *SecretFile) *Resolver {
 	return &Resolver{cfg: cfg, policy: policy, client: client, secret: secret, slots: map[string]*leaseSlot{}, now: time.Now}
 }
 
 func (r *Resolver) SetClock(now func() time.Time) { r.now = now }
 
-func (r *Resolver) slot(id TransportIdentity) *leaseSlot {
+// acquireSlot returns the slot for an identity WITH ITS LOCK ALREADY HELD, and pins it against eviction.
+//
+// WHY BOTH, ATOMICALLY. An earlier draft inserted the slot, ran eviction while its lastUsed was still zero —
+// so a brand-new slot could evict itself — and then released the resolver lock before the caller took the
+// slot lock. In that gap another insertion could evict the slot just handed out, and the next caller for the
+// same identity would create a second one. Two slots for one identity is two in-flight resolutions for one
+// object: single-flight defeated by the cache that exists to bound it.
+//
+// Every caller must pair this with releaseSlot.
+func (r *Resolver) acquireSlot(id TransportIdentity) *leaseSlot {
 	key := id.Key()
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	s, ok := r.slots[key]
 	if !ok {
 		s = &leaseSlot{}
 		r.slots[key] = s
 	}
+	// Marked used and pinned BEFORE anything can evict it.
+	s.lastUsed = r.now()
+	s.active++
+	r.evictLocked()
+	r.mu.Unlock()
+
+	s.mu.Lock()
 	return s
+}
+
+// releaseSlot drops the eviction pin, and prunes if the table is over its bound.
+//
+// WHY EVICTION HAPPENS HERE TOO. A burst of concurrent reads can hold far more slots active than the cap
+// allows — that is intended, since an active slot must never be taken from its holder — but if the pruning
+// only ever ran on INSERT, the oversized table would stay oversized forever once the burst ended and no new
+// identity arrived. The cap is therefore "at most MaxLeaseSlots once things are idle", not "never exceeded",
+// and this is the half that makes the first clause true.
+//
+// The prune runs only while the table is actually over its bound, so the common release is a decrement and a
+// size comparison rather than a sort of the whole map.
+func (r *Resolver) releaseSlot(s *leaseSlot) {
+	r.mu.Lock()
+	if s.active > 0 {
+		s.active--
+	}
+	if len(r.slots) > MaxLeaseSlots {
+		r.evictLocked()
+	}
+	r.mu.Unlock()
+}
+
+// evictLocked keeps the slot table bounded. A slot any caller currently holds is never dropped, so eviction
+// can never take a slot out from under a resolution or hand a second caller a fresh one for the same
+// identity. It is called with r.mu held and takes no slot lock, which is also what keeps the lock order
+// one-way: resolver lock, then slot lock, never the reverse.
+func (r *Resolver) evictLocked() {
+	if len(r.slots) <= MaxLeaseSlots {
+		return
+	}
+	type aged struct {
+		key  string
+		when time.Time
+	}
+	candidates := make([]aged, 0, len(r.slots))
+	for key, slot := range r.slots {
+		if slot.active > 0 {
+			continue
+		}
+		candidates = append(candidates, aged{key: key, when: slot.lastUsed})
+	}
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].when.Equal(candidates[j].when) {
+			return candidates[i].when.Before(candidates[j].when)
+		}
+		return candidates[i].key < candidates[j].key
+	})
+	for _, candidate := range candidates {
+		if len(r.slots) <= MaxLeaseSlots {
+			return
+		}
+		delete(r.slots, candidate.key)
+	}
+}
+
+// SlotCount is exported so a test can prove the table stays bounded.
+func (r *Resolver) SlotCount() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return len(r.slots)
 }
 
 const leaseSkew = 2 * time.Second
@@ -228,8 +318,8 @@ const leaseSkew = 2 * time.Second
 // which meant an endpoint whose resolutions were failing was re-resolved once per read, forever, with no
 // cooldown between attempts — precisely the storm the budget exists to prevent.
 func (r *Resolver) Get(ctx context.Context, id TransportIdentity, objectRef string) (*Lease, error) {
-	slot := r.slot(id)
-	slot.mu.Lock()
+	slot := r.acquireSlot(id)
+	defer r.releaseSlot(slot)
 	if lease := slot.lease; lease != nil && !lease.Expired(r.now(), leaseSkew) {
 		slot.mu.Unlock()
 		return lease, nil
@@ -244,8 +334,8 @@ func (r *Resolver) Get(ctx context.Context, id TransportIdentity, objectRef stri
 // keep failing cannot be asked again until the configured cooldown elapses, however many readers want it. A
 // refresh never triggers another refresh.
 func (r *Resolver) Refresh(ctx context.Context, id TransportIdentity, objectRef string, stale *Lease) (*Lease, error) {
-	slot := r.slot(id)
-	slot.mu.Lock()
+	slot := r.acquireSlot(id)
+	defer r.releaseSlot(slot)
 	// Somebody already replaced the lease this caller was using: take theirs rather than asking again.
 	if slot.lease != nil && (stale == nil || slot.lease.generation > stale.generation) &&
 		!slot.lease.Expired(r.now(), leaseSkew) {
