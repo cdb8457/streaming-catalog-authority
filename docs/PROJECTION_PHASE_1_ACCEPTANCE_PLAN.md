@@ -158,17 +158,19 @@ So the five minutes are proved from the **client and the output**, and the encod
 
 | Asserted | What it refuses |
 |---|---|
+| The **source** codec, as the media server identified it, is `mpeg4` | a transcode "to h264" from a source that was already h264 |
+| Decoded `h264` media time ≥ 300 s, over **every** consumed segment | counting files the server emitted; a remux; empty segments |
 | Wall span across segment arrivals ≥ 300 s | nothing on its own — see the next row |
 | Longest gap between **adjacent** arrivals ≤ 20 s | consuming every segment in ten seconds, sleeping, and fetching one more at the end |
-| Decoded `h264` media time ≥ 300 s, over **every** consumed segment | counting files the server emitted; a remux; empty segments |
 | ≥ 25 % of the required media decoded in the **last third** of the window | a dense start with a padded tail |
 | All consumed segments distinct | one segment delivered fifty times, which satisfies every row above |
-| The server's own `PlayState.PlayMethod` = `Transcode` at ≥ 80 % of samples across the window | a session that stopped being a transcode early |
 
 | Recorded, not asserted | Why |
 |---|---|
 | The encoder's own output-file span, and how many files | it is how far **ahead of the paced client** the encoder ran, not how long it ran |
 | Samples with live `TranscodingInfo` | it goes null when the job exits, which is seconds into the window |
+| Samples where the server reported the playback method as `Transcode` | **the field is client-writable.** A negative control against a live server, with a real transcode serving the segments throughout, showed that a client reporting `DirectPlay` is recorded as `DirectPlay`. An earlier version asserted an 80 % share of it *while the gate was itself sending `PlayMethod: Transcode`* — a claim made here, handed to the server, and read back as the server's. The gate now sends no `PlayMethod` at all |
+| Playback reports the server refused | session telemetry gathered while the server was ignoring the client describes the harness's silence, not the server's view |
 
 **On slower hardware, a longer source or a heavier profile, the encoder would still be working across the
 window and the recorded numbers would say so.** That is a property of the machine, not of the data plane,

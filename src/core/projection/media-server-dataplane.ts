@@ -180,25 +180,22 @@ export const MEDIA_SERVER_SOAK = Object.freeze({
    */
   MIN_LATE_WINDOW_DECODED_FRACTION: 0.25,
   /**
-   * G10: the share of session samples across the window in which the server's own `PlayState.PlayMethod`
-   * for this item was `Transcode`.
+   * G10 HAS NO SESSION-SHARE THRESHOLD, AND THE ABSENCE IS THE POINT.
    *
-   * THIS BECAME ASSERTABLE ONLY AFTER TWO MEASUREMENTS, AND BOTH ARE WORTH RECORDING.
+   * There used to be a `MIN_TRANSCODE_METHOD_SAMPLE_FRACTION` here, requiring the server to report this
+   * session's playback method as `Transcode` at 80 % of samples. The gate's own playback report was sending
+   * `PlayMethod: 'Transcode'` at the time, so the threshold was measuring a claim this process had made.
    *
-   * FIRST: a raw HLS request that never reports playback does not become a session with a `NowPlayingItem`
-   * at all, so an earlier version of this gate sampled twenty times, read nothing, and could assert
-   * nothing. Reporting playback the way a player does — `POST /Sessions/Playing`, then progress as the
-   * position advances — attaches it. The report has to come BEFORE the transcode is requested: a session
-   * that arrives afterwards never acquires the job.
+   * A three-arm negative control against a live pinned server -- with a genuine mpeg4 to h264 transcode
+   * serving the segments in every arm -- decided it. Reporting `Transcode` read `DirectPlay` at t=0 and
+   * `Transcode` at t=20s; reporting NOTHING read the same, so the server does derive a value when the client
+   * asserts none; and reporting `DirectPlay` read **`DirectPlay` at both samples while the transcode ran**.
+   * The client's contrary claim wins, so the field is client-writable and cannot carry an assertion about
+   * what the server was doing.
    *
-   * SECOND, AND IT IS WHY THIS IS ABOUT `PlayMethod` RATHER THAN ABOUT `TranscodingInfo`: the live
-   * `TranscodingInfo` is populated immediately and is **null fifteen seconds later**, because the encoder
-   * finishes the whole source in 1.6 seconds and exits. `PlayMethod` stays `Transcode` for the life of the
-   * session. So this share is the server's statement that what was being PLAYED across the window was the
-   * transcode — which is true and is G10's subject — and not a statement that an encoder was busy, which
-   * would be false. See `encoderAheadSpanSeconds` and `encoderLiveSamples`.
+   * The gate now authors no `PlayMethod` at all, records what the server reports, and rests the transcode
+   * claim on the decoded output: an asserted mpeg4 source and every consumed segment decoded as h264.
    */
-  MIN_TRANSCODE_METHOD_SAMPLE_FRACTION: 0.8,
   /** G9: "ten seeks". */
   SEEK_COUNT: 10,
   /** G9: "each producing playable video within 10 s". */

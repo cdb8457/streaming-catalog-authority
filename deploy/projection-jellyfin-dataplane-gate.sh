@@ -1082,8 +1082,8 @@ PROBESOAK
 docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$JELLYFIN_IMAGE" \
   /work/out/probe-soak.sh "$JELLYFIN_FFPROBE"
 node "$REL/probes.cjs" "$REL/out/soak-probes.txt" "$REL/out/soak-probes.json" >/dev/null
-drive transcode-soak-verify --key "$SOAK_FILE" --soak "$REL/out/soak.json" \
-  --probes "$REL/out/soak-probes.json" --seconds 300
+drive transcode-soak-verify --key "$SOAK_FILE" --items "$REL/out/items-corpus-2.json" \
+  --soak "$REL/out/soak.json" --probes "$REL/out/soak-probes.json" --seconds 300
 
 drive traffic-window --before "$REL/out/counters-before-soak.json" \
   --after "$REL/out/counters-after-soak.json" --gate JD20-transcode-soak-traffic \

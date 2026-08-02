@@ -174,30 +174,52 @@ async function main(): Promise<void> {
         // second validation and no way to register something through here that the flags could not register.
         // If it grew one, the registry would have two ideas of what a valid registration is and one of them
         // would drift.
+        // ONE TRANSACTION, AND IT IS NOT A NICETY.
+        //
+        // THE FAILURE THIS PREVENTS. Registering a corpus row by row, each committing on its own, means a
+        // row the registry REFUSES — a bad probe offset, a path that does not normalize, a duplicate item —
+        // leaves everything before it registered and everything after it absent. The command exits non-zero,
+        // which is correct and useless: the database now holds a corpus that no document describes, the next
+        // `publish` mints a generation out of whatever happened to land, and the gate that follows measures
+        // a namespace nobody intended. A half-registered corpus is worse than none, because it looks like
+        // one.
+        //
+        // So the whole batch commits or none of it does. `registerVersion` and `registerEntry` are the same
+        // calls the single-row commands make; the only difference is what happens when one of them refuses.
         const parsed = JSON.parse(readFileSync(one(args, 'file'), 'utf8')) as {
           versions?: Array<{ key: string; size: number; mtime: string; probes?: string[] }>;
           entries?: Array<{ item: string; versionKey: string; path: string; sources: string[] }>;
         };
         let versions = 0;
-        for (const version of parsed.versions ?? []) {
-          const probes = (version.probes ?? []).map(parseProbe);
-          await registerVersion(db, {
-            versionKey: version.key,
-            sizeBytes: version.size,
-            mtime: version.mtime,
-            probes: probes.length === 0 ? null : probes,
-          });
-          versions += 1;
-        }
         let entries = 0;
-        for (const entry of parsed.entries ?? []) {
-          await registerEntry(db, {
-            itemId: entry.item,
-            versionKey: entry.versionKey,
-            path: entry.path,
-            sources: entry.sources.map((raw, index) => parseSource(raw, index)),
-          });
-          entries += 1;
+        await db.query('BEGIN');
+        try {
+          for (const version of parsed.versions ?? []) {
+            const probes = (version.probes ?? []).map(parseProbe);
+            await registerVersion(db, {
+              versionKey: version.key,
+              sizeBytes: version.size,
+              mtime: version.mtime,
+              probes: probes.length === 0 ? null : probes,
+            });
+            versions += 1;
+          }
+          for (const entry of parsed.entries ?? []) {
+            await registerEntry(db, {
+              itemId: entry.item,
+              versionKey: entry.versionKey,
+              path: entry.path,
+              sources: entry.sources.map((raw, index) => parseSource(raw, index)),
+            });
+            entries += 1;
+          }
+          await db.query('COMMIT');
+        } catch (error) {
+          // THE ROLLBACK IS ITSELF ALLOWED TO FAIL, and swallowing THAT is deliberate: a connection that has
+          // already gone away cannot be rolled back and has nothing left to roll back. What must not be lost
+          // is the original refusal, which is why it is re-thrown rather than replaced.
+          await db.query('ROLLBACK').catch(() => undefined);
+          throw error;
         }
         console.log(JSON.stringify({ registered: 'batch', versions, entries }));
         return;

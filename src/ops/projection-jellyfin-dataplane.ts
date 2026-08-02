@@ -1148,61 +1148,99 @@ export async function configureEncoding(state: GateState, tempPath: string, thro
  * throttling enabled, the job still transcoded a 340-second source in 1.6 seconds and exited. So this buys
  * the server's account of the session, and it does not buy five minutes of encoder liveness — and the gate
  * says so rather than letting the two be read as one.
+ *
+ * IT DELIBERATELY SENDS NO `PlayMethod`, AND THAT IS THE WHOLE POINT OF THIS COMMENT. It used to send
+ * `PlayMethod: 'Transcode'`, and the gate then sampled `PlayState.PlayMethod` and asserted it read
+ * `Transcode` — which is this process's own claim, handed to the server, and read back as though the server
+ * had reached it. A negative control (see `TranscodeSessionSample.methodIsTranscode`) showed the field is
+ * client-writable: report `DirectPlay` and the server records `DirectPlay` while a real transcode is serving
+ * the segments. A gate must not author the value it later reads, so it no longer does.
+ *
+ * IT RETURNS WHETHER THE REPORT LANDED rather than swallowing the answer. A report that silently failed
+ * would leave the sampler measuring the gate's own silence and reporting it as the server's.
  */
 async function reportPlayback(
   state: GateState, item: ItemRecord, playSessionId: string,
   stage: 'Playing' | 'Playing/Progress' | 'Playing/Stopped', positionSeconds: number,
-): Promise<void> {
-  await json(state, 'POST', `/Sessions/${stage}`, {
-    ItemId: item.itemId,
-    MediaSourceId: item.mediaSourceId,
-    PlaySessionId: playSessionId,
-    PositionTicks: Math.round(positionSeconds * TICKS_PER_SECOND),
-    CanSeek: true,
-    IsPaused: false,
-    PlayMethod: 'Transcode',
-    RepeatMode: 'RepeatNone',
-  }).catch(() => undefined);
+): Promise<boolean> {
+  try {
+    await json(state, 'POST', `/Sessions/${stage}`, {
+      ItemId: item.itemId,
+      MediaSourceId: item.mediaSourceId,
+      PlaySessionId: playSessionId,
+      PositionTicks: Math.round(positionSeconds * TICKS_PER_SECOND),
+      CanSeek: true,
+      IsPaused: false,
+      RepeatMode: 'RepeatNone',
+    });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-/** What the server says about this item's playback at one instant. Two facts, and they are not the same one. */
+/**
+ * What the server says about this item's playback at one instant.
+ *
+ * NEITHER OF THESE IS ASSERTED ON, AND A NEGATIVE CONTROL IS WHY. See `methodIsTranscode`.
+ */
 export interface TranscodeSessionSample {
   /**
-   * The server's own `PlayState.PlayMethod` for a session playing this item is `Transcode`.
+   * The server's own `PlayState.PlayMethod` for THIS GATE'S session on this item reads `Transcode`.
    *
-   * THIS IS THE ONE THAT LASTS, and it is what the gate asserts. It says the stream being played throughout
-   * the window is the transcoded one rather than a direct play — which is the property G10 is about.
+   * RECORDED, NEVER ASSERTED, BECAUSE IT IS NOT THE SERVER'S OPINION. An earlier version of this gate
+   * asserted an 80 % share of it — while `reportPlayback` was sending `PlayMethod: 'Transcode'` in the
+   * playback report. That is a claim this process made, handed to the server, and read back as though the
+   * server had reached it. A three-arm negative control against a live pinned server, with a genuine
+   * mpeg4 → h264 transcode serving the segments in every arm, settled it:
+   *
+   *   - reporting `Transcode`   → read `DirectPlay` at t=0, `Transcode` at t=20s
+   *   - reporting NOTHING       → read `DirectPlay` at t=0, `Transcode` at t=20s
+   *   - reporting `DirectPlay`  → read **`DirectPlay` at both**, with the transcode running
+   *
+   * The third arm is decisive: a client's contrary claim WINS, so the field cannot carry an assertion about
+   * what the server was doing. (The second shows the server does derive a value when the client asserts
+   * none — which is why this gate now sends no `PlayMethod` at all, so it never authors what it reads.) The
+   * transcode claim rests on the DECODED OUTPUT instead: an asserted mpeg4 source, and every consumed
+   * segment decoded as h264.
    */
   readonly methodIsTranscode: boolean;
   /**
    * The server is reporting live `TranscodingInfo` for it.
    *
-   * THIS IS THE ONE THAT DOES NOT LAST, and it is why the gate records it instead of asserting on it.
-   * Measured against the pinned server: `TranscodingInfo` is populated immediately after the job starts and
-   * is **null fifteen seconds later**, because the encoder finished the whole source in 1.6 seconds and
-   * exited. It is a live-encoder signal, and on this host the encoder is not live for five minutes. An 80 %
-   * share of it would be an assertion about encoder liveness wearing a session's clothes.
+   * ALSO RECORDED, for a different reason. Measured: `TranscodingInfo` is populated immediately after the
+   * job starts and is **null fifteen seconds later**, because the encoder finished the whole source in 1.6
+   * seconds and exited. It is a live-encoder signal, and on this host the encoder is not live for five
+   * minutes; a share of it would be an assertion about encoder liveness wearing a session's clothes.
    */
   readonly encoderJobLive: boolean;
+  /** Whether a session belonging to this gate's own device was found for the item at all. */
+  readonly sessionPresent: boolean;
 }
 
 /**
- * What the server reports about this item right now.
+ * What the server reports about THIS GATE'S session on this item, right now.
  *
- * `some`, NOT `find`. The gate opens several playback sessions against the same item over one run — a direct
- * play, ten seeks, then this — and the server keeps finished ones around. `find` returns the FIRST session
- * for the item, which is routinely a stale one, so the sampler would answer for the wrong session.
+ * BOUND TO THIS GATE'S OWN DEVICE, NOT MERELY TO THE ITEM. The gate opens several playback sessions against
+ * the same item over one run — a direct play, ten seeks, then the soak — and the server keeps finished ones
+ * around; a `find` over the item alone answers for whichever it happens to return first. Worse, on any
+ * server that is not this gate's private container, another client playing the same film would answer for
+ * it. `deviceId` is the one field the gate controls end to end: every request it makes carries
+ * `GATE_CLIENT.deviceId`, so a session bearing it is this gate's and nobody else's.
  */
 export async function transcodeSessionNow(
   state: GateState, item: ItemRecord,
 ): Promise<TranscodeSessionSample> {
   const sessions = await json<Array<{
+    DeviceId?: string;
     NowPlayingItem?: { Id?: string };
     PlayState?: { PlayMethod?: string };
     TranscodingInfo?: { IsVideoDirect?: boolean };
   }>>(state, 'GET', '/Sessions').catch(() => []);
-  const mine = (sessions ?? []).filter((session) => session.NowPlayingItem?.Id === item.itemId);
+  const mine = (sessions ?? []).filter((session) => session.NowPlayingItem?.Id === item.itemId
+    && session.DeviceId === GATE_CLIENT.deviceId);
   return {
+    sessionPresent: mine.length > 0,
     methodIsTranscode: mine.some((session) => session.PlayState?.PlayMethod === 'Transcode'),
     encoderJobLive: mine.some((session) => session.TranscodingInfo !== undefined
       && session.TranscodingInfo.IsVideoDirect !== true),
@@ -1226,6 +1264,15 @@ export interface TranscodeSoakOutcome {
   readonly producerMtimesMs: number[];
   readonly credentialsInGeneratedUrls: number;
   readonly playSessionId: string;
+  /**
+   * Playback reports the server refused or dropped.
+   *
+   * REPORTED RATHER THAN SWALLOWED. The session samples are only meaningful if the server was being told the
+   * player was still playing; a run in which those reports failed is a run whose session telemetry describes
+   * this gate's silence rather than the server's view, and a reader is entitled to know which they are
+   * looking at.
+   */
+  readonly failedPlaybackReports: number;
 }
 
 /**
@@ -1258,7 +1305,7 @@ export async function transcodeSoak(
   // twenty times and reads "not transcoding" from every one of them, which is a false negative about the
   // exact thing the phase is measuring. Reported first, the same samples carry `IsVideoDirect: false` and
   // the server's own reason for transcoding.
-  await reportPlayback(state, item, playSessionId, 'Playing', 0);
+  let failedPlaybackReports = (await reportPlayback(state, item, playSessionId, 'Playing', 0)) ? 0 : 1;
   const masterPath = forcedTranscodePath(item.itemId, item.mediaSourceId, playSessionId);
   let credentialsInGeneratedUrls = 0;
   const follow = (from: string, reference: string): string => {
@@ -1322,9 +1369,11 @@ export async function transcodeSoak(
     while (!stopSampling) {
       await sleep(15_000);
       if (stopSampling) break;
-      await reportPlayback(state, item, playSessionId, 'Playing/Progress', mediaStart);
+      if (!(await reportPlayback(state, item, playSessionId, 'Playing/Progress', mediaStart))) {
+        failedPlaybackReports += 1;
+      }
       sessions.push(await transcodeSessionNow(state, item)
-        .catch(() => ({ methodIsTranscode: false, encoderJobLive: false })));
+        .catch(() => ({ methodIsTranscode: false, encoderJobLive: false, sessionPresent: false })));
       for (const [name, mtime] of readProducerFiles(opts.producerDir)) {
         if (mtime >= wallClockStart && !producerSeen.has(name)) producerSeen.set(name, mtime);
       }
@@ -1390,7 +1439,10 @@ export async function transcodeSoak(
   }
 
   const producerMtimesMs = [...producerSeen.values()].sort((a, b) => a - b);
-  return { segments, sessions, producerMtimesMs, credentialsInGeneratedUrls, playSessionId };
+  return {
+    segments, sessions, producerMtimesMs, credentialsInGeneratedUrls, playSessionId,
+    failedPlaybackReports,
+  };
 }
 
 /**

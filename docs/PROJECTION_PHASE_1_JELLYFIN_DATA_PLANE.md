@@ -223,19 +223,42 @@ The five minutes are proved from the client and the output instead:
 
 | Asserted | What it refuses |
 |---|---|
+| The **source** codec, as the media server identified it, is `mpeg4` | a transcode "to h264" from something that was already h264 |
+| Decoded `h264` media ≥ 300 s over **every** consumed segment | counting files; a remux; empty segments |
 | Wall span across segment arrivals ≥ 300 s | nothing on its own |
 | Longest gap between **adjacent** arrivals ≤ 20 s | consuming everything in ten seconds, sleeping, and fetching one more at the end |
-| Decoded `h264` media ≥ 300 s over **every** consumed segment | counting files; a remux; empty segments |
 | ≥ 25 % of the required media decoded in the **last third** of the window | a dense start with a padded tail |
 | All consumed segments distinct | one segment delivered fifty times, which satisfies every row above |
-| The server's own `PlayState.PlayMethod` = `Transcode` at ≥ 80 % of samples | a session that stopped being a transcode early |
 
-That last row took two measurements to become assertable. A raw HLS request that never reports playback does
-not become a session with a `NowPlayingItem` at all, so the sampler read nothing and could assert nothing.
-Reporting playback the way a player does attaches it — **and the report has to come before the transcode is
-requested**, because the job records itself against the session that exists when it is created and a session
-arriving later never acquires it. Then `PlayMethod` had to be used rather than live `TranscodingInfo`, because
-the second is a live-encoder signal and the encoder is not live for five minutes here.
+The first two rows are the transcode claim, and they are asserted **in the same phase** so that neither half
+can quietly stop being true while the other is still checked.
+
+### 3.7.1 A circular assertion, and the negative control that removed it
+
+An earlier version of this gate had a seventh asserted row: the server's own `PlayState.PlayMethod` reading
+`Transcode` at ≥ 80 % of samples across the window. **The gate's own playback report was sending
+`PlayMethod: 'Transcode'` at the time.** That is a claim this harness made, handed to the server, and read
+back as though the server had reached it — evidence of nothing but its own round trip.
+
+Three arms against a live pinned server, with a genuine `mpeg4` → `h264` transcode serving the segments in
+**every** arm:
+
+| What the client reported | Read at t=0 | Read at t=20 s |
+|---|---|---|
+| `PlayMethod: Transcode` | `DirectPlay` | `Transcode` |
+| nothing at all | `DirectPlay` | `Transcode` |
+| `PlayMethod: DirectPlay` | `DirectPlay` | **`DirectPlay`** |
+
+The third arm settles it: **the client's contrary claim wins**, so the field cannot carry an assertion about
+what the server was doing. (The second is interesting on its own — the server does derive a value when the
+client asserts none — which is why the gate now sends **no** `PlayMethod` at all: a gate must not author the
+value it later reads.) The number is still sampled and reported, as telemetry, beside a count of playback
+reports the server refused — because session telemetry gathered while the server was ignoring the client
+describes this harness's silence rather than the server's view, and a reader is entitled to know which.
+
+What made the session observable at all is worth keeping: a raw HLS request that never reports playback does
+not become a session with a `NowPlayingItem`, and **the report has to come before the transcode is
+requested**, because the job records itself against the session that exists when it is created.
 
 **On slower hardware, a longer source or a heavier profile the encoder would still be working across the
 window, and the recorded numbers would say so.** That is a property of the machine rather than of the data

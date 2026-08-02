@@ -889,15 +889,76 @@ await test('an opaque reference compares across phases without printing what it 
 
 const bashAvailable = spawnSync('bash', ['-c', 'exit 0'], { encoding: 'utf8' }).status === 0;
 
+/**
+ * Which spelling of a filesystem path the `bash` on this machine understands.
+ *
+ * THE DEFECT THIS CLOSES, AND IT MADE FIVE TESTS FAIL FOR A REASON THAT HAD NOTHING TO DO WITH THEM. On
+ * Windows, `bash` may be Git Bash — which takes `C:\a\b` and `/c/a/b` — or it may be WSL, which takes neither
+ * and answers `127`, the status a shell returns for "command not found". Passing a native Windows path to
+ * whichever one is on PATH is a coin flip, and when it lost, the wrapper-accounting tests reported that a
+ * skipped run looked like a passing one. That is a false alarm about the single most important property in
+ * this gate, raised by a path separator.
+ *
+ * So the shell is ASKED what it can translate with, once, rather than guessed at from `process.platform`.
+ */
+const bashPathStyle = ((): 'wsl' | 'cygwin' | 'native' => {
+  if (!bashAvailable) return 'native';
+  const probe = spawnSync('bash', ['-c',
+    'if command -v wslpath >/dev/null 2>&1; then echo wsl; '
+    + 'elif command -v cygpath >/dev/null 2>&1; then echo cygwin; else echo native; fi'],
+  { encoding: 'utf8' });
+  const answer = (probe.stdout ?? '').trim();
+  return answer === 'wsl' || answer === 'cygwin' ? answer : 'native';
+})();
+
+/**
+ * A path in the spelling a given `bash` understands. A non-Windows path is already one.
+ *
+ * IT IS STRING ARITHMETIC RATHER THAN A CALL TO `wslpath`, AND THE FIRST VERSION WAS THE CALL. Shelling out
+ * to `bash -c 'wslpath -a "$1"' sh <path>` looks obviously more correct than hard-coding a prefix — and
+ * measured from PowerShell, `$1` arrived EMPTY, so `wslpath` translated the working directory instead. The
+ * wrapper was then handed the project directory, bash said "Is a directory", and the tests reported `126`:
+ * a translation that silently produced a plausible-looking wrong path. The two conventions are one line
+ * each and can be checked against literals offline, which the call could not be.
+ */
+export function toBashPath(path: string, style: 'wsl' | 'cygwin' | 'native'): string {
+  if (!/^[A-Za-z]:[\\/]/.test(path)) return path;
+  const drive = (path[0] as string).toLowerCase();
+  const rest = path.slice(2).replace(/\\/g, '/');
+  // WSL mounts Windows drives under /mnt; MSYS, Cygwin and Git Bash put them at the root. A `native` bash on
+  // Windows is Git Bash, which takes the second.
+  return style === 'wsl' ? `/mnt/${drive}${rest}` : `/${drive}${rest}`;
+}
+
 function runWrapper(script: string, stubExit: number, env: Record<string, string> = {}):
 { status: number | null; out: string } {
   const dir = mkdtempSync(join(tmpdir(), 'pjd-gate-'));
   const stub = join(dir, 'stub-gate.sh');
   writeFileSync(stub, `#!/usr/bin/env bash\necho "stub gate ran"\nexit ${stubExit}\n`);
   chmodSync(stub, 0o755);
-  const result = spawnSync('bash', [join(root, script)], {
+  // BOTH PATHS ARE TRANSLATED. The wrapper is invoked by path and it invokes the stub by path; translating
+  // only one of them moves the 127 rather than removing it.
+  const wrapperEnv: Record<string, string> = {
+    PROJECTION_JELLYFIN_GATE_COMMAND: toBashPath(stub, bashPathStyle),
+    ...env,
+  };
+  // A WIN32 ENVIRONMENT VARIABLE DOES NOT REACH WSL UNLESS `WSLENV` NAMES IT, AND THIS IS THE THIRD LAYER OF
+  // THE SAME FAILURE.
+  //
+  // With the path fixed and the line endings fixed, the wrapper finally RAN — and ignored the stub, because
+  // `PROJECTION_JELLYFIN_GATE_COMMAND` never crossed the boundary, so its `:-` default took over and it
+  // invoked the REAL gate. The suite then reported 77 (this host cannot host the gate) where it expected 0,
+  // which reads exactly like the wrapper mishandling a skip: the defect these tests exist to catch, produced
+  // by the harness rather than by the wrapper. `/u` means "pass it in, unchanged" — unchanged because the
+  // path was already translated above, and letting WSL translate it a second time would corrupt it.
+  const spawnEnv: Record<string, string | undefined> = { ...process.env, ...wrapperEnv };
+  if (bashPathStyle === 'wsl') {
+    const shared = Object.keys(wrapperEnv).map((name) => `${name}/u`).join(':');
+    spawnEnv.WSLENV = process.env.WSLENV ? `${process.env.WSLENV}:${shared}` : shared;
+  }
+  const result = spawnSync('bash', [toBashPath(join(root, script), bashPathStyle)], {
     encoding: 'utf8',
-    env: { ...process.env, PROJECTION_JELLYFIN_GATE_COMMAND: stub, ...env },
+    env: spawnEnv,
   });
   return { status: result.status, out: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
@@ -1533,45 +1594,77 @@ await test('THE ENCODER SPAN IS REPORTED, AND NOTHING PASSES OR FAILS ON IT', ()
     'and the gate records it with a fixed verdict rather than holding it to a threshold');
 });
 
-await test('the server\'s own PLAYBACK METHOD is sampled across the window and asserted', () => {
-  // A SESSION THAT STOPPED BEING A TRANSCODE has every total this gate measures, because the client keeps
-  // consuming segments the server already produced. What it does not have is the server continuing to call
-  // this item's playback a transcode — which is why the samples are spread and why the SHARE matters rather
-  // than the presence of one.
-  const healthy = soakFixture(306, { active: 20 });
-  const good = analyseTranscodeSoak(healthy.segments, healthy.probes, healthy.mtimes, healthy.sessions);
-  assertEq(good.sessionSamples, 20, 'twenty samples were taken, not one at the start');
-  assert(good.transcodeMethodSamples
-    >= Math.ceil(20 * MEDIA_SERVER_SOAK.MIN_TRANSCODE_METHOD_SAMPLE_FRACTION),
-    'and a session playing a transcode throughout reaches the required share');
+await test('THE TRANSCODE CLAIM IS NOT A CLAIM THIS GATE MADE AND READ BACK', () => {
+  // THE CIRCULARITY THIS PINS SHUT. An earlier version asserted that the server reported this session's
+  // playback method as `Transcode` at 80% of samples — while the gate's own playback report was SENDING
+  // `PlayMethod: 'Transcode'`. A three-arm negative control against a live pinned server, with a real
+  // mpeg4-to-h264 transcode serving the segments in EVERY arm, settled what the field is worth:
+  //
+  //   reporting Transcode  -> read DirectPlay at t=0, Transcode at t=20s
+  //   reporting nothing    -> read DirectPlay at t=0, Transcode at t=20s
+  //   reporting DirectPlay -> read DirectPlay at BOTH, with the transcode running
+  //
+  // The third arm is decisive: the client's contrary claim wins, so the field is client-writable and cannot
+  // carry an assertion about what the server was doing.
+  const driver = readCode('src/ops/projection-jellyfin-dataplane.ts');
+  const report = driver.slice(driver.indexOf('async function reportPlayback'),
+    driver.indexOf('export async function transcodeSessionNow'));
+  assert(!/PlayMethod/.test(report), 'the gate authors no PlayMethod, so it cannot read its own claim back');
+  const cli = readCode('src/ops/projection-jellyfin-dataplane-cli.ts');
+  assert(!/atLeast\(`JD20-transcode-soak-transcode-method-samples/.test(cli)
+    && !/atLeast\(`JD20-transcode-soak-reported-method-samples/.test(cli),
+    'and no gate holds the reported method to a floor');
+  const block = cli.slice(cli.indexOf('JD20-transcode-soak-reported-method-samples'));
+  assert(/verdict: 'pass'/.test(block.slice(0, 400)), 'it is recorded with a fixed verdict');
+  // ...AND WHAT CARRIES THE CLAIM INSTEAD IS ANCHORED AT BOTH ENDS INSIDE THE SAME PHASE.
+  assert(cli.includes('JD20-transcode-soak-source-codec'),
+    'the source codec is asserted in the soak phase, not only in the short transcode step');
+  assert(cli.includes('JD20-transcode-soak-wrong-codec'), 'and every consumed segment is decoded');
+});
 
-  const abandoned = soakFixture(306, { active: 3 });
-  const bad = analyseTranscodeSoak(abandoned.segments, abandoned.probes, abandoned.mtimes, abandoned.sessions);
-  assert(bad.wallSpanSeconds >= 300 && bad.decodedMediaSeconds >= 300, 'every total is still reached');
-  assert(bad.transcodeMethodSamples
-    < Math.ceil(20 * MEDIA_SERVER_SOAK.MIN_TRANSCODE_METHOD_SAMPLE_FRACTION),
-    'and a session that stopped being a transcode early does not');
+await test('a failed playback report is reported, not swallowed', () => {
+  // The session numbers are only meaningful if the server was being told a player was still playing. A run
+  // whose reports were refused describes this gate's silence, and a reader is entitled to know which of the
+  // two they are looking at — even for numbers nothing asserts on.
+  const driver = readCode('src/ops/projection-jellyfin-dataplane.ts');
+  const report = driver.slice(driver.indexOf('async function reportPlayback'),
+    driver.indexOf('export async function transcodeSessionNow'));
+  assert(/Promise<boolean>/.test(report), 'the report says whether it landed');
+  assert(!/\.catch\(\(\) => undefined\)/.test(report), 'rather than discarding the answer');
+  const cli = readCode('src/ops/projection-jellyfin-dataplane-cli.ts');
+  assert(/exactly\(`JD20-transcode-soak-failed-playback-reports/.test(cli),
+    'and the count of refused reports is a gate of its own');
+});
+
+await test('a session sample answers for THIS gate’s device, not for anyone playing the same item', () => {
+  // The gate opens several sessions against the same item over one run, and the server keeps finished ones.
+  // Matching on the item alone answers for whichever session comes back first — and on any server that is
+  // not this gate's private container, for another client entirely.
+  const driver = readCode('src/ops/projection-jellyfin-dataplane.ts');
+  const fn = driver.slice(driver.indexOf('export async function transcodeSessionNow'),
+    driver.indexOf('export interface TranscodeSoakOptions'));
+  assert(/DeviceId === GATE_CLIENT\.deviceId/.test(fn), 'the filter is bound to this gate own device');
+  assert(/NowPlayingItem\?\.Id === item\.itemId/.test(fn), 'and to the item');
+  assert(!/\.find\(/.test(fn), 'and it does not answer from whichever row came back first');
 });
 
 await test('LIVE ENCODER SAMPLES ARE RECORDED AND NOT ASSERTED, and the fixture is what the server does', () => {
-  // The second half of the correction. Measured against the pinned server: `TranscodingInfo` is populated
-  // immediately after the job starts and is NULL fifteen seconds later, because the encoder finishes the
-  // whole source in 1.6 seconds and exits. `PlayState.PlayMethod` stays `Transcode` for the life of the
-  // session. Asserting a share of the first would be asserting encoder liveness — the claim this gate
-  // explicitly does not make — so the two are separate numbers with separate fates.
+  // Measured: `TranscodingInfo` is populated immediately after the job starts and is NULL fifteen seconds
+  // later, because the encoder finishes the whole source in 1.6 seconds and exits. Asserting a share of it
+  // would be asserting encoder liveness — the claim this gate explicitly does not make.
   const fixture = soakFixture(306);
   const analysis = analyseTranscodeSoak(fixture.segments, fixture.probes, fixture.mtimes, fixture.sessions);
   assertEq(analysis.encoderLiveSamples, 1, 'the encoder was live for one sample of twenty');
-  assertEq(analysis.transcodeMethodSamples, 20, 'and the playback method was a transcode for all twenty');
-  assert(analysis.transcodeMethodSamples
-    >= Math.ceil(analysis.sessionSamples * MEDIA_SERVER_SOAK.MIN_TRANSCODE_METHOD_SAMPLE_FRACTION),
-    'so this run passes, on the fact that persists');
+  assert(analysis.wallSpanSeconds >= 300 && analysis.decodedMediaSeconds >= 300
+    && analysis.maxArrivalGapSeconds <= MEDIA_SERVER_SOAK.MAX_SEGMENT_ARRIVAL_GAP_SECONDS,
+    'and the run is a passing one anyway, because nothing asserts on it');
   const cli = readCode('src/ops/projection-jellyfin-dataplane-cli.ts');
   assert(!/atLeast\(`JD20-transcode-soak-encoder-live/.test(cli),
     'and no gate holds the live-encoder count to a floor');
   const block = cli.slice(cli.indexOf('JD20-transcode-soak-encoder-live-samples'));
   assert(/verdict: 'pass'/.test(block.slice(0, 300)), 'it is recorded with a fixed verdict');
 });
+
 
 await test('the session only attaches because playback is reported, which is measured and not assumed', () => {
   // The finding: `/Sessions` shows nothing for a raw HLS request. Reporting `Playing` and then progress is
@@ -1731,6 +1824,22 @@ await test('an empty seek set fails rather than reporting nothing', () => {
   assert(analysis.slowestSeconds === Infinity, 'the timing ceiling fails');
   assert(analysis.maxPositionErrorSeconds === Infinity, 'the position check fails');
   assert(analysis.decodedOffsetSpreadSeconds === Infinity, 'and the temporal check fails');
+});
+
+await test('a Windows path is translated for whichever bash is on PATH', () => {
+  // THE DEFECT THIS CLOSES, AND IT WAS A FALSE ALARM ABOUT THE MOST IMPORTANT PROPERTY IN THIS GATE. Run
+  // from PowerShell, `bash` is WSL, which takes neither `C:\a\b` nor `/c/a/b` and answers 127 — so the four
+  // wrapper-accounting tests reported that a skipped run looked like a passing one, because of a path
+  // separator. Run from Git Bash the same tests passed. A gate whose verdict depends on which shell started
+  // it is not a gate.
+  assertEq(toBashPath('C:\\Users\\a\\b.sh', 'wsl'), '/mnt/c/Users/a/b.sh', 'WSL mounts drives under /mnt');
+  assertEq(toBashPath('C:\\Users\\a\\b.sh', 'cygwin'), '/c/Users/a/b.sh', 'MSYS and Cygwin put them at root');
+  assertEq(toBashPath('C:\\Users\\a\\b.sh', 'native'), '/c/Users/a/b.sh', 'and a native Windows bash is Git Bash');
+  assertEq(toBashPath('D:/x/y', 'wsl'), '/mnt/d/x/y', 'forward slashes and any drive letter');
+  // A path that is already POSIX is left exactly alone, which is every non-Windows host.
+  for (const style of ['wsl', 'cygwin', 'native'] as const) {
+    assertEq(toBashPath('/home/runner/work/x.sh', style), '/home/runner/work/x.sh', 'untouched');
+  }
 });
 
 await test('the seek settle is a client rate and cannot absorb a slow seek', () => {
@@ -1969,8 +2078,23 @@ await test('the corpus is registered through the same write path, in one process
   assert(batch.includes('registerEntry(db'), 'and the ordinary entry registration');
   // SQL, not the word "insert" in the comment saying there is none.
   const batchCode = batch.replace(/\/\*[\s\S]*?\*\//g, '').replace(/(^|[^:])\/\/.*$/gm, '$1');
-  assert(!/\bINSERT\s+INTO\b|\bCOPY\s+\w+\s+FROM\b|\bdb\.query\b/i.test(batchCode),
+  assert(!/\bINSERT\s+INTO\b|\bCOPY\s+\w+\s+FROM\b|\bUPDATE\s+\w+\s+SET\b|\bDELETE\s+FROM\b/i.test(batchCode),
     'there is no second write path hidden inside it');
+  // THE ONLY SQL IT MAY ISSUE ITSELF IS TRANSACTION CONTROL. Anything else would be a write the registry did
+  // not validate — which is the whole reason this command routes through `registerVersion`/`registerEntry`.
+  const statements = [...batchCode.matchAll(/db\.query\('([^']+)'/g)].map((match) => match[1]);
+  assert(statements.length > 0, 'it opens a transaction');
+  for (const statement of statements) {
+    assert(['BEGIN', 'COMMIT', 'ROLLBACK'].includes(statement as string),
+      `the only SQL the batch issues is transaction control, not ${statement}`);
+  }
+  // AND IT IS ACTUALLY A TRANSACTION: a bad later row must not leave the earlier ones registered, because a
+  // half-registered corpus is worse than none — the next publish mints a generation out of whatever landed.
+  for (const verb of ['BEGIN', 'COMMIT', 'ROLLBACK']) {
+    assert(statements.includes(verb), `it issues ${verb}`);
+  }
+  assert(/catch \(error\)[\s\S]*ROLLBACK[\s\S]*throw error/.test(batchCode),
+    'and a refusal rolls back and is re-thrown rather than replaced');
   assert(read('deploy/projection-jellyfin-dataplane-gate.sh').includes('register batch --file'),
     'and the gate uses it for the corpus');
 });

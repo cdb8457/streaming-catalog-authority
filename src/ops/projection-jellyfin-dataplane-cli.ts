@@ -48,7 +48,7 @@ import {
 //   media-seeks  --state F --items F --key K --duration-seconds N --segment-dir D --out F
 //   seek-verify  --key K --seeks F --probes F
 //   transcode-soak       --state F --items F --key K --segment-dir D --producer-dir D --out F [--seconds N]
-//   transcode-soak-verify --key K --soak F --probes F [--seconds N]
+//   transcode-soak-verify --key K --items F --soak F --probes F [--seconds N]
 //   traffic-window --before F --after F --gate G --object-bytes N [--max-object-multiplier N]
 //
 // THE DECODING IS NOT IN HERE, ON PURPOSE. Every "playable video" claim this gate makes is made by a real
@@ -577,6 +577,7 @@ async function main(): Promise<void> {
         sessions: outcome.sessions,
         producerMtimesMs: outcome.producerMtimesMs,
         credentialsInGeneratedUrls: outcome.credentialsInGeneratedUrls,
+        failedPlaybackReports: outcome.failedPlaybackReports,
       }, null, 2)}\n`);
       console.log(`  consumed ${outcome.segments.length} segment(s) over `
         + `${Math.round((outcome.segments[outcome.segments.length - 1]?.wallMs ?? 0) / 1000)}s`);
@@ -594,6 +595,7 @@ async function main(): Promise<void> {
         sessions: TranscodeSessionSampleRecord[];
         producerMtimesMs: number[];
         credentialsInGeneratedUrls: number;
+        failedPlaybackReports: number;
       };
       const probes = JSON.parse(readFileSync(need(args, 'probes'), 'utf8')) as SoakProbe[];
       const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_TRANSCODE_SECONDS);
@@ -623,6 +625,23 @@ async function main(): Promise<void> {
       record(args, exactly(`JD20-transcode-soak-distinct-segments:${ref}`,
         analysis.distinctSegments, analysis.segments,
         'every segment is a different segment: one window delivered fifty times is not fifty segments'));
+      // THE ASSERTION THAT NOW CARRIES G10, AND IT IS ANCHORED AT BOTH ENDS INSIDE THIS PHASE.
+      //
+      // The source is asserted to be the codec the transcode was forced AWAY from, here rather than only in
+      // the earlier short-transcode step: "every segment decoded as h264" says nothing at all if the source
+      // was h264 to begin with, and a phase whose two halves live in different steps is a phase where one
+      // half can quietly stop being true.
+      // TAKEN FROM THE MEDIA SERVER'S OWN IDENTIFICATION OF THE ITEM, not from a flag the shell computed.
+      // What matters is what the SERVER thought it was transcoding from, since it is the server's encoder
+      // whose output is being decoded.
+      const sourceCodec = itemFor(readItems(need(args, 'items')), key).videoCodec;
+      record(args, {
+        gate: `JD20-transcode-soak-source-codec:${ref}`,
+        verdict: sourceCodec === TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass' : 'fail',
+        note: `the media server identified the source as ${sourceCodec || '(none)'}; a transcode to `
+          + `${TRANSCODE_TARGET_VIDEO_CODEC} from a source that was already ${TRANSCODE_TARGET_VIDEO_CODEC} `
+          + 'would prove nothing about an encoder',
+      });
       record(args, exactly(`JD20-transcode-soak-wrong-codec:${ref}`, analysis.wrongCodec, 0,
         `the source is ${TRANSCODE_SOURCE_VIDEO_CODEC} throughout and every segment decoded as `
         + `${TRANSCODE_TARGET_VIDEO_CODEC}`));
@@ -658,18 +677,34 @@ async function main(): Promise<void> {
           + 'the encoder finishes the whole source almost immediately. G10 is NOT closed as five minutes of '
           + 'encoder liveness by this gate',
       });
-      // THE SERVER'S OWN ACCOUNT OF WHAT IT WAS PLAYING, SAMPLED ACROSS THE WINDOW RATHER THAN ONCE.
+      // THE SESSION TELEMETRY, SAMPLED ACROSS THE WINDOW AND ASSERTED ON BY NOTHING.
       //
-      // Sampled every fifteen seconds, so a session that stopped being a transcode at second forty cannot
-      // pass. It is `PlayMethod` rather than live `TranscodingInfo` for a measured reason — see the second
-      // recorded number below.
+      // WHY NOTHING ASSERTS ON IT. An earlier version required `PlayState.PlayMethod` to read `Transcode` at
+      // 80 % of samples — while the gate's own playback report was SENDING `PlayMethod: 'Transcode'`. That is
+      // a claim this process made, handed to the server, and read back as evidence the server had produced.
+      // A three-arm negative control against a live pinned server, with a real mpeg4 → h264 transcode
+      // serving the segments in every arm, showed the field is client-writable: reporting `DirectPlay` made
+      // the server record `DirectPlay` throughout. The gate now sends no `PlayMethod` at all, and this number
+      // is telemetry. What carries the transcode claim is the decoded output above.
       record(args, atLeast(`JD20-transcode-soak-session-samples:${ref}`, analysis.sessionSamples, 10,
         'the session was sampled across the window, not once at the start'));
-      record(args, atLeast(`JD20-transcode-soak-transcode-method-samples:${ref}`,
-        analysis.transcodeMethodSamples,
-        Math.ceil(analysis.sessionSamples * MEDIA_SERVER_SOAK.MIN_TRANSCODE_METHOD_SAMPLE_FRACTION),
-        `samples in which the server itself reported this item's playback method as Transcode rather than `
-        + `DirectPlay, of ${analysis.sessionSamples} taken across the window`));
+      record(args, {
+        gate: `JD20-transcode-soak-reported-method-samples:${ref}`,
+        verdict: 'pass',
+        measured: analysis.transcodeMethodSamples, budget: analysis.sessionSamples,
+        note: 'samples in which the server reported this session\'s playback method as Transcode. RECORDED, '
+          + 'NOT ASSERTED: a negative control showed the field is client-writable — a client reporting '
+          + 'DirectPlay is recorded as DirectPlay while a real transcode serves it — so it is not the '
+          + 'server\'s independent account. The gate authors no PlayMethod, and the transcode claim rests on '
+          + 'the decoded mpeg4-to-h264 output above',
+      });
+      // AND WHETHER THE TELEMETRY ABOVE HAD A SUBJECT. A run whose playback reports were refused is a run
+      // whose session numbers describe this gate's silence rather than the server's view, and that has to be
+      // visible rather than swallowed — even for a number nothing asserts on.
+      record(args, exactly(`JD20-transcode-soak-failed-playback-reports:${ref}`,
+        raw.failedPlaybackReports, 0,
+        'playback reports the server refused; a non-zero count makes the session telemetry beside it '
+        + 'meaningless rather than merely low'));
       record(args, exactly(`JD20-transcode-soak-no-credential-in-generated-urls:${ref}`,
         raw.credentialsInGeneratedUrls, 0));
       return;
