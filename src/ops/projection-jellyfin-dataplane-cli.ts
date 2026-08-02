@@ -578,6 +578,7 @@ async function main(): Promise<void> {
         producerMtimesMs: outcome.producerMtimesMs,
         credentialsInGeneratedUrls: outcome.credentialsInGeneratedUrls,
         failedPlaybackReports: outcome.failedPlaybackReports,
+        failedSessionPolls: outcome.failedSessionPolls,
       }, null, 2)}\n`);
       console.log(`  consumed ${outcome.segments.length} segment(s) over `
         + `${Math.round((outcome.segments[outcome.segments.length - 1]?.wallMs ?? 0) / 1000)}s`);
@@ -596,6 +597,7 @@ async function main(): Promise<void> {
         producerMtimesMs: number[];
         credentialsInGeneratedUrls: number;
         failedPlaybackReports: number;
+        failedSessionPolls: number;
       };
       const probes = JSON.parse(readFileSync(need(args, 'probes'), 'utf8')) as SoakProbe[];
       const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_TRANSCODE_SECONDS);
@@ -686,8 +688,21 @@ async function main(): Promise<void> {
       // serving the segments in every arm, showed the field is client-writable: reporting `DirectPlay` made
       // the server record `DirectPlay` throughout. The gate now sends no `PlayMethod` at all, and this number
       // is telemetry. What carries the transcode claim is the decoded output above.
+      // SAMPLES ARE SUCCESSFUL READS ONLY, and the failures beside them are gated at zero — otherwise a run
+      // whose polls all failed satisfies "sampled across the window" with nothing but its own failures.
+      record(args, exactly(`JD20-transcode-soak-failed-session-polls:${ref}`, raw.failedSessionPolls, 0,
+        'session reads that never reached the server; a failed read is not an observation that the server '
+        + 'reported nothing, and it may not be counted as one'));
       record(args, atLeast(`JD20-transcode-soak-session-samples:${ref}`, analysis.sessionSamples, 10,
-        'the session was sampled across the window, not once at the start'));
+        'successful session reads across the window, not one at the start'));
+      // ...AND THE SAMPLES HAVE TO HAVE FOUND SOMETHING. A window in which this gate's own session was never
+      // present is a window in which every number below describes an absence: `methodIsTranscode` and
+      // `encoderJobLive` are both false for "no session of ours exists" and for "it exists and is neither",
+      // and a count that cannot tell those apart is not telemetry, it is noise.
+      record(args, atLeast(`JD20-transcode-soak-session-present-samples:${ref}`, analysis.sessionPresentSamples,
+        Math.ceil(analysis.sessionSamples * MEDIA_SERVER_SOAK.MIN_SESSION_PRESENT_SAMPLE_FRACTION),
+        `samples in which a session for THIS gate's device and this item existed at all, of `
+        + `${analysis.sessionSamples} successful reads`));
       record(args, {
         gate: `JD20-transcode-soak-reported-method-samples:${ref}`,
         verdict: 'pass',

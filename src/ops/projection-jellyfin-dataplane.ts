@@ -1231,12 +1231,22 @@ export interface TranscodeSessionSample {
 export async function transcodeSessionNow(
   state: GateState, item: ItemRecord,
 ): Promise<TranscodeSessionSample> {
+  // IT THROWS RATHER THAN ANSWERING WHEN THE READ FAILS, AND THAT IS THE WHOLE CHANGE.
+  //
+  // THE DEFECT THIS CLOSES. This used to end in `.catch(() => [])`, and the caller wrapped it in a second
+  // catch that produced `{ methodIsTranscode: false, encoderJobLive: false, sessionPresent: false }`. So a
+  // request that never reached the server became an OBSERVATION — a recorded sample stating that the server
+  // reported no transcode and no session, which nobody had ever been told. It is a fabricated measurement
+  // wearing the shape of a real one, and it padded `sessionSamples`, which IS asserted: a run whose polls
+  // all failed could satisfy "the session was sampled across the window" with nothing but its own failures.
+  //
+  // "The server said no" and "we could not ask" are different facts, and only one of them is evidence.
   const sessions = await json<Array<{
     DeviceId?: string;
     NowPlayingItem?: { Id?: string };
     PlayState?: { PlayMethod?: string };
     TranscodingInfo?: { IsVideoDirect?: boolean };
-  }>>(state, 'GET', '/Sessions').catch(() => []);
+  }>>(state, 'GET', '/Sessions');
   const mine = (sessions ?? []).filter((session) => session.NowPlayingItem?.Id === item.itemId
     && session.DeviceId === GATE_CLIENT.deviceId);
   return {
@@ -1273,6 +1283,14 @@ export interface TranscodeSoakOutcome {
    * looking at.
    */
   readonly failedPlaybackReports: number;
+  /**
+   * Session polls that never reached the server.
+   *
+   * SEPARATE FROM THE SAMPLES, AND GATED AT ZERO. A failed read is not an observation that the server
+   * reported nothing; folding the two together let a run's own failures pad the sample count that
+   * "the session was sampled across the window" is asserted against.
+   */
+  readonly failedSessionPolls: number;
 }
 
 /**
@@ -1306,6 +1324,7 @@ export async function transcodeSoak(
   // exact thing the phase is measuring. Reported first, the same samples carry `IsVideoDirect: false` and
   // the server's own reason for transcoding.
   let failedPlaybackReports = (await reportPlayback(state, item, playSessionId, 'Playing', 0)) ? 0 : 1;
+  let failedSessionPolls = 0;
   const masterPath = forcedTranscodePath(item.itemId, item.mediaSourceId, playSessionId);
   let credentialsInGeneratedUrls = 0;
   const follow = (from: string, reference: string): string => {
@@ -1372,8 +1391,13 @@ export async function transcodeSoak(
       if (!(await reportPlayback(state, item, playSessionId, 'Playing/Progress', mediaStart))) {
         failedPlaybackReports += 1;
       }
-      sessions.push(await transcodeSessionNow(state, item)
-        .catch(() => ({ methodIsTranscode: false, encoderJobLive: false, sessionPresent: false })));
+      // A POLL THAT FAILED IS COUNTED AS A FAILED POLL, NOT PUSHED AS A SAMPLE SAYING "NO". See
+      // `transcodeSessionNow`: the two are different facts and only one of them is an observation.
+      try {
+        sessions.push(await transcodeSessionNow(state, item));
+      } catch {
+        failedSessionPolls += 1;
+      }
       for (const [name, mtime] of readProducerFiles(opts.producerDir)) {
         if (mtime >= wallClockStart && !producerSeen.has(name)) producerSeen.set(name, mtime);
       }
@@ -1441,7 +1465,7 @@ export async function transcodeSoak(
   const producerMtimesMs = [...producerSeen.values()].sort((a, b) => a - b);
   return {
     segments, sessions, producerMtimesMs, credentialsInGeneratedUrls, playSessionId,
-    failedPlaybackReports,
+    failedPlaybackReports, failedSessionPolls,
   };
 }
 

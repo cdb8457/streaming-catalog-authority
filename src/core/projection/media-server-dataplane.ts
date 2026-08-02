@@ -180,6 +180,14 @@ export const MEDIA_SERVER_SOAK = Object.freeze({
    */
   MIN_LATE_WINDOW_DECODED_FRACTION: 0.25,
   /**
+   * G10: the share of successful session reads in which a session for this gate's device and item existed.
+   *
+   * It is a floor on the telemetry HAVING A SUBJECT rather than on what the telemetry said. A window in
+   * which this gate's session was never present makes every session number beside it an absence dressed as
+   * a measurement.
+   */
+  MIN_SESSION_PRESENT_SAMPLE_FRACTION: 0.8,
+  /**
    * G10 HAS NO SESSION-SHARE THRESHOLD, AND THE ABSENCE IS THE POINT.
    *
    * There used to be a `MIN_TRANSCODE_METHOD_SAMPLE_FRACTION` here, requiring the server to report this
@@ -856,10 +864,13 @@ export interface TranscodeSoakAnalysis {
   readonly encoderAheadSpanSeconds: number;
   readonly encoderOutputFiles: number;
   /**
-   * Samples in which the server's own `PlayState.PlayMethod` for this item was `Transcode`.
+   * Samples in which the server reported this session's `PlayState.PlayMethod` as `Transcode`.
    *
-   * ASSERTED. It says the stream being played across the window was the transcoded one and not a direct
-   * play, which is what G10 is about, and it persists for as long as the session does.
+   * RECORDED, NEVER ASSERTED. This comment used to read "ASSERTED", and it was stale in the direction that
+   * matters: it described the number as the evidence carrying G10 after the assertion on it had been
+   * removed for being circular -- the gate was sending `PlayMethod: 'Transcode'` and reading it back. A
+   * negative control showed the field is client-writable; see `TranscodeSessionSample.methodIsTranscode`
+   * in the driver for the three arms. The transcode claim rests on the decoded output.
    */
   readonly transcodeMethodSamples: number;
   /**
@@ -871,6 +882,15 @@ export interface TranscodeSoakAnalysis {
    * this gate does not make.
    */
   readonly encoderLiveSamples: number;
+  /**
+   * Samples in which a session for this gate's own device and item existed at all.
+   *
+   * WITHOUT IT THE TWO NUMBERS ABOVE CANNOT BE READ. `methodIsTranscode` and `encoderJobLive` are both
+   * false for "no session of ours exists" and for "one exists and is neither of those things", so a window
+   * that never had a session produces the same zeros as a window that had one and was direct-playing.
+   */
+  readonly sessionPresentSamples: number;
+  /** Successful session reads. A poll that FAILED is not one of these -- see `analyseTranscodeSoak`. */
   readonly sessionSamples: number;
 }
 
@@ -878,6 +898,7 @@ export interface TranscodeSoakAnalysis {
 export interface TranscodeSessionSampleRecord {
   readonly methodIsTranscode: boolean;
   readonly encoderJobLive: boolean;
+  readonly sessionPresent: boolean;
 }
 
 /**
@@ -938,6 +959,9 @@ export function analyseTranscodeSoak(
     encoderOutputFiles: mtimes.length,
     transcodeMethodSamples: sessions.filter((sample) => sample.methodIsTranscode).length,
     encoderLiveSamples: sessions.filter((sample) => sample.encoderJobLive).length,
+    sessionPresentSamples: sessions.filter((sample) => sample.sessionPresent).length,
+    // ONLY SUCCESSFUL READS ARRIVE HERE. A poll that failed is counted by the caller as a failed poll and
+    // is never pushed as a sample, because "the server said no" and "we could not ask" are different facts.
     sessionSamples: sessions.length,
   };
 }

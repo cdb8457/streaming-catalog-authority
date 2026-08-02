@@ -1447,7 +1447,7 @@ await test('a freeze that lasted until the consumer was stopped is still a stall
 function soakFixture(seconds: number, opts: {
   arrivals?: 'paced' | 'burst' | 'front-loaded'; codec?: string; packets?: number;
   encoderSpanSeconds?: number; encoderFiles?: number; active?: number; encoderLive?: number;
-  sameSegment?: boolean;
+  sessionPresent?: number; sameSegment?: boolean;
 } = {}): {
   segments: SoakSegment[]; probes: SoakProbe[]; mtimes: number[];
   sessions: TranscodeSessionSampleRecord[];
@@ -1494,6 +1494,7 @@ function soakFixture(seconds: number, opts: {
   const sessions = Array.from({ length: sessionCount }, (_value, index) => ({
     methodIsTranscode: index < method,
     encoderJobLive: index < (opts.encoderLive ?? 1),
+    sessionPresent: index < (opts.sessionPresent ?? sessionCount),
   }));
   return { segments, probes, mtimes, sessions };
 }
@@ -1620,6 +1621,38 @@ await test('THE TRANSCODE CLAIM IS NOT A CLAIM THIS GATE MADE AND READ BACK', ()
   assert(cli.includes('JD20-transcode-soak-source-codec'),
     'the source codec is asserted in the soak phase, not only in the short transcode step');
   assert(cli.includes('JD20-transcode-soak-wrong-codec'), 'and every consumed segment is decoded');
+});
+
+await test('A FAILED SESSION POLL IS NOT AN OBSERVATION THAT THE SERVER REPORTED NOTHING', () => {
+  // THE DEFECT THIS PINS. `transcodeSessionNow` ended in `.catch(() => [])` and the caller wrapped it in a
+  // second catch producing `{ methodIsTranscode: false, encoderJobLive: false, sessionPresent: false }`. A
+  // request that never reached the server therefore became a recorded SAMPLE stating that the server had
+  // reported no transcode and no session — a measurement nobody took, wearing the shape of one — and it
+  // padded `sessionSamples`, which IS asserted. A run whose every poll failed could satisfy "the session was
+  // sampled across the window" out of nothing but its own failures.
+  const driver = readCode('src/ops/projection-jellyfin-dataplane.ts');
+  const fn = driver.slice(driver.indexOf('export async function transcodeSessionNow'),
+    driver.indexOf('export interface TranscodeSoakOptions'));
+  assert(!/\.catch\(/.test(fn), 'a failed read throws rather than answering');
+  const soak = driver.slice(driver.indexOf('export async function transcodeSoak'));
+  assert(/failedSessionPolls \+= 1/.test(soak), 'the caller counts the failure');
+  assert(!/methodIsTranscode: false/.test(soak), 'and never synthesizes a sample to stand in for it');
+  const cli = readCode('src/ops/projection-jellyfin-dataplane-cli.ts');
+  assert(/exactly\(`JD20-transcode-soak-failed-session-polls[\s\S]{0,200}?, 0,/.test(cli),
+    'and failed polls are gated at zero rather than merely reported');
+
+  // ...AND THE SAMPLES THAT REMAIN HAVE TO HAVE FOUND THIS GATE'S SESSION. `methodIsTranscode` and
+  // `encoderJobLive` are both false for "no session of ours exists" and for "one exists and is neither", so
+  // without this the telemetry cannot be told apart from an absence.
+  const absent = soakFixture(306, { sessionPresent: 0 });
+  const analysis = analyseTranscodeSoak(absent.segments, absent.probes, absent.mtimes, absent.sessions);
+  assertEq(analysis.sessionPresentSamples, 0, 'a window that never had our session says so');
+  assert(analysis.sessionPresentSamples
+    < Math.ceil(analysis.sessionSamples * MEDIA_SERVER_SOAK.MIN_SESSION_PRESENT_SAMPLE_FRACTION),
+    'and fails the floor, rather than reading as a quiet server');
+  const healthy = soakFixture(306);
+  const good = analyseTranscodeSoak(healthy.segments, healthy.probes, healthy.mtimes, healthy.sessions);
+  assertEq(good.sessionPresentSamples, good.sessionSamples, 'while a real window finds it every time');
 });
 
 await test('a failed playback report is reported, not swallowed', () => {
