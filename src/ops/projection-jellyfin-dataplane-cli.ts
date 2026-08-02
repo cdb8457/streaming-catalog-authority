@@ -1,13 +1,17 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import {
-  MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, TRANSCODE_SOURCE_VIDEO_CODEC,
-  TRANSCODE_TARGET_VIDEO_CODEC, atLeast, exactly, findRedactionProblems, opaqueRef, withinBudget,
-  type GateResult,
+  MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS,
+  TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC, analysePacedPlayback, analyseTranscodeSoak,
+  analyseSeekSet, atLeast, corpusProblems, corpusSelfProblems, exactly, findRedactionProblems, opaqueRef,
+  seekPlanProblems, seekPositionsFor, withinBudget,
+  type CorpusExpectation, type GateResult, type SeekObservation, type SoakProbe, type SoakSegment,
+  type TranscodeSessionSampleRecord,
 } from '../core/projection/media-server-dataplane.js';
 import {
-  GateFailure, addMovieLibrary, appendResult, awaitFile, awaitServer, bootstrap, directPlay,
-  forcedTranscode, listMovies, openPinnedStream, rangeRead, readExpected, readResults, readState,
-  resolveLibraryId, scanIsRunningNow, scanLibrary, writeState, type GateState, type ItemRecord,
+  GateFailure, addMovieLibrary, appendResult, awaitFile, awaitServer, bootstrap, configureEncoding,
+  directPlay, forcedTranscode, listMovies, mediaTimeSeekSet, openPinnedStream, pacedDirectPlay, rangeRead,
+  readExpected, readResults, readState, resolveLibraryId, scanIsRunningNow, scanLibrary, transcodeSoak,
+  writeState, type GateState, type ItemRecord,
 } from './projection-jellyfin-dataplane.js';
 
 // The Projection Phase 1 media-server data-plane gate, from the command line.
@@ -31,8 +35,26 @@ import {
 //   hold-stream  --state F --items F --key K --ready F --release F --expect-file F [--allow-interrupt]
 //   compare      --before F --after F --gate G [--expect-added N]
 //   counters     --url U --out F
-//   budget       --before F --after F --gate G --entries N --bytes N --windows N
+//   budget       --before F --after F --gate G --entries N --bytes N [--small-bytes N] [--windows N]
 //   report       --results F [--json F]
+//
+// ...and the five-minute half, which is where G8, G9 and G10 of the acceptance plan actually live:
+//
+//   corpus-check --expect-file F --min-entries N --min-remote N
+//   configure-encoding --state F --temp-path P [--throttle-seconds N]
+//   paced-play   --state F --items F --key K --image I --network N --container-name C --work-dir D
+//                --stream-base U --output-rel P --ffmpeg P --trace F [--seconds N]
+//   paced-play-output  --probed-seconds N --probed-packets N [--seconds N]
+//   media-seeks  --state F --items F --key K --duration-seconds N --segment-dir D --out F
+//   seek-verify  --key K --seeks F --probes F
+//   transcode-soak       --state F --items F --key K --segment-dir D --producer-dir D --out F [--seconds N]
+//   transcode-soak-verify --key K --items F --soak F --probes F [--seconds N]
+//   traffic-window --before F --after F --gate G --object-bytes N [--max-object-multiplier N]
+//
+// THE DECODING IS NOT IN HERE, ON PURPOSE. Every "playable video" claim this gate makes is made by a real
+// decoder in a separate container, over files these phases wrote; the `*-verify` phases hold that decoder's
+// answers against the acceptance plan. A phase that both produced the bytes and pronounced them playable
+// would be the shape of claim this repository is trying to leave behind.
 
 interface Args { readonly command: string; readonly flags: ReadonlyMap<string, string> }
 
@@ -78,6 +100,19 @@ function itemFor(items: readonly ItemRecord[], key: string): ItemRecord {
 
 function readItems(path: string): ItemRecord[] {
   return JSON.parse(readFileSync(path, 'utf8')) as ItemRecord[];
+}
+
+/**
+ * The claim the whole appliance rests on, as one predicate: a media server sees a file on a disk.
+ *
+ * It was inline in the scan phase when there were two entries to check. It is a named function now because a
+ * ~50-entry corpus is checked in aggregate and two anchors are checked individually, and two spellings of
+ * "ordinary" would eventually disagree — with the aggregate, which covers every entry, being the one nobody
+ * would notice had drifted.
+ */
+function isOrdinaryFile(item: ItemRecord): boolean {
+  return item.protocol === 'File' && !item.isRemote && !item.key.endsWith('.strm')
+    && item.container !== '' && item.locationType === 'FileSystem' && item.supportsDirectPlay;
 }
 
 function record(args: Args, result: GateResult): void {
@@ -187,7 +222,33 @@ async function main(): Promise<void> {
       record(args, exactly(`JD3-${label}-item-count`, items.length, expected.length,
         `the scan took ${Math.round(elapsed / 1000)}s`));
 
-      for (const want of expected) {
+      // THE WHOLE CORPUS, IN ONE PASS, AS A COUNT OF MATCHED IDENTITIES.
+      //
+      // WHY AGGREGATE AT ALL. Fifty entries times four properties times seven scans is fourteen hundred
+      // report lines, and §7 asks for a report an operator reads rather than one they scroll past.
+      //
+      // WHY IT IS STILL NOT A COUNT. `matched` is the number of PUBLISHED keys that were present, at the
+      // published size, as an ordinary file — so `JD3-corpus-matched 50/50` cannot be satisfied by fifty
+      // arbitrary items the way an item count can. The three problem counters beside it name what went wrong
+      // when it is not fifty, which a bare match count would leave undiagnosable.
+      const problems = corpusProblems(expected, items.map((item) => ({
+        key: item.key,
+        sizeBytes: item.sizeBytes,
+        ordinaryFile: isOrdinaryFile(item),
+      })));
+      record(args, exactly(`JD3-${label}-corpus-matched`, problems.matched, expected.length,
+        'published identities the server catalogued at the published size as ordinary files'));
+      record(args, exactly(`JD3-${label}-corpus-missing`, problems.missing, 0));
+      record(args, exactly(`JD3-${label}-corpus-wrong-size`, problems.wrongSize, 0));
+      record(args, exactly(`JD3-${label}-corpus-not-ordinary`, problems.notOrdinary, 0,
+        'not a symlink, not a .strm placeholder, not a remote media source: a file on a disk'));
+      record(args, exactly(`JD3-${label}-corpus-duplicated`, problems.duplicated, 0));
+      record(args, exactly(`JD3-${label}-corpus-unexpected`, problems.unexpected, 0));
+
+      // AND THE ANCHORS INDIVIDUALLY. These are the entries whose BYTES are also read back and digest-
+      // compared elsewhere; naming them one at a time keeps the per-entry evidence the two-entry version of
+      // this gate had, for the entries it had it for.
+      for (const want of expected.filter((entry) => entry.anchor === true)) {
         const item = itemFor(items, want.key);
         // THE MEDIA SERVER'S OWN VIEW OF THE FILE, checked against what was published — size from its probe,
         // not from a stat this gate did itself.
@@ -196,11 +257,9 @@ async function main(): Promise<void> {
         // ORDINARY FILES. Not a symlink, not a `.strm` placeholder pointing somewhere else, not a remote
         // media source the server would fetch over HTTP itself. This is the claim the whole appliance rests
         // on: a media server treats the projection as a disk.
-        const ordinary = item.protocol === 'File' && !item.isRemote && !item.key.endsWith('.strm')
-          && item.container !== '' && item.locationType === 'FileSystem' && item.supportsDirectPlay;
         record(args, {
           gate: `JD3-${label}-ordinary-file:${opaqueRef('entry', want.key).slice(0, 12)}`,
-          verdict: ordinary ? 'pass' : 'fail',
+          verdict: isOrdinaryFile(item) ? 'pass' : 'fail',
           note: `protocol=${item.protocol} container=${item.container} remote=${item.isRemote} `
             + `location=${item.locationType} directPlay=${item.supportsDirectPlay}`,
         });
@@ -289,6 +348,380 @@ async function main(): Promise<void> {
       mkdirSync(out.replace(/[^/\\]*$/, '') || '.', { recursive: true });
       writeFileSync(out, result.firstSegment);
       console.log(`  wrote ${result.firstSegment.byteLength} bytes of transcoded output for decoding`);
+      return;
+    }
+
+    case 'configure-encoding': {
+      // Where the encoder writes, and that it must pace itself to its client. See `configureEncoding` for
+      // why the five-minute transcode gate cannot be measured without both.
+      const state = readState(need(args, 'state'));
+      await configureEncoding(state, need(args, 'temp-path'),
+        optionalNumber(args, 'throttle-seconds', 30));
+      record(args, {
+        gate: 'JD17-encoder-configured', verdict: 'pass',
+        note: 'the transcoding job writes where the gate can observe it, and throttles to its client',
+      });
+      return;
+    }
+
+    case 'corpus-check': {
+      // THE CORPUS CHECKED AGAINST ITSELF, BEFORE A MEDIA SERVER IS INVOLVED. Two entries with the same bytes
+      // make every digest comparison in this gate decorative, and a ~50-entry corpus is generated by a loop —
+      // which is exactly the thing that could quietly start emitting identical parameters.
+      const expected = readExpected(need(args, 'expect-file')) as readonly CorpusExpectation[];
+      const problems = corpusSelfProblems(expected);
+      record(args, exactly('JD3-corpus-self-distinct', problems.length, 0,
+        problems.length === 0
+          ? `${expected.length} entries, every one a distinct name, size-bearing and distinctly digested`
+          : problems.join('; ')));
+      record(args, atLeast('JD3-corpus-size', expected.length, optionalNumber(args, 'min-entries', 50),
+        'the acceptance plan\'s ~50-entry corpus'));
+      const remote = expected.filter((entry) => entry.kind === 'http-range').length;
+      record(args, atLeast('JD3-corpus-remote-entries', remote, optionalNumber(args, 'min-remote', 1),
+        'entries whose bytes only exist behind the HTTP Range provider'));
+      return;
+    }
+
+    case 'paced-play': {
+      // G8: "Direct play starts within 10 s and runs 5 minutes without a stall."
+      //
+      // WHAT MAKES THIS DIFFERENT FROM THE `play` PHASE ABOVE. That one proves the BYTES are right: it drains
+      // the whole response and digests it, which takes a second or two. It cannot prove anything about five
+      // minutes, and adding a sleep to it would have produced a phase that took five minutes and measured a
+      // download. This one runs a real decoder at the media's own rate and holds its progress trace against
+      // four separate numbers, three of which exist specifically to fail the ways the first one can be faked.
+      const state = readState(need(args, 'state'));
+      const items = readItems(need(args, 'items'));
+      const key = need(args, 'key');
+      const item = itemFor(items, key);
+      const ref = opaqueRef('entry', key).slice(0, 12);
+      const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_DIRECT_PLAY_SECONDS);
+
+      const outcome = await pacedDirectPlay({
+        image: need(args, 'image'),
+        network: need(args, 'network'),
+        containerName: need(args, 'container-name'),
+        workDir: need(args, 'work-dir'),
+        // The stream URL is built here and goes nowhere else: not into a result, not into a note, not into a
+        // failure message. `withoutLocators` scrubs the consumer's own stderr for the same reason.
+        streamUrl: `${need(args, 'stream-base')}/Videos/${item.itemId}/stream`
+          + `?static=true&mediaSourceId=${encodeURIComponent(item.mediaSourceId)}`,
+        outputRelPath: need(args, 'output-rel'),
+        seconds,
+        ffmpegPath: need(args, 'ffmpeg'),
+      });
+      if (outcome.exitCode !== 0) {
+        throw new GateFailure(`the paced consumer exited ${outcome.exitCode}: ${outcome.stderr.slice(-600)}`);
+      }
+      const analysis = analysePacedPlayback(outcome.samples);
+      writeFileSync(need(args, 'trace'), `${JSON.stringify(outcome.samples, null, 2)}\n`);
+
+      record(args, atLeast(`JD18-paced-play-samples:${ref}`, analysis.samples, 30,
+        'progress records from the decoder itself, roughly one a second'));
+      record(args, withinBudget(`JD18-paced-play-startup-seconds:${ref}`,
+        Math.round(analysis.startupSeconds * 10) / 10, MEDIA_SERVER_SOAK.MAX_STARTUP_SECONDS,
+        'from launching the consumer to its first decoded frame'));
+      record(args, atLeast(`JD18-paced-play-wall-seconds:${ref}`,
+        Math.floor(analysis.wallSeconds), seconds));
+      // THE ONE A SLEEP CANNOT PASS. Wall clock is what a sleep buys; this is decoded media time, reported by
+      // the decoder, and five minutes of it cannot be produced by waiting.
+      record(args, atLeast(`JD18-paced-play-decoded-media-seconds:${ref}`,
+        Math.floor(analysis.mediaSeconds), seconds,
+        'media the consumer actually decoded, not wall clock it spent'));
+      // ...AND THE ONE A FAST DRAIN CANNOT PASS. A consumer that downloaded the file as fast as the socket
+      // allowed and then slept has the same two numbers above and a ratio in the hundreds.
+      record(args, withinBudget(`JD18-paced-play-pacing-ratio-x100:${ref}`,
+        Math.round(analysis.pacingRatio * 100), Math.round(MEDIA_SERVER_SOAK.MAX_PACING_RATIO * 100),
+        'decoded media seconds per wall second: a player is ~100, a download is thousands'));
+      record(args, atLeast(`JD18-paced-play-pacing-floor-x100:${ref}`,
+        Math.round(analysis.pacingRatio * 100), Math.round(MEDIA_SERVER_SOAK.MIN_PACING_RATIO * 100),
+        'and a consumer that slept through the window sits near zero'));
+      record(args, withinBudget(`JD18-paced-play-longest-stall-seconds:${ref}`,
+        Math.round(analysis.longestStallSeconds), MEDIA_SERVER_SOAK.MAX_STALL_SECONDS,
+        'the longest wall interval in which the decoder made no progress at all'));
+      return;
+    }
+
+    case 'paced-play-output': {
+      // The consumer's own output, decoded by a decoder outside this process. "Playable output" is a
+      // decoder's answer; a byte count is not one.
+      const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_DIRECT_PLAY_SECONDS);
+      record(args, atLeast('JD18-paced-play-output-seconds', optionalNumber(args, 'probed-seconds', 0),
+        Math.floor(seconds * 0.98), 'the decoded output re-probed end to end'));
+      record(args, atLeast('JD18-paced-play-output-packets', optionalNumber(args, 'probed-packets', 0), 1,
+        'the output has decodable video packets in it'));
+      return;
+    }
+
+    case 'media-seeks': {
+      // G9: "Ten seeks, including backwards and to > 90 % of duration, each producing playable video
+      // within 10 s."
+      //
+      // WHAT A SEEK IS AGAINST THIS SERVER, MEASURED RATHER THAN GUESSED. One HLS session, one playlist, and
+      // ten out-of-order requests for the segments at the positions wanted -- which is what a player does
+      // when somebody drags a scrubber, and what makes the server restart its encoder at a new position.
+      // See `SEEK_IS_A_DIRECT_SEGMENT_REQUEST` for the two measurements that ruled out `startTimeTicks`.
+      const state = readState(need(args, 'state'));
+      const items = readItems(need(args, 'items'));
+      const key = need(args, 'key');
+      const item = itemFor(items, key);
+      const ref = opaqueRef('entry', key).slice(0, 12);
+      const duration = optionalNumber(args, 'duration-seconds', 0);
+      if (duration <= 0) fail('--duration-seconds is required and must be positive');
+
+      // THE PLAN IS CHECKED BEFORE IT IS RUN. Every per-seek assertion would pass just as happily against ten
+      // seeks into the first minute; the properties that make the SET worth running belong to the list, and
+      // nothing that watches one seek at a time can see them.
+      const planProblems = seekPlanProblems(SEEK_PLAN_FRACTIONS);
+      record(args, exactly(`JD19-seek-plan:${ref}`, planProblems.length, 0,
+        planProblems.length === 0
+          ? 'ten distinct positions, four transitions backwards, two beyond 90% of duration'
+          : planProblems.join('; ')));
+
+      const positions = seekPositionsFor(duration);
+      const outcome = await mediaTimeSeekSet(state, item, positions,
+        `gate-seek-${opaqueRef('session', key).slice(0, 16)}`);
+      const segmentDir = need(args, 'segment-dir');
+      mkdirSync(segmentDir, { recursive: true });
+      outcome.segments.forEach((segment, index) => {
+        writeFileSync(`${segmentDir}/seek-${String(index).padStart(2, '0')}.ts`, segment);
+      });
+      writeFileSync(need(args, 'out'), `${JSON.stringify({
+        seeks: outcome.seeks,
+        playlistSeconds: outcome.playlistSeconds,
+        durationSeconds: duration,
+        credentialsInGeneratedUrls: outcome.credentialsInGeneratedUrls,
+      }, null, 2)}
+`);
+
+      // THE PER-SEEK CEILING, which is the half of G9 that is about a viewer waiting for a picture.
+      for (const seek of outcome.seeks) {
+        record(args, withinBudget(`JD19-seek-${seek.index}-seconds:${ref}`,
+          Math.round(seek.elapsedMs / 100) / 10, MEDIA_SERVER_SOAK.MAX_SEEK_SECONDS,
+          `to ${Math.round((seek.requestedSeconds / duration) * 100)}% of duration`));
+      }
+      record(args, exactly(`JD19-seek-count:${ref}`, outcome.seeks.length, MEDIA_SERVER_SOAK.SEEK_COUNT));
+      record(args, exactly(`JD19-seek-no-credential-in-generated-urls:${ref}`,
+        outcome.credentialsInGeneratedUrls, 0));
+      // The server's own playlist has to describe the media the gate thinks it is seeking around, or every
+      // position below was computed against the wrong duration.
+      record(args, withinBudget(`JD19-seek-playlist-duration-drift-seconds:${ref}`,
+        Math.round(Math.abs(outcome.playlistSeconds - duration)), 5,
+        `the server's playlist describes ${Math.round(outcome.playlistSeconds)}s and the file decodes as `
+        + `${duration}s`));
+      return;
+    }
+
+    case 'seek-verify': {
+      // THE PROPERTIES THAT BELONG TO THE SET, held against the acceptance plan once the segments have been
+      // decoded by a real decoder. Every per-seek assertion above is satisfied by a server that returned the
+      // first three seconds of the file ten times; none of these is.
+      const key = need(args, 'key');
+      const ref = opaqueRef('entry', key).slice(0, 12);
+      const raw = JSON.parse(readFileSync(need(args, 'seeks'), 'utf8')) as {
+        seeks: SeekObservation[]; durationSeconds: number;
+      };
+      const decodes = (JSON.parse(readFileSync(need(args, 'probes'), 'utf8')) as SoakProbe[])
+        .map((probe) => ({
+          index: probe.index, codec: probe.codec, packets: probe.packets, startSeconds: probe.seconds,
+        }));
+      const analysis = analyseSeekSet(raw.seeks, decodes);
+
+      record(args, exactly(`JD19-seek-decoded-count:${ref}`, analysis.count - analysis.unprobed,
+        MEDIA_SERVER_SOAK.SEEK_COUNT, 'every seek position was decoded, not a sample of them'));
+      record(args, exactly(`JD19-seek-wrong-codec:${ref}`, analysis.wrongCodec, 0,
+        `every seek produced ${TRANSCODE_TARGET_VIDEO_CODEC} from an ${TRANSCODE_SOURCE_VIDEO_CODEC} source`));
+      record(args, exactly(`JD19-seek-empty-of-video:${ref}`, analysis.emptyOfVideo, 0,
+        'a segment with no decodable video packets is not playable video'));
+      record(args, withinBudget(`JD19-seek-slowest-seconds:${ref}`,
+        Math.round(analysis.slowestSeconds * 10) / 10, MEDIA_SERVER_SOAK.MAX_SEEK_SECONDS));
+      // TEN SEEKS, NOT ONE SEEK TEN TIMES.
+      record(args, exactly(`JD19-seek-distinct-segments:${ref}`, analysis.distinctSegments,
+        MEDIA_SERVER_SOAK.SEEK_COUNT, 'ten different segments came back, byte for byte'));
+      record(args, atLeast(`JD19-seek-backward-transitions:${ref}`, analysis.backwardTransitions,
+        MEDIA_SERVER_SOAK.MIN_BACKWARD_SEEKS, 'the plan really did go backwards, in the order it was run'));
+      record(args, atLeast(`JD19-seek-past-90-percent:${ref}`, analysis.deepSeeks, 1));
+      record(args, withinBudget(`JD19-seek-position-error-seconds:${ref}`,
+        Math.round(analysis.maxPositionErrorSeconds * 10) / 10,
+        MEDIA_SERVER_SOAK.MAX_SEEK_POSITION_ERROR_SECONDS,
+        'the worst gap between the position asked for and the one the server said it was serving'));
+      // THE TEMPORAL ASSERTION. The decoded timestamps move one second per second of media asked for; the
+      // constant offset between them is one server's presentation-time base and is measured, not assumed.
+      record(args, withinBudget(`JD19-seek-decoded-offset-spread-x10:${ref}`,
+        Math.round(analysis.decodedOffsetSpreadSeconds * 10),
+        Math.round(MEDIA_SERVER_SOAK.MAX_SEEK_DECODED_OFFSET_SPREAD_SECONDS * 10),
+        'how much the decoded-timestamp offset varied across the ten seeks; a server that ignored the '
+        + 'position would vary by the whole duration'));
+      record(args, atLeast(`JD19-seek-decoded-span-seconds:${ref}`,
+        Math.floor(analysis.decodedSpanSeconds),
+        Math.floor(raw.durationSeconds * MEDIA_SERVER_SOAK.MIN_SEEK_DECODED_SPAN_FRACTION),
+        'the media the ten decoded segments actually covered, end to end'));
+      return;
+    }
+
+    case 'transcode-soak': {
+      // G10: "A forced transcode runs 5 minutes."
+      const state = readState(need(args, 'state'));
+      const items = readItems(need(args, 'items'));
+      const key = need(args, 'key');
+      const item = itemFor(items, key);
+      const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_TRANSCODE_SECONDS);
+      const outcome = await transcodeSoak(state, item, {
+        segmentDir: need(args, 'segment-dir'),
+        producerDir: need(args, 'producer-dir'),
+        minSeconds: seconds,
+        maxSegmentBytes: optionalNumber(args, 'max-segment-bytes', 8 * 1024 * 1024),
+      });
+      writeFileSync(need(args, 'out'), `${JSON.stringify({
+        segments: outcome.segments,
+        sessions: outcome.sessions,
+        producerMtimesMs: outcome.producerMtimesMs,
+        credentialsInGeneratedUrls: outcome.credentialsInGeneratedUrls,
+        failedPlaybackReports: outcome.failedPlaybackReports,
+        failedSessionPolls: outcome.failedSessionPolls,
+      }, null, 2)}\n`);
+      console.log(`  consumed ${outcome.segments.length} segment(s) over `
+        + `${Math.round((outcome.segments[outcome.segments.length - 1]?.wallMs ?? 0) / 1000)}s`);
+      return;
+    }
+
+    case 'transcode-soak-verify': {
+      // WHAT THIS GATE CLAIMS, IN ONE SENTENCE, SO THAT THE ASSERTIONS CAN BE READ AGAINST IT: five minutes
+      // of PACED, CONTINUOUSLY DECODED, TRANSCODED PLAYBACK. Not five minutes of an encoder process being
+      // busy — see the encoder span below, which is recorded and is not that.
+      const key = need(args, 'key');
+      const ref = opaqueRef('entry', key).slice(0, 12);
+      const raw = JSON.parse(readFileSync(need(args, 'soak'), 'utf8')) as {
+        segments: SoakSegment[];
+        sessions: TranscodeSessionSampleRecord[];
+        producerMtimesMs: number[];
+        credentialsInGeneratedUrls: number;
+        failedPlaybackReports: number;
+        failedSessionPolls: number;
+      };
+      const probes = JSON.parse(readFileSync(need(args, 'probes'), 'utf8')) as SoakProbe[];
+      const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_TRANSCODE_SECONDS);
+      const analysis = analyseTranscodeSoak(raw.segments, probes, raw.producerMtimesMs, raw.sessions);
+
+      record(args, atLeast(`JD20-transcode-soak-wall-seconds:${ref}`,
+        Math.floor(analysis.wallSpanSeconds), seconds,
+        'wall clock between the first segment arriving and the last, at a player\'s pace'));
+      // THE ONE THAT TURNS AN ELAPSED WINDOW INTO A CONTINUOUS ONE. A five-minute span is satisfied by
+      // consuming everything in ten seconds and fetching one last segment four minutes later; requiring
+      // every ADJACENT pair to arrive close together is what refuses that.
+      record(args, withinBudget(`JD20-transcode-soak-longest-arrival-gap-seconds:${ref}`,
+        Math.round(analysis.maxArrivalGapSeconds), MEDIA_SERVER_SOAK.MAX_SEGMENT_ARRIVAL_GAP_SECONDS,
+        'the longest wall gap between two consecutive transcoded segments arriving, including the first'));
+      record(args, atLeast(`JD20-transcode-soak-decoded-seconds:${ref}`,
+        Math.floor(analysis.decodedMediaSeconds), seconds,
+        'media time actually decoded out of the transcoded output, not segments counted'));
+      // ...AND THE ONE THAT REFUSES A FRONT-LOADED RUN. Everything real happening early and the tail padded
+      // out passes the span and the gap ceiling if the tail is thin enough; this says the end of the window
+      // looks like the middle of it.
+      record(args, atLeast(`JD20-transcode-soak-late-window-decoded-seconds:${ref}`,
+        Math.floor(analysis.lateWindowDecodedSeconds),
+        Math.floor(seconds * MEDIA_SERVER_SOAK.MIN_LATE_WINDOW_DECODED_FRACTION),
+        'decoded h264 media time among the segments that arrived in the LAST THIRD of the window'));
+      record(args, exactly(`JD20-transcode-soak-unprobed-segments:${ref}`, analysis.unprobed, 0,
+        'every consumed segment was decoded, so the decoded total is not a sample'));
+      record(args, exactly(`JD20-transcode-soak-distinct-segments:${ref}`,
+        analysis.distinctSegments, analysis.segments,
+        'every segment is a different segment: one window delivered fifty times is not fifty segments'));
+      // THE ASSERTION THAT NOW CARRIES G10, AND IT IS ANCHORED AT BOTH ENDS INSIDE THIS PHASE.
+      //
+      // The source is asserted to be the codec the transcode was forced AWAY from, here rather than only in
+      // the earlier short-transcode step: "every segment decoded as h264" says nothing at all if the source
+      // was h264 to begin with, and a phase whose two halves live in different steps is a phase where one
+      // half can quietly stop being true.
+      // TAKEN FROM THE MEDIA SERVER'S OWN IDENTIFICATION OF THE ITEM, not from a flag the shell computed.
+      // What matters is what the SERVER thought it was transcoding from, since it is the server's encoder
+      // whose output is being decoded.
+      const sourceCodec = itemFor(readItems(need(args, 'items')), key).videoCodec;
+      record(args, {
+        gate: `JD20-transcode-soak-source-codec:${ref}`,
+        verdict: sourceCodec === TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass' : 'fail',
+        note: `the media server identified the source as ${sourceCodec || '(none)'}; a transcode to `
+          + `${TRANSCODE_TARGET_VIDEO_CODEC} from a source that was already ${TRANSCODE_TARGET_VIDEO_CODEC} `
+          + 'would prove nothing about an encoder',
+      });
+      record(args, exactly(`JD20-transcode-soak-wrong-codec:${ref}`, analysis.wrongCodec, 0,
+        `the source is ${TRANSCODE_SOURCE_VIDEO_CODEC} throughout and every segment decoded as `
+        + `${TRANSCODE_TARGET_VIDEO_CODEC}`));
+      record(args, exactly(`JD20-transcode-soak-empty-segments:${ref}`, analysis.emptyOfVideo, 0));
+
+      // TWO MEASUREMENTS THIS GATE RECORDS AND DELIBERATELY DOES NOT ASSERT ON, each with the measurement
+      // that says why. Recording them is worth doing; asserting on them would be asserting something the
+      // pinned server does not do, and then relaxing the threshold until it passed.
+      //
+      // THE ENCODER'S OWN OUTPUT SPAN. An earlier version of this gate required it to cover most of the
+      // window, on the theory that a throttled encoder stays a bounded distance ahead of its client.
+      // Measured, with throttling enabled: 115 output files written inside 1.6 seconds. The encoder finishes
+      // a five-minute low-bitrate source almost immediately and exits. So this number is how far AHEAD OF
+      // THE CLIENT it ran, and it is reported as that and nothing else.
+      record(args, {
+        gate: `JD20-transcode-soak-encoder-ahead-span-seconds:${ref}`,
+        verdict: 'pass',
+        measured: Math.round(analysis.encoderAheadSpanSeconds), budget: seconds,
+        note: `${analysis.encoderOutputFiles} file(s) written by the transcoding job inside this window, `
+          + 'spanning the seconds measured. RECORDED, NOT ASSERTED: the encoder races ahead of a paced client '
+          + 'and exits, so this is how far ahead it ran and is NOT evidence that it was busy for five '
+          + 'minutes. The five-minute claim rests on the continuity of decoded output above',
+      });
+      // AND THE OTHER HALF OF THE SAME LIMITATION, STATED WITH ITS NUMBER. Live `TranscodingInfo` disappears
+      // when the encoder job ends, which on this source and host is within seconds; a share of it would be
+      // an assertion about encoder liveness wearing a session's clothes.
+      record(args, {
+        gate: `JD20-transcode-soak-encoder-live-samples:${ref}`,
+        verdict: 'pass',
+        measured: analysis.encoderLiveSamples, budget: analysis.sessionSamples,
+        note: 'samples in which the server was still reporting a LIVE transcoding job. RECORDED, NOT '
+          + 'ASSERTED: it goes null once the encoder exits, which happens seconds into the window because '
+          + 'the encoder finishes the whole source almost immediately. G10 is NOT closed as five minutes of '
+          + 'encoder liveness by this gate',
+      });
+      // THE SESSION TELEMETRY, SAMPLED ACROSS THE WINDOW AND ASSERTED ON BY NOTHING.
+      //
+      // WHY NOTHING ASSERTS ON IT. An earlier version required `PlayState.PlayMethod` to read `Transcode` at
+      // 80 % of samples — while the gate's own playback report was SENDING `PlayMethod: 'Transcode'`. That is
+      // a claim this process made, handed to the server, and read back as evidence the server had produced.
+      // A three-arm negative control against a live pinned server, with a real mpeg4 → h264 transcode
+      // serving the segments in every arm, showed the field is client-writable: reporting `DirectPlay` made
+      // the server record `DirectPlay` throughout. The gate now sends no `PlayMethod` at all, and this number
+      // is telemetry. What carries the transcode claim is the decoded output above.
+      // SAMPLES ARE SUCCESSFUL READS ONLY, and the failures beside them are gated at zero — otherwise a run
+      // whose polls all failed satisfies "sampled across the window" with nothing but its own failures.
+      record(args, exactly(`JD20-transcode-soak-failed-session-polls:${ref}`, raw.failedSessionPolls, 0,
+        'session reads that never reached the server; a failed read is not an observation that the server '
+        + 'reported nothing, and it may not be counted as one'));
+      record(args, atLeast(`JD20-transcode-soak-session-samples:${ref}`, analysis.sessionSamples, 10,
+        'successful session reads across the window, not one at the start'));
+      // ...AND THE SAMPLES HAVE TO HAVE FOUND SOMETHING. A window in which this gate's own session was never
+      // present is a window in which every number below describes an absence: `methodIsTranscode` and
+      // `encoderJobLive` are both false for "no session of ours exists" and for "it exists and is neither",
+      // and a count that cannot tell those apart is not telemetry, it is noise.
+      record(args, atLeast(`JD20-transcode-soak-session-present-samples:${ref}`, analysis.sessionPresentSamples,
+        Math.ceil(analysis.sessionSamples * MEDIA_SERVER_SOAK.MIN_SESSION_PRESENT_SAMPLE_FRACTION),
+        `samples in which a session for THIS gate's device and this item existed at all, of `
+        + `${analysis.sessionSamples} successful reads`));
+      record(args, {
+        gate: `JD20-transcode-soak-reported-method-samples:${ref}`,
+        verdict: 'pass',
+        measured: analysis.transcodeMethodSamples, budget: analysis.sessionSamples,
+        note: 'samples in which the server reported this session\'s playback method as Transcode. RECORDED, '
+          + 'NOT ASSERTED: a negative control showed the field is client-writable — a client reporting '
+          + 'DirectPlay is recorded as DirectPlay while a real transcode serves it — so it is not the '
+          + 'server\'s independent account. The gate authors no PlayMethod, and the transcode claim rests on '
+          + 'the decoded mpeg4-to-h264 output above',
+      });
+      // AND WHETHER THE TELEMETRY ABOVE HAD A SUBJECT. A run whose playback reports were refused is a run
+      // whose session numbers describe this gate's silence rather than the server's view, and that has to be
+      // visible rather than swallowed — even for a number nothing asserts on.
+      record(args, exactly(`JD20-transcode-soak-failed-playback-reports:${ref}`,
+        raw.failedPlaybackReports, 0,
+        'playback reports the server refused; a non-zero count makes the session telemetry beside it '
+        + 'meaningless rather than merely low'));
+      record(args, exactly(`JD20-transcode-soak-no-credential-in-generated-urls:${ref}`,
+        raw.credentialsInGeneratedUrls, 0));
       return;
     }
 
@@ -468,9 +901,20 @@ async function main(): Promise<void> {
       // THE ONE THAT MATTERS. A scanner that downloaded the file to identify it would sit at or above 1.0 of
       // the object's own length; the budget is a fraction of it, so "it works, it just fetches everything"
       // cannot pass.
-      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'),
-        Math.floor(remoteBytes * MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION),
-        `denominator: ${remoteBytes} remote bytes published`));
+      //
+      // TWO DENOMINATORS WHEN THERE ARE TWO KINDS OF OBJECT, AND THE SECOND ONE IS ABOVE 1.0 ON PURPOSE.
+      // Below the contract's single-probe threshold an entry's own probe window IS the whole object, so
+      // identifying it costs its whole length by construction and a sub-1.0 budget over it would be a gate
+      // that could never pass. Folding the two together would be worse than either: the large entries would
+      // pay for the small ones, and a regression in the large path — the one the product's argument rests
+      // on — would disappear into the average. So each names its own denominator, and both are printed.
+      const smallBytes = optionalNumber(args, 'small-bytes', 0);
+      const byteBudget = Math.floor(remoteBytes * MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION
+        + smallBytes * MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER);
+      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), byteBudget,
+        `denominators: ${remoteBytes} bytes in objects above the single-probe threshold at `
+        + `x${MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION}, and ${smallBytes} bytes below it at `
+        + `x${MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER}`));
       record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
@@ -483,6 +927,39 @@ async function main(): Promise<void> {
         record(args, atLeast(`${gate}-range-requests-floor`, delta('rangeRequests'), Number(floor),
           'a scan that reached the provider zero times did not read the entry'));
       }
+      return;
+    }
+
+    case 'traffic-window': {
+      // WHAT A FIVE-MINUTE READ COST AT THE PROVIDER, bounded explicitly rather than by a scan multiplier.
+      //
+      // WHY THE SCAN BUDGETS DO NOT APPLY HERE. `budget` measures a metadata pass, whose whole argument is
+      // that it reads a fraction of the object. A five-minute PLAYBACK legitimately reads the object — that
+      // is what playing it means — so a fraction budget over it would be a gate that could not pass, and
+      // leaving the window unmeasured would be a gate that could not fail. What is bounded instead is
+      // AMPLIFICATION: how many times over the daemon fetched an object it was streaming once.
+      const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as Record<string, number>;
+      const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as Record<string, number>;
+      const gate = need(args, 'gate');
+      const objectBytes = optionalNumber(args, 'object-bytes', 1);
+      const multiplier = optionalNumber(args, 'max-object-multiplier', 3);
+      const delta = (key: string): number => (after[key] ?? 0) - (before[key] ?? 0);
+
+      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'),
+        Math.floor(objectBytes * multiplier),
+        `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`));
+      record(args, withinBudget(`${gate}-range-requests`, delta('rangeRequests'),
+        optionalNumber(args, 'max-range-requests', 4096),
+        'a ranged read per window the daemon needed, and a ceiling a runaway read-ahead would blow'));
+      // A FLOOR AS WELL, because a window in which the provider was never reached would score perfectly
+      // against every ceiling above and would mean the entry was served from somewhere else entirely.
+      record(args, atLeast(`${gate}-range-requests-floor`, delta('rangeRequests'),
+        optionalNumber(args, 'min-range-requests', 1)));
+      record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
+      record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
+        MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
+      record(args, withinBudget(`${gate}-peak-connections`, after.peakConns ?? 0,
+        MEDIA_SERVER_BUDGETS.MAX_PEAK_CONNECTIONS));
       return;
     }
 

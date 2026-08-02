@@ -116,10 +116,10 @@ the same and only the second is evidence.
 
 | Gate | Jellyfin | Plex | Emby |
 |---|---|---|---|
-| G7 **Scan** | run — `npm run go:jellyfin-dataplane-gate`, against a real digest-pinned Jellyfin with the mount as a library root | not run | not run |
-| G8 **Play** | run — direct play, both entries, digest-compared against values recorded outside the mount | not run | not run |
-| G9 **Seek** | run — a ranged request per entry, `206` and `Content-Range` asserted before the body is read. **The plan's ten seeks including >90 % of duration are not yet run**; two windows are | not run | not run |
-| G10 **Transcode** | run — forced `mpeg4` → `h264`, proved by decoding the segments. **The plan's five-minute duration is not yet run**; a bounded segment count is | not run | not run |
+| G7 **Scan** | run — `npm run go:jellyfin-dataplane-gate`, against a real digest-pinned Jellyfin with the mount as a library root. **The plan's ~50-entry corpus is now run**: 50 published identities, each catalogued at the published size as an ordinary file, with zero missing, zero duplicated and zero unexpected. Zero churn across a repeat scan, and across the daemon SIGKILL/restart/remount path, which is followed by a byte-for-byte read so it cannot pass on a dead mount. A graceful daemon restart under a long-running media server is **not** proved here and the reason is recorded | not run | not run |
+| G8 **Play** | run — direct play, digest-compared against values recorded outside the mount, **and the plan's five minutes are now run**: a real decoder consuming at the media's own rate for 300 s, startup under 10 s, no stall, with decoded media time and the media-per-wall-second ratio both asserted so that a fast download and a sleep cannot pass. See §6.2 | not run | not run |
+| G9 **Seek** | run — **the plan's ten seeks are now run**, including four backward transitions and two positions beyond 90 % of duration, each returning decodable `h264` inside 10 s, all ten segments distinct, and the decoded timestamps tracking the requested positions with a constant offset. The earlier ranged-request evidence (`206` and `Content-Range` asserted before the body is read) is kept as the byte-level control | not run | not run |
+| G10 **Transcode** | run — forced `mpeg4` → `h264` proved by decoding the segments, **and the plan's five minutes are now run** as five minutes of *paced, continuously decoded, transcoded playback*. **NOT closed as five minutes of encoder liveness** — see §6.2, which records why that is a different claim and what was measured | not run | not run |
 | G11 **Generation swap mid-read** | run — the in-flight stream completed correctly across an admitted successor | not run | not run |
 | G12 **Kill and recover** | run — `SIGKILL` mid-stream, restart, remount: zero added, zero removed, zero item-id churn; playback resumable | not run | not run |
 | G13 **Re-scan churn** | run — twice, plus across a media-server restart | not run | not run |
@@ -131,6 +131,50 @@ the same and only the second is evidence.
 `docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md` describes the gate that produced the Jellyfin column. Every
 run of it so far has been on **Windows / Docker Desktop**, which §6 says closes none of G7–G13. The tranche
 still closes on Linux or Unraid, three consecutive times, and on **all three** media servers.
+
+### 6.2 What the five-minute gates prove, and the one thing G10 does not
+
+**G8 and G9 are proved as written.** A five-minute play is a real decoder consuming the stream at the media's
+own frame rate: startup, decoded media time, the ratio of media seconds to wall seconds, and the longest
+interval in which the decoder made no progress are each asserted separately, because a five-minute claim is
+otherwise passed by downloading the file and sleeping. Ten seeks are ten *distinct* segments at ten media
+positions, four of the transitions backwards and two past 90 % of duration, each decoded rather than merely
+answered — and the decoded timestamps move one second per second of media asked for, which is what
+distinguishes a seek from the same segment served ten times.
+
+**G10 says "a forced transcode runs 5 minutes", and this gate proves five minutes of PACED, CONTINUOUSLY
+DECODED, TRANSCODED PLAYBACK. It does not prove five minutes of encoder work, and the difference is
+measured rather than glossed over.**
+
+Measured against the pinned server on a developer machine: the transcoding job encodes a 340-second,
+320×240, 150 kbit/s source in about **1.6 seconds** and exits. That is with `EnableThrottling` on, a
+throttle delay configured, and a player session attached by reporting playback the way a client does. Live
+`TranscodingInfo` is populated immediately and is null fifteen seconds later, because there is no longer a
+job. An earlier draft of this gate asserted that the encoder's own output spanned most of the window; that
+assertion would have failed every correct run on this hardware, and calling 1.6 seconds evidence of five
+minutes would have been an overclaim of exactly the kind this plan exists to prevent.
+
+So the five minutes are proved from the **client and the output**, and the encoder is **recorded**:
+
+| Asserted | What it refuses |
+|---|---|
+| The **source** codec, as the media server identified it, is `mpeg4` | a transcode "to h264" from a source that was already h264 |
+| Decoded `h264` media time ≥ 300 s, over **every** consumed segment | counting files the server emitted; a remux; empty segments |
+| Wall span across segment arrivals ≥ 300 s | nothing on its own — see the next row |
+| Longest gap between **adjacent** arrivals ≤ 20 s | consuming every segment in ten seconds, sleeping, and fetching one more at the end |
+| ≥ 25 % of the required media decoded in the **last third** of the window | a dense start with a padded tail |
+| All consumed segments distinct | one segment delivered fifty times, which satisfies every row above |
+
+| Recorded, not asserted | Why |
+|---|---|
+| The encoder's own output-file span, and how many files | it is how far **ahead of the paced client** the encoder ran, not how long it ran |
+| Samples with live `TranscodingInfo` | it goes null when the job exits, which is seconds into the window |
+| Samples where the server reported the playback method as `Transcode` | **the field is client-writable.** A negative control against a live server, with a real transcode serving the segments throughout, showed that a client reporting `DirectPlay` is recorded as `DirectPlay`. An earlier version asserted an 80 % share of it *while the gate was itself sending `PlayMethod: Transcode`* — a claim made here, handed to the server, and read back as the server's. The gate now sends no `PlayMethod` at all |
+| Playback reports the server refused | session telemetry gathered while the server was ignoring the client describes the harness's silence, not the server's view |
+
+**On slower hardware, a longer source or a heavier profile, the encoder would still be working across the
+window and the recorded numbers would say so.** That is a property of the machine, not of the data plane,
+which is why it is reported rather than required. **G10 is recorded as run, not as closed.**
 
 ## 7. What the harness must record
 

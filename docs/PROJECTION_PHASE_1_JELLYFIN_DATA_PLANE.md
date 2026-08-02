@@ -20,7 +20,7 @@ There are now **two** Jellyfin jobs here, and they prove different things.
 |---|---|---|
 | What it talks to | a **fake** Jellyfin (`test/jellyfin-fake-server.ts`) | a **real** Jellyfin container, pinned by digest |
 | What it exercises | collections, matching, outbox, privacy, URL policy | scan, direct play, seek, forced transcode, library churn |
-| Media involved | none | two generated mp4 files, read through a FUSE mount |
+| Media involved | none | a ~50-entry generated corpus plus one long soak source, read through a FUSE mount |
 | Mount involved | none | the production `projectiond` image, strict-direct-mounted |
 | Command | `npm run test:jellyfin-*` | `npm run go:jellyfin-dataplane-gate` |
 
@@ -36,14 +36,23 @@ and still is not.
    mp4. Nothing is downloaded, nothing copyrighted is touched, and no media fixture is committed. Each entry
    uses a different pattern, tone and duration, so no two are byte-identical — otherwise reading the wrong one
    would still match its digest.
+2b. **A ~50-entry corpus of tiny files, and exactly ONE long source.** The corpus answers G7, which is a
+   question about fifty identities rather than about bytes; the long source answers G8, G9 and G10, which need
+   a duration and only need one. Keeping them separate is what lets the corpus stay cheap enough that nobody
+   is tempted to shrink it. See §3.4.
 3. **Digests and byte lengths recorded outside the mount**, before anything is published.
 4. **The production publisher**, and a pointer whose digest is verified against the artifact file.
 5. **The already-merged production `projectiond` image**, strict-direct-mounted with `/dev/fuse`,
    `CAP_SYS_ADMIN` and nothing else, its namespace bind-propagated to sibling containers.
 6. **Jellyfin, non-root, as an ordinary container**, stood up non-interactively through its own `/Startup/*`
    first-run API — not by forging a config file — and given the mount as a Movies library root.
-7. **A real scan**, then direct play, a real HTTP seek, a forced transcode, a mid-stream generation swap, a
-   `SIGKILL` of the daemon mid-stream, a daemon restart, a media-server restart and two more scans.
+7. **A real scan**, then direct play, a real HTTP seek and a forced transcode over the first small generation.
+8. **The ~50-entry corpus published on top of it**, scanned and re-scanned with zero churn of any kind. The
+   projection-restart evidence is the `SIGKILL` path in step 10, for the reason in §3.8.
+9. **The five-minute half**: ten media-time seeks, five minutes of paced direct play, and five minutes of
+   paced, continuously decoded transcoded playback.
+10. **The violent half**: a mid-stream generation swap, a `SIGKILL` of the daemon mid-stream, a daemon
+   restart, a media-server restart, a generation admitted mid-scan, a provider outage, and more scans.
 
 ## 3. The assertions, and why each is worth making
 
@@ -76,6 +85,11 @@ so **no transient outage can produce a smaller published generation**; and once 
 through the media server are correct again.
 
 | `JD16` | A generation admitted **strictly inside a running scan**, made deterministic rather than raced — see §3.2. The scanner is confirmed running immediately *before* the publish and again *after* it returns; what the raced scan saw is recorded, not asserted; nothing half-formed may appear in it; and the next scan must converge with zero removals and zero item-id churn. |
+| `JD9b` | What a **~50-entry** scan cost at the provider, with **both denominators named** — see §3.4. |
+| `JD13b` | A plain re-scan over the ~50-entry corpus: zero removals, zero additions, zero duplicates, zero item-id churn and zero metadata drift. The projection-RESTART evidence is `JD11`, the crash path, for the reason in section 3.8. |
+| `JD18` | **Five minutes of direct play, paced** — see §3.5. |
+| `JD19` | **Ten media-time seeks**, backwards and past 90 % of duration — see §3.6. |
+| `JD20` | **Five minutes of paced, continuously decoded, transcoded playback** — see §3.7, including the one thing it deliberately does not claim. |
 
 Alongside them, outside the driver: every mutation attempted from **inside Jellyfin's own non-root container**
 is refused; the mount is deliberately **not** bound `:ro`, so what refuses the write is the daemon and not a
@@ -117,6 +131,174 @@ leak rather than a live waiter and the next run would inherit a wedged endpoint.
 
 **The bound stays below the daemon's request timeout,** so a gate that died between hold and release degrades
 into a slow read rather than a failed one.
+
+## 3.4 The ~50-entry corpus, and why it is made of tiny files
+
+G7 is a scan of a **~50-entry corpus**. What it measures is whether a media server catalogues fifty distinct
+identities correctly — a question about namespace, metadata and stable identity, not about bytes. Fifty large
+files would answer the same question, cost gigabytes of generated media and minutes of encoding per run, and
+would make the gate slow enough that somebody would eventually shrink the corpus. A fifty-entry gate run
+against five entries is worse than no gate at all.
+
+So the corpus is **50 tiny, valid, individually distinct media files** — 47 generated in a single container
+(nine local, thirty-eight served over HTTP Range), plus the two original anchors and the long soak source.
+Each uses a different pattern, tone and duration; `corpus-check` refuses the run unless all fifty digests are
+distinct, because two byte-identical entries would make every digest comparison in this gate decorative.
+
+**The scan is asserted as a count of MATCHED IDENTITIES, not a count of items.** A listing of fifty arbitrary
+files has the right length. `JD3-corpus-matched 50/50` counts only published keys that were present, at the
+published size, as ordinary files — so it cannot be satisfied by fifty of anything else. Alongside it,
+`missing`, `wrong-size`, `not-ordinary`, `duplicated` and `unexpected` are each zero, so a shortfall says what
+went wrong rather than only that something did.
+
+**The byte budget names two denominators**, and folding them together would have been the easy mistake. Above
+the contract's single-probe threshold an object is identified from a **fraction** of itself, and that fraction
+carries the product's entire argument. Below it, the contract's own probe plan is a single window covering the
+**whole** object, so identifying such an entry costs its whole length by construction and a sub-1.0 budget over
+it could never pass. One combined budget would let the large entries pay for the small ones — and a regression
+in the large read path would disappear into the average.
+
+## 3.5 Five minutes of direct play, and the three ways to fake it
+
+`JD4` proves the **bytes** are right: it drains a response and digests it, in a second or two. Nothing about
+it can support *"direct play starts within 10 s and runs 5 minutes without a stall"*, and the obvious way to
+make it take five minutes — add a sleep — produces a phase that takes five minutes and measures a download.
+
+`JD18` runs a **real decoder at the media's own frame rate** (`ffmpeg -re`, in the pinned media-server image,
+on the gate's own network) and holds its progress trace against four separate numbers:
+
+| Measured | What it refuses |
+|---|---|
+| Startup: launch to first decoded frame | a server that takes half a minute to produce a picture |
+| Wall clock ≥ 300 s | nothing on its own |
+| **Decoded media time** ≥ 300 s | sleeping for five minutes having decoded four seconds |
+| **Media seconds per wall second**, floor and ceiling | draining the whole file in twenty seconds and sleeping — which passes every row above and sits in the hundreds here |
+| Longest interval with no decoder progress | a play that froze for ninety seconds and caught up, whose endpoints are identical to a correct run's |
+
+The decoder's own output is then re-probed end to end, because "decoded/playable output" is a decoder's
+answer and a byte count is not one. **The consumer sends no credential**, which is a consequence of §3.1's
+measurement rather than an oversight: this server answers `static=true` direct play to a request carrying
+none, and putting one on a `docker run` command line would publish it to every process listing on the host
+to buy nothing.
+
+## 3.6 Ten seeks, and how a seek is actually performed against this server
+
+The obvious spelling is `StartTimeTicks` on `master.m3u8`. Measured against the pinned server, it is wrong in
+two ways, and both were only visible by running it:
+
+1. **It does not change the playlist.** The variant playlist for a seeked request lists the whole file — 114
+   segments and 340 seconds of `#EXTINF` — exactly as an unseeked one does. So "ask for 90 % of the way in
+   and a tenth of the duration remains" is not a statement this server makes.
+2. **The segment request then fails.** The server generates child URLs in the shape of the request that asked
+   for them, so `startTimeTicks` propagates into every segment URL, lands beside the `runtimeTicks` the
+   playlist generator adds, and the segment endpoint answers **400**.
+
+What an HLS client actually does — and therefore what this gate does — is hold one playlist and **request the
+segment at the position it wants**, out of order, wherever that is. The server restarts its encoder at that
+position to answer, which is the non-sequential, multi-position read this data plane exists to make cheap.
+
+Every per-seek assertion — a 200, a non-empty body, decodable `h264`, inside ten seconds — is satisfied by a
+server that returned the first three seconds of the file ten times over. So the properties that belong to the
+**set** are asserted too: ten **distinct** segments, a position the server itself agrees with to within one
+segment, decoded timestamps spanning at least 80 % of the media, and — the temporal assertion — a
+**constant** offset between each decoded start timestamp and the position asked for. The pinned server offsets
+its transport-stream timestamps by ten seconds; that constant is *measured*, not hard-coded, because it is one
+server's presentation-time convention. What is universal is that it does not change as the position moves.
+
+## 3.7 Five minutes of transcode, and the one thing this gate does **not** claim about it
+
+**What `JD20` claims: five minutes of paced, continuously decoded, transcoded playback.**
+
+**What it does not claim: five minutes of encoder work.** Measured on a developer machine, the transcoding job
+encodes the 340-second, 320×240, 150 kbit/s source in about **1.6 seconds** and exits — with `EnableThrottling`
+on, a throttle delay configured, and a player session attached. Live `TranscodingInfo` is populated
+immediately and is null fifteen seconds later, because there is no longer a job.
+
+An earlier draft of this gate asserted that the encoder's own output files spanned most of the window. That
+assertion would have failed every correct run on this hardware, and reporting 1.6 seconds as proof of five
+minutes would have been the overclaim this repository exists to stop shipping. Both numbers are now
+**recorded with their measurements and asserted on by nothing**.
+
+The five minutes are proved from the client and the output instead:
+
+| Asserted | What it refuses |
+|---|---|
+| The **source** codec, as the media server identified it, is `mpeg4` | a transcode "to h264" from something that was already h264 |
+| Decoded `h264` media ≥ 300 s over **every** consumed segment | counting files; a remux; empty segments |
+| Wall span across segment arrivals ≥ 300 s | nothing on its own |
+| Longest gap between **adjacent** arrivals ≤ 20 s | consuming everything in ten seconds, sleeping, and fetching one more at the end |
+| ≥ 25 % of the required media decoded in the **last third** of the window | a dense start with a padded tail |
+| All consumed segments distinct | one segment delivered fifty times, which satisfies every row above |
+
+The first two rows are the transcode claim, and they are asserted **in the same phase** so that neither half
+can quietly stop being true while the other is still checked.
+
+### 3.7.1 A circular assertion, and the negative control that removed it
+
+An earlier version of this gate had a seventh asserted row: the server's own `PlayState.PlayMethod` reading
+`Transcode` at ≥ 80 % of samples across the window. **The gate's own playback report was sending
+`PlayMethod: 'Transcode'` at the time.** That is a claim this harness made, handed to the server, and read
+back as though the server had reached it — evidence of nothing but its own round trip.
+
+Three arms against a live pinned server, with a genuine `mpeg4` → `h264` transcode serving the segments in
+**every** arm:
+
+| What the client reported | Read at t=0 | Read at t=20 s |
+|---|---|---|
+| `PlayMethod: Transcode` | `DirectPlay` | `Transcode` |
+| nothing at all | `DirectPlay` | `Transcode` |
+| `PlayMethod: DirectPlay` | `DirectPlay` | **`DirectPlay`** |
+
+The third arm settles it: **the client's contrary claim wins**, so the field cannot carry an assertion about
+what the server was doing. (The second is interesting on its own — the server does derive a value when the
+client asserts none — which is why the gate now sends **no** `PlayMethod` at all: a gate must not author the
+value it later reads.) The number is still sampled and reported, as telemetry, beside a count of playback
+reports the server refused — because session telemetry gathered while the server was ignoring the client
+describes this harness's silence rather than the server's view, and a reader is entitled to know which.
+
+What made the session observable at all is worth keeping: a raw HLS request that never reports playback does
+not become a session with a `NowPlayingItem`, and **the report has to come before the transcode is
+requested**, because the job records itself against the session that exists when it is created.
+
+**On slower hardware, a longer source or a heavier profile the encoder would still be working across the
+window, and the recorded numbers would say so.** That is a property of the machine rather than of the data
+plane, which is why it is reported rather than required.
+
+## 3.8 A defect this corpus found, and a check that was passing because of it
+
+The gate briefly had a step that stopped the daemon with `docker stop`, remounted, and re-scanned — the
+boring restart an installation performs every time it is updated, asserted separately from the crash. It
+reported **zero churn over all fifty entries**. The next real read then failed, and the media server's own
+encoder log said:
+
+```
+[in#0] Error opening input: Transport endpoint is not connected
+```
+
+**On this host a graceful daemon stop leaves a container that was started BEFORE it holding a dead FUSE
+mount.** The bind-propagated namespace does not pick up the replacement; `stat` still answers out of the
+kernel's cache, and only an `open` finds out. `await_namespace` cannot see it either, because it probes with
+a **fresh** container, which gets the new mount correctly.
+
+**And the zero-churn result was passing because of the failure, not despite it.** A scanner that cannot read
+a library root is *supposed* to decline to delete its items — so "zero removed" was a symptom of the broken
+mount rather than evidence against it. That is a check that could not fail, which is the class this
+repository exists to stop shipping, and the step was deleted rather than reordered around.
+
+Two things changed as a result:
+
+1. **The projection-restart evidence is the `SIGKILL` path**, which is strictly more violent, already
+   asserts zero churn, and follows the remount with a byte-for-byte read through the media server — so it
+   cannot pass while the mount is dead.
+2. **Every remount is now followed by a read of BYTES from inside the media server's own container**, before
+   any churn assertion is made. A failure is named at the point it happens instead of surfacing three phases
+   later as an unexplained `500`.
+
+**What is not proved, and is deliberately left open:** whether a graceful daemon restart under a
+long-running media server recovers on **Linux or Unraid**, where mount propagation is not travelling through
+a Docker Desktop VM. It may well be an artifact of this host. It is recorded here because an appliance whose
+daemon cannot be restarted under a running media server would be a serious operational limitation, and
+finding out is Linux/Unraid work rather than something this gate can settle.
 
 ## 3.1 Two things this gate deliberately does **not** claim
 
@@ -263,8 +445,15 @@ rule.
 - **A real provider endpoint**, and therefore **TorBox**: real TLS, real redirects refused, real
   `Content-Range`, real `429`. The only endpoint any automated gate here contacts is
   `internal/fakeprovider`, in a container, on a private network.
-- **The expiring-lease gates** (G24–G26). The endpoint supports the mode; this gate runs against the direct
+- **The expiring-lease gates** (G24–G26) through a media server. The endpoint supports the mode and this gate
+  runs it in **resolver** mode — a real lease is minted and searched for — but nothing here lets one lapse
+  mid-read.
+- **G18, the simultaneous-client gate.** It requires all three media servers scanning at once, and there is
   one.
+- **G22**, the rclone/WebDAV comparison control, and **G27**'s three-server half.
+- **Five minutes of ENCODER work under G10.** What is proved is five minutes of paced, continuously decoded,
+  transcoded playback; the encoder finishes in about 1.6 seconds on this hardware and that number is
+  recorded rather than dressed up. See §3.7.
 - **Three consecutive green runs on Linux or Unraid**, which is what the acceptance plan means by passing.
 
-A Windows or Docker Desktop green run is not a Phase 1 pass and is not reported as one.
+A Windows or Docker Desktop green run is not a Phase 1 pass and is not reported as one. **Phase 1 is open.**

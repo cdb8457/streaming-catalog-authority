@@ -21,3 +21,22 @@ test/fixtures/projection-manifest-v1/** -text
 projectiond/go.mod text eol=lf
 projectiond/go.sum text eol=lf
 projectiond/internal/contract/contract.generated.json text eol=lf
+
+# Shell scripts are LF, on every platform, because a CRLF one is not a script.
+#
+# THE FAILURE THIS FIXES, MEASURED RATHER THAN ANTICIPATED. On a Windows checkout with core.autocrlf=true
+# these arrive with CRLF. Git Bash tolerates that; WSL's bash does not, and `bash` on a Windows PATH is
+# routinely WSL. Running the three-run wrapper there produces:
+#
+#     set: pipefail\r: invalid option name
+#     syntax error near unexpected token `$'do\r''
+#
+# ...and an exit status of 2. What that looked like from the offline suite was four WRAPPER-ACCOUNTING tests
+# failing — the tests whose whole subject is that a SKIPPED RUN MUST NOT LOOK LIKE A PASSING ONE. So the most
+# important property in this tranche appeared broken, from PowerShell, because of a line ending; and it
+# appeared fine from Git Bash, which is the worst version of the same problem: a verdict that depends on
+# which shell you happened to start.
+#
+# It is not only a test concern. These scripts are meant to run on the Linux or Unraid host where the tranche
+# actually closes, and a CRLF copy carried there fails the same way.
+*.sh text eol=lf

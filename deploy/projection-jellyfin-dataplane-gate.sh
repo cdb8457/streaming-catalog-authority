@@ -61,6 +61,11 @@ RANGE_PORT="${PROJECTION_JELLYFIN_GATE_RANGE_PORT:-8097}"
 MOUNT_CONTAINER="projection-jf-mount-$$"
 RANGE_CONTAINER="projection-jf-range-$$"
 JELLYFIN_CONTAINER="projection-jf-server-$$"
+# The PACED CONSUMER. It is named so that the cleanup trap can remove it: it runs for five minutes, and a gate
+# that failed halfway through one would otherwise leave an ffmpeg reading the mount for the rest of the run —
+# and a stale reader is what stops a FUSE mount unmounting cleanly, which is how the NEXT run inherits a
+# namespace and passes for the wrong reason.
+PLAY_CONTAINER="projection-jf-play-$$"
 
 # TWO SPELLINGS OF ONE DIRECTORY, for the same reasons the publisher-to-mount gate has them: WORK is absolute
 # and is what Docker bind mounts name, and it lives beside the repository because bind propagation needs a
@@ -78,6 +83,7 @@ cleanup() {
   # THE MEDIA SERVER FIRST. It holds open handles on the mount, and a FUSE mount with a live reader does not
   # unmount cleanly — leaving one behind is how the NEXT run inherits a stale namespace and passes for the
   # wrong reason.
+  docker rm -f "$PLAY_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$JELLYFIN_CONTAINER" >/dev/null 2>&1 || true
   docker rm -f "$MOUNT_CONTAINER" "$RANGE_CONTAINER" >/dev/null 2>&1 || true
   docker compose -f "$COMPOSE_FILE" down -v --remove-orphans >/dev/null 2>&1 || true
@@ -147,6 +153,144 @@ fetch(process.argv[2], { method: 'POST', signal: controller.signal })
   })
   .catch((error) => { clearTimeout(timer); console.error(`control failed: ${error.name}`); process.exit(1); });
 CTL
+
+cat > "$WORK/expect.cjs" <<'EXPECT'
+// Build an expectation file: a base file (or `-`), plus entries given as groups of five arguments —
+// key, size, sha256, kind, anchor. It exists so the ~50-entry corpus and the handful of entries the gate
+// publishes later are described by ONE document per generation, rather than by a heredoc that has to be
+// edited in three places every time the corpus grows.
+const { readFileSync, writeFileSync } = require('node:fs');
+const [, , out, base, ...rest] = process.argv;
+const entries = base === '-' ? [] : JSON.parse(readFileSync(base, 'utf8'));
+if (rest.length % 5 !== 0) { console.error('an expectation is key size sha kind anchor'); process.exit(1); }
+for (let i = 0; i < rest.length; i += 5) {
+  entries.push({
+    key: rest[i], sizeBytes: Number(rest[i + 1]), sha256: rest[i + 2], kind: rest[i + 3],
+    anchor: rest[i + 4] === 'anchor',
+  });
+}
+writeFileSync(out, `${JSON.stringify(entries, null, 2)}\n`);
+console.log(String(entries.length));
+EXPECT
+
+cat > "$WORK/corpus.cjs" <<'CORPUS'
+// THE ~50-ENTRY CORPUS, described once, from the files that were actually generated.
+//
+// It emits three documents from one walk: what to register (versions and entries, for the batch write path),
+// what to expect (key, size, digest and kind, for every scan assertion), and the byte totals the scan budget
+// needs as its two denominators. Deriving all three from the same walk is what stops the gate from asserting
+// a corpus that differs from the one it published.
+//
+// EVERY REMOTE ENTRY IS CROSS-CHECKED AGAINST THE ENDPOINT before it is registered. The endpoint computed its
+// own size and digest when it opened the file; if those disagree with what this walk found, the gate would be
+// publishing a manifest describing one byte stream and reading another, and every later digest comparison
+// would be measuring the wrong thing.
+const { readFileSync, writeFileSync, statSync } = require('node:fs');
+const { createHash } = require('node:crypto');
+const [, , work, totalRaw, localRaw] = process.argv;
+const total = Number(totalRaw);
+const localCount = Number(localRaw);
+const objects = JSON.parse(readFileSync(`${work}/out/objects.json`, 'utf8'));
+const byRef = new Map(objects.map((object) => [object.ref, object]));
+
+const versions = [];
+const entries = [];
+const expected = [];
+let smallRemoteBytes = 0;
+let localBytes = 0;
+for (let index = 1; index <= total; index += 1) {
+  const n = String(index).padStart(2, '0');
+  const file = `Projection Corpus ${n} (2026).mp4`;
+  const local = index <= localCount;
+  const onDisk = `${work}/${local ? 'media' : 'remote'}/${file}`;
+  const bytes = readFileSync(onDisk);
+  const size = statSync(onDisk).size;
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const ref = `obj-projection-corpus-${n}`;
+  let probes = [];
+  if (!local) {
+    const object = byRef.get(ref);
+    if (!object) { console.error(`the endpoint is not serving corpus entry ${n}`); process.exit(1); }
+    if (object.size !== size || object.sha256 !== sha256) {
+      console.error(`the endpoint and the file disagree about corpus entry ${n}`);
+      process.exit(1);
+    }
+    probes = object.probes.map((probe) => `${probe.position}:${probe.offset}:${probe.length}:${probe.sha256}`);
+    smallRemoteBytes += size;
+  } else {
+    localBytes += size;
+  }
+  versions.push({ key: `corpus-${n}`, size, mtime: '2026-06-01T10:00:00.000Z', probes });
+  entries.push({
+    // A DETERMINISTIC ITEM ID PER INDEX, so two runs of this gate register the same corpus and a diff
+    // between two runs is a difference in behaviour rather than in identifiers.
+    item: `f0000000-0000-4000-8000-${String(index).padStart(12, '0')}`,
+    versionKey: `corpus-${n}`,
+    path: `Movies/Projection Corpus ${n} (2026)/${file}`,
+    sources: [local ? `local:media:${file}` : `http-range:vault:${ref}`],
+  });
+  expected.push({ key: file, sizeBytes: size, sha256, kind: local ? 'local' : 'http-range' });
+}
+
+writeFileSync(`${work}/out/corpus-register.json`, `${JSON.stringify({ versions, entries }, null, 2)}\n`);
+writeFileSync(`${work}/out/corpus-expected.json`, `${JSON.stringify(expected, null, 2)}\n`);
+writeFileSync(`${work}/out/corpus-totals.json`, `${JSON.stringify({
+  entries: expected.length,
+  localEntries: localCount,
+  remoteEntries: total - localCount,
+  smallRemoteBytes,
+  localBytes,
+}, null, 2)}\n`);
+console.log(String(expected.length));
+CORPUS
+
+cat > "$WORK/cacheceiling.cjs" <<'CEILING'
+// The most a fixed-window probe cache can legitimately hold for one corpus.
+//
+// IT IS COMPUTED FROM THE CORPUS RATHER THAN WRITTEN DOWN. The two-entry version of this gate used a flat 18
+// MiB, which was right for two entries and would have been a ceiling nothing could ever reach for fifty. A
+// ceiling that cannot be reached is not a ceiling. Per entry the plan allows three one-megabyte windows, or
+// the whole object when the object is smaller than the contract's single-probe threshold — plus a record
+// header per window and a generous slack, because what this rules out is an order of magnitude, not a byte.
+const { readFileSync } = require('node:fs');
+const WINDOW = 1048576;
+const SINGLE_PROBE_BELOW = 3 * WINDOW;
+const expected = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+let ceiling = 0;
+for (const entry of expected) {
+  ceiling += entry.sizeBytes < SINGLE_PROBE_BELOW ? entry.sizeBytes : 3 * WINDOW;
+}
+console.log(String(Math.floor(ceiling * 1.5) + 4 * 1048576));
+CEILING
+
+cat > "$WORK/published.cjs" <<'PUBLISHED'
+// Total bytes across a published generation, from the same document every scan assertion is made against.
+const { readFileSync } = require('node:fs');
+const entries = JSON.parse(readFileSync(process.argv[2], 'utf8'));
+console.log(String(entries.reduce((total, entry) => total + entry.sizeBytes, 0)));
+PUBLISHED
+
+cat > "$WORK/probes.cjs" <<'PROBES'
+// Turn a directory of decoded-segment reports into the JSON the verify phases read.
+//
+// ONE CONTAINER DECODES EVERY SEGMENT AND WRITES ONE LINE PER FILE — `index|codec|packets|seconds`. This
+// turns that into records. It does no deciding: a segment that decoded as nothing at all still becomes a
+// record with an empty codec and zero packets, so the phase that holds them against the acceptance plan sees
+// a failure rather than an absence.
+const { readFileSync, writeFileSync } = require('node:fs');
+const lines = readFileSync(process.argv[2], 'utf8').split('\n').map((line) => line.trim()).filter(Boolean);
+const probes = lines.map((line) => {
+  const [index, codec, packets, seconds] = line.split('|');
+  return {
+    index: Number(index),
+    codec: (codec ?? '').trim(),
+    packets: Number(packets) || 0,
+    seconds: Number(seconds) || 0,
+  };
+});
+writeFileSync(process.argv[3], `${JSON.stringify(probes, null, 2)}\n`);
+console.log(String(probes.length));
+PROBES
 
 cat > "$WORK/objects.cjs" <<'OBJECTS'
 const { readFileSync } = require('node:fs');
@@ -266,6 +410,104 @@ encode "remote/$REMOTE_FILE" 8 testsrc2 660 moov-at-end
 MIDSCAN_FILE="Projection Remote Held (2026).mp4"
 encode "remote/$MIDSCAN_FILE" 6 smptebars 550 faststart
 
+# ----------------------------------------------------------------------------------------------------------
+# THE ~50-ENTRY CORPUS THE ACCEPTANCE PLAN ASKS FOR, AND WHY IT IS MADE OF TINY FILES.
+#
+# G7 is a scan of a ~50-entry corpus. It is not a throughput test and it is not a soak: what it measures is
+# whether a media server catalogues FIFTY DISTINCT IDENTITIES correctly, which is a question about namespace,
+# metadata and stable identity rather than about bytes. Fifty large files would answer the same question,
+# cost gigabytes of generated media and minutes of encoding per run, and would make the gate slow enough that
+# somebody would eventually shrink the corpus — at which point the fifty-entry gate is a five-entry gate with
+# a fifty-entry name.
+#
+# So the corpus is fifty tiny, valid, individually distinct media files, and the things that genuinely need
+# LENGTH — five minutes of playback, ten seeks spread across a duration, five minutes of transcoding — get
+# ONE separate source that is long, generated once, below.
+#
+# THEY ARE ALL DIFFERENT FROM EACH OTHER, and it is asserted rather than intended: a different pattern, a
+# different tone and a different duration per index, and `corpus-check` refuses the run if the digests are
+# not all distinct. Two byte-identical entries would make every digest comparison in this gate decorative,
+# because a read that returned the wrong entry would still match.
+#
+# ONE CONTAINER GENERATES ALL OF THEM. Fifty `docker run`s cost more in container start-up than in encoding.
+CORPUS_COUNT=47
+CORPUS_LOCAL=9
+step "generating the ${CORPUS_COUNT}-item legal synthetic corpus, in one container"
+# THE GENERATOR IS A FILE, NOT A MULTI-LINE `-c '...'` ARGUMENT, and that is a rule this repository enforces
+# rather than a style choice: `test/custody-runtime-closure.ts` parses every shipped script and REFUSES a line
+# whose quotes do not close on it, because an unreadable line is one a "does this region contain chmod" gate
+# answers "no" for. A single quote held open across twenty lines is exactly that. Every other embedded script
+# in this gate is written the same way.
+cat > "$WORK/out/gen-corpus.sh" <<'GENCORPUS'
+set -eu
+total="$1"; localCount="$2"; ff="$3"
+i=1
+while [ "$i" -le "$total" ]; do
+  n=$(printf "%02d" "$i")
+  # A DIFFERENT PATTERN, TONE AND DURATION PER INDEX. The tone alone would be enough to make the files
+  # differ; all three make them differ in ways a scanner can also see.
+  case $(( i % 3 )) in
+    0) src=testsrc ;;
+    1) src=testsrc2 ;;
+    *) src=smptebars ;;
+  esac
+  dur="2.$(( i % 7 ))"
+  freq=$(( 200 + i * 7 ))
+  if [ "$i" -le "$localCount" ]; then dir=media; else dir=remote; fi
+  "$ff" -hide_banner -loglevel error -y \
+    -f lavfi -i "${src}=size=128x96:rate=15:duration=${dur}" \
+    -f lavfi -i "sine=frequency=${freq}:duration=${dur}" \
+    -c:v mpeg4 -qscale:v 5 -c:a aac -b:a 32k -shortest -movflags +faststart \
+    "/work/${dir}/Projection Corpus ${n} (2026).mp4"
+  i=$(( i + 1 ))
+done
+echo "  generated ${total} corpus files"
+GENCORPUS
+docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$JELLYFIN_IMAGE" \
+  /work/out/gen-corpus.sh "$CORPUS_COUNT" "$CORPUS_LOCAL" "$JELLYFIN_FFMPEG"
+
+# ----------------------------------------------------------------------------------------------------------
+# THE ONE LONG SOURCE, AND WHY THERE IS EXACTLY ONE.
+#
+# G8 wants five minutes of playback, G9 wants ten seeks spread across a duration with one beyond 90 % of it,
+# and G10 wants five minutes of transcoding. All three need a source LONGER THAN FIVE MINUTES, and none of
+# them needs fifty of them. One source, low bitrate, small frame, is the whole requirement — and it is
+# separate from the corpus precisely so that "the corpus is fifty tiny files" and "the soak source is long"
+# are both true and neither compromises the other.
+#
+# THE BITRATE IS PINNED RATHER THAN QUALITY-TARGETED. `testsrc` compresses to almost nothing under a quality
+# target, and a soak source that came out under 3 MiB would fall below the contract's single-probe threshold —
+# which would leave the seek gate reading an object whose entire probe plan is one window covering all of it,
+# and the tail-seek evidence would evaporate. A hard rate keeps it above the threshold whatever the encoder
+# decides about the pattern.
+#
+# `+faststart` HERE, unlike the remote anchor. The anchor's index is deliberately at the END, to force a
+# scanner to seek to the far end of an object it is reading over HTTP Range. This one is the SEEK subject: a
+# player seeking to 90 % of duration needs the index to find the position at all, and every real long file a
+# person would play is written this way.
+SOAK_SECONDS=340
+SOAK_FILE="Projection Soak Source (2026).mp4"
+step "generating the long, low-bitrate soak source (${SOAK_SECONDS}s)"
+ffmpeg_run -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc=size=320x240:rate=12:duration=$SOAK_SECONDS" \
+  -f lavfi -i "sine=frequency=333:duration=$SOAK_SECONDS" \
+  -c:v mpeg4 -b:v 150k -minrate 150k -maxrate 150k -bufsize 300k \
+  -c:a aac -b:a 48k -shortest -movflags +faststart "/work/remote/$SOAK_FILE"
+
+SOAK_SIZE="$(wc -c < "$WORK/remote/$SOAK_FILE" | tr -d ' ')"
+SOAK_SHA="$(node "$REL/sha.cjs" "$REL/remote/$SOAK_FILE")"
+test "$SOAK_SIZE" -gt 3145728 \
+  || die "the soak source is under 3 MiB, so its whole probe plan would be a single window and the seek gate would prove nothing"
+# THE DURATION IS READ BACK FROM THE FILE, not assumed from the argument that was passed to the encoder. Every
+# seek position and the five-minute play are computed from this number; taking it from the request rather than
+# from the artifact would make a short encode look like a successful long one.
+SOAK_DURATION="$(ffprobe_run -v error -show_entries format=duration -of csv=p=0 "/work/remote/$SOAK_FILE" \
+  | head -1 | tr -d " \r\n")"
+SOAK_DURATION_INT="${SOAK_DURATION%%.*}"
+test "${SOAK_DURATION_INT:-0}" -gt 300 \
+  || die "the soak source decodes as ${SOAK_DURATION}s, which is not longer than the five minutes the gates need"
+echo "  the soak source is $SOAK_SIZE bytes and decodes as ${SOAK_DURATION}s"
+
 LOCAL_SIZE="$(wc -c < "$WORK/media/$LOCAL_FILE" | tr -d ' ')"
 REMOTE_SIZE="$(wc -c < "$WORK/remote/$REMOTE_FILE" | tr -d ' ')"
 test "$LOCAL_SIZE" -gt 3145728  || die "the local media is under 3 MiB, so the full probe plan would not apply"
@@ -312,6 +554,20 @@ MIDSCAN_REF="obj-projection-remote-held"
 LEASE_MARKER="PJDLEASE$(node -e "console.log(require('node:crypto').randomBytes(16).toString('hex'))" | tr -d ' \r\n')"
 echo "  the endpoint will mint leases prefixed with a per-run secret marker"
 
+SOAK_REF="obj-projection-soak-source"
+
+# EVERY REMOTE OBJECT THE RUN WILL EVER NEED IS SERVED FROM THE START, and published later in whatever
+# generation wants it. Registering an object with the endpoint is not publishing it: nothing is visible
+# through the mount until the control plane mints a generation naming it, which is what the mid-scan step
+# depends on and what keeps `JD14`'s "an unchanged generation costs the provider nothing" honest.
+CORPUS_OBJECT_FLAGS=()
+index=$(( CORPUS_LOCAL + 1 ))
+while [ "$index" -le "$CORPUS_COUNT" ]; do
+  n="$(printf "%02d" "$index")"
+  CORPUS_OBJECT_FLAGS+=(--file-object "obj-projection-corpus-${n}=/remote/Projection Corpus ${n} (2026).mp4")
+  index=$(( index + 1 ))
+done
+
 docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fakerange \
   -p "127.0.0.1:${RANGE_PORT}:8099" \
   -v "$PWD:/workspace" -w /workspace/projectiond -v "$WORK/out:/out" -v "$WORK/remote:/remote:ro" \
@@ -319,28 +575,48 @@ docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fak
   "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 --lease-prefix "$LEASE_MARKER" \
   --public-base-url "http://fakerange:8099" \
   --file-object "${REMOTE_REF}=/remote/${REMOTE_FILE}" \
-  --file-object "${MIDSCAN_REF}=/remote/${MIDSCAN_FILE}" --emit /out/objects.json >/dev/null
+  --file-object "${MIDSCAN_REF}=/remote/${MIDSCAN_FILE}" \
+  --file-object "${SOAK_REF}=/remote/${SOAK_FILE}" \
+  "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects.json >/dev/null
 
-echo "  waiting for the endpoint to answer a RANGED request"
-# THE PROBE SENDS A RANGE HEADER AND ASSERTS THE STATUS LINE. The endpoint is Range-only by construction — a
-# request without a Range header is answered 416 on purpose — and busybox wget exits non-zero on a 206 because
-# it treats anything but 200 as an error, so the exit code is useless in both directions.
+echo "  waiting for the endpoint to come up"
+# A LIVENESS PROBE MUST NOT BE PROVIDER TRAFFIC, AND THIS ONE USED TO BE.
+#
+# The readiness loop below used to send a ranged GET for the remote object, up to a hundred and twenty times.
+# Every attempt was a real object read: it incremented `rangeRequests`, it served bytes, and on a slow host it
+# did so dozens of times before the first assertion in this gate had been made. A health check that consumes
+# the budget it is about to measure is a health check that quietly widens it — and the whole argument of this
+# appliance is carried by those numbers.
+#
+# So liveness is `/counters`, which is a control surface the endpoint deliberately does not count, and the
+# RANGE SEMANTICS are checked exactly once, afterwards, because that check is evidence rather than a poll.
 cat > "$WORK/out/probe.sh" <<'PROBE'
 set -eu
 wget -S --header "Range: bytes=0-1023" -O /dev/null "$1" 2>&1 | grep -q "206 Partial Content"
 PROBE
+cat > "$WORK/out/alive.sh" <<'ALIVE'
+set -eu
+wget -q -O /dev/null "$1"
+ALIVE
 
 ready=0
-for _ in $(seq 1 120); do
+for _ in $(seq 1 180); do
   if [ -f "$WORK/out/objects.json" ] && docker run --rm --network "$NETWORK" \
        -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
-       sh /probe/probe.sh "http://fakerange:8099/direct/${REMOTE_REF}" >/dev/null 2>&1; then
+       sh /probe/alive.sh "http://fakerange:8099/counters" >/dev/null 2>&1; then
     ready=1
     break
   fi
   sleep 1
 done
 test "$ready" -eq 1 || { docker logs "$RANGE_CONTAINER" 2>&1 | tail -20 >&2; die "the range endpoint never answered"; }
+
+# ONE ranged request, and its status line asserted. The endpoint is Range-only by construction — a request
+# without a Range header is answered 416 on purpose — and busybox wget exits non-zero on a 206 because it
+# treats anything but 200 as an error, so the exit code is useless in both directions.
+docker run --rm --network "$NETWORK" -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
+  sh /probe/probe.sh "http://fakerange:8099/direct/${REMOTE_REF}" >/dev/null 2>&1 \
+  || { docker logs "$RANGE_CONTAINER" 2>&1 | tail -20 >&2; die "the endpoint does not answer a ranged request with 206"; }
 
 ENDPOINT_SIZE="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$REMOTE_REF" size)"
 ENDPOINT_SHA="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$REMOTE_REF" sha256)"
@@ -461,12 +737,13 @@ docker run --rm --user 65534:65534 --cap-drop ALL --security-opt no-new-privileg
   sh /out/baseline.sh "$LOCAL_PATH" "$REMOTE_PATH"
 
 # The expectations the driver compares Jellyfin's answers against, recorded outside the mount.
-cat > "$WORK/out/expected.json" <<JSON
-[
-  { "key": "$LOCAL_FILE",  "sizeBytes": $LOCAL_SIZE,  "sha256": "$LOCAL_SHA",  "kind": "local" },
-  { "key": "$REMOTE_FILE", "sizeBytes": $REMOTE_SIZE, "sha256": "$REMOTE_SHA", "kind": "http-range" }
-]
-JSON
+#
+# BOTH ARE `anchor`s: an anchor is an entry whose BYTES are read back and digest-compared, not merely
+# catalogued. The ~50-entry corpus published later is asserted in aggregate — every published identity, at the
+# published size, as an ordinary file — while the anchors keep the per-entry, byte-for-byte evidence.
+node "$REL/expect.cjs" "$REL/out/expected.json" - \
+  "$LOCAL_FILE"  "$LOCAL_SIZE"  "$LOCAL_SHA"  local      anchor \
+  "$REMOTE_FILE" "$REMOTE_SIZE" "$REMOTE_SHA" http-range anchor >/dev/null
 
 # ----------------------------------------------------------------------------------------------------------
 step "starting a REAL Jellyfin, non-root, with the projected mount as its library root"
@@ -572,11 +849,257 @@ test "${OUT_FRAMES:-0}" -gt 0 || die "the transcoded output has no decodable vid
 echo "  the source is mpeg4 and the output is h264, so a real re-encode ran"
 
 # ----------------------------------------------------------------------------------------------------------
+step "publishing the ~50-entry corpus and the long soak source"
+# ----------------------------------------------------------------------------------------------------------
+# EVERYTHING ABOVE WAS TWO ENTRIES, AND EVERYTHING ABOVE STAYS. The first generation is deliberately small so
+# that the amplification evidence it produces — two ranged requests and 15 % of a 13.9 MB object to identify
+# it — is about ONE remote object and is not averaged with anything. The corpus is a second generation on top
+# of it, measured in its own window, so neither claim borrows from the other.
+node "$REL/corpus.cjs" "$REL" "$CORPUS_COUNT" "$CORPUS_LOCAL" >/dev/null \
+  || die "the corpus could not be described, or the endpoint disagrees with a generated file"
+register batch --file "$REL/out/corpus-register.json"
+
+# The long source is registered here rather than in the batch because its probes come from the endpoint's own
+# descriptor and it is the only entry with a duration the later gates compute positions from.
+SOAK_SIZE_AT_ENDPOINT="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$SOAK_REF" size)"
+SOAK_SHA_AT_ENDPOINT="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$SOAK_REF" sha256)"
+test "$SOAK_SIZE_AT_ENDPOINT" = "$SOAK_SIZE" || die "the endpoint disagrees with the soak file about its size"
+test "$SOAK_SHA_AT_ENDPOINT" = "$SOAK_SHA"   || die "the endpoint is not serving the soak file the gate hashed"
+SOAK_PROBES="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$SOAK_REF" probes)"
+SOAK_PROBE_FLAGS=""
+for probe in $SOAK_PROBES; do SOAK_PROBE_FLAGS="$SOAK_PROBE_FLAGS --probe $probe"; done
+SOAK_ITEM="ffffffff-6666-4666-8666-ffffffffffff"
+SOAK_PATH="Movies/Projection Soak Source (2026)/$SOAK_FILE"
+# shellcheck disable=SC2086
+register version --key soak-source --size "$SOAK_SIZE" --mtime 2026-06-01T10:00:00.000Z $SOAK_PROBE_FLAGS
+register entry --item "$SOAK_ITEM" --version-key soak-source --path "$SOAK_PATH" \
+  --source "http-range:vault:${SOAK_REF}"
+
+publish > "$WORK/out/publish-corpus.json"
+test "$(field outcome < "$WORK/out/publish-corpus.json")" = "published" || die "the corpus was not published"
+test "$(field additions < "$WORK/out/publish-corpus.json")" = "$(( CORPUS_COUNT + 1 ))" \
+  || die "the corpus generation added $(field additions < "$WORK/out/publish-corpus.json") entries, not $(( CORPUS_COUNT + 1 ))"
+
+echo "  waiting for the corpus to be admitted"
+ready=0
+for _ in $(seq 1 180); do
+  if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -f "/mnt/$SOAK_PATH" >/dev/null 2>&1; then
+    ready=1; break
+  fi
+  sleep 0.5
+done
+test "$ready" -eq 1 || { docker logs "$MOUNT_CONTAINER" 2>&1 | tail -30 >&2; die "the corpus never became visible"; }
+
+# The full expectation: the two anchors, the soak source (also an anchor — its bytes are read back), and
+# every corpus entry.
+CORPUS_TOTAL="$(node "$REL/expect.cjs" "$REL/out/expected-corpus.json" "$REL/out/corpus-expected.json" \
+  "$LOCAL_FILE"  "$LOCAL_SIZE"  "$LOCAL_SHA"  local      anchor \
+  "$REMOTE_FILE" "$REMOTE_SIZE" "$REMOTE_SHA" http-range anchor \
+  "$SOAK_FILE"   "$SOAK_SIZE"   "$SOAK_SHA"   http-range anchor)"
+echo "  the corpus is $CORPUS_TOTAL entries"
+drive corpus-check --expect-file "$REL/out/expected-corpus.json" --min-entries 50 --min-remote 39
+
+SMALL_REMOTE_BYTES="$(field smallRemoteBytes < "$WORK/out/corpus-totals.json")"
+REMOTE_CORPUS_ENTRIES="$(field remoteEntries < "$WORK/out/corpus-totals.json")"
+
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-corpus.json"
+drive scan --state "$STATE" --expect-file "$REL/out/expected-corpus.json" \
+  --out "$REL/out/items-corpus.json" --label corpus
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-corpus.json"
+
+# WHAT A ~50-ENTRY SCAN COST AT THE PROVIDER, with both denominators named. The soak source is above the
+# contract's single-probe threshold and is budgeted as a FRACTION of itself; the tiny corpus entries are
+# below it, where the contract's own probe plan is one window covering the whole object, so identifying one
+# costs its whole length by construction and a sub-1.0 budget over it could never pass. See `budget`.
+drive budget --before "$REL/out/counters-before-corpus.json" --after "$REL/out/counters-after-corpus.json" \
+  --gate JD9b-corpus-scan --entries "$(( REMOTE_CORPUS_ENTRIES + 1 ))" \
+  --bytes "$SOAK_SIZE" --small-bytes "$SMALL_REMOTE_BYTES" --min-range 1
+
+# ----------------------------------------------------------------------------------------------------------
+step "a repeat scan of the ~50-entry corpus, with zero churn"
+# ----------------------------------------------------------------------------------------------------------
+drive scan --state "$STATE" --expect-file "$REL/out/expected-corpus.json" \
+  --out "$REL/out/items-corpus-2.json" --label corpus-repeat
+drive compare --before "$REL/out/items-corpus.json" --after "$REL/out/items-corpus-2.json" \
+  --gate JD13b-corpus-rescan
+# WHY THE PROJECTION-RESTART EVIDENCE IS THE CRASH PATH AND NOT A GRACEFUL ONE, AND IT IS A FINDING RATHER
+# THAN A PREFERENCE.
+#
+# A step here used to stop the daemon with `docker stop`, remount, and re-scan. It reported zero churn over
+# all fifty entries -- AND THE NEXT REAL READ FAILED, with the media server's own encoder log saying
+# `Transport endpoint is not connected` against the projected path. On this host a GRACEFUL daemon stop
+# leaves a container that was started BEFORE it holding a dead FUSE mount: the bind-propagated namespace does
+# not pick the new mount up, `stat` still answers, and only an `open` finds out.
+#
+# So the zero-churn result was passing FOR THE WRONG REASON. A media server that cannot open the library root
+# does not report its items as removed -- not reporting removals is what a scanner is supposed to do when a
+# root goes unreadable -- so "zero removed" was a symptom of the failure rather than evidence against it.
+# That is exactly the shape of check this repository exists to stop shipping, and deleting it is the honest
+# response to finding it.
+#
+# The restart evidence therefore comes from the SIGKILL path further down, which is strictly more violent,
+# already asserts zero churn, and -- crucially -- follows the remount with a BYTE-FOR-BYTE READ through the
+# media server, so it cannot pass while the mount is dead.
+#
+# WHAT IS NOT PROVED, AND IS RECORDED IN THE DOCUMENT RATHER THAN QUIETLY DROPPED: whether a graceful daemon
+# restart under a long-running media server recovers on Linux or Unraid, where mount propagation is not going
+# through a Docker Desktop VM. See PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md.
+
+# ----------------------------------------------------------------------------------------------------------
+step "ten real media-time seeks, including backwards and beyond 90% of duration"
+# ----------------------------------------------------------------------------------------------------------
+# THIS IS NOT THE RANGED READ ABOVE, AND THE DIFFERENCE IS THE GATE. A ranged GET proves the daemon serves
+# byte offset N. G9 asks whether SECOND N of the media can be reached, which is a question only the media
+# server can answer: it demuxes, finds the position, and starts an encode there — and the non-sequential,
+# multi-position reads that fall out of that are the read pattern this whole appliance exists to make cheap.
+# Both are kept. The ranged read is the byte-level control; this is the acceptance gate.
+drive configure-encoding --state "$STATE" --temp-path /cache/transcodes --throttle-seconds 30
+
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-seeks.json"
+drive media-seeks --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
+  --duration-seconds "$SOAK_DURATION_INT" --segment-dir "$REL/out/seek-segments" \
+  --out "$REL/out/seeks.json"
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-seeks.json"
+
+# EVERY SEEK'S SEGMENT DECODED, BY A DECODER, OUTSIDE THE PROCESS THAT FETCHED IT. "Playable video within
+# 10 s" is a decoder's answer; a 200 and a byte count are not one, and a segment that decodes as nothing is
+# exactly what a seek to a position the server could not reach would produce.
+#
+# THE FOURTH FIELD IS THE DECODED PICTURE'S OWN START TIMESTAMP, and it is the temporal evidence. It must
+# move one second per second of media asked for, across all ten positions. A server that ignored the
+# positions and returned the same segment ten times produces ten identical timestamps and fails that — while
+# passing every per-seek check it is possible to write.
+cat > "$WORK/out/probe-seeks.sh" <<'PROBESEEKS'
+set -eu
+probe="$1"
+: > /work/out/seek-probes.txt
+for file in /work/out/seek-segments/seek-*.ts; do
+  index=$(basename "$file" .ts | sed "s/^seek-//")
+  codec=$("$probe" -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null | head -1 | tr -d " \r\n" || true)
+  packets=$("$probe" -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$file" 2>/dev/null | head -1 | tr -d " \r\n" || true)
+  start=$("$probe" -v error -select_streams v:0 -show_entries stream=start_time -of csv=p=0 "$file" 2>/dev/null | head -1 | tr -d " \r\n" || true)
+  echo "${index#0}|${codec}|${packets:-0}|${start:-0}" >> /work/out/seek-probes.txt
+done
+PROBESEEKS
+docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$JELLYFIN_IMAGE" \
+  /work/out/probe-seeks.sh "$JELLYFIN_FFPROBE"
+node "$REL/probes.cjs" "$REL/out/seek-probes.txt" "$REL/out/seek-probes.json" >/dev/null
+drive seek-verify --key "$SOAK_FILE" --seeks "$REL/out/seeks.json" --probes "$REL/out/seek-probes.json"
+
+drive traffic-window --before "$REL/out/counters-before-seeks.json" \
+  --after "$REL/out/counters-after-seeks.json" --gate JD19-seek-traffic \
+  --object-bytes "$SOAK_SIZE" --max-object-multiplier 6 --max-range-requests 400
+
+# ----------------------------------------------------------------------------------------------------------
+step "direct play, PACED, for five minutes"
+# ----------------------------------------------------------------------------------------------------------
+# WHAT THIS DOES THAT THE `play` PHASE ABOVE CANNOT. That one drains the whole response and digests it, which
+# takes a second or two and proves the BYTES are right. Nothing about it can support "starts within 10 s and
+# runs 5 minutes without a stall", and the obvious way to make it take five minutes — add a sleep — produces
+# a phase that takes five minutes and measures a download.
+#
+# So a real decoder consumes the stream AT THE MEDIA'S OWN RATE (`ffmpeg -re`), reports its position about
+# once a second, and the gate holds that trace against four numbers: startup, wall clock, DECODED MEDIA TIME,
+# and the ratio between the last two. A drain-and-sleep passes the first three and sits in the hundreds on
+# the fourth; a sleep-and-decode-nothing fails the third. The stall ceiling is the "without a stall" half,
+# which no start-and-end measurement can see at all.
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-play.json"
+drive paced-play --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
+  --image "$JELLYFIN_IMAGE" --ffmpeg "$JELLYFIN_FFMPEG" --network "$NETWORK" \
+  --container-name "$PLAY_CONTAINER" --work-dir "$WORK" \
+  --stream-base "http://${JELLYFIN_CONTAINER}:8096" --output-rel "out/paced-play.mp4" \
+  --trace "$REL/out/paced-play-trace.json" --seconds 300
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-play.json"
+
+# THE CONSUMER'S OWN OUTPUT, DECODED. Five minutes of progress records is evidence that a decoder was running;
+# five minutes of decodable video in the file it wrote is evidence that what it was decoding was video.
+test -s "$WORK/out/paced-play.mp4" || die "the paced consumer wrote no output to decode"
+PLAY_OUT_SECONDS="$(ffprobe_run -v error -show_entries format=duration -of csv=p=0 /work/out/paced-play.mp4 \
+  | head -1 | tr -d " \r\n")"
+PLAY_OUT_PACKETS="$(ffprobe_run -v error -select_streams v:0 -count_packets \
+  -show_entries stream=nb_read_packets -of csv=p=0 /work/out/paced-play.mp4 | head -1 | tr -d " \r\n")"
+drive paced-play-output --probed-seconds "${PLAY_OUT_SECONDS%%.*}" --probed-packets "${PLAY_OUT_PACKETS:-0}" \
+  --seconds 300
+
+drive traffic-window --before "$REL/out/counters-before-play.json" \
+  --after "$REL/out/counters-after-play.json" --gate JD18-paced-play-traffic \
+  --object-bytes "$SOAK_SIZE" --max-object-multiplier 3 --max-range-requests 400
+
+# THE MOUNT'S OWN VIEW, AFTER FIVE MINUTES OF BEING READ. Metadata is a snapshot the daemon holds, and five
+# minutes of streaming must not have moved any of it.
+SOAK_STAT_AFTER_PLAY="$(docker run --rm --user 65534:65534 --cap-drop ALL -v "$WORK/mnt:/mnt:rslave" \
+  "$VERIFY_IMAGE" stat -c "%s %i %a" "/mnt/$SOAK_PATH")"
+echo "  the soak entry after five minutes of playback: $SOAK_STAT_AFTER_PLAY"
+
+# ----------------------------------------------------------------------------------------------------------
+step "a forced transcode, run and consumed for five minutes"
+# ----------------------------------------------------------------------------------------------------------
+# WHAT THIS STEP CLAIMS, EXACTLY: five minutes of PACED, CONTINUOUSLY DECODED, TRANSCODED PLAYBACK.
+#
+# It does NOT claim five minutes of encoder CPU time, and the difference is measured rather than glossed.
+# Measured on this host: the transcoding job finishes a 340-second, 320x240 source in about 1.6 seconds and
+# exits, with throttling enabled and a player session attached. So an assertion that the ENCODER was busy for
+# five minutes would fail every correct run, and describing 1.6 seconds as proof that it was would be a claim
+# the measurement contradicts. Both numbers are reported, under that description, and neither is asserted.
+#
+# WHAT IS ASSERTED, AND WHAT EACH ONE REFUSES:
+#
+#   - THE CLIENT'S PACE. Segments are asked for at the moment a player would ask for them, so the window is
+#     five minutes of consumption rather than five minutes of sleeping after a fast download.
+#   - CONTINUITY. Every ADJACENT pair of segments must arrive close together. A five-minute span alone is
+#     satisfied by consuming everything in ten seconds and fetching one more segment at the end.
+#   - THE OUTPUT. Every segment consumed is DECODED, and the decoded media time must reach five minutes with
+#     every segment h264, none empty, and no two the same. Counting segments would not do it: a server can
+#     emit files, and it can emit the same one repeatedly.
+#   - THE LATE WINDOW. A quarter of the required media must be decoded in the LAST THIRD of the window, so a
+#     dense start with a padded tail cannot pass.
+#   - THE SERVER'S OWN ACCOUNT. Playback is reported the way a player reports it -- which is what attaches a
+#     session at all, and it has to come BEFORE the transcode is requested -- and the server's `PlayMethod`
+#     for this item must read `Transcode` at nearly every sample across the window. That is the fact that
+#     persists; live `TranscodingInfo` goes null when the encoder exits, and is recorded rather than asserted
+#     for exactly that reason.
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-soak.json"
+drive transcode-soak --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
+  --segment-dir "$REL/out/soak-segments" --producer-dir "$REL/jf-cache/transcodes" \
+  --out "$REL/out/soak.json" --seconds 300
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-soak.json"
+
+cat > "$WORK/out/probe-soak.sh" <<'PROBESOAK'
+set -eu
+probe="$1"
+: > /work/out/soak-probes.txt
+for file in /work/out/soak-segments/seg-*.ts; do
+  index=$(basename "$file" .ts | sed "s/^seg-0*//")
+  codec=$("$probe" -v error -select_streams v:0 -show_entries stream=codec_name -of csv=p=0 "$file" 2>/dev/null | head -1 | tr -d " \r\n" || true)
+  packets=$("$probe" -v error -select_streams v:0 -count_packets -show_entries stream=nb_read_packets -of csv=p=0 "$file" 2>/dev/null | head -1 | tr -d " \r\n" || true)
+  seconds=$("$probe" -v error -select_streams v:0 -show_entries stream=duration -of csv=p=0 "$file" 2>/dev/null | head -1 | tr -d " \r\n" || true)
+  if [ -z "${seconds:-}" ] || [ "${seconds}" = "N/A" ]; then
+    seconds=$("$probe" -v error -show_entries format=duration -of csv=p=0 "$file" 2>/dev/null | head -1 | tr -d " \r\n" || true)
+  fi
+  echo "${index:-0}|${codec}|${packets:-0}|${seconds:-0}" >> /work/out/soak-probes.txt
+done
+PROBESOAK
+docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$JELLYFIN_IMAGE" \
+  /work/out/probe-soak.sh "$JELLYFIN_FFPROBE"
+node "$REL/probes.cjs" "$REL/out/soak-probes.txt" "$REL/out/soak-probes.json" >/dev/null
+drive transcode-soak-verify --key "$SOAK_FILE" --items "$REL/out/items-corpus-2.json" \
+  --soak "$REL/out/soak.json" --probes "$REL/out/soak-probes.json" --seconds 300
+
+drive traffic-window --before "$REL/out/counters-before-soak.json" \
+  --after "$REL/out/counters-after-soak.json" --gate JD20-transcode-soak-traffic \
+  --object-bytes "$SOAK_SIZE" --max-object-multiplier 4 --max-range-requests 600
+
+# THE TRANSCODING JOB IS GONE. A five-minute encode left running would occupy the machine for the rest of the
+# gate, and every later measurement would be taken against a host under load.
+docker exec "$JELLYFIN_CONTAINER" sh -c 'rm -rf /cache/transcodes/* 2>/dev/null || true'
+echo "  the transcoding job was stopped and its output removed"
+
+# ----------------------------------------------------------------------------------------------------------
 step "a successor published while a stream is in flight"
 # ----------------------------------------------------------------------------------------------------------
 rm -f "$WORK/out/stream-ready" "$WORK/out/stream-release"
-drive hold-stream --state "$STATE" --items "$REL/out/items-1.json" --key "$REMOTE_FILE" \
-  --expect-file "$REL/out/expected.json" \
+drive hold-stream --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$REMOTE_FILE" \
+  --expect-file "$REL/out/expected-corpus.json" \
   --ready "$REL/out/stream-ready" --release "$REL/out/stream-release" &
 HOLD_PID=$!
 
@@ -612,21 +1135,26 @@ touch "$WORK/out/stream-release"
 wait "$HOLD_PID" || die "the in-flight stream did not survive the generation swap"
 echo "  the stream completed correctly across the swap"
 
-cat > "$WORK/out/expected-2.json" <<JSON
-[
-  { "key": "$LOCAL_FILE",  "sizeBytes": $LOCAL_SIZE,  "sha256": "$LOCAL_SHA",  "kind": "local" },
-  { "key": "$REMOTE_FILE", "sizeBytes": $REMOTE_SIZE, "sha256": "$REMOTE_SHA", "kind": "http-range" },
-  { "key": "$THIRD_FILE",  "sizeBytes": $THIRD_SIZE,  "sha256": "$THIRD_SHA",  "kind": "local" }
-]
-JSON
+# The corpus, plus the entry the successor added. Every later generation is described this way -- the
+# corpus document plus what that generation published -- so a corpus that grows never needs three
+# heredocs edited in step with each other.
+node "$REL/expect.cjs" "$REL/out/expected-2.json" "$REL/out/expected-corpus.json" \
+  "$THIRD_FILE" "$THIRD_SIZE" "$THIRD_SHA" local anchor >/dev/null
 
 drive scan --state "$STATE" --expect-file "$REL/out/expected-2.json" --out "$REL/out/items-2.json" --label scan2
-drive compare --before "$REL/out/items-1.json" --after "$REL/out/items-2.json" \
+drive compare --before "$REL/out/items-corpus-2.json" --after "$REL/out/items-2.json" \
   --gate JD10-successor --expect-added 1
 
 # ----------------------------------------------------------------------------------------------------------
 step "SIGKILL the daemon during playback, then the real recovery path"
 # ----------------------------------------------------------------------------------------------------------
+# WHAT THE PUBLISHED GENERATION WAS BEFORE ANY OF THIS, so that "it did not move" can be checked against the
+# fact rather than against a number somebody wrote down while counting the publishes above.
+publish --status > "$WORK/out/status-before-kill.json"
+SEQUENCE_BEFORE_KILL="$(field pointerSequence < "$WORK/out/status-before-kill.json")"
+test -n "$SEQUENCE_BEFORE_KILL" || die "the publisher reported no current sequence before the kill"
+echo "  the published generation before the kill is sequence $SEQUENCE_BEFORE_KILL"
+
 rm -f "$WORK/out/kill-ready" "$WORK/out/kill-release"
 drive hold-stream --state "$STATE" --items "$REL/out/items-2.json" --key "$REMOTE_FILE" \
   --expect-file "$REL/out/expected-2.json" --allow-interrupt true \
@@ -652,12 +1180,45 @@ echo "  restarting and remounting through the ordinary daemon start"
 start_daemon
 await_namespace || { docker logs "$MOUNT_CONTAINER" 2>&1 | tail -30 >&2; die "the daemon did not remount"; }
 
+# THE MEDIA SERVER'S OWN VIEW OF THE REMOUNT, FROM INSIDE ITS OWN CONTAINER, BEFORE ANY CHURN IS ASSERTED.
+#
+# THE DEFECT THIS CLOSES, AND IT WAS FOUND BY A REAL FAILURE RATHER THAN BY REASONING. A container started
+# BEFORE a daemon restart can be left holding a dead FUSE mount whose `stat` still answers and whose `open`
+# returns ENOTCONN. A library scan across that reports ZERO REMOVALS -- because declining to delete a library
+# whose root has gone unreadable is correct scanner behaviour -- so every churn assertion below would have
+# passed on a mount nothing could read. `await_namespace` cannot see it either: it uses a FRESH container,
+# which picks up the new mount correctly.
+#
+# So the read is done as the media server, through the mount it actually holds, and it reads BYTES rather
+# than metadata. If this fails, the failure is named here instead of surfacing three phases later as an
+# unexplained 500.
+docker exec "$JELLYFIN_CONTAINER" sh -c "head -c 65536 '/media/projection/$REMOTE_PATH' > /dev/null" \
+  || { docker logs "$MOUNT_CONTAINER" 2>&1 | tail -30 >&2
+       die "after the remount the media server's own mount cannot be READ, so every churn assertion that follows would be about a dead mount"; }
+echo "  the media server can still read bytes through its own mount after the remount"
+
 # A TRANSIENT SOURCE OUTAGE IS NOT A DELETION. The publisher must still say the same generation is current:
 # nothing about a crashed daemon may cause a SMALLER published generation.
+#
+# THE SEQUENCE IS COMPARED AGAINST WHAT IT WAS BEFORE THE KILL, NOT AGAINST A LITERAL.
+#
+# THE DEFECT THIS CLOSES, AND IT WAS FOUND BY THE CORPUS. This read `= "2"`, which was the right number when
+# the gate published exactly two generations before this point. Adding the ~50-entry corpus made it three,
+# and the gate failed with "the published generation moved because a daemon died" while the status output it
+# had just printed showed a database and a pointer in perfect agreement at sequence 3. A constant that
+# encodes how many times something earlier in the script happened is a constant that will be wrong the next
+# time somebody adds a step -- and its failure message accuses the product of a defect it does not have,
+# which is the most expensive kind of false alarm a gate can raise.
+#
+# What the step MEANS is "the published generation did not move across the kill", so that is what it now
+# compares: the sequence recorded before the daemon was killed against the sequence after it.
 publish --status > "$WORK/out/status-after-kill.json"
 cat "$WORK/out/status-after-kill.json"
-test "$(field agrees         < "$WORK/out/status-after-kill.json")" = "true" || die "the directory and the database disagree after the kill"
-test "$(field pointerSequence < "$WORK/out/status-after-kill.json")" = "2"   || die "the published generation moved because a daemon died"
+SEQUENCE_AFTER_KILL="$(field pointerSequence < "$WORK/out/status-after-kill.json")"
+test "$(field agrees < "$WORK/out/status-after-kill.json")" = "true" || die "the directory and the database disagree after the kill"
+test "$SEQUENCE_AFTER_KILL" = "$SEQUENCE_BEFORE_KILL" \
+  || die "the published generation moved because a daemon died: $SEQUENCE_BEFORE_KILL -> $SEQUENCE_AFTER_KILL"
+echo "  the published generation is still sequence $SEQUENCE_AFTER_KILL, exactly as before the kill"
 publish > "$WORK/out/publish-after-kill.json"
 test "$(field outcome < "$WORK/out/publish-after-kill.json")" = "unchanged" \
   || die "a publish after the kill was not a no-op, so an outage produced a new generation"
@@ -892,15 +1453,9 @@ test "$(( HOLD_AFTER - HOLD_BEFORE ))" -ge 1 \
 echo "  $(( HOLD_AFTER - HOLD_BEFORE )) provider request(s) entered the hold; one was still blocked across the publish"
 echo "  a generation was admitted while the scanner was provably walking the namespace"
 
-cat > "$WORK/out/expected-3.json" <<JSON
-[
-  { "key": "$LOCAL_FILE",   "sizeBytes": $LOCAL_SIZE,   "sha256": "$LOCAL_SHA",   "kind": "local" },
-  { "key": "$REMOTE_FILE",  "sizeBytes": $REMOTE_SIZE,  "sha256": "$REMOTE_SHA",  "kind": "http-range" },
-  { "key": "$MIDSCAN_FILE", "sizeBytes": $MIDSCAN_SIZE, "sha256": "$MIDSCAN_SHA", "kind": "http-range" },
-  { "key": "$THIRD_FILE",   "sizeBytes": $THIRD_SIZE,   "sha256": "$THIRD_SHA",   "kind": "local" },
-  { "key": "$FOURTH_FILE",  "sizeBytes": $FOURTH_SIZE,  "sha256": "$FOURTH_SHA",  "kind": "local" }
-]
-JSON
+node "$REL/expect.cjs" "$REL/out/expected-3.json" "$REL/out/expected-2.json" \
+  "$MIDSCAN_FILE" "$MIDSCAN_SIZE" "$MIDSCAN_SHA" http-range anchor \
+  "$FOURTH_FILE"  "$FOURTH_SIZE"  "$FOURTH_SHA"  local      anchor >/dev/null
 
 # THE CONVERGENCE ASSERTION, which is the one that matters, and it must be reached with the hold released and
 # the scan finished.
@@ -943,10 +1498,13 @@ test "$(field deletions < "$WORK/out/publish-outage.json")" = "0" \
 echo "  a publish during the outage minted nothing and deleted nothing"
 
 docker start "$RANGE_CONTAINER" >/dev/null
+# Liveness on the uncounted control surface again, for the same reason: a recovery poll that reads the object
+# would put a burst of provider traffic into the run at the one moment the gate is asserting an outage
+# produced none.
 ready=0
 for _ in $(seq 1 120); do
   if docker run --rm --network "$NETWORK" -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
-       sh /probe/probe.sh "http://fakerange:8099/direct/${REMOTE_REF}" >/dev/null 2>&1; then ready=1; break; fi
+       sh /probe/alive.sh "http://fakerange:8099/counters" >/dev/null 2>&1; then ready=1; break; fi
   sleep 1
 done
 test "$ready" -eq 1 || die "the provider never came back"
@@ -1051,9 +1609,13 @@ docker run --rm -v "$WORK/cache:/scan:ro" -v "$WORK/out:/out:ro" "$VERIFY_IMAGE"
 # it rules out is an order of magnitude, not a byte.
 CACHE_BYTES="$(docker run --rm -v "$WORK/cache:/scan:ro" "$VERIFY_IMAGE" \
   sh -c 'du -sb /scan 2>/dev/null | cut -f1' | tr -d " \r\n")"
-# Five entries, at most three one-megabyte windows each, plus a record header per window and some slack.
-CACHE_CEILING=$(( 18 * 1048576 ))
-PUBLISHED_BYTES=$(( LOCAL_SIZE + REMOTE_SIZE + MIDSCAN_SIZE + THIRD_SIZE + FOURTH_SIZE ))
+# COMPUTED FROM THE CORPUS THAT WAS ACTUALLY PUBLISHED, not written down. The two-entry version of this
+# gate used a flat 18 MiB, which was a real ceiling for two entries and would have been an unreachable
+# one for fifty -- and a ceiling nothing can reach is not a ceiling. Per entry the plan allows three
+# one-megabyte windows, or the whole object when the object is below the contract's single-probe
+# threshold, and the same document that describes the corpus is what this is derived from.
+CACHE_CEILING="$(node "$REL/cacheceiling.cjs" "$REL/out/expected-3.json")"
+PUBLISHED_BYTES="$(node "$REL/published.cjs" "$REL/out/expected-3.json")"
 echo "  the probe cache holds $CACHE_BYTES bytes against $PUBLISHED_BYTES bytes published"
 test "${CACHE_BYTES:-0}" -le "$CACHE_CEILING" \
   || die "the probe cache holds $CACHE_BYTES bytes, which is more than a fixed window plan can account for"
@@ -1110,9 +1672,27 @@ echo "  - a real, digest-pinned Jellyfin container, stood up non-interactively t
 echo "    running NON-ROOT, with the FUSE mount bind-propagated in as a Movies library root."
 echo "  - legal synthetic media generated on this machine by the ffmpeg inside that image. Nothing downloaded,"
 echo "    nothing copyrighted, no fixture committed."
-echo "  - a real library scan that found both items, with the sizes the control plane published and the media"
-echo "    server's own view of them as ORDINARY FILES -- not symlinks, not .strm placeholders, not remote"
-echo "    media sources."
+echo "  - a real library scan of a ~50-ENTRY CORPUS in which every published identity was catalogued at the"
+echo "    size the control plane published and as an ORDINARY FILE -- not symlinks, not .strm placeholders,"
+echo "    not remote media sources -- with zero missing, zero duplicated and zero unexpected; and zero churn"
+echo "    of any kind across a repeat scan and across a clean projection stop, start and remount."
+echo "  - FIVE MINUTES OF PACED DIRECT PLAY: a real decoder consuming at the media's own frame rate, with"
+echo "    startup, decoded MEDIA time, the media-seconds-per-wall-second ratio and the longest stall each"
+echo "    asserted separately -- so neither a fast download followed by a sleep, nor a sleep that decoded"
+echo "    nothing, nor a play that froze in the middle can pass."
+echo "  - TEN MEDIA-TIME SEEKS through the server's own playlist, four of the transitions backwards and two"
+echo "    beyond 90% of duration, each returning decodable h264 inside ten seconds -- and, because every one"
+echo "    of those would pass against the same segment served ten times: ten DISTINCT segments, positions the"
+echo "    server itself agrees with, and decoded timestamps that track the requested positions with a"
+echo "    constant offset measured rather than assumed."
+echo "  - FIVE MINUTES OF PACED, CONTINUOUSLY DECODED, TRANSCODED PLAYBACK: every consumed segment decoded"
+echo "    as h264 from an mpeg4 source, no adjacent arrival gap over 20s, a quarter of the media decoded in"
+echo "    the LAST THIRD of the window, all segments distinct, and the server's own PlayMethod reading"
+echo "    Transcode across the window."
+echo "    THIS IS NOT A CLAIM THAT AN ENCODER WAS BUSY FOR FIVE MINUTES. Measured here: the transcoding job"
+echo "    finishes the whole source in about 1.6 seconds and exits. That number and the live-encoder sample"
+echo "    count are REPORTED and asserted on by nothing, because asserting on them would either fail every"
+echo "    correct run on this hardware or overclaim what was measured. G10 is run, not closed."
 echo "  - direct play of both, digest-compared against values recorded OUTSIDE the mount; a real HTTP seek"
 echo "    whose 206 and Content-Range were asserted before the body was read. This is evidence about BYTES."
 echo "    It is NOT evidence that the server authorized the request: on this Jellyfin version the direct-play"
