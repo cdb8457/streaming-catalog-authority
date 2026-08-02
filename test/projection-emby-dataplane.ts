@@ -1004,6 +1004,42 @@ await test('the document exists and states what has NOT been proved', () => {
   }
   assert(/##\s*\d+\.\s*The run record/i.test(doc),
     'and carries a run record separate from the description of what the gate asserts');
+  // THE RUN RECORD MUST CARRY THE FAILURES TOO. A record that lists only green runs is a record that has
+  // been curated, and three of this gate's own defects were found by failing runs.
+  assert(doc.includes('**FAILED**'), 'the run record names the runs that failed');
+  assert(doc.includes('SHALL NOT be reported as one'),
+    'and refuses to let a Docker Desktop pass be read as Phase 1 closure');
+});
+
+await test('a Docker Desktop pass is recorded as run and still closes nothing', () => {
+  // THE TWO STATEMENTS THAT MUST TRAVEL TOGETHER. "Emby has been run" and "that closes none of G7-G13" are
+  // both true, and this repository's failure mode is a document that carries the first without the second.
+  const plan = read('docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md');
+  assert(plan.includes('THIRD GATE EXISTS AND THE EMBY COLUMN NOW RECORDS IT AS RUN ON DOCKER DESKTOP'),
+    'the acceptance plan records the Emby column as run');
+  assert(plan.includes('A gate existing is not a gate passing'), 'on the strength of a run record');
+  assert(/All seven are Windows \/ Docker Desktop, which §6 says closes none/.test(plan),
+    'and says in the same breath that it closes none of the media-server gates');
+  assert(plan.includes('none of the three gates has ever run on one'),
+    'and that no gate has ever run on the platform that would close them');
+  // AND THE ROADMAP MUST NOT HAVE QUIETLY UPGRADED ITSELF EITHER.
+  const roadmap = read('docs/PROJECTION_ROADMAP.md');
+  assert(roadmap.includes('ALL THREE MEDIA SERVERS NOW HAVE A GATE, AND THE TRANCHE IS NO CLOSER TO CLOSING'),
+    'the roadmap says a third gate does not move the tranche');
+  assert(roadmap.includes('Phase 1 remains open'), 'and that Phase 1 is still open');
+  assert(/rule has not been satisfied/.test(roadmap), 'and the anti-detour rule still stands');
+  // THE STALE LINES ARE GONE. These are the exact sentences this tranche was asked to correct.
+  assert(!roadmap.includes('Plex and Emby are untouched') || roadmap.includes('is now false twice over'),
+    'the "Plex and Emby are untouched" line is corrected rather than left standing');
+  // THE README'S OLD SENTENCE MAY ONLY SURVIVE AS A QUOTED CORRECTION, NEVER AS A CLAIM. Deleting it outright
+  // would lose the record that it was wrong; leaving it standing would be a README that disagrees with what
+  // runs. So it has to appear inside the sentence that retracts it, and nowhere else.
+  const readme = read('README.md');
+  const staleClaim = 'it has never been run against a real media server';
+  assertEq(readme.split(staleClaim).length - 1, 1, 'the old sentence appears exactly once');
+  assert(readme.includes(`used to end "and ${staleClaim}"`),
+    'and only as the thing the next clause retracts');
+  assert(readme.includes('closes **none** of'), 'while the README still says what a run there does not close');
 });
 
 console.log(`\n${passed} passed, ${failed} failed`);

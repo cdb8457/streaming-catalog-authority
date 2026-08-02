@@ -14,27 +14,29 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
   seeks ten times including backwards and past 90 % of duration, and consumes a forced transcode for five
   minutes — all through the production `projectiond` mount. Leaving the old sentence in place would have been
   the opposite of this repository's problem and just as bad: a document that disagrees with what runs.
-- **Plex is no longer untouched, and this line has been corrected for the same reason.** It used to read
-  "Plex and Emby are untouched", and that became false when `deploy/projection-plex-dataplane-gate.sh` was
-  merged and its run record carried a real count: **seven runs, three of them failing and four green**, the
-  last three consecutive and each starting from nothing. `docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md` §7 is
-  that record, and it also states plainly that it is not a complete index of every time the gate has run.
-- **THE CORRECTION CHANGES WHICH SERVERS HAVE BEEN DRIVEN. IT CHANGES NOTHING ABOUT WHAT IS CLOSED.** Every
-  one of those runs was on **Windows / Docker Desktop**, which `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`
-  §6 says closes **none** of G7–G13. A green Plex run is not a Phase 1 pass and is not reported as one.
-- **Two media servers are not three, and Docker Desktop is not Unraid.** No run has happened on Linux or a
-  real Unraid host, and no real provider endpoint has ever been contacted. What has been run, against which
-  server, is `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 — and that table, not this page, is the
-  authority on it.
-- Therefore the product now does the thing it is for, **on two media servers, on a developer's machine** —
-  and Phase 1 remains open.
+- **"Plex and Emby are untouched" was this page's line, and it is now false twice over.** It became false for
+  Plex when `deploy/projection-plex-dataplane-gate.sh` merged with a run record carrying a real count —
+  **seven runs, three failing and four green**, the last three consecutive and each starting from nothing
+  (`docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md` §7, which also says plainly that it is not a complete index).
+  It became false for Emby when `deploy/projection-emby-dataplane-gate.sh` passed **four times, the last
+  three consecutive and fresh, each 353 assertions with none failed and none skipped**
+  (`docs/PROJECTION_PHASE_1_EMBY_DATA_PLANE.md` §7).
+- **ALL THREE MEDIA SERVERS NOW HAVE A GATE, AND THE TRANCHE IS NO CLOSER TO CLOSING.** Every run of every one
+  of them has been on **Windows / Docker Desktop**, which `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6 says
+  closes **none** of G7–G13. What changed is that "one of the three is untouched" is no longer the reason
+  Phase 1 is open. The reason is the platform, and it always was.
+- **Docker Desktop is not Unraid.** No run has happened on Linux or a real Unraid host, and no real provider
+  endpoint has ever been contacted. What has been run, against which server, is
+  `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 — and that table, not this page, is the authority on it.
+- Therefore the product now does the thing it is for, **on all three media servers, on a developer's machine**
+  — and Phase 1 remains open.
 
 ## The only tranche
 
 | | |
 |---|---|
 | **Projection Phase 0** | The executable product contract. `docs/ADR_002_PROJECTION_APPLIANCE.md`, `docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md`, `docs/schemas/projection-manifest-v1.schema.json`, `src/core/projection/*`, `test/projection-manifest-v1.ts`. **Done.** |
-| **Projection Phase 1** | The **vertical slice**: manifest producer → published artifact → `projectiond` → FUSE mount → Plex, Jellyfin and Emby scanning and playing it. Local passthrough and HTTP Range adapters, in the same tranche. Gates in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`. **Open.** The daemon, the manifest producer (`docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md`), the publisher-to-mount gate and **the Jellyfin and Plex data-plane gates** are built and run — **on Windows / Docker Desktop only, which closes none of G7–G13**. **The Unraid half is not**, and the tranche does not close until every gate passes on a real Linux or Unraid host, on all three media servers, three times. A third gate exists for **Emby**; whether it has ever passed is `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 and `docs/PROJECTION_PHASE_1_EMBY_DATA_PLANE.md` §7, because **a gate existing is not a gate passing**. |
+| **Projection Phase 1** | The **vertical slice**: manifest producer → published artifact → `projectiond` → FUSE mount → Plex, Jellyfin and Emby scanning and playing it. Local passthrough and HTTP Range adapters, in the same tranche. Gates in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`. **Open.** The daemon, the manifest producer (`docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md`), the publisher-to-mount gate and **all three media-server data-plane gates** are built and run — **on Windows / Docker Desktop only, which closes none of G7–G13**. **The Unraid half is not**, and the tranche does not close until every gate passes on a real Linux or Unraid host, on all three media servers, three times. Whether any given gate has ever passed is §6.1 of the acceptance plan and each gate's own run record, because **a gate existing is not a gate passing**. |
 
 There is no Phase 2 in this document. Writing one now would be a guess, and a guess in a roadmap is how a
 product acquires thirty phases of scaffolding around a thing that has never run.

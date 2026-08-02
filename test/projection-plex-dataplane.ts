@@ -3283,21 +3283,40 @@ await test('the Plex document does not copy the Jellyfin gate\'s claims', () => 
 await test('the acceptance plan records Plex as run WITHOUT recording Phase 1 as closed', () => {
   const plan = read('docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md');
   assert(plan.includes('plex-dataplane-gate'), 'the plan names the gate that now runs');
-  assert(/Emby/.test(plan), 'Emby is still named as untouched');
+  assert(/Emby/.test(plan), 'and Emby is still named');
   const row = (gate: string): string =>
     (plan.split('\n').find((line) => line.startsWith(`| ${gate} `)) ?? '').trim();
+  // THIS ASSERTION PINNED "EMBY HAS NEVER RUN", AND THAT WAS THE WRONG THING TO PIN.
+  //
+  // It read `| not run |$` — the last column, Emby — which was true when it was written and stopped being
+  // true when the Emby gate passed. Its intent was never "Emby specifically must stay untouched": it was
+  // "this table must not quietly acquire a verdict it did not earn". Pinning a COUNT OF UNTOUCHED SERVERS
+  // means that every time a gate legitimately passes, the acceptance plan has to be prevented from saying so
+  // in order to keep a Plex test green — the table lying to preserve an assertion about itself.
+  //
+  // What has NOT changed, and is what this suite actually cares about, is that no media-server gate has ever
+  // run anywhere that CLOSES it. So no column may name a platform that would.
   for (const gate of ['G7 **Scan**', 'G8 **Play**', 'G9 **Seek**', 'G10 **Transcode**']) {
-    assert(/\| not run \|$/.test(row(gate)), `${gate} still records EMBY as not run: ${row(gate)}`);
+    for (const column of row(gate).split('|').slice(2).map((cell) => cell.trim()).filter(Boolean)) {
+      assert(!/\bLinux\b|\bUnraid\b/.test(column),
+        `${gate}: a column claims a platform that would CLOSE it, and no run has ever happened on one: `
+        + `${column.slice(0, 120)}`);
+    }
   }
+  assert(/closes none of G7[-–—]G13/.test(plan),
+    'and the plan still says in prose that a Docker Desktop run closes none of G7-G13');
   assert(/G18/.test(plan) && /not run/.test(plan), 'G18 is still not run');
 });
 
-await test('the roadmap records a second media server without declaring the tranche closed', () => {
+await test('the roadmap records the media servers that ran without declaring the tranche closed', () => {
   const roadmap = read('docs/PROJECTION_ROADMAP.md');
   assert(/Phase 1 remains open|Phase 1 is open|\*\*Open\.\*\*/.test(roadmap), 'the tranche is still open');
   assert(/has not been satisfied/.test(roadmap), 'and the anti-detour rule says it is not satisfied');
-  assert(roadmap.includes('Emby'), 'Emby is named among what has not happened');
-  assert(roadmap.includes('Unraid'), 'and so is Unraid');
+  assert(roadmap.includes('Emby'), 'Emby is named');
+  assert(roadmap.includes('Unraid'), 'and so is Unraid, which is what has NOT happened');
+  // THE ROADMAP MAY RECORD THAT SERVERS HAVE RUN. IT MAY NOT RECORD THE TRANCHE AS ANY CLOSER FOR IT, and
+  // the platform every one of those runs happened on is what makes the difference legible.
+  assert(/Docker Desktop/.test(roadmap), 'and the platform every run happened on is named');
 });
 
 // ---------------------------------------------------------------------------------------------------------

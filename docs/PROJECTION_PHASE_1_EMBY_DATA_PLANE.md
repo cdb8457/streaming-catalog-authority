@@ -517,24 +517,72 @@ A Windows or Docker Desktop green run is not a Phase 1 pass and is not reported 
 
 ## 7. The run record
 
-**Status: this gate has never been run to completion. It closes nothing, and the Emby column of
-`docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 still reads `not run`.**
+**Status: the gate has passed, four times, on Windows / Docker Desktop only — the last three consecutive and
+each starting from nothing. That closes none of G7–G13.**
 
 This section is deliberately the only place in this document that says how many times anything has happened, and
 it is deliberately separate from the description of what the gate asserts. A document that describes a gate's
 assertions reads, at a glance, exactly like a document that reports them holding — and this repository has three
-hundred phases of the second kind written before the first.
-
-**A gate existing is not a gate passing.** Everything in §3 is a statement about what
-`deploy/projection-emby-dataplane-gate.sh` asserts when it runs. Until a complete run passes with a recorded
-assertion count, that is a description of code and not evidence about a media server.
+hundred phases of the second kind written before the first. `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1
+now records Emby as **run on Docker Desktop** on the strength of the rows below, and on nothing else.
 
 | Run | Environment | Command | Outcome |
 |---|---|---|---|
-| — | — | — | **no complete run has been recorded** |
+| gate1 | Windows / Docker Desktop, pre-commit working tree | `npm run go:emby-dataplane-gate` | **FAILED**, exit 1: 7 assertions, 6 passed, 1 failed — `EM3-scan1-corpus-matched` **0 of 2** (§3.10) |
+| gate2 | Windows / Docker Desktop, pre-commit working tree | `npm run go:emby-dataplane-gate` | **FAILED**, exit 1: 116 assertions, 0 failed — died in `paced-play` at `ENOENT …\c\Users\…` before it could assert (§4) |
+| gate3 | Windows / Docker Desktop, pre-commit working tree | `npm run go:emby-dataplane-gate` | **FAILED**, exit 1: 122 assertions, 121 passed, 1 failed — `EM18-paced-play-decoded-media-seconds` **299 against 300** (§4) |
+| gate4 | Windows / Docker Desktop, pre-commit working tree | `npm run go:emby-dataplane-gate` | **PASSED**, exit 0: 353 assertions, 0 failed, 0 skipped |
+| gate5–7 | Windows / Docker Desktop, commit `1cdee90` | `npm run go:emby-dataplane-gate:three` | **PASSED**, exit 0: three fresh consecutive runs, each 353 assertions, 0 failed, 0 skipped |
 
-The findings in §3 are a different kind of statement and they **were** measured: each one comes from a live,
-digest-pinned `emby/embyserver` 4.9.5.0 answering real requests during the construction of this gate, and the
-request and response are recorded beside each constant in `src/core/projection/emby-dataplane.ts`. Those are
-measurements of the media server. They are **not** measurements of the data plane, because none of them was
-taken through a FUSE mount.
+**gate4 and the wrapper's three are not the same code, and the difference is stated rather than smoothed over.**
+gate4 ran on the working tree immediately before commit `1cdee90`. Between the two, exactly one **note string**
+changed — `EM17`'s, which had claimed that a zero-file encoder-ahead result "means the encoder wrote none", an
+inference the measurement does not support (§3.9). No assertion, threshold, request or measurement moved.
+gate5–7 are the runs on the committed code, and they are what §6.1 rests on; gate4 is recorded because it
+happened, not because it is needed.
+
+**gate5–7 are the wrapper's own three, and gate4 is not counted toward them.** Each of the three started from an
+empty database, manifest directory, media-server configuration and mount, and the wrapper stops at the first
+failure rather than averaging.
+
+**Every failing run failed on this gate's own assertions or its own harness, and not one of them was a defect in
+the data plane.** gate1 was an inherited predicate requiring a field this server does not send; gate2 was one
+directory needing two spellings; gate3 was a rounding boundary. All three are written up in §4 rather than
+quietly fixed, because the shape of each is the shape this repository keeps producing: a check that looks
+right, agrees with its own comment, and measures something other than what it names.
+
+What the three passing runs measured — **Docker Desktop only, which §5 says closes none of G7–G13**:
+
+| | gate5 | gate6 | gate7 |
+|---|---|---|---|
+| Assertions | 353, 0 failed, 0 skipped | 353, 0 failed, 0 skipped | 353, 0 failed, 0 skipped |
+| Small-generation scan at the provider | 2,097,152 B of a 13,981,376 B object — **0.15** | same | same |
+| ~50-entry corpus scan at the provider | 40 requests, 39 resolutions, 5,322,772 B | same | same |
+| Paced direct play | startup 2.3 s, 305 decoded media s, pacing ratio 1.00, longest stall 0 s | startup **2.4 s**, otherwise same | startup 2.3 s, same |
+| Ten seeks | slowest 0.3 s (ceiling 10), 10 distinct, 4 backward, 2 past 90 %, position error 2.8 s, **decoded-offset spread 0.0 s**, span 321 s | same | same |
+| Transcode soak | 320 s wall, 324 decoded s, 108 distinct segments, 108 s in the last third | same | same |
+| Encoder instruments | span **0 s over 0 files**; live `TranscodingInfo` in **0 of 21** samples — recorded, asserted by nothing (§3.9) | same | same |
+| Probe cache | 11,810,990 B against a 26,537,231 B window-plan ceiling and 34,193,320 B published | same | same |
+| Whole run at the provider | 0 × 429, 0 full-body answers to a ranged request, peak 2 connections | same | same |
+
+**The stability across three runs is itself worth stating.** Every number above is identical across gate5–7
+except paced-play startup, which moved by a tenth of a second. A gate whose measurements wandered between runs
+would be measuring the host as much as the product.
+
+**Two things these runs did NOT exercise, and this record does not claim otherwise.** No playback window ever
+reached the provider — all three of `EM18`, `EM19` and `EM20` measured **zero** provider requests and were
+carried by the daemon's own playback-cache evidence (for example, 140 hits / 381,401,110 B over the paced-play
+window in gate5). So the *cold* arm of those windows is unexercised here, and so is the falling-counter refusal
+beside it; both are carried by the offline suite rather than by these runs. And the encoder instruments returned
+nothing at all, which §3.9 says is not a finding about the encoder.
+
+The findings in §3 are a different kind of statement again, and they **were** measured before any of these runs:
+each comes from a live, digest-pinned `emby/embyserver` 4.9.5.0 answering real requests, with the request and
+response recorded beside each constant in `src/core/projection/emby-dataplane.ts`.
+
+**What these rows close, said exactly.** Four green runs on **Windows / Docker Desktop**, three of them
+consecutive and fresh. §5 says that closes **none** of G7–G13, and this record does not upgrade it: a green run
+here is not a Phase 1 pass and **SHALL NOT be reported as one**. The tranche closes on a Linux or Unraid host,
+**three consecutive times**, on **all three** media servers. All three now have a gate; **none of the three has
+ever run on Linux or Unraid**, and no real provider endpoint has ever been contacted. Everything in §6 remains
+open.
