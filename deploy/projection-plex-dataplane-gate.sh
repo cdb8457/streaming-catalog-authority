@@ -66,6 +66,23 @@ DECODER_IMAGE="jellyfin/jellyfin@sha256:7ae36aab93ef9b6aaff02b37f8bb23df84bb2d7a
 DECODER_FFMPEG="/usr/lib/jellyfin-ffmpeg/ffmpeg"
 DECODER_FFPROBE="/usr/lib/jellyfin-ffmpeg/ffprobe"
 
+# THE OPT-IN GEOMETRY DIAGNOSTIC, WHICH IS NOT A GATE AND CANNOT BE MISTAKEN FOR ONE.
+#
+# WHAT IT IS FOR. gate6 measured the large-object scan at 32,505,856 bytes over 10 ranged requests, and that
+# total cannot be decomposed: 7.75 demand blocks is not a whole number of anything. A budget derived from it
+# would be a multiplier chosen to clear an observation, which is the mistake this gate has already made once.
+# The endpoint now reports request SHAPE, and this mode measures that shape over two large objects of
+# materially different sizes -- because one object cannot distinguish a fixed per-item cost from one that
+# scales with size, and a single point would let either story be told.
+#
+# WHAT MAKES IT SAFE TO HAVE IN THE PRODUCTION GATE AT ALL. It is off unless PROJECTION_PLEX_GEOMETRY_DIAGNOSTIC=1,
+# it adds nothing to the default path, it scores nothing -- no ceiling, no floor, no fraction is applied to
+# the second object -- and it exits **78**, which is neither 0 nor the 77 that means "skipped". The three-run
+# wrapper counts only 0, so a diagnostic can never be counted as one of the three required runs; the optional
+# entry point maps only 77, so it cannot be laundered into a success either.
+GEOMETRY_DIAGNOSTIC="${PROJECTION_PLEX_GEOMETRY_DIAGNOSTIC:-0}"
+GEOMETRY_EXIT_STATUS=78
+
 COMPOSE_FILE="docker-compose.projection-plex.yml"
 NETWORK="projection-plex-gate"
 PG_PORT="${PROJECTION_PLEX_GATE_PG_PORT:-5490}"
@@ -495,12 +512,44 @@ ffmpeg_run -hide_banner -loglevel error -y \
 LARGE_SIZE="$(wc -c < "$WORK/remote/$LARGE_FILE" | tr -d ' ')"
 LARGE_SHA="$(node "$REL/sha.cjs" "$REL/remote/$LARGE_FILE")"
 # THE FIXTURE HAS TO BE BIG ENOUGH FOR THE CLAIM TO MEAN ANYTHING, and that is asserted rather than assumed:
-# the ceiling for identifying one object is 2 opens x min(3 x 4 MiB, the object), which saturates at 24 MiB;
-# a 0.5 fraction of an object that small leaves no margin above the bytes a scan legitimately needs, so an
-# encoder that produced 20 MB here would fail the gate for a reason that has nothing to do with the daemon.
+# the ALLOWED CEILING for identifying one object saturates at 24 MiB, and on an object of only 20 MB that
+# ceiling already exceeds half the object -- so a 0.5 fraction would be asserting something the ceiling does
+# not constrain, and the result would say nothing either way. (The ceiling is an upper bound on what a scan
+# MAY read, not a floor on what it needs; an earlier version of this comment called it the bytes a scan
+# legitimately needs, which reads it backwards.)
 test "$LARGE_SIZE" -ge 100663296 \
   || die "the large fixture is $LARGE_SIZE bytes, under the 96 MiB the fraction claim needs to be testable"
 echo "  the large remote object is $LARGE_SIZE bytes"
+
+# THE SECOND LARGE OBJECT, GENERATED ONLY IN DIAGNOSTIC MODE AND ONLY HERE.
+#
+# SAME CODEC AND SETTINGS, MATERIALLY DIFFERENT DURATION. Identical encoder parameters are what make the two
+# measurements comparable: if the second object differed in codec, bitrate or container as well as in size,
+# a difference in its read shape could be attributed to any of them. Only the duration changes, so only the
+# size does -- which is the single variable the question is about.
+#
+# IT IS GENERATED BEFORE THE PROVIDER STARTS, for the same reason the first one is: the endpoint's counters
+# are process-lifetime counters that PX15 asserts over the whole run, and restarting it to add an object
+# would silently reset them.
+SECOND_LARGE_FILE="Projection Second Large Remote (2026).mp4"
+SECOND_LARGE_REF="obj-projection-second-large-remote"
+SECOND_LARGE_SIZE=0
+if [ "$GEOMETRY_DIAGNOSTIC" = "1" ]; then
+  step "GEOMETRY DIAGNOSTIC: generating a second large object of a different size"
+  ffmpeg_run -hide_banner -loglevel error -y \
+    -f lavfi -i "testsrc2=size=640x480:rate=24:duration=45" \
+    -f lavfi -i "sine=frequency=277:duration=45" \
+    -c:v mpeg4 -b:v 8M -minrate 8M -maxrate 8M -bufsize 16M \
+    -c:a aac -b:a 64k -shortest -movflags +faststart "/work/remote/$SECOND_LARGE_FILE"
+  SECOND_LARGE_SIZE="$(wc -c < "$WORK/remote/$SECOND_LARGE_FILE" | tr -d ' ')"
+  SECOND_LARGE_SHA="$(node "$REL/sha.cjs" "$REL/remote/$SECOND_LARGE_FILE")"
+  # THE TWO SIZES MUST DIFFER ENOUGH TO SEPARATE THE TWO STORIES. A fixed per-item cost and one that scales
+  # with size are indistinguishable across objects of nearly equal length, so the run refuses to produce
+  # evidence that could not answer its own question.
+  test "$SECOND_LARGE_SIZE" -lt "$(( LARGE_SIZE / 2 ))" \
+    || die "the second large object is $SECOND_LARGE_SIZE bytes against $LARGE_SIZE; too close to tell a fixed cost from a scaling one"
+  echo "  the second large remote object is $SECOND_LARGE_SIZE bytes, against $LARGE_SIZE for the first"
+fi
 
 CORPUS_COUNT=47
 CORPUS_LOCAL=9
@@ -609,6 +658,13 @@ LARGE_REF="obj-projection-large-remote"
 LEASE_MARKER="PJDLEASE$(node -e "console.log(require('node:crypto').randomBytes(16).toString('hex'))" | tr -d ' \r\n')"
 echo "  the endpoint will mint leases prefixed with a per-run secret marker"
 
+# The second large object joins the SINGLE launch below rather than prompting a restart. In the default
+# path this array is empty and the launch is byte-for-byte what it always was.
+DIAGNOSTIC_OBJECT_FLAGS=()
+if [ "$GEOMETRY_DIAGNOSTIC" = "1" ]; then
+  DIAGNOSTIC_OBJECT_FLAGS+=(--file-object "${SECOND_LARGE_REF}=/remote/${SECOND_LARGE_FILE}")
+fi
+
 CORPUS_OBJECT_FLAGS=()
 index=$(( CORPUS_LOCAL + 1 ))
 while [ "$index" -le "$CORPUS_COUNT" ]; do
@@ -627,6 +683,7 @@ docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fak
   --file-object "${MIDSCAN_REF}=/remote/${MIDSCAN_FILE}" \
   --file-object "${SOAK_REF}=/remote/${SOAK_FILE}" \
   --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
+  "${DIAGNOSTIC_OBJECT_FLAGS[@]}" \
   "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects.json >/dev/null
 
 echo "  waiting for the endpoint to come up"
@@ -1058,6 +1115,87 @@ drive compare --before "$REL/out/items-corpus-2.json" --after "$REL/out/items-la
 # EVERY LATER SCAN BUDGET COVERS THIS OBJECT TOO, so the size list grows with the library it describes. A
 # list that stopped at the corpus would under-name the denominator of the restart scan below.
 CORPUS_SIZE_LIST="${CORPUS_SIZE_LIST},${LARGE_SIZE}"
+
+# ----------------------------------------------------------------------------------------------------------
+if [ "$GEOMETRY_DIAGNOSTIC" = "1" ]; then
+step "GEOMETRY DIAGNOSTIC: a second large object, in its own generation and its own counter window"
+# ----------------------------------------------------------------------------------------------------------
+# TWO POINTS, BECAUSE ONE CANNOT ANSWER THE QUESTION. The question is whether the cost of identifying an
+# object is fixed or scales with its size, and a single measurement is consistent with both. Two objects of
+# the same codec and settings and materially different length, each scanned alone in its own counter window
+# with everything else already warm, separate them.
+#
+# NOTHING HERE IS SCORED. No ceiling, no floor, no fraction is applied to this object -- `shape-window`
+# records the request shape and asserts only that it reconciles. The gate has already made the mistake of
+# turning an observation into a budget, and this mode exists so that the next budget can be derived from
+# evidence rather than fitted to it.
+SECOND_LARGE_PATH="Movies/Projection Second Large Remote (2026)/$SECOND_LARGE_FILE"
+SECOND_LARGE_ITEM="b2b2b2b2-8888-4888-8888-b2b2b2b2b2b2"
+
+SECOND_SIZE_AT_ENDPOINT="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$SECOND_LARGE_REF" size)"
+test "$SECOND_SIZE_AT_ENDPOINT" = "$SECOND_LARGE_SIZE" \
+  || die "the endpoint disagrees with the second large file about its size"
+
+SECOND_LARGE_PROBES="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$SECOND_LARGE_REF" probes)"
+SECOND_PROBE_FLAGS=""
+for probe in $SECOND_LARGE_PROBES; do SECOND_PROBE_FLAGS="$SECOND_PROBE_FLAGS --probe $probe"; done
+# shellcheck disable=SC2086
+register version --key second-large --size "$SECOND_LARGE_SIZE" --mtime 2026-06-01T10:00:00.000Z $SECOND_PROBE_FLAGS
+register entry --item "$SECOND_LARGE_ITEM" --version-key second-large --path "$SECOND_LARGE_PATH" \
+  --source "http-range:vault:${SECOND_LARGE_REF}"
+publish > "$WORK/out/publish-second-large.json"
+test "$(field outcome   < "$WORK/out/publish-second-large.json")" = "published" || die "the second large object was not published"
+test "$(field additions < "$WORK/out/publish-second-large.json")" = "1"         || die "the second large generation should add exactly one entry"
+
+ready=0
+for _ in $(seq 1 240); do
+  if docker run --rm -v "$WORK/mnt:/mnt:rslave" "$VERIFY_IMAGE" test -f "/mnt/$SECOND_LARGE_PATH" >/dev/null 2>&1; then
+    ready=1; break
+  fi
+  sleep 0.5
+done
+test "$ready" -eq 1 || die "the second large object never became visible"
+
+node "$REL/expect.cjs" "$REL/out/expected-second-large.json" "$REL/out/expected-large.json" \
+  "$SECOND_LARGE_FILE" "$SECOND_LARGE_SIZE" "$SECOND_LARGE_SHA" http-range plain >/dev/null
+
+# ITS OWN WINDOW, drawn around this scan alone. Everything already in the library has been scanned and
+# analysed, and the repeat scan earlier demonstrated that costs the provider nothing -- so the delta is this
+# object's.
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-second.json"
+drive scan --state "$STATE" --expect-file "$REL/out/expected-second-large.json" \
+  --out "$REL/out/items-second-large.json" --label second-large
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-second.json"
+
+drive shape-window --before "$REL/out/counters-before-second.json" \
+  --after "$REL/out/counters-after-second.json" --gate PXD-second-large-object
+
+# ...and the first object's window, re-stated side by side so the two are read together rather than one being
+# looked up in an older log.
+drive shape-window --before "$REL/out/counters-before-large.json" \
+  --after "$REL/out/counters-after-large.json" --gate PXD-first-large-object
+
+echo
+echo "############################################################################################"
+echo "# DIAGNOSTIC ONLY. NO GATE PASSED. NOTHING HERE IS EVIDENCE FOR ANY ACCEPTANCE GATE."
+echo "############################################################################################"
+echo
+echo "This run was started with PROJECTION_PLEX_GEOMETRY_DIAGNOSTIC=1. It stopped after measuring the"
+echo "request shape of two large objects and did NOT run the ten seeks, the five-minute paced play, the"
+echo "five-minute transcode, the generation swap, the SIGKILL recovery, the media-server restart, the"
+echo "mid-scan publish, the source outage, the mutation refusal or the lease-secrecy checks."
+echo
+echo "  first  large object: $LARGE_SIZE bytes"
+echo "  second large object: $SECOND_LARGE_SIZE bytes"
+echo
+echo "The two PXD-* shape records above are the measurement. NOTHING was scored against them: no ceiling,"
+echo "no floor and no byte fraction was applied to the second object, and no acceptance record, run record"
+echo "or three-run count is updated by this run."
+echo
+echo "Exiting ${GEOMETRY_EXIT_STATUS}, which is neither success nor the 77 that means skipped, so no caller"
+echo "can read this as a gate that passed."
+exit "$GEOMETRY_EXIT_STATUS"
+fi
 
 # ----------------------------------------------------------------------------------------------------------
 step "a forced transcode, proved by decoding what came out"

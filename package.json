@@ -103,7 +103,7 @@
     "ops:projection-contract-export": "tsx src/ops/projection-contract-export-cli.ts",
     "ops:projection-register": "tsx src/ops/projection-register-cli.ts",
     "ops:projection-publish": "tsx src/ops/projection-publish-cli.ts",
-    "go:fmt": "docker run --rm -v \"${PWD}/projectiond\":/w -w /w golang:1.26.5-bookworm gofmt -l .",
+    "go:fmt": "docker compose -f docker-compose.projectiond.yml run --rm go-gate gofmt -l .",
     "go:build": "docker compose -f docker-compose.projectiond.yml run --rm go-gate go build ./...",
     "go:vet": "docker compose -f docker-compose.projectiond.yml run --rm go-gate go vet ./...",
     "go:test": "docker compose -f docker-compose.projectiond.yml run --rm go-gate go test ./...",

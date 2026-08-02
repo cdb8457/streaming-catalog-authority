@@ -446,11 +446,18 @@ type CountersSnapshot struct {
 	PeakConns          int64 `json:"peakConns"`
 	// Request shape, in three flat buckets. See Counters.
 	//
-	// TWO PARTITIONS, AND A CALLER SHOULD CHECK BOTH. The bucket BYTES sum to BytesServed, and the bucket
-	// RESPONSE COUNTS sum to the number of ranged requests that served a body — which is RangeRequests less
-	// the ones refused without one (Served429, ExpiredRejected). Bytes alone are not enough: two responses
-	// filed as one leave the byte total intact and the count wrong, and the count is what a geometry is
-	// derived from.
+	// TWO PARTITIONS, AND A CALLER SHOULD CHECK BOTH:
+	//
+	//	ChunkBytes + SmallBytes + OtherBytes                          == BytesServed
+	//	ChunkResponses + SmallResponses + OtherResponses + Bodyless   == RangeRequests
+	//
+	// THE SECOND ONE RECONCILES AGAINST BodylessResponses, NOT AGAINST A LIST OF REFUSALS. This comment used
+	// to say the counts sum to RangeRequests less Served429 and ExpiredRejected, which was short by every
+	// other no-body path — an unknown object, a missing file, a malformed Range, 401, 403, 410, 503, a
+	// timeout, a redirect. BodylessResponses covers all of them structurally.
+	//
+	// Bytes alone are not enough: two responses filed as one leave the byte total intact and the count
+	// wrong, and the count is what a request geometry is derived from.
 	ChunkResponses    int64 `json:"chunkResponses"`
 	ChunkBytes        int64 `json:"chunkBytes"`
 	SmallResponses    int64 `json:"smallResponses"`

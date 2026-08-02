@@ -1149,6 +1149,171 @@ await test('a seek that throws mid-set still leaves the completed seeks as evide
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// The opt-in geometry diagnostic, which is not a gate and must not be able to look like one
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * The gate script with every diagnostic-guarded region removed — i.e. exactly the default path.
+ *
+ * IT COUNTS NESTED `if`s, and the first version did not. The diagnostic block contains readiness loops with
+ * their own `if … then … fi` inside, so a stripper that closed on the first bare `fi` stopped early and left
+ * the tail of the block — including its `exit` — looking like part of the default path. The test then failed
+ * for a reason that had nothing to do with the gate, which is its own kind of false signal.
+ */
+function gateWithoutDiagnostic(): string {
+  const lines = GATE.split('\n');
+  const kept: string[] = [];
+  let depth = 0;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (depth === 0 && /^if \[ "\$GEOMETRY_DIAGNOSTIC" = "1" \]; then$/.test(trimmed)) {
+      depth = 1;
+      continue;
+    }
+    if (depth > 0) {
+      // Any `if … then` opens a nested block; `fi` closes the innermost one. Only when the outermost closes
+      // are we back on the default path.
+      if (/^if .*; then$/.test(trimmed) || /^if .*$/.test(trimmed) === false && trimmed === 'then') depth += 1;
+      else if (trimmed === 'fi') depth -= 1;
+      continue;
+    }
+    kept.push(line);
+  }
+  if (depth !== 0) throw new Error(`unbalanced diagnostic guard: depth ${depth} at end of script`);
+  return kept.join('\n');
+}
+
+await test('the geometry diagnostic is OFF unless it is asked for by name', () => {
+  assert(GATE.includes('GEOMETRY_DIAGNOSTIC="${PROJECTION_PLEX_GEOMETRY_DIAGNOSTIC:-0}"'),
+    'it defaults to off');
+  // EVERY diagnostic-only region is guarded by the same explicit test — no partial guards, no `-n` checks
+  // that a stray empty string would satisfy.
+  const guards = GATE.split('\n').filter((line) => line.includes('GEOMETRY_DIAGNOSTIC'));
+  for (const guard of guards) {
+    assert(/GEOMETRY_DIAGNOSTIC="\$\{PROJECTION_PLEX_GEOMETRY_DIAGNOSTIC:-0\}"/.test(guard)
+      || /\[ "\$GEOMETRY_DIAGNOSTIC" = "1" \]/.test(guard)
+      || guard.trimStart().startsWith('#')
+      || guard.trimStart().startsWith('echo '),
+    `every mention is the definition, an exact "=1" guard, a comment or printed text: ${guard.trim()}`);
+  }
+});
+
+await test('the DEFAULT path reaches every scoring phase and never early-exits', () => {
+  // The production gate must be unchanged in phase order. This checks the default path specifically — with
+  // the diagnostic regions stripped — so a guard that failed to close would show up as a missing phase.
+  const plain = gateWithoutDiagnostic();
+  for (const phase of ['ten real media-time seeks', 'direct play, PACED, for five minutes',
+    'a forced transcode, run and consumed for five minutes', 'a successor published while a stream is in flight',
+    'SIGKILL the daemon during playback', 'restarting the media server',
+    'a generation admitted WHILE A SCAN IS RUNNING', 'a source outage is not a deletion',
+    'the media server cannot write to the projection', 'no PROVIDER access lease reached', 'the report']) {
+    assert(plain.includes(phase), `the default path still runs: ${phase}`);
+  }
+  // ...and the default path can leave early only by SKIPPING or by FAILING. `die` exits 1, which is a
+  // failure and is meant to stop the run; the FUSE check exits 77. Anything else would be a path that ends
+  // the gate without either passing every phase or saying it did not.
+  const exits = plain.split('\n').filter((line) => /^\s*exit /.test(line));
+  assert(exits.length > 0, 'the default path does have deliberate exits');
+  for (const line of exits) {
+    assert(/GATE_SKIP_STATUS/.test(line) || /^\s*exit 1$/.test(line),
+      `the default path exits only to skip or to fail: ${line.trim()}`);
+  }
+  assert(!plain.includes('GEOMETRY_EXIT_STATUS"'), 'and never with the diagnostic status');
+  // THE SECOND FIXTURE IS NEVER ACTED ON WHEN THE MODE IS OFF. The check is on ACTIONS rather than on the
+  // identifiers: the variable names are defined unconditionally so the guarded blocks stay small, and an
+  // inert assignment costs nothing. What must not happen on the default path is an encode, a registration,
+  // a publish, a scan or a shape record.
+  for (const [marker, what] of [
+    ['duration=45', 'encoding the second fixture'],
+    ['--key second-large', 'registering it'],
+    ['publish-second-large.json', 'publishing it'],
+    ['--label second-large', 'scanning it'],
+    ['drive shape-window', 'recording a shape window'],
+    ['PXD-', 'emitting a diagnostic record'],
+    ['DIAGNOSTIC_OBJECT_FLAGS+=', 'adding it to the provider launch'],
+  ] as Array<[string, string]>) {
+    assert(!plain.includes(marker), `the default path does not do ${what}`);
+  }
+});
+
+await test('the diagnostic exits 78, which is neither a pass nor a skip', () => {
+  assert(GATE.includes('GEOMETRY_EXIT_STATUS=78'), 'the status is 78');
+  assert(GATE.includes('exit "$GEOMETRY_EXIT_STATUS"'), 'and the diagnostic exits with it');
+  assert(GATE.includes('GATE_SKIP_STATUS=77'), 'while a skip is still 77');
+  // THE THREE-RUN WRAPPER COUNTS ONLY ZERO, so 78 can never become one of the three required runs, and the
+  // OPTIONAL entry point maps only 77, so it cannot be laundered into a success either.
+  const three = read('deploy/projection-plex-dataplane-gate-three.sh');
+  assert(!three.includes('78'), 'the three-run wrapper knows nothing about 78');
+  assert(/if \[ "\$status" -ne 0 \]; then/.test(three), 'and treats any non-zero as a failed run');
+  const optional = read('deploy/projection-plex-dataplane-gate-optional.sh');
+  assert(/if \[ "\$status" -eq "\$GATE_SKIP_STATUS" \]/.test(optional), 'the optional wrapper maps only 77');
+  assert(!optional.includes('78'), 'and never 78');
+});
+
+await test('a diagnostic run announces loudly that it proved nothing', () => {
+  const banner = GATE.split('DIAGNOSTIC ONLY')[1]?.split('exit "$GEOMETRY_EXIT_STATUS"')[0] ?? '';
+  assert(banner.length > 0, 'there is a banner');
+  assert(/NO GATE PASSED/.test(GATE), 'it says no gate passed');
+  assert(/NOTHING HERE IS EVIDENCE FOR ANY ACCEPTANCE GATE/.test(GATE), 'and that it is not evidence');
+  // It enumerates what it did NOT do, so a reader cannot mistake a short run for a complete one.
+  for (const skipped of ['ten seeks', 'five-minute paced play', 'five-minute transcode', 'SIGKILL',
+    'mid-scan publish', 'source outage', 'lease-secrecy']) {
+    assert(banner.includes(skipped), `the banner names ${skipped} among what it did not run`);
+  }
+  assert(/no acceptance record, run record/.test(banner), 'and that no record is updated');
+});
+
+await test('the diagnostic scores nothing: shape and partitions only', () => {
+  const diagnostic = GATE.split('GEOMETRY DIAGNOSTIC: a second large object')[1]
+    ?.split('exit "$GEOMETRY_EXIT_STATUS"')[0] ?? '';
+  assert(diagnostic.includes('drive shape-window'), 'it records the shape');
+  assert(!diagnostic.includes('drive budget'), 'and applies no budget');
+  assert(!diagnostic.includes('--large-bytes'), 'and no byte fraction');
+  assert(!diagnostic.includes('--object-sizes'), 'and no geometry ceiling');
+  // `shape-window` itself must assert the partitions and nothing else.
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  const shapeWindow = cli.split("case 'shape-window':")[1]?.split("case 'assert-scan-in-flight'")[0] ?? '';
+  assert(shapeWindow.includes('-request-shape-accounts-for-every-byte'), 'byte partition asserted');
+  assert(shapeWindow.includes('-request-shape-accounts-for-every-request'), 'request partition asserted');
+  assert(!/withinBudget|atLeast/.test(shapeWindow), 'and no ceiling or floor is applied anywhere in it');
+});
+
+await test('the diagnostic isolates both windows and keeps the provider launched once', () => {
+  const diagnostic = GATE.split('GEOMETRY DIAGNOSTIC: a second large object')[1]
+    ?.split('exit "$GEOMETRY_EXIT_STATUS"')[0] ?? '';
+  // Its own generation, its own before/after pair, and the first object's window re-stated beside it.
+  assert(diagnostic.includes('counters-before-second.json') && diagnostic.includes('counters-after-second.json'),
+    'the second object has its own counter window');
+  assert(diagnostic.includes('--gate PXD-second-large-object'), 'reported under its own name');
+  assert(diagnostic.includes('--gate PXD-first-large-object'),
+    'and the first object is re-stated so the two are read together');
+  assert(/additions < "\$WORK\/out\/publish-second-large\.json"\)" = "1"/.test(diagnostic),
+    'the second object is published alone, adding exactly one entry');
+  // STILL EXACTLY ONE PROVIDER LAUNCH. Adding an object by restarting the endpoint would reset the lifetime
+  // counters, which is the defect this gate already fixed once.
+  assertEq(GATE.split('go run ./cmd/fakerange').length - 1, 1, 'the endpoint is launched exactly once');
+  assert(GATE.includes('"${DIAGNOSTIC_OBJECT_FLAGS[@]}"'),
+    'and the second object joins that single launch');
+  assert(gateWithoutDiagnostic().includes('DIAGNOSTIC_OBJECT_FLAGS=()'),
+    'with an empty array on the default path, so the launch is unchanged there');
+});
+
+await test('the two diagnostic fixtures differ enough to answer the question, and it is asserted', () => {
+  // One object cannot distinguish a fixed per-item cost from one that scales with size. The gate refuses to
+  // produce evidence that could not answer its own question.
+  assert(/test "\$SECOND_LARGE_SIZE" -lt "\$\(\( LARGE_SIZE \/ 2 \)\)"/.test(GATE),
+    'the second object must be under half the first');
+  assert(/too close to tell a fixed cost from a scaling one/.test(GATE), 'and the failure says why');
+  // SAME CODEC AND SETTINGS, so size is the only variable.
+  const first = GATE.split(`-f lavfi -i "testsrc2=size=640x480:rate=24:duration=105"`)[1]?.split('"/work/remote/')[0] ?? '';
+  const second = GATE.split(`-f lavfi -i "testsrc2=size=640x480:rate=24:duration=45"`)[1]?.split('"/work/remote/')[0] ?? '';
+  assert(first.length > 0 && second.length > 0, 'both encodes exist');
+  const settings = (block: string): string => (block.match(/-c:v [^\n]*|-b:v [^\n]*|-c:a [^\n]*/g) ?? []).join(' ');
+  assertEq(settings(second), settings(first),
+    'the second fixture uses identical codec settings, so only its size differs');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 // The failure diagnostic, which must not become the failure
 // ---------------------------------------------------------------------------------------------------------
 

@@ -656,6 +656,37 @@ async function main(): Promise<void> {
       return;
     }
 
+    case 'shape-window': {
+      // EVIDENCE ONLY. This records the request shape over one counter window and asserts nothing but the
+      // two partitions — no ceiling, no floor, no fraction, no budget of any kind.
+      //
+      // WHY IT IS A SEPARATE COMMAND RATHER THAN A FLAG ON `budget`. A flag that suppressed the budgets
+      // would leave a `budget` call in the gate that scores nothing, which is exactly the shape of thing
+      // somebody later reads as a passing budget. The command is named for what it does, and the geometry
+      // diagnostic is the only caller.
+      const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as Record<string, number>;
+      const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as Record<string, number>;
+      const gate = need(args, 'gate');
+      const delta = (key: string): number => (after[key] ?? 0) - (before[key] ?? 0);
+
+      const bucketedBytes = delta('chunkBytes') + delta('smallBytes') + delta('otherBytes');
+      const bucketedRequests = delta('chunkResponses') + delta('smallResponses') + delta('otherResponses');
+      record(args, {
+        gate: `${gate}-request-shape`, verdict: 'pass',
+        note: `${delta('chunkResponses')} responses of exactly one 4 MiB demand block `
+          + `(${delta('chunkBytes')} bytes), ${delta('smallResponses')} of one probe window or less `
+          + `(${delta('smallBytes')} bytes), ${delta('otherResponses')} other `
+          + `(${delta('otherBytes')} bytes); ${delta('rangeRequests')} ranged requests, `
+          + `${delta('bytesServed')} bytes, ${delta('resolutions')} resolutions`,
+      });
+      // THE PARTITIONS STILL HOLD, because a shape nobody reconciled is a shape nobody can build on.
+      record(args, exactly(`${gate}-request-shape-accounts-for-every-byte`,
+        bucketedBytes, delta('bytesServed')));
+      record(args, exactly(`${gate}-request-shape-accounts-for-every-request`,
+        bucketedRequests + delta('bodylessResponses'), delta('rangeRequests')));
+      return;
+    }
+
     case 'assert-scan-in-flight': {
       // THE PRE-PUBLISH GUARD. The marker says the scan WAS running when another process looked; this asks
       // whether it still is, at the last possible moment before the successor is published.
