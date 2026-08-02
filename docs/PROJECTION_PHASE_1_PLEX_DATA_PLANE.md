@@ -548,6 +548,50 @@ Plex, on the gate's own network) and holds its progress trace against five separ
 The decoder's own output is then re-probed end to end, because "decoded/playable output" is a decoder's
 answer and a byte count is not one.
 
+### 3.5.1 A warm playback window, and why "the provider was never reached" stopped being a failure
+
+`PX18`, `PX19` and `PX20` each measured a provider counter window, and each carried a floor: **at least one
+range request**, on the reasoning that *a window in which the provider was never reached means the bytes came
+from somewhere else*. That was sound while a handle release **deleted** the daemon's playback cache, because
+then every playback window had to re-fetch what it read.
+
+It stopped being sound when the release semantics were repaired. A release now discharges the handle's
+admission accounting and leaves the bytes addressable, so an object that fits in the playback cache is served
+from memory on every later open. **gate10 measured exactly that**: five minutes of paced play, ten seeks and
+five minutes of transcode, all at a provider delta of **zero**, while independent decoders proved 300 s of
+playable output, ten distinct seek positions and 332 s of transcoded output. The floors turned the repair's
+intended effect into three failures.
+
+**Dropping them was not an option, and `--warm-capable` from §3.4 is not the right precedent here.** That flag
+drops a floor and asserts nothing in its place, which is defensible for a scan window whose ceiling still
+binds. On a playback window it would accept *any* zero-provider result — including a media server reading a
+stale mount, or something that is not the daemon answering. That is precisely the ambiguity the floor existed
+to catch, and it is still worth catching.
+
+So a zero-provider playback window must now prove **positively** that this daemon served it, from the daemon's
+own cumulative playback-cache counters taken across the *same* window:
+
+| Assertion | What it establishes |
+|---|---|
+| `-range-requests-floor` | **cold path, unchanged.** A window that reached the provider is asserted exactly as before, under its original name. A cold run's verdict list does not move. |
+| `-warm-daemon-counters-coherent` | both readings exist, both carry a `playback` block, and no cumulative counter **fell** across the window. A fall means the daemon restarted inside it — which this gate does on purpose elsewhere in the same run — so the two readings describe different processes and their difference describes neither. |
+| `-warm-daemon-cache-hits` | the daemon's playback cache answered **at least one** read over exactly this window. |
+| `-warm-daemon-cache-hit-bytes` | and served **at least one byte** doing it. A hit *count* alone cannot separate a window served from memory from one that hit once on a trivial read. |
+| `-range-requests-warm-capable` | the headline, named for the assertion it replaces so two runs can be compared. It passes only if all three above hold. |
+
+**Zero provider requests and zero cache hits is still a failure**, and it is the same failure the old floor
+was aimed at.
+
+**How the counters are read, and what is deliberately not relaxed.** The daemon's status surface binds
+**loopback only**, and that restriction is not widened for a test: a published port would not reach it and
+must not be made to. The gate starts a pinned container with `--network container:<mount>`, which **shares the
+daemon's network namespace**, so its own `127.0.0.1` is reachable without the daemon listening anywhere else.
+The image that serves the mount is distroless — no shell, no HTTP client — which is why the request comes from
+a separate container rather than a `docker exec`.
+
+**This is not the diagnostic.** `/readyz` carries cumulative counters of the kind it already published, always
+on; the per-event cache diagnostic stays off and its route is not registered unless an operator enables it.
+
 ### 3.6 Ten seeks, and the mechanism it took three measurements to get right
 
 **A seek against Plex is a new `start.m3u8` at the wanted `offset`, on the same session, followed by the
@@ -772,6 +816,21 @@ container now names the server by address, and the gate refuses to continue with
   still a sum checked against one counter, so a window that opened only the two large objects clears the
   floor for all forty. Closing it means asserting the floor per object too, which needs a per-object
   expectation of what *should* have been read — not merely what was.
+- **Why one gap block is still fetched four times in a corpus scan** — an open follow-up, recorded here
+  because it was measured and not explained, and deliberately **not** acted on in the correction that found
+  it. In gate10's `PX9b` window the soak object (8,594,275 B) was served 16,767,097 B, which decomposes
+  **uniquely**: three probe windows (3,145,728 B), **one** fetch of the head→middle gap
+  `[1,048,576, 3,772,849)` = 2,724,273 B, and **four** fetches of the middle→tail gap
+  `[4,821,425, 7,545,699)` = 2,724,274 B. The head gap being fetched once is the release repair working — the
+  same window cost thirteen clipped responses before it. The middle gap being fetched four times is not
+  explained. Cache eviction is ruled out: the daemon ran on its defaults, 512 MiB total against an 8.6 MB
+  object. The standing hypothesis is bytes fetched under a handle that closes before `publish` runs, which
+  `publish` discards by design so that an admission is never charged to a departed handle — but **this is
+  unproved**: the provider's counters carry no offset and no handle id, and the instrument that could settle
+  it is the opt-in cache diagnostic, which that run deliberately did not enable. It breaches no budget: the
+  per-object class caps allow eight block-sized fetches and three probe windows. Settling it needs one
+  diagnostic-enabled run of the corpus-scan window, and any change it might motivate is a separate piece of
+  work from the assertion correction that surfaced it.
 - **A real Unraid host**: real shares, real mount propagation, real Unraid container templates.
 - **A real provider endpoint**, and therefore **TorBox**: real TLS, real redirects refused, real
   `Content-Range`, real `429`. The only endpoint any automated gate here contacts is

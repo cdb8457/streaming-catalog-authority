@@ -474,17 +474,29 @@ func (d *Daemon) LastAdmit() AdmitRecord {
 // provider's health, and an appliance whose readiness depends on a remote service is an appliance that goes
 // unready during an outage it is designed to survive.
 type Status struct {
-	Ready               bool        `json:"ready"`
-	Mounted             bool        `json:"mounted"`
-	UptimeSeconds       int64       `json:"uptimeSeconds"`
-	GenerationID        string      `json:"generationId,omitempty"`
-	GenerationSequence  int64       `json:"generationSequence,omitempty"`
-	Entries             int         `json:"entries"`
-	TotalBytes          int64       `json:"totalBytes"`
-	RetainedGenerations []string    `json:"retainedGenerations"`
-	ProbeCacheBytes     int64       `json:"probeCacheBytes"`
-	PlaybackCacheBytes  int64       `json:"playbackCacheBytes"`
-	LastAdmission       AdmitRecord `json:"lastAdmission"`
+	Ready               bool     `json:"ready"`
+	Mounted             bool     `json:"mounted"`
+	UptimeSeconds       int64    `json:"uptimeSeconds"`
+	GenerationID        string   `json:"generationId,omitempty"`
+	GenerationSequence  int64    `json:"generationSequence,omitempty"`
+	Entries             int      `json:"entries"`
+	TotalBytes          int64    `json:"totalBytes"`
+	RetainedGenerations []string `json:"retainedGenerations"`
+	ProbeCacheBytes     int64    `json:"probeCacheBytes"`
+	PlaybackCacheBytes  int64    `json:"playbackCacheBytes"`
+	// Playback is what the playback cache DID, alongside the level above.
+	//
+	// WHY A LEVEL WAS NOT ENOUGH. `playbackCacheBytes` says how much is resident now, which cannot answer
+	// whether this daemon served a read. Since a handle release stops deleting entries, a window of playback
+	// can legitimately reach the provider zero times — the bytes were already here — and "zero provider
+	// requests" then has two very different explanations: the daemon served it from memory, or something
+	// that is not the daemon served it. Only a cumulative hit count and hit volume tell those apart, and an
+	// acceptance gate that cannot tell them apart is one that passes on a bypassed daemon.
+	//
+	// IT IS NOT THE DIAGNOSTIC. These are cumulative counters, of the kind this surface already carries; they
+	// hold no per-request record, no offset, no handle and no identity, and they are always on.
+	Playback      cache.PlaybackCounters `json:"playback"`
+	LastAdmission AdmitRecord            `json:"lastAdmission"`
 }
 
 func (d *Daemon) Status() Status {
@@ -494,6 +506,7 @@ func (d *Daemon) Status() Status {
 		RetainedGenerations: d.Store.Retained(),
 		ProbeCacheBytes:     d.Probe.TotalBytes(),
 		PlaybackCacheBytes:  d.Playback.TotalBytes(),
+		Playback:            d.Playback.Counters(),
 		LastAdmission:       d.LastAdmit(),
 	}
 	if snap := d.Store.Current(); snap != nil {

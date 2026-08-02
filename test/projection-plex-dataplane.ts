@@ -3300,6 +3300,172 @@ await test('the roadmap records a second media server without declaring the tran
   assert(roadmap.includes('Unraid'), 'and so is Unraid');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// THE WARM-CACHE CONTRACT ON A PLAYBACK WINDOW, RUN RATHER THAN READ.
+//
+// WHAT gate10 MEASURED. Five minutes of paced play, ten seeks and five minutes of transcode each reached the
+// provider ZERO times, while independent decoders proved 300 s of playable output, ten distinct seek
+// positions and 332 s of transcoded output. The cause is the repair: a handle release stopped deleting
+// playback entries, so an object that fits in the cache is served from memory on every later open. The floor
+// `atLeast(range requests, 1)` turned that into three failures.
+//
+// WHAT MUST NOT HAPPEN IN FIXING IT. Simply dropping the floor would accept ANY zero-provider window,
+// including a stale mount or a bypassed daemon — the exact ambiguity the floor existed to catch. So the
+// replacement demands POSITIVE evidence from the daemon's own cumulative counters, and these tests drive all
+// three paths plus the two ways the evidence can be untrustworthy.
+// ---------------------------------------------------------------------------------------------------------
+
+/** Runs `traffic-window` with real provider and daemon snapshots, and returns the recorded verdicts. */
+function runTrafficWindow(options: {
+  provider: { before: Record<string, unknown>; after: Record<string, unknown> };
+  daemon?: { before: unknown; after: unknown };
+  argv?: readonly string[];
+}): {
+  status: number; reportStatus: number;
+  results: Array<{ gate: string; verdict: string; measured?: number; note?: string }>;
+} {
+  const dir = mkdtempSync(join(tmpdir(), 'plex-traffic-'));
+  const write = (name: string, value: unknown): string => {
+    const path = join(dir, name);
+    writeFileSync(path, JSON.stringify(value));
+    return path;
+  };
+  const argv = ['traffic-window',
+    '--before', write('p-before.json', options.provider.before),
+    '--after', write('p-after.json', options.provider.after),
+    '--gate', 'PXTEST-window', '--object-bytes', '8594275', '--results', join(dir, 'results.json'),
+    ...(options.daemon === undefined ? [] : [
+      '--daemon-before', write('d-before.json', options.daemon.before),
+      '--daemon-after', write('d-after.json', options.daemon.after),
+    ]),
+    ...(options.argv ?? [])];
+  const run = runCli(argv);
+  const resultsPath = join(dir, 'results.json');
+  const results = existsSync(resultsPath)
+    ? readFileSync(resultsPath, 'utf8').split('\n').filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line) as { gate: string; verdict: string; measured?: number; note?: string })
+    : [];
+  // A RECORDED FAILURE IS ONLY A FAILURE IF THE RUN ENDS ON IT. `traffic-window` records verdicts and exits
+  // zero; `report` is what turns a recorded `fail` into a non-zero gate. Asserting the verdict alone would
+  // let a fail verdict that the report ignored read as coverage.
+  const reportStatus = results.length === 0 ? -1
+    : runCli(['report', '--results', resultsPath]).status;
+  return { status: run.status, reportStatus, results };
+}
+
+const COLD_PROVIDER = Object.freeze({ before: { rangeRequests: 10, bytesServed: 1_000_000 },
+  after: { rangeRequests: 14, bytesServed: 5_000_000 } });
+const WARM_PROVIDER = Object.freeze({ before: { rangeRequests: 59, bytesServed: 43_819_536 },
+  after: { rangeRequests: 59, bytesServed: 43_819_536 } });
+const verdictOf = (results: ReadonlyArray<{ gate: string; verdict: string }>, suffix: string):
+string | undefined => results.find((r) => r.gate === `PXTEST-window${suffix}`)?.verdict;
+
+await test('a COLD playback window keeps the original provider floor, unchanged and under its own name', () => {
+  const run = runTrafficWindow({ provider: COLD_PROVIDER });
+  assertEq(run.reportStatus, 0, 'a window that reached the provider passes the report');
+  assertEq(verdictOf(run.results, '-range-requests-floor'), 'pass', 'the original floor still runs');
+  // AND NOTHING WARM IS EMITTED. A cold run's verdict list must be byte-identical to what it was before this
+  // correction, or two runs of the same gate cannot be compared.
+  for (const suffix of ['-range-requests-warm-capable', '-warm-daemon-cache-hits',
+    '-warm-daemon-cache-hit-bytes', '-warm-daemon-counters-coherent']) {
+    assertEq(verdictOf(run.results, suffix), undefined, `a cold window emits no ${suffix}`);
+  }
+  // The ceilings are untouched by any of this.
+  assertEq(verdictOf(run.results, '-provider-bytes'), 'pass', 'the byte ceiling still runs');
+  assertEq(verdictOf(run.results, '-http-429'), 'pass', 'and the 429 ceiling');
+  assertEq(verdictOf(run.results, '-full-body-on-range'), 'pass', 'and the full-body ceiling');
+});
+
+await test('a WARM window passes only on the daemon\'s own account of what it served', () => {
+  const run = runTrafficWindow({
+    provider: WARM_PROVIDER,
+    daemon: {
+      before: { playback: { hits: 12, hitBytes: 40_000, misses: 30, totalBytes: 8_594_275 } },
+      after: { playback: { hits: 940, hitBytes: 25_000_000, misses: 30, totalBytes: 8_594_275 } },
+    },
+  });
+  assertEq(run.reportStatus, 0, 'zero provider traffic with daemon cache evidence passes the report');
+  assertEq(verdictOf(run.results, '-range-requests-warm-capable'), 'pass', 'the headline passes');
+  assertEq(verdictOf(run.results, '-warm-daemon-cache-hits'), 'pass', '928 hits over the window');
+  assertEq(verdictOf(run.results, '-warm-daemon-cache-hit-bytes'), 'pass', 'and 24,960,000 bytes');
+  assertEq(verdictOf(run.results, '-warm-daemon-counters-coherent'), 'pass', 'the deltas are coherent');
+  // THE OLD FLOOR IS NOT SILENTLY PASSED — it is not emitted at all, so nobody can read a pass into it.
+  assertEq(verdictOf(run.results, '-range-requests-floor'), undefined, 'the provider floor does not apply');
+  const hits = run.results.find((r) => r.gate === 'PXTEST-window-warm-daemon-cache-hits');
+  assertEq(hits?.measured, 928, 'the delta is the measurement, not the absolute reading');
+});
+
+await test('a zero-provider window with NO daemon evidence FAILS: that is the bypass the floor caught', () => {
+  const run = runTrafficWindow({ provider: WARM_PROVIDER });
+  assertEq(run.reportStatus, 1, 'a generic zero-provider window fails the report');
+  assertEq(verdictOf(run.results, '-range-requests-warm-capable'), 'fail', 'the headline fails');
+  assertEq(verdictOf(run.results, '-warm-daemon-cache-hits'), 'fail', 'with no hits to show');
+  const headline = run.results.find((r) => r.gate === 'PXTEST-window-range-requests-warm-capable');
+  assert(/stale mount|bypassed daemon/.test(headline?.note ?? ''),
+    'and the note names what a zero window with no evidence also looks like');
+});
+
+await test('a zero-provider window where the daemon served NOTHING fails, even with snapshots present', () => {
+  const run = runTrafficWindow({
+    provider: WARM_PROVIDER,
+    daemon: {
+      before: { playback: { hits: 5, hitBytes: 20_000, misses: 2, totalBytes: 0 } },
+      after: { playback: { hits: 5, hitBytes: 20_000, misses: 2, totalBytes: 0 } },
+    },
+  });
+  assertEq(run.reportStatus, 1, 'zero provider requests AND zero cache hits still fails the report');
+  assertEq(verdictOf(run.results, '-warm-daemon-cache-hits'), 'fail', 'nothing was served from cache');
+  assertEq(verdictOf(run.results, '-range-requests-warm-capable'), 'fail', 'so the window proves nothing');
+});
+
+await test('a daemon that RESTARTED inside the window cannot supply warm evidence for it', () => {
+  // The gate SIGKILLs and restarts the daemon on purpose elsewhere in the same run, so this is the failure
+  // mode a warm claim is most exposed to. Cumulative counters only rise within one process; a fall means the
+  // two readings describe different processes and their difference is a number about nothing.
+  const run = runTrafficWindow({
+    provider: WARM_PROVIDER,
+    daemon: {
+      before: { playback: { hits: 900, hitBytes: 24_000_000, misses: 40, totalBytes: 8_594_275 } },
+      after: { playback: { hits: 3, hitBytes: 9_000, misses: 1, totalBytes: 12_288 } },
+    },
+  });
+  assertEq(run.reportStatus, 1, 'a counter that fell fails the report');
+  assertEq(verdictOf(run.results, '-warm-daemon-counters-coherent'), 'fail', 'incoherence is named');
+  assertEq(verdictOf(run.results, '-range-requests-warm-capable'), 'fail', 'and the headline fails with it');
+  const coherence = run.results.find((r) => r.gate === 'PXTEST-window-warm-daemon-counters-coherent');
+  assert(/RESTARTED/.test(coherence?.note ?? ''), 'and says a restart is what a falling counter means');
+});
+
+await test('a daemon too old to publish playback counters is named, not read as zero', () => {
+  const run = runTrafficWindow({
+    provider: WARM_PROVIDER,
+    daemon: { before: { playbackCacheBytes: 8_594_275 }, after: { playbackCacheBytes: 8_594_275 } },
+  });
+  assertEq(run.reportStatus, 1, 'a missing counter block fails the report');
+  assertEq(verdictOf(run.results, '-warm-daemon-counters-coherent'), 'fail', 'the absence is a failure');
+  const coherence = run.results.find((r) => r.gate === 'PXTEST-window-warm-daemon-counters-coherent');
+  assert(/no `playback` counters/.test(coherence?.note ?? ''), 'and it says which half is missing');
+});
+
+await test('the gate hands the daemon window to all three playback traffic phases', () => {
+  const gate = read('deploy/projection-plex-dataplane-gate.sh');
+  // THE DEFECT THIS CLOSES IS THE ONE PX14 TAUGHT: an assertion that is correct and never reached. The CLI
+  // can demand daemon evidence all it likes if the gate never passes any.
+  for (const window of ['seeks', 'play', 'soak']) {
+    assert(gate.includes(`daemon_counters "$WORK/out/daemon-before-${window}.json"`),
+      `the ${window} window captures the daemon's counters before it`);
+    assert(gate.includes(`daemon_counters "$WORK/out/daemon-after-${window}.json"`),
+      `and after it`);
+    assert(gate.includes(`--daemon-before "$REL/out/daemon-before-${window}.json"`),
+      `and hands them to the ${window} assertion`);
+  }
+  // The status surface it reads is loopback-only and reached by joining the daemon's own namespace, not by
+  // relaxing where the daemon listens.
+  assert(gate.includes('"statusAddr": "127.0.0.1:9099"'), 'the daemon publishes on loopback only');
+  assert(gate.includes('--network "container:$MOUNT_CONTAINER"'),
+    'and the reader joins its network namespace rather than a published port');
+});
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) {
   for (const [name, error] of failures) console.error(`\n${name}\n  ${(error as Error).stack ?? error}`);

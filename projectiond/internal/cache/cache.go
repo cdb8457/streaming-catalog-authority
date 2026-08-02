@@ -443,10 +443,17 @@ type PlaybackCache struct {
 	byHnd map[uint64]int64
 	now   func() time.Time
 
-	Hits    int64
-	Misses  int64
-	Evicts  int64
-	Refused int64
+	Hits int64
+	// HitBytes is how many bytes were SERVED FROM a hit, cumulatively.
+	//
+	// WHY A COUNT OF HITS IS NOT ENOUGH. A hit count says how often the cache answered; it cannot say how
+	// much it answered with, and the two come apart badly at the sizes that matter — one hit on a 4 MiB
+	// demand block and one on a 4 KiB read are the same number. An acceptance gate asking "was this window
+	// served by the daemon rather than by something else" needs the volume, not the frequency.
+	HitBytes int64
+	Misses   int64
+	Evicts   int64
+	Refused  int64
 	// AccountingFaults counts discharges that would have driven a handle's admission balance below zero. It
 	// is zero on a correct cache, and it exists because the alternative was worse: the balance is clamped at
 	// zero so a fault can never widen a ceiling, and a clamp that absorbed the fault SILENTLY would leave a
@@ -506,6 +513,7 @@ func (c *PlaybackCache) Get(handle uint64, key Key, dst []byte) bool {
 	entry.lastUsed = c.now()
 	copy(dst, entry.data)
 	c.Hits++
+	c.HitBytes += int64(len(entry.data))
 	c.diagnostic.record(EventHit, objectNamespace(key), handle, key.Offset, key.Length)
 	return true
 }
@@ -692,6 +700,33 @@ func (c *PlaybackCache) evictLocked() {
 		}
 		c.evictOneLocked(name, c.entries[name])
 	}
+}
+
+// PlaybackCounters is what the playback cache did, as a number an operator or an acceptance gate can subtract
+// one reading of from another.
+//
+// EVERY FIELD IS CUMULATIVE EXCEPT TotalBytes, which is a level. That distinction is the whole usefulness of
+// the document: a difference of two cumulative readings is what happened BETWEEN them, and a difference of two
+// levels is not. A reading whose cumulative fields went DOWN did not come from the same process as the one
+// before it, and a caller that subtracts across a restart must be able to see that rather than compute a
+// negative and call it zero.
+type PlaybackCounters struct {
+	Hits       int64 `json:"hits"`
+	HitBytes   int64 `json:"hitBytes"`
+	Misses     int64 `json:"misses"`
+	TotalBytes int64 `json:"totalBytes"`
+}
+
+// Counters returns all of them AT ONE MOMENT, under one lock.
+//
+// WHY A SNAPSHOT RATHER THAN FOUR ACCESSORS. Four separate reads under an active stream return four different
+// moments, and a caller that divides bytes by hits, or reasons about the two together at all, would be
+// combining numbers that were never simultaneously true. That is the torn-snapshot defect gate9 found in the
+// request partition and this file has no business reintroducing at the point the numbers are published.
+func (c *PlaybackCache) Counters() PlaybackCounters {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return PlaybackCounters{Hits: c.Hits, HitBytes: c.HitBytes, Misses: c.Misses, TotalBytes: c.total}
 }
 
 // SetClock replaces the recency clock, so a test can assert WHICH entry the LRU takes rather than hoping the

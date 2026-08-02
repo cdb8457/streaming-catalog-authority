@@ -380,6 +380,15 @@ media server's open-read-release scan followed by an analyse pass refetched the 
 measured through the real read path as the identical block at offset 1,048,576 for 2,724,273 bytes, fetched
 four times for four sequential opens.
 
+7.10.1.1 **A read served from the playback cache reaches no provider, and the daemon **SHALL** say so.** A
+consequence of 7.10.1 is that a window of real playback — a scan, a direct play, a seek, a transcode — may
+produce **zero** provider requests when the bytes are already resident. "Zero provider requests" therefore has
+two explanations that call for opposite responses: this daemon served the read from memory, or something that
+is not this daemon served it. The daemon **SHALL** publish, on its status surface and independently of any
+opt-in diagnostic, the playback cache's **cumulative** hit count and hit **bytes** alongside the resident
+level, so the two can be told apart by subtracting two readings. These are counters, not a per-request record:
+they carry no offset, no handle, no identity and no byte content.
+
 7.10.2 **The 64 MiB per-handle cap is an admission ceiling.** It bounds what one open handle may **add**. A
 cache hit is free reuse: it **SHALL NOT** transfer ownership and **SHALL NOT** count against the reading
 handle's ceiling. A handle **SHALL NOT** hold admissions beyond the cap; when a put would exceed it, that

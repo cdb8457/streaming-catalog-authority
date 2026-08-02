@@ -775,6 +775,7 @@ cat > "$WORK/config.json" <<'JSON'
   "mountPoint": "/mnt/projection",
   "pointerPath": "/var/lib/projectiond/manifest/pointer.json",
   "probeCacheDir": "/var/lib/projectiond/cache",
+  "statusAddr": "127.0.0.1:9099",
   "localRoots": { "media": "/var/lib/projectiond/media" },
   "endpoints": [
     {
@@ -801,6 +802,28 @@ start_daemon() {
     -v "$WORK/config.json:/etc/projectiond/config.json:ro" \
     -v "$WORK/mnt:/mnt/projection:rshared" \
     "$IMAGE" --config /etc/projectiond/config.json --poll 2s --strict-direct-mount >/dev/null
+}
+
+# THE DAEMON'S OWN PLAYBACK-CACHE COUNTERS, over the same window the provider's are measured across.
+#
+# WHY THIS IS NEEDED AT ALL. Since a handle release stopped deleting playback entries, a playback window can
+# legitimately reach the provider zero times — the bytes are already in the daemon's memory. "Zero provider
+# requests" then has two explanations that call for opposite responses: the daemon served it, or something
+# that is not the daemon did. Only the daemon can say which, so the daemon is asked.
+#
+# WHY IT JOINS THE CONTAINER'S NETWORK NAMESPACE. The status server binds LOOPBACK ONLY and that restriction
+# is not being relaxed for a test — a published port would not reach it and must not be made to. A container
+# started with `--network container:<name>` shares that namespace, so the daemon's own 127.0.0.1 is reachable
+# without the daemon listening anywhere else. The image that serves the mount is distroless and has no shell
+# and no HTTP client, which is why the request comes from a separate, pinned one.
+#
+# IT IS NOT THE DIAGNOSTIC. `/readyz` carries cumulative counters and is always on; the per-event cache
+# diagnostic stays off, and its route is not even registered unless an operator enables it.
+DAEMON_STATUS_PORT=9099
+daemon_counters() {
+  docker run --rm --network "container:$MOUNT_CONTAINER" "$VERIFY_IMAGE" \
+    wget -q -T 15 -O - "http://127.0.0.1:${DAEMON_STATUS_PORT}/readyz" > "$1" \
+    || die "the daemon's status surface did not answer; a warm window cannot be told from a bypassed daemon"
 }
 
 await_namespace() {
@@ -1245,10 +1268,12 @@ step "ten real media-time seeks, including backwards and beyond 90% of duration"
 # server stating where the segment begins. A gate that computed `index * 8` would be asserting a property of
 # one build's segmenter.
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-seeks.json"
+daemon_counters "$WORK/out/daemon-before-seeks.json"
 drive media-seeks --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
   --duration-seconds "$SOAK_DURATION_INT" --segment-dir "$REL/out/seek-segments" \
   --out "$REL/out/seeks.json"
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-seeks.json"
+daemon_counters "$WORK/out/daemon-after-seeks.json"
 
 # EVERY SEEK'S SEGMENT DECODED, BY A DECODER THAT IS NOT PLEX, OUTSIDE THE PROCESS THAT FETCHED IT. The
 # fourth field is the decoded picture's own START TIMESTAMP, and it is the temporal evidence: it must move
@@ -1280,7 +1305,8 @@ drive seek-verify --key "$SOAK_FILE" --seeks "$REL/out/seeks.json" --probes "$RE
 # derived ceiling of 128,974,848: 54,485,469.
 drive traffic-window --before "$REL/out/counters-before-seeks.json" \
   --after "$REL/out/counters-after-seeks.json" --gate PX19-seek-traffic \
-  --object-bytes "$SOAK_SIZE" --events 10 --seek-ceiling true --max-range-requests 400
+  --object-bytes "$SOAK_SIZE" --events 10 --seek-ceiling true --max-range-requests 400 \
+  --daemon-before "$REL/out/daemon-before-seeks.json" --daemon-after "$REL/out/daemon-after-seeks.json"
 
 # ----------------------------------------------------------------------------------------------------------
 step "direct play, PACED, for five minutes"
@@ -1290,12 +1316,14 @@ step "direct play, PACED, for five minutes"
 # 5 minutes without a stall", and the obvious way to make it take five minutes — add a sleep — produces a
 # phase that takes five minutes and measures a download.
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-play.json"
+daemon_counters "$WORK/out/daemon-before-play.json"
 drive paced-play --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
   --image "$DECODER_IMAGE" --ffmpeg "$DECODER_FFMPEG" --network "$NETWORK" \
   --container-name "$PLAY_CONTAINER" --work-dir "$WORK" \
   --stream-base "http://${PLEX_IP}:32400" --output-rel "out/paced-play.mp4" \
   --trace "$REL/out/paced-play-trace.json" --seconds 300
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-play.json"
+daemon_counters "$WORK/out/daemon-after-play.json"
 
 # THE CONSUMER'S OWN OUTPUT, DECODED. Five minutes of progress records is evidence that a decoder was
 # running; five minutes of decodable video in the file it wrote is evidence that what it was decoding was
@@ -1310,7 +1338,8 @@ drive paced-play-output --probed-seconds "${PLAY_OUT_SECONDS%%.*}" --probed-pack
 
 drive traffic-window --before "$REL/out/counters-before-play.json" \
   --after "$REL/out/counters-after-play.json" --gate PX18-paced-play-traffic \
-  --object-bytes "$SOAK_SIZE" --max-object-multiplier 3 --max-range-requests 400
+  --object-bytes "$SOAK_SIZE" --max-object-multiplier 3 --max-range-requests 400 \
+  --daemon-before "$REL/out/daemon-before-play.json" --daemon-after "$REL/out/daemon-after-play.json"
 
 # THE MOUNT'S OWN VIEW, AFTER FIVE MINUTES OF BEING READ. Metadata is a snapshot the daemon holds, and five
 # minutes of streaming must not have moved any of it.
@@ -1333,9 +1362,11 @@ step "a forced transcode, run and consumed for five minutes"
 # Every floor sits well below what was measured, because a threshold pinned to an observed value fails on a
 # loaded machine. The rest of the server's bookkeeping is recorded and asserted on by nothing.
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-soak.json"
+daemon_counters "$WORK/out/daemon-before-soak.json"
 drive transcode-soak --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
   --segment-dir "$REL/out/soak-segments" --out "$REL/out/soak.json" --seconds 300
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-soak.json"
+daemon_counters "$WORK/out/daemon-after-soak.json"
 
 cat > "$WORK/out/probe-soak.sh" <<'PROBESOAK'
 set -eu
@@ -1361,7 +1392,8 @@ drive transcode-soak-verify --key "$SOAK_FILE" --items "$REL/out/items-corpus-2.
 
 drive traffic-window --before "$REL/out/counters-before-soak.json" \
   --after "$REL/out/counters-after-soak.json" --gate PX20-transcode-soak-traffic \
-  --object-bytes "$SOAK_SIZE" --max-object-multiplier 4 --max-range-requests 600
+  --object-bytes "$SOAK_SIZE" --max-object-multiplier 4 --max-range-requests 600 \
+  --daemon-before "$REL/out/daemon-before-soak.json" --daemon-after "$REL/out/daemon-after-soak.json"
 
 # THE TRANSCODING JOB IS GONE. A five-minute encode left running would occupy the machine for the rest of the
 # gate, and every later measurement would be taken against a host under load.

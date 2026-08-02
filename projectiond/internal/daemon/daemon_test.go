@@ -77,6 +77,77 @@ func TestStatusCarriesNoPaths(t *testing.T) {
 	}
 }
 
+// TestStatusPublishesWhatThePlaybackCacheServed.
+//
+// WHAT THIS SURFACE HAS TO ANSWER, AND DID NOT. `playbackCacheBytes` is a LEVEL: it says how much is resident,
+// which cannot say whether this daemon served a read. Since a handle release stopped deleting entries, a
+// window of real playback can reach the provider zero times, and "zero provider requests" then has two
+// explanations calling for opposite responses — the daemon served it from memory, or something that is not
+// the daemon served it. An acceptance gate that cannot separate those passes on a bypassed daemon.
+//
+// IT IS NOT THE DIAGNOSTIC. These are cumulative counters of the kind this document already carries; they
+// hold no per-request record, no offset, no handle and no identity, and they are on by default.
+func TestStatusPublishesWhatThePlaybackCacheServed(t *testing.T) {
+	// EXPLICITLY OFF, so this proves the counters do not depend on the opt-in diagnostic.
+	t.Setenv("PROJECTIOND_CACHE_DIAGNOSTIC", "")
+	cfg := configFor(t)
+	d, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if d.Playback.DiagnosticEnabled() {
+		t.Fatal("this test must run with the diagnostic off")
+	}
+
+	if got := d.Status().Playback; got.Hits != 0 || got.HitBytes != 0 || got.Misses != 0 {
+		t.Fatalf("a fresh daemon has served nothing: %+v", got)
+	}
+
+	key := cache.Key{ProjectedVersionID: "pv", IdentityDigest: "identity", Offset: 0, Length: 4096}
+	d.Playback.Get(1, key, make([]byte, 4096)) // a miss
+	d.Playback.Put(1, key, make([]byte, 4096))
+	d.Playback.DropHandle(1)                   // the admitting handle goes; the bytes stay
+	d.Playback.Get(2, key, make([]byte, 4096)) // a later open reuses them
+
+	status := d.Status()
+	if status.Playback.Hits != 1 {
+		t.Fatalf("one read was served from cache, the document says %d", status.Playback.Hits)
+	}
+	if status.Playback.HitBytes != 4096 {
+		t.Fatalf("and served 4096 bytes, the document says %d", status.Playback.HitBytes)
+	}
+	if status.Playback.Misses != 1 {
+		t.Fatalf("one read was not, the document says %d", status.Playback.Misses)
+	}
+	// THE LEVEL AND THE COUNTERS AGREE, and the old field keeps its meaning.
+	if status.Playback.TotalBytes != status.PlaybackCacheBytes {
+		t.Fatalf("the two spellings of the level disagree: %d and %d",
+			status.Playback.TotalBytes, status.PlaybackCacheBytes)
+	}
+
+	// AND IT SURVIVES ENCODING UNDER THE NAMES THE GATE READS. A field renamed in the struct and not in the
+	// JSON tag would leave the gate reading zeros and calling a warm window a bypass.
+	encoded, err := json.Marshal(status)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var decoded struct {
+		Playback struct {
+			Hits       int64 `json:"hits"`
+			HitBytes   int64 `json:"hitBytes"`
+			Misses     int64 `json:"misses"`
+			TotalBytes int64 `json:"totalBytes"`
+		} `json:"playback"`
+	}
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if decoded.Playback.Hits != 1 || decoded.Playback.HitBytes != 4096 || decoded.Playback.Misses != 1 {
+		t.Fatalf("the JSON the gate reads does not carry the evidence: %s", encoded)
+	}
+}
+
 func TestConfigurationRefusals(t *testing.T) {
 	base := t.TempDir()
 	for name, mutate := range map[string]func(*Config){

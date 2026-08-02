@@ -572,6 +572,90 @@ func TestEvictingAReleasedEntryLeavesNoNegativeAccounting(t *testing.T) {
 	auditLedgers(t, c)
 }
 
+// TestPlaybackCountersReportHitVOLUMEAndNotOnlyFrequency.
+//
+// WHAT THESE COUNTERS ARE FOR. Since a release stopped deleting entries, a window of real playback can reach
+// the provider zero times. An acceptance gate then has to separate "the daemon served it from memory" from
+// "something that is not the daemon served it", and the provider's own counters cannot: the evidence is on
+// this side. A hit COUNT alone is not enough either — one hit on a 4 MiB block and one on a 4 KiB read are
+// the same number — so the volume is counted beside it.
+func TestPlaybackCountersReportHitVolumeAndNotOnlyFrequency(t *testing.T) {
+	c := NewPlaybackCache(64<<20, 32<<20)
+	cached := testKey(0, 4096)
+	c.Put(1, cached, payload(4096))
+	c.DropHandle(1)
+
+	if got := c.Counters(); got.Hits != 0 || got.HitBytes != 0 {
+		t.Fatalf("an admission is not a hit: %+v", got)
+	}
+
+	for _, handle := range []uint64{2, 3} {
+		if !c.Get(handle, cached, make([]byte, 4096)) {
+			t.Fatalf("handle %d should have reused the retained entry", handle)
+		}
+	}
+	c.Get(4, testKey(1<<20, 4096), make([]byte, 4096)) // a genuine miss
+
+	got := c.Counters()
+	if got.Hits != 2 {
+		t.Fatalf("two reads were served from cache, counted %d", got.Hits)
+	}
+	if got.HitBytes != 2*4096 {
+		t.Fatalf("and served %d bytes doing it, counted %d", 2*4096, got.HitBytes)
+	}
+	if got.Misses != 1 {
+		t.Fatalf("one read was not served from cache, counted %d", got.Misses)
+	}
+	// A LEVEL, NOT A COUNTER, AND THE DOCUMENT MUST NOT CONFLATE THEM. One entry is resident however many
+	// times it was served.
+	if got.TotalBytes != 4096 {
+		t.Fatalf("one 4096-byte entry is resident, the level says %d", got.TotalBytes)
+	}
+	// A REFUSED LOOKUP IS A MISS AND NEVER A HIT, so a short destination cannot inflate the evidence.
+	if c.Get(5, cached, make([]byte, 4)) {
+		t.Fatal("a destination shorter than the record must be refused")
+	}
+	if after := c.Counters(); after.Hits != got.Hits || after.HitBytes != got.HitBytes {
+		t.Fatalf("a refused lookup moved the hit evidence: %+v then %+v", got, after)
+	}
+}
+
+// TestPlaybackCountersAreOneMomentRatherThanFour. A caller that reasons about hits and bytes together must
+// not be handed numbers that were never simultaneously true — the torn-snapshot defect gate9 found in the
+// request partition, at the point these numbers are published.
+func TestPlaybackCountersAreOneMomentRatherThanFour(t *testing.T) {
+	c := NewPlaybackCache(64<<20, 32<<20)
+	key := testKey(0, 8192)
+	c.Put(1, key, payload(8192))
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			c.Get(2, key, make([]byte, 8192))
+		}
+	}()
+
+	// Every reading must be internally consistent: the bytes are exactly the record length per hit, so a
+	// snapshot that combined a hit count from one instant with a byte total from another would not divide.
+	for i := 0; i < 500; i++ {
+		got := c.Counters()
+		if got.HitBytes != got.Hits*8192 {
+			t.Fatalf("torn snapshot: %d hits against %d bytes, which is not %d per hit",
+				got.Hits, got.HitBytes, 8192)
+		}
+	}
+	close(stop)
+	wg.Wait()
+}
+
 // TestTheUnownedSentinelIsNotAnAdmissionPath.
 //
 // Handle 0 labels an entry no live handle owns. If `Put` accepted it, those bytes would sit in the cache
