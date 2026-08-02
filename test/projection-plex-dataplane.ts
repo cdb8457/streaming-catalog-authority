@@ -3447,6 +3447,55 @@ await test('a daemon too old to publish playback counters is named, not read as 
   assert(/no `playback` counters/.test(coherence?.note ?? ''), 'and it says which half is missing');
 });
 
+await test('a provider counter that FELL is a broken instrument, not a warm window', () => {
+  // THE DEFECT THIS CLOSES. The branch was `> 0` and an else, so a NEGATIVE delta — the endpoint restarted
+  // or its counters were reset between the two readings — landed in the WARM arm and was then decided
+  // entirely by the daemon's cache evidence. That evidence can be perfectly healthy while the provider side
+  // of the window describes nothing, so a reset endpoint would have been reported as "served from cache".
+  const run = runTrafficWindow({
+    provider: { before: { rangeRequests: 59, bytesServed: 43_819_536 },
+      after: { rangeRequests: 4, bytesServed: 900_000 } },
+    // Cache evidence that would otherwise carry a warm verdict, to prove the negative delta is what decides.
+    daemon: {
+      before: { playback: { hits: 12, hitBytes: 40_000, misses: 30, totalBytes: 8_594_275 } },
+      after: { playback: { hits: 940, hitBytes: 25_000_000, misses: 30, totalBytes: 8_594_275 } },
+    },
+  });
+  assertEq(run.reportStatus, 1, 'a window with no interval fails the report');
+  assertEq(verdictOf(run.results, '-provider-counters-coherent'), 'fail', 'and says the counter fell');
+  // THE WARM ARM IS REACHED ON EXACTLY ZERO AND NOTHING ELSE, so none of its records may be emitted here.
+  for (const suffix of ['-range-requests-warm-capable', '-warm-daemon-cache-hits',
+    '-warm-daemon-cache-hit-bytes', '-warm-daemon-counters-coherent']) {
+    assertEq(verdictOf(run.results, suffix), undefined,
+      `a negative delta must not reach the warm arm, but emitted ${suffix}`);
+  }
+  assertEq(verdictOf(run.results, '-range-requests-floor'), undefined, 'nor the cold floor');
+});
+
+await test('the daemon evidence interval is CONTAINED INSIDE the provider window, not overlapping it', () => {
+  // Straggling work between the two closing snapshots must be able to make a window look COLDER and never
+  // warmer. That requires the daemon snapshot to close FIRST at the end — and, at the start, to open LAST.
+  // Reversed, a late read would add cache hits the provider delta never saw: an inflated warm claim built
+  // out of activity the provider window excludes.
+  const gate = read('deploy/projection-plex-dataplane-gate.sh');
+  const at = (needle: string): number => {
+    const index = gate.indexOf(needle);
+    assert(index >= 0, `the gate contains ${needle}`);
+    return index;
+  };
+  for (const window of ['seeks', 'play', 'soak']) {
+    const providerBefore = at(`--out "$REL/out/counters-before-${window}.json"`);
+    const daemonBefore = at(`daemon_counters "$WORK/out/daemon-before-${window}.json"`);
+    const daemonAfter = at(`daemon_counters "$WORK/out/daemon-after-${window}.json"`);
+    const providerAfter = at(`--out "$REL/out/counters-after-${window}.json"`);
+    assert(providerBefore < daemonBefore,
+      `${window}: the daemon's interval must OPEN after the provider's, so it starts inside it`);
+    assert(daemonAfter < providerAfter,
+      `${window}: the daemon's interval must CLOSE before the provider's, so it ends inside it`);
+    assert(daemonBefore < daemonAfter, `${window}: and the daemon's own pair is in order`);
+  }
+});
+
 await test('the gate hands the daemon window to all three playback traffic phases', () => {
   const gate = read('deploy/projection-plex-dataplane-gate.sh');
   // THE DEFECT THIS CLOSES IS THE ONE PX14 TAUGHT: an assertion that is correct and never reached. The CLI

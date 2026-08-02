@@ -1231,6 +1231,23 @@ async function main(): Promise<void> {
         record(args, atLeast(`${gate}-range-requests-floor`, providerRequests,
           optionalNumber(args, 'min-range-requests', 1),
           'a window in which the provider was never reached means the bytes came from somewhere else'));
+      } else if (providerRequests < 0) {
+        // A PROVIDER COUNTER THAT FELL IS A BROKEN INSTRUMENT, NOT A WARM WINDOW.
+        //
+        // THE DEFECT THIS CLOSES. The branch was `> 0` and an else, so a NEGATIVE delta — the endpoint
+        // restarted, or its counters were reset, between the two readings — landed in the warm arm and was
+        // then decided entirely by the daemon's cache evidence. That evidence can be perfectly healthy while
+        // the provider side of the window describes nothing at all, so a reset endpoint would have been
+        // reported as "served from cache". "Fewer requests than we started with" is not proof that nothing
+        // was fetched; it is proof that this window has no interval, which also makes every ceiling above it
+        // meaningless. The warm arm is now reached on EXACTLY zero and nothing else.
+        record(args, {
+          gate: `${gate}-provider-counters-coherent`, verdict: 'fail',
+          measured: providerRequests, budget: 0,
+          note: 'the provider\'s request counter FELL across this window, which happens only when the '
+            + 'endpoint restarted or its counters were reset between the two readings. The window describes '
+            + 'no interval, so neither a ceiling nor a warm-cache claim can be made about it',
+        });
       } else {
         const warm = readWarmCacheEvidence(args);
         record(args, {

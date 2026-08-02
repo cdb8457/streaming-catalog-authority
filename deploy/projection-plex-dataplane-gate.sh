@@ -819,6 +819,18 @@ start_daemon() {
 #
 # IT IS NOT THE DIAGNOSTIC. `/readyz` carries cumulative counters and is always on; the per-event cache
 # diagnostic stays off, and its route is not even registered unless an operator enables it.
+#
+# THE TWO SNAPSHOT ORDERS ARE DELIBERATELY ASYMMETRIC, AND THAT ASYMMETRY IS THE POINT.
+#
+#   at the START:  provider first, THEN daemon
+#   at the END:    daemon first,   THEN provider
+#
+# So the daemon's evidence interval is CONTAINED INSIDE the provider's rather than overlapping it. Any read
+# that lands between the two closing snapshots then counts on the PROVIDER side only, where it can push the
+# request delta above zero and take the window out of the warm arm altogether. Reverse the closing order and
+# the containment reverses with it: a late read would add cache hits the provider delta never saw, which is
+# an inflated warm claim built out of activity the provider window excludes. The conservative direction is
+# the one where straggling work can only make the window look COLDER, never warmer than it was.
 DAEMON_STATUS_PORT=9099
 daemon_counters() {
   docker run --rm --network "container:$MOUNT_CONTAINER" "$VERIFY_IMAGE" \
@@ -1272,8 +1284,8 @@ daemon_counters "$WORK/out/daemon-before-seeks.json"
 drive media-seeks --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
   --duration-seconds "$SOAK_DURATION_INT" --segment-dir "$REL/out/seek-segments" \
   --out "$REL/out/seeks.json"
-drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-seeks.json"
 daemon_counters "$WORK/out/daemon-after-seeks.json"
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-seeks.json"
 
 # EVERY SEEK'S SEGMENT DECODED, BY A DECODER THAT IS NOT PLEX, OUTSIDE THE PROCESS THAT FETCHED IT. The
 # fourth field is the decoded picture's own START TIMESTAMP, and it is the temporal evidence: it must move
@@ -1322,8 +1334,8 @@ drive paced-play --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "
   --container-name "$PLAY_CONTAINER" --work-dir "$WORK" \
   --stream-base "http://${PLEX_IP}:32400" --output-rel "out/paced-play.mp4" \
   --trace "$REL/out/paced-play-trace.json" --seconds 300
-drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-play.json"
 daemon_counters "$WORK/out/daemon-after-play.json"
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-play.json"
 
 # THE CONSUMER'S OWN OUTPUT, DECODED. Five minutes of progress records is evidence that a decoder was
 # running; five minutes of decodable video in the file it wrote is evidence that what it was decoding was
@@ -1365,8 +1377,8 @@ drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/c
 daemon_counters "$WORK/out/daemon-before-soak.json"
 drive transcode-soak --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
   --segment-dir "$REL/out/soak-segments" --out "$REL/out/soak.json" --seconds 300
-drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-soak.json"
 daemon_counters "$WORK/out/daemon-after-soak.json"
+drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-soak.json"
 
 cat > "$WORK/out/probe-soak.sh" <<'PROBESOAK'
 set -eu
