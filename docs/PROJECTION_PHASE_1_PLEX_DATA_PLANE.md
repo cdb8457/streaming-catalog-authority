@@ -849,8 +849,9 @@ container now names the server by address, and the gate refuses to continue with
   is asserted where an actual-byte measurement has margin: a fixture above 94 MiB, held to the same 0.5
   fraction Jellyfin is held to — on which the envelope is the tighter bound, so 0.5 is the headline and not
   what binds — and
-  **that assertion has never been observed to hold, because no run of this gate has passed**. See §3.4.
-  Jellyfin remains the only server on which the argument is demonstrated.
+  that assertion **has now been observed to hold, on Docker Desktop only**: 0.109 of the 105,406,871-byte
+  object in gate11 and in each of gate12–14. See §3.4 and §7. What is still not proved is the argument on a
+  host that closes anything — the measurement is real and the environment does not close G7–G13.
 - **A graceful daemon restart under a long-running media server**, on Linux or Unraid. See §3.8.
 - **Anything air-gapped beyond four requests.** What was measured with no route to the internet (§3.0) is
   `GET /`, `GET /library/sections`, `GET /:/prefs` and `POST /library/sections`. **Scanning, direct play,
@@ -863,23 +864,64 @@ A Windows or Docker Desktop green run is not a Phase 1 pass and is not reported 
 
 ## 7. The run record
 
-**Status: the gate is written and has NOT yet been observed to pass. Nothing in §3 is evidence yet.**
+**Status: the gate has passed, four times, on Windows / Docker Desktop only. That closes none of G7–G13.**
 
 This section is deliberately the only place in this document that says how many times anything has happened,
 and it is deliberately separate from the description of what the gate asserts. A document that describes a
 gate's assertions reads, at a glance, exactly like a document that reports them holding — and this repository
-has three hundred phases of the second kind written before the first. Until a row appears below with a real
-count and a real date, `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 records Plex as **not run** and this
-document claims nothing.
+has three hundred phases of the second kind written before the first. `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`
+§6.1 now records Plex as **run on Docker Desktop** on the strength of the rows below, and on nothing else:
+what those rows close is stated at the end of this section, and it is not the tranche.
 
-| Runs | Environment | Command | Outcome |
+| Run | Environment | Command | Outcome |
 |---|---|---|---|
-| 1 | Windows / Docker Desktop, commit `ed2aeee` | `npm run go:plex-dataplane-gate` | **FAILED**, exit 1: 307 assertions, 304 passed, 3 failed, 0 skipped |
-| 2 | Windows / Docker Desktop, commit `2e97cf0` | `npm run go:plex-dataplane-gate` | **FAILED**, exit 1: 344 assertions, 343 passed, 1 failed, 0 skipped |
+| gate6 | Windows / Docker Desktop, commit `ed2aeee` | `npm run go:plex-dataplane-gate` | **FAILED**, exit 1: 307 assertions, 304 passed, 3 failed, 0 skipped |
+| gate7 | Windows / Docker Desktop, commit `2e97cf0` | `npm run go:plex-dataplane-gate` | **FAILED**, exit 1: 344 assertions, 343 passed, 1 failed, 0 skipped |
+| gate10 | Windows / Docker Desktop, commit `7c394f6` | `npm run go:plex-dataplane-gate` | **FAILED**, exit 1: 372 assertions, 369 passed, 3 failed, 0 skipped |
+| gate11 | Windows / Docker Desktop, commit `d94fff2` | `npm run go:plex-dataplane-gate` | **PASSED**, exit 0: 381 assertions, 0 failed, 0 skipped |
+| gate12–14 | Windows / Docker Desktop, commit `d94fff2` | `npm run go:plex-dataplane-gate:three` | **PASSED**, exit 0: three fresh consecutive runs, each 381 assertions, 0 failed, 0 skipped |
 
-**Neither run has passed, and every failure so far has been a defect in this gate's own budgets rather than
-in the data plane.** That is not a reassurance — a budget that fails on correct behaviour is a defect of the
-same seriousness — but it is what the evidence says.
+**THIS TABLE IS NOT A COMPLETE INDEX, AND SAYING SO IS THE POINT OF HAVING IT.** The first two rows were
+written before the `gateN` labels this document's prose uses, and they are gate6 and gate7. **gate8 and gate9
+are missing.** Both happened: gate8 repeated all five gate7 windows and is what retired the per-open scan
+ceiling (§3.4.2), and gate9 is the run whose measurement the cache diagnostic was built to explain — one
+8,594,275-byte object served 38,561,281 bytes in a single scan. Neither was ever given a row here, and their
+assertion totals are not recorded anywhere this document can cite, so no row is invented for them. A run
+record that quietly renumbered around its own gaps would be worth less than one that admits them.
+
+**Every failing run failed on this gate's own assertions rather than on the data plane, and gate10 is the one
+worth reading.** Its three failures were `PX18`, `PX19` and `PX20`'s provider-request floors, each measuring 0
+against a floor of 1 — and the cause was a repair to the daemon, not a fault in it. A handle release had been
+deleting the playback cache; once it stopped, an object that fits in memory is served from memory on every
+later open, and three windows of real playback reached the provider zero times while independent decoders
+proved 300 s of playable output, ten distinct seek positions and 332 s of transcoded output. The floors
+encoded an inference — *never reached the provider means the bytes came from somewhere else* — that the repair
+had made false. They were not dropped: a zero-provider playback window now has to prove the daemon served it,
+from the daemon's own cumulative playback-cache counters over the same window. See §3.5.1.
+
+**gate12–14 are the wrapper's own three, and gate11 is not counted toward them.** Each of the three started from
+an empty database, manifest directory, media-server configuration and mount, and the wrapper stops at the
+first failure rather than averaging.
+
+**What the passing runs measured at the provider, and what the daemon accounted for.** All nine playback
+windows across gate12–14 reached the provider **zero** times and were carried by daemon
+cache evidence, with every counter delta coherent — no cumulative counter fell, so no window straddled the
+daemon restart the gate performs elsewhere in the same sequence:
+
+| Window | gate12 | gate13 | gate14 |
+|---|---|---|---|
+| `PX18` paced play | 0 requests; 118 hits / 321,464,283 B | 0; 119 / 324,188,556 | 0; 118 / 321,464,283 |
+| `PX19` ten seeks | 0 requests; 771 hits / 2,100,414,869 B | 0; 761 / 2,073,172,136 | 0; 779 / 2,122,209,059 |
+| `PX20` transcode soak | 0 requests; 284 hits / 773,693,706 B | 0; 282 / 768,245,159 | 0; 282 / 768,245,159 |
+
+`PX18` and `PX20` barely move between runs, which a deterministic paced consumer should not; `PX19` ranges
+761–779 hits, because a seek restarts Plex's encoder and each restart reads slightly differently. The
+assertions are stable across that spread because they check coherence and non-zero rather than a fitted
+number — a threshold tuned to one run would have been chasing that variance.
+
+**Two failure paths added for those windows were never exercised here, and this record does not claim
+otherwise.** No window saw a falling provider counter and none straddled a daemon restart, so the refusals for
+both are carried by mutation-tested unit assertions, not by these runs.
 
 **gate6's three** were the large-object scan's range-request and byte ceilings, calibrated on fixtures too
 small to constrain them (§3.4.1), and a floor applied to a window that can legitimately be warm (§3.4).
@@ -913,3 +955,23 @@ which §5 says closes none of G7–G13**:
 | Warm re-scan | 0 ranged requests, 0 bytes — and in gate7 the **zero-byte assertion actually ran** |
 | Restart re-scan | gate7: 0 requests and 0 bytes, served entirely from the daemon's persistent probe cache |
 | Whole run at the provider | 0 × 429, 0 full-body answers to a ranged request, peak 2 connections |
+
+And what the PASSING runs measured, which is what §3 now rests on — still **Docker Desktop only**:
+
+| | measured in gate11 |
+|---|---|
+| Large-object scan byte fraction | **0.109** of a 105,406,871-byte object, against the 0.5 the Jellyfin gate is held to; the class envelope remains the tighter of the two bounds |
+| Large-object scan shape | 2 full blocks + 3 probe windows = 5 requests, 11,534,336 bytes |
+| Corpus scan shape | 0 full blocks + 3 clipped + 41 probe windows = 44 requests, 12,854,221 bytes over 40 remote entries |
+| Paced direct play | startup 1.34 s, wall 301 s, decoded media 300 s, pacing ratio 0.999, longest stall 0 s |
+| Ten seeks | slowest 0.33 s against a 10 s ceiling, 10 distinct segments |
+| Transcode soak | 39 distinct segments, 312 decoded seconds, 304 s wall span |
+| Playback windows at the provider | `PX18`, `PX19`, `PX20`: **0 ranged requests each**, every byte served from the daemon's playback cache |
+| Whole run at the provider | 0 × 429, 0 full-body answers to a ranged request, peak 2 connections |
+
+**What these rows close, said exactly.** Four green runs on **Windows / Docker Desktop**, three of them
+consecutive and fresh. §5 says that closes **none** of G7–G13, and this record does not upgrade it: a green
+run here is not a Phase 1 pass and **SHALL NOT be reported as one**. The tranche closes on a Linux or Unraid
+host, **three consecutive times**, on **all three** media servers — and **Emby has still never been run at
+all**, so one of the three is untouched no matter how many times these three pass. Everything in §6 remains
+open, including the middle-gap observation gate10 surfaced and these runs neither explain nor disturb.
