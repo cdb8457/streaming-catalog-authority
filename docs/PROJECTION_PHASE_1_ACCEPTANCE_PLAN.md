@@ -132,6 +132,16 @@ the same and only the second is evidence.
 run of it so far has been on **Windows / Docker Desktop**, which §6 says closes none of G7–G13. The tranche
 still closes on Linux or Unraid, three consecutive times, and on **all three** media servers.
 
+**A second gate exists and the Plex column is still `not run`.**
+`deploy/projection-plex-dataplane-gate.sh` — `npm run go:plex-dataplane-gate` — drives a real,
+digest-pinned, **unclaimed** Plex Media Server over the same production mount, and
+`docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md` describes what it asserts. **A gate existing is not a gate
+passing**, the Plex column above says `not run` for exactly that reason, and it changes only when that
+document's run record (§7 of it) carries a real count. The same document records the one thing the gate
+cannot make offline: an unclaimed Plex answers **401** to its own local API when it cannot reach plex.tv, so
+the media server container has egress, which is a property of that image and is written down rather than
+worked around.
+
 ### 6.2 What the five-minute gates prove, and the one thing G10 does not
 
 **G8 and G9 are proved as written.** A five-minute play is a real decoder consuming the stream at the media's

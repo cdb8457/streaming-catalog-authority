@@ -631,6 +631,10 @@ const FORBIDDEN_IN_REPORT: ReadonlyArray<readonly [RegExp, string]> = Object.fre
   [/\bBearer\s/i, 'a bearer credential'],
   [/\bMediaBrowser\s+Client=/i, 'a media-server authorization header'],
   [/\bToken="/i, 'a token'],
+  // Plex's own credential parameter and header spelling. It is here rather than in `plex-dataplane.ts`
+  // because this list is what every report in this family is checked against, and a redaction rule that
+  // only covered the server whose gate happened to be running would be a rule with a hole in it.
+  [/\bX-Plex-Token\b/i, 'a Plex token'],
   [/(^|[^A-Za-z0-9])\/(mnt|media|var|etc|home|root|tmp)\//, 'an absolute filesystem path'],
   [/[A-Za-z]:\\\\?[A-Za-z0-9_.-]/, 'a Windows filesystem path'],
   [/\b\d{1,3}(\.\d{1,3}){3}\b/, 'an IP address'],
