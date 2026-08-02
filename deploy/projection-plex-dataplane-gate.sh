@@ -137,8 +137,17 @@ field()    { node "$REL/jq.cjs" "$1"; }
 publish()  { npx tsx src/ops/projection-publish-cli.ts --manifest-dir "$REL/manifest" "$@"; }
 register() { npx tsx src/ops/projection-register-cli.ts "$@"; }
 drive()    { npx tsx src/ops/projection-plex-dataplane-cli.ts "$@" --results "$REL/out/results.json"; }
-ffmpeg_run()  { docker run --rm --entrypoint "$DECODER_FFMPEG"  -v "$WORK:/work" "$DECODER_IMAGE" "$@"; }
-ffprobe_run() { docker run --rm --entrypoint "$DECODER_FFPROBE" -v "$WORK:/work" "$DECODER_IMAGE" "$@"; }
+# `--no-healthcheck` ON EVERY DECODER CONTAINER, AND IT IS ABOUT TRUTHFUL SUPERVISION.
+#
+# The decoder image is a media server's image, borrowed here for its ffmpeg. Its own `HEALTHCHECK` probes
+# that server on localhost:8096, which is not running in these containers because the entrypoint is ffmpeg.
+# So a container doing exactly what it was asked to do reports `unhealthy` for its whole life. A five-minute
+# paced play showed red in `docker ps` throughout a successful run. Nothing failed, and that is the problem:
+# a status that is always wrong spends the signal, and the next genuinely unhealthy container inherits an
+# operator who has learned to ignore it.
+DECODER_RUN_FLAGS=(--rm --no-healthcheck)
+ffmpeg_run()  { docker run "${DECODER_RUN_FLAGS[@]}" --entrypoint "$DECODER_FFMPEG"  -v "$WORK:/work" "$DECODER_IMAGE" "$@"; }
+ffprobe_run() { docker run "${DECODER_RUN_FLAGS[@]}" --entrypoint "$DECODER_FFPROBE" -v "$WORK:/work" "$DECODER_IMAGE" "$@"; }
 
 mkdir -p "$WORK/manifest" "$WORK/media" "$WORK/remote" "$WORK/cache" "$WORK/mnt" "$WORK/out" \
          "$WORK/plex-config" "$WORK/plex-transcode"
@@ -529,7 +538,7 @@ while [ "$i" -le "$total" ]; do
 done
 echo "  generated ${total} corpus files"
 GENCORPUS
-docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$DECODER_IMAGE" \
+docker run "${DECODER_RUN_FLAGS[@]}" --entrypoint /bin/sh -v "$WORK:/work" "$DECODER_IMAGE" \
   /work/out/gen-corpus.sh "$CORPUS_COUNT" "$CORPUS_LOCAL" "$DECODER_FFMPEG"
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1101,7 +1110,7 @@ for file in /work/out/seek-segments/seek-*.ts; do
   echo "${index#0}|${codec}|${packets:-0}|${start:-0}" >> /work/out/seek-probes.txt
 done
 PROBESEEKS
-docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$DECODER_IMAGE" \
+docker run "${DECODER_RUN_FLAGS[@]}" --entrypoint /bin/sh -v "$WORK:/work" "$DECODER_IMAGE" \
   /work/out/probe-seeks.sh "$DECODER_FFPROBE"
 node "$REL/seekprobes.cjs" "$REL/out/seek-probes.txt" "$REL/out/seek-probes.json" >/dev/null
 drive seek-verify --key "$SOAK_FILE" --seeks "$REL/out/seeks.json" --probes "$REL/out/seek-probes.json"
@@ -1186,7 +1195,7 @@ for file in /work/out/soak-segments/seg-*.ts; do
   echo "${index:-0}|${codec}|${packets:-0}|${seconds:-0}" >> /work/out/soak-probes.txt
 done
 PROBESOAK
-docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$DECODER_IMAGE" \
+docker run "${DECODER_RUN_FLAGS[@]}" --entrypoint /bin/sh -v "$WORK:/work" "$DECODER_IMAGE" \
   /work/out/probe-soak.sh "$DECODER_FFPROBE"
 node "$REL/probes.cjs" "$REL/out/soak-probes.txt" "$REL/out/soak-probes.json" >/dev/null
 drive transcode-soak-verify --key "$SOAK_FILE" --items "$REL/out/items-corpus-2.json" \
@@ -1338,9 +1347,14 @@ drive bootstrap --base "$PLEX_BASE" --state "$STATE" --name "Projection Movies"
 # zero-refetch claim would have been the strongest-sounding half of a two-part measurement with the
 # expensive half unmeasured.
 #
-# IT IS BUDGETED AS A COLD SCAN, because from the daemon's side it is one: a restarted media server
-# re-analyses its items, and the reads that fall outside the contract's three persistent probe windows have
-# to be served again. What the budget refuses is a restart costing MORE than a first scan.
+# ITS CEILING IS A COLD SCAN'S AND IT HAS NO FLOOR, because this window can legitimately be either.
+#
+# A LATER RUN MEASURED THE SAME WINDOW AT ZERO. The daemon's persistent probe cache served everything the
+# restarted Plex re-read, which is what that cache is for. So both outcomes are correct: a restart may
+# re-analyse and pay a cold scan's cost, or it may be served entirely from cache and pay nothing. A floor
+# here would fail the good outcome -- and would contradict PX14, which asserts zero for a warm re-scan --
+# so `--warm-capable true` drops the floors for this window and keeps every ceiling. What is still refused
+# is a restart costing MORE than a first scan, and the churn and library assertions are untouched.
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-restart-scan.json"
 drive scan --state "$STATE" --expect-file "$REL/out/expected-2.json" \
   --out "$REL/out/items-4.json" --label scan4
@@ -1349,7 +1363,7 @@ drive compare --before "$REL/out/items-3.json" --after "$REL/out/items-4.json" -
 drive budget --before "$REL/out/counters-before-restart-scan.json" \
   --after "$REL/out/counters-after-restart-scan.json" \
   --gate PX12b-restart-scan --entries "$(( CORPUS_REMOTE_ENTRIES + 3 ))" \
-  --object-sizes "$CORPUS_SIZE_LIST"
+  --object-sizes "$CORPUS_SIZE_LIST" --warm-capable true
 
 # A RE-SCAN OVER AN UNCHANGED GENERATION MUST COST THE PROVIDER NOTHING IT HAS NOT ALREADY PAID. The window
 # is drawn tightly around the re-scan alone, because everything else in this run — a full direct play, a

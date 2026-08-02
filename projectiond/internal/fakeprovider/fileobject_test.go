@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -393,4 +394,111 @@ func itoa(v int64) string {
 		v /= 10
 	}
 	return digits
+}
+
+// TestRequestShapeBucketsClassifyEverySizeExactlyOnce drives the three request-shape buckets over the sizes
+// that actually occur, and holds them to the one property that makes them trustworthy: they partition.
+//
+// WHY THIS TELEMETRY EXISTS. A gate measured 32,505,856 bytes over 10 ranged requests for one object and
+// could say nothing about the mix — 7.75 demand blocks is not a whole number of anything. Without the shape,
+// the only way to turn that total into a budget is to pick a multiplier that clears it, which records the
+// observation instead of constraining it.
+func TestRequestShapeBucketsClassifyEverySizeExactlyOnce(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-shape", 32*1024*1024)
+
+	get := func(from, to int64) {
+		request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-shape", nil)
+		request.Header.Set("Range", byteRange(from, to))
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("ranged get: %v", err)
+		}
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}
+
+	// One exact demand block, one exact probe window, one sub-window read, and one that is neither.
+	get(0, 4*1024*1024-1)
+	get(8*1024*1024, 8*1024*1024+1024*1024-1)
+	get(20*1024*1024, 20*1024*1024+4095)
+	get(24*1024*1024, 24*1024*1024+2*1024*1024-1)
+
+	snapshot := server.Snapshot()
+	if snapshot.ChunkResponses != 1 || snapshot.ChunkBytes != 4*1024*1024 {
+		t.Fatalf("chunk bucket: got %d responses / %d bytes, want 1 / %d",
+			snapshot.ChunkResponses, snapshot.ChunkBytes, 4*1024*1024)
+	}
+	// The exact probe window and the 4 KiB read are both "small": at or under one window.
+	if snapshot.SmallResponses != 2 || snapshot.SmallBytes != 1024*1024+4096 {
+		t.Fatalf("small bucket: got %d responses / %d bytes, want 2 / %d",
+			snapshot.SmallResponses, snapshot.SmallBytes, 1024*1024+4096)
+	}
+	if snapshot.OtherResponses != 1 || snapshot.OtherBytes != 2*1024*1024 {
+		t.Fatalf("other bucket: got %d responses / %d bytes, want 1 / %d",
+			snapshot.OtherResponses, snapshot.OtherBytes, 2*1024*1024)
+	}
+	// THE PARTITION PROPERTY, which is what makes the buckets usable as evidence: every served byte is in
+	// exactly one bucket, so a decomposition that does not add up says a response escaped classification
+	// rather than that the reader misread it.
+	if sum := snapshot.ChunkBytes + snapshot.SmallBytes + snapshot.OtherBytes; sum != snapshot.BytesServed {
+		t.Fatalf("the buckets do not partition: %d + %d + %d = %d, but %d bytes were served",
+			snapshot.ChunkBytes, snapshot.SmallBytes, snapshot.OtherBytes, sum, snapshot.BytesServed)
+	}
+	if count := snapshot.ChunkResponses + snapshot.SmallResponses + snapshot.OtherResponses; count != 4 {
+		t.Fatalf("four responses were served but %d were classified", count)
+	}
+}
+
+// TestRequestShapeCountersCarryNothingIdentifying is a redaction assertion over a telemetry surface.
+//
+// The gates print provider counters into their logs. A shape counter that had grown a per-request record —
+// an offset, a reference, a lease — would put exactly the material this product promises never to persist
+// into the one place nobody thinks to check. The wire shape is asserted to be flat integers and nothing else.
+func TestRequestShapeCountersCarryNothingIdentifying(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-secret-reference", 4096)
+
+	request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-secret-reference", nil)
+	request.Header.Set("Range", byteRange(0, 4095))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("ranged get: %v", err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+
+	resp, err := http.Get(server.BaseURL() + "/counters")
+	if err != nil {
+		t.Fatalf("counters: %v", err)
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatalf("read counters: %v", err)
+	}
+	text := string(body)
+	for _, forbidden := range []string{"obj-secret-reference", "Range", "bytes=", "http://", "offset"} {
+		if strings.Contains(text, forbidden) {
+			t.Fatalf("the counters payload contains %q: %s", forbidden, text)
+		}
+	}
+	// Every value is a number. A string anywhere in here would be something that came from a request.
+	var generic map[string]any
+	if err := json.Unmarshal(body, &generic); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for key, value := range generic {
+		if _, ok := value.(float64); !ok {
+			t.Fatalf("counter %q is not a number: %#v", key, value)
+		}
+	}
 }

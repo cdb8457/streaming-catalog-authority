@@ -938,6 +938,15 @@ export async function pacedDirectPlay(opts: PacedPlayOptions): Promise<PacedPlay
     '--network', opts.network,
     '--user', '1000:1000',
     '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    // THE IMAGE'S OWN HEALTHCHECK IS DISABLED, AND SUPERVISION IS THE REASON.
+    //
+    // The decoder image is a media server's image, used here only for its ffmpeg. Its `HEALTHCHECK` probes
+    // that server on localhost:8096 — which is not running in this container, because the entrypoint is
+    // ffmpeg. So a five-minute direct play that was working perfectly reported `unhealthy` for its entire
+    // duration in `docker ps`. Nothing failed, and that is the problem: an operator or a supervisor watching
+    // this run is shown a red status that means nothing, and the next time a container is genuinely
+    // unhealthy the signal has already been spent. A status that is always wrong is worse than no status.
+    '--no-healthcheck',
     '-v', `${opts.workDir}:/work`,
     '--entrypoint', opts.ffmpegPath,
     opts.image,

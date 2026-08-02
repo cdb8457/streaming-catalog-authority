@@ -488,15 +488,18 @@ async function main(): Promise<void> {
       record(args, withinBudget(`${gate}-resolutions`, delta('resolutions'),
         Math.ceil(entries * MEDIA_SERVER_BUDGETS.MAX_SCAN_RESOLUTION_MULTIPLIER),
         `denominator: ${entries} remote entries`));
-      // WHAT A PLEX SCAN MAY COST, DERIVED FROM BLOCK GEOMETRY RATHER THAN FROM A MULTIPLE OF THE FIXTURE.
+      // WHAT A PLEX SCAN MAY COST, AS A CEILING DERIVED FROM BLOCK GEOMETRY RATHER THAN A MULTIPLE OF THE
+      // FIXTURE.
       //
-      // The daemon serves a 4 MiB demand block for a one-byte read; Plex opens each new item twice and
-      // touches about three blocks per open. So scanning ONE object costs up to `2 x 3 x 4 MiB`, clamped by
-      // the object — a FIXED window, independent of size. On fixtures smaller than that window "reads a
-      // fraction of the object" is not a property a correct implementation can have, and the earlier
-      // attempt to express this as a >1.0 multiplier was recording the observation rather than budgeting it.
-      // The product's fraction claim is asserted separately, against an object several times larger than
-      // the window: `--large-bytes`. See `plexScanByteCeiling` and `PLEX_LARGE_FIXTURE`.
+      // The daemon serves a 4 MiB demand block for a one-byte read; Plex opens each new item twice. So the
+      // CEILING on scanning one object is `opens x min(blocks x chunk, size)`, which saturates once the
+      // object is large and clamps to a multiple of the object when it is small. On a small fixture that
+      // ceiling already permits a whole-object read, so satisfying it proves nothing about the fraction —
+      // a limit of the instrument, not a lower bound, and not a claim that a below-one read is impossible
+      // there. The earlier attempt to express this as a >1.0 multiplier recorded the observation instead of
+      // constraining it. The product's fraction claim is asserted separately, against an object several
+      // times larger than the saturation point: `--large-bytes`. See `plexScanByteCeiling` and
+      // `PLEX_LARGE_FIXTURE`.
       // EVERY BYTE TERM COMES FROM `--object-sizes`, ONE OBJECT AT A TIME. `--bytes` and `--small-bytes`
       // survive only for the range/resolution denominators above; nothing about the byte budget is derived
       // from a pooled total any more, because a pooled total is what let one large object pay for
@@ -521,16 +524,59 @@ async function main(): Promise<void> {
         // The least a scanner that really looked at an object could have cost is one probe window, or the
         // whole object when the object is smaller than a window. Summing THAT per object gives a floor no
         // single entry can cover for another.
-        const floorBytes = sizes.reduce(
-          (total, size) => total + Math.min(size, PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES), 0,
-        );
-        record(args, atLeast(`${gate}-provider-bytes-floor`, delta('bytesServed'), floorBytes,
-          'one probe window per object, or the object itself when it is smaller than a window; a scan that '
-          + 'read less than that did not open the entries'));
+        //
+        // ...EXCEPT ON A WINDOW THAT MAY LEGITIMATELY BE WARM, WHICH `--warm-capable` NAMES.
+        //
+        // THE DEFECT THIS CLOSES. The scan after a media-server restart was given this floor, and a real run
+        // then measured it at ZERO provider bytes — because the daemon's persistent probe cache served
+        // everything Plex re-read, which is the behaviour the cache exists for. The floor turned the desired
+        // outcome into a failure, and it contradicted `PX14`, which asserts zero for the same situation.
+        // An earlier run of the same window had measured +37,924,876 bytes, so BOTH outcomes are valid and
+        // no floor can be right for it.
+        //
+        // The ceilings stay: a warm-capable window may cost nothing, and it may not cost more than a cold
+        // one. Only the floors are dropped, only where the flag says so, and never on a scan that is
+        // expected to reach the provider.
+        if (args.flags.get('warm-capable') === 'true') {
+          record(args, {
+            gate: `${gate}-provider-bytes-warm-capable`, verdict: 'pass',
+            measured: delta('bytesServed'), budget: plexScanByteCeiling(sizes),
+            note: 'no floor: this window may legitimately be served entirely from the daemon\'s persistent '
+              + 'probe cache. Zero is valid cache reuse; a cold-scan cost is also valid. The ceiling above '
+              + 'still applies.',
+          });
+        } else {
+          const floorBytes = sizes.reduce(
+            (total, size) => total + Math.min(size, PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES), 0,
+          );
+          record(args, atLeast(`${gate}-provider-bytes-floor`, delta('bytesServed'), floorBytes,
+            'one probe window per object, or the object itself when it is smaller than a window; a scan '
+            + 'that read less than that did not open the entries'));
+        }
       }
       // THE PRODUCT'S OWN CLAIM, ASSERTED WHERE IT IS MEANINGFUL. Against an object several times larger
       // than the fixed scan window, a scanner that downloaded it to identify it sits at 1.0 and the daemon
       // must sit well under. This uses the SHARED fraction, not one of Plex's own.
+      // THE REQUEST SHAPE, RECORDED SO THE NEXT BUDGET CAN BE DERIVED INSTEAD OF GUESSED.
+      //
+      // A window that cost 32,505,856 bytes over 10 ranged requests cannot be turned into a budget: 7.75
+      // demand blocks is not a whole number of anything, so the total is some unknown mix of full 4 MiB
+      // blocks and smaller probe or tail reads. Decomposing it is the difference between a ceiling derived
+      // from geometry and a multiplier picked to clear an observation. These three buckets are cumulative
+      // counts and byte totals only — no offsets, no references, no ordering — and they sum to the bytes
+      // served, which is asserted so a response that escaped classification is visible rather than silent.
+      const shape = (key: string): number => delta(key);
+      const bucketed = shape('chunkBytes') + shape('smallBytes') + shape('otherBytes');
+      record(args, {
+        gate: `${gate}-request-shape`, verdict: 'pass',
+        note: `${shape('chunkResponses')} responses of exactly one 4 MiB demand block `
+          + `(${shape('chunkBytes')} bytes), ${shape('smallResponses')} of one probe window or less `
+          + `(${shape('smallBytes')} bytes), ${shape('otherResponses')} other (${shape('otherBytes')} bytes)`,
+      });
+      record(args, exactly(`${gate}-request-shape-accounts-for-every-byte`,
+        bucketed, delta('bytesServed'),
+        'the three buckets partition the bytes served; a shortfall means a response was not classified'));
+
       const largeBytes = optionalNumber(args, 'large-bytes', 0);
       if (largeBytes > 0) {
         record(args, withinBudget(`${gate}-large-object-byte-fraction`,

@@ -291,11 +291,41 @@ three demand blocks, plus one session-setup allowance. `1.2x the object per seek
 **What was untouched, and is the strongest amplification claim Plex supports:** a re-scan of an unchanged
 generation costs the provider **zero** ranged GETs and **zero** bytes.
 
-**And one that was not measured at all until review caught it:** the scan after a **media-server restart**
-re-fetched **+37,924,876 bytes over +14 ranged requests**, while the warm scan immediately after cost zero.
-The gate had a counter window around the warm scan and none around the restart scan — the strongest-sounding
-half of a two-part measurement with the expensive half unmeasured. It is budgeted now, as a cold scan, because
-from the daemon's side that is what it is.
+**And one that was not measured at all until review caught it: the scan after a media-server restart.** The
+gate had a counter window around the warm re-scan — which costs zero — and none around the restart scan, the
+strongest-sounding half of a two-part measurement with the expensive half unmeasured.
+
+Measured twice, it went both ways:
+
+| run | restart scan | warm scan immediately after |
+|---|---|---|
+| gate4 | **+37,924,876 bytes / +14 ranged requests** | 0 |
+| gate6 | **0 bytes / 0 ranged requests** | 0 |
+
+**Both are correct.** A restarted Plex may re-analyse its items and pay a cold scan's cost, or the daemon's
+persistent probe cache may serve everything it re-reads and it pays nothing. So the window keeps a cold
+scan's **ceiling** — a restart may not cost more than a first scan — and has **no floor**, because a floor
+would fail the good outcome and would contradict the warm re-scan gate that asserts zero for the same
+situation. `--warm-capable true` marks exactly that one window, and the offline suite asserts no other window
+carries it: dropping a floor where the provider genuinely must be reached would be a check that cannot fail.
+
+### 3.4.1 Why the next budget will be derived rather than chosen
+
+Gate6 measured the large-object scan at **32,505,856 bytes over 10 ranged requests** — 7.75 demand blocks,
+which is not a whole number of anything. A total that cannot be decomposed cannot become a budget: the only
+thing to do with it is pick a multiplier that clears it, which is how the rejected `MAX_SCAN_BYTE_MULTIPLIER`
+happened in the first place.
+
+So the fake endpoint now counts **request shape** in three flat buckets — responses of exactly one 4 MiB
+demand block, responses of one probe window or less, and everything else — as cumulative counts and byte
+totals. No offsets, no references, no ordering, no per-request records: there is nothing in them to redact
+because there is nothing in them to identify, and a Go test asserts the wire payload is integers only. They
+are asserted to **partition** the bytes served, so a response that escaped classification is visible rather
+than silent, and they are recorded on every budgeted window.
+
+The next short diagnostic run can then read the mix directly and derive `DEMAND_BLOCKS_PER_OPEN` and the
+range-request denominator from it. **Until that run happens, the two gate6 budget failures stand and no
+threshold has been widened.**
 
 **The byte budget has one denominator per object, and it is not the single-probe threshold.** An earlier
 version of this paragraph said that any object above the contract's 3 MiB single-probe threshold is
@@ -583,4 +613,24 @@ document claims nothing.
 
 | Runs | Environment | Command | Outcome |
 |---|---|---|---|
-| — | — | — | not yet run |
+| 1 | Windows / Docker Desktop, commit `ed2aeee` | `npm run go:plex-dataplane-gate` | **FAILED**, exit 1: 307 assertions, 304 passed, 3 failed, 0 skipped |
+
+**The one run so far failed, and the three failures were all defects in this gate's own budgets rather than
+in the data plane.** Two were the large-object scan's range-request and byte ceilings, whose constants had
+been calibrated on fixtures too small to constrain them (§3.4.1); one was a floor applied to a window that can
+legitimately be warm (§3.4). Nothing has been widened to make them pass.
+
+What that run did establish, and what §3's assertions therefore rest on for now — **one Docker Desktop run,
+which §5 says closes none of G7–G13**:
+
+| | measured |
+|---|---|
+| Large-object scan byte fraction | **0.308** of a 105,406,871-byte object (ceiling 0.5) |
+| Corpus identities | 50/50, then 51/51 with the large object |
+| Churn across repeat scan, successor, SIGKILL recovery, media-server restart, mid-scan swap | zero removed, added, duplicated, `ratingKey`-churned, `guid`-churned, metadata-drifted |
+| Paced direct play | startup 1.32 s, wall 301 s, decoded media 300 s, pacing ratio 0.999, longest stall 0 s |
+| Ten seeks | 215–327 ms each (ceiling 10 s), 10 distinct, 4 backward, 2 past 90 %, position error ≤ 6.8 s, decoded-offset spread 0.17 s |
+| Transcode soak | 39 distinct segments, 312 decoded seconds over a 304 s span, max adjacent gap 8.02 s, encoder present in every sample, 9 output advances, 232 s working span, 38 throttled samples |
+| Generation swap under one held-open body | 13,981,407 bytes, digest match, 10,442,463 arriving after the swap |
+| Warm re-scan | 0 ranged requests, 0 bytes |
+| Whole run at the provider | 0 × 429, 0 full-body answers to a ranged request, peak 2 connections |

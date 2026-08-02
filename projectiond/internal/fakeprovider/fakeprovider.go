@@ -81,6 +81,52 @@ type Counters struct {
 	CurrentConcurrent  atomic.Int64
 	PeakConns          atomic.Int64
 	CurrentConns       atomic.Int64
+
+	// REQUEST SHAPE, IN THREE BUCKETS AND NOTHING ELSE.
+	//
+	// WHY THIS EXISTS. A gate measured 32,505,856 bytes over 10 ranged requests for one object and could say
+	// nothing about the mix: 7.75 demand blocks is not a whole number of anything, so the total is some
+	// combination of full 4 MiB blocks and smaller probe or tail reads. A budget derived from a total that
+	// cannot be decomposed is a budget derived from a coincidence, and the honest response is to measure the
+	// shape rather than to pick a multiplier that clears the observation.
+	//
+	// WHY THREE FLAT BUCKETS AND NOT A LOG. Anything per-request is a record of what was read and when, and
+	// this endpoint serves media on behalf of a product whose whole argument is about not leaking access
+	// material. Cumulative counts and byte totals in fixed buckets answer "what mix of sizes was served"
+	// without retaining a single URL, header, lease, offset or ordering. There is nothing here to redact
+	// because there is nothing here to identify.
+	ChunkResponses atomic.Int64
+	ChunkBytes     atomic.Int64
+	SmallResponses atomic.Int64
+	SmallBytes     atomic.Int64
+	OtherResponses atomic.Int64
+	OtherBytes     atomic.Int64
+}
+
+// The bucket boundaries, and both are read off the daemon rather than chosen here.
+const (
+	// chunkResponseBytes is readpath.DefaultConfig().ChunkBytes: the daemon's demand block. A response of
+	// exactly this size is one full block.
+	chunkResponseBytes = 4 * 1024 * 1024
+	// smallResponseBytes is manifest.ProbeWindowBytes: one scan window. At or under this, a response is a
+	// probe-sized read rather than a demand block.
+	smallResponseBytes = 1024 * 1024
+)
+
+// recordShape files one served response into exactly one bucket. It is called wherever bytes are counted, so
+// the buckets always sum to BytesServed and a caller can check that they do.
+func (c *Counters) recordShape(n int64) {
+	switch {
+	case n == chunkResponseBytes:
+		c.ChunkResponses.Add(1)
+		c.ChunkBytes.Add(n)
+	case n <= smallResponseBytes:
+		c.SmallResponses.Add(1)
+		c.SmallBytes.Add(n)
+	default:
+		c.OtherResponses.Add(1)
+		c.OtherBytes.Add(n)
+	}
 }
 
 // Server is the fake endpoint.
@@ -387,6 +433,14 @@ type CountersSnapshot struct {
 	ExpiredRejected    int64 `json:"expiredRejected"`
 	PeakConcurrent     int64 `json:"peakConcurrent"`
 	PeakConns          int64 `json:"peakConns"`
+	// Request shape, in three flat buckets. See Counters. These sum to BytesServed, which is what lets a
+	// caller check that no served response escaped classification.
+	ChunkResponses int64 `json:"chunkResponses"`
+	ChunkBytes     int64 `json:"chunkBytes"`
+	SmallResponses int64 `json:"smallResponses"`
+	SmallBytes     int64 `json:"smallBytes"`
+	OtherResponses int64 `json:"otherResponses"`
+	OtherBytes     int64 `json:"otherBytes"`
 }
 
 // Snapshot reads every counter. It is not atomic across counters and does not need to be: each one is
@@ -404,6 +458,12 @@ func (s *Server) Snapshot() CountersSnapshot {
 		ExpiredRejected:    s.counters.ExpiredRejected.Load(),
 		PeakConcurrent:     s.counters.PeakConcurrent.Load(),
 		PeakConns:          s.counters.PeakConns.Load(),
+		ChunkResponses:     s.counters.ChunkResponses.Load(),
+		ChunkBytes:         s.counters.ChunkBytes.Load(),
+		SmallResponses:     s.counters.SmallResponses.Load(),
+		SmallBytes:         s.counters.SmallBytes.Load(),
+		OtherResponses:     s.counters.OtherResponses.Load(),
+		OtherBytes:         s.counters.OtherBytes.Load(),
 	}
 }
 
@@ -629,6 +689,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(full)
 		s.counters.BytesServed.Add(object.Size)
+		s.counters.recordShape(object.Size)
 		return
 	case FaultMalformedRange:
 		w.Header().Set("Content-Range", "octets "+strconv.FormatInt(start, 10))
@@ -647,6 +708,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(short)
 		s.counters.BytesServed.Add(int64(len(short)))
+		s.counters.recordShape(int64(len(short)))
 		return
 	case FaultDelayedClose:
 		// No Content-Length, so the response is chunked; the body is correct and complete, but the terminal
@@ -657,6 +719,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 			flusher.Flush()
 		}
 		s.counters.BytesServed.Add(int64(len(data)))
+		s.counters.recordShape(int64(len(data)))
 		time.Sleep(s.timeoutFor)
 		return
 	case FaultLongBody:
@@ -667,6 +730,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(long)
 		s.counters.BytesServed.Add(int64(len(long)))
+		s.counters.recordShape(int64(len(long)))
 		return
 	}
 
@@ -674,6 +738,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 	w.WriteHeader(http.StatusPartialContent)
 	_, _ = w.Write(data)
 	s.counters.BytesServed.Add(length)
+	s.counters.recordShape(length)
 }
 
 func parseRange(value string, size int64) (int64, int64, bool) {

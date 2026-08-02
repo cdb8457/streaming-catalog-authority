@@ -1459,6 +1459,74 @@ await test('the byte floor is per object, and cannot be cross-subsidised or defa
     'the restart-scan call names object sizes, so it gets a real floor');
 });
 
+await test('a WARM-CAPABLE window keeps its ceilings and loses only its floors', () => {
+  // THE DEFECT THIS CLOSES, AND IT WAS FOUND BY A REAL RUN. The scan after a media-server restart was given
+  // the per-object byte floor, and gate6 measured that window at ZERO provider bytes — because the daemon's
+  // persistent probe cache served everything Plex re-read, which is what the cache is for. The floor turned
+  // the desired outcome into a failure and contradicted PX14, which asserts zero for the same situation. An
+  // earlier run measured +37,924,876 bytes on the same window, so BOTH are valid and no floor fits.
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  assert(/args\.flags\.get\('warm-capable'\) === 'true'/.test(cli), 'the flag exists');
+  assert(/-provider-bytes-warm-capable/.test(cli), 'and records the window under its own name');
+  assert(GATE.includes('--gate PX12b-restart-scan') && GATE.includes('--warm-capable true'),
+    'the restart scan is the window that uses it');
+  // THE CEILINGS SURVIVE. A warm-capable window may cost nothing; it may not cost more than a cold scan.
+  const budgetBlock = cli.split("case 'budget':")[1]?.split("case 'traffic-window'")[0] ?? '';
+  const ceilingAt = budgetBlock.indexOf('-provider-bytes`');
+  const warmAt = budgetBlock.indexOf("warm-capable') === 'true'");
+  assert(ceilingAt > 0 && warmAt > ceilingAt,
+    'the byte ceiling is recorded before the warm-capable branch, so the flag cannot skip it');
+  assert(/-range-requests`/.test(budgetBlock), 'and the range-request ceiling is unconditional');
+  // AND NO OTHER WINDOW GETS IT. A floor dropped where the provider really must be reached would be a
+  // check that cannot fail.
+  // Counted over EXECUTABLE lines only: the comment above the call names the flag too, and a check that
+  // counted prose would fail the next time somebody explained the flag better.
+  const invocations = GATE.split('\n')
+    .filter((line) => !line.trimStart().startsWith('#'))
+    .filter((line) => line.includes('--warm-capable true'));
+  assertEq(invocations.length, 1, `exactly one window is warm-capable, found: ${invocations.join(' | ')}`);
+  assert(GATE.includes('--gate PX9-scan') && !/--gate PX9-scan[^\n]*--warm-capable/.test(GATE),
+    'the first cold scan keeps its floor');
+  assert(!/--gate PX9c-large-object-scan[^\n]*--warm-capable/.test(GATE),
+    'and so does the large-object scan, which is the one the fraction claim rests on');
+});
+
+await test('the request-shape diagnostic is wired in, and is asserted to account for every byte', () => {
+  // A window that cost 32,505,856 bytes over 10 ranged requests cannot be turned into a budget: 7.75 demand
+  // blocks is not a whole number of anything. The buckets let the next short diagnostic DERIVE the geometry
+  // instead of picking a multiplier that clears the observation.
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  for (const bucket of ['chunkResponses', 'chunkBytes', 'smallResponses', 'smallBytes',
+    'otherResponses', 'otherBytes']) {
+    assert(cli.includes(bucket), `the ${bucket} bucket is read from the counters`);
+  }
+  assert(/-request-shape-accounts-for-every-byte/.test(cli),
+    'and the partition is ASSERTED, so a response that escaped classification is visible');
+  // It is recorded on every budgeted window, including the large-object one the claim rests on.
+  assert(GATE.includes('--gate PX9c-large-object-scan'), 'the large-object window is budgeted');
+  // AND IT CARRIES NOTHING IDENTIFYING. Counts and byte totals only; the Go side asserts the wire shape.
+  const shapeNote = cli.split('gate: `${gate}-request-shape`')[1]?.split('});')[0] ?? '';
+  assert(shapeNote.length > 0, 'the shape note exists');
+  assert(!/offset|objectRef|url|lease/i.test(shapeNote),
+    'and names no offset, reference, locator or lease — only counts and byte totals');
+});
+
+await test('transient decoder containers do not inherit a healthcheck they can never satisfy', () => {
+  // THE DEFECT THIS CLOSES. The decoder image is a media server's image, borrowed for its ffmpeg; its
+  // HEALTHCHECK probes that server on localhost:8096, which is not running because the entrypoint is
+  // ffmpeg. A five-minute paced play that worked perfectly showed `unhealthy` in `docker ps` for its whole
+  // duration. Nothing failed — and that is the problem: a status that is always wrong spends the signal,
+  // and the next genuinely unhealthy container inherits an operator who has learned to ignore it.
+  const driver = read('src/ops/projection-plex-dataplane.ts');
+  assert(driver.includes("'--no-healthcheck'"), 'the paced consumer disables it');
+  const runArgs = driver.split('const args = [')[1]?.split('];')[0] ?? '';
+  assert(runArgs.includes('--no-healthcheck'), 'in the docker run argument list itself');
+  assert(GATE.includes('DECODER_RUN_FLAGS=(--rm --no-healthcheck)'), 'and so does every gate decoder run');
+  // EVERY decoder container in the gate goes through those flags — none is left calling docker run directly.
+  const strays = (GATE.match(/docker run --rm[^\n]*\$DECODER_IMAGE/g) ?? []);
+  assertEq(strays.length, 0, `no decoder run bypasses the shared flags, found: ${strays.join(' | ')}`);
+});
+
 await test('the seek ceiling is per-seek block geometry, not a multiple of the fixture', () => {
   const perSeek = PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * PLEX_READ_GEOMETRY.CHUNK_BYTES;
   assertEq(plexSeekByteCeiling(10) - plexSeekByteCeiling(9), perSeek,
