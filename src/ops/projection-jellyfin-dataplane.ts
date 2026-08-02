@@ -1,11 +1,12 @@
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 import {
-  Deadline, GATE_CLIENT, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_POLL_INTERVAL_MS, ScanBarrier,
-  directPlayPath, forcedTranscodePath, hasQueryCredential, isInFlightState, mediaServerAuthHeader,
-  movieLibraryRequest, opaqueRef, stripQueryCredentials,
-  type GateResult, type ScanTaskSample,
+  Deadline, GATE_CLIENT, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_POLL_INTERVAL_MS, SEEK_SETTLE_MS,
+  ScanBarrier, directPlayPath, forcedTranscodePath, hasQueryCredential, isInFlightState,
+  TICKS_PER_SECOND, mediaServerAuthHeader, movieLibraryRequest, opaqueRef, stripQueryCredentials,
+  type GateResult, type PacedSample, type ScanTaskSample, type SeekObservation, type SoakSegment,
 } from '../core/projection/media-server-dataplane.js';
 
 // Projection Phase 1 — driving a REAL Jellyfin against the projected mount.
@@ -733,6 +734,689 @@ function firstPlaylistLine(playlist: string): string | undefined {
     .find((line) => line !== '' && !line.startsWith('#'));
 }
 
+// ---------------------------------------------------------------------------------------------------------
+// The five-minute gates
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * Strip anything that looks like a locator out of a diagnostic before it is allowed anywhere near an output.
+ *
+ * The consumer's stderr is worth keeping when it fails — "connection refused", "401", "invalid data" are the
+ * difference between a diagnosable failure and a shrug. It is also the one place in this gate where a full URL
+ * is guaranteed to appear, because ffmpeg echoes its input. §7's redaction rule has no exception for error
+ * paths, and an exception is exactly where a leak would live.
+ */
+export function withoutLocators(text: string): string {
+  return text
+    .replace(/[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s'"]*/g, '<locator>')
+    .replace(/\b\d{1,3}(\.\d{1,3}){3}\b/g, '<address>');
+}
+
+export interface PacedPlayOptions {
+  readonly image: string;
+  readonly network: string;
+  readonly containerName: string;
+  /** Host directory bound in at `/work`. The consumer's output is written under it. */
+  readonly workDir: string;
+  /** Where the consumer reads from. It never reaches a result, a report or a log line. */
+  readonly streamUrl: string;
+  /** Where the decoded output is written, relative to `/work`. */
+  readonly outputRelPath: string;
+  readonly seconds: number;
+  readonly ffmpegPath: string;
+}
+
+export interface PacedPlayOutcome {
+  readonly samples: PacedSample[];
+  readonly exitCode: number | null;
+  readonly stderr: string;
+}
+
+/**
+ * Consume a direct play AT THE SPEED THE MEDIA PLAYS, and record what happened while it did.
+ *
+ * WHY NOT `fetch` AND A LOOP. Because the thing G8 asks about is not whether the bytes arrive. A `fetch` that
+ * drains a six-megabyte file takes a second or two through this mount; wrapping it in `await sleep(300_000)`
+ * produces a phase that takes five minutes, reads the whole file, and proves that a download and a sleep both
+ * work. Every part of "direct play starts within 10 s and runs 5 minutes without a stall" — starting,
+ * running, stalling — is about a DECODER's progress through the media, and nothing that only counts bytes can
+ * see any of it.
+ *
+ * `-re` IS THE WHOLE MECHANISM. It makes ffmpeg read its input at the media's own frame rate rather than as
+ * fast as the socket allows, which is what a player does and what makes the read pattern through the mount a
+ * playback rather than a copy. `-progress` then makes the decoder report its position about once a second,
+ * and each record is stamped with the wall clock HERE, on arrival — so the trace carries both clocks and the
+ * pure analysis can compare them. A trace with one clock cannot tell a play from a drain.
+ *
+ * IT RUNS IN THE PINNED MEDIA-SERVER IMAGE, on the gate's own network, so the consumer is the same ffmpeg the
+ * server itself ships and the stream is reached container-to-container rather than through a published port.
+ *
+ * IT SENDS NO CREDENTIAL, and that is a deliberate consequence of a measurement rather than an oversight:
+ * §3.1 of the data-plane document records that this server answers `static=true` direct play to a request
+ * carrying none. Putting one on a `docker run` command line would publish it to `docker inspect` and to every
+ * process listing on the host, to buy nothing. If a future pinned version starts requiring one, ffmpeg gets a
+ * 401 and this gate fails loudly rather than quietly proving less.
+ */
+export async function pacedDirectPlay(opts: PacedPlayOptions): Promise<PacedPlayOutcome> {
+  const args = [
+    'run', '--rm', '--name', opts.containerName,
+    '--network', opts.network,
+    '--user', '1000:1000',
+    '--cap-drop', 'ALL', '--security-opt', 'no-new-privileges',
+    '-v', `${opts.workDir}:/work`,
+    '--entrypoint', opts.ffmpegPath,
+    opts.image,
+    '-hide_banner', '-nostdin', '-loglevel', 'error',
+    '-progress', 'pipe:1', '-stats_period', '1',
+    // READ AT THE MEDIA'S OWN RATE. Without this the rest of the phase is a download with a timer on it.
+    '-re', '-i', opts.streamUrl,
+    '-t', String(opts.seconds),
+    // DECODE AND RE-ENCODE, rather than `-c copy`. A stream copy would move bytes without ever asking the
+    // decoder a question, and "decoded/playable output" would be a claim about a container.
+    '-an', '-vf', 'scale=160:120', '-r', '5', '-c:v', 'mpeg4', '-q:v', '20',
+    '-f', 'mp4', '-y', `/work/${opts.outputRelPath}`,
+  ];
+
+  const startedAt = now();
+  const samples: PacedSample[] = [];
+  const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+
+  let stdoutBuffer = '';
+  let stderr = '';
+  let record: Record<string, string> = {};
+  child.stdout.setEncoding('utf8');
+  child.stdout.on('data', (chunk: string) => {
+    stdoutBuffer += chunk;
+    let newline = stdoutBuffer.indexOf('\n');
+    while (newline !== -1) {
+      const line = stdoutBuffer.slice(0, newline).trim();
+      stdoutBuffer = stdoutBuffer.slice(newline + 1);
+      const eq = line.indexOf('=');
+      if (eq > 0) {
+        const key = line.slice(0, eq);
+        const value = line.slice(eq + 1);
+        record[key] = value;
+        if (key === 'progress') {
+          // ONE RECORD, STAMPED ON ARRIVAL HERE. ffmpeg's own progress block carries no wall clock, and the
+          // wall clock is half of every question this gate is asking.
+          const micros = Number(record.out_time_us ?? record.out_time_ms ?? '0');
+          samples.push({
+            wallMs: now() - startedAt,
+            mediaMs: Number.isFinite(micros) ? Math.round(micros / 1_000) : 0,
+            frames: Number(record.frame ?? '0') || 0,
+          });
+          record = {};
+        }
+      }
+      newline = stdoutBuffer.indexOf('\n');
+    }
+  });
+  child.stderr.setEncoding('utf8');
+  child.stderr.on('data', (chunk: string) => { stderr = `${stderr}${chunk}`.slice(-4_000); });
+
+  // A HARD CEILING OVER A GATE THAT IS SUPPOSED TO BE SLOW. Every other deadline here bounds a wait for
+  // something quick; this one exists only so a wedged consumer cannot hold the machine. The container is
+  // removed by name as well as the child killed, because killing `docker run` does not always stop what it
+  // started.
+  const exitCode = await new Promise<number | null>((resolve) => {
+    const watchdog = setTimeout(() => {
+      spawn('docker', ['rm', '-f', opts.containerName], { stdio: 'ignore' });
+      child.kill('SIGKILL');
+    }, MEDIA_SERVER_DEADLINES_MS.PACED_PLAY);
+    child.on('error', () => { clearTimeout(watchdog); resolve(null); });
+    child.on('close', (code) => { clearTimeout(watchdog); resolve(code); });
+  });
+
+  return { samples, exitCode, stderr: withoutLocators(stderr) };
+}
+
+export interface SeekSetOutcome {
+  readonly seeks: SeekObservation[];
+  readonly segments: Uint8Array[];
+  readonly credentialsInGeneratedUrls: number;
+  /** The media length the server's own playlist described, so the plan can be checked against it. */
+  readonly playlistSeconds: number;
+  readonly playSessionId: string;
+}
+
+/**
+ * The tail of the media server's own most recent transcoding log.
+ *
+ * WHY A GATE NEEDS THIS. When the segment endpoint answers 500 the body is the string "Error processing
+ * request." and nothing else, and the gate deletes its run directory on the way out — so a failure that
+ * happens once in a twenty-minute run leaves NOTHING behind to diagnose it with. The information exists: the
+ * server keeps the encoder's command line and its stderr. Fetching the tail of it turns "500, no idea" into
+ * a failure somebody can act on, which is the difference between a gate that finds defects and a gate that
+ * merely reports that something went wrong.
+ *
+ * IT IS BEST EFFORT AND IT IS SCRUBBED. A diagnostic that could itself fail would replace one unexplained
+ * failure with another, so every error here degrades to an empty string; and the log contains absolute paths
+ * and the endpoint's own URL, which §7's redaction rule has no exception for.
+ */
+export async function transcodeLogTail(state: GateState, maxChars = 900): Promise<string> {
+  const fetchLog = async (name: string, chars: number): Promise<string> => {
+    const exchange = await request(state, 'GET',
+      `/System/Logs/Log?name=${encodeURIComponent(name)}`, { accept: '*/*' });
+    try {
+      if (!exchange.response.ok) return '';
+      return withoutLocators((await exchange.response.text()).slice(-chars));
+    } finally {
+      exchange.release();
+    }
+  };
+  try {
+    const logs = await json<Array<{ Name?: string; DateModified?: string }>>(state, 'GET', '/System/Logs');
+    const newestOf = (prefix: string): string | undefined => (logs ?? [])
+      .filter((entry) => (entry.Name ?? '').startsWith(prefix))
+      .sort((a, b) => Date.parse(b.DateModified ?? '') - Date.parse(a.DateModified ?? ''))[0]?.Name;
+
+    // BOTH LOGS, BECAUSE THE ENCODER'S IS ROUTINELY THE WRONG ONE. A request the server refuses before it
+    // starts an encoder writes no FFmpeg log at all, so the newest one is the PREVIOUS job's — and a tail of
+    // a successful encode reads like evidence that nothing was wrong. The server's own log is where the
+    // reason for a 500 is, and it is fetched first for that reason.
+    const parts: string[] = [];
+    const main = newestOf('log_');
+    if (main !== undefined) parts.push(`[server log]\n${await fetchLog(main, maxChars)}`);
+    const encoder = newestOf('FFmpeg');
+    if (encoder !== undefined) {
+      parts.push(`[most recent encoder log — MAY BE A PREVIOUS JOB]\n${await fetchLog(encoder, 400)}`);
+    }
+    return parts.join('\n');
+  } catch {
+    return '';
+  }
+}
+
+/** Query parameter NAMES that occur more than once in a path. Names only: a value could be anything. */
+export function repeatedQueryNames(pathAndQuery: string): string[] {
+  const query = pathAndQuery.split('?').slice(1).join('?');
+  if (query === '') return [];
+  const counts = new Map<string, number>();
+  for (const pair of query.split('&')) {
+    const name = (pair.split('=')[0] ?? '').toLowerCase();
+    if (name !== '') counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+  return [...counts.entries()].filter(([, count]) => count > 1).map(([name]) => name).sort();
+}
+
+/** `#EXTINF:6.000000,` durations and the segment references that follow them, in order. */
+function parseVariantPlaylist(playlist: string): Array<{ ref: string; seconds: number }> {
+  const out: Array<{ ref: string; seconds: number }> = [];
+  let pending: number | undefined;
+  for (const raw of playlist.split('\n')) {
+    const line = raw.trim();
+    if (line.startsWith('#EXTINF:')) {
+      const seconds = Number(line.slice('#EXTINF:'.length).split(',')[0]);
+      pending = Number.isFinite(seconds) ? seconds : undefined;
+      continue;
+    }
+    if (line === '' || line.startsWith('#')) continue;
+    out.push({ ref: line, seconds: pending ?? 0 });
+    pending = undefined;
+  }
+  return out;
+}
+
+/** Where each segment in a variant playlist begins, as the SERVER states it in the URL it generated. */
+function segmentPositions(entries: ReadonlyArray<{ ref: string; seconds: number }>): number[] {
+  let cumulative = 0;
+  return entries.map((entry) => {
+    // `runtimeTicks` is the server's own statement of the position. Falling back to the accumulated
+    // `#EXTINF` durations keeps this working against a server that does not publish one — but the gate
+    // asserts the position it asked for against whichever number this returned, so the fallback cannot
+    // silently turn into "the gate compared its own arithmetic with itself": `#EXTINF` is the server's
+    // arithmetic too.
+    const ticks = /[?&]runtimeTicks=(\d+)/.exec(entry.ref)?.[1];
+    const position = ticks === undefined ? cumulative : Number(ticks) / TICKS_PER_SECOND;
+    cumulative += entry.seconds;
+    return position;
+  });
+}
+
+/**
+ * TEN SEEKS, out of order, through the media server's own playlist.
+ *
+ * WHY THIS IS NOT THE RANGED READ THE GATE ALREADY HAD. A ranged GET proves the daemon can serve byte offset
+ * N. It says nothing about whether SECOND N of the media maps to a byte offset at all, and a data plane could
+ * pass every ranged-read assertion ever written while being unseekable by a player. Both are kept: the ranged
+ * read is the byte-level control, this is the acceptance gate.
+ *
+ * WHY IT IS ONE SESSION AND TEN SEGMENT REQUESTS RATHER THAN TEN SEEKED SESSIONS. Because that is what the
+ * pinned server does — see `SEEK_IS_A_DIRECT_SEGMENT_REQUEST` for the two measurements that ruled out the
+ * obvious `startTimeTicks` spelling. It is also what an HLS player does when somebody drags the scrubber: it
+ * holds one playlist and asks for the segment it wants next, wherever that is. Asking for segment 105 while
+ * the encoder is at segment 6 is what makes the server restart its encode at a new position, and that is the
+ * non-sequential, multi-position read this whole data plane exists to make cheap.
+ *
+ * NOTHING HERE DECIDES ANYTHING. It returns what it asked for, what the server said it was answering, how
+ * long each took and the bytes; the decoding happens in a separate container and the verdicts are reached by
+ * a pure function over both.
+ */
+export async function mediaTimeSeekSet(
+  state: GateState, item: ItemRecord, positions: readonly number[], playSessionId: string,
+): Promise<SeekSetOutcome> {
+  const masterPath = forcedTranscodePath(item.itemId, item.mediaSourceId, playSessionId);
+  let credentialsInGeneratedUrls = 0;
+  const follow = (from: string, reference: string): string => {
+    const resolved = absolutePath(from, reference);
+    if (hasQueryCredential(resolved)) credentialsInGeneratedUrls += 1;
+    return stripQueryCredentials(resolved);
+  };
+
+  const master = await request(state, 'GET', masterPath,
+    { timeoutMs: MEDIA_SERVER_DEADLINES_MS.SEEK, accept: '*/*' });
+  let masterBody: string;
+  try {
+    if (master.response.status !== 200) {
+      throw new GateFailure(`the seek master playlist answered ${master.response.status}, not 200`);
+    }
+    masterBody = await master.response.text();
+  } finally {
+    master.release();
+  }
+  const variantRef = firstPlaylistLine(masterBody);
+  if (variantRef === undefined) throw new GateFailure('the seek master playlist named no variant');
+  const variantPath = follow(masterPath, variantRef);
+
+  const variant = await request(state, 'GET', variantPath,
+    { timeoutMs: MEDIA_SERVER_DEADLINES_MS.SEEK, accept: '*/*' });
+  let variantBody: string;
+  try {
+    if (variant.response.status !== 200) {
+      throw new GateFailure(`the seek variant playlist answered ${variant.response.status}, not 200`);
+    }
+    variantBody = await variant.response.text();
+  } finally {
+    variant.release();
+  }
+  const entries = parseVariantPlaylist(variantBody);
+  if (entries.length === 0) throw new GateFailure('the seek variant playlist listed no segment');
+  const starts = segmentPositions(entries);
+  const playlistSeconds = entries.reduce((total, entry) => total + entry.seconds, 0);
+
+  const seeks: SeekObservation[] = [];
+  const segments: Uint8Array[] = [];
+  try {
+    for (const [index, wanted] of positions.entries()) {
+      // A SETTLE BETWEEN SEEKS, AND IT IS NOT A RETRY.
+      //
+      // Asking for a segment far from the one the encoder is producing makes the server tear its transcoding
+      // job down and start a new one at the new position. Measured: firing ten of those back to back, with
+      // no gap at all, gets a 500 from the fourth — the server is still disposing of the previous job when
+      // the next request arrives. A person dragging a scrubber does not produce that, and neither does any
+      // player; the gate was producing a request rate no client would.
+      //
+      // WHAT THIS IS NOT. It is not a retry and it does not soften any assertion: every seek still has to
+      // answer, first time, inside the acceptance plan's ten seconds — and the ten seconds are measured
+      // around the REQUEST, after this settle, so the settle cannot be spent hiding a slow one.
+      if (index > 0) await sleep(SEEK_SETTLE_MS);
+      // The segment that CONTAINS the requested position: the last one starting at or before it.
+      let chosen = 0;
+      for (let candidate = 0; candidate < starts.length; candidate += 1) {
+        if ((starts[candidate] as number) <= wanted) chosen = candidate; else break;
+      }
+      const entry = entries[chosen] as { ref: string; seconds: number };
+      const segmentPath = follow(variantPath, entry.ref);
+      const startedAt = now();
+      const exchange = await request(state, 'GET', segmentPath,
+        { timeoutMs: MEDIA_SERVER_DEADLINES_MS.SEEK, accept: '*/*' });
+      let segment: Uint8Array;
+      try {
+        if (exchange.response.status !== 200) {
+          // A DIAGNOSTIC THAT NAMES PARAMETERS RATHER THAN PRINTING THE URL. A server-generated child URL is
+          // the one thing in this gate whose exact shape is not the gate's own choice, so a failure here has to
+          // say something about it — and §7's redaction rule has no exception for error paths. Repeated
+          // parameter names are named because that was the real failure mode: a query the server built by
+          // echoing the request that asked for it carried one name twice, and the binder answered 400.
+          const detail = (await exchange.response.text().catch(() => '')).slice(0, 200);
+          const encoderLog = await transcodeLogTail(state);
+          throw new GateFailure(
+            `the segment at ${wanted}s answered ${exchange.response.status}, not 200. `
+            + `repeated query parameters: ${repeatedQueryNames(segmentPath).join(',') || '(none)'}. `
+            + `body: ${withoutLocators(detail)}\n--- the media server's own encoder log ---\n${encoderLog}`);
+        }
+        segment = new Uint8Array(await exchange.response.arrayBuffer());
+      } finally {
+        exchange.release();
+      }
+      if (segment.byteLength === 0) throw new GateFailure(`the segment at ${wanted}s was empty`);
+      seeks.push({
+        index,
+        requestedSeconds: wanted,
+        serverPositionSeconds: starts[chosen] as number,
+        elapsedMs: now() - startedAt,
+        bytes: segment.byteLength,
+        sha256: createHash('sha256').update(segment).digest('hex'),
+      });
+      segments.push(segment);
+    }
+  } finally {
+    // IN THE `finally`, because a seek that failed halfway leaves an encoder running otherwise — and the
+    // five-minute phases that come next would then be measured on a host busy with the wreckage of this one.
+    await stopEncoding(state, playSessionId);
+  }
+  return { seeks, segments, credentialsInGeneratedUrls, playlistSeconds, playSessionId };
+}
+
+/** Stop one transcoding job. Best effort by design: a failure here must not fail the thing being measured. */
+export async function stopEncoding(state: GateState, playSessionId: string): Promise<void> {
+  await request(state, 'DELETE',
+    `/Videos/ActiveEncodings?deviceId=${encodeURIComponent(GATE_CLIENT.deviceId)}`
+    + `&playSessionId=${encodeURIComponent(playSessionId)}`,
+  ).then((exchange) => exchange.release()).catch(() => undefined);
+}
+
+/**
+ * Put the media server's encoder where the gate can watch it, and make it pace itself to its client.
+ *
+ * TWO SETTINGS, EACH FOR A REASON THE FIVE-MINUTE TRANSCODE GATE DEPENDS ON.
+ *
+ * `TranscodingTempPath` puts the job's own output somewhere the gate has bind-mounted, which is what makes
+ * "the encoder was alive across the window" measurable at all. Without it the only observable is segments
+ * arriving over HTTP, and those are indistinguishable from a directory of files produced in twenty seconds.
+ *
+ * `EnableThrottling` is what a real player causes and what stops the encoder from racing to the end of a
+ * five-minute source in forty seconds and exiting — after which the gate would be consuming a finished
+ * directory and calling it a running transcode. Throttling makes the job stay a bounded distance ahead of the
+ * client and keep working for as long as the client keeps consuming, which is the behaviour under test.
+ *
+ * IT IS READ, PATCHED AND WRITTEN BACK rather than posted as a literal: the encoding configuration has
+ * dozens of fields and posting a hand-made one would silently reset every setting this gate did not think of.
+ */
+export async function configureEncoding(state: GateState, tempPath: string, throttleSeconds: number): Promise<void> {
+  const current = await json<Record<string, unknown>>(state, 'GET', '/System/Configuration/encoding');
+  const patched = {
+    ...(current ?? {}),
+    TranscodingTempPath: tempPath,
+    EnableThrottling: true,
+    ThrottleDelaySeconds: throttleSeconds,
+  };
+  await json(state, 'POST', '/System/Configuration/encoding', patched);
+}
+
+/**
+ * Report playback the way a player does, so the server attaches a session to the stream.
+ *
+ * WHY THIS EXISTS, AND IT IS A MEASUREMENT RATHER THAN A CONVENTION. A raw HLS request that never reports
+ * playback does not become a session with a `NowPlayingItem` on the pinned server: `/Sessions` shows nothing,
+ * and a gate asking "was the server transcoding throughout" gets no answer at all. Reporting `Playing` and
+ * then progress as the position advances attaches it, after which the server reports `TranscodingInfo` with
+ * `IsVideoDirect: false` for as long as the client keeps playing — which is the server's own statement, in
+ * its own bookkeeping, that the thing being played is a transcode.
+ *
+ * WHAT IT DOES NOT DO, measured on the same run: it does not change the ENCODER. With an attached session and
+ * throttling enabled, the job still transcoded a 340-second source in 1.6 seconds and exited. So this buys
+ * the server's account of the session, and it does not buy five minutes of encoder liveness — and the gate
+ * says so rather than letting the two be read as one.
+ */
+async function reportPlayback(
+  state: GateState, item: ItemRecord, playSessionId: string,
+  stage: 'Playing' | 'Playing/Progress' | 'Playing/Stopped', positionSeconds: number,
+): Promise<void> {
+  await json(state, 'POST', `/Sessions/${stage}`, {
+    ItemId: item.itemId,
+    MediaSourceId: item.mediaSourceId,
+    PlaySessionId: playSessionId,
+    PositionTicks: Math.round(positionSeconds * TICKS_PER_SECOND),
+    CanSeek: true,
+    IsPaused: false,
+    PlayMethod: 'Transcode',
+    RepeatMode: 'RepeatNone',
+  }).catch(() => undefined);
+}
+
+/** What the server says about this item's playback at one instant. Two facts, and they are not the same one. */
+export interface TranscodeSessionSample {
+  /**
+   * The server's own `PlayState.PlayMethod` for a session playing this item is `Transcode`.
+   *
+   * THIS IS THE ONE THAT LASTS, and it is what the gate asserts. It says the stream being played throughout
+   * the window is the transcoded one rather than a direct play — which is the property G10 is about.
+   */
+  readonly methodIsTranscode: boolean;
+  /**
+   * The server is reporting live `TranscodingInfo` for it.
+   *
+   * THIS IS THE ONE THAT DOES NOT LAST, and it is why the gate records it instead of asserting on it.
+   * Measured against the pinned server: `TranscodingInfo` is populated immediately after the job starts and
+   * is **null fifteen seconds later**, because the encoder finished the whole source in 1.6 seconds and
+   * exited. It is a live-encoder signal, and on this host the encoder is not live for five minutes. An 80 %
+   * share of it would be an assertion about encoder liveness wearing a session's clothes.
+   */
+  readonly encoderJobLive: boolean;
+}
+
+/**
+ * What the server reports about this item right now.
+ *
+ * `some`, NOT `find`. The gate opens several playback sessions against the same item over one run — a direct
+ * play, ten seeks, then this — and the server keeps finished ones around. `find` returns the FIRST session
+ * for the item, which is routinely a stale one, so the sampler would answer for the wrong session.
+ */
+export async function transcodeSessionNow(
+  state: GateState, item: ItemRecord,
+): Promise<TranscodeSessionSample> {
+  const sessions = await json<Array<{
+    NowPlayingItem?: { Id?: string };
+    PlayState?: { PlayMethod?: string };
+    TranscodingInfo?: { IsVideoDirect?: boolean };
+  }>>(state, 'GET', '/Sessions').catch(() => []);
+  const mine = (sessions ?? []).filter((session) => session.NowPlayingItem?.Id === item.itemId);
+  return {
+    methodIsTranscode: mine.some((session) => session.PlayState?.PlayMethod === 'Transcode'),
+    encoderJobLive: mine.some((session) => session.TranscodingInfo !== undefined
+      && session.TranscodingInfo.IsVideoDirect !== true),
+  };
+}
+
+export interface TranscodeSoakOptions {
+  /** Where consumed segments are written, so a decoder outside this process can be handed all of them. */
+  readonly segmentDir: string;
+  /** The host directory the media server's transcoding job writes its own output into. */
+  readonly producerDir: string;
+  readonly minSeconds: number;
+  readonly maxSegmentBytes: number;
+}
+
+export interface TranscodeSoakOutcome {
+  readonly segments: SoakSegment[];
+  /** One sample per tick of the server's own account of this item's playback. Two facts, see the type. */
+  readonly sessions: TranscodeSessionSample[];
+  /** Modification times of the files the ENCODER wrote, sampled before the job is stopped. */
+  readonly producerMtimesMs: number[];
+  readonly credentialsInGeneratedUrls: number;
+  readonly playSessionId: string;
+}
+
+/**
+ * A forced transcode, consumed for five minutes AT THE PACE A PLAYER WOULD CONSUME IT.
+ *
+ * WHY PACED, WHEN THE OBVIOUS THING IS TO FETCH EVERY SEGMENT AS FAST AS POSSIBLE. Because fetching them as
+ * fast as possible takes under a minute, and the only way to reach five minutes from there is to sleep — at
+ * which point the gate has measured a directory listing. A player asks for segment N at about the moment
+ * second N of the media arrives, which keeps the encoding job alive, keeps it producing, and keeps the reads
+ * flowing through the mount for the whole window. That is the thing G10 says exercises read-ahead
+ * cancellation, and it only exists if the client behaves like a client.
+ *
+ * WHAT IS COLLECTED, AND WHY THREE DIFFERENT KINDS. The segments and their arrival times are the client's
+ * side. The session samples are the server's own bookkeeping, taken repeatedly rather than once, because a
+ * transcode that died at second forty would still have a session record. The producer's file mtimes are the
+ * ENCODER's side, and they are read BEFORE the job is stopped because stopping it is what deletes them.
+ *
+ * NOTHING HERE ASSERTS. It returns measurements; the CLI holds them against the acceptance plan's numbers,
+ * and the segments are decoded by a real decoder outside this process.
+ */
+export async function transcodeSoak(
+  state: GateState, item: ItemRecord, opts: TranscodeSoakOptions,
+): Promise<TranscodeSoakOutcome> {
+  const playSessionId = `gate-soak-${opaqueRef('session', item.itemId).slice(0, 16)}`;
+  // PLAYBACK IS REPORTED BEFORE THE TRANSCODE IS ASKED FOR, AND THE ORDER IS LOAD-BEARING.
+  //
+  // Measured: reporting it afterwards attaches a session with a `NowPlayingItem` but with NO
+  // `TranscodingInfo` — the transcoding job records itself against the session that exists at the moment it
+  // is created, so a session that arrives later never acquires it. The gate then samples a live session
+  // twenty times and reads "not transcoding" from every one of them, which is a false negative about the
+  // exact thing the phase is measuring. Reported first, the same samples carry `IsVideoDirect: false` and
+  // the server's own reason for transcoding.
+  await reportPlayback(state, item, playSessionId, 'Playing', 0);
+  const masterPath = forcedTranscodePath(item.itemId, item.mediaSourceId, playSessionId);
+  let credentialsInGeneratedUrls = 0;
+  const follow = (from: string, reference: string): string => {
+    const resolved = absolutePath(from, reference);
+    if (hasQueryCredential(resolved)) credentialsInGeneratedUrls += 1;
+    return stripQueryCredentials(resolved);
+  };
+
+  const master = await request(state, 'GET', masterPath,
+    { timeoutMs: MEDIA_SERVER_DEADLINES_MS.TRANSCODE, accept: '*/*' });
+  let masterBody: string;
+  try {
+    if (master.response.status !== 200) {
+      throw new GateFailure(`the transcode manifest answered ${master.response.status}, not 200`);
+    }
+    masterBody = await master.response.text();
+  } finally {
+    master.release();
+  }
+  const variantRef = firstPlaylistLine(masterBody);
+  if (variantRef === undefined) throw new GateFailure('the transcode master playlist named no variant');
+  const variantPath = follow(masterPath, variantRef);
+
+  const listed = await until('the transcode variant playlist to list a segment',
+    MEDIA_SERVER_DEADLINES_MS.TRANSCODE, async () => {
+      const exchange = await request(state, 'GET', variantPath,
+        { timeoutMs: MEDIA_SERVER_DEADLINES_MS.API_REQUEST, accept: '*/*' });
+      try {
+        if (exchange.response.status !== 200) {
+          await exchange.response.body?.cancel().catch(() => undefined);
+          return undefined;
+        }
+        const entries = parseVariantPlaylist(await exchange.response.text());
+        return entries.length > 0 ? entries : undefined;
+      } finally {
+        exchange.release();
+      }
+    });
+
+  mkdirSync(opts.segmentDir, { recursive: true });
+  const startedAt = now();
+  // The same instant, kept separately because it is compared against FILE modification times rather than
+  // against this process's own elapsed clock, and a second later it would start excluding real output.
+  const wallClockStart = startedAt - 1_000;
+  const segments: SoakSegment[] = [];
+  const sessions: TranscodeSessionSample[] = [];
+  let stopSampling = false;
+  let mediaStart = 0;
+  // THE ENCODER'S OWN OUTPUT, ACCUMULATED WHILE THE WINDOW IS OPEN RATHER THAN LISTED AT THE END.
+  //
+  // A listing taken afterwards found NOTHING: the server deletes a transcoded segment once the client has
+  // been served it, so by the end of a paced five-minute consumption the directory is empty. Reading zero
+  // files and reporting a zero span would have been a measurement that says "the encoder never ran" about a
+  // run in which it demonstrably did — which is worse than not measuring, because it looks like a finding.
+  const producerSeen = new Map<string, number>();
+  // THE SESSION SAMPLER RUNS ALONGSIDE, not between fetches: a sampler driven by the fetch loop would stop
+  // sampling exactly when the loop was blocked, which is the interval its answer matters most for. It also
+  // carries the progress report, because a session that stopped hearing from its player is a session the
+  // server is entitled to tear down — and then the gate would be measuring its own silence.
+  const sampler = (async (): Promise<void> => {
+    while (!stopSampling) {
+      await sleep(15_000);
+      if (stopSampling) break;
+      await reportPlayback(state, item, playSessionId, 'Playing/Progress', mediaStart);
+      sessions.push(await transcodeSessionNow(state, item)
+        .catch(() => ({ methodIsTranscode: false, encoderJobLive: false })));
+      for (const [name, mtime] of readProducerFiles(opts.producerDir)) {
+        if (mtime >= wallClockStart && !producerSeen.has(name)) producerSeen.set(name, mtime);
+      }
+    }
+  })();
+
+  const deadline = new Deadline('the five-minute transcode', MEDIA_SERVER_DEADLINES_MS.TRANSCODE_SOAK, startedAt);
+  // A MARGIN ON TOP OF THE FIVE MINUTES, because the first segment cannot arrive at wall time zero and the
+  // span the gate asserts is measured between the first arrival and the last.
+  const targetMs = (opts.minSeconds + 20) * 1_000;
+  try {
+    for (const [index, entry] of listed.entries()) {
+      const elapsed = now() - startedAt;
+      if (elapsed >= targetMs && mediaStart >= opts.minSeconds + 15) break;
+      if (deadline.expired(now())) throw new GateFailure(deadline.message());
+      // ASK FOR SEGMENT N WHEN SECOND N OF THE MEDIA ARRIVES. This is the pacing, and it is the whole reason
+      // the wall clock and the media clock can be compared afterwards.
+      const dueAt = mediaStart * 1_000;
+      if (elapsed < dueAt) await sleep(Math.min(dueAt - elapsed, 10_000));
+
+      const exchange = await request(state, 'GET', follow(variantPath, entry.ref),
+        { timeoutMs: MEDIA_SERVER_DEADLINES_MS.TRANSCODE, accept: '*/*' });
+      let buffer: Uint8Array;
+      try {
+        if (exchange.response.status !== 200) {
+          throw new GateFailure(`transcode segment ${index} answered ${exchange.response.status}, not 200.`
+            + `\n--- the media server's own encoder log ---\n${await transcodeLogTail(state)}`);
+        }
+        buffer = new Uint8Array(await exchange.response.arrayBuffer());
+      } finally {
+        exchange.release();
+      }
+      if (buffer.byteLength === 0) throw new GateFailure(`transcode segment ${index} was empty`);
+      if (buffer.byteLength > opts.maxSegmentBytes) {
+        throw new GateFailure(`transcode segment ${index} was ${buffer.byteLength} bytes, over the ceiling`);
+      }
+      writeFileSync(join(opts.segmentDir, `seg-${String(index).padStart(4, '0')}.ts`), buffer);
+      segments.push({
+        index, wallMs: now() - startedAt, mediaStartSeconds: mediaStart, bytes: buffer.byteLength,
+        sha256: createHash('sha256').update(buffer).digest('hex'),
+      });
+      mediaStart += entry.seconds;
+    }
+  } finally {
+    stopSampling = true;
+    await sampler.catch(() => undefined);
+    // THE TEARDOWN IS IN THE `finally`, NOT AFTER IT, and that is the difference between a failing phase and
+    // a failing phase that leaves an ffmpeg encoding for the rest of the run. Every measurement after this
+    // point would then be taken against a host under load, and the failure that got reported would be the
+    // second one rather than the first.
+    //
+    // THE ENCODER'S OUTPUT IS READ BEFORE THE JOB IS STOPPED, because stopping it deletes the directory —
+    // and only what was written inside THIS window, since the forced transcode and the ten seeks before it
+    // left output in the same place. Measured during development: 343 files spanning nine minutes, of which
+    // the soak's own encoder had produced a fraction.
+    for (const [name, mtime] of readProducerFiles(opts.producerDir)) {
+      if (mtime >= wallClockStart && !producerSeen.has(name)) producerSeen.set(name, mtime);
+    }
+    // Tell the server the player stopped, so a failed run does not leave a session it believes is still
+    // playing — which the NEXT phase would then find and mistake for its own.
+    await reportPlayback(state, item, playSessionId, 'Playing/Stopped', mediaStart);
+    await stopEncoding(state, playSessionId);
+  }
+
+  const producerMtimesMs = [...producerSeen.values()].sort((a, b) => a - b);
+  return { segments, sessions, producerMtimesMs, credentialsInGeneratedUrls, playSessionId };
+}
+
+/**
+ * The transcoding job's own output files, by name and modification time.
+ *
+ * IT IS SAMPLED REPEATEDLY RATHER THAN LISTED ONCE, and the reason is a measurement: the server DELETES a
+ * transcoded segment once it has served it, so a listing taken at the end of a paced five-minute consumption
+ * finds an empty directory. Reporting that as a zero span would have been a measurement saying "the encoder
+ * never ran" about a run in which it demonstrably did — a false finding, which is worse than no finding.
+ *
+ * IT RETURNS AN EMPTY LIST RATHER THAN THROWING when the directory is missing. That is safe here only
+ * because this number is RECORDED and never asserted on; if it ever becomes a threshold, an absent directory
+ * has to be made to fail rather than to read as zero.
+ */
+export function readProducerFiles(dir: string): Array<[string, number]> {
+  if (!existsSync(dir)) return [];
+  const out: Array<[string, number]> = [];
+  for (const name of readdirSync(dir)) {
+    try {
+      const info = statSync(join(dir, name));
+      if (info.isFile() && info.size > 0) out.push([name, info.mtimeMs]);
+    } catch { /* a file the encoder deleted between the listing and the stat is not a measurement */ }
+  }
+  return out;
+}
+
 /** Resolve a playlist-relative reference against the path the playlist itself was fetched from. */
 export function absolutePath(fromPath: string, reference: string): string {
   if (reference.startsWith('/')) return reference;
@@ -778,6 +1462,15 @@ export interface ExpectedEntry {
   readonly sizeBytes: number;
   readonly sha256: string;
   readonly kind: 'local' | 'http-range';
+  /**
+   * An entry whose BYTES are read back and digest-compared, not merely catalogued.
+   *
+   * The ~50-entry corpus is asserted in aggregate; direct-playing all of it would turn a gate into a
+   * throughput test and would say nothing a handful of entries do not. The anchors are the handful, and they
+   * are marked in the expectation file rather than named in the driver so that what is checked byte-for-byte
+   * is a property of the corpus the gate published, not a list two files apart could disagree about.
+   */
+  readonly anchor?: boolean;
 }
 
 export function readExpected(path: string): ExpectedEntry[] {

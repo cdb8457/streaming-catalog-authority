@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import {
   deriveProjectedEntryId,
   normalizeProjectedPath,
@@ -16,6 +17,9 @@ import {
 //                                              [--probe head:0:1048576:<sha256> ...]
 //   npm run ops:projection-register -- entry   --item <uuid> --version-key movie-a --path "Movies/A/A.bin" \
 //                                              --source local:media:a.bin [--source http-range:vault:obj-a]
+//   npm run ops:projection-register -- batch   --file corpus.json
+//                                              { "versions": [{ "key", "size", "mtime", "probes": [...] }],
+//                                                "entries":  [{ "item", "versionKey", "path", "sources" }] }
 //   npm run ops:projection-register -- retire  --path "Movies/A/A.bin" --intent-key drop-a \
 //                                              --declared-at <ts> --grace <ts>
 //   npm run ops:projection-register -- degrade --path "Movies/A/A.bin" --reason source-unreachable --since <ts>
@@ -157,8 +161,49 @@ async function main(): Promise<void> {
         console.log(JSON.stringify({ registered: 'available', projectedEntryId: entryId }));
         return;
       }
+      case 'batch': {
+        // THE SAME WRITE PATH, ONCE PER PROCESS INSTEAD OF ONCE PER ROW.
+        //
+        // WHY THIS EXISTS. The acceptance plan's corpus is ~50 entries. Registering it a flag at a time costs
+        // a hundred Node starts and several minutes before a gate has done anything, which is the kind of
+        // cost that ends with somebody quietly shrinking the corpus until the gate is fast — and a
+        // fifty-entry gate run against five entries is the failure this whole tranche exists to stop.
+        //
+        // WHAT IT IS NOT. It is not a second write path, and that is deliberate: it calls `registerVersion`
+        // and `registerEntry`, in order, exactly as the single-row commands do. There is no bulk insert, no
+        // second validation and no way to register something through here that the flags could not register.
+        // If it grew one, the registry would have two ideas of what a valid registration is and one of them
+        // would drift.
+        const parsed = JSON.parse(readFileSync(one(args, 'file'), 'utf8')) as {
+          versions?: Array<{ key: string; size: number; mtime: string; probes?: string[] }>;
+          entries?: Array<{ item: string; versionKey: string; path: string; sources: string[] }>;
+        };
+        let versions = 0;
+        for (const version of parsed.versions ?? []) {
+          const probes = (version.probes ?? []).map(parseProbe);
+          await registerVersion(db, {
+            versionKey: version.key,
+            sizeBytes: version.size,
+            mtime: version.mtime,
+            probes: probes.length === 0 ? null : probes,
+          });
+          versions += 1;
+        }
+        let entries = 0;
+        for (const entry of parsed.entries ?? []) {
+          await registerEntry(db, {
+            itemId: entry.item,
+            versionKey: entry.versionKey,
+            path: entry.path,
+            sources: entry.sources.map((raw, index) => parseSource(raw, index)),
+          });
+          entries += 1;
+        }
+        console.log(JSON.stringify({ registered: 'batch', versions, entries }));
+        return;
+      }
       default:
-        fail('usage: root | version | entry | retire | degrade | restore');
+        fail('usage: root | version | entry | batch | retire | degrade | restore');
     }
   });
 }
