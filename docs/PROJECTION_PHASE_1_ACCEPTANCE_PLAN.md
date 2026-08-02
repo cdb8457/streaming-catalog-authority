@@ -137,9 +137,11 @@ still closes on Linux or Unraid, three consecutive times, and on **all three** m
 digest-pinned, **unclaimed** Plex Media Server over the same production mount, and
 `docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md` describes what it asserts. **A gate existing is not a gate
 passing**, and the Plex column changed only when that document's run record (§7 of it) carried a real
-count: it now carries five, one failing run and four green ones, the last three consecutive and each
-starting from nothing. **All of them are Windows / Docker Desktop, which §6 says closes none of
-G7—G13.** The column therefore reads `run` and the gate stays open.
+count: **five rows covering seven runs — three failing and four green**, the last three of the green ones
+consecutive and each starting from nothing. That record also states plainly that it is **not** a complete
+index: two further runs of this gate happened and were never given rows, so seven is what the table carries
+rather than every time the gate has run. **All seven are Windows / Docker Desktop, which §6 says closes none
+of G7—G13.** The column therefore reads `run` and the gate stays open.
 
 That document also carries a **retracted** finding
 and the confound behind it: three probes said an unclaimed Plex needs plex.tv to answer its own local API,
