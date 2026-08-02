@@ -101,6 +101,17 @@ type Counters struct {
 	SmallBytes     atomic.Int64
 	OtherResponses atomic.Int64
 	OtherBytes     atomic.Int64
+	// BodylessResponses is every ranged request that returned WITHOUT a body: an unknown object, a missing
+	// file, a malformed Range, and each of the injected refusals — 401, 403, 410, 429, 503, a timeout, a
+	// redirect. It exists so the request partition is an equation rather than an approximation:
+	//
+	//	ChunkResponses + SmallResponses + OtherResponses + BodylessResponses == RangeRequests
+	//
+	// IT IS COUNTED STRUCTURALLY, NOT ENUMERATED. `serveRange` defers an increment that fires unless a body
+	// was classified, so a no-body branch added tomorrow is accounted for by nobody having to remember it.
+	// The first draft of this reconciliation added back only Served429 and ExpiredRejected and was short by
+	// a dozen paths, while its gate name claimed to cover every request.
+	BodylessResponses atomic.Int64
 }
 
 // The bucket boundaries, and both are read off the daemon rather than chosen here.
@@ -433,14 +444,20 @@ type CountersSnapshot struct {
 	ExpiredRejected    int64 `json:"expiredRejected"`
 	PeakConcurrent     int64 `json:"peakConcurrent"`
 	PeakConns          int64 `json:"peakConns"`
-	// Request shape, in three flat buckets. See Counters. These sum to BytesServed, which is what lets a
-	// caller check that no served response escaped classification.
-	ChunkResponses int64 `json:"chunkResponses"`
-	ChunkBytes     int64 `json:"chunkBytes"`
-	SmallResponses int64 `json:"smallResponses"`
-	SmallBytes     int64 `json:"smallBytes"`
-	OtherResponses int64 `json:"otherResponses"`
-	OtherBytes     int64 `json:"otherBytes"`
+	// Request shape, in three flat buckets. See Counters.
+	//
+	// TWO PARTITIONS, AND A CALLER SHOULD CHECK BOTH. The bucket BYTES sum to BytesServed, and the bucket
+	// RESPONSE COUNTS sum to the number of ranged requests that served a body — which is RangeRequests less
+	// the ones refused without one (Served429, ExpiredRejected). Bytes alone are not enough: two responses
+	// filed as one leave the byte total intact and the count wrong, and the count is what a geometry is
+	// derived from.
+	ChunkResponses    int64 `json:"chunkResponses"`
+	ChunkBytes        int64 `json:"chunkBytes"`
+	SmallResponses    int64 `json:"smallResponses"`
+	SmallBytes        int64 `json:"smallBytes"`
+	OtherResponses    int64 `json:"otherResponses"`
+	OtherBytes        int64 `json:"otherBytes"`
+	BodylessResponses int64 `json:"bodylessResponses"`
 }
 
 // Snapshot reads every counter. It is not atomic across counters and does not need to be: each one is
@@ -464,6 +481,7 @@ func (s *Server) Snapshot() CountersSnapshot {
 		SmallBytes:         s.counters.SmallBytes.Load(),
 		OtherResponses:     s.counters.OtherResponses.Load(),
 		OtherBytes:         s.counters.OtherBytes.Load(),
+		BodylessResponses:  s.counters.BodylessResponses.Load(),
 	}
 }
 
@@ -614,6 +632,32 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 	}
 	defer s.counters.CurrentConcurrent.Add(-1)
 	s.counters.RangeRequests.Add(1)
+
+	// EVERY RANGED REQUEST LANDS IN EXACTLY ONE BUCKET, INCLUDING THE ONES THAT SERVE NOTHING.
+	//
+	// THE DEFECT THIS CLOSES. The first version of the request partition reconciled the three size buckets
+	// against RangeRequests by adding back Served429 and ExpiredRejected — and this function returns without
+	// a body in a dozen other places: an unknown object, a missing file, a malformed Range, 401, 403, 410,
+	// 503, a timeout, a redirect. Every one of those made the partition short, so the gate that claimed to
+	// account for every request would have failed on any of them while its note insisted it was complete.
+	// Enumerating the known faults is exactly the fix that goes stale the next time a fault is added.
+	//
+	// So the accounting is structural rather than enumerated: one deferred increment that fires unless a body
+	// was classified. A new no-body branch is counted correctly the day it is written, by nobody.
+	bodyClassified := false
+	defer func() {
+		if !bodyClassified {
+			s.counters.BodylessResponses.Add(1)
+		}
+	}()
+	// serveBody is the ONE way a body is recorded. Routing every body-producing branch through it is what
+	// keeps the flag and the buckets from drifting apart.
+	serveBody := func(n int64) {
+		s.counters.BytesServed.Add(n)
+		s.counters.recordShape(n)
+		bodyClassified = true
+	}
+
 	// The request has arrived and is counted; holding it blocks the READER, which is the point.
 	s.waitForHold(ref)
 
@@ -688,8 +732,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		w.Header().Set("Content-Length", strconv.FormatInt(object.Size, 10))
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write(full)
-		s.counters.BytesServed.Add(object.Size)
-		s.counters.recordShape(object.Size)
+		serveBody(object.Size)
 		return
 	case FaultMalformedRange:
 		w.Header().Set("Content-Range", "octets "+strconv.FormatInt(start, 10))
@@ -707,8 +750,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		w.Header().Set("Content-Length", strconv.FormatInt(int64(len(data)), 10))
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(short)
-		s.counters.BytesServed.Add(int64(len(short)))
-		s.counters.recordShape(int64(len(short)))
+		serveBody(int64(len(short)))
 		return
 	case FaultDelayedClose:
 		// No Content-Length, so the response is chunked; the body is correct and complete, but the terminal
@@ -718,8 +760,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-		s.counters.BytesServed.Add(int64(len(data)))
-		s.counters.recordShape(int64(len(data)))
+		serveBody(int64(len(data)))
 		time.Sleep(s.timeoutFor)
 		return
 	case FaultLongBody:
@@ -729,16 +770,14 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		long := append(data, ObjectBytes(ref, end+1, 64)...)
 		w.WriteHeader(http.StatusPartialContent)
 		_, _ = w.Write(long)
-		s.counters.BytesServed.Add(int64(len(long)))
-		s.counters.recordShape(int64(len(long)))
+		serveBody(int64(len(long)))
 		return
 	}
 
 	w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
 	w.WriteHeader(http.StatusPartialContent)
 	_, _ = w.Write(data)
-	s.counters.BytesServed.Add(length)
-	s.counters.recordShape(length)
+	serveBody(length)
 }
 
 func parseRange(value string, size int64) (int64, int64, bool) {

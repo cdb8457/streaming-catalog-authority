@@ -442,15 +442,94 @@ func TestRequestShapeBucketsClassifyEverySizeExactlyOnce(t *testing.T) {
 		t.Fatalf("other bucket: got %d responses / %d bytes, want 1 / %d",
 			snapshot.OtherResponses, snapshot.OtherBytes, 2*1024*1024)
 	}
-	// THE PARTITION PROPERTY, which is what makes the buckets usable as evidence: every served byte is in
-	// exactly one bucket, so a decomposition that does not add up says a response escaped classification
-	// rather than that the reader misread it.
+	// THE TWO PARTITION PROPERTIES, which are what make the buckets usable as evidence.
+	//
+	// BYTES: every served byte is in exactly one bucket.
 	if sum := snapshot.ChunkBytes + snapshot.SmallBytes + snapshot.OtherBytes; sum != snapshot.BytesServed {
-		t.Fatalf("the buckets do not partition: %d + %d + %d = %d, but %d bytes were served",
+		t.Fatalf("the byte buckets do not partition: %d + %d + %d = %d, but %d bytes were served",
 			snapshot.ChunkBytes, snapshot.SmallBytes, snapshot.OtherBytes, sum, snapshot.BytesServed)
 	}
-	if count := snapshot.ChunkResponses + snapshot.SmallResponses + snapshot.OtherResponses; count != 4 {
-		t.Fatalf("four responses were served but %d were classified", count)
+	// REQUESTS: and every ranged request lands in exactly one bucket, bodyless ones included. This is the
+	// property bytes alone cannot give — two responses filed as one leave the byte total intact and the
+	// count wrong, and the count is what a request geometry is derived from.
+	count := snapshot.ChunkResponses + snapshot.SmallResponses + snapshot.OtherResponses
+	if total := count + snapshot.BodylessResponses; total != snapshot.RangeRequests {
+		t.Fatalf("the response buckets do not partition: %d classified + %d bodyless = %d, but %d ranged requests arrived",
+			count, snapshot.BodylessResponses, total, snapshot.RangeRequests)
+	}
+	if count != 4 || snapshot.BodylessResponses != 0 {
+		t.Fatalf("four bodies were served and none refused, but %d classified / %d bodyless",
+			count, snapshot.BodylessResponses)
+	}
+}
+
+// TestEveryBodylessReturnIsCounted drives the request partition across the no-body paths that broke the first
+// version of it, and it is deliberately broad rather than a single 429.
+//
+// THE DEFECT THIS CLOSES. The reconciliation originally added back only Served429 and ExpiredRejected, and
+// this endpoint returns without a body in a dozen other places. Every one of them made the partition short
+// while the gate asserting it claimed to account for every ranged request. The counter is now incremented by
+// a deferred check rather than by each branch remembering, so this test's job is to prove the check fires on
+// paths that have nothing in common except serving nothing.
+func TestEveryBodylessReturnIsCounted(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-partition", 8*1024*1024)
+
+	// A TRANSPORT ERROR HERE IS FATAL, and the first draft of this helper swallowed one with a comment
+	// claiming the request had still been counted. That is not guaranteed: a transport failure can happen
+	// before `serveRange` runs at all, which would leave the endpoint's counters one short and make the
+	// expected totals below pass or fail for a reason that has nothing to do with the partition. Every
+	// branch this test exercises answers with an HTTP response, so there is no legitimate transport error.
+	get := func(ref, rangeHeader string) {
+		t.Helper()
+		request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/"+ref, nil)
+		if rangeHeader != "" {
+			request.Header.Set("Range", rangeHeader)
+		}
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("ranged get %q: %v", ref, err)
+		}
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}
+
+	// One good body, so the classified side is non-zero and the equation is not trivially satisfied.
+	get("obj-partition", byteRange(0, 1023))
+
+	// ...and then every shape of bodyless return that does not need a clock: an unknown object, a malformed
+	// Range header, and four injected status refusals. Each is a different branch of serveRange.
+	get("obj-does-not-exist", byteRange(0, 1023))
+	get("obj-partition", "not-a-range-header")
+	for _, fault := range []Fault{Fault401, Fault403, Fault410, Fault429, Fault503} {
+		server.InjectFault("obj-partition", fault, 1)
+		get("obj-partition", byteRange(0, 1023))
+	}
+
+	snapshot := server.Snapshot()
+	classified := snapshot.ChunkResponses + snapshot.SmallResponses + snapshot.OtherResponses
+	if classified != 1 {
+		t.Fatalf("exactly one request served a body, but %d were classified", classified)
+	}
+	if snapshot.BodylessResponses != 7 {
+		t.Fatalf("seven requests should have served no body, got %d", snapshot.BodylessResponses)
+	}
+	// THE EQUATION THE GATES ASSERT. If either side changes, this breaks here rather than in a thirty-minute
+	// Docker run.
+	if total := classified + snapshot.BodylessResponses; total != snapshot.RangeRequests {
+		t.Fatalf("partition: %d classified + %d bodyless = %d, but %d ranged requests arrived",
+			classified, snapshot.BodylessResponses, total, snapshot.RangeRequests)
+	}
+	// ...and none of the bodyless returns contributed bytes to any bucket.
+	if sum := snapshot.ChunkBytes + snapshot.SmallBytes + snapshot.OtherBytes; sum != snapshot.BytesServed {
+		t.Fatalf("byte buckets %d do not match bytes served %d", sum, snapshot.BytesServed)
+	}
+	if snapshot.BytesServed != 1024 {
+		t.Fatalf("only the one good request should have served bytes, got %d", snapshot.BytesServed)
 	}
 }
 

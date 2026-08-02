@@ -323,9 +323,19 @@ because there is nothing in them to identify, and a Go test asserts the wire pay
 are asserted to **partition** the bytes served, so a response that escaped classification is visible rather
 than silent, and they are recorded on every budgeted window.
 
-The next short diagnostic run can then read the mix directly and derive `DEMAND_BLOCKS_PER_OPEN` and the
-range-request denominator from it. **Until that run happens, the two gate6 budget failures stand and no
-threshold has been widened.**
+**What that diagnostic may and may not conclude.** A first draft of the plan proposed deriving
+blocks-per-open as `chunkResponses / 2`. That is not available and the plan was corrected: the counters are
+cumulative across a window and keep **no association between a response and the open that caused it** — by
+design, since that association is the per-request record the telemetry exists to avoid. Dividing by an
+assumed number of opens would manufacture an attribution the data does not support, which is the same class
+of error as the multiplier it is meant to replace.
+
+What a window over one newly scanned object *can* yield is the **per-new-item request geometry**: how many
+full demand blocks, how many probe-sized reads, how many others, and the bytes in each. Those are the terms a
+ceiling can be built from directly. The two-factor `opens × blocks` spelling in the contract is
+presentational — only their **product** has ever been measured, and the code says so.
+
+**Until that diagnostic runs, the two gate6 budget failures stand and no threshold has been widened.**
 
 **The byte budget has one denominator per object, and it is not the single-probe threshold.** An earlier
 version of this paragraph said that any object above the contract's 3 MiB single-probe threshold is

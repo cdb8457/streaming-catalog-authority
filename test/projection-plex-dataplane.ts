@@ -1454,9 +1454,12 @@ await test('the byte floor is per object, and cannot be cross-subsidised or defa
     'each tiny object contributes its own length and each large one contributes one window');
   assert(mixedFloor > 2 * window,
     'so a run that opened only the two large objects cannot clear the floor for the other thirty-eight');
-  // And the restart-scan call names sizes, which is what makes the floor apply to it at all.
+  // NAMING SIZES IS WHAT FEEDS THE CEILING, AND THAT IS ALL IT DOES HERE. The restart-scan window supplies
+  // `--object-sizes` so its ceiling is the per-object geometry rather than a default — but it is separately
+  // marked `--warm-capable`, so it carries no floor at all. The next test is what proves that; this one
+  // would contradict it if it still claimed the sizes bought a floor.
   assert(GATE.includes('--gate PX12b-restart-scan') && GATE.includes('--object-sizes "$CORPUS_SIZE_LIST"'),
-    'the restart-scan call names object sizes, so it gets a real floor');
+    'the restart-scan call names object sizes, so its CEILING is the per-object geometry');
 });
 
 await test('a WARM-CAPABLE window keeps its ceilings and loses only its floors', () => {
@@ -1501,7 +1504,19 @@ await test('the request-shape diagnostic is wired in, and is asserted to account
     assert(cli.includes(bucket), `the ${bucket} bucket is read from the counters`);
   }
   assert(/-request-shape-accounts-for-every-byte/.test(cli),
-    'and the partition is ASSERTED, so a response that escaped classification is visible');
+    'and the BYTE partition is ASSERTED, so a response that escaped classification is visible');
+  // THE REQUEST PARTITION IS A SEPARATE GATE, because bytes summing correctly says nothing about the count:
+  // two responses filed as one leave the byte total intact and the count wrong, and the count is what a
+  // geometry would be derived from.
+  assert(/-request-shape-accounts-for-every-request/.test(cli), 'and so is the REQUEST partition');
+  assert(cli.includes("shape('bodylessResponses')"),
+    'reconciled with a single bodyless counter rather than a list of known faults');
+  // THE ENUMERATION THIS REPLACES WAS SHORT BY A DOZEN PATHS. serveRange returns without a body for an
+  // unknown object, a missing file, a malformed Range, 401, 403, 410, 503, a timeout and a redirect; adding
+  // back only served429 and expiredRejected made the equation fail on any of them while the gate id claimed
+  // to account for every request.
+  assert(!/shape\('served429'\) \+ shape\('expiredRejected'\)/.test(cli),
+    'the enumerated refusal list is gone');
   // It is recorded on every budgeted window, including the large-object one the claim rests on.
   assert(GATE.includes('--gate PX9c-large-object-scan'), 'the large-object window is budgeted');
   // AND IT CARRIES NOTHING IDENTIFYING. Counts and byte totals only; the Go side asserts the wire shape.

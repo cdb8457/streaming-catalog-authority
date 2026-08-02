@@ -341,15 +341,58 @@ export const PLEX_READ_GEOMETRY = Object.freeze({
    *
    * TWO, AND THE SECOND ONE IS IN THE SERVER'S OWN LOG: Plex launches `Plex Media Scanner --analyze` for
    * every new item, in addition to the scan that found it, even with the scheduled deep-analysis task off.
+   *
+   * IT IS NOT A MEASURED APPORTIONMENT, AND NOTHING MAY DIVIDE BY IT. The provider counters are aggregate by
+   * design — they retain no association between a response and the open that caused it — so "blocks per
+   * open" cannot be recovered from them by dividing, and doing so would re-introduce exactly the attribution
+   * the telemetry deliberately does not keep. What the ceiling below actually uses is the PRODUCT of this
+   * and `DEMAND_BLOCKS_PER_OPEN`; the split into two factors is presentational, and only the product has
+   * ever been measured. See `PLEX_SCAN_REQUESTS_PER_NEW_ITEM`.
    */
   OPENS_PER_NEW_ITEM: 2,
   /**
    * How many distinct demand blocks one open can touch: a container header, the `moov` wherever it is, and
-   * one interior probe. Derived, then checked against measurement: the 13,981,407-byte anchor cost
-   * 17,825,792 bytes over two opens — 2.1 blocks per open, inside this.
+   * one interior probe.
+   *
+   * SEE THE CAVEAT ON `OPENS_PER_NEW_ITEM`: this factor has never been measured on its own either, and it
+   * cannot be, from aggregate counters. Only the product is real.
    */
   DEMAND_BLOCKS_PER_OPEN: 3,
 } as const);
+
+/**
+ * THE PER-NEW-ITEM REQUEST GEOMETRY, WHICH IS WHAT A DIAGNOSTIC CAN HONESTLY DERIVE.
+ *
+ * A first draft of the diagnostic plan proposed computing blocks-per-open as `chunkResponses / 2`. That is
+ * not available: the counters are cumulative across the window and carry no link between a response and the
+ * open it belonged to, so the division would be an attribution the data does not support — precisely the
+ * kind of number that reads like a measurement and is not one.
+ *
+ * WHAT IS AVAILABLE, from one object scanned in its own counter window, is the total request geometry for
+ * that item: how many full demand blocks, how many probe-sized reads, how many others, and how many bytes
+ * each accounted for. Those are the terms a ceiling can be built from directly — `requests per new item` and
+ * `bytes per new item` — with no per-open apportionment anywhere in it.
+ *
+ * Until such a window is measured, these are `undefined` and the gate uses the geometry ceiling above.
+ * Nothing here is filled in from gate6, because gate6 could not decompose its 10 requests.
+ */
+export interface PlexScanRequestGeometry {
+  /** Responses of exactly one demand block, for one newly scanned item. */
+  readonly chunkResponses: number;
+  /** Responses of one probe window or less. */
+  readonly smallResponses: number;
+  /** Everything else. */
+  readonly otherResponses: number;
+  readonly bytes: number;
+}
+
+/**
+ * The measured per-new-item geometry, once a diagnostic has produced one.
+ *
+ * IT IS DELIBERATELY EMPTY. Writing a plausible shape in here before it is measured is how a placeholder
+ * becomes a citation.
+ */
+export const PLEX_SCAN_REQUESTS_PER_NEW_ITEM: PlexScanRequestGeometry | undefined = undefined;
 
 /**
  * THE CEILING ON WHAT A PLEX SCAN MAY COST AT THE PROVIDER, PER OBJECT, FROM BLOCK GEOMETRY.

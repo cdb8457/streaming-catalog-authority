@@ -566,7 +566,8 @@ async function main(): Promise<void> {
       // counts and byte totals only — no offsets, no references, no ordering — and they sum to the bytes
       // served, which is asserted so a response that escaped classification is visible rather than silent.
       const shape = (key: string): number => delta(key);
-      const bucketed = shape('chunkBytes') + shape('smallBytes') + shape('otherBytes');
+      const bucketedBytes = shape('chunkBytes') + shape('smallBytes') + shape('otherBytes');
+      const bucketedRequests = shape('chunkResponses') + shape('smallResponses') + shape('otherResponses');
       record(args, {
         gate: `${gate}-request-shape`, verdict: 'pass',
         note: `${shape('chunkResponses')} responses of exactly one 4 MiB demand block `
@@ -574,8 +575,24 @@ async function main(): Promise<void> {
           + `(${shape('smallBytes')} bytes), ${shape('otherResponses')} other (${shape('otherBytes')} bytes)`,
       });
       record(args, exactly(`${gate}-request-shape-accounts-for-every-byte`,
-        bucketed, delta('bytesServed'),
+        bucketedBytes, delta('bytesServed'),
         'the three buckets partition the bytes served; a shortfall means a response was not classified'));
+      // ...AND FOR EVERY REQUEST, WHICH THE BYTE PARTITION ALONE DOES NOT CATCH.
+      //
+      // Bytes summing correctly says nothing about the COUNT: two responses filed as one, or a served body
+      // that incremented no bucket while its bytes were counted elsewhere, both leave the byte total intact.
+      // The count is what a request geometry would be derived from, so it gets its own gate.
+      //
+      // THE BODYLESS TERM IS ONE COUNTER, NOT A LIST OF KNOWN FAULTS. The first draft of this equation added
+      // back `served429 + expiredRejected` — and the endpoint returns without a body in a dozen other places:
+      // an unknown object, a missing file, a malformed Range, 401, 403, 410, 503, a timeout, a redirect. It
+      // was short on every one of them while its gate id claimed to account for every request. The endpoint
+      // now counts bodyless returns structurally, so this side does not enumerate anything and cannot go
+      // stale when a fault is added.
+      record(args, exactly(`${gate}-request-shape-accounts-for-every-request`,
+        bucketedRequests + shape('bodylessResponses'), delta('rangeRequests'),
+        `${bucketedRequests} classified responses plus ${shape('bodylessResponses')} that served no body `
+        + 'must equal every ranged request the endpoint saw'));
 
       const largeBytes = optionalNumber(args, 'large-bytes', 0);
       if (largeBytes > 0) {
