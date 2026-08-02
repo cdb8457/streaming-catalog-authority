@@ -116,10 +116,10 @@ the same and only the second is evidence.
 
 | Gate | Jellyfin | Plex | Emby |
 |---|---|---|---|
-| G7 **Scan** | run — `npm run go:jellyfin-dataplane-gate`, against a real digest-pinned Jellyfin with the mount as a library root. **The plan's ~50-entry corpus is now run**: 50 published identities, each catalogued at the published size as an ordinary file, with zero missing, zero duplicated and zero unexpected. Zero churn across a repeat scan, and across the daemon SIGKILL/restart/remount path, which is followed by a byte-for-byte read so it cannot pass on a dead mount. A graceful daemon restart under a long-running media server is **not** proved here and the reason is recorded | not run | not run |
-| G8 **Play** | run — direct play, digest-compared against values recorded outside the mount, **and the plan's five minutes are now run**: a real decoder consuming at the media's own rate for 300 s, startup under 10 s, no stall, with decoded media time and the media-per-wall-second ratio both asserted so that a fast download and a sleep cannot pass. See §6.2 | not run | not run |
-| G9 **Seek** | run — **the plan's ten seeks are now run**, including four backward transitions and two positions beyond 90 % of duration, each returning decodable `h264` inside 10 s, all ten segments distinct, and the decoded timestamps tracking the requested positions with a constant offset. The earlier ranged-request evidence (`206` and `Content-Range` asserted before the body is read) is kept as the byte-level control | not run | not run |
-| G10 **Transcode** | run — forced `mpeg4` → `h264` proved by decoding the segments, **and the plan's five minutes are now run** as five minutes of *paced, continuously decoded, transcoded playback*. **NOT closed as five minutes of encoder liveness** — see §6.2, which records why that is a different claim and what was measured | not run | not run |
+| G7 **Scan** | run — `npm run go:jellyfin-dataplane-gate`, against a real digest-pinned Jellyfin with the mount as a library root. **The plan's ~50-entry corpus is now run**: 50 published identities, each catalogued at the published size as an ordinary file, with zero missing, zero duplicated and zero unexpected. Zero churn across a repeat scan, and across the daemon SIGKILL/restart/remount path, which is followed by a byte-for-byte read so it cannot pass on a dead mount. A graceful daemon restart under a long-running media server is **not** proved here and the reason is recorded | run on Docker Desktop only — `npm run go:plex-dataplane-gate`, against a real digest-pinned UNCLAIMED Plex. 51 published identities catalogued at the published size, zero missing, duplicated or unexpected, and zero churn across a repeat scan, a media-server restart, the daemon SIGKILL/restart/remount path and a mid-scan generation swap. Four green runs, three of them consecutive and fresh; see that gate's run record | not run |
+| G8 **Play** | run — direct play, digest-compared against values recorded outside the mount, **and the plan's five minutes are now run**: a real decoder consuming at the media's own rate for 300 s, startup under 10 s, no stall, with decoded media time and the media-per-wall-second ratio both asserted so that a fast download and a sleep cannot pass. See §6.2 | run on Docker Desktop only — direct play digest-compared against values recorded outside the mount, plus five minutes of paced play: startup 1.34 s, 300 decoded media seconds, pacing ratio 0.999, longest stall 0 s | not run |
+| G9 **Seek** | run — **the plan's ten seeks are now run**, including four backward transitions and two positions beyond 90 % of duration, each returning decodable `h264` inside 10 s, all ten segments distinct, and the decoded timestamps tracking the requested positions with a constant offset. The earlier ranged-request evidence (`206` and `Content-Range` asserted before the body is read) is kept as the byte-level control | run on Docker Desktop only — ten media-time seeks including backward transitions and two past 90 % of duration, ten distinct segments, slowest 0.33 s against a 10 s ceiling | not run |
+| G10 **Transcode** | run — forced `mpeg4` → `h264` proved by decoding the segments, **and the plan's five minutes are now run** as five minutes of *paced, continuously decoded, transcoded playback*. **NOT closed as five minutes of encoder liveness** — see §6.2, which records why that is a different claim and what was measured | run on Docker Desktop only — forced `mpeg4` —> `h264` proved by decoding, five minutes of paced continuously decoded transcoded playback, 39 distinct segments, 312 decoded seconds. **NOT closed as five minutes of encoder liveness** — see §6.2 | not run |
 | G11 **Generation swap mid-read** | run — the in-flight stream completed correctly across an admitted successor | not run | not run |
 | G12 **Kill and recover** | run — `SIGKILL` mid-stream, restart, remount: zero added, zero removed, zero item-id churn; playback resumable | not run | not run |
 | G13 **Re-scan churn** | run — twice, plus across a media-server restart | not run | not run |
@@ -131,6 +131,40 @@ the same and only the second is evidence.
 `docs/PROJECTION_PHASE_1_JELLYFIN_DATA_PLANE.md` describes the gate that produced the Jellyfin column. Every
 run of it so far has been on **Windows / Docker Desktop**, which §6 says closes none of G7–G13. The tranche
 still closes on Linux or Unraid, three consecutive times, and on **all three** media servers.
+
+**A second gate exists and the Plex column now records it as run on Docker Desktop.**
+`deploy/projection-plex-dataplane-gate.sh` — `npm run go:plex-dataplane-gate` — drives a real,
+digest-pinned, **unclaimed** Plex Media Server over the same production mount, and
+`docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md` describes what it asserts. **A gate existing is not a gate
+passing**, and the Plex column changed only when that document's run record (§7 of it) carried a real
+count: **five rows covering seven runs — three failing and four green**, the last three of the green ones
+consecutive and each starting from nothing. That record also states plainly that it is **not** a complete
+index: two further runs of this gate happened and were never given rows, so seven is what the table carries
+rather than every time the gate has run. **All seven are Windows / Docker Desktop, which §6 says closes none
+of G7—G13.** The column therefore reads `run` and the gate stays open.
+
+That document also carries a **retracted** finding
+and the confound behind it: three probes said an unclaimed Plex needs plex.tv to answer its own local API,
+all three addressed the server by container name, and what was refusing was Plex's Host-header rebinding
+protection. Re-measured with no route to the internet and the server addressed by IP, an unclaimed Plex
+answered the four requests needed to inspect and create a library — and no more than those four were tried,
+so scanning and playback on an air-gapped Plex are **not** established.
+
+It also records something §5 should not be read as already covering for Plex. §5's byte budgets are measured
+against a **synthetic** scan, and its own preamble says none of those numbers is evidence about a real media
+server's metadata pass. Against a real Plex the *budget* for identifying one object is
+`BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size)` — the per-response-class caps (8 demand blocks + 3
+probe windows) evaluated at the object's own length. **So on a small fixture that ceiling already
+permits a whole-object read, and satisfying it would prove nothing about the fraction.** That is a limit of
+the instrument and not a lower bound — it does not mean a below-one read is unreachable there. The 1.28x and
+1.66x measured over the 8.6 MB and 14.0 MB fixtures are separately just observations of what was read: they
+neither prove nor disprove the argument. The Plex gate therefore asserts the fraction where an actual-byte
+measurement has margin — **one object above 94 MiB**, against the same 0.5 the Jellyfin gate is held to — and
+that assertion has now been observed to hold on Docker Desktop, at 0.109 of the 105.4 MB fixture, in four
+green runs. On an object that size the envelope (0.348 on that fixture) is the tighter of the two bounds,
+so 0.5 remains the explicit headline but is not what would fail first. An earlier per-open model —
+`2 opens x min(3 x 4 MiB, size)`, saturating at 24 MiB — was **retired** when gate6 exceeded it, 32,505,856
+against 25,165,824.
 
 ### 6.2 What the five-minute gates prove, and the one thing G10 does not
 

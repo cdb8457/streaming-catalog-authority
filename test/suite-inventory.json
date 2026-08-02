@@ -384,6 +384,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-plex-dataplane.ts",
+      "group": "offline"
+    },
+    {
       "file": "provider-availability-bridge.ts",
       "group": "offline"
     },

@@ -1297,7 +1297,14 @@ await test('G8, G9 and G10 are recorded as RUN, and G10 is explicitly not record
     (plan.split('\n').find((line) => line.startsWith(`| ${gate} `)) ?? '').trim();
   for (const gate of ['G7 **Scan**', 'G8 **Play**', 'G9 **Seek**', 'G10 **Transcode**']) {
     assert(row(gate).includes('now run'), `${gate} records what is now run`);
-    assert(/\| not run \| not run \|$/.test(row(gate)), `${gate} still records Plex and Emby as not run`);
+    // EMBY, AND ONLY EMBY, IS STILL THE UNTOUCHED COLUMN.
+    //
+    // This asserted `| not run | not run |` — Plex and Emby together — which was true when it was written and
+    // stopped being true when the Plex gate passed. Keeping it would have forced the acceptance plan to go on
+    // saying Plex had never run in order to keep a Jellyfin test green, which is the table lying to preserve
+    // an assertion about itself. The intent survives intact: the LAST column is Emby, no gate here has ever
+    // been run against it, and a row that quietly acquired a verdict there would still fail.
+    assert(/\| not run \|$/.test(row(gate)), `${gate} still records EMBY as not run`);
   }
   assert(/NOT closed as five minutes of encoder liveness/.test(row('G10 **Transcode**')),
     'and G10 names the thing it does not claim, in the row that claims the rest');

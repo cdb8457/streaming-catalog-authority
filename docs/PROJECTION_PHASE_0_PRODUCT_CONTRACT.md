@@ -365,13 +365,44 @@ exact rather than overlapping.
 
 7.10 **Caches.** The **probe-prefix cache** is persistent, keyed by `projectedVersionId` — never by path and
 never by source, so a failover keeps it — holds one probe window per version, and is capped at 2 GiB total.
-The **playback cache** is ephemeral, capped at 512 MiB total and 64 MiB per open handle, and is dropped on
-release.
+The **playback cache** is **process-ephemeral**: it lives in memory only, holds nothing across a restart, and
+is capped at 512 MiB total.
+
+7.10.1 **A release discharges an admission; it does not delete bytes.** Playback entries are keyed by exact
+byte identity — projected version, identity digest, offset and length — so an entry **SHALL** remain readable
+after the handle that cached it is released, and a later open asking for the same bytes **SHALL** be served
+from it. `release` **SHALL** discharge that handle's admission accounting in full and **SHALL NOT** delete
+reusable bytes; the entry becomes an unowned candidate in the global LRU.
+
+*The defect this corrects.* This paragraph read "dropped on release", and the daemon did that. Because the key
+is byte identity rather than the handle, the deleted entry was exactly what the next open would ask for, so a
+media server's open-read-release scan followed by an analyse pass refetched the same block once per open —
+measured through the real read path as the identical block at offset 1,048,576 for 2,724,273 bytes, fetched
+four times for four sequential opens.
+
+7.10.1.1 **A read served from the playback cache reaches no provider, and the daemon **SHALL** say so.** A
+consequence of 7.10.1 is that a window of real playback — a scan, a direct play, a seek, a transcode — may
+produce **zero** provider requests when the bytes are already resident. "Zero provider requests" therefore has
+two explanations that call for opposite responses: this daemon served the read from memory, or something that
+is not this daemon served it. The daemon **SHALL** publish, on its status surface and independently of any
+opt-in diagnostic, the playback cache's **cumulative** hit count and hit **bytes** alongside the resident
+level, so the two can be told apart by subtracting two readings. These are counters, not a per-request record:
+they carry no offset, no handle, no identity and no byte content.
+
+7.10.2 **The 64 MiB per-handle cap is an admission ceiling.** It bounds what one open handle may **add**. A
+cache hit is free reuse: it **SHALL NOT** transfer ownership and **SHALL NOT** count against the reading
+handle's ceiling. A handle **SHALL NOT** hold admissions beyond the cap; when a put would exceed it, that
+handle's own oldest entries are evicted first, and never another handle's. Both caps are hard: the 512 MiB
+total is enforced by evicting the least recently used entry, owned or unowned alike.
 
 7.11 **Read-ahead.** Suppressed entirely within the probe window, so a metadata scan never pulls more than it
 asked for. Beyond it, three sequential chunk-aligned reads start read-ahead of at most four chunks; a
 non-sequential seek cancels it immediately and abandons in-flight prefetch. An open handle pins its
-generation, its bound source and its cached chunks; eviction **SHALL NOT** take them.
+generation, its bound source and its cached chunks — but a **pin is a preference, not an exemption**, and an
+earlier version of this sentence said eviction could not take a pinned chunk. Under a hard ceiling eviction
+**SHALL** take them rather than exceed the bound: the scan cache retains pinned records last, and the playback
+cache evicts by recency alone. An appliance that ran out of space because a stream asked it to is a worse
+failure than a cache miss.
 
 ---
 

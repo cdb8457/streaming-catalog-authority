@@ -474,17 +474,29 @@ func (d *Daemon) LastAdmit() AdmitRecord {
 // provider's health, and an appliance whose readiness depends on a remote service is an appliance that goes
 // unready during an outage it is designed to survive.
 type Status struct {
-	Ready               bool        `json:"ready"`
-	Mounted             bool        `json:"mounted"`
-	UptimeSeconds       int64       `json:"uptimeSeconds"`
-	GenerationID        string      `json:"generationId,omitempty"`
-	GenerationSequence  int64       `json:"generationSequence,omitempty"`
-	Entries             int         `json:"entries"`
-	TotalBytes          int64       `json:"totalBytes"`
-	RetainedGenerations []string    `json:"retainedGenerations"`
-	ProbeCacheBytes     int64       `json:"probeCacheBytes"`
-	PlaybackCacheBytes  int64       `json:"playbackCacheBytes"`
-	LastAdmission       AdmitRecord `json:"lastAdmission"`
+	Ready               bool     `json:"ready"`
+	Mounted             bool     `json:"mounted"`
+	UptimeSeconds       int64    `json:"uptimeSeconds"`
+	GenerationID        string   `json:"generationId,omitempty"`
+	GenerationSequence  int64    `json:"generationSequence,omitempty"`
+	Entries             int      `json:"entries"`
+	TotalBytes          int64    `json:"totalBytes"`
+	RetainedGenerations []string `json:"retainedGenerations"`
+	ProbeCacheBytes     int64    `json:"probeCacheBytes"`
+	PlaybackCacheBytes  int64    `json:"playbackCacheBytes"`
+	// Playback is what the playback cache DID, alongside the level above.
+	//
+	// WHY A LEVEL WAS NOT ENOUGH. `playbackCacheBytes` says how much is resident now, which cannot answer
+	// whether this daemon served a read. Since a handle release stops deleting entries, a window of playback
+	// can legitimately reach the provider zero times — the bytes were already here — and "zero provider
+	// requests" then has two very different explanations: the daemon served it from memory, or something
+	// that is not the daemon served it. Only a cumulative hit count and hit volume tell those apart, and an
+	// acceptance gate that cannot tell them apart is one that passes on a bypassed daemon.
+	//
+	// IT IS NOT THE DIAGNOSTIC. These are cumulative counters, of the kind this surface already carries; they
+	// hold no per-request record, no offset, no handle and no identity, and they are always on.
+	Playback      cache.PlaybackCounters `json:"playback"`
+	LastAdmission AdmitRecord            `json:"lastAdmission"`
 }
 
 func (d *Daemon) Status() Status {
@@ -494,6 +506,7 @@ func (d *Daemon) Status() Status {
 		RetainedGenerations: d.Store.Retained(),
 		ProbeCacheBytes:     d.Probe.TotalBytes(),
 		PlaybackCacheBytes:  d.Playback.TotalBytes(),
+		Playback:            d.Playback.Counters(),
 		LastAdmission:       d.LastAdmit(),
 	}
 	if snap := d.Store.Current(); snap != nil {
@@ -515,6 +528,13 @@ func (d *Daemon) ServeStatus(ctx context.Context) error {
 	if d.cfg.StatusAddr == "" {
 		return nil
 	}
+	mux := d.statusMux()
+	return d.serveStatusMux(ctx, mux)
+}
+
+// statusMux builds the status routes. Separated from serving so the routes can be exercised without binding
+// a port — a route whose only test is "the daemon started" is a route nobody has actually checked.
+func (d *Daemon) statusMux() *http.ServeMux {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -522,6 +542,40 @@ func (d *Daemon) ServeStatus(ctx context.Context) error {
 			"alive": true, "uptimeSeconds": int64(time.Since(d.startedAt).Seconds()),
 		})
 	})
+	// THE CACHE DIAGNOSTIC, AND IT IS ABSENT UNLESS SOMEBODY TURNED IT ON.
+	//
+	// WHY IT IS REGISTERED CONDITIONALLY RATHER THAN ALWAYS ANSWERING "disabled". A route that exists in
+	// every build is a route somebody can probe; one that is not registered cannot leak the fact that the
+	// daemon has a diagnostic at all. Turning the diagnostic on is a deliberate act, and the surface appears
+	// with it.
+	//
+	// LOOPBACK ONLY. Even enabled, it answers only a request that arrived from the local host. The events
+	// carry no reference, URL, lease or byte content, but they do describe the daemon own block plan, and a
+	// debugging surface has no business being reachable from anywhere else.
+	if d.Playback != nil && d.Playback.DiagnosticEnabled() {
+		mux.HandleFunc("/debug/cache-diagnostic", func(w http.ResponseWriter, r *http.Request) {
+			if !requestIsLoopback(r) {
+				http.NotFound(w, r)
+				return
+			}
+			// READ-ONLY, AND ONLY A READ. Anything but GET is refused rather than quietly treated as one,
+			// so a mistaken POST is a visible 405 instead of an apparently successful call.
+			if r.Method != http.MethodGet {
+				w.Header().Set("Allow", http.MethodGet)
+				http.Error(w, "the cache diagnostic is read-only", http.StatusMethodNotAllowed)
+				return
+			}
+			// ONE CAPTURE, NOT TWO. Asking for the events and then separately for the summary would return
+			// a summary of a different moment under an active read — the torn-snapshot defect gate9 found,
+			// which this file has no business reintroducing at the point it is reported.
+			report := d.Playback.DiagnosticReport()
+			w.Header().Set("Content-Type", "application/json")
+			// NEVER CACHED. It is a point-in-time view of a moving recorder; a stored copy would be read
+			// later as though it described then.
+			w.Header().Set("Cache-Control", "no-store")
+			_ = json.NewEncoder(w).Encode(report)
+		})
+	}
 	mux.HandleFunc("/readyz", func(w http.ResponseWriter, _ *http.Request) {
 		status := d.Status()
 		w.Header().Set("Content-Type", "application/json")
@@ -530,6 +584,11 @@ func (d *Daemon) ServeStatus(ctx context.Context) error {
 		}
 		_ = json.NewEncoder(w).Encode(status)
 	})
+	return mux
+}
+
+// serveStatusMux runs the status server over routes that were built and can be tested separately.
+func (d *Daemon) serveStatusMux(ctx context.Context, mux *http.ServeMux) error {
 	server := &http.Server{
 		Addr:              d.cfg.StatusAddr,
 		Handler:           mux,
@@ -577,4 +636,25 @@ func LoadConfigFile(path string) (Config, error) {
 
 func openNoFollow(path string) (*os.File, error) {
 	return os.OpenFile(path, os.O_RDONLY|osNoFollow, 0)
+}
+
+// requestIsLoopback reports whether a request arrived from the local host.
+//
+// THE DEBUGGING SURFACE IS FOR SOMEBODY SITTING ON THE MACHINE. It is judged on the transport's own remote
+// address rather than on any header: X-Forwarded-For and friends are supplied by the caller, so trusting one
+// would let a remote request declare itself local. A malformed or missing remote address is treated as NOT
+// loopback, because the safe reading of "I cannot tell where this came from" is "not from here".
+func requestIsLoopback(r *http.Request) bool {
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		host = r.RemoteAddr
+	}
+	if host == "" {
+		return false
+	}
+	address := net.ParseIP(host)
+	if address == nil {
+		return false
+	}
+	return address.IsLoopback()
 }

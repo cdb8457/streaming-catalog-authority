@@ -98,6 +98,19 @@ test('the Go gates are wired to a pinned toolchain image and do not touch the Ty
   assert(raceService.includes('CGO_ENABLED: "1"'), 'the race gate enables cgo, without which it cannot run');
   assertEq(pkg.scripts['go:race'], 'docker compose -f docker-compose.projectiond.yml run --rm go-race',
     'go:race runs the cgo-enabled service');
+  // EVERY GO GATE GOES THROUGH COMPOSE, AND go:fmt USED NOT TO. It was a bare `docker run` interpolating
+  // "${PWD}/projectiond" as a bind source, which a POSIX shell expands and cmd.exe does not — so on Windows
+  // Docker received a literal `${PWD}` and refused it as an invalid volume name before gofmt ever ran. A
+  // formatting gate that cannot execute on the machine most of this repository is developed on is a gate
+  // that is not running, and it was not running. Routing it through the same service as go:test and go:vet
+  // makes it work everywhere those two already do.
+  for (const script of ['go:fmt', 'go:vet', 'go:test']) {
+    assert((pkg.scripts[script] ?? '').startsWith(
+      'docker compose -f docker-compose.projectiond.yml run --rm go-gate'),
+    `${script} runs through the pinned compose service rather than a bare docker run`);
+    assert(!(pkg.scripts[script] ?? '').includes('${PWD}'),
+      `${script} interpolates no shell variable a Windows shell would not expand`);
+  }
   // ...while the shipped binary stays static.
   assert(read('projectiond/Dockerfile').includes('CGO_ENABLED=0'), 'the release build is static');
 });

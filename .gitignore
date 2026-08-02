@@ -38,3 +38,7 @@ deploy/ci/acceptance/playwright-report/
 # and a media server's whole config directory, so leaving it behind would be several megabytes of untracked
 # noise rather than a few files.
 .projection-jellyfin-gate/
+
+# ...and for the PLEX data-plane gate, which holds all of that plus a Plex config directory and a transcode
+# scratch area. The gate deletes it on success and on failure; this is the belt to that brace.
+.projection-plex-gate/
