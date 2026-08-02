@@ -142,9 +142,19 @@ and the confound behind it: three probes said an unclaimed Plex needs plex.tv to
 all three addressed the server by container name, and what was refusing was Plex's Host-header rebinding
 protection. Re-measured with no route to the internet and the server addressed by IP, an unclaimed Plex
 answered the four requests needed to inspect and create a library — and no more than those four were tried,
-so scanning and playback on an air-gapped Plex are **not** established. It records one further measurement
-the acceptance plan should not be read as covering: **Plex reads more of a remote object per scan than §5's
-fraction argument claims**, which is reported there with its ratios rather than budgeted around.
+so scanning and playback on an air-gapped Plex are **not** established.
+
+It also records something §5 should not be read as already covering for Plex. §5's byte budgets are measured
+against a **synthetic** scan, and its own preamble says none of those numbers is evidence about a real media
+server's metadata pass. Against a real Plex the *budget* for identifying one object is
+`2 opens x min(3 x 4 MiB demand blocks, object size)` — which tops out at 24 MiB, but only for objects of at
+least 12 MiB; below that it clamps to twice the object. **So on a small fixture that ceiling already permits
+a whole-object read, and satisfying it would prove nothing about the fraction.** That is a limit of the
+instrument and not a lower bound — it does not mean a below-one read is unreachable there. The 1.28x and
+1.66x measured over the 8.6 MB and 14.0 MB fixtures are separately just observations of what was read: they
+neither prove nor disprove the argument. The Plex gate therefore asserts the fraction where an actual-byte
+measurement has margin — **one 96 MiB object**, against the same 0.5 the Jellyfin gate is held to — and that
+assertion has not yet been observed to hold, because no run of that gate has passed.
 
 ### 6.2 What the five-minute gates prove, and the one thing G10 does not
 

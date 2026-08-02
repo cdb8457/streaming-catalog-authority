@@ -435,6 +435,29 @@ await test('a fast complete is a COMPLETION and is not an in-flight observation'
   assert(!barrier.observedInFlight, 'but nobody saw it running, and the barrier says so');
 });
 
+await test('a scan seen RUNNING and then quiet completes, even if scannedAt never moved', () => {
+  // THE HANG THIS CLOSES. Completion used to require a moved `scannedAt`, and Plex does not promise to move
+  // it for a refresh that changed nothing. A scan this observer watched run and watched go quiet is
+  // finished, whatever the timestamp says — and the old rule would have waited out the full 300s deadline
+  // on a library that had demonstrably settled, reading as a slow scanner rather than a barrier that could
+  // not recognise the end.
+  const barrier = new PlexScanBarrier(100);
+  assertEq(barrier.observe({ refreshing: true, scannedAt: 100, activities: ['library.update.section'] }),
+    'running', 'the scanner is seen running, with the baseline timestamp unchanged');
+  assertEq(barrier.observe({ refreshing: false, scannedAt: 100, activities: ['butler'] }), 'complete',
+    'and going quiet at the SAME timestamp is completion');
+  assert(barrier.observedInFlight, 'the in-flight fact is what licensed it');
+});
+
+await test('...but quiet at the same timestamp with nothing ever seen running is NOT completion', () => {
+  // The other half, and the reason the disjunct is guarded by the in-flight fact rather than dropped.
+  const barrier = new PlexScanBarrier(100);
+  assertEq(barrier.observe({ refreshing: false, scannedAt: 100, activities: ['butler'] }), 'not-started',
+    'a server that was always quiet has not scanned');
+  assert(!barrier.executionSeen, 'and no execution is claimed');
+  assert(!barrier.observedInFlight, 'nor any in-flight observation');
+});
+
 await test('a stale scannedAt cannot complete a scan that has not started', () => {
   const barrier = new PlexScanBarrier(200);
   assertEq(barrier.observe({ refreshing: false, scannedAt: 200, activities: [] }), 'not-started',
@@ -1293,10 +1316,11 @@ await test('the scan ceiling is BLOCK GEOMETRY, and is independent of the fixtur
   const fixed = PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * chunk;
   assertEq(chunk, 4 * 1024 * 1024, 'the demand block is the daemon\'s readpath.ChunkBytes');
   assertEq(PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES, 1_048_576, 'and the probe window is the manifest\'s');
-  // A LARGE OBJECT COSTS THE FIXED WINDOW, WHATEVER ITS SIZE. That is the whole shape of the model.
-  assertEq(plexScanByteCeiling([512 * 1024 * 1024]), fixed, 'a 512 MiB object costs the fixed window');
+  // A LARGE OBJECT'S CEILING SATURATES AT THE FIXED WINDOW, WHATEVER ITS SIZE. That is the shape of the
+  // model — a ceiling on what a scan may read, not a prediction of what it will.
+  assertEq(plexScanByteCeiling([512 * 1024 * 1024]), fixed, 'a 512 MiB object saturates the window');
   assertEq(plexScanByteCeiling([100 * 1024 * 1024]), fixed, 'and so does a 100 MiB one');
-  // ...AND A SMALL ONE IS CLAMPED BY ITSELF: forty kilobytes cannot cost a four-megabyte block.
+  // ...AND A SMALL ONE IS CLAMPED BY ITSELF: forty kilobytes cannot be allowed a four-megabyte block.
   assertEq(plexScanByteCeiling([40_000]), PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * 40_000,
     'a tiny corpus entry is clamped by its own length');
   assertEq(plexScanByteCeiling([40_000, 40_000]), plexScanByteCeiling([40_000]) * 2, 'and they sum');
@@ -1318,16 +1342,18 @@ await test('the block-geometry ceiling admits every measured scan and refuses a 
 });
 
 await test('the product\'s fraction claim is asserted, on an object big enough for it to mean something', () => {
-  // On a fixture smaller than the fixed 24 MiB scan window, "reads a fraction of the object" is not a
-  // property a correct implementation can have. So the claim moves to a fixture several times larger, and
-  // it is held to the SHARED constant the Jellyfin gate is held to rather than one of Plex's own.
-  const fixed = PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN
+  // On a fixture smaller than the 24 MiB the ceiling saturates at, the ceiling already permits a
+  // whole-object read — so satisfying it proves nothing about the fraction. That is a limit of the
+  // INSTRUMENT, not a lower bound: it does not mean a below-one read is unreachable at those sizes. The
+  // claim therefore moves to a fixture where an ACTUAL-BYTE measurement has margin, held to the SHARED
+  // constant the Jellyfin gate is held to rather than one of Plex's own.
+  const saturated = PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN
     * PLEX_READ_GEOMETRY.CHUNK_BYTES;
   assertEq(PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION, MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION,
     'the same fraction, not a Plex-specific one');
   assertEq(MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION, 0.5, 'and the shared constant is untouched');
-  assert(PLEX_LARGE_FIXTURE.MIN_BYTES >= fixed / PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION,
-    'and the fixture is large enough that the fixed window fits under the fraction with margin');
+  assert(PLEX_LARGE_FIXTURE.MIN_BYTES >= saturated / PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION,
+    'and the fixture is large enough that the saturated ceiling sits under the fraction with margin');
   assert(GATE.includes('--large-bytes "$LARGE_SIZE"'), 'the gate asserts the fraction on it');
   assert(/test "\$LARGE_SIZE" -ge 100663296/.test(GATE),
     'and refuses to run the claim against a fixture that came out too small to test it');

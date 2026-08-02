@@ -486,9 +486,9 @@ ffmpeg_run -hide_banner -loglevel error -y \
 LARGE_SIZE="$(wc -c < "$WORK/remote/$LARGE_FILE" | tr -d ' ')"
 LARGE_SHA="$(node "$REL/sha.cjs" "$REL/remote/$LARGE_FILE")"
 # THE FIXTURE HAS TO BE BIG ENOUGH FOR THE CLAIM TO MEAN ANYTHING, and that is asserted rather than assumed:
-# identifying one object costs a fixed ~24 MiB of demand blocks whatever its size, so an encoder that
-# produced 20 MB here would make a sub-0.5 fraction unreachable and the gate would fail for a reason that has
-# nothing to do with the daemon.
+# the ceiling for identifying one object is 2 opens x min(3 x 4 MiB, the object), which saturates at 24 MiB;
+# a 0.5 fraction of an object that small leaves no margin above the bytes a scan legitimately needs, so an
+# encoder that produced 20 MB here would fail the gate for a reason that has nothing to do with the daemon.
 test "$LARGE_SIZE" -ge 100663296 \
   || die "the large fixture is $LARGE_SIZE bytes, under the 96 MiB the fraction claim needs to be testable"
 echo "  the large remote object is $LARGE_SIZE bytes"
@@ -981,12 +981,14 @@ step "one LARGE remote object, which is the only place the fraction claim can be
 # WHY THIS FIXTURE EXISTS, AND WHY EVERY OTHER BYTE BUDGET IN THIS GATE IS THE WRONG PLACE FOR THE CLAIM.
 #
 # The daemon serves a 4 MiB demand block for a one-byte read, and Plex opens each new item twice and touches
-# about three blocks per open. So identifying ONE object costs up to 24 MiB no matter how large it is. Every
-# other remote fixture here is smaller than that -- the soak source is 8.6 MB and the anchor 14.0 MB -- so
-# "a scan reads a fraction of the object" is not a property a correct implementation can have against them,
-# and the 1.28x and 1.66x measured earlier are the geometry rather than waste. An earlier version of this
-# gate answered those numbers by raising a multiplier above 1.0, which recorded the observation and retired
-# the claim.
+# about three blocks per open. So the CEILING for identifying one object is 2 x min(3 x 4 MiB, the object) --
+# topping out at 24 MiB, but clamping to twice the object below 12 MiB. Every other remote fixture here is
+# under that: the soak source is 8.6 MB and the anchor 14.0 MB, so at those sizes the ceiling already permits
+# a whole-object read and satisfying it would prove nothing about the fraction. That is a limit of the
+# INSTRUMENT and not a lower bound -- it does not mean a below-one read is unreachable there. The 1.28x and
+# 1.66x measured earlier are separately just observations of what was read. An earlier version of this gate
+# answered those numbers by raising a multiplier above 1.0, which recorded the observation and retired the
+# claim.
 #
 # 96 MiB IS FOUR TIMES THE FIXED WINDOW, so a correct scan should sit near 0.25 of the object and the SHARED
 # fraction of 0.5 -- the same constant the Jellyfin gate is held to, not one of Plex's own -- has real margin.
@@ -1738,7 +1740,11 @@ echo "reported as one. Emby, a real Unraid host and a real provider endpoint rem
 echo "run's media server sat on an ordinary bridge network -- not because Plex needs the internet, which was"
 echo "measured and found NOT to be so, but because Docker Desktop cannot publish a port from an internal"
 echo "network and the driver reaches the server through one; so scanning and playback on an air-gapped Plex"
-echo "are NOT established here. Plex also reads more of a remote object per scan than the product's"
-echo "fraction argument claims -- see the data-plane document, which reports the measured ratios rather than"
-echo "budgeting around them. The acceptance plan closes the tranche only on a Linux/Unraid run, on all three"
-echo "media servers, three consecutive times."
+echo "are NOT established here. The product's fraction-of-the-object scan argument is neither proved nor"
+echo "disproved by the small fixtures: the ceiling for identifying one object is 2 opens x min(3 x 4 MiB, the"
+echo "object), which clamps to twice the object below 12 MiB -- so on an 8.6 MB or 14.0 MB fixture it already"
+echo "permits a whole-object read and satisfying it proves nothing about the fraction. That is a limit of the"
+echo "instrument, not a lower bound. The claim is asserted here on ONE 96 MiB fixture, where an actual-byte"
+echo "measurement has margin, against the same 0.5 fraction Jellyfin is held to -- see the data-plane"
+echo "document. The acceptance plan closes the tranche only on a Linux/Unraid run, on all three media"
+echo "servers, three consecutive times."

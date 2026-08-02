@@ -265,17 +265,21 @@ object three times over, and it retired the product's central claim instead of t
 **The arithmetic the multiplier was hiding.** The daemon serves a **4 MiB demand block** for a one-byte read
 (`readpath.ChunkBytes`). Plex opens each new item **twice** — its own log shows `Plex Media Scanner --analyze`
 launched for every new item, in addition to the scan that found it, with the scheduled deep-analysis task off
-— and touches about **three blocks per open**. So identifying *one* object costs up to **24 MiB no matter how
-large it is**. The soak fixture is 8.6 MB and the anchor 14.0 MB. Against objects smaller than that fixed
-window, *"reads a fraction of the object"* is not a property a correct implementation can have: 1.28x and
-1.66x are the block geometry, not waste, and the fixture was the wrong instrument.
+— and touches about **three blocks per open**. So the *budget* for identifying one object is
+**`2 opens x min(3 x 4 MiB, object size)`**: it saturates at **24 MiB** for objects of 12 MiB or more, and
+below that it is simply **twice the object**. The soak fixture is 8.6 MB and the anchor 14.0 MB, so at those
+sizes the ceiling already permits a whole-object read — **satisfying it would not prove a fraction**. That is
+a limit of the instrument, not a lower bound: a ceiling says *not more than*, and nothing about it makes a
+below-one read unreachable or impossible for a correct implementation. **1.28x and 1.66x are, separately,
+observations of what was actually read** — not evidence of waste, and not evidence for the claim.
 
-So the ceiling is derived rather than chosen: **`opens x min(blocks x chunk, size)` per object** — a fixed
-window, clamped by the object, the same shape whether the object is 40 KB or 400 MB. Sizes are handed to it
-one at a time, because a total would let the large entries buy headroom for the small ones.
+The ceiling is therefore derived rather than chosen: **`opens x min(blocks x chunk, size)` per object** — the
+same shape whether the object is 40 KB or 400 MB. Sizes are handed to it one at a time, because a total would
+let the large entries buy headroom for the small ones.
 
 **And the product's claim is asserted where it can mean something: one 96 MiB remote fixture**, four times the
-fixed window, held to the **shared** `MAX_SCAN_BYTE_FRACTION` of 0.5 — the same constant the Jellyfin gate is
+24 MiB the budget saturates at, held to the **shared** `MAX_SCAN_BYTE_FRACTION` of 0.5 — the same constant the
+Jellyfin gate is
 held to, not one of Plex's own. Published in its own generation and measured in its own counter window, so the
 delta is attributable to that object alone. The shared constant was never widened; widening it would have
 slackened the Jellyfin gate to make this one pass.
@@ -548,10 +552,13 @@ container now names the server by address, and the gate refuses to continue with
   two.
 - **G22**, the rclone/WebDAV comparison control, and **G27**'s three-server half.
 - **The product's "a scan reads a fraction of the object" argument, on Plex — not contradicted, not yet
-  demonstrated.** The 1.28x and 1.66x measured earlier are of fixtures SMALLER than Plex's fixed ~24 MiB scan
-  cost, so no correct implementation could have scored better against them and they settle nothing either
-  way. The claim is now asserted against a 96 MiB fixture, held to the same 0.5 fraction Jellyfin is held to
-  — and **that assertion has never been observed to hold, because no run of this gate has passed**. See §3.4.
+  demonstrated.** The 1.28x and 1.66x are **observations of what was read**, not a cost the design makes
+  unavoidable. And the geometry-derived ceiling — `2 opens x min(3 x 4 MiB, object size)`, clamped per
+  object — cannot settle it either on those fixtures: at 8.6 MB and 14.0 MB it already permits a whole-object
+  read, so passing it proves nothing about the fraction. It equally does not rule a below-one read out; a
+  ceiling is not a lower bound. The claim is asserted where an actual-byte measurement has margin: a 96 MiB
+  fixture, held to the same 0.5 fraction Jellyfin is held to — and
+  **that assertion has never been observed to hold, because no run of this gate has passed**. See §3.4.
   Jellyfin remains the only server on which the argument is demonstrated.
 - **A graceful daemon restart under a long-running media server**, on Linux or Unraid. See §3.8.
 - **Anything air-gapped beyond four requests.** What was measured with no route to the internet (§3.0) is

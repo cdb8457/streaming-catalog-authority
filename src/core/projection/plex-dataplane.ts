@@ -309,12 +309,13 @@ export function plexPrefsPath(prefs: ReadonlyArray<readonly [string, string]> = 
  * fixture was large enough for the argument to be about them**. The daemon serves a 4 MiB demand block for a
  * one-byte read, and Plex opens each new item twice — its own log shows `Plex Media Scanner --analyze`
  * launched per item with the scheduled task off — touching about three blocks per open. Identifying ONE
- * object therefore costs up to 24 MiB *whatever its size*. Against an 8.6 MB soak source and a 14.0 MB
- * anchor, 1.28x and 1.66x are the block geometry, not waste, and no correct implementation could have scored
- * better.
+ * object therefore has a BUDGET of `2 x min(3 x 4 MiB, size)` — topping out at 24 MiB, but clamping to twice
+ * the object below 12 MiB. Against an 8.6 MB soak source and a 14.0 MB anchor that ceiling already permits a
+ * whole-object read, so **satisfying it would prove nothing about the fraction** — which is a limit of the
+ * instrument, not a lower bound on what the daemon reads.
  *
- * SO THE HISTORICAL RATIOS ARE KEPT AND RELABELLED: they are measurements of undersized fixtures, and they
- * say nothing either way about the product's claim.
+ * SO THE HISTORICAL RATIOS ARE KEPT AND RELABELLED: 1.28x and 1.66x are observations of what was read on
+ * undersized fixtures. They are not evidence of waste and they are not evidence for the claim.
  *
  * WHAT IS ASSERTED NOW. A ceiling derived from that geometry rather than from any fixture's size; a floor
  * derived per object so no entry can be paid for by another; and the product's actual claim, moved to the
@@ -360,15 +361,27 @@ export const PLEX_READ_GEOMETRY = Object.freeze({
  * product's central claim rather than testing it.
  *
  * THE ARITHMETIC THE MULTIPLIER WAS HIDING. The daemon serves a 4 MiB demand block for a one-byte read. Plex
- * opens a new item twice and touches about three blocks per open. So the floor on scanning ONE object is
- * about 24 MiB **regardless of how big the object is** — and the soak fixture is 8.6 MB and the anchor
- * 14.0 MB. Against objects smaller than a single demand block plan, "reads a fraction of the object" is not a
- * property a correct implementation can have; the measured 1.28x and 1.66x are the geometry, not waste.
+ * opens a new item twice and touches about three blocks per open. So the CEILING on scanning ONE object is
+ * `opens x min(blocks x chunk, size)` = `2 x min(3 x 4 MiB, size)` — saturating at 24 MiB for an object of
+ * 12 MiB or more, and equal to twice the object below that. It is the same shape whether the object is 40 KB
+ * or 400 MB.
  *
- * So the ceiling is `opens x min(blocks x chunk, size)` per object — a fixed window, clamped by the object —
- * and it is the same shape whether the object is 40 KB or 400 MB. **The product's fraction claim is then
- * asserted where it is actually meaningful: against an object several times larger than the fixed window.**
- * See `PLEX_LARGE_FIXTURE`.
+ * WHAT THAT MEANS FOR THE SMALL FIXTURES — AND WHAT IT DOES NOT. The soak source is 8.6 MB and the anchor
+ * 14.0 MB, so at those sizes this ceiling permits **at least a whole-object read**. That is a statement
+ * about the CEILING, not about the daemon: passing it would not prove a below-one fraction, and it is not a
+ * lower bound, so it does not mean a below-one read is unreachable or that no correct implementation could
+ * achieve one. A ceiling says "not more than"; inferring "not less than" from it is a mistake this comment
+ * made once and should not make again.
+ *
+ * The measured 1.28x and 1.66x are separately just observations of what was read on those fixtures. They do
+ * not prove the fraction claim either. **So the claim is tested where an actual-byte measurement has useful
+ * margin: against an object several times larger than the point at which the ceiling saturates.** See
+ * `PLEX_LARGE_FIXTURE`.
+ *
+ * THE FLOOR IS A DIFFERENT NUMBER AND LIVES IN THE CLI: one probe window per object, or the object itself
+ * when it is smaller than a window. A ceiling asks "did this cost too much"; a floor asks "did it happen at
+ * all", and a scan that fetched almost nothing would satisfy any ceiling while meaning the scanner never
+ * opened the entries.
  */
 export function plexScanByteCeiling(objectSizes: readonly number[]): number {
   const fixed = PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * PLEX_READ_GEOMETRY.CHUNK_BYTES;
@@ -381,14 +394,16 @@ export function plexScanByteCeiling(objectSizes: readonly number[]): number {
 /**
  * THE OBJECT THE FRACTION CLAIM IS ASSERTED AGAINST, and why it has to be this big.
  *
- * A fixed cost of `opens x blocks x chunk` = 24 MiB is 2.8x an 8.6 MB object and 0.25x a 96 MiB one. The
- * product's claim — that identifying an object does not require downloading it — is therefore untestable on
- * the small synthetic fixtures this gate generates for everything else, and testable on one large one. The
- * size is not a round number picked for comfort: it is the smallest multiple of the fixed window at which a
- * sub-0.5 fraction has real margin rather than sitting on the boundary.
+ * The ceiling `opens x min(blocks x chunk, size)` saturates at 24 MiB once the object reaches 12 MiB, and
+ * below that it is simply twice the object — so on a small fixture the ceiling already permits a whole-object
+ * read and CANNOT ITSELF establish a sub-one fraction. (It also cannot rule one out: a ceiling is not a lower
+ * bound.) At 96 MiB the saturated 24 MiB is 0.25 of the object, so an actual-byte measurement there has real
+ * margin, and that is where the product's claim — that identifying an object does not require downloading it
+ * — is tested. The size is not a round number picked for comfort: it is the smallest multiple of the
+ * saturated ceiling at which a sub-0.5 fraction sits clear of the boundary.
  */
 export const PLEX_LARGE_FIXTURE = Object.freeze({
-  /** 96 MiB: four times the fixed 24 MiB scan cost, so the expected fraction is about 0.25. */
+  /** 96 MiB: four times the 24 MiB the per-object budget saturates at, so the expected fraction is ~0.25. */
   MIN_BYTES: 96 * 1024 * 1024,
   /**
    * The fraction of ITS OWN LENGTH a scan of the large object may read.
@@ -793,10 +808,18 @@ export class PlexScanBarrier {
       return 'running';
     }
 
-    // Settled on every axis AND a new completed scan has been recorded. All three halves are required: a
-    // quiet server that has not scanned yet is `not-started`, and a new `scannedAt` on its own can still be
-    // followed by minutes of item-metadata work.
-    if (sample.refreshing === false && !busyActivities && scannedSinceBaseline) {
+    // SETTLED ON EVERY AXIS, AND EITHER A NEW `scannedAt` OR A SCAN THIS OBSERVER WATCHED RUN.
+    //
+    // WHY THE SECOND DISJUNCT EXISTS. Requiring `scannedSinceBaseline` alone was a hang waiting to happen:
+    // a scan that this observer SAW running and then saw go quiet is finished whatever the section's
+    // timestamp says, and Plex does not promise to move `scannedAt` for a refresh that changed nothing. The
+    // barrier would have waited out its full deadline on a library that had demonstrably settled, and the
+    // failure would have read as a slow scanner rather than as a barrier that could not recognise the end.
+    //
+    // AND THE STALE-QUIET TRAP IS STILL SHUT. A server that is quiet, has never been seen running, and
+    // carries the same `scannedAt` we baselined on satisfies neither disjunct: it falls through to
+    // `not-started`, which is exactly what it is.
+    if (sample.refreshing === false && !busyActivities && (scannedSinceBaseline || this.inFlightObserved)) {
       this.executionObserved = true;
       this.finished = true;
       return 'complete';
