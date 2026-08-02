@@ -137,10 +137,14 @@ still closes on Linux or Unraid, three consecutive times, and on **all three** m
 digest-pinned, **unclaimed** Plex Media Server over the same production mount, and
 `docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md` describes what it asserts. **A gate existing is not a gate
 passing**, the Plex column above says `not run` for exactly that reason, and it changes only when that
-document's run record (§7 of it) carries a real count. The same document records the one thing the gate
-cannot make offline: an unclaimed Plex answers **401** to its own local API when it cannot reach plex.tv, so
-the media server container has egress, which is a property of that image and is written down rather than
-worked around.
+document's run record (§7 of it) carries a real count. That document also carries a **retracted** finding
+and the confound behind it: three probes said an unclaimed Plex needs plex.tv to answer its own local API,
+all three addressed the server by container name, and what was refusing was Plex's Host-header rebinding
+protection. Re-measured with no route to the internet and the server addressed by IP, an unclaimed Plex
+answered the four requests needed to inspect and create a library — and no more than those four were tried,
+so scanning and playback on an air-gapped Plex are **not** established. It records one further measurement
+the acceptance plan should not be read as covering: **Plex reads more of a remote object per scan than §5's
+fraction argument claims**, which is reported there with its ratios rather than budgeted around.
 
 ### 6.2 What the five-minute gates prove, and the one thing G10 does not
 

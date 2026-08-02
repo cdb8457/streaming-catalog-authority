@@ -8,8 +8,9 @@ import {
 } from '../core/projection/media-server-dataplane.js';
 import {
   PLEX_ACCEPT_JSON, PLEX_SERVER_PREFS, PlexScanBarrier, parsePlexVariantPlaylist, plexClientQuery,
-  plexCreateSectionPath, plexDirectPlayPath, plexHasQueryCredential, plexPartIsOrdinaryFile, plexPrefsPath,
-  plexSeekPositionErrorCeilingSeconds, plexSegmentPath, plexSegmentPlanFor, plexStripQueryCredentials,
+  plexCreateSectionPath, plexDirectPlayPath, plexHasQueryCredential, plexIsStartingUp,
+  plexPartIsOrdinaryFile, plexPrefsPath, plexSeekPositionErrorCeilingSeconds, plexSegmentPath,
+  plexSegmentPlanFor, plexStripQueryCredentials,
   plexTranscodePingPath, plexTranscodeStartPath, plexTranscodeStopPath, plexVariantPlaylistPath,
   type PlexEncoderSample, type PlexPlaylistEntry, type PlexScanSample,
 } from '../core/projection/plex-dataplane.js';
@@ -185,10 +186,8 @@ export interface BootstrapOutcome {
  * assertion in this gate while being tied to somebody's identity, and the run would silently stop being
  * reproducible on another machine.
  *
- * `/identity` IS THE ONLY ENDPOINT USED HERE, deliberately. It is also the only endpoint an unclaimed server
- * that cannot reach plex.tv still answers — see `PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY` —
- * so a host where that reachability is missing fails at the NEXT step with a 401 that names the cause,
- * rather than hanging here.
+ * `/identity` IS THE ONLY ENDPOINT USED HERE, deliberately: it is the cheapest thing that proves the process
+ * is up and reports whether it is claimed, and it is answered before the server will accept a write.
  */
 export async function awaitServer(state: GateState): Promise<BootstrapOutcome> {
   const identity = await until('the media server to answer /identity',
@@ -214,17 +213,22 @@ export async function awaitServer(state: GateState): Promise<BootstrapOutcome> {
  * Confirm the local API answers WITHOUT a credential, which is what the rest of the gate depends on.
  *
  * IT IS A SEPARATE STEP FROM `awaitServer` BECAUSE IT FAILS FOR A DIFFERENT REASON. `/identity` answering is
- * "the process is up". `/` answering is "this server has decided to trust this address" — and measured, that
- * decision is contingent on the server having reached plex.tv. Splitting them means the log says which of the
- * two went wrong instead of leaving a bare 401 three phases later.
+ * "the process is up". `/` answering is "this server has decided to treat this request as local". Splitting
+ * them means the log says which of the two went wrong instead of leaving a bare 401 three phases later.
+ *
+ * AND THE DIAGNOSTIC NAMES THE CAUSE THAT WAS ACTUALLY MEASURED. It used to blame plex.tv reachability, on
+ * the strength of a finding that was later retracted: what refuses a local request is the `Host` header
+ * naming something the server does not recognise. Pointing an operator at their internet connection for a
+ * fault in their URL is worse than saying nothing.
  */
 export async function assertAnonymousLocalApi(state: GateState): Promise<void> {
   const exchange = await request(state, 'GET', `/?${new URLSearchParams(plexClientQuery()).toString()}`);
   try {
     if (exchange.response.status === 401) {
-      throw new GateFailure('the media server answered 401 to its own local API without a credential. On an '
-        + 'UNCLAIMED server that grant is contingent on the server being able to reach plex.tv; a network '
-        + 'with no egress produces exactly this. See the data-plane document, section on offline operation.');
+      throw new GateFailure('the media server answered 401 to its own local API without a credential. '
+        + 'Measured cause: Plex treats a request whose Host header names something it does not recognise as '
+        + 'non-local and refuses it, so the base URL must address the server by IP or localhost rather than '
+        + 'by a container or host name. See PLEX_REJECTS_UNRECOGNISED_HOST_HEADER.');
     }
     if (!exchange.response.ok) {
       throw new GateFailure(`the media server answered ${exchange.response.status} to its own local API`);
@@ -284,12 +288,47 @@ async function sections(state: GateState): Promise<SectionDirectory[]> {
   return body?.MediaContainer?.Directory ?? [];
 }
 
-/** Create the library, and assert the server kept the agent and scanner that were asked for. */
-export async function addMovieLibrary(state: GateState, mountPath: string, name: string): Promise<void> {
+/**
+ * Create the library, waiting out the ONE refusal that means "not yet" and failing on every other.
+ *
+ * THE DEFECT THIS CLOSES, FOUND BY THE FIRST REAL RUN. `/identity` answered, `/` answered, `PUT /:/prefs`
+ * answered and every preference read back correctly — and then the first WRITE came back
+ * `400 ... the server is still starting up. Please retry later`, and the gate died. Plex accepts reads
+ * before it will accept a library creation, so "the server is up" and "the server will create a library"
+ * are two different facts and only the first was being checked.
+ *
+ * IT IS NOT A RETRY ON 400, AND THE DIFFERENCE IS THE WHOLE POINT. Retrying every 400 would swallow every
+ * genuine refusal this endpoint makes — an agent that does not exist, a scanner that does not exist, a
+ * location the server cannot see — and turn each into a two-minute wait ending in a timeout with the real
+ * reason thrown away. Those must fail loudly on the first attempt, and they do: `plexIsStartingUp` keys on
+ * the sentence Plex writes, and anything else is raised immediately with the server's own body attached.
+ *
+ * `budgetMs` IS A SEAM FOR THE OFFLINE SUITE, which drives a server that never stops saying "not yet" and
+ * requires this to end. It defaults to the shared bootstrap deadline, and the suite asserts that it does —
+ * a seam that let a caller pass `Infinity` would be a bound in name only.
+ */
+export async function addMovieLibrary(
+  state: GateState, mountPath: string, name: string,
+  budgetMs: number = MEDIA_SERVER_DEADLINES_MS.BOOTSTRAP,
+): Promise<void> {
   const existing = (await sections(state)).find((section) => section.title === name);
   if (existing === undefined) {
-    await json<unknown>(state, 'POST', plexCreateSectionPath(name, mountPath),
-      MEDIA_SERVER_DEADLINES_MS.BOOTSTRAP);
+    const deadline = new Deadline('the media server to accept a library creation', budgetMs, now());
+    for (;;) {
+      const exchange = await request(state, 'POST', plexCreateSectionPath(name, mountPath),
+        { timeoutMs: MEDIA_SERVER_DEADLINES_MS.API_REQUEST });
+      const status = exchange.response.status;
+      const body = await exchange.response.text().catch(() => '');
+      exchange.release();
+      if (status >= 200 && status < 300) break;
+      if (!plexIsStartingUp(status, body)) {
+        throw new GateFailure(`creating the library answered ${status}: ${body.slice(0, 300)}`);
+      }
+      if (deadline.expired(now())) {
+        throw new GateFailure(`${deadline.message()} (it was still starting up after ${budgetMs}ms)`);
+      }
+      await sleep(MEDIA_SERVER_POLL_INTERVAL_MS);
+    }
   }
   const section = await until('the library section to exist', MEDIA_SERVER_DEADLINES_MS.BOOTSTRAP,
     async () => (await sections(state)).find((candidate) => candidate.title === name));
@@ -696,9 +735,10 @@ export interface TranscodeSession {
 }
 
 export async function openTranscodeSession(
-  state: GateState, item: ItemRecord, session: string,
+  state: GateState, item: ItemRecord, session: string, offsetSeconds = 0,
 ): Promise<TranscodeSession> {
-  const master = await text(state, 'GET', plexTranscodeStartPath(item.metadataKey, session),
+  const master = await text(state, 'GET',
+    plexTranscodeStartPath(item.metadataKey, session, offsetSeconds),
     MEDIA_SERVER_DEADLINES_MS.TRANSCODE);
   const variant = await text(state, 'GET', plexVariantPlaylistPath(session),
     MEDIA_SERVER_DEADLINES_MS.TRANSCODE);
@@ -970,24 +1010,48 @@ export interface SeekSetOutcome {
   readonly playlistSeconds: number;
   readonly positionErrorCeilingSeconds: number;
   readonly session: string;
+  /**
+   * How long the session took to produce its FIRST output, measured separately from the ten seeks.
+   *
+   * A SEEK IS A TRANSITION WITHIN AN ESTABLISHED SESSION, AND THE FIRST SEGMENT OF A COLD SESSION IS NOT
+   * ONE. Opening a transcode session makes Plex launch an encoder, open the projected file through the
+   * mount, and start writing; a request that waits for all of that is measuring playback STARTUP, which G8
+   * budgets separately and G9 does not mention. Charging it to seek number one measured two different things
+   * under one name — and the ten-second seek contract, which is what G9 actually asks for, is unchanged and
+   * still applies to all ten.
+   *
+   * It is returned rather than discarded, and the caller asserts it against its own ceiling, so a session
+   * that took a minute to produce a picture fails LOUDLY here instead of disappearing into the gap between
+   * two gates.
+   */
+  readonly warmupMs: number;
 }
 
 /**
- * Ten seeks, performed the way an HLS client performs one.
+ * Ten seeks, performed the way a PLEX client performs one: a new `start.m3u8` at the wanted offset.
  *
- * NOT `offset=` ON A NEW `start.m3u8`, AND THAT IS A MEASUREMENT. Against the pinned server, a session opened
- * at `offset=300` produces a variant playlist listing the WHOLE file — identical to `offset=0` — and answers
- * every segment below the offset with an 188-byte body. So "seek by re-opening at an offset" is not a thing
- * this server does; what it does is answer the segment you ask for, wherever it is, restarting its encoder at
- * that position — which is exactly the non-sequential, multi-position read this data plane exists to make
- * cheap.
+ * THIS IS NOT HOW THE JELLYFIN GATE SEEKS, AND THE DIFFERENCE IS A MEASUREMENT RATHER THAN A PREFERENCE.
+ * Jellyfin answers an out-of-order segment request from a held playlist in well under a second, so its gate
+ * holds one playlist and asks for the segment it wants. The Plex driver was written the same way and it
+ * HANGS: against a purely local file, with no FUSE, no provider and nothing of this product involved, the
+ * gate's own seek order produced a 45-second stall and then a timeout. Two full gate runs were lost to it.
+ * See `PLEX_SEEK_IS_AN_OFFSET_RESTART` for both measurement tables.
+ *
+ * So each seek TELLS the server where to restart — which is what the client actually does — and then asks
+ * for the segment at that position. The same ten positions go from "wedges after six" to about 300 ms each,
+ * and nothing about what is asserted changed: ten distinct bodies, every one decoded, every decoded start
+ * timestamp a constant offset from the position the server's own playlist gives that segment.
+ *
+ * THE ELAPSED TIME COVERS THE WHOLE SEEK — the offset request, the playlist, and the segment — because that
+ * is what a person waiting for the picture experiences. Timing only the final GET would hide the restart
+ * that the seek actually consists of.
  *
  * THE POSITION IS THE SERVER'S, NOT THE GATE'S ARITHMETIC. `serverPositionSeconds` is the running sum of the
- * playlist's own `#EXTINF` values up to the requested segment: the server stating where that segment starts.
- * A gate that computed `index * 8` would be asserting a property of one build's segmenter.
+ * playlist's own `#EXTINF` values up to the requested segment. A gate that computed `index * 8` would be
+ * asserting a property of one build's segmenter.
  *
- * THE SETTLE BETWEEN SEEKS IS A CLIENT RATE, NOT A RETRY. Each seek must still answer first time, and the ten
- * seconds are measured around the request itself, after the wait.
+ * THE SETTLE BETWEEN SEEKS IS A CLIENT RATE, NOT A RETRY. Each seek must still answer first time, and the
+ * ten seconds are measured around the seek itself, after the wait.
  */
 export async function mediaTimeSeekSet(
   state: GateState, item: ItemRecord, session: string, positions: readonly number[],
@@ -995,18 +1059,52 @@ export async function mediaTimeSeekSet(
   const opened = await openTranscodeSession(state, item, session);
   const seeks: SeekObservation[] = [];
   const segments: Uint8Array[] = [];
+  let warmupMs = 0;
+  // ACCUMULATED ACROSS THE OPENING SESSION AND EVERY OFFSET RESTART. See the loop below.
+  let credentialsInGeneratedUrls = opened.credentialsInGeneratedUrls;
   try {
+    // THE SESSION IS BROUGHT UP BEFORE THE FIRST SEEK, AND THAT COST IS TIMED UNDER ITS OWN NAME. See
+    // `warmupMs`. The warm-up reads the segment at the start of the media, which is the one position the
+    // seek plan never asks for, so it cannot pre-warm any of the ten.
+    const warmupStart = now();
+    await fetchSegment(state, session, 0, MEDIA_SERVER_DEADLINES_MS.TRANSCODE);
+    warmupMs = now() - warmupStart;
+    await pingTranscodeSession(state, session);
+
     for (let index = 0; index < positions.length; index += 1) {
       if (index > 0) await sleep(SEEK_SETTLE_MS);
       const wanted = positions[index] as number;
-      const plan = plexSegmentPlanFor(opened.entries, wanted);
+      const startedAt = now();
+      // EVERY SEEK ANNOUNCES ITSELF BEFORE IT IS ATTEMPTED, AND AGAIN WHEN IT LANDS.
+      //
+      // THE DEFECT THIS CLOSES. The per-seek profile used to be recorded only after this function returned.
+      // When seek six timed out, the function returned nothing, the profile was never written, and the
+      // cleanup trap deleted the run directory and the media server's logs — so a thirty-minute run left
+      // behind one line saying a segment had timed out and no timings for the five seeks that had worked.
+      // Printing on both edges means a mid-set throw still leaves the completed seeks, in order, on stdout.
+      //
+      // IT CARRIES NO LOCATOR: an index, a media position and a duration.
+      process.stdout.write(`    seek ${index} -> position ${Math.round(wanted)}s: requesting\n`);
+      // THE SEEK ITSELF: restart the encoder at the wanted position. The playlist that comes back is the
+      // server's current statement of where every segment sits, and it is what the plan is taken from —
+      // re-read each time rather than cached, so a server that re-segmented would be followed rather than
+      // silently mismeasured.
+      const atOffset = await openTranscodeSession(state, item, session, wanted);
+      // EVERY OFFSET RESTART GENERATES A FRESH MASTER AND VARIANT PLAYLIST, so every one of them is checked
+      // for a credential. Counting only the session this set opened with would have left ten generated
+      // playlists unexamined — and a token that appeared only in a later one would have gone unseen.
+      credentialsInGeneratedUrls += atOffset.credentialsInGeneratedUrls;
+      const plan = plexSegmentPlanFor(atOffset.entries, wanted);
       if (plan === undefined) throw new GateFailure(`no segment covers ${wanted}s`);
       const fetched = await fetchSegment(state, session, plan.index, MEDIA_SERVER_DEADLINES_MS.SEEK);
+      const elapsedMs = now() - startedAt;
+      process.stdout.write(`    seek ${index} -> server position ${Math.round(plan.startSeconds)}s, `
+        + `${elapsedMs}ms, ${fetched.bytes} bytes\n`);
       seeks.push({
         index,
         requestedSeconds: wanted,
         serverPositionSeconds: plan.startSeconds,
-        elapsedMs: fetched.elapsedMs,
+        elapsedMs,
         bytes: fetched.bytes,
         sha256: fetched.sha256,
       });
@@ -1019,10 +1117,11 @@ export async function mediaTimeSeekSet(
   return {
     seeks,
     segments,
-    credentialsInGeneratedUrls: opened.credentialsInGeneratedUrls,
+    credentialsInGeneratedUrls,
     playlistSeconds: opened.playlistSeconds,
     positionErrorCeilingSeconds: plexSeekPositionErrorCeilingSeconds(opened.entries),
     session,
+    warmupMs,
   };
 }
 
@@ -1067,13 +1166,21 @@ export async function transcodeSoak(
   let failedSessionPolls = 0;
   const startedAt = now();
 
+  let takeLast = false;
   try {
     for (const entry of opened.entries) {
       // THE WINDOW IS BOUNDED BY MEDIA POSITION, NOT BY SEGMENT COUNT. `opts.seconds` of media, consumed at
       // one media second per wall second, is `opts.seconds` of wall clock — and the analysis afterwards
       // asserts both independently, because either alone is a different claim: media without wall is a
       // download, wall without media is a sleep.
-      if (entry.startSeconds >= opts.seconds) break;
+      //
+      // THE SEGMENT THAT REACHES THE BOUNDARY IS INCLUDED, AND THAT IS ARITHMETIC RATHER THAN GENEROSITY.
+      // Segments are eight seconds here, so the last one that STARTS strictly before three hundred begins at
+      // 296 — and since arrival wall-time tracks media start, stopping there gives a window whose measured
+      // wall span is 296 seconds and which fails a "five minutes" assertion by four seconds, on a run where
+      // nothing was wrong. Taking the segment that crosses the boundary makes the span 304.
+      if (takeLast) break;
+      if (entry.startSeconds >= opts.seconds) takeLast = true;
 
       // PACE TO THE MEDIA CLOCK. The target wall moment for this segment is its own media start; sleeping to
       // it makes the client's consumption rate one media second per wall second.

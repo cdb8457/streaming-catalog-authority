@@ -2,10 +2,12 @@
 # The PLEX data-plane gate for a host where it is OPTIONAL.
 #
 # WHAT THIS IS FOR. A general CI job that runs on whatever runner it is given cannot require a mount: a host
-# without /dev/fuse is not a defect there, it is a fact about the runner. Nor can it require egress to
-# plex.tv, which an unclaimed Plex needs in order to answer its own local API at all. This entry point runs
-# the real gate and maps its SKIP status (77) to 0, so such a job stays green when the gate genuinely cannot
-# run.
+# without /dev/fuse is not a defect there, it is a fact about the runner. This entry point runs the real gate
+# and maps its SKIP status (77) to 0, so such a job stays green when the gate genuinely cannot run.
+#
+# THE GATE HAS ONE SKIP CONDITION AND IT IS /dev/fuse. It briefly had a second — plex.tv reachability — on the
+# strength of a finding that was retracted; an unclaimed Plex does not need the internet to answer a local
+# request, and what had actually been refusing was its Host-header check. That skip is gone.
 #
 # WHAT IT IS NOT FOR, AND THE DISTINCTION IS THE POINT. It is NOT the command the acceptance plan names as
 # evidence. `npm run go:plex-dataplane-gate` and `npm run go:plex-dataplane-gate:three` propagate 77, so a

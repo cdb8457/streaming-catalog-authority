@@ -7,7 +7,8 @@ import {
   type GateResult, type SeekDecode, type SoakProbe,
 } from '../core/projection/media-server-dataplane.js';
 import {
-  PLEX_ENCODER_FLOORS, analysePlexEncoderLiveness,
+  PLEX_ENCODER_FLOORS, PLEX_LARGE_FIXTURE, PLEX_READ_GEOMETRY, analysePlexEncoderLiveness,
+  plexScanByteCeiling, plexSeekByteCeiling,
 } from '../core/projection/plex-dataplane.js';
 import {
   GateFailure, addMovieLibrary, appendResult, applyPreferences, assertAnonymousLocalApi, awaitFile,
@@ -128,9 +129,10 @@ async function main(): Promise<void> {
 
   switch (args.command) {
     case 'bootstrap': {
-      // NO WIZARD, NO ACCOUNT, NO CLAIM TOKEN. An unclaimed Plex serves its whole local API to an address in
-      // `allowedNetworks` with no credential, which is what lets this gate run against a real Plex without
-      // anybody's personal credentials — and `claimed` is asserted rather than assumed.
+      // NO WIZARD, NO ACCOUNT, NO CLAIM TOKEN. An unclaimed Plex answers a local request with no credential,
+      // which is what lets this gate run against a real Plex without anybody's personal credentials — and
+      // `claimed` is asserted rather than assumed. What counts as local is decided by the `Host` header, not
+      // by the peer address; see `PLEX_REJECTS_UNRECOGNISED_HOST_HEADER`.
       const state: GateState = { baseUrl: need(args, 'base') };
       const outcome = await awaitServer(state);
       await assertAnonymousLocalApi(state);
@@ -486,18 +488,44 @@ async function main(): Promise<void> {
       record(args, withinBudget(`${gate}-resolutions`, delta('resolutions'),
         Math.ceil(entries * MEDIA_SERVER_BUDGETS.MAX_SCAN_RESOLUTION_MULTIPLIER),
         `denominator: ${entries} remote entries`));
-      // THE ONE THAT MATTERS, AND IT NAMES BOTH ITS DENOMINATORS. A scanner that downloaded the object to
-      // identify it sits at 1.0 of its length; the budget for objects above the contract's single-probe
-      // threshold is a FRACTION of it. Below that threshold the probe plan is one window covering the whole
-      // object, so its budget is above 1.0 by construction — and folding the two together would let the
-      // large entries pay for the small ones.
+      // WHAT A PLEX SCAN MAY COST, DERIVED FROM BLOCK GEOMETRY RATHER THAN FROM A MULTIPLE OF THE FIXTURE.
+      //
+      // The daemon serves a 4 MiB demand block for a one-byte read; Plex opens each new item twice and
+      // touches about three blocks per open. So scanning ONE object costs up to `2 x 3 x 4 MiB`, clamped by
+      // the object — a FIXED window, independent of size. On fixtures smaller than that window "reads a
+      // fraction of the object" is not a property a correct implementation can have, and the earlier
+      // attempt to express this as a >1.0 multiplier was recording the observation rather than budgeting it.
+      // The product's fraction claim is asserted separately, against an object several times larger than
+      // the window: `--large-bytes`. See `plexScanByteCeiling` and `PLEX_LARGE_FIXTURE`.
       const smallBytes = optionalNumber(args, 'small-bytes', 0);
-      const byteBudget = Math.floor(remoteBytes * MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION
-        + smallBytes * MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER);
-      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), byteBudget,
-        `denominators: ${remoteBytes} bytes above the single-probe threshold at `
-        + `x${MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION}, ${smallBytes} bytes below it at `
-        + `x${MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER}`));
+      const sizes = (args.flags.get('object-sizes') ?? '').split(',')
+        .map((entry) => Number(entry.trim())).filter((entry) => Number.isFinite(entry) && entry > 0);
+      const totalRemote = remoteBytes + smallBytes;
+      if (sizes.length > 0) {
+        const byteBudget = plexScanByteCeiling(sizes);
+        record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), byteBudget,
+          `${sizes.length} remote objects, each at most `
+          + `${PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM} opens x `
+          + `${PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN} demand blocks of `
+          + `${PLEX_READ_GEOMETRY.CHUNK_BYTES} bytes, clamped by the object`));
+        // A FLOOR, because a scan that fetched almost nothing would score perfectly against any ceiling and
+        // would mean the scanner never opened the entries. One probe window per object is the least a
+        // scanner that really looked at them could have cost.
+        record(args, atLeast(`${gate}-provider-bytes-floor`, delta('bytesServed'),
+          Math.min(totalRemote, sizes.length * PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES),
+          'a scan that read almost nothing did not open the entries'));
+      }
+      // THE PRODUCT'S OWN CLAIM, ASSERTED WHERE IT IS MEANINGFUL. Against an object several times larger
+      // than the fixed scan window, a scanner that downloaded it to identify it sits at 1.0 and the daemon
+      // must sit well under. This uses the SHARED fraction, not one of Plex's own.
+      const largeBytes = optionalNumber(args, 'large-bytes', 0);
+      if (largeBytes > 0) {
+        record(args, withinBudget(`${gate}-large-object-byte-fraction`,
+          Math.round((delta('bytesServed') / largeBytes) * 1000) / 1000,
+          PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION,
+          `identifying a ${largeBytes}-byte object read this fraction of it; a scanner that downloaded it `
+          + 'to identify it would sit at 1.0'));
+      }
       record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
@@ -519,11 +547,26 @@ async function main(): Promise<void> {
       const gate = need(args, 'gate');
       const objectBytes = optionalNumber(args, 'object-bytes', 1);
       const multiplier = optionalNumber(args, 'max-object-multiplier', 3);
+      // THE DENOMINATOR CAN BE AN EVENT RATHER THAN THE WINDOW, AND FOR SEEKS IT MUST BE. A seek on Plex
+      // restarts the encoder, and a restart re-opens the object — so "ten seeks cost at most six times the
+      // object" is an arbitrary window multiple, while "one seek costs at most 1.2x the object" is a
+      // statement about what a seek IS. Callers that measure a continuous window leave `events` at one and
+      // nothing changes for them.
+      const events = Math.max(1, optionalNumber(args, 'events', 1));
       const delta = (key: string): number => (after[key] ?? 0) - (before[key] ?? 0);
 
+      // A SEEK WINDOW IS BUDGETED FROM BLOCK GEOMETRY, NOT FROM THE OBJECT'S SIZE. Each seek restarts the
+      // encoder, and a restart is an open: up to three 4 MiB demand blocks, plus the session's setup reads.
+      // `1.2 x object x 10` was both loose and unstable — on a small fixture it sat a hair above the
+      // arithmetic floor, and on a large one it would have meant nothing.
+      const seekBudget = args.flags.get('seek-ceiling') === 'true';
       record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'),
-        Math.floor(objectBytes * multiplier),
-        `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`));
+        seekBudget ? plexSeekByteCeiling(events) : Math.floor(objectBytes * multiplier * events),
+        seekBudget
+          ? `${events} seeks, each an encoder restart of at most `
+            + `${PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN} demand blocks of `
+            + `${PLEX_READ_GEOMETRY.CHUNK_BYTES} bytes, plus one session setup allowance`
+          : `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`));
       record(args, withinBudget(`${gate}-range-requests`, delta('rangeRequests'),
         optionalNumber(args, 'max-range-requests', 4096)));
       record(args, atLeast(`${gate}-range-requests-floor`, delta('rangeRequests'),
@@ -643,7 +686,16 @@ async function main(): Promise<void> {
         playlistSeconds: outcome.playlistSeconds,
         positionErrorCeilingSeconds: outcome.positionErrorCeilingSeconds,
         durationSeconds: duration,
+        warmupMs: outcome.warmupMs,
       }, null, 2)}\n`);
+      // THE SESSION WARM-UP, UNDER ITS OWN NAME AND ITS OWN CEILING. A seek is a transition within an
+      // established session; bringing the session up is playback startup, which G8 budgets and G9 does not
+      // mention. It is asserted rather than merely recorded, so a session that took a minute to produce a
+      // picture fails here instead of disappearing into the gap between two gates.
+      record(args, withinBudget(`PX19-session-warmup-seconds:${ref(item)}`,
+        Math.round((outcome.warmupMs / 1_000) * 100) / 100,
+        MEDIA_SERVER_DEADLINES_MS.SEEK / 1_000,
+        'bringing the encoder up and reading its first output, measured apart from the ten seeks'));
       record(args, exactly(`PX19-no-credential-in-generated-urls:${ref(item)}`,
         outcome.credentialsInGeneratedUrls, 0));
       record(args, exactly(`PX19-seeks-performed:${ref(item)}`, outcome.seeks.length,
@@ -673,6 +725,17 @@ async function main(): Promise<void> {
       };
       const decodes = JSON.parse(readFileSync(need(args, 'probes'), 'utf8')) as SeekDecode[];
       const analysis = analyseSeekSet(seekFile.seeks, decodes);
+
+      // THE PER-SEEK PROFILE, RECORDED BEFORE ANY SET-LEVEL VERDICT. A failing "slowest seek" number with no
+      // breakdown behind it is undiagnosable: it cannot say whether one position was pathological or the
+      // whole set was slow, and the run directory is deleted on the way out. This costs one line and turns
+      // the next failure into a fact. It carries no path, no locator and no address.
+      record(args, {
+        gate: `PX19-seek-elapsed-profile:${handle}`, verdict: 'pass',
+        note: seekFile.seeks
+          .map((seek) => `#${seek.index}@${Math.round(seek.serverPositionSeconds)}s=${seek.elapsedMs}ms`)
+          .join(' '),
+      });
 
       record(args, exactly(`PX19-seek-count:${handle}`, analysis.count, MEDIA_SERVER_SOAK.SEEK_COUNT));
       record(args, withinBudget(`PX19-slowest-seek-seconds:${handle}`,
@@ -819,12 +882,21 @@ async function main(): Promise<void> {
     }
 
     case 'redaction-check': {
+      // THE ARTIFACT'S FORMAT DECIDES HOW IT IS READ, NOT ITS FILE EXTENSION.
+      //
+      // THE DEFECT THIS CLOSES. This used to pick `JSON.parse` for anything ending in `.json`. The results
+      // artifact is `results.json` and is NDJSON — one `GateResult` per line, appended by `appendResult` as
+      // each phase records a verdict — so the check threw `Unexpected non-whitespace character after JSON at
+      // position 141` at the very end of a run that had otherwise produced 272 passing assertions. The
+      // redaction check is the last thing standing between a report and whatever it might leak, and it was
+      // deciding how to parse its subject by looking at the subject's NAME.
+      //
+      // `readResults` is the reader that matches the writer, and it is the only one used here.
       const path = need(args, 'file');
       if (!existsSync(path)) fail(`${path.split(/[/\\]/).pop()} does not exist`);
-      const parsed = path.endsWith('.json')
-        ? JSON.parse(readFileSync(path, 'utf8'))
-        : readResults(path);
-      const problems = findRedactionProblems(parsed);
+      const results = readResults(path);
+      if (results.length === 0) fail('the results artifact is empty, so the check would have no subject');
+      const problems = findRedactionProblems(results);
       if (problems.length > 0) {
         for (const problem of problems.slice(0, 20)) console.error(`  ${problem.kind} at ${problem.at}`);
         fail('a kept artifact is not redaction-safe');

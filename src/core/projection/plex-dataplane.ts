@@ -1,5 +1,5 @@
 import {
-  MEDIA_SERVER_SOAK, TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC,
+  MEDIA_SERVER_BUDGETS, MEDIA_SERVER_SOAK, TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC,
 } from './media-server-dataplane.js';
 
 // Projection Phase 1 — the PLEX data-plane contract.
@@ -43,32 +43,74 @@ import {
 // ---------------------------------------------------------------------------------------------------------
 
 /**
- * WHETHER THIS GATE NEEDS A PLEX ACCOUNT: no. WHETHER IT NEEDS THE INTERNET: yes, and that is a finding.
+ * WHETHER THIS GATE NEEDS A PLEX ACCOUNT: no. WHETHER IT NEEDS THE INTERNET: **no** — and getting that
+ * second answer right took retracting the first answer this file gave.
  *
  * An UNCLAIMED Plex Media Server — one with no `PLEX_CLAIM` token, no `PlexOnlineMail` and no
- * `PlexOnlineToken` — serves its whole local HTTP API to an address inside `allowedNetworks` with **no
- * credential at all**. That is what lets this gate run against a real Plex without asking anybody for their
- * personal credentials, and the gate asserts `claimed="0"` rather than assuming it.
+ * `PlexOnlineToken` — answers a local address with **no credential at all**. That is what lets this gate run
+ * against a real Plex without asking anybody for their personal credentials, and the gate asserts
+ * `claimed="0"` rather than assuming it.
  *
- * IT IS NOT AN OFFLINE SERVER, AND CLAIMING OTHERWISE WOULD BE THE OVERCLAIM THIS REPOSITORY EXISTS TO STOP.
- * Measured three ways against the pinned image:
+ * WHAT THIS COMMENT USED TO SAY, AND WHY IT WAS WRONG. It said an unclaimed Plex answers 401 to everything
+ * but `/identity` unless it can reach plex.tv, and it cited three measurements. All three were real
+ * observations and the conclusion drawn from them was false, because every one of them addressed the server
+ * **by its Docker container name** — and the refusal had nothing to do with plex.tv. See
+ * `PLEX_REJECTS_UNRECOGNISED_HOST_HEADER`.
  *
- *   1. Started on a Docker network created `--internal`, the server comes up, answers `/identity` with
- *      `claimed="0"` — and answers **401 to `GET /`, `GET /library/sections` and `POST /library/sections`**.
- *   2. A server that was already answering unauthenticated was detached from its internet-capable network and
- *      attached to an internal one. Within seconds every endpoint except `/identity` began answering 401.
- *   3. Its own log says why: `MyPlex: Error -6 requesting JSON from https://servers.plex.tv/...`.
+ * WHAT THE CORRECTED MEASUREMENT COVERS, AND EXACTLY THAT. On a network created `--internal`, with DNS for
+ * `servers.plex.tv` failing inside the container throughout and the server addressed **by IP**, these four
+ * requests were made and no others:
  *
- * So the unauthenticated-local-access grant is contingent on the server being able to reach plex.tv and
- * confirm it is unclaimed. An air-gapped Plex is **not achievable with this image**, and this gate therefore
- * runs the media server on a network with egress. What stays private is everything the product owns: the
- * daemon, the fake provider endpoint and the mount are on the gate's own network, the provider's counters
- * account for every media byte the server fetched, and no provider access material may leave the daemon.
+ *   `GET /` 200 | `GET /library/sections` 200 | `GET /:/prefs` 200 | `POST /library/sections` 201
  *
- * This constant exists so the offline suite can assert the gate documents the dependency rather than
- * discovering it on a host where it does not hold.
+ * So what is established is: **an unclaimed Plex with no route to the internet answers the endpoints needed
+ * to inspect and create a library.** It is NOT established that scanning, direct play, seeking or
+ * transcoding work air-gapped — this gate has never run that way, because Docker Desktop cannot publish a
+ * port from an internal network and its driver reaches the server through one. `PLEX_AIR_GAPPED_TESTED_PATHS`
+ * is the exact list, so the claim cannot drift upward into "the whole local API".
+ *
+ * The three original observations are kept in the document rather than deleted, because a confounded
+ * experiment that produced a confident wrong conclusion is worth more as a record than as an absence.
  */
-export const PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY = true;
+export const PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY = false;
+
+/**
+ * The exact requests that were made against an air-gapped unclaimed Plex, and therefore the exact extent of
+ * the claim. Anything not on this list is not covered by it.
+ */
+export const PLEX_AIR_GAPPED_TESTED_PATHS: readonly string[] = Object.freeze([
+  'GET /',
+  'GET /library/sections',
+  'GET /:/prefs',
+  'POST /library/sections',
+]);
+
+/**
+ * PLEX REFUSES A REQUEST WHOSE `Host` HEADER IS A NAME IT DOES NOT RECOGNISE, AND THAT IS THE WHOLE OF IT.
+ *
+ * Measured, with everything else held identical — same network, same peer, same unclaimed server:
+ *
+ *   | request                                    | answer |
+ *   |--------------------------------------------|--------|
+ *   | `http://<container-name>:32400/library/sections` | **401** |
+ *   | `http://<container-ip>:32400/library/sections`   | **200** |
+ *   | `http://<container-ip>:...` with `Host: <name>`  | **401** |
+ *   | `http://<container-name>:...` with `Host: <ip>`  | **200** |
+ *   | `http://<container-name>:...` with `Host: localhost:32400` | **200** |
+ *
+ * The server's own log names it: `Request came in with unrecognized domain / IP '<name>' in header Host;
+ * treating as non-local`. It is DNS-rebinding protection, it is keyed on the `Host` header rather than on
+ * the peer address, and `allowedNetworks` does not override it.
+ *
+ * WHAT IT COST BEFORE IT WAS UNDERSTOOD. Two things, and the second is the worse one. It failed the paced
+ * direct-play phase, whose consumer reached the server container-to-container by name and got a 401 from
+ * ffmpeg. And it produced a completely wrong finding about plex.tv, written into this file, into the
+ * data-plane document, into the acceptance plan and into a skip check in the gate that would have made an
+ * offline host report SKIPPED for a reason that does not exist.
+ *
+ * So every URL this gate hands to a container names the server by ADDRESS.
+ */
+export const PLEX_REJECTS_UNRECOGNISED_HOST_HEADER = true;
 
 /**
  * The gate's own Plex client identity.
@@ -147,6 +189,35 @@ export const PLEX_LIBRARY = Object.freeze({
   language: 'en-US',
 } as const);
 
+/**
+ * PLEX ANSWERS **400** WHILE IT IS STILL STARTING, AND THE BODY IS THE ONLY THING THAT SAYS SO.
+ *
+ * Measured: `/identity` answers, `/` answers, `PUT /:/prefs` answers and every preference reads back
+ * correctly — and then the very first WRITE, `POST /library/sections`, comes back
+ * `400 ... the server is still starting up. Please retry later`. The server accepts reads before it will
+ * accept a library creation, so "the server is up" and "the server will create a library" are two different
+ * facts and only the first was being checked.
+ *
+ * WHY THE STATUS CANNOT DECIDE THIS ON ITS OWN, AND WHY THAT MATTERS MORE THAN THE FIX. A retry keyed on
+ * `400` would swallow every genuine refusal this endpoint makes — an agent that does not exist, a scanner
+ * that does not exist, a location the server cannot see — and turn each of them into a two-minute wait
+ * followed by a timeout, with the real reason discarded. Those are exactly the mistakes a gate must fail
+ * loudly on, on the first attempt. So the retryable answer is recognised by the SENTENCE PLEX WRITES, and
+ * everything else is fatal immediately.
+ */
+export const PLEX_STARTING_UP_MARKER = 'still starting up';
+
+/**
+ * Whether a refusal is Plex saying "not yet", as opposed to Plex saying "no".
+ *
+ * The status is checked as well as the body, so a 200 whose payload happens to contain the phrase — an
+ * item titled after it, say — is not mistaken for a refusal to retry.
+ */
+export function plexIsStartingUp(status: number, body: string): boolean {
+  if (status !== 400 && status !== 503) return false;
+  return body.toLowerCase().includes(PLEX_STARTING_UP_MARKER);
+}
+
 /** `POST` this to create the library. The location is the projected mount as the server sees it. */
 export function plexCreateSectionPath(name: string, mountPath: string): string {
   const query = new URLSearchParams({
@@ -213,6 +284,134 @@ export function plexPrefsPath(prefs: ReadonlyArray<readonly [string, string]> = 
   const query = new URLSearchParams(plexClientQuery());
   for (const [key, value] of prefs) query.set(key, value);
   return `/:/prefs?${query.toString()}`;
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// What a Plex scan costs at the provider, which is NOT what a Jellyfin scan costs
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * PLEX'S SCANNER READS THE WHOLE OBJECT. JELLYFIN'S READS A FRACTION OF IT. THAT IS A FINDING, AND THE
+ * BUDGETS HERE EXIST TO STATE IT RATHER THAN TO BE TUNED UNTIL IT STOPS BEING VISIBLE.
+ *
+ * `MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION` is **0.5**, and its comment says what it is for: "a scanner
+ * that fetched the whole object to identify it would sit at 1.0, and the entire argument for this product is
+ * that it does not have to." Measured against a real Jellyfin, a 13.9 MB object is identified from two
+ * ranged requests and about 15 % of itself. Measured against a real Plex, on the same object through the
+ * same mount:
+ *
+ *   | scan | provider bytes | total remote bytes in the library | ratio |
+ *   |---|---|---|---|
+ *   | two-entry generation | 17,825,792 | 13,981,407 | **1.28x** |
+ *   | ~50-entry corpus | 40,096,953 | 24,111,354 | **1.66x** |
+ *
+ * Plex analyses every item it imports, and the analysis reads the file. So **the fraction argument is
+ * demonstrated by Jellyfin and is contradicted by Plex**, and this gate says so in its report and in its
+ * document rather than quietly widening the shared constant — which would also have slackened the Jellyfin
+ * gate by the same amount, to make a different gate pass.
+ *
+ * WHAT IS STILL WORTH ASSERTING, GIVEN THAT. Three things, and none of them is decoration:
+ *
+ *   - A CEILING WELL ABOVE 1.0 BUT FAR BELOW A RUNAWAY. At 3.0 it cannot be satisfied by a read path that
+ *     served the object ten times over, or by a read-ahead that never cancels. It is roughly twice the worst
+ *     measured value, because a ceiling pinned to an observation fails on a loaded machine.
+ *   - A FLOOR. A scan that fetched almost nothing would score perfectly against any ceiling and would mean
+ *     the scanner never opened the entries.
+ *   - THE RE-SCAN, WHICH IS UNTOUCHED AND IS THE STRONGEST AMPLIFICATION CLAIM PLEX SUPPORTS. A second scan
+ *     of an unchanged generation must cost the provider **zero** ranged GETs and **zero** bytes. That is the
+ *     daemon's scan-window cache doing exactly what it exists for, it holds on Plex, and no part of this
+ *     comment relaxes it.
+ */
+/**
+ * THE GEOMETRY EVERY BUDGET BELOW IS DERIVED FROM. Not one of these numbers is chosen; each is read off the
+ * daemon or off Plex's measured behaviour.
+ */
+export const PLEX_READ_GEOMETRY = Object.freeze({
+  /** `readpath.DefaultConfig().ChunkBytes` — the daemon's demand block. A read of one byte costs one. */
+  CHUNK_BYTES: 4 * 1024 * 1024,
+  /** `manifest.ProbeWindowBytes` — one scan window, of which the contract's plan has three. */
+  PROBE_WINDOW_BYTES: 1_048_576,
+  /** `manifest.SingleProbeBelowByte` — below this an object's whole probe plan is one window over all of it. */
+  SINGLE_PROBE_BELOW_BYTES: 3 * 1_048_576,
+  /**
+   * How many times Plex opens a NEW item during a scan.
+   *
+   * TWO, AND THE SECOND ONE IS IN THE SERVER'S OWN LOG: Plex launches `Plex Media Scanner --analyze` for
+   * every new item, in addition to the scan that found it, even with the scheduled deep-analysis task off.
+   */
+  OPENS_PER_NEW_ITEM: 2,
+  /**
+   * How many distinct demand blocks one open can touch: a container header, the `moov` wherever it is, and
+   * one interior probe. Derived, then checked against measurement: the 13,981,407-byte anchor cost
+   * 17,825,792 bytes over two opens — 2.1 blocks per open, inside this.
+   */
+  DEMAND_BLOCKS_PER_OPEN: 3,
+} as const);
+
+/**
+ * THE CEILING ON WHAT A PLEX SCAN MAY COST AT THE PROVIDER, PER OBJECT, FROM BLOCK GEOMETRY.
+ *
+ * WHY THIS REPLACED A MULTIPLIER, AND WHY THE MULTIPLIER WAS WRONG. The first attempt at this gate met three
+ * failing byte budgets and answered them with `MAX_SCAN_BYTE_MULTIPLIER = 3.0` — a number above 1.0 chosen to
+ * sit above what had been measured. That is not a budget, it is a record of an observation with room around
+ * it: it would have passed a daemon that read every object three times over, and it quietly retired the
+ * product's central claim rather than testing it.
+ *
+ * THE ARITHMETIC THE MULTIPLIER WAS HIDING. The daemon serves a 4 MiB demand block for a one-byte read. Plex
+ * opens a new item twice and touches about three blocks per open. So the floor on scanning ONE object is
+ * about 24 MiB **regardless of how big the object is** — and the soak fixture is 8.6 MB and the anchor
+ * 14.0 MB. Against objects smaller than a single demand block plan, "reads a fraction of the object" is not a
+ * property a correct implementation can have; the measured 1.28x and 1.66x are the geometry, not waste.
+ *
+ * So the ceiling is `opens x min(blocks x chunk, size)` per object — a fixed window, clamped by the object —
+ * and it is the same shape whether the object is 40 KB or 400 MB. **The product's fraction claim is then
+ * asserted where it is actually meaningful: against an object several times larger than the fixed window.**
+ * See `PLEX_LARGE_FIXTURE`.
+ */
+export function plexScanByteCeiling(objectSizes: readonly number[]): number {
+  const fixed = PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  return objectSizes.reduce(
+    (total, size) => total + PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * Math.min(fixed, Math.max(0, size)),
+    0,
+  );
+}
+
+/**
+ * THE OBJECT THE FRACTION CLAIM IS ASSERTED AGAINST, and why it has to be this big.
+ *
+ * A fixed cost of `opens x blocks x chunk` = 24 MiB is 2.8x an 8.6 MB object and 0.25x a 96 MiB one. The
+ * product's claim — that identifying an object does not require downloading it — is therefore untestable on
+ * the small synthetic fixtures this gate generates for everything else, and testable on one large one. The
+ * size is not a round number picked for comfort: it is the smallest multiple of the fixed window at which a
+ * sub-0.5 fraction has real margin rather than sitting on the boundary.
+ */
+export const PLEX_LARGE_FIXTURE = Object.freeze({
+  /** 96 MiB: four times the fixed 24 MiB scan cost, so the expected fraction is about 0.25. */
+  MIN_BYTES: 96 * 1024 * 1024,
+  /**
+   * The fraction of ITS OWN LENGTH a scan of the large object may read.
+   *
+   * THIS IS THE SHARED CONSTANT, DELIBERATELY. `MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION` is what carries
+   * the product's argument, and the point of the large fixture is to put Plex under that same number rather
+   * than under one of its own.
+   */
+  MAX_SCAN_BYTE_FRACTION: MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION,
+} as const);
+
+/**
+ * THE CEILING ON WHAT TEN SEEKS MAY COST AT THE PROVIDER, from the same geometry.
+ *
+ * A seek on Plex restarts the encoder at the new position, and a restart is an open: up to
+ * `DEMAND_BLOCKS_PER_OPEN` demand blocks, plus the session's own setup reads. That is `seeks x 3 x 4 MiB`
+ * plus a fixed allowance, and it does **not** scale with the object's size — which is why the previous
+ * spelling, `1.2 x object x 10`, was both loose and unstable: on a small fixture it was a hair above the
+ * arithmetic floor, and on a large one it would have been meaningless. Measured: 54,485,469 bytes for ten
+ * seeks, against a derived ceiling of 10 x 12 MiB + 3 MiB = 128,974,848.
+ */
+export function plexSeekByteCeiling(seekCount: number): number {
+  const perSeek = PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  const sessionSetup = 3 * PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES;
+  return seekCount * perSeek + sessionSetup;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -291,12 +490,14 @@ export const PLEX_SEGMENT_CONTAINER = 'mpegts';
  * be sent. What proves a transcode ran is the same thing that proves it in the Jellyfin gate: the source is
  * encoded as `mpeg4`, `h264` is what comes out, and the segments are handed to a decoder that is not Plex.
  *
- * `offset` IS ALWAYS ZERO HERE, and the seek gate does NOT use it. Measured against the pinned server: the
- * variant playlist for `offset=300` lists the WHOLE file — 43 segments and 344 seconds of `#EXTINF` — exactly
- * as `offset=0` does, so "ask for 90 % of the way in and a tenth remains" is not a statement this server
- * makes. Worse, a session started at an offset answers segments BELOW that offset with an 188-byte body. What
- * an HLS client actually does, and therefore what this gate does, is hold one playlist and request the
- * segment at the position it wants — see `plexSegmentPlanFor`.
+ * `offset` IS HOW A SEEK IS PERFORMED, AND THIS COMMENT USED TO SAY THE OPPOSITE. It said offset was always
+ * zero and the seek gate did not use it, on the strength of a true observation with a false conclusion: the
+ * variant playlist for `offset=300` does list the WHOLE file — 43 segments and 344 seconds of `#EXTINF` —
+ * exactly as `offset=0` does, and a session started at an offset does answer segments below it with an
+ * 188-byte body. What does not follow is that offset is useless for seeking. It is the ONLY thing that works:
+ * re-issuing `start.m3u8` at the wanted offset restarts the encoder there, and the segment at that position
+ * then answers in about 300 ms. Asking for an out-of-order segment without it wedges the session after a
+ * handful of requests. See `PLEX_SEEK_IS_AN_OFFSET_RESTART` for the measurements on both sides.
  *
  * `session` IS THE JOB'S IDENTITY. Every child URL and every `/transcode/sessions` row is keyed on it, so the
  * gate mints one per phase and can therefore tell its own encoder job from anything else on the server.
@@ -319,6 +520,39 @@ export function plexTranscodeStartPath(metadataKey: string, session: string, off
   });
   return `/video/:/transcode/universal/start.m3u8?${query.toString()}`;
 }
+
+/**
+ * HOW A SEEK IS ACTUALLY PERFORMED AGAINST PLEX, MEASURED THREE TIMES BECAUSE THE FIRST ANSWER WAS WRONG.
+ *
+ * **A seek is a new `start.m3u8` at the wanted `offset`, on the same session, followed by the segment at
+ * that position.** That is what a Plex client does: it TELLS the server where to restart, rather than
+ * letting the server infer it from a segment request that arrives out of order.
+ *
+ * WHAT THIS REPLACES, AND WHY IT IS NOT A CONVENIENCE. The Jellyfin gate seeks by holding one playlist and
+ * requesting the segment it wants, wherever that is; Jellyfin answers every one in well under a second. The
+ * Plex driver was written the same way, and against a real Plex it **hangs**. Measured against a purely
+ * LOCAL file — no FUSE, no provider, nothing of this product involved — with one session and out-of-order
+ * segment GETs in the gate's own seek order:
+ *
+ *     seg 00000 212ms | 00002 112ms | 00039 191ms | 00008  57ms | 00026 192ms | 00000  64ms
+ *     seg 00017 196ms | 00041 **45073ms** | 00006 109ms | 00033 **timed out at 45s** | 00014 191ms
+ *
+ * It works for the first several and then wedges, and it wedges with no media server, no mount and no
+ * provider in the picture. Two full gate runs were lost to it: one reported a 20.33 s seek, the next timed
+ * out on segment 00017 after 30 s. Raising the timeout would have turned a broken mechanism into a slow one
+ * and left the ten-second contract meaningless.
+ *
+ * The same ten positions through the offset mechanism, on the same server and the same file:
+ *
+ *     296ms  312ms  268ms  322ms  316ms  316ms  329ms  354ms  311ms  270ms
+ *
+ * ...and the segments returned are correct: ten distinct bodies, every one decoding as `h264`, every decoded
+ * start timestamp exactly **+10.0 s** from the position the server's own playlist gives that segment (spread
+ * 0.167 s across all ten). So the mechanism changed and not one assertion was weakened — the ten-second
+ * ceiling, the distinctness, the position agreement and the constant-offset temporal check all still hold,
+ * and they hold with two orders of magnitude of headroom instead of failing.
+ */
+export const PLEX_SEEK_IS_AN_OFFSET_RESTART = true;
 
 /**
  * The variant playlist for a session.

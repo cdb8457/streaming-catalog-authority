@@ -102,25 +102,70 @@ credential at all**. The gate asserts `claimed="0"` on every run, and separately
 `PlexOnlineToken` and no `PlexOnlineMail` were written to the server's own preferences file — so "unclaimed"
 is a measurement rather than a promise about how the container was started.
 
-**It is not an offline server, and saying otherwise would be the overclaim this repository exists to stop.**
-Measured three ways against this pinned image:
+**It does not need the internet either — and this section previously said the opposite, with three
+measurements behind it.** The retraction is kept rather than tidied away, because a confounded experiment
+that produced a confident wrong conclusion is worth more as a record than as an absence.
 
-1. Started on a Docker network created `--internal`, Plex comes up, answers `/identity` with `claimed="0"`,
-   and answers **401 to `GET /`, `GET /library/sections` and `POST /library/sections`**.
+What was measured, and what was concluded from it:
+
+1. Started on a Docker network created `--internal`, Plex came up, answered `/identity` with `claimed="0"`,
+   and answered **401 to `GET /`, `GET /library/sections` and `POST /library/sections`**.
 2. A server that was already answering unauthenticated was detached from its internet-capable network and
    attached to an internal one. Within seconds every endpoint except `/identity` began answering 401.
-3. Its own log says why: `MyPlex: Error -6 requesting JSON from https://servers.plex.tv/api/v2/…`.
+3. Its own log said `MyPlex: Error -6 requesting JSON from https://servers.plex.tv/api/v2/…`.
 
-So the unauthenticated-local-access grant is **contingent on the server being able to reach plex.tv and
-confirm it is unclaimed**. An air-gapped Plex is **not achievable with this image**, and this gate therefore
-gives the media server container egress. The gate checks for that reachability up front and **skips with
-status 77** if it is absent, rather than failing four steps later with a bare 401 that would read like a
-projection defect.
+The conclusion drawn — that unauthenticated local access is contingent on reaching plex.tv — was **false**,
+and it was written into this document, into the contract module, into the acceptance plan, and into a skip
+check in the gate that would have reported SKIPPED on a perfectly capable offline host. **Every probe in
+those three observations addressed the server by its Docker container NAME**, and what was refusing was
+Plex's Host-header rebinding protection (§3.0.1). The `MyPlex: Error -6` line was true and irrelevant: an
+unclaimed server logs it and carries on.
 
-What stays private is everything the product owns: the daemon, the fake provider endpoint and the mount are
-on the gate's own network, the provider's counters account for every media byte the server fetched, and the
-run asserts that no provider access material reaches the manifest, the probe cache or Plex's own library
-state.
+**Re-measured properly** — the same `--internal` network, DNS for `servers.plex.tv` failing inside the
+container throughout, the server addressed **by IP**:
+
+| request | answer |
+|---|---|
+| `GET /` | **200** |
+| `GET /library/sections` | **200** |
+| `GET /:/prefs` | **200** |
+| `POST /library/sections` | **201**, library created |
+
+**Those four requests were made and no others, and the claim is exactly that wide: an unclaimed Plex with no
+route to the internet answers the endpoints needed to inspect and create a library.** Scanning, direct play,
+seeking and transcoding on an air-gapped Plex are **not** established — this gate has never run that way, and
+this section is a targeted probe rather than a run of the gate. `PLEX_AIR_GAPPED_TESTED_PATHS` in the contract
+module is the same list, so the claim cannot quietly widen into "the whole local API".
+
+What the corrected measurement does settle is that the gate's plex.tv skip check was wrong, and it has been
+**deleted**. A false SKIP is the same family of defect as a false PASS.
+
+The gate's own network is an ordinary bridge rather than an internal one for a reason that has nothing to do
+with Plex: the driver runs on the host and reaches the server through a published port, and Docker Desktop
+cannot publish a port from a container attached only to an internal network. Everything the product owns
+stays private regardless — the daemon, the fake provider endpoint and the mount are on the gate's own
+network, the provider's counters account for every media byte the server fetched, and the run asserts that no
+provider access material reaches the manifest, the probe cache or Plex's own library state.
+
+### 3.0.1 The Host header, which is what was actually refusing
+
+Plex refuses a request whose `Host` header names something it does not recognise, and answers **401**. Its
+own log is explicit: `Request came in with unrecognized domain / IP '<name>' in header Host; treating as
+non-local`. Measured with everything else held identical — same peer, same network, same unclaimed server:
+
+| request | answer |
+|---|---|
+| `http://<container-name>:32400/library/sections` | **401** |
+| `http://<container-ip>:32400/library/sections` | **200** |
+| by IP, with `Host: <container-name>` | **401** |
+| by name, with `Host: <container-ip>:32400` | **200** |
+| by name, with `Host: localhost:32400` | **200** |
+
+It is DNS-rebinding protection, it is keyed on the `Host` header rather than on the peer address, and
+`allowedNetworks` does not override it. It cost two things: the paced direct-play phase, whose consumer
+reached the server container-to-container by name and got a 401 out of ffmpeg before it decoded a frame; and
+the entire false plex.tv finding above. **Every URL this gate hands to a container now names the server by
+address**, and the gate refuses to continue if it cannot resolve one.
 
 ### 3.1 Two things this gate deliberately does **not** claim
 
@@ -202,6 +247,52 @@ published size, with Plex's own live `accessible`/`exists` answer — so it cann
 anything else. Alongside it, `missing`, `wrong-size`, `not-ordinary`, `duplicated` and `unexpected` are each
 zero, so a shortfall says what went wrong rather than only that something did.
 
+**WHAT A PLEX SCAN COSTS AT THE PROVIDER, AND THE WRONG ANSWER THAT WAS TRIED FIRST.**
+
+Three byte budgets failed on the first full run:
+
+| scan | provider bytes | remote bytes in the library | ratio |
+|---|---|---|---|
+| two-entry generation | 17,825,792 | 13,981,407 | **1.28x** |
+| ~50-entry corpus | 40,096,953 | 24,111,354 | **1.66x** |
+| ten seeks | 54,485,469 | 8,594,275 | **6.34x** |
+
+The first answer was a Plex-specific `MAX_SCAN_BYTE_MULTIPLIER = 3.0` — a number above 1.0 chosen to sit
+above what had been measured. **That was rejected in review and it deserved to be.** A ceiling placed above an
+observation is a record of the observation with room around it: it would have passed a daemon that read every
+object three times over, and it retired the product's central claim instead of testing it.
+
+**The arithmetic the multiplier was hiding.** The daemon serves a **4 MiB demand block** for a one-byte read
+(`readpath.ChunkBytes`). Plex opens each new item **twice** — its own log shows `Plex Media Scanner --analyze`
+launched for every new item, in addition to the scan that found it, with the scheduled deep-analysis task off
+— and touches about **three blocks per open**. So identifying *one* object costs up to **24 MiB no matter how
+large it is**. The soak fixture is 8.6 MB and the anchor 14.0 MB. Against objects smaller than that fixed
+window, *"reads a fraction of the object"* is not a property a correct implementation can have: 1.28x and
+1.66x are the block geometry, not waste, and the fixture was the wrong instrument.
+
+So the ceiling is derived rather than chosen: **`opens x min(blocks x chunk, size)` per object** — a fixed
+window, clamped by the object, the same shape whether the object is 40 KB or 400 MB. Sizes are handed to it
+one at a time, because a total would let the large entries buy headroom for the small ones.
+
+**And the product's claim is asserted where it can mean something: one 96 MiB remote fixture**, four times the
+fixed window, held to the **shared** `MAX_SCAN_BYTE_FRACTION` of 0.5 — the same constant the Jellyfin gate is
+held to, not one of Plex's own. Published in its own generation and measured in its own counter window, so the
+delta is attributable to that object alone. The shared constant was never widened; widening it would have
+slackened the Jellyfin gate to make this one pass.
+
+**The seek ceiling is the same geometry.** A seek restarts the encoder, and a restart is an open: at most
+three demand blocks, plus one session-setup allowance. `1.2x the object per seek` was both loose and unstable
+— a hair above the arithmetic floor on a small fixture, meaningless on a large one.
+
+**What was untouched, and is the strongest amplification claim Plex supports:** a re-scan of an unchanged
+generation costs the provider **zero** ranged GETs and **zero** bytes.
+
+**And one that was not measured at all until review caught it:** the scan after a **media-server restart**
+re-fetched **+37,924,876 bytes over +14 ranged requests**, while the warm scan immediately after cost zero.
+The gate had a counter window around the warm scan and none around the restart scan — the strongest-sounding
+half of a two-part measurement with the expensive half unmeasured. It is budgeted now, as a cold scan, because
+from the daemon's side that is what it is.
+
 **The byte budget names two denominators.** Above the contract's single-probe threshold an object is
 identified from a **fraction** of itself, and that fraction carries the product's entire argument. Below it,
 the contract's own probe plan is a single window covering the **whole** object, so identifying such an entry
@@ -240,43 +331,68 @@ Plex, on the gate's own network) and holds its progress trace against five separ
 The decoder's own output is then re-probed end to end, because "decoded/playable output" is a decoder's
 answer and a byte count is not one.
 
-### 3.6 Ten seeks, and where the position comes from
+### 3.6 Ten seeks, and the mechanism it took three measurements to get right
 
-The obvious spelling is `offset=` on a fresh `start.m3u8`. Measured against the pinned server, it is wrong in
-two ways, and both were only visible by running it:
+**A seek against Plex is a new `start.m3u8` at the wanted `offset`, on the same session, followed by the
+segment at that position.** The client tells the server where to restart. It does not ask for a distant
+segment and leave the server to infer it.
 
-1. **It does not change the playlist.** The variant playlist for `offset=300` lists the whole file — 43
-   segments and 344 seconds of `#EXTINF` — exactly as `offset=0` does.
-2. **Segments below the offset stop working.** A session started at 300 s answers segment 0 with an
-   **188-byte body**.
+**The Jellyfin mechanism does not work here, and it fails in the worst possible way: slowly, and only after
+several requests.** The Jellyfin gate holds one playlist and requests whichever segment it wants; Jellyfin
+answers every one in well under a second, and the Plex driver was written the same way. Measured against a
+purely **local** file — no FUSE, no provider, nothing of this product involved — in this gate's own seek
+order:
 
-What an HLS client actually does — and therefore what this gate does — is hold one playlist and **request the
-segment at the position it wants**, out of order, wherever that is. Plex restarts its encoder at that position
-to answer, which is the non-sequential, multi-position read this data plane exists to make cheap. Measured:
-ten such requests, every one answered in about 300 ms, every one a distinct segment.
+```
+seg 00000  212ms | 00002  112ms | 00039  191ms | 00008   57ms | 00026 192ms | 00000 64ms
+seg 00017  196ms | 00041 45073ms | 00006  109ms | 00033 TIMED OUT (45s)      | 00014 191ms
+```
+
+It works for the first six and then wedges. Two full gate runs were lost to it before the mechanism was
+suspected rather than the data plane: the first reported a 20.33 s seek, the second timed out on segment
+00017 after 30 s. **Raising the timeout would have converted a broken mechanism into a slow one and left the
+ten-second contract meaningless**, which is why the local-file arm was run first — it separates "Plex cannot
+do this" from "the projection stalled", and the answer was the former.
+
+The same ten positions, same server, same file, through the offset mechanism:
+
+```
+296ms  312ms  268ms  322ms  316ms  316ms  329ms  354ms  311ms  270ms
+```
+
+**Not one assertion was weakened to get there.** The ten returned bodies are distinct, every one decodes as
+`h264`, and every decoded start timestamp sits exactly **+10.0 s** from the position the server's own playlist
+gives that segment — a spread of 0.167 s across all ten. The ten-second ceiling now passes with two orders of
+magnitude of headroom instead of failing.
 
 **One prerequisite, which cost an afternoon.** A segment request answers **404** — every time, for every
 index — until the session's variant playlist has been fetched once. The session's segment namespace does not
-exist before that.
+exist before that, so fetching it is part of opening a session and part of every seek.
 
 **The position credited to a seek is the server's own arithmetic.** `serverPositionSeconds` is the running sum
 of the playlist's `#EXTINF` values up to the requested segment: the server stating where that segment begins.
-A gate that computed `index * 8` would be hard-coding one build's segmenter into an acceptance gate, and would
-silently start measuring the wrong positions the day it changed.
+A gate that computed `index * 8` would be hard-coding one build's segmenter into an acceptance gate.
 
 **The position-error ceiling is derived, not shared.** A seek lands on a segment boundary; Plex's segments are
 eight seconds and Jellyfin's are three, and the shared constant is four. Reusing four would fail a correct
 Plex seek roughly half the time, and widening the shared constant to eight would have quietly slackened the
-Jellyfin gate by five seconds — a gate weakened to make a different gate pass. So the ceiling is **one
-segment as the server's own playlist declares it, plus a second**.
+Jellyfin gate by five seconds — a gate weakened to make a different gate pass. So the ceiling is **one segment
+as the server's own playlist declares it, plus a second**.
+
+**The session warm-up is timed apart from the ten.** A seek is a transition within an established session;
+bringing the session up and getting its first output is playback startup, which G8 budgets and G9 does not
+mention. The warm-up reads the segment at the very start of the media — the one position the plan never asks
+for, so it cannot pre-warm any of the ten — and is asserted under its own gate id against its own ceiling, so
+a session that took a minute to produce a picture fails loudly rather than disappearing into the gap between
+two gates.
 
 Every per-seek assertion — a 200, a non-empty body, decodable `h264`, inside ten seconds — is satisfied by a
 server that returned the first eight seconds of the file ten times over. So the properties that belong to the
 **set** are asserted too: ten **distinct** segments, a position the server itself agrees with to within one
 segment, decoded timestamps spanning at least 80 % of the media, and — the temporal assertion — a **constant**
-offset between each decoded start timestamp and the position asked for. The pinned server offsets its
-transport-stream timestamps by ten seconds; that constant is *measured*, not hard-coded, because it is one
-server's presentation-time convention. What is universal is that it does not change as the position moves.
+offset between each decoded start timestamp and the position asked for. That constant is *measured*, not
+hard-coded, because it is one server's presentation-time convention. What is universal is that it does not
+change as the position moves.
 
 ### 3.7 Five minutes of transcode — and the one claim Plex supports that Jellyfin does not
 
@@ -350,6 +466,18 @@ Desktop VM, remains **not proved and deliberately open**.
 Recorded because the class they belong to — *a check that cannot fail, or a comment that describes one
 behaviour while the code does another* — is the reason this repository is where it is.
 
+**"The server is up" and "the server will create a library" are two different facts.** The first real run of
+this gate died at the first WRITE: `/identity` answered, `/` answered, `PUT /:/prefs` answered and every
+preference read back correctly, and then `POST /library/sections` came back
+`400 … the server is still starting up. Please retry later`. The fix is a bounded wait — and the shape of it
+matters more than the fact of it. A retry keyed on **400** would swallow every genuine refusal that endpoint
+makes: an agent that does not exist, a scanner that does not exist, a location the server cannot see. Each of
+those would become a two-minute wait ending in a timeout with the real reason discarded, which is precisely
+the class of check this repository exists to stop shipping. So the retryable answer is recognised by **the
+sentence Plex writes**, everything else is raised on the first attempt with the server's own body attached,
+and the offline suite drives all three cases: the transient one is waited out, an unknown-scanner 400 fails
+after exactly **one** POST, and a server that never finishes starting up ends at a bounded deadline.
+
 **A segment request answers 404 until the variant playlist has been fetched.** The first version of the seek
 phase asked for ten segments and got ten 404s. The failure looked like a broken seek plan; it was a missing
 prerequisite, and the session's segment namespace simply does not exist until `index.m3u8` has been generated
@@ -374,16 +502,21 @@ profile the server has.
 **`refreshing` is not scan completion.** See §3.3. This is the one that would have shipped as intermittent
 flakiness rather than as a visible failure.
 
-**An unclaimed Plex needs plex.tv to answer its own local API.** See §3.0. Discovered while trying to make the
-gate genuinely air-gapped; recorded as a limitation of the image rather than worked around, and the gate skips
-rather than failing confusingly on a host without egress.
+**A confident wrong finding, and the confound that produced it.** See §3.0. Three probes said an unclaimed
+Plex needs plex.tv to answer its own local API; all three addressed the server by container name, and the
+Host header was what refused. It reached this document, the contract module, the acceptance plan and a skip
+check in the gate before it was caught by an unrelated failure -- the paced consumer's 401 -- which had the
+same cause. It is the most expensive defect in this list because nothing it touched was failing.
+
+**The paced consumer reached the server by container name and got a 401.** See §3.0.1. Every URL handed to a
+container now names the server by address, and the gate refuses to continue without one.
 
 ## 5. Where this can and cannot be run
 
 | Environment | What the gate closes |
 |---|---|
-| **Windows / Docker Desktop** | Everything above, provided `/dev/fuse` is reachable from a container and `servers.plex.tv` resolves. **This is not Phase 1 closure and SHALL NOT be reported as one.** If either prerequisite is missing the gate exits **77**, the three-run wrapper propagates it, and no caller can read the result as a pass. |
-| **Linux CI** | The offline suite (`npm run test:projection-plex-dataplane`) runs anywhere. The gate itself needs FUSE, mount propagation into a sibling container, a media server and egress; it is **not** wired into a CI job, because a gate that is flaky in CI gets disabled and then gets deleted. |
+| **Windows / Docker Desktop** | Everything above, provided `/dev/fuse` is reachable from a container. **This is not Phase 1 closure and SHALL NOT be reported as one.** If FUSE is missing the gate exits **77**, the three-run wrapper propagates it, and no caller can read the result as a pass. There is no plex.tv prerequisite; there was, and it was wrong -- see §3.0. |
+| **Linux CI** | The offline suite (`npm run test:projection-plex-dataplane`) runs anywhere. The gate itself needs FUSE, mount propagation into a sibling container and a media server; it is **not** wired into a CI job, because a gate that is flaky in CI gets disabled and then gets deleted. |
 | **Linux / Unraid, operator-run** | The place the tranche actually closes, three consecutive times: `npm run go:plex-dataplane-gate:three` — **and the same for Jellyfin and Emby**. |
 
 ## 6. What is still not proved
@@ -400,8 +533,15 @@ rather than failing confusingly on a host without egress.
 - **G18, the simultaneous-client gate.** It requires all three media servers scanning at once, and there are
   two.
 - **G22**, the rclone/WebDAV comparison control, and **G27**'s three-server half.
+- **The product's "a scan reads a fraction of the object" argument, on Plex.** It is contradicted there:
+  Plex reads 1.28x-1.66x of the remote bytes in the library on every scan. See §3.4. Jellyfin remains the
+  only server on which that argument is demonstrated.
 - **A graceful daemon restart under a long-running media server**, on Linux or Unraid. See §3.8.
-- **An air-gapped media server.** Measured to be impossible with this image; see §3.0.
+- **Anything air-gapped beyond four requests.** What was measured with no route to the internet (§3.0) is
+  `GET /`, `GET /library/sections`, `GET /:/prefs` and `POST /library/sections`. **Scanning, direct play,
+  seeking and transcoding on an air-gapped Plex are not established at all** — the gate's own network is an
+  ordinary bridge, because Docker Desktop cannot publish a port from an internal network and the driver runs
+  on the host, so no run of this gate has ever been air-gapped.
 - **Three consecutive green runs on Linux or Unraid**, which is what the acceptance plan means by passing.
 
 A Windows or Docker Desktop green run is not a Phase 1 pass and is not reported as one. **Phase 1 is open.**

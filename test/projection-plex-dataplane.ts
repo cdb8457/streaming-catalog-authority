@@ -7,31 +7,36 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
-  MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS, TRANSCODE_SOURCE_VIDEO_CODEC,
+  MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS,
+  TRANSCODE_SOURCE_VIDEO_CODEC,
   TRANSCODE_TARGET_VIDEO_CODEC, findRedactionProblems, seekPlanProblems,
 } from '../src/core/projection/media-server-dataplane.js';
 import {
   PLEX_ACCEPT_JSON, PLEX_CLIENT, PLEX_ENCODER_FLOORS, PLEX_HAS_NO_CLIENT_WRITABLE_PLAY_METHOD, PLEX_LIBRARY,
-  PLEX_SEGMENT_CONTAINER, PLEX_SERVER_PREFS, PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY,
+  PLEX_AIR_GAPPED_TESTED_PATHS, PLEX_LARGE_FIXTURE, PLEX_READ_GEOMETRY,
+  PLEX_REJECTS_UNRECOGNISED_HOST_HEADER, PLEX_SEEK_IS_AN_OFFSET_RESTART,
+  PLEX_SEGMENT_CONTAINER, PLEX_SERVER_PREFS, plexScanByteCeiling, plexSeekByteCeiling,
+  PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY,
   PlexScanBarrier, analysePlexEncoderLiveness, parsePlexVariantPlaylist, plexActivityIsLibraryWork,
-  plexClientQuery, plexCreateSectionPath, plexDirectPlayPath, plexHasQueryCredential,
+  plexClientQuery, plexCreateSectionPath, plexDirectPlayPath, plexHasQueryCredential, plexIsStartingUp,
   plexPartIsOrdinaryFile, plexPrefsPath, plexSeekPositionErrorCeilingSeconds, plexSegmentPath,
   plexSegmentPlanFor, plexStripQueryCredentials, plexTranscodePingPath, plexTranscodeStartPath,
   plexTranscodeStopPath, plexVariantPlaylistPath,
   type PlexEncoderSample, type PlexScanSample,
 } from '../src/core/projection/plex-dataplane.js';
 import {
-  applyPreferences, awaitServer, directPlay, isOrdinaryFile, listMovies, openPinnedStream, rangeRead,
-  scanLibrary, withoutLocators, type GateState, type ItemRecord,
+  addMovieLibrary, applyPreferences, awaitServer, directPlay, isOrdinaryFile, listMovies,
+  mediaTimeSeekSet, openPinnedStream, rangeRead, scanLibrary, withoutLocators,
+  type GateState, type ItemRecord,
 } from '../src/ops/projection-plex-dataplane.js';
 
 // Projection Phase 1 — the offline half of the PLEX data-plane gate.
 //
-// WHAT THIS SUITE IS FOR. The gate itself needs Docker, /dev/fuse, a real PostgreSQL, a real Plex and egress
-// to plex.tv, and it takes half an hour. This suite runs everywhere, in seconds, and holds the rules the gate
-// depends on: that every wait is bounded, that a skipped run cannot look like a passing one, that the request
-// shapes carry no credential, that the scan barrier and the held-open stream BEHAVE as claimed, and that the
-// report cannot leak.
+// WHAT THIS SUITE IS FOR. The gate itself needs Docker, /dev/fuse, a real PostgreSQL and a real Plex, and it
+// takes half an hour. This suite runs everywhere, in seconds, and holds the rules the gate depends on: that
+// every wait is bounded, that a skipped run cannot look like a passing one, that the request shapes carry no
+// credential, that the scan barrier and the held-open stream BEHAVE as claimed, and that the report cannot
+// leak.
 //
 // SEVERAL OF THESE ARE BEHAVIOURAL RATHER THAN STRUCTURAL, AND DELIBERATELY SO. The Jellyfin gate's defect
 // list is almost entirely "a comment described one behaviour while the code did another, or a check that
@@ -84,6 +89,9 @@ const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const read = (relative: string): string => readFileSync(join(repoRoot, relative), 'utf8');
 
 console.log('Projection Phase 1 — Plex data plane (offline)');
+
+// Read once, up here, because several sections below assert against the gate script.
+const GATE = read('deploy/projection-plex-dataplane-gate.sh');
 
 // ---------------------------------------------------------------------------------------------------------
 // The variant playlist, and the server's own arithmetic
@@ -322,11 +330,46 @@ await test('the transcode request forces a re-encode, and names a platform that 
   assert(path.includes('X-Plex-Platform=Chrome'), 'and the request says so');
 });
 
-await test('offset is always zero on the start request, because Plex does not seek that way', () => {
-  // MEASURED: a session opened at offset=300 lists the WHOLE file, identically to offset=0, and answers
-  // segments below the offset with an 188-byte body. Seeking is done by asking for the segment you want.
+await test('a SEEK is an offset restart, and the driver performs it as one', () => {
+  // THE MECHANISM THIS REPLACES WEDGED, AND IT WEDGED WITH NOTHING OF THIS PRODUCT INVOLVED. Against a
+  // purely local file, one session and out-of-order segment GETs in the gate's own seek order answered the
+  // first six in ~150ms each and then took 45s and timed out. Two gate runs were lost before the mechanism
+  // was suspected rather than the data plane. The same ten positions through the offset restart: ~300ms each.
+  assert(PLEX_SEEK_IS_AN_OFFSET_RESTART, 'the contract records the mechanism');
   assert(plexTranscodeStartPath('/library/metadata/1', 's').includes('offset=0'), 'the default is zero');
-  assertEq(PLEX_SEGMENT_CONTAINER, 'mpegts', 'and the segments are transport streams');
+  assert(plexTranscodeStartPath('/library/metadata/1', 's', 139.4).includes('offset=139.4'),
+    'and a seek names the position it wants');
+  assertEq(PLEX_SEGMENT_CONTAINER, 'mpegts', 'the segments are transport streams');
+
+  const driver = read('src/ops/projection-plex-dataplane.ts');
+  const seekSet = driver.split('export async function mediaTimeSeekSet')[1]?.split('\nexport ')[0] ?? '';
+  assert(/openTranscodeSession\(state, item, session, wanted\)/.test(seekSet),
+    'every seek re-issues start.m3u8 at the position it wants');
+  assert(/plexSegmentPlanFor\(atOffset\.entries, wanted\)/.test(seekSet),
+    'and plans from the playlist the server returned for THAT offset, not a cached one');
+  // AND THE ELAPSED TIME COVERS THE WHOLE SEEK. Timing only the final GET would hide the encoder restart
+  // that the seek actually consists of, and the ten-second contract would be measuring the cheap half.
+  assert(/const startedAt = now\(\);/.test(seekSet), 'the clock starts before the offset request');
+  assert(/const elapsedMs = now\(\) - startedAt;/.test(seekSet), 'and stops after the segment arrives');
+  assert(!/elapsedMs: fetched\.elapsedMs/.test(seekSet), 'never just the segment fetch');
+  // AND THE COMPLETED SEEKS SURVIVE A MID-SET THROW. The profile used to be written only on return, so a
+  // timeout on seek six left no timings for the five that had worked.
+  assert(/process\.stdout\.write\(`    seek \$\{index\}/.test(seekSet),
+    'each seek announces itself on both edges, so a throw still leaves the completed ones on stdout');
+  assert(/credentialsInGeneratedUrls \+= atOffset\.credentialsInGeneratedUrls/.test(seekSet),
+    'and every offset restart\'s generated playlists are checked for a credential, not just the first');
+});
+
+await test('the ten-second seek contract survived the mechanism change unweakened', () => {
+  // The failure mode this refuses is the tempting one: a mechanism that times out, "fixed" by widening the
+  // budget until it passes. Every threshold G9 rests on is unchanged.
+  assertEq(MEDIA_SERVER_SOAK.MAX_SEEK_SECONDS, 10, 'ten seconds per seek');
+  assertEq(MEDIA_SERVER_SOAK.SEEK_COUNT, 10, 'ten seeks');
+  assertEq(MEDIA_SERVER_SOAK.MIN_BACKWARD_SEEKS, 3, 'at least three backwards');
+  assertEq(MEDIA_SERVER_SOAK.MAX_SEEK_DECODED_OFFSET_SPREAD_SECONDS, 1.5, 'the temporal check is unchanged');
+  assertEq(MEDIA_SERVER_SOAK.MIN_SEEK_DECODED_SPAN_FRACTION, 0.8, 'and so is the span');
+  assert(Number.isFinite(MEDIA_SERVER_DEADLINES_MS.SEEK) && MEDIA_SERVER_DEADLINES_MS.SEEK <= 60_000,
+    'and the per-seek wait is still bounded well under a minute');
 });
 
 await test('the transcode claim rests on decoded output, not on a field the server happens to author', () => {
@@ -518,6 +561,17 @@ interface FakePlexOptions {
   readonly refreshingScript?: readonly boolean[];
   readonly withCheckFiles?: boolean;
   readonly prefsEcho?: boolean;
+  /**
+   * What `POST /library/sections` answers, one entry per attempt; the LAST entry repeats forever.
+   *
+   * It exists because the first real run of this gate died on a refusal that only the body identified, and
+   * a fix for that has to be shown to retry the transient one and to NOT retry anything else.
+   */
+  readonly sectionPostScript?: ReadonlyArray<{ readonly status: number; readonly body: string }>;
+  /** Put an `X-Plex-Token` into generated playlists once the requested offset reaches this. */
+  readonly tokenFromOffset?: number;
+  /** Make this segment index answer 500, so a mid-set throw can be driven. */
+  readonly failSegment?: number;
 }
 
 interface FakePlex {
@@ -534,6 +588,9 @@ async function startFakePlex(options: FakePlexOptions = {}): Promise<FakePlex> {
   const itemCount = options.itemCount ?? 3;
   const requests: string[] = [];
   let sectionReads = 0;
+  let sectionPosts = 0;
+  let sectionCreated = false;
+  let lastOffset = 0;
   const prefs = new Map<string, string>();
 
   const items = Array.from({ length: itemCount }, (_, index) => ({
@@ -579,17 +636,31 @@ async function startFakePlex(options: FakePlexOptions = {}): Promise<FakePlex> {
       return;
     }
     if (url.pathname === '/library/sections') {
+      if (request.method === 'POST') {
+        const script = options.sectionPostScript;
+        const step = script === undefined
+          ? { status: 201, body: '' }
+          : (script[Math.min(sectionPosts, script.length - 1)] ?? { status: 201, body: '' });
+        sectionPosts += 1;
+        if (step.status >= 200 && step.status < 300) sectionCreated = true;
+        response.writeHead(step.status, { 'content-type': 'text/plain' });
+        response.end(step.body);
+        return;
+      }
       const script = options.refreshingScript;
       const refreshing = script === undefined
         ? false : (script[Math.min(sectionReads, script.length - 1)] ?? false);
       sectionReads += 1;
+      // WITH A POST SCRIPT, THE SECTION DOES NOT EXIST UNTIL ONE SUCCEEDS. Otherwise `addMovieLibrary`
+      // finds it already there and never posts at all, and the retry behaviour under test never runs.
+      const exists = options.sectionPostScript === undefined || sectionCreated;
       json({
         MediaContainer: {
-          Directory: [{
+          Directory: exists ? [{
             key: '1', title: 'Projection Movies', refreshing, scannedAt: refreshing ? 100 : 900,
             agent: 'tv.plex.agents.none', scanner: 'Plex Video Files',
             Location: [{ id: 1, path: '/media/projection/Movies' }],
-          }],
+          }] : [],
         },
       });
       return;
@@ -620,6 +691,35 @@ async function startFakePlex(options: FakePlexOptions = {}): Promise<FakePlex> {
       });
       return;
     }
+    // The transcode surface, only as far as the seek set needs it: a master playlist, a variant playlist and
+    // segments. `tokenFromOffset` puts a credential into the generated playlist from a given offset onward,
+    // and `failSegment` makes one segment refuse — both so the seek set can be driven into the cases that
+    // matter and would otherwise need a real Plex.
+    if (url.pathname === '/video/:/transcode/universal/start.m3u8') {
+      lastOffset = Number(url.searchParams.get('offset') ?? '0');
+      const token = options.tokenFromOffset !== undefined && lastOffset >= options.tokenFromOffset
+        ? '?X-Plex-Token=leaked' : '';
+      response.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' });
+      response.end(`#EXTM3U\n#EXT-X-STREAM-INF:BANDWIDTH=1\nsession/s/base/index.m3u8${token}\n`);
+      return;
+    }
+    if (/\/video\/:\/transcode\/universal\/session\/.*\/base\/index\.m3u8$/.test(url.pathname)) {
+      const token = options.tokenFromOffset !== undefined && lastOffset >= options.tokenFromOffset
+        ? '?X-Plex-Token=leaked' : '';
+      const lines = ['#EXTM3U', '#EXT-X-TARGETDURATION:8'];
+      for (let index = 0; index < 43; index += 1) lines.push('#EXTINF:8,', `${String(index).padStart(5, '0')}.ts${token}`);
+      response.writeHead(200, { 'content-type': 'application/vnd.apple.mpegurl' });
+      response.end(`${lines.join('\n')}\n`);
+      return;
+    }
+    if (/\/video\/:\/transcode\/universal\/session\/.*\/base\/\d+\.ts$/.test(url.pathname)) {
+      const index = Number(/(\d+)\.ts$/.exec(url.pathname)?.[1] ?? '0');
+      if (options.failSegment === index) { response.writeHead(500).end(); return; }
+      response.writeHead(200, { 'content-type': 'video/mp2t' });
+      response.end(Buffer.from(`segment-${index}`.padEnd(256, 'x')));
+      return;
+    }
+    if (url.pathname.startsWith('/video/:/transcode/universal/')) { response.writeHead(200).end(); return; }
     if (url.pathname.startsWith('/library/parts/')) {
       const range = request.headers.range;
       if (typeof range === 'string') {
@@ -703,6 +803,94 @@ await test('preferences that DID apply pass, and every one of them is checked', 
   } finally {
     await fake.close();
   }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// "The server is still starting up" — the one refusal that means "not yet"
+// ---------------------------------------------------------------------------------------------------------
+
+const STARTING_UP_BODY = 'the server is still starting up. Please retry later';
+
+await test('"still starting up" is recognised by the SENTENCE, never by the status alone', () => {
+  assert(plexIsStartingUp(400, STARTING_UP_BODY), 'the measured 400 is retryable');
+  assert(plexIsStartingUp(400, `<html>${STARTING_UP_BODY.toUpperCase()}</html>`), 'case does not hide it');
+  assert(plexIsStartingUp(503, STARTING_UP_BODY), 'and so is the same sentence behind a 503');
+  // EVERY OTHER 400 IS A REAL REFUSAL. Retrying on the status would swallow an agent that does not exist, a
+  // scanner that does not exist, or a location the server cannot see — and turn each into a two-minute wait
+  // ending in a timeout with the real reason discarded.
+  assert(!plexIsStartingUp(400, 'Unknown agent tv.plex.agents.nope'), 'an unknown agent is not "not yet"');
+  assert(!plexIsStartingUp(400, ''), 'and neither is a 400 with nothing to say');
+  assert(!plexIsStartingUp(401, STARTING_UP_BODY), 'nor is an unauthorized answer, whatever it says');
+  assert(!plexIsStartingUp(200, STARTING_UP_BODY),
+    'and a SUCCESS whose payload happens to contain the phrase is not a refusal at all');
+});
+
+await test('a library creation waits out "still starting up" and then succeeds', async () => {
+  // THE FIRST REAL RUN OF THIS GATE DIED HERE. /identity answered, / answered, PUT /:/prefs answered and
+  // every preference read back correctly — and then the first WRITE came back 400 "still starting up".
+  const fake = await startFakePlex({
+    sectionPostScript: [
+      { status: 400, body: STARTING_UP_BODY },
+      { status: 400, body: STARTING_UP_BODY },
+      { status: 201, body: '' },
+    ],
+  });
+  try {
+    const state: GateState = { baseUrl: fake.base };
+    await addMovieLibrary(state, '/media/projection/Movies', 'Projection Movies', 20_000);
+    assertEq(state.sectionId, '1', 'the library exists afterwards');
+    const posts = fake.requests.filter((entry) => entry === 'POST /library/sections').length;
+    assertEq(posts, 3, 'it retried exactly until the server accepted');
+  } finally {
+    await fake.close();
+  }
+});
+
+await test('ANY OTHER 400 is fatal on the FIRST attempt, with the server\'s own reason kept', async () => {
+  const fake = await startFakePlex({
+    sectionPostScript: [{ status: 400, body: 'Unknown scanner: Plex Video Filez' }],
+  });
+  try {
+    let message = '';
+    try {
+      await addMovieLibrary({ baseUrl: fake.base }, '/media/projection/Movies', 'Projection Movies', 20_000);
+    } catch (error) { message = (error as Error).message; }
+    assert(/Unknown scanner/.test(message), `the server's reason survives: ${message}`);
+    assert(!/deadline/.test(message), 'and it is not reported as a timeout');
+    const posts = fake.requests.filter((entry) => entry === 'POST /library/sections').length;
+    assertEq(posts, 1, 'it did NOT retry a real refusal — one attempt, then the failure');
+  } finally {
+    await fake.close();
+  }
+});
+
+await test('a server that never finishes starting up ends at a BOUNDED deadline', async () => {
+  const fake = await startFakePlex({ sectionPostScript: [{ status: 400, body: STARTING_UP_BODY }] });
+  try {
+    const startedAt = Date.now();
+    let message = '';
+    try {
+      await addMovieLibrary({ baseUrl: fake.base }, '/media/projection/Movies', 'Projection Movies', 3_000);
+    } catch (error) { message = (error as Error).message; }
+    const elapsed = Date.now() - startedAt;
+    assert(/deadline exceeded/.test(message), `it ends by deadline, not by luck: ${message}`);
+    assert(/still starting up/.test(message), 'and says what it was waiting for');
+    assert(elapsed < 20_000, `and it really ended, in ${elapsed}ms`);
+  } finally {
+    await fake.close();
+  }
+});
+
+await test('the retry budget defaults to the shared bootstrap deadline, so the seam is not a hole', () => {
+  // A seam that let a caller pass Infinity would be a bound in name only. The default is the shared
+  // constant, and the shared constant is finite.
+  const driver = read('src/ops/projection-plex-dataplane.ts');
+  assert(/budgetMs: number = MEDIA_SERVER_DEADLINES_MS\.BOOTSTRAP/.test(driver),
+    'the default is the shared bootstrap deadline');
+  assert(Number.isFinite(MEDIA_SERVER_DEADLINES_MS.BOOTSTRAP) && MEDIA_SERVER_DEADLINES_MS.BOOTSTRAP > 0,
+    'and that deadline is finite and positive');
+  const gate = read('deploy/projection-plex-dataplane-gate.sh');
+  assert(!/--budget/.test(gate), 'and the gate never overrides it');
 });
 
 await test('a listing is paged, and a library of exactly one page is not silently truncated', async () => {
@@ -861,10 +1049,236 @@ await test('the OPTIONAL entry point maps 77 to 0 and NOTHING else', () => {
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// The seek set, driven against a socket: late-offset credentials, and evidence that survives a throw
+// ---------------------------------------------------------------------------------------------------------
+
+const SEEK_ITEM: ItemRecord = {
+  key: 'Soak.mp4', ratingKey: '1', guid: 'tv.plex.agents.none://1', metadataKey: '/library/metadata/1',
+  partKey: '/library/parts/1/1/file.mp4', path: '/media/projection/Movies/Soak/Soak.mp4',
+  sizeBytes: 1_000, container: 'mp4', videoCodec: 'mpeg4', accessible: true, exists: true,
+  durationSeconds: 340,
+};
+
+/** Run something with `process.stdout.write` captured, so what a phase PRINTS can be asserted. */
+async function capturingStdout<T>(fn: () => Promise<T>): Promise<{ value?: T; error?: Error; out: string }> {
+  const original = process.stdout.write.bind(process.stdout);
+  let out = '';
+  (process.stdout as unknown as { write: (chunk: string) => boolean }).write = (chunk: string) => {
+    out += chunk; return true;
+  };
+  try {
+    return { value: await fn(), out };
+  } catch (error) {
+    return { error: error as Error, out };
+  } finally {
+    (process.stdout as unknown as { write: typeof original }).write = original;
+  }
+}
+
+await test('a credential appearing only in a LATE offset playlist is still caught', async () => {
+  // THE GAP THIS CLOSES. `credentialsInGeneratedUrls` came from the session the set opened with, and every
+  // seek re-issues start.m3u8 and gets a FRESH master and variant playlist back. Ten generated playlists
+  // went unexamined, so a token that appeared only once the offsets got large would have gone unseen.
+  const fake = await startFakePlex({ tokenFromOffset: 200 });
+  try {
+    const outcome = await mediaTimeSeekSet({ baseUrl: fake.base, sectionId: '1' }, SEEK_ITEM, 'sess',
+      [10, 20, 300]);
+    assert(outcome.credentialsInGeneratedUrls > 0,
+      'the token in the third seek\'s playlist is counted, though the first two were clean');
+  } finally {
+    await fake.close();
+  }
+});
+
+await test('a clean run over all ten offset sessions still reports zero credentials', () => {
+  // The other half: a counter that always fires is as useless as one that never does.
+  return startFakePlex().then(async (fake) => {
+    try {
+      const outcome = await mediaTimeSeekSet({ baseUrl: fake.base, sectionId: '1' }, SEEK_ITEM, 'sess',
+        [10, 20, 300]);
+      assertEq(outcome.credentialsInGeneratedUrls, 0, 'nothing to strip anywhere');
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
+await test('a seek that throws mid-set still leaves the completed seeks as evidence', async () => {
+  // THE DEFECT THIS CLOSES. The per-seek profile was recorded only after the function returned, so when seek
+  // six timed out the function returned nothing, the profile was never written, and the cleanup trap deleted
+  // the run directory and the media server's logs. A thirty-minute run left one line saying a segment had
+  // timed out and no timings for the five seeks that had worked. A source-presence check cannot prove this;
+  // driving the throw can.
+  const fake = await startFakePlex({ failSegment: 37 });
+  try {
+    const captured = await capturingStdout(() =>
+      mediaTimeSeekSet({ baseUrl: fake.base, sectionId: '1' }, SEEK_ITEM, 'sess', [10, 20, 300]));
+    assert(captured.error !== undefined, 'the failing seek still fails the phase');
+    assert(/seek 0 -> server position 8s, \d+ms/.test(captured.out),
+      `the first completed seek is on stdout before the throw: ${captured.out}`);
+    assert(/seek 1 -> server position 16s/.test(captured.out), 'and so is the second');
+    assert(/seek 2 -> position 300s: requesting/.test(captured.out),
+      'and the one that failed is named as attempted, so the gap is visible');
+    assert(!/:\/\//.test(captured.out), 'and none of it carries a locator');
+  } finally {
+    await fake.close();
+  }
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The redaction check, over the artifact format that is actually written
+// ---------------------------------------------------------------------------------------------------------
+
+function runCli(argv: readonly string[]): { status: number; stdout: string; stderr: string } {
+  const result = spawnSync('npx', ['tsx', join(repoRoot, 'src/ops/projection-plex-dataplane-cli.ts'),
+    ...argv], { encoding: 'utf8', cwd: repoRoot, shell: process.platform === 'win32' });
+  return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+}
+
+await test('redaction-check reads the NDJSON the gate actually writes, not whatever the name suggests', () => {
+  // THE DEFECT THIS CLOSES. The check picked `JSON.parse` for anything ending in `.json`. The results
+  // artifact IS called `results.json` and IS NDJSON — one GateResult per line, appended by `appendResult` as
+  // each phase records a verdict — so the last step of a run that had produced 272 passing assertions died
+  // with `Unexpected non-whitespace character after JSON at position 141`. The redaction check is the last
+  // thing between a report and whatever it might leak, and it was deciding how to parse its subject by
+  // looking at the subject's NAME.
+  const dir = mkdtempSync(join(tmpdir(), 'plex-redaction-'));
+  const clean = join(dir, 'results.json');
+  writeFileSync(clean, `${JSON.stringify({ gate: 'PX3-corpus-matched', verdict: 'pass', measured: 50, budget: 50 })}\n`
+    + `${JSON.stringify({ gate: 'PX4-direct-play-digest:abc', verdict: 'pass' })}\n`);
+  const ok = runCli(['redaction-check', '--file', clean]);
+  assertEq(ok.status, 0, `two NDJSON lines are read and pass: ${ok.stderr}`);
+  assert(/redaction-safe/.test(ok.stdout), 'and it says so');
+});
+
+await test('redaction-check still CATCHES a leak in that same NDJSON format', () => {
+  // A reader that parsed the file but stopped checking it would be worse than the crash: the crash was
+  // visible. This proves the fix kept the teeth.
+  const dir = mkdtempSync(join(tmpdir(), 'plex-redaction-leak-'));
+  const leaky = join(dir, 'results.json');
+  writeFileSync(leaky, `${JSON.stringify({ gate: 'PX3-corpus-matched', verdict: 'pass' })}\n`
+    + `${JSON.stringify({ gate: 'PX4-play', verdict: 'pass', note: 'fetched http://fakerange:8099/direct/x' })}\n`);
+  const bad = runCli(['redaction-check', '--file', leaky]);
+  assert(bad.status !== 0, 'a locator on the SECOND line is refused');
+  assert(/not redaction-safe/.test(bad.stderr), 'and named as such');
+  assert(/a URL/.test(bad.stderr), 'with what was found');
+});
+
+await test('an empty results artifact is a failure, not a vacuous pass', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'plex-redaction-empty-'));
+  const empty = join(dir, 'results.json');
+  writeFileSync(empty, '');
+  const result = runCli(['redaction-check', '--file', empty]);
+  assert(result.status !== 0, 'nothing to check is not the same as nothing wrong');
+  assert(/no subject/.test(result.stderr), 'and it says why');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// What a Plex scan costs, and the claim that is NOT being made about it
+// ---------------------------------------------------------------------------------------------------------
+
+await test('the scan ceiling is BLOCK GEOMETRY, and is independent of the fixture\'s size', () => {
+  // THE MULTIPLIER THIS REPLACES WAS REJECTED, AND RIGHTLY. Three byte budgets failed and the first answer
+  // was `MAX_SCAN_BYTE_MULTIPLIER = 3.0` — a number above 1.0 chosen to sit above what had been measured.
+  // That is a record of an observation with room around it, not a budget: it would have passed a daemon that
+  // read every object three times over, and it retired the product's central claim rather than testing it.
+  const chunk = PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  const fixed = PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * chunk;
+  assertEq(chunk, 4 * 1024 * 1024, 'the demand block is the daemon\'s readpath.ChunkBytes');
+  assertEq(PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES, 1_048_576, 'and the probe window is the manifest\'s');
+  // A LARGE OBJECT COSTS THE FIXED WINDOW, WHATEVER ITS SIZE. That is the whole shape of the model.
+  assertEq(plexScanByteCeiling([512 * 1024 * 1024]), fixed, 'a 512 MiB object costs the fixed window');
+  assertEq(plexScanByteCeiling([100 * 1024 * 1024]), fixed, 'and so does a 100 MiB one');
+  // ...AND A SMALL ONE IS CLAMPED BY ITSELF: forty kilobytes cannot cost a four-megabyte block.
+  assertEq(plexScanByteCeiling([40_000]), PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * 40_000,
+    'a tiny corpus entry is clamped by its own length');
+  assertEq(plexScanByteCeiling([40_000, 40_000]), plexScanByteCeiling([40_000]) * 2, 'and they sum');
+  assertEq(plexScanByteCeiling([]), 0, 'nothing costs nothing');
+});
+
+await test('the block-geometry ceiling admits every measured scan and refuses a runaway', () => {
+  // Held against the three real measurements from a full run, and against the failure it must still catch.
+  const anchor = 13_981_407;
+  const soak = 8_594_275;
+  const corpus = Array.from({ length: 38 }, () => Math.round(1_535_672 / 38));
+  assert(plexScanByteCeiling([anchor]) >= 17_825_792,
+    'the measured two-entry scan of 17,825,792 bytes is inside the ceiling');
+  assert(plexScanByteCeiling([anchor, soak, ...corpus]) >= 40_096_953,
+    'and so is the measured corpus scan of 40,096,953');
+  // THE TEETH: a read path that served every object ten times over is still refused.
+  assert(plexScanByteCeiling([anchor, soak, ...corpus]) < 10 * (anchor + soak + 1_535_672),
+    'while a ten-times-over read path is not');
+});
+
+await test('the product\'s fraction claim is asserted, on an object big enough for it to mean something', () => {
+  // On a fixture smaller than the fixed 24 MiB scan window, "reads a fraction of the object" is not a
+  // property a correct implementation can have. So the claim moves to a fixture several times larger, and
+  // it is held to the SHARED constant the Jellyfin gate is held to rather than one of Plex's own.
+  const fixed = PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN
+    * PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  assertEq(PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION, MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION,
+    'the same fraction, not a Plex-specific one');
+  assertEq(MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION, 0.5, 'and the shared constant is untouched');
+  assert(PLEX_LARGE_FIXTURE.MIN_BYTES >= fixed / PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION,
+    'and the fixture is large enough that the fixed window fits under the fraction with margin');
+  assert(GATE.includes('--large-bytes "$LARGE_SIZE"'), 'the gate asserts the fraction on it');
+  assert(/test "\$LARGE_SIZE" -ge 100663296/.test(GATE),
+    'and refuses to run the claim against a fixture that came out too small to test it');
+});
+
+await test('the re-scan budget is untouched, and it is the strongest claim Plex does support', () => {
+  // A second scan of an unchanged generation must cost the provider ZERO ranged GETs and ZERO bytes. That is
+  // the daemon's scan-window cache doing exactly what it exists for; it holds on Plex, and nothing above
+  // relaxes it.
+  assert(GATE.includes('--gate PX14-rescan --entries 1 --bytes 0 --windows 0'),
+    'the re-scan is budgeted at zero bytes and zero windows');
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  assert(/if \(sizes\.length > 0\)/.test(cli),
+    'and the geometry ceiling is skipped when no object sizes are named, so it cannot turn a zero-cost '
+    + 're-scan into a failure');
+});
+
+await test('the scan AFTER A MEDIA-SERVER RESTART is budgeted, not just its churn', () => {
+  // THE GAP THIS CLOSES. The gate measured churn across the restart and measured the WARM repeat scan at
+  // zero provider bytes, and drew a counter window around neither the restart scan itself. Measured: the
+  // restart re-fetched +37,924,876 bytes over +14 ranges, and the scan immediately after cost zero. Letting
+  // only the warm scan carry the zero-refetch claim was the strongest-sounding half of a two-part
+  // measurement with the expensive half unmeasured.
+  assert(GATE.includes('counters-before-restart-scan.json'), 'a window opens before the restart scan');
+  assert(GATE.includes('counters-after-restart-scan.json'), 'and closes after it');
+  assert(GATE.includes('--gate PX12b-restart-scan'), 'and it carries a budget');
+  const restart = GATE.split('restarting the media server')[1]?.split('step "')[0] ?? '';
+  assert(restart.indexOf('counters-before-restart-scan') < restart.indexOf('--label scan4'),
+    'the window really does bracket scan4');
+});
+
+await test('the corpus-scan denominator names EVERY remote object, one size at a time', () => {
+  // THE DEFECT THIS CLOSES. It named the soak source and the corpus and silently omitted the remote anchor,
+  // which is in this library and is re-scanned by this very scan. And the sizes cannot be summed before they
+  // reach the budget: the ceiling clamps each object by its own length, so folding them together would let
+  // the large entries buy headroom for the small ones.
+  assert(/CORPUS_SIZE_LIST="\$\(node "\$REL\/sizelist\.cjs"/.test(GATE), 'the sizes are listed individually');
+  assert(GATE.includes('--object-sizes "$CORPUS_SIZE_LIST"'), 'and handed to the budget as a list');
+  assert(/CORPUS_SIZE_LIST="\$\{CORPUS_SIZE_LIST\},\$\{LARGE_SIZE\}"/.test(GATE),
+    'and the list grows with the library, so a later scan is not budgeted against a smaller one');
+});
+
+await test('the seek ceiling is per-seek block geometry, not a multiple of the fixture', () => {
+  const perSeek = PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  assertEq(plexSeekByteCeiling(10) - plexSeekByteCeiling(9), perSeek,
+    'each additional seek adds exactly one encoder restart\'s worth of demand blocks');
+  assert(plexSeekByteCeiling(0) > 0, 'and there is a fixed session-setup allowance beneath it');
+  assert(plexSeekByteCeiling(10) >= 54_485_469, 'the measured ten-seek cost is inside the ceiling');
+  // IT DOES NOT DEPEND ON THE OBJECT AT ALL, which is what made `1.2 x object x 10` unstable: a hair above
+  // the arithmetic floor on a small fixture and meaningless on a large one.
+  assert(GATE.includes('--events 10 --seek-ceiling true'), 'the gate asks for the derived ceiling');
+  assert(!GATE.includes('--max-object-multiplier 1.2'), 'and no longer for an object multiple');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 // The gate script itself
 // ---------------------------------------------------------------------------------------------------------
 
-const GATE = read('deploy/projection-plex-dataplane-gate.sh');
 
 await test('the gate exits 77 rather than 0 when the host cannot host it', () => {
   assert(GATE.includes('GATE_SKIP_STATUS=77'), 'the skip status is 77');
@@ -895,6 +1309,95 @@ await test('the decoder is NOT the server under test, and the gate says why', ()
     'and the gate records that the Plex image has no ffprobe at all');
   assert(GATE.includes('$DECODER_FFPROBE'), 'every probe uses the independent one');
   assert(!GATE.includes('Plex Transcoder'.concat('" ')), 'and nothing invokes the server\'s own encoder');
+});
+
+await test('every container is handed the media server\'s ADDRESS, never its container name', () => {
+  // MEASURED, AND IT COST A RUN. Plex refuses a request whose Host header is a name it does not recognise:
+  // its own log says `Request came in with unrecognized domain / IP '<name>' in header Host; treating as
+  // non-local`, and it answers 401. Same peer, same network, same unclaimed server: by-name 401, by-ip 200,
+  // by-ip-with-a-name-in-Host 401, by-name-with-an-ip-in-Host 200. `allowedNetworks` does not override it.
+  assert(PLEX_REJECTS_UNRECOGNISED_HOST_HEADER, 'the contract records the behaviour');
+  assert(/PLEX_IP="\$\(docker inspect "\$PLEX_CONTAINER"/.test(GATE),
+    'the gate resolves the server\'s address');
+  assert(/test -n "\$PLEX_IP"/.test(GATE), 'and refuses to continue without one');
+  assert(GATE.includes('--stream-base "http://${PLEX_IP}:32400"'),
+    'and the paced consumer is given that address');
+  assert(!/--stream-base "http:\/\/\$\{?PLEX_CONTAINER/.test(GATE),
+    'never the container name, which is what produced the 401');
+  assert(/unrecognized domain \/ IP/.test(GATE), 'and the gate records the server\'s own explanation');
+});
+
+await test('the plex.tv skip check is GONE, because the finding behind it was wrong', () => {
+  // The gate used to skip with 77 when servers.plex.tv did not resolve, on the strength of a measurement
+  // that turned out to be confounded by the Host header above. Re-measured on a --internal network with the
+  // server addressed by IP, an air-gapped unclaimed Plex answers /, /library/sections and /:/prefs with 200
+  // and creates a library. A false SKIP is the same family of defect as a false PASS.
+  assertEq(PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY, false,
+    'the contract records the corrected finding');
+  assert(!/nslookup servers\.plex\.tv/.test(GATE), 'the check is deleted, not softened');
+  assert(/There is no plex\.tv reachability check here|THERE IS NO plex\.tv REACHABILITY CHECK HERE/.test(GATE),
+    'and the gate says why, so nobody re-adds it');
+  const doc = read('docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md');
+  assert(/air-gapped/i.test(doc), 'the document states what was actually measured');
+});
+
+await test('the air-gapped claim is exactly as wide as the requests that were made', () => {
+  // The corrected finding must not drift upward into "the whole local API" or "entirely usable". Four
+  // requests were made; scanning, playback, seeking and transcoding air-gapped are not established, because
+  // this gate has never run that way.
+  assertEq(PLEX_AIR_GAPPED_TESTED_PATHS.length, 4, 'four endpoints, enumerated');
+  for (const path of ['GET /', 'GET /library/sections', 'GET /:/prefs', 'POST /library/sections']) {
+    assert(PLEX_AIR_GAPPED_TESTED_PATHS.includes(path), `${path} is one of them`);
+  }
+  const doc = read('docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md');
+  assert(!/entirely usable/.test(doc), 'the doc does not say "entirely usable"');
+  assert(!/answers its whole local API/.test(doc), 'nor "answers its whole local API"');
+  assert(/not.{0,40}established/is.test(doc), 'and says what is not established');
+  // AND NO OPERATIONAL TEXT STILL BLAMES plex.tv. These are diagnostics an operator reads, not just prose.
+  const driver = read('src/ops/projection-plex-dataplane.ts');
+  assert(!/contingent on the server (being able to reach|having reached) plex\.tv/.test(driver),
+    'the driver no longer attributes a 401 to plex.tv');
+  assert(!/an unclaimed Plex needs in order to answer/.test(read('deploy/projection-plex-dataplane-gate-optional.sh')),
+    'and neither does the optional wrapper');
+  assert(!/media server container has internet egress and an unclaimed Plex requires it/.test(GATE),
+    'and neither does the gate\'s closing summary');
+  assert(!/nslookup servers\.plex\.tv/.test(GATE), 'and the skip check is gone');
+});
+
+await test('the media server\'s address is resolved on the NAMED gate network', () => {
+  // A `range` over .NetworkSettings.Networks concatenates every address the container has, so the moment it
+  // is attached to a second network the consumer is handed a URL that resolves to nothing.
+  assert(/{{index \.NetworkSettings\.Networks \\"\$NETWORK\\" \\"IPAddress\\"}}/.test(GATE),
+    'the address is indexed by the gate network\'s name');
+  assert(!/{{range \.NetworkSettings\.Networks}}{{\.IPAddress}}{{end}}/.test(GATE),
+    'never ranged over every network');
+  assert(/\*\[!0-9\.\]\*/.test(GATE), 'and what comes back is checked to be a bare IPv4 address');
+});
+
+await test('the session warm-up is timed apart from the ten seeks, and is itself bounded', () => {
+  // A seek is a transition within an ESTABLISHED session. The first segment of a cold session waits for the
+  // encoder to launch, open the projected file through the mount and start writing — that is playback
+  // startup, which G8 budgets and G9 does not mention. Charging it to seek number one measured two things
+  // under one name. The ten-second contract for all ten seeks is unchanged.
+  const driver = read('src/ops/projection-plex-dataplane.ts');
+  assert(/readonly warmupMs: number/.test(driver), 'the warm-up is a returned measurement');
+  assert(/const warmupStart = now\(\)/.test(driver), 'timed around the first fetch');
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  assert(/PX19-session-warmup-seconds/.test(cli), 'and asserted under its own gate id');
+  assert(/MEDIA_SERVER_DEADLINES_MS\.SEEK \/ 1_000/.test(cli),
+    'against a real ceiling, so a session that took a minute fails rather than vanishing between two gates');
+  assertEq(MEDIA_SERVER_SOAK.MAX_SEEK_SECONDS, 10, 'and the ten-second seek contract is untouched');
+  assert(/PX19-seek-elapsed-profile/.test(cli),
+    'with a per-seek breakdown recorded, so a failing slowest-seek number is diagnosable at all');
+});
+
+await test('the warm-up reads a position the seek plan never asks for', () => {
+  // Otherwise it would pre-warm one of the ten and the gate would be measuring a seek it had already paid
+  // for. The plan's smallest fraction is 0.02 of the duration, and the warm-up reads segment 0.
+  const driver = read('src/ops/projection-plex-dataplane.ts');
+  assert(/await fetchSegment\(state, session, 0,/.test(driver), 'the warm-up reads segment zero');
+  const smallest = Math.min(...SEEK_PLAN_FRACTIONS);
+  assert(smallest > 0, 'and no planned position is the very start of the media');
 });
 
 await test('the mount is deliberately NOT bound read-only, so the DAEMON is what refuses a write', () => {
@@ -1045,13 +1548,20 @@ await test('the Plex document states the limits in the same breath as the capabi
   assert(/three consecutive/i.test(doc), 'and repeats what passing means');
 });
 
-await test('the Plex document records the plex.tv dependency instead of hiding it', () => {
-  assert(PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY,
-    'the contract records the dependency as a fact');
+await test('the Plex document keeps the RETRACTED plex.tv finding, and the confound that produced it', () => {
+  // A confounded experiment that produced a confident wrong conclusion is worth more as a record than as an
+  // absence. This asserts the document did not quietly tidy it away and replace it with the right answer as
+  // though the right answer had always been there — which is the shape of edit this repository exists to
+  // stop making.
+  assertEq(PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY, false,
+    'the contract carries the corrected finding');
   const doc = read('docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md');
   assert(/plex\.tv/.test(doc), 'the document names plex.tv');
-  assert(/401/.test(doc), 'and what happens without it');
-  assert(/internal/.test(doc), 'and how that was measured');
+  assert(/401/.test(doc), 'and the refusal that was observed');
+  assert(/internal/.test(doc), 'and how it was measured');
+  assert(/false|wrong|retract/i.test(doc), 'and says the conclusion drawn from it was not right');
+  assert(/Host/.test(doc), 'and names the Host header as what was actually refusing');
+  assert(/air-gapped/i.test(doc), 'and states what the corrected measurement showed');
   assert(/no Plex account|nobody's Plex account|unclaimed/i.test(doc),
     'while stating that no account is used');
 });
