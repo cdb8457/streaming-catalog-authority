@@ -291,36 +291,38 @@ export function plexPrefsPath(prefs: ReadonlyArray<readonly [string, string]> = 
 // ---------------------------------------------------------------------------------------------------------
 
 /**
- * PLEX'S SCANNER READS THE WHOLE OBJECT. JELLYFIN'S READS A FRACTION OF IT. THAT IS A FINDING, AND THE
- * BUDGETS HERE EXIST TO STATE IT RATHER THAN TO BE TUNED UNTIL IT STOPS BEING VISIBLE.
+ * WHAT A PLEX SCAN COSTS AT THE PROVIDER — AND WHY THE FIRST TWO ANSWERS HERE WERE BOTH WRONG.
  *
- * `MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION` is **0.5**, and its comment says what it is for: "a scanner
- * that fetched the whole object to identify it would sit at 1.0, and the entire argument for this product is
- * that it does not have to." Measured against a real Jellyfin, a 13.9 MB object is identified from two
- * ranged requests and about 15 % of itself. Measured against a real Plex, on the same object through the
- * same mount:
+ * MEASURED, AGAINST FIXTURES THAT TURNED OUT TO BE THE WRONG INSTRUMENT:
  *
- *   | scan | provider bytes | total remote bytes in the library | ratio |
+ *   | scan | provider bytes | remote bytes in the library | ratio |
  *   |---|---|---|---|
  *   | two-entry generation | 17,825,792 | 13,981,407 | **1.28x** |
  *   | ~50-entry corpus | 40,096,953 | 24,111,354 | **1.66x** |
  *
- * Plex analyses every item it imports, and the analysis reads the file. So **the fraction argument is
- * demonstrated by Jellyfin and is contradicted by Plex**, and this gate says so in its report and in its
- * document rather than quietly widening the shared constant — which would also have slackened the Jellyfin
- * gate by the same amount, to make a different gate pass.
+ * THE FIRST WRONG ANSWER was a Plex-specific multiplier of 3.0, chosen to sit above those numbers. A ceiling
+ * placed above an observation is a record of the observation with room around it: it would have passed a
+ * daemon that read every object three times over.
  *
- * WHAT IS STILL WORTH ASSERTING, GIVEN THAT. Three things, and none of them is decoration:
+ * THE SECOND WRONG ANSWER, in the comment this replaces, was to read those ratios as a product defect —
+ * "Plex reads the whole object, so the fraction argument is contradicted". It is not, because **neither
+ * fixture was large enough for the argument to be about them**. The daemon serves a 4 MiB demand block for a
+ * one-byte read, and Plex opens each new item twice — its own log shows `Plex Media Scanner --analyze`
+ * launched per item with the scheduled task off — touching about three blocks per open. Identifying ONE
+ * object therefore costs up to 24 MiB *whatever its size*. Against an 8.6 MB soak source and a 14.0 MB
+ * anchor, 1.28x and 1.66x are the block geometry, not waste, and no correct implementation could have scored
+ * better.
  *
- *   - A CEILING WELL ABOVE 1.0 BUT FAR BELOW A RUNAWAY. At 3.0 it cannot be satisfied by a read path that
- *     served the object ten times over, or by a read-ahead that never cancels. It is roughly twice the worst
- *     measured value, because a ceiling pinned to an observation fails on a loaded machine.
- *   - A FLOOR. A scan that fetched almost nothing would score perfectly against any ceiling and would mean
- *     the scanner never opened the entries.
- *   - THE RE-SCAN, WHICH IS UNTOUCHED AND IS THE STRONGEST AMPLIFICATION CLAIM PLEX SUPPORTS. A second scan
- *     of an unchanged generation must cost the provider **zero** ranged GETs and **zero** bytes. That is the
- *     daemon's scan-window cache doing exactly what it exists for, it holds on Plex, and no part of this
- *     comment relaxes it.
+ * SO THE HISTORICAL RATIOS ARE KEPT AND RELABELLED: they are measurements of undersized fixtures, and they
+ * say nothing either way about the product's claim.
+ *
+ * WHAT IS ASSERTED NOW. A ceiling derived from that geometry rather than from any fixture's size; a floor
+ * derived per object so no entry can be paid for by another; and the product's actual claim, moved to the
+ * one place it can be tested — a 96 MiB fixture, four times the fixed window, held to the SHARED
+ * `MAX_SCAN_BYTE_FRACTION`. **That last assertion has not yet been observed to hold: no gate run has passed.**
+ *
+ * AND ONE THING NEITHER ANSWER TOUCHED, WHICH REMAINS THE STRONGEST AMPLIFICATION CLAIM PLEX SUPPORTS: a
+ * re-scan of an unchanged generation costs the provider zero ranged GETs and zero bytes.
  */
 /**
  * THE GEOMETRY EVERY BUDGET BELOW IS DERIVED FROM. Not one of these numbers is chosen; each is read off the

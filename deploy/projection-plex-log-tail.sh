@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# The media server's own last words, TIME-BOUNDED and scrubbed, for a gate that is about to fail.
+#
+# WHY THIS IS A SCRIPT AND NOT FOUR LINES INSIDE THE GATE. Two reasons, and the second is the one that made
+# it a file.
+#
+# 1. THE GATE DELETES ITS OWN EVIDENCE. The cleanup trap removes the run directory, and the media server's
+#    log lives inside it — so a failure that happens once in a thirty-minute run leaves nothing behind to
+#    diagnose it with. That is not hypothetical: a seek timed out on segment 17 and the only surviving
+#    evidence was the timeout itself.
+#
+# 2. A DIAGNOSTIC THAT CAN HANG IS WORSE THAN NO DIAGNOSTIC. The first version wrapped `docker exec` in
+#    nothing at all while its comment claimed to be bounded. `docker exec` blocks indefinitely against a
+#    wedged container or a stalled daemon — and the cases where a gate most needs its log tail are exactly
+#    the cases where the container is wedged. So the collection is wrapped in a real time bound, and a
+#    timeout is reported rather than waited on. Being a script with an injectable command is what lets the
+#    offline suite drive a hanging collector and prove the bound holds.
+#
+# IT NEVER CHANGES THE OUTCOME. It prints to stdout and always exits 0: the caller has already decided to
+# fail, and a diagnostic that could turn one failure into a different one would replace an explained failure
+# with an unexplained one.
+set -uo pipefail
+
+CONTAINER="${1:?container name}"
+LINES="${2:-40}"
+# The time bound, and the command that is bounded. `PROJECTION_PLEX_LOG_TAIL_DOCKER` is the seam the offline
+# suite replaces with a script that hangs, so the bound is exercised as behaviour rather than read as source.
+TIMEOUT_SECONDS="${PROJECTION_PLEX_LOG_TAIL_TIMEOUT_SECONDS:-15}"
+DOCKER_BIN="${PROJECTION_PLEX_LOG_TAIL_DOCKER:-docker}"
+
+LOG="/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log"
+
+# EVERYTHING IS SCRUBBED BEFORE ANYTHING IS PRINTED. The pipeline means no raw line ever reaches stdout, and
+# the rules cover the four shapes this log actually carries: a URL, a filesystem path, an address, and a
+# CREDENTIAL IN A QUERY — which the URL rule alone would miss, because Plex logs bare `?X-Plex-Token=...`
+# fragments as well as whole locators. §7's redaction rule has no exception for error paths, and an exception
+# is exactly where a leak would live.
+scrub() {
+  sed -e 's#[Xx]-[Pp]lex-[Tt]oken=[^ &"]*#X-Plex-Token=<redacted>#g' \
+      -e 's#[Aa]pi_key=[^ &"]*#api_key=<redacted>#g' \
+      -e 's#[Tt]oken=[^ &"]*#token=<redacted>#g' \
+      -e 's#[a-zA-Z][a-zA-Z0-9+.-]*://[^ ]*#<locator>#g' \
+      -e 's#/config/[^ ]*#<path>#g' \
+      -e 's#/media/projection/[^ ]*#<path>#g' \
+      -e 's#[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}#<address>#g'
+}
+
+raw="$(timeout "$TIMEOUT_SECONDS" "$DOCKER_BIN" exec "$CONTAINER" \
+  sh -c "tail -n ${LINES} '${LOG}'" 2>/dev/null)"
+status=$?
+
+if [ "$status" -eq 124 ]; then
+  # THE BOUND FIRED. Say so, and say nothing else: the caller's own failure is the thing that matters and it
+  # has already been printed.
+  echo "  (the media server's log could not be collected within ${TIMEOUT_SECONDS}s; the container is not"
+  echo "   answering. The failure above stands on its own.)"
+  exit 0
+fi
+if [ "$status" -ne 0 ] || [ -z "$raw" ]; then
+  echo "  (no media-server log was available)"
+  exit 0
+fi
+
+printf '%s\n' "$raw" | scrub
+exit 0

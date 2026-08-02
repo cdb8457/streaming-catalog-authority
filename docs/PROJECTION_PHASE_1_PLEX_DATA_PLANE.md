@@ -533,9 +533,12 @@ container now names the server by address, and the gate refuses to continue with
 - **G18, the simultaneous-client gate.** It requires all three media servers scanning at once, and there are
   two.
 - **G22**, the rclone/WebDAV comparison control, and **G27**'s three-server half.
-- **The product's "a scan reads a fraction of the object" argument, on Plex.** It is contradicted there:
-  Plex reads 1.28x-1.66x of the remote bytes in the library on every scan. See §3.4. Jellyfin remains the
-  only server on which that argument is demonstrated.
+- **The product's "a scan reads a fraction of the object" argument, on Plex — not contradicted, not yet
+  demonstrated.** The 1.28x and 1.66x measured earlier are of fixtures SMALLER than Plex's fixed ~24 MiB scan
+  cost, so no correct implementation could have scored better against them and they settle nothing either
+  way. The claim is now asserted against a 96 MiB fixture, held to the same 0.5 fraction Jellyfin is held to
+  — and **that assertion has never been observed to hold, because no run of this gate has passed**. See §3.4.
+  Jellyfin remains the only server on which the argument is demonstrated.
 - **A graceful daemon restart under a long-running media server**, on Linux or Unraid. See §3.8.
 - **Anything air-gapped beyond four requests.** What was measured with no route to the internet (§3.0) is
   `GET /`, `GET /library/sections`, `GET /:/prefs` and `POST /library/sections`. **Scanning, direct play,

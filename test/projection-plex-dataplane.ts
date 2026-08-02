@@ -1126,6 +1126,78 @@ await test('a seek that throws mid-set still leaves the completed seeks as evide
 });
 
 // ---------------------------------------------------------------------------------------------------------
+// The failure diagnostic, which must not become the failure
+// ---------------------------------------------------------------------------------------------------------
+
+function runLogTail(dockerStub: string, timeoutSeconds: string): {
+  status: number; stdout: string; elapsedMs: number;
+} {
+  const startedAt = Date.now();
+  const result = spawnSync('bash', [join(repoRoot, 'deploy/projection-plex-log-tail.sh'), 'container', '40'], {
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      PROJECTION_PLEX_LOG_TAIL_DOCKER: dockerStub,
+      PROJECTION_PLEX_LOG_TAIL_TIMEOUT_SECONDS: timeoutSeconds,
+    },
+  });
+  return { status: result.status ?? -1, stdout: result.stdout ?? '', elapsedMs: Date.now() - startedAt };
+}
+
+function writeStub(body: string): string {
+  const dir = mkdtempSync(join(tmpdir(), 'plex-logtail-'));
+  const stub = join(dir, 'docker');
+  writeFileSync(stub, `#!/usr/bin/env bash\n${body}\n`);
+  chmodSync(stub, 0o755);
+  return stub;
+}
+
+await test('a HANGING log collector is cut off, and never becomes the failure itself', () => {
+  // THE DEFECT THIS CLOSES. The first version wrapped `docker exec` in nothing while its comment claimed to
+  // be bounded — and `docker exec` blocks indefinitely against a wedged container, which is exactly the
+  // situation in which a gate most needs its log tail. A diagnostic that hangs there replaces an explained
+  // failure with an unexplained one.
+  const hanging = writeStub('sleep 60');
+  const result = runLogTail(hanging, '2');
+  assertEq(result.status, 0, 'the collector still exits 0, so it cannot change the gate\'s own verdict');
+  assert(result.elapsedMs < 20_000, `and it returns promptly, in ${result.elapsedMs}ms`);
+  assert(/could not be collected within 2s/.test(result.stdout), 'saying the bound fired');
+  assert(/failure above stands on its own/.test(result.stdout),
+    'and pointing back at the failure that mattered');
+});
+
+await test('the log tail scrubs tokens and query credentials, not just whole locators', () => {
+  // The URL rule alone would miss a bare `?X-Plex-Token=...` fragment, and Plex logs those. Nothing reaches
+  // stdout unscrubbed: the raw text is never printed, only the output of the pipeline.
+  const leaky = writeStub(String.raw`printf '%s\n' "GET /library?X-Plex-Token=SECRETVALUE from 172.22.0.4" `
+    + String.raw`"opening https://example.test/x?api_key=OTHERSECRET" `
+    + String.raw`"file /config/Library/Plex.log and /media/projection/Movies/a.mp4"`);
+  const result = runLogTail(leaky, '15');
+  assertEq(result.status, 0, 'it collects');
+  assert(!/SECRETVALUE/.test(result.stdout), 'the Plex token value is gone');
+  assert(!/OTHERSECRET/.test(result.stdout), 'and so is an api_key value');
+  assert(!/172\.22\.0\.4/.test(result.stdout), 'and the address');
+  assert(!/:\/\//.test(result.stdout), 'and the locator');
+  assert(!/\/config\/Library/.test(result.stdout) && !/\/media\/projection\/Movies/.test(result.stdout),
+    'and both filesystem paths');
+  assert(/GET \/library/.test(result.stdout), 'while the part worth reading survives');
+});
+
+await test('a collector that fails outright says so, without pretending it had a log', () => {
+  const failing = writeStub('exit 1');
+  const result = runLogTail(failing, '15');
+  assertEq(result.status, 0, 'still exits 0');
+  assert(/no media-server log was available/.test(result.stdout), 'and says there was nothing to show');
+});
+
+await test('the gate calls the bounded collector rather than docker exec directly', () => {
+  assert(GATE.includes('projection-plex-log-tail.sh'), 'the gate uses the bounded script');
+  const dieBody = GATE.split('die() {')[1]?.split('\n}')[0] ?? '';
+  assert(!/docker exec/.test(dieBody), 'and die() no longer runs docker exec itself');
+  assert(/exit 1/.test(dieBody), 'while still failing the gate');
+});
+
+// ---------------------------------------------------------------------------------------------------------
 // The redaction check, over the artifact format that is actually written
 // ---------------------------------------------------------------------------------------------------------
 
@@ -1261,6 +1333,69 @@ await test('the corpus-scan denominator names EVERY remote object, one size at a
   assert(GATE.includes('--object-sizes "$CORPUS_SIZE_LIST"'), 'and handed to the budget as a list');
   assert(/CORPUS_SIZE_LIST="\$\{CORPUS_SIZE_LIST\},\$\{LARGE_SIZE\}"/.test(GATE),
     'and the list grows with the library, so a later scan is not budgeted against a smaller one');
+});
+
+await test('the provider is NEVER restarted mid-run, so lifetime evidence survives', () => {
+  // THE DEFECT THIS CLOSES. Adding the large object by restarting the fake endpoint would have reset its
+  // process-lifetime counters — and PX15 asserts over the WHOLE run that it served zero 429s, zero full-body
+  // answers to a ranged request and never exceeded the connection cap. Every violation before the restart
+  // would have been discarded while PX15 went on claiming to describe the run.
+  const launches = GATE.split('go run ./cmd/fakerange').length - 1;
+  assertEq(launches, 1, 'the endpoint is launched exactly once');
+  assert(GATE.includes(`--file-object "\${LARGE_REF}=/remote/\${LARGE_FILE}"`),
+    'and the large object is registered with it at that single launch');
+  // The file must therefore exist before the launch: generated in the media step, published much later.
+  const beforeLaunch = GATE.split('go run ./cmd/fakerange')[0] ?? '';
+  assert(beforeLaunch.includes('LARGE_SIZE="$(wc -c < "$WORK/remote/$LARGE_FILE"'),
+    'the large fixture is generated and sized before the endpoint starts');
+  assert(!/docker rm -f "\$RANGE_CONTAINER" >\/dev\/null 2>&1 \|\| true\n +docker run -d --name "\$RANGE_CONTAINER"/
+    .test(GATE), 'and nothing tears the endpoint down and brings it back');
+});
+
+await test('every post-large baseline carries the large item, and the denominators agree', () => {
+  // Once PX9c publishes it, the large object stays in the library. A later scan measured against an
+  // expectation that omits it would fail on item count; a later BUDGET measured against a denominator that
+  // omits it would be wrong in the quiet direction.
+  assert(GATE.includes('"$REL/out/expected-2.json" "$REL/out/expected-large.json"'),
+    'the successor expectation derives from the large one');
+  assert(GATE.includes('--before "$REL/out/items-large.json" --after "$REL/out/items-2.json"'),
+    'and the successor comparison uses the post-large listing as its baseline');
+  assert(/CORPUS_SIZE_LIST="\$\{CORPUS_SIZE_LIST\},\$\{LARGE_SIZE\}"/.test(GATE),
+    'the size list grows to include it');
+  // ...and the entry count grows with it: anchor + soak + large, on top of the corpus.
+  assert(GATE.includes('--gate PX12b-restart-scan --entries "$(( CORPUS_REMOTE_ENTRIES + 3 ))"'),
+    'the restart scan counts three large remote entries beside the corpus');
+  assert(GATE.includes('--gate PX9b-corpus-scan --entries "$(( CORPUS_REMOTE_ENTRIES + 2 ))"'),
+    'while the corpus scan, which runs BEFORE the large object exists, still counts two');
+  // Every expectation after PX9c chains from expected-large, so LARGE_FILE is in all of them.
+  for (const chain of ['"$REL/out/expected-midscan.json" "$REL/out/expected-2.json"',
+    '"$REL/out/expected-3.json" "$REL/out/expected-midscan.json"']) {
+    assert(GATE.includes(chain), `the expectation chain is unbroken at ${chain}`);
+  }
+});
+
+await test('the byte floor is per object, and cannot be cross-subsidised or defaulted away', () => {
+  // THE DEFECT THIS CLOSES. The floor was `min(totalRemote, count x 1 MiB)` and `totalRemote` came from
+  // `--bytes`, which defaults to 1 — so the restart-scan call, which names sizes but no `--bytes`, had a
+  // floor of ONE BYTE and could not fail. And even when `--bytes` was given, the terms were pooled: thirty-
+  // eight tiny objects that were never opened could be paid for by one large one that was.
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  assert(/sizes\.reduce\(\s*\(total, size\) => total \+ Math\.min\(size, PLEX_READ_GEOMETRY\.PROBE_WINDOW_BYTES\)/
+    .test(cli), 'the floor sums one probe window per object, clamped by the object');
+  assert(!/Math\.min\(totalRemote, sizes\.length/.test(cli), 'and never pools them');
+  assert(!/const totalRemote/.test(cli), 'the pooled total is gone entirely');
+  // The arithmetic, on a mixed library: 38 tiny objects plus two large ones.
+  const window = PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES;
+  const tiny = Array.from({ length: 38 }, () => 40_000);
+  const mixedFloor = [...tiny, 8_594_275, 13_981_407]
+    .reduce((total, size) => total + Math.min(size, window), 0);
+  assertEq(mixedFloor, 38 * 40_000 + 2 * window,
+    'each tiny object contributes its own length and each large one contributes one window');
+  assert(mixedFloor > 2 * window,
+    'so a run that opened only the two large objects cannot clear the floor for the other thirty-eight');
+  // And the restart-scan call names sizes, which is what makes the floor apply to it at all.
+  assert(GATE.includes('--gate PX12b-restart-scan') && GATE.includes('--object-sizes "$CORPUS_SIZE_LIST"'),
+    'the restart-scan call names object sizes, so it gets a real floor');
 });
 
 await test('the seek ceiling is per-seek block geometry, not a multiple of the fixture', () => {

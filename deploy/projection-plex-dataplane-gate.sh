@@ -118,26 +118,16 @@ step() { echo; echo "=== $* ==="; }
 # The information existed at the time and was thrown away. It is the difference between a gate that finds
 # defects and a gate that reports that something went wrong.
 #
-# BOUNDED, BEST EFFORT, AND SCRUBBED. A diagnostic that could itself hang or fail would replace one
-# unexplained failure with another, so every error here degrades to silence; the tail is capped; and the
-# absolute paths and addresses Plex writes are stripped, because the redaction rule has no exception for
-# error paths and an exception is exactly where a leak would live.
-plex_log_tail() {
-  local lines="${1:-40}"
-  docker exec "$PLEX_CONTAINER" sh -c \
-    "tail -n ${lines} '/config/Library/Application Support/Plex Media Server/Logs/Plex Media Server.log'" \
-    2>/dev/null \
-    | sed -e 's#[a-zA-Z][a-zA-Z0-9+.-]*://[^ ]*#<locator>#g' \
-          -e 's#/config/[^ ]*#<path>#g' -e 's#/media/projection/[^ ]*#<path>#g' \
-          -e 's#[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}#<address>#g' \
-    || true
-}
-
+# TIME-BOUNDED, LINE-BOUNDED, BEST EFFORT AND SCRUBBED — and it lives in its own script so the offline suite
+# can drive a hanging collector and prove the bound holds. `docker exec` blocks indefinitely against a wedged
+# container, and the failures that most need a log tail are exactly the ones where the container is wedged; a
+# diagnostic that hangs there would replace an explained failure with an unexplained one.
+# See deploy/projection-plex-log-tail.sh.
 die() {
   echo "GATE FAILED: $*" >&2
   if docker inspect "$PLEX_CONTAINER" >/dev/null 2>&1; then
-    echo "--- the media server's last 40 log lines, scrubbed ---" >&2
-    plex_log_tail 40 >&2
+    echo "--- the media server's last 40 log lines, time-bounded and scrubbed ---" >&2
+    bash "$(dirname "$0")/projection-plex-log-tail.sh" "$PLEX_CONTAINER" 40 >&2 || true
     echo "--- end ---" >&2
   fi
   exit 1
@@ -468,6 +458,41 @@ encode "remote/$REMOTE_FILE" 8 testsrc2 660 moov-at-end
 # whose probe windows are NOT in the daemon's cache, so that the endpoint can hold the scanner's read.
 encode "remote/$MIDSCAN_FILE" 6 smptebars 550 faststart
 
+# ----------------------------------------------------------------------------------------------------------
+# THE LARGE REMOTE OBJECT, GENERATED HERE AND PUBLISHED MUCH LATER -- AND GENERATED HERE FOR A REASON THAT IS
+# ABOUT EVIDENCE RATHER THAN CONVENIENCE.
+#
+# It is the only fixture the product's "a scan reads a fraction of the object" claim can be tested against;
+# see the step that publishes it. The obvious way to add it was to restart the fake endpoint once the file
+# existed -- and THAT WOULD HAVE DESTROYED THE RUN'S PROVIDER EVIDENCE. The endpoint's counters are process
+# lifetime counters, and `PX15` asserts over the WHOLE run that it served zero 429s, zero full-body answers
+# to a ranged request and never exceeded the connection cap. Restarting it mid-run resets those to zero, so
+# every violation before the restart would have been discarded and PX15 would have been describing the last
+# few minutes while claiming to describe the run.
+#
+# So every remote object this run will ever serve is generated BEFORE the endpoint starts and registered with
+# it at launch. Registering an object with the endpoint is not publishing it: nothing is visible through the
+# mount until the control plane mints a generation naming it.
+#
+# THE BITRATE MAKES THE SIZE; the frame size only makes it slow. 640x480 at 8 Mbit/s reaches ~100 MB in a
+# hundred seconds and encodes in a fraction of that.
+LARGE_FILE="Projection Large Remote (2026).mp4"
+ffmpeg_run -hide_banner -loglevel error -y \
+  -f lavfi -i "testsrc2=size=640x480:rate=24:duration=105" \
+  -f lavfi -i "sine=frequency=277:duration=105" \
+  -c:v mpeg4 -b:v 8M -minrate 8M -maxrate 8M -bufsize 16M \
+  -c:a aac -b:a 64k -shortest -movflags +faststart "/work/remote/$LARGE_FILE"
+
+LARGE_SIZE="$(wc -c < "$WORK/remote/$LARGE_FILE" | tr -d ' ')"
+LARGE_SHA="$(node "$REL/sha.cjs" "$REL/remote/$LARGE_FILE")"
+# THE FIXTURE HAS TO BE BIG ENOUGH FOR THE CLAIM TO MEAN ANYTHING, and that is asserted rather than assumed:
+# identifying one object costs a fixed ~24 MiB of demand blocks whatever its size, so an encoder that
+# produced 20 MB here would make a sub-0.5 fraction unreachable and the gate would fail for a reason that has
+# nothing to do with the daemon.
+test "$LARGE_SIZE" -ge 100663296 \
+  || die "the large fixture is $LARGE_SIZE bytes, under the 96 MiB the fraction claim needs to be testable"
+echo "  the large remote object is $LARGE_SIZE bytes"
+
 CORPUS_COUNT=47
 CORPUS_LOCAL=9
 # ----------------------------------------------------------------------------------------------------------
@@ -565,6 +590,7 @@ step "starting the deterministic HTTP Range endpoint, serving the remote objects
 REMOTE_REF="obj-projection-remote-two"
 MIDSCAN_REF="obj-projection-remote-held"
 SOAK_REF="obj-projection-soak-source"
+LARGE_REF="obj-projection-large-remote"
 
 # A REAL, EXPIRING ACCESS LEASE, WITH A SECRET THIS GATE CAN SEARCH FOR BY EXACT VALUE. The endpoint runs in
 # RESOLVER mode, so the daemon must exchange the stable objectRef for short-lived access material. The lease
@@ -591,6 +617,7 @@ docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fak
   --file-object "${REMOTE_REF}=/remote/${REMOTE_FILE}" \
   --file-object "${MIDSCAN_REF}=/remote/${MIDSCAN_FILE}" \
   --file-object "${SOAK_REF}=/remote/${SOAK_FILE}" \
+  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
   "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects.json >/dev/null
 
 echo "  waiting for the endpoint to come up"
@@ -967,52 +994,19 @@ step "one LARGE remote object, which is the only place the fraction claim can be
 # IT IS PUBLISHED IN ITS OWN GENERATION AND MEASURED IN ITS OWN COUNTER WINDOW, which is what makes the
 # delta attributable to this one object: everything already in the library has been scanned and analysed,
 # and the repeat scan above has just demonstrated that costs the provider nothing.
-LARGE_FILE="Projection Large Remote (2026).mp4"
+#
+# THE FILE AND ITS PROVIDER REGISTRATION ALREADY EXIST -- see the media-generation step. Nothing is restarted
+# here, because restarting the endpoint would reset the lifetime counters `PX15` asserts over the whole run
+# and silently discard every 429 and full-body answer that came before.
 LARGE_PATH="Movies/Projection Large Remote (2026)/$LARGE_FILE"
-LARGE_REF="obj-projection-large-remote"
 LARGE_ITEM="a1a1a1a1-7777-4777-8777-a1a1a1a1a1a1"
-# THE BITRATE MAKES THE SIZE; the frame size only makes it slow. 640x480 at 8 Mbit/s reaches ~100 MB in a
-# hundred seconds and encodes in a fraction of that.
-ffmpeg_run -hide_banner -loglevel error -y \
-  -f lavfi -i "testsrc2=size=640x480:rate=24:duration=105" \
-  -f lavfi -i "sine=frequency=277:duration=105" \
-  -c:v mpeg4 -b:v 8M -minrate 8M -maxrate 8M -bufsize 16M \
-  -c:a aac -b:a 64k -shortest -movflags +faststart "/work/remote/$LARGE_FILE"
 
-LARGE_SIZE="$(wc -c < "$WORK/remote/$LARGE_FILE" | tr -d ' ')"
-LARGE_SHA="$(node "$REL/sha.cjs" "$REL/remote/$LARGE_FILE")"
-# THE FIXTURE HAS TO BE BIG ENOUGH FOR THE CLAIM TO MEAN ANYTHING, and that is asserted rather than assumed:
-# an encoder that produced 20 MB here would make a sub-0.5 fraction unreachable and the gate would fail for
-# a reason that has nothing to do with the daemon.
-test "$LARGE_SIZE" -ge 100663296 \
-  || die "the large fixture is $LARGE_SIZE bytes, under the 96 MiB the fraction claim needs to be testable"
-echo "  the large remote object is $LARGE_SIZE bytes"
+LARGE_SIZE_AT_ENDPOINT="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$LARGE_REF" size)"
+LARGE_SHA_AT_ENDPOINT="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$LARGE_REF" sha256)"
+test "$LARGE_SIZE_AT_ENDPOINT" = "$LARGE_SIZE" || die "the endpoint disagrees with the large file about its size"
+test "$LARGE_SHA_AT_ENDPOINT" = "$LARGE_SHA"   || die "the endpoint is not serving the large file the gate hashed"
 
-# The endpoint has to serve it, and it was started before this file existed -- so the endpoint is restarted
-# with the object added. Its counters reset, which is why the whole-run invariants are taken later.
-docker rm -f "$RANGE_CONTAINER" >/dev/null 2>&1 || true
-docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fakerange \
-  -p "127.0.0.1:${RANGE_PORT}:8099" \
-  -v "$PWD:/workspace" -w /workspace/projectiond -v "$WORK/out:/out" -v "$WORK/remote:/remote:ro" \
-  -e GOFLAGS=-buildvcs=false -e GOTOOLCHAIN=local -e CGO_ENABLED=0 \
-  "$GO_IMAGE" go run ./cmd/fakerange --addr 0.0.0.0:8099 --lease-prefix "$LEASE_MARKER" \
-  --public-base-url "http://fakerange:8099" \
-  --file-object "${REMOTE_REF}=/remote/${REMOTE_FILE}" \
-  --file-object "${MIDSCAN_REF}=/remote/${MIDSCAN_FILE}" \
-  --file-object "${SOAK_REF}=/remote/${SOAK_FILE}" \
-  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
-  "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects-large.json >/dev/null
-
-ready=0
-for _ in $(seq 1 180); do
-  if [ -f "$WORK/out/objects-large.json" ] && docker run --rm --network "$NETWORK" \
-       -v "$WORK/out:/probe:ro" "$VERIFY_IMAGE" \
-       sh /probe/alive.sh "http://fakerange:8099/counters" >/dev/null 2>&1; then ready=1; break; fi
-  sleep 1
-done
-test "$ready" -eq 1 || die "the endpoint did not come back with the large object"
-
-LARGE_PROBES="$(node "$REL/objects.cjs" "$REL/out/objects-large.json" "$LARGE_REF" probes)"
+LARGE_PROBES="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$LARGE_REF" probes)"
 LARGE_PROBE_FLAGS=""
 for probe in $LARGE_PROBES; do LARGE_PROBE_FLAGS="$LARGE_PROBE_FLAGS --probe $probe"; done
 # shellcheck disable=SC2086
@@ -1110,10 +1104,12 @@ docker run --rm --entrypoint /bin/sh -v "$WORK:/work" "$DECODER_IMAGE" \
 node "$REL/seekprobes.cjs" "$REL/out/seek-probes.txt" "$REL/out/seek-probes.json" >/dev/null
 drive seek-verify --key "$SOAK_FILE" --seeks "$REL/out/seeks.json" --probes "$REL/out/seek-probes.json"
 
-# THE DENOMINATOR IS A SEEK, NOT THE WINDOW. Every seek on Plex restarts the encoder at the new position and
-# a restart re-opens the object, so "ten seeks cost at most six times the object" is an arbitrary window
-# multiple while "one seek costs at most 1.2x the object" is a statement about what a seek is. Measured:
-# 0.63x per seek.
+# THE DENOMINATOR IS A SEEK'S BLOCK GEOMETRY, NOT THE OBJECT. Every seek on Plex restarts the encoder at the
+# new position and a restart is an open: at most three 4 MiB demand blocks, plus one session-setup allowance.
+# Two earlier spellings were wrong in the same way -- "six times the object over the window" and then "1.2x
+# the object per seek" -- because both scaled with the fixture: on an 8.6 MB object either sits a hair above
+# the arithmetic floor of ten 4 MiB reads, and on a large one either would mean nothing. Measured against the
+# derived ceiling of 128,974,848: 54,485,469.
 drive traffic-window --before "$REL/out/counters-before-seeks.json" \
   --after "$REL/out/counters-after-seeks.json" --gate PX19-seek-traffic \
   --object-bytes "$SOAK_SIZE" --events 10 --seek-ceiling true --max-range-requests 400
@@ -1350,7 +1346,7 @@ drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/c
 drive compare --before "$REL/out/items-3.json" --after "$REL/out/items-4.json" --gate PX12-server-restart
 drive budget --before "$REL/out/counters-before-restart-scan.json" \
   --after "$REL/out/counters-after-restart-scan.json" \
-  --gate PX12b-restart-scan --entries "$(( CORPUS_REMOTE_ENTRIES + 2 ))" \
+  --gate PX12b-restart-scan --entries "$(( CORPUS_REMOTE_ENTRIES + 3 ))" \
   --object-sizes "$CORPUS_SIZE_LIST"
 
 # A RE-SCAN OVER AN UNCHANGED GENERATION MUST COST THE PROVIDER NOTHING IT HAS NOT ALREADY PAID. The window

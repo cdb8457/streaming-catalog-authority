@@ -497,10 +497,12 @@ async function main(): Promise<void> {
       // attempt to express this as a >1.0 multiplier was recording the observation rather than budgeting it.
       // The product's fraction claim is asserted separately, against an object several times larger than
       // the window: `--large-bytes`. See `plexScanByteCeiling` and `PLEX_LARGE_FIXTURE`.
-      const smallBytes = optionalNumber(args, 'small-bytes', 0);
+      // EVERY BYTE TERM COMES FROM `--object-sizes`, ONE OBJECT AT A TIME. `--bytes` and `--small-bytes`
+      // survive only for the range/resolution denominators above; nothing about the byte budget is derived
+      // from a pooled total any more, because a pooled total is what let one large object pay for
+      // thirty-eight tiny ones.
       const sizes = (args.flags.get('object-sizes') ?? '').split(',')
         .map((entry) => Number(entry.trim())).filter((entry) => Number.isFinite(entry) && entry > 0);
-      const totalRemote = remoteBytes + smallBytes;
       if (sizes.length > 0) {
         const byteBudget = plexScanByteCeiling(sizes);
         record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), byteBudget,
@@ -508,12 +510,23 @@ async function main(): Promise<void> {
           + `${PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM} opens x `
           + `${PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN} demand blocks of `
           + `${PLEX_READ_GEOMETRY.CHUNK_BYTES} bytes, clamped by the object`));
-        // A FLOOR, because a scan that fetched almost nothing would score perfectly against any ceiling and
-        // would mean the scanner never opened the entries. One probe window per object is the least a
-        // scanner that really looked at them could have cost.
-        record(args, atLeast(`${gate}-provider-bytes-floor`, delta('bytesServed'),
-          Math.min(totalRemote, sizes.length * PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES),
-          'a scan that read almost nothing did not open the entries'));
+        // A FLOOR, DERIVED PER OBJECT AND NOT CROSS-SUBSIDISED.
+        //
+        // THE DEFECT THIS CLOSES. It was `min(totalRemote, count x 1 MiB)`, and `totalRemote` came from
+        // `--bytes`, which defaults to 1 — so on the restart-scan call, which names sizes but no `--bytes`,
+        // the floor collapsed to 1 byte and the check could not fail. Worse, even when `--bytes` was given
+        // the two terms were pooled: thirty-eight tiny objects that were never opened could be paid for by
+        // one large one that was.
+        //
+        // The least a scanner that really looked at an object could have cost is one probe window, or the
+        // whole object when the object is smaller than a window. Summing THAT per object gives a floor no
+        // single entry can cover for another.
+        const floorBytes = sizes.reduce(
+          (total, size) => total + Math.min(size, PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES), 0,
+        );
+        record(args, atLeast(`${gate}-provider-bytes-floor`, delta('bytesServed'), floorBytes,
+          'one probe window per object, or the object itself when it is smaller than a window; a scan that '
+          + 'read less than that did not open the entries'));
       }
       // THE PRODUCT'S OWN CLAIM, ASSERTED WHERE IT IS MEANINGFUL. Against an object several times larger
       // than the fixed scan window, a scanner that downloaded it to identify it sits at 1.0 and the daemon
