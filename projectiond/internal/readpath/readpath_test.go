@@ -196,7 +196,8 @@ func TestTwentyConcurrentReadsOfOneBlockCostOneFetch(t *testing.T) {
 }
 
 // REGRESSION: the persistent cache used to cover only offset < 1 MiB, so the middle and tail probes a real
-// scanner makes landed in ephemeral chunks that were dropped on release — and a second scan re-fetched them.
+// scanner makes landed in memory-only chunks that no restart could recover — and a second scan re-fetched
+// them. The scan windows belong on disk; the playback cache is process-ephemeral by design.
 func TestSecondScanOfEveryProbeWindowCostsZeroProviderRequests(t *testing.T) {
 	adapter := newCountingAdapter()
 	reader := newReader(t, adapter)

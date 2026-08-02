@@ -114,6 +114,11 @@ type Reader struct {
 	// has produced bytes and before they are published, which is the exact window a duplicate fetch could
 	// once slip through.
 	onFetchComplete func()
+	// onPublishAdmit is a TEST SEAM, nil in production. It runs INSIDE the publish critical section, after
+	// the handle has been found open and before the playback admission. A release attempted while it is
+	// parked must block; that is the whole content of the check-then-put linearization, and no seam outside
+	// the lock could observe it.
+	onPublishAdmit func()
 }
 
 func NewReader(cfg Config, router Router, probe *cache.ProbeCache, playback *cache.PlaybackCache) (*Reader, error) {
@@ -291,8 +296,13 @@ func failoverCandidates(entry *manifest.Entry) []int {
 	return candidates
 }
 
-// Release drops the handle's caches and stops its read-ahead. After this returns there is no goroutine and no
-// cached byte that belongs to it.
+// Release stops the handle's read-ahead, unpins its scan windows and discharges its playback-cache admission.
+// After this returns there is no goroutine belonging to it and no cached byte charged to it.
+//
+// IT DOES NOT DELETE THE BYTES IT CACHED, AND THAT IS THE POINT. Playback entries are keyed by byte identity,
+// not by handle, so what this handle read is what the next open of the same object will ask for. Its entries
+// become unowned candidates in the process-wide playback LRU, bounded by that cache's hard total; deleting
+// them here is what made a scan-then-analyse pass refetch the same block once per open.
 func (r *Reader) Release(h *Handle) {
 	if h == nil {
 		return
@@ -307,8 +317,25 @@ func (r *Reader) Release(h *Handle) {
 	// Wait for the prefetch goroutine to actually be gone before reporting the handle released: "no request
 	// survives release" is only true if the thing making requests has stopped.
 	h.prefetchWG.Wait()
-	r.playback.DropHandle(h.ID)
+	// THE DISCHARGE HAPPENS UNDER THE HANDLE'S OWN LOCK, so it is ordered against a publish.
+	//
+	// THE DEFECT THIS CLOSES. `publish` used to test h.closed and then call Put with nothing held. A demand
+	// read already past that test could be descheduled, this Release could close the handle and discharge it —
+	// it waits on the PREFETCH goroutine, never on a demand read — and the late Put would then charge a handle
+	// that no longer exists, leaving an admission row nothing will ever discharge. Publish now holds h.mu
+	// across the test and the Put, so exactly two orders exist: publish first, and the Put is discharged by
+	// the DropHandle below; or a release first, and publish finds the handle closed and admits nothing.
+	//
+	// WHICH HALF IS LOAD-BEARING, SAID HONESTLY. Publish's lock is: without it the check and the admission
+	// come apart and a release lands between them, which the regression test demonstrates. This acquisition is
+	// NOT independently load-bearing today, because the closeOnce block above already takes h.mu after closing
+	// h.closed and that alone orders a first release behind an in-flight publish. It is held anyway so the
+	// ordering lives where the discharge is rather than in an unrelated block's internals, and so a second
+	// Release — where closeOnce is a no-op and that incidental barrier is absent — is ordered too. Moving the
+	// DropHandle back outside this lock does not fail a test; that is a statement about the redundancy, not a
+	// licence to remove it.
 	h.mu.Lock()
+	r.playback.DropHandle(h.ID)
 	pinned := h.pinnedKeys
 	h.pinnedKeys = nil
 	h.mu.Unlock()
@@ -351,8 +378,9 @@ type block struct {
 // THE THREE SCAN WINDOWS ARE THEIR OWN BLOCKS. A media server's metadata pass does not only read the first
 // megabyte: it reads a header, it reads near the middle, and it reads the tail looking for an index. An
 // earlier draft made only `offset < probeWindow` persistent, which meant the middle and tail probes landed in
-// ephemeral 4 MiB chunks that were dropped on release — so a second scan re-fetched them and "zero provider
-// requests on re-scan" was unachievable by construction.
+// ephemeral 4 MiB chunks — memory-resident only, and only for as long as they win the playback LRU — so a
+// re-scan after a restart re-fetched them and "zero provider requests on re-scan" was unachievable by
+// construction. The scan cache is on disk and survives the process; the playback cache does not.
 //
 // The windows are exactly the manifest's own fixed probe plan, so they are the same three windows the control
 // plane proved byte identity over. Between them, reads fall into ordinary chunk-aligned blocks that never
@@ -655,18 +683,32 @@ func (r *Reader) blockBytesEpoch(ctx context.Context, h *Handle, b block, epoch 
 // publish puts a completed block in the cache it belongs to.
 //
 // It runs on the fetch goroutine, BEFORE the flight leaves the map, so there is no instant at which a block
-// is neither in flight nor cached. A released handle still publishes to the persistent scan cache — those
-// bytes are keyed by byte identity and are useful to everyone — but not to the ephemeral playback cache,
-// whose entries belong to a handle that no longer exists.
+// is neither in flight nor cached.
+//
+// A CLOSED HANDLE STILL PUBLISHES TO THE SCAN CACHE AND STILL DOES NOT PUBLISH TO THE PLAYBACK CACHE, and the
+// reason has changed even though the rule has not. It is no longer that playback entries die with their
+// handle — they do not. It is that a playback put is an ADMISSION charged to a handle's ceiling, and charging
+// one to a handle that has already been released would leave a ledger row nothing will ever discharge. The
+// bytes are not lost: this is a fetch landing for a stream that has ended — a late prefetch, or a demand read
+// whose handle was released while its bytes were in the air — and the next open will fetch and admit them
+// under its own budget.
 func (r *Reader) publish(h *Handle, b block, key cache.Key, data []byte) {
 	if b.persistent {
 		_ = r.probe.Put(key, data)
 		return
 	}
+	// THE TEST AND THE ADMISSION ARE ONE STEP, under the lock Release takes before it discharges. Testing
+	// h.closed and then putting with nothing held was a check that could be true when it was made and false
+	// when it was acted on.
+	h.mu.Lock()
+	defer h.mu.Unlock()
 	select {
 	case <-h.closed:
 		return
 	default:
+	}
+	if r.onPublishAdmit != nil {
+		r.onPublishAdmit()
 	}
 	r.playback.Put(h.ID, key, data)
 }

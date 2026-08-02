@@ -700,7 +700,11 @@ test('the two caches answer two different questions, and the probe cache is keye
   assertEq(PROJECTION_PHASE_1_BUDGETS.SCAN_WINDOWS_PER_ENTRY, PROJECTION_PROBE_PLAN.OFFSETS.length,
     'the byte budget is measured against the same window count');
   assertEq(PROJECTIOND_CACHE_POLICY.playback.PERSISTENT, false, 'the playback cache is ephemeral');
-  assertEq(PROJECTIOND_CACHE_POLICY.playback.EVICTION, 'dropped-on-release', 'and goes when the handle does');
+  // CORRECTED: this said 'dropped-on-release'. Entries are keyed by byte identity, so deleting them when a
+  // handle closed threw away exactly what the next open would ask for; release now discharges the handle's
+  // admission and the bytes stay until the hard total ceiling takes them by recency.
+  assertEq(PROJECTIOND_CACHE_POLICY.playback.EVICTION, 'lru-on-cap-not-on-release',
+    'a release discharges an admission, and capacity is what ends an entry');
   assertEq(PROJECTIOND_READAHEAD_POLICY.SUPPRESSED_WITHIN_BYTES, PROJECTION_PROBE_PLAN.WINDOW_BYTES,
     'a scan never pulls more than the probe window');
   assertEq(PROJECTIOND_READAHEAD_POLICY.SUPPRESSED_WITHIN_SCAN_WINDOWS, true,

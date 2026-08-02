@@ -216,7 +216,7 @@
         "PERSISTENT": false,
         "MAX_TOTAL_BYTES": 536870912,
         "MAX_BYTES_PER_OPEN_HANDLE": 67108864,
-        "EVICTION": "dropped-on-release"
+        "EVICTION": "lru-on-cap-not-on-release"
       }
     },
     "readaheadPolicy": {

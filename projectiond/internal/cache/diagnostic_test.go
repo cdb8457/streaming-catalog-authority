@@ -38,16 +38,15 @@ func TestTheDiagnosticIsOffByDefault(t *testing.T) {
 	}
 }
 
-// TestSequentialOpensRefetchAStableKey EXERCISES THE SUMMARISER, AND ONLY THAT.
+// TestSequentialOpensReuseAStableKeyAcrossReleases EXERCISES THE CACHE, AND ONLY THAT.
 //
-// IT IS NOT THE EVIDENCE, AND AN EARLIER VERSION OF THIS COMMENT CLAIMED IT WAS. It hands the cache the
-// same key thirteen times and then reports that the key was stable — which it assumed rather than observed.
-// What it legitimately proves is that RefetchAfterRelease counts a stable-key refetch correctly when one
-// occurs.
+// IT IS NOT THE EVIDENCE. It hands the cache the same key thirteen times, so the stability of the key is
+// something it assumes rather than observes. What it legitimately proves is that a release no longer removes
+// a stable-keyed block from reach.
 //
-// The real evidence is TestSequentialOpensRefetchTheSameGapThroughTheRealReader in internal/readpath, where
-// the READER computes the key from its own block plan and Release is what destroys it.
-func TestSequentialOpensRefetchAStableKey(t *testing.T) {
+// The real evidence is TestSequentialOpensReuseTheSameGapThroughTheRealReader in internal/readpath, where the
+// READER computes the key from its own block plan and Release is the thing that used to destroy it.
+func TestSequentialOpensReuseAStableKeyAcrossReleases(t *testing.T) {
 	t.Setenv(cacheDiagnosticEnv, "1")
 	cache := NewPlaybackCache(64<<20, 32<<20)
 	if !cache.DiagnosticEnabled() {
@@ -79,15 +78,57 @@ func TestSequentialOpensRefetchAStableKey(t *testing.T) {
 		t.Fatalf("offset %d was requested with %d different lengths; that would be changing geometry",
 			gate9GapOffset, got)
 	}
-	// AND IT WAS REFETCHED AFTER RELEASE, every time after the first.
-	if refetches != opens-1 {
-		t.Fatalf("expected %d refetches of a stable key after release, got %d", opens-1, refetches)
+	// AND NOTHING WAS REFETCHED, because twelve releases removed twelve accounting claims and no bytes.
+	if refetches != 0 {
+		t.Fatalf("a release still costs a refetch: %d of them", refetches)
 	}
-	if cache.Hits != 0 {
-		t.Fatalf("no open should have hit: %d hits", cache.Hits)
+	if cache.Misses != 1 {
+		t.Fatalf("only the first open may miss: got %d misses", cache.Misses)
 	}
-	if cache.Misses != int64(opens) {
-		t.Fatalf("every open missed: want %d, got %d", opens, cache.Misses)
+	if cache.Hits != int64(opens-1) {
+		t.Fatalf("every later open must hit: want %d, got %d", opens-1, cache.Hits)
+	}
+	// ONE COPY OF THE BLOCK, not thirteen: the reuse is of the entry, not of the shape.
+	if cache.TotalBytes() != gate9GapLength {
+		t.Fatalf("the cache should hold exactly one %d-byte block, it holds %d",
+			gate9GapLength, cache.TotalBytes())
+	}
+	if cache.HandleBytes(opens) != 0 {
+		t.Fatalf("the last handle was released and must be charged nothing, got %d", cache.HandleBytes(opens))
+	}
+}
+
+// TestTheSummariserStillNamesARefetchAfterRelease KEEPS THE INSTRUMENT SHARP AFTER THE DEFECT IT FOUND WAS
+// REPAIRED.
+//
+// A detector that can no longer be made to fire is indistinguishable from one that is broken. The cache no
+// longer produces this shape, so the shape is fed to the summariser directly: miss, put, release, and a miss
+// for the same block afterwards. That is exactly what a regression of the repair would emit, and it must
+// still be counted as a refetch after RELEASE rather than after eviction — the two call for opposite fixes.
+func TestTheSummariserStillNamesARefetchAfterRelease(t *testing.T) {
+	events := []Event{
+		{Seq: 1, Object: 0, Kind: EventMiss, Handle: 1, Offset: gate9GapOffset, Length: gate9GapLength},
+		{Seq: 2, Object: 0, Kind: EventPut, Handle: 1, Offset: gate9GapOffset, Length: gate9GapLength},
+		{Seq: 3, Object: -1, Kind: EventDrop, Handle: 1},
+		{Seq: 4, Object: 0, Kind: EventMiss, Handle: 2, Offset: gate9GapOffset, Length: gate9GapLength},
+	}
+
+	summary := summariseEvents(events)
+	if summary.RefetchesAfterRelease != 1 {
+		t.Fatalf("the summariser no longer detects the defect it was built for: got %d",
+			summary.RefetchesAfterRelease)
+	}
+	if summary.RefetchesAfterEviction != 0 {
+		t.Fatalf("nothing was evicted here: got %d", summary.RefetchesAfterEviction)
+	}
+	if summary.UninterpretableEvents != 0 {
+		t.Fatalf("every block event carries an ordinal: got %d ungroupable", summary.UninterpretableEvents)
+	}
+	if summary.DistinctBlocks != 1 {
+		t.Fatalf("one block was ever cached, got %d", summary.DistinctBlocks)
+	}
+	if got := summary.LengthsPerObjectOffset[fmt.Sprintf("%d:%d", 0, gate9GapOffset)]; got != 1 {
+		t.Fatalf("the geometry never moved, so one length at that offset: got %d", got)
 	}
 }
 

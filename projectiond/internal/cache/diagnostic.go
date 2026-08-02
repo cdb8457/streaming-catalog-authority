@@ -23,6 +23,14 @@ import (
 // Aggregate counters cannot separate those: both produce N misses and N fetches. Distinguishing them needs
 // the (offset, length) of each miss and the handle it belonged to, which is exactly what this records.
 //
+// THE ANSWER IT RETURNED, AND WHY IT IS STILL HERE. Driven through the real Reader, four sequential
+// Open/Read/Release cycles produced one geometry — offset 1,048,576, length 2,724,273, four times — with a
+// drop-handle between every pair. STABLE-KEY REFETCH, decided by measurement rather than by argument. The
+// repair went into cache lifetime: `DropHandle` now discharges a handle's admission accounting and leaves the
+// bytes addressable. This instrument stays because it is the only thing that can tell a REGRESSION of that
+// repair from a change in the block plan, and those still call for opposite fixes. Against the repaired
+// daemon `RefetchesAfterRelease` is zero; a nonzero value is the defect returning.
+//
 // WHY IT IS OFF BY DEFAULT. It keeps a per-event record, and this repository's standing rule is that the
 // default telemetry surface holds cumulative counters and nothing per-request. This is a debugging
 // instrument for a named question, enabled deliberately by an operator who is asking it.
@@ -169,16 +177,19 @@ func (c *PlaybackCache) DiagnosticEnabled() bool {
 	return c.diagnostic != nil
 }
 
-// RefetchAfterRelease summarises the events into the answer the question actually wants.
+// Summary is what the events add up to, in the terms the question needs.
 //
 // A REFETCH AFTER RELEASE is a miss for an (object, offset, length) that had ALREADY been cached under a
-// different handle, where that handle's entries were dropped in between. Counting those separates the two
-// hypotheses: if they dominate, the key was stable and the entry did not survive; if instead the misses
-// carry lengths that keep changing for the same offset, the geometry is moving.
-// Summary is what the events add up to, in the terms the question needs.
+// handle which was released in between. Counting those separated the two hypotheses when the question was
+// open: if they dominate, the key was stable and the entry did not survive; if instead the misses carry
+// lengths that keep changing for the same offset, the geometry is moving.
 type Summary struct {
-	// RefetchesAfterRelease counts misses for a block that was cached under a handle which was then
-	// RELEASED — the deletion being blamed. Evictions are excluded; see below.
+	// RefetchesAfterRelease counts misses for a block that was cached under a handle which was then RELEASED.
+	//
+	// A RELEASE NO LONGER DELETES ANYTHING, so on a correct daemon this is zero: the block is still there and
+	// the second open hits it. It is kept, and kept named for the release, because it is the exact signature
+	// of the defect that was repaired — bytes that stopped being reachable across a handle boundary — and the
+	// only way to tell that regression from a moving block plan. Evictions are excluded; see below.
 	RefetchesAfterRelease int `json:"refetchesAfterRelease"`
 	// RefetchesAfterEviction counts the same shape where CAPACITY removed the block first. It is reported
 	// separately because the repair differs: eviction pressure is a sizing question, release is a lifetime
@@ -263,7 +274,8 @@ func summariseEvents(events []Event) Summary {
 	for _, event := range events {
 		// OVERFLOW AND IDENTITY-FREE EVENTS TAKE PART IN NOTHING EXCEPT THE HANDLE LEDGER.
 		//
-		// A drop still has to mark its handle released — that is what a drop MEANS — but an event whose
+		// A drop still has to mark its handle released — that is what a drop MEANS, now that it means the
+		// handle's admission was discharged rather than that its bytes were deleted — but an event whose
 		// object is -1 must never enter the block maps, because -1 is a label shared by every object past
 		// the ordinal limit and two unrelated ones would then look like the same block.
 		// A HANDLE RELEASE CARRIES NO IDENTITY BY DESIGN, so its -1 is not overflow and must not be counted

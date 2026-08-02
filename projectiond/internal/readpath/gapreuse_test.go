@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"sync"
 	"testing"
 	"time"
 
@@ -35,20 +36,25 @@ func gapReuseEntry() *manifest.Entry {
 	}
 }
 
-// TestSequentialOpensRefetchTheSameGapThroughTheRealReader IS THE EVIDENCE, TAKEN THROUGH THE REAL PATH.
+// TestSequentialOpensReuseTheSameGapThroughTheRealReader IS THE EVIDENCE, TAKEN THROUGH THE REAL PATH.
 //
 // WHY THE CACHE-LEVEL TEST WAS NOT ENOUGH, AND IT WAS MINE. It handed PlaybackCache the same key thirteen
 // times and then reported that the key was stable — which it had assumed. It proved the summariser and
 // nothing about the daemon. The question is whether the READER's own block plan produces a stable key and
 // whether RELEASE is what destroys it, and only Open/Read/Release can answer that.
 //
-// WHAT THIS DRIVES: sequential opens of one object, each reading a byte inside the head-to-middle gap, each
-// released before the next — the shape of a scan followed by an analyse pass, which is what Plex does.
+// WHAT IT MEASURED BEFORE THE REPAIR. Four sequential opens, each reading one byte inside the head-to-middle
+// gap and releasing before the next: four misses of the identical block — offset 1,048,576, length 2,724,273
+// — four puts, four releases, four provider requests, 4 x 2,724,273 bytes. One geometry, so the block plan
+// was never moving; the entry simply did not outlive the handle that cached it.
 //
-// WHAT IT ASSERTS: that every open fetched the SAME (offset, length) from the provider, that the provider
-// therefore served the gap once per open, and that the diagnostic shows miss → put → drop-handle repeating
-// with one geometry rather than a changing one.
-func TestSequentialOpensRefetchTheSameGapThroughTheRealReader(t *testing.T) {
+// WHAT IT ASSERTS NOW, AS EQUALITIES. The same four opens compute the same block, and the provider is asked
+// for it EXACTLY ONCE: one miss and one put on the first open, a hit on each of the other three, a release
+// after every one, still one geometry, and zero refetches after release. Inequalities would let a retry, a
+// prefetch or any unrelated traffic satisfy this while the sequence it claims to show never happened.
+//
+// AND THE RETENTION IS PROCESS-SCOPED. A fresh playback cache — what a restart is — fetches the gap again.
+func TestSequentialOpensReuseTheSameGapThroughTheRealReader(t *testing.T) {
 	t.Setenv("PROJECTIOND_CACHE_DIAGNOSTIC", "1")
 
 	server, err := fakeprovider.New(fakeprovider.Options{})
@@ -94,11 +100,13 @@ func TestSequentialOpensRefetchTheSameGapThroughTheRealReader(t *testing.T) {
 	entry := gapReuseEntry()
 	const opens = 4
 	before := server.Snapshot()
+	handleIDs := make([]uint64, 0, opens)
 	for open := 0; open < opens; open++ {
 		handle, err := reader.Open(entry, "gen_one")
 		if err != nil {
 			t.Fatalf("open %d: %v", open, err)
 		}
+		handleIDs = append(handleIDs, handle.ID)
 		one := make([]byte, 1)
 		if _, err := reader.Read(context.Background(), handle, one, readAt); err != nil {
 			t.Fatalf("read %d: %v", open, err)
@@ -119,7 +127,7 @@ func TestSequentialOpensRefetchTheSameGapThroughTheRealReader(t *testing.T) {
 	if dropped != 0 {
 		t.Fatalf("the diagnostic ring dropped %d events; this window should fit", dropped)
 	}
-	var misses, puts, drops int
+	var misses, hits, puts, drops int
 	geometry := map[[2]int64]int{}
 	handles := map[uint64]bool{}
 	for _, event := range events {
@@ -128,47 +136,84 @@ func TestSequentialOpensRefetchTheSameGapThroughTheRealReader(t *testing.T) {
 			misses++
 			geometry[[2]int64{event.Offset, event.Length}]++
 			handles[event.Handle] = true
+		case cache.EventHit:
+			hits++
+			geometry[[2]int64{event.Offset, event.Length}]++
+			handles[event.Handle] = true
 		case cache.EventPut:
 			puts++
 		case cache.EventDrop:
 			drops++
+		case cache.EventEvict:
+			t.Fatalf("nothing should have been evicted here: %+v", event)
 		}
 	}
-	t.Logf("EVIDENCE: %d misses, %d puts, %d handle releases across %d distinct requesting handles",
-		misses, puts, drops, len(handles))
+	t.Logf("EVIDENCE: %d misses, %d hits, %d puts, %d handle releases across %d distinct requesting handles",
+		misses, hits, puts, drops, len(handles))
 	for block, count := range geometry {
-		t.Logf("EVIDENCE: block offset=%d length=%d was MISSED %d times", block[0], block[1], count)
+		t.Logf("EVIDENCE: block offset=%d length=%d was LOOKED UP %d times", block[0], block[1], count)
 	}
 
-	// THE DECISIVE PROPERTIES, AS EQUALITIES. Inequalities would let a retry, a prefetch or any unrelated
-	// traffic satisfy this while the sequence it claims to show never happened.
+	// THE DECISIVE PROPERTIES, AS EQUALITIES.
 	gapLength := gapEnd - gapStart
 	if len(geometry) != 1 {
-		t.Fatalf("the misses carry %d distinct geometries, so the block plan is MOVING and the finding is "+
-			"geometry rather than cache lifetime: %v", len(geometry), geometry)
+		t.Fatalf("the lookups carry %d distinct geometries, so the block plan is MOVING and the finding "+
+			"would be geometry rather than cache lifetime: %v", len(geometry), geometry)
 	}
 	if geometry[[2]int64{gapStart, gapLength}] != opens {
-		t.Fatalf("the sole missed block must be offset=%d length=%d, missed exactly %d times: got %v",
+		t.Fatalf("the sole block must be offset=%d length=%d, looked up exactly %d times: got %v",
 			gapStart, gapLength, opens, geometry)
 	}
-	if misses != opens || puts != opens || drops != opens {
-		t.Fatalf("exactly one miss, one put and one release per open: got %d/%d/%d for %d opens",
-			misses, puts, drops, opens)
+	if misses != 1 || puts != 1 {
+		t.Fatalf("exactly one open may miss and cache the gap: got %d misses and %d puts", misses, puts)
+	}
+	if hits != opens-1 {
+		t.Fatalf("every later open must reuse it: want %d hits, got %d", opens-1, hits)
+	}
+	if drops != opens {
+		t.Fatalf("every open must still release its handle: got %d for %d opens", drops, opens)
 	}
 	if len(handles) != opens {
 		t.Fatalf("each open must appear as its own requesting handle, got %d for %d opens",
 			len(handles), opens)
 	}
-	if requests != int64(opens) {
-		t.Fatalf("the provider must be asked exactly once per open, got %d", requests)
+	if requests != 1 {
+		t.Fatalf("the provider must be asked exactly once for all %d opens, got %d", opens, requests)
 	}
-	if fetched != int64(opens)*gapLength {
-		t.Fatalf("the provider must serve the gap exactly once per open: want %d bytes, got %d",
-			int64(opens)*gapLength, fetched)
+	if fetched != gapLength {
+		t.Fatalf("the provider must serve the gap exactly once: want %d bytes, got %d", gapLength, fetched)
+	}
+	if got := reader.Stats.PlaybackHits.Load(); got != int64(opens-1) {
+		t.Fatalf("the reader must count %d playback hits, got %d", opens-1, got)
+	}
+	if got := reader.Stats.BlockFetches.Load(); got != 1 {
+		t.Fatalf("exactly one block fetch reached a source, got %d", got)
 	}
 
-	// AND THE ORDER, PER HANDLE: miss(gap) -> put(gap) -> drop, with the release landing BEFORE the next
-	// handle asks. Totals alone cannot show that release is what sits between two misses of a stable key.
+	// THE SUMMARISER, ON ITS OWN QUESTION. Zero refetches after release is the repair; zero after eviction
+	// says nothing here was reclaimed for capacity either, so the zero above is not an eviction in disguise.
+	summary := playback.Summarise()
+	if summary.RefetchesAfterRelease != 0 {
+		t.Fatalf("a release still costs a refetch of a stable key: %d of them", summary.RefetchesAfterRelease)
+	}
+	if summary.RefetchesAfterEviction != 0 {
+		t.Fatalf("nothing should have been evicted: %d refetches after eviction",
+			summary.RefetchesAfterEviction)
+	}
+
+	// AND THE BYTES ARE HELD ONCE, OWNED BY NOBODY. Every handle is gone; the entry is not.
+	if got := playback.TotalBytes(); got != gapLength {
+		t.Fatalf("the cache should hold exactly one %d-byte block, it holds %d", gapLength, got)
+	}
+	for open, id := range handleIDs {
+		if got := playback.HandleBytes(id); got != 0 {
+			t.Fatalf("released handle %d (open %d) is still charged %d bytes", id, open, got)
+		}
+	}
+
+	// AND THE ORDER, PER HANDLE: miss(gap) -> put(gap) -> drop for the first open, then hit(gap) -> drop for
+	// each later one, with the release landing BEFORE the next handle asks. Totals alone cannot show that a
+	// release is what sits between two lookups of a stable key.
 	type step struct {
 		kind   cache.EventKind
 		handle uint64
@@ -177,28 +222,207 @@ func TestSequentialOpensRefetchTheSameGapThroughTheRealReader(t *testing.T) {
 	sequence := make([]step, 0, len(events))
 	for _, event := range events {
 		switch event.Kind {
-		case cache.EventMiss, cache.EventPut, cache.EventDrop:
+		case cache.EventMiss, cache.EventHit, cache.EventPut, cache.EventDrop:
 			sequence = append(sequence, step{event.Kind, event.Handle, [2]int64{event.Offset, event.Length}})
 		}
 	}
-	if len(sequence) != opens*3 {
-		t.Fatalf("expected %d ordered events (miss, put, drop per open), got %d: %v",
-			opens*3, len(sequence), sequence)
-	}
 	wantBlock := [2]int64{gapStart, gapLength}
-	for open := 0; open < opens; open++ {
-		miss, put, drop := sequence[open*3], sequence[open*3+1], sequence[open*3+2]
-		if miss.kind != cache.EventMiss || miss.block != wantBlock {
-			t.Fatalf("open %d must begin with a miss of the gap, got %+v", open, miss)
+	if len(sequence) != 3+(opens-1)*2 {
+		t.Fatalf("expected %d ordered events (miss, put, drop then hit, drop per later open), got %d: %v",
+			3+(opens-1)*2, len(sequence), sequence)
+	}
+	if sequence[0].kind != cache.EventMiss || sequence[0].block != wantBlock {
+		t.Fatalf("the first open must begin with a miss of the gap, got %+v", sequence[0])
+	}
+	if sequence[1].kind != cache.EventPut || sequence[1].block != wantBlock ||
+		sequence[1].handle != sequence[0].handle {
+		t.Fatalf("the first open must then cache that block under its own handle, got %+v", sequence[1])
+	}
+	if sequence[2].kind != cache.EventDrop || sequence[2].handle != sequence[0].handle {
+		t.Fatalf("the first open must release its own handle, got %+v", sequence[2])
+	}
+	for open := 1; open < opens; open++ {
+		hit, drop := sequence[3+(open-1)*2], sequence[3+(open-1)*2+1]
+		if hit.kind != cache.EventHit || hit.block != wantBlock {
+			t.Fatalf("open %d must hit the retained gap, got %+v", open, hit)
 		}
-		if put.kind != cache.EventPut || put.block != wantBlock || put.handle != miss.handle {
-			t.Fatalf("open %d must then cache that same block under the same handle, got %+v", open, put)
+		if hit.handle == sequence[0].handle {
+			t.Fatalf("open %d reused the first open's handle id, so this proves nothing about reuse "+
+				"across handles: %+v", open, hit)
 		}
-		if drop.kind != cache.EventDrop || drop.handle != miss.handle {
+		if drop.kind != cache.EventDrop || drop.handle != hit.handle {
 			t.Fatalf("open %d must release its own handle before the next open, got %+v", open, drop)
 		}
-		if open > 0 && sequence[open*3-1].kind != cache.EventDrop {
-			t.Fatalf("open %d asked again before the previous release: %+v", open, sequence[open*3-1])
-		}
+	}
+
+	// A RESTART IS A NEW CACHE. The retention is memory-resident and process-scoped; nothing about it is
+	// persistence, and the gap is not a scan window, so a fresh cache must pay for it again.
+	restartBefore := server.Snapshot()
+	restarted, err := NewReader(DefaultConfig(), endpointRouter{adapter}, probe,
+		cache.NewPlaybackCache(64<<20, 8<<20))
+	if err != nil {
+		t.Fatal(err)
+	}
+	handle, err := restarted.Open(entry, "gen_one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := restarted.Read(context.Background(), handle, make([]byte, 1), readAt); err != nil {
+		t.Fatalf("post-restart read: %v", err)
+	}
+	restarted.Release(handle)
+	restartAfter := server.Snapshot()
+	if got := restartAfter.RangeRequests - restartBefore.RangeRequests; got != 1 {
+		t.Fatalf("a restarted daemon must fetch the gap again exactly once, got %d requests", got)
+	}
+	if got := restartAfter.BytesServed - restartBefore.BytesServed; got != gapLength {
+		t.Fatalf("and serve exactly the gap: want %d bytes, got %d", gapLength, got)
+	}
+}
+
+// TestAClosedHandleAdmitsNothingToThePlaybackCache.
+//
+// The rule survives the repair, and its reason changed. It is no longer that playback entries die with their
+// handle — they do not. It is that a playback put is an ADMISSION charged to a handle's ceiling: charging one
+// to a handle that has already been released would leave a ledger row nothing will ever discharge, and a
+// ceiling that only ever fills is a cache that eventually refuses everything.
+//
+// The seam pauses on the fetch goroutine after the transport produced bytes and before they are published,
+// which is the only window in which a handle can be released while a publish for it is still to come.
+func TestAClosedHandleAdmitsNothingToThePlaybackCache(t *testing.T) {
+	adapter := newCountingAdapter()
+	probe, err := cache.NewProbeCache(t.TempDir(), 64<<20, 4<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	playback := cache.NewPlaybackCache(32<<20, 8<<20)
+	reader, err := NewReader(DefaultConfig(), staticRouter{adapter}, probe, playback)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handle, err := reader.Open(testEntry(), "gen_one")
+	if err != nil {
+		t.Fatal(err)
+	}
+	released := make(chan struct{})
+	var once sync.Once
+	reader.onFetchComplete = func() {
+		once.Do(func() {
+			reader.Release(handle)
+			close(released)
+		})
+	}
+
+	// A NON-PERSISTENT BLOCK: past the head scan window, so the playback cache is the one that would take it.
+	windows := manifest.ProbeOffsetsFor(fileSize)
+	offset := windows[0].Offset + windows[0].Length + 4096
+	got, err := reader.Read(context.Background(), handle, make([]byte, 4096), offset)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if got != 4096 {
+		t.Fatalf("the read must still return its bytes to the caller, got %d", got)
+	}
+	<-released
+
+	if total := playback.TotalBytes(); total != 0 {
+		t.Fatalf("a released handle admitted %d bytes to the playback cache", total)
+	}
+	if charged := playback.HandleBytes(handle.ID); charged != 0 {
+		t.Fatalf("a released handle was left holding an admission of %d bytes that nothing will discharge",
+			charged)
+	}
+}
+
+// TestAReleaseCannotSlipBetweenThePublishCheckAndTheAdmission.
+//
+// THE DEFECT THIS CLOSES, AND THE TEST ABOVE COULD NOT SEE IT. `publish` tested h.closed and then called Put
+// with nothing held, and the closed-handle test releases on the publishing goroutine itself — so it proves the
+// test exists and can never exercise the interval between the test and the admission. A demand read already
+// past the check could be descheduled there. Release waits on the PREFETCH goroutine and never on a demand
+// read, so it would close the handle, discharge it, and return; the late Put would then charge a handle that
+// no longer exists, leaving an admission row nothing discharges. That row is permanent: it counts against a
+// per-handle ceiling belonging to nobody, and it is exactly how a cache stops admitting.
+//
+// IT IS DETERMINISTIC RATHER THAN A RACE-DETECTOR HOPE. The seam parks inside the publish critical section, at
+// the one instruction the defect lived between, and the release is issued while it is parked.
+func TestAReleaseCannotSlipBetweenThePublishCheckAndTheAdmission(t *testing.T) {
+	adapter := newCountingAdapter()
+	probe, err := cache.NewProbeCache(t.TempDir(), 64<<20, 4<<20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	playback := cache.NewPlaybackCache(32<<20, 8<<20)
+	reader, err := NewReader(DefaultConfig(), staticRouter{adapter}, probe, playback)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	handle, err := reader.Open(testEntry(), "gen_one")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	inside := make(chan struct{})
+	proceed := make(chan struct{})
+	var once sync.Once
+	reader.onPublishAdmit = func() {
+		once.Do(func() {
+			close(inside)
+			<-proceed
+		})
+	}
+
+	windows := manifest.ProbeOffsetsFor(fileSize)
+	offset := windows[0].Offset + windows[0].Length + 4096
+	readDone := make(chan error, 1)
+	go func() {
+		_, err := reader.Read(context.Background(), handle, make([]byte, 4096), offset)
+		readDone <- err
+	}()
+
+	select {
+	case <-inside:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the publish never reached its admission point")
+	}
+
+	// THE RELEASE ARRIVES IN EXACTLY THE WINDOW. It must not be able to discharge the handle while an
+	// admission that would have to be discharged is still to come.
+	releaseDone := make(chan struct{})
+	go func() {
+		reader.Release(handle)
+		close(releaseDone)
+	}()
+	releasedEarly := false
+	select {
+	case <-releaseDone:
+		releasedEarly = true
+	case <-time.After(250 * time.Millisecond):
+	}
+
+	// Unwind before asserting, so a failure does not leave a goroutine parked holding the handle's lock.
+	close(proceed)
+	select {
+	case <-releaseDone:
+	case <-time.After(3 * time.Second):
+		t.Fatal("the release never completed after the publish finished")
+	}
+	if err := <-readDone; err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	if releasedEarly {
+		t.Fatal("the release discharged the handle while a publish was mid-admission; the admission that " +
+			"followed charges a handle that no longer exists and nothing will ever discharge it")
+	}
+	// BOTH HALVES MATTER. A charge nothing discharges is the leak this closes; a discharge that took the bytes
+	// with it is the original defect.
+	if charged := playback.HandleBytes(handle.ID); charged != 0 {
+		t.Fatalf("the released handle is still charged %d bytes", charged)
+	}
+	if total := playback.TotalBytes(); total == 0 {
+		t.Fatal("the admission that won the ordering must still be cached, unowned")
 	}
 }

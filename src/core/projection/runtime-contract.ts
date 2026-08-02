@@ -283,8 +283,9 @@ export const PROJECTIOND_CIRCUIT_BREAKER = Object.freeze({
  *
  * The PROBE PREFIX cache is small, persistent and per projected version: it holds the bytes a media server's
  * metadata pass reads, so a re-scan of an unchanged library costs zero provider requests. The PLAYBACK cache
- * is ephemeral, memory-bounded and dropped on release: it exists to make sequential playback smooth, not to
- * store anybody's library on the appliance's disk.
+ * is process-ephemeral and memory-bounded, keyed by exact byte identity: it exists to make sequential playback
+ * smooth and to let the next open of the same bytes reuse the last open's work, not to store anybody's library
+ * on the appliance's disk.
  */
 export const PROJECTIOND_CACHE_POLICY = Object.freeze({
   probePrefix: Object.freeze({
@@ -296,8 +297,9 @@ export const PROJECTIOND_CACHE_POLICY = Object.freeze({
      * AMENDED IN PHASE 1. This was one window, on the assumption that a metadata pass reads a header and
      * stops. The access pattern this contract CHOOSES TO SUPPORT is a header, something near the middle, and
      * the tail — where a container keeps its index. With only the head persistent, the other two probes
-     * landed in ephemeral playback chunks that are dropped on release, so a second scan re-fetched them and
-     * "a re-scan costs zero provider requests" was unachievable by construction rather than by defect.
+     * landed in memory-only playback chunks that no restart could recover and that survive only while they
+     * win the playback LRU, so a re-scan re-fetched them and "a re-scan costs zero provider requests" was
+     * unachievable by construction rather than by defect.
      *
      * THIS IS A DESIGN CHOICE, NOT A MEASUREMENT. No Plex, Jellyfin or Emby scan has been run against this
      * namespace. The Phase 1 harness is a SYNTHETIC scanner that reads exactly these three windows; whether a
@@ -313,10 +315,27 @@ export const PROJECTIOND_CACHE_POLICY = Object.freeze({
     EVICTION: 'lru-on-cap-or-version-removed',
   }),
   playback: Object.freeze({
+    /** Memory only, and this process only: a restart starts empty. Nothing here is ever written to disk. */
     PERSISTENT: false,
     MAX_TOTAL_BYTES: 512 * 1_048_576,
+    /**
+     * An ADMISSION ceiling, not a readership one. It bounds what a single open handle may ADD; a cache hit is
+     * free reuse that transfers no ownership and spends none of it, and a handle that would exceed it evicts
+     * its own oldest admissions first.
+     */
     MAX_BYTES_PER_OPEN_HANDLE: 64 * 1_048_576,
-    EVICTION: 'dropped-on-release',
+    /**
+     * CORRECTED. This said `dropped-on-release`, and the daemon did exactly that: `release` deleted every
+     * entry the handle had cached. Because entries are keyed by byte identity rather than by handle, the
+     * deleted entry was precisely what the next open would ask for — so a media server's open-read-release
+     * scan followed by an analyse pass refetched the same block once per open. Measured through the real read
+     * path: four sequential opens of one object, the identical block at offset 1,048,576 for 2,724,273 bytes,
+     * fetched four times.
+     *
+     * A release now discharges that handle's admission accounting and RETAINS the bytes as an unowned
+     * candidate in the global LRU. What ends an entry is the hard 512 MiB total, by recency, and nothing else.
+     */
+    EVICTION: 'lru-on-cap-not-on-release',
   }),
 } as const);
 
@@ -338,7 +357,15 @@ export const PROJECTIOND_READAHEAD_POLICY = Object.freeze({
   MAX_READAHEAD_CHUNKS: 4,
   /** A seek that is not the next chunk cancels read-ahead immediately; in-flight prefetch is abandoned. */
   CANCEL_ON_NON_SEQUENTIAL: true,
-  /** An open handle pins its generation, its bound source and its cached chunks. Eviction cannot take them. */
+  /**
+   * An open handle pins its generation, its bound source and its cached chunks.
+   *
+   * A PIN IS A PREFERENCE, NOT AN EXEMPTION, and an earlier version of this line said eviction could not take
+   * a pinned chunk. Both caps are hard: the scan cache retains pinned records last but evicts them rather
+   * than exceed 2 GiB, and the playback cache evicts within its 512 MiB by recency alone, whether or not an
+   * open handle admitted the entry. An appliance that ran out of space because a stream asked it to would be
+   * a worse failure than a cache miss.
+   */
   ACTIVE_STREAM_PINNING: true,
 } as const);
 
