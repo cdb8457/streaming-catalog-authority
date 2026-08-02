@@ -224,7 +224,7 @@ func TestPlaybackCacheRefusesAnOversizedChunk(t *testing.T) {
 	}
 	// The chunk that was already there must survive: dropping it to make room for something that then never
 	// fits is the worst of both.
-	if !cache.Get(testKey(0, 1024), make([]byte, 1024)) {
+	if !cache.Get(1, testKey(0, 1024), make([]byte, 1024)) {
 		t.Fatal("an oversized put must not evict what was already cached")
 	}
 }
@@ -252,7 +252,7 @@ func TestPlaybackCacheRefusesAShortDestination(t *testing.T) {
 	cache := NewPlaybackCache(8192, 8192)
 	key := testKey(0, 1024)
 	cache.Put(1, key, payload(1024))
-	if cache.Get(key, make([]byte, 4)) {
+	if cache.Get(1, key, make([]byte, 4)) {
 		t.Fatal("a destination shorter than the record must be refused")
 	}
 }

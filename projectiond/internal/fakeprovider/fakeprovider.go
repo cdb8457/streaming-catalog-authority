@@ -66,8 +66,24 @@ type Object struct {
 
 // Counters are read by the gates. Every one of them is a number a budget is asserted against.
 type Counters struct {
-	Resolutions   atomic.Int64
+	Resolutions atomic.Int64
+	// RangeRequests counts ARRIVALS: incremented when a request reaches the handler, before its outcome is
+	// known. It is the right denominator for a request ceiling and the wrong one for a partition identity;
+	// AccountedResponses is the partition's side. See the accounting lock.
 	RangeRequests atomic.Int64
+	// AccountedResponses counts requests whose outcome has been RECORDED — a body classified, or no body
+	// served — and it advances in the same critical section as that recording. The identity is
+	//
+	//	Chunk + Small + Partial + Oversized + Bodyless == AccountedResponses
+	//
+	// which holds with any number of requests still in flight, because both sides move together.
+	//
+	// IT IS NOT NAMED "COMPLETED", AND THE DISTINCTION IS THE ONE THIS FILE KEEPS HAVING TO LEARN. The
+	// increment happens BEFORE the body is written to the socket — deliberately, so bytes cannot reach a
+	// client before the counters describing them — so at the moment it moves the HTTP response is not
+	// complete and may still fail on a broken pipe. Calling it Completed would claim delivery this endpoint
+	// does not observe. It counts accounting, which is exactly what it does and all it is used for.
+	AccountedResponses atomic.Int64
 	// HeldRequests is a LIFETIME count of requests that entered a hold. CurrentHeldWaiters is how many are
 	// blocked right now, and HoldTimeouts counts holds that lapsed instead of being released.
 	HeldRequests       atomic.Int64
@@ -82,7 +98,7 @@ type Counters struct {
 	PeakConns          atomic.Int64
 	CurrentConns       atomic.Int64
 
-	// REQUEST SHAPE, IN THREE BUCKETS AND NOTHING ELSE.
+	// REQUEST SHAPE, IN FOUR SIZE BUCKETS AND NOTHING ELSE.
 	//
 	// WHY THIS EXISTS. A gate measured 32,505,856 bytes over 10 ranged requests for one object and could say
 	// nothing about the mix: 7.75 demand blocks is not a whole number of anything, so the total is some
@@ -90,22 +106,47 @@ type Counters struct {
 	// cannot be decomposed is a budget derived from a coincidence, and the honest response is to measure the
 	// shape rather than to pick a multiplier that clears the observation.
 	//
-	// WHY THREE FLAT BUCKETS AND NOT A LOG. Anything per-request is a record of what was read and when, and
-	// this endpoint serves media on behalf of a product whose whole argument is about not leaking access
+	// WHY FOUR AND NOT THREE, WHICH IS WHAT A REAL GATE RUN TAUGHT. The middle bucket used to be one
+	// undifferentiated "other", asserted at ZERO because eight instrumented diagnostic windows had never
+	// produced one. Every one of those windows scanned a single large object COLD. gate7's corpus window —
+	// the first ever instrumented scan of a mixed-size library that reads AROUND already-cached data —
+	// produced thirteen of them, 35,415,553 bytes, and failed a budget that said they could not exist.
+	//
+	// They were not waste. `readpath.demandBlock` computes a block inside the GAP between cached probe
+	// windows and clips it to the gap's end, so a read bounded by cached data legitimately returns something
+	// between one probe window and one demand block. That is the daemon fetching LESS, not more.
+	//
+	// A body ABOVE a demand block is a different animal entirely — a coalesced read or a full-body answer to
+	// a ranged request — and has never occurred. Folding both into one bucket meant a budget could not admit
+	// the harmless case without also admitting the harmful one. So they are separated:
+	//
+	//	small     n <= one probe window
+	//	chunk     n == one demand block, exactly
+	//	partial   one probe window < n < one demand block   (a block clipped by a cache gap or by EOF)
+	//	oversized n > one demand block                      (never legitimate)
+	//
+	// WHY FLAT BUCKETS AND NOT A LOG. Anything per-request is a record of what was read and when, and this
+	// endpoint serves media on behalf of a product whose whole argument is about not leaking access
 	// material. Cumulative counts and byte totals in fixed buckets answer "what mix of sizes was served"
-	// without retaining a single URL, header, lease, offset or ordering. There is nothing here to redact
+	// without retaining a single URL, header, lease, offset or per-request ordering. There is nothing to redact
 	// because there is nothing here to identify.
-	ChunkResponses atomic.Int64
-	ChunkBytes     atomic.Int64
-	SmallResponses atomic.Int64
-	SmallBytes     atomic.Int64
-	OtherResponses atomic.Int64
-	OtherBytes     atomic.Int64
+	ChunkResponses     atomic.Int64
+	ChunkBytes         atomic.Int64
+	SmallResponses     atomic.Int64
+	SmallBytes         atomic.Int64
+	PartialResponses   atomic.Int64
+	PartialBytes       atomic.Int64
+	OversizedResponses atomic.Int64
+	OversizedBytes     atomic.Int64
 	// BodylessResponses is every ranged request that returned WITHOUT a body: an unknown object, a missing
 	// file, a malformed Range, and each of the injected refusals — 401, 403, 410, 429, 503, a timeout, a
 	// redirect. It exists so the request partition is an equation rather than an approximation:
 	//
-	//	ChunkResponses + SmallResponses + OtherResponses + BodylessResponses == RangeRequests
+	//	Chunk + Small + Partial + Oversized + Bodyless == AccountedResponses
+	//
+	// AGAINST ACCOUNTED RESPONSES, NOT ARRIVALS. This comment said RangeRequests until gate9 showed why it
+	// could not: arrivals are counted when a request lands and its class when the body is served, so a
+	// request in flight at a snapshot sits on one side of the equation only.
 	//
 	// IT IS COUNTED STRUCTURALLY, NOT ENUMERATED. `serveRange` defers an increment that fires unless a body
 	// was classified, so a no-body branch added tomorrow is accounted for by nobody having to remember it.
@@ -126,19 +167,45 @@ const (
 
 // recordShape files one served response into exactly one bucket. It is called wherever bytes are counted, so
 // the buckets always sum to BytesServed and a caller can check that they do.
-func (c *Counters) recordShape(n int64) {
+//
+// THE BOUNDARIES ARE CLOSED ON THE SMALL SIDE AND OPEN ON THE OTHER, and the order of these cases is what
+// makes them a partition rather than an overlap. Exactly one probe window is SMALL; one byte more is
+// PARTIAL. Exactly one demand block is CHUNK; one byte more is OVERSIZED. A zero-length body is SMALL, which
+// is the only sensible home for it: it is not a block, and it is certainly not oversized.
+// It RETURNS the class it chose, so the per-object mirror of these counters cannot pick a different one.
+// Two switch statements over the same boundaries is how the aggregate and the per-object view drift apart.
+func (c *Counters) recordShape(n int64) responseClass {
 	switch {
 	case n == chunkResponseBytes:
 		c.ChunkResponses.Add(1)
 		c.ChunkBytes.Add(n)
+		return classChunk
 	case n <= smallResponseBytes:
 		c.SmallResponses.Add(1)
 		c.SmallBytes.Add(n)
+		return classSmall
+	case n < chunkResponseBytes:
+		// Strictly between a probe window and a demand block: a block clipped by a cache gap or by EOF.
+		c.PartialResponses.Add(1)
+		c.PartialBytes.Add(n)
+		return classPartial
 	default:
-		c.OtherResponses.Add(1)
-		c.OtherBytes.Add(n)
+		// Larger than a demand block. Nothing legitimate produces this.
+		c.OversizedResponses.Add(1)
+		c.OversizedBytes.Add(n)
+		return classOversized
 	}
 }
+
+// responseClass names the bucket a served body fell into, so the per-object arrays mirror the aggregate.
+type responseClass int
+
+const (
+	classChunk responseClass = iota
+	classSmall
+	classPartial
+	classOversized
+)
 
 // Server is the fake endpoint.
 type Server struct {
@@ -164,6 +231,60 @@ type Server struct {
 	// holds blocks range requests for one object until released. See Hold.
 	holds   map[string]chan struct{}
 	maxHold time.Duration
+
+	// PER-OBJECT BYTE ATTRIBUTION, AND EXACTLY AS MUCH OF IT AS A BUDGET NEEDS.
+	//
+	// WHY IT EXISTS. Every byte budget here was an AGGREGATE over a window: object sizes shaped the
+	// allowance one at a time, but the measurement was a single `BytesServed`, so nothing could tell "each
+	// object cost its own share" from "one object cost everything". gate8 made that material — its corpus
+	// window exceeded the byte ceiling by 0.098% and the counters could not say which of forty objects did
+	// it, or whether it was one large runaway or thirty-eight small extra passes.
+	//
+	// WHAT IT DELIBERATELY IS NOT. Not a request log. No reference, URL, lease, offset, status code or
+	// timestamp — a served-byte total per object and nothing else.
+	//
+	// AND THE ONE THING IT DOES CARRY, STATED PLAINLY BECAUSE AN EARLIER COMMENT DENIED IT: an ORDERING. The
+	// array is indexed by the order the GATE registered its objects, so position i is a stable handle for
+	// one object across the run. That is not the ordering the redaction rule is about — there is no record
+	// of which request came when, or in what sequence bytes were asked for — but writing "no ordering" was
+	// false, and a privacy claim that overstates itself is worth less than a narrower true one.
+	//
+	// It is bounded by the number of registered objects, which the gate chooses; it cannot grow with
+	// traffic. A reader learns how many objects exist and how many bytes each was asked for, both of which
+	// the gate already knew when it created them.
+	// POINTERS, NOT VALUES, AND THE REASON IS A RACE RATHER THAN A STYLE. Registration appends, which
+	// reallocates the backing array; a writer that had read the slice header without the lock would then be
+	// adding to a discarded array. Holding pointers lets the counter be fetched under the lock and
+	// incremented after releasing it, so a served body never blocks on another object's accounting.
+	objectOrdinal map[string]int
+	objectBytes   []*atomic.Int64
+	// ORDINAL-ALIGNED PER-OBJECT CLASS COUNTS, so per-object class arithmetic is OBSERVED, not inferred.
+	//
+	// gate9 failed one object at 4.487x and the only way to say which responses were its was to notice that
+	// 35,415,553 + 3 x 1,048,576 happened to equal its byte total exactly. That worked once; it is not a
+	// method. These four arrays answer the question directly, under the same bounding and the same narrow
+	// privacy claim as objectBytes: one entry per registered object, no reference, URL, lease, offset,
+	// status, timestamp or per-request sequence.
+	objectChunk     []*atomic.Int64
+	objectPartial   []*atomic.Int64
+	objectSmall     []*atomic.Int64
+	objectOversized []*atomic.Int64
+
+	// THE COMPOUND ACCOUNTING LOCK, HELD FOR A FEW ATOMIC ADDS AND NOTHING ELSE.
+	//
+	// THE DEFECT THIS CLOSES. Every counter here is individually atomic, and an earlier comment argued that
+	// made a lock unnecessary. gate9 falsified it: the request partition `classified + bodyless == arrivals`
+	// failed 5 against 4 because arrivals are counted when a request lands and its class when the body is
+	// served, so a request in flight at a snapshot is counted on one side only. Individually atomic counters
+	// are not a coherent SET.
+	//
+	// So classification, bytes, per-object totals and AccountedResponses all move together under this, and
+	// reads them under it. A window's identity is then exact however many requests are in flight.
+	//
+	// IT IS NOT HELD ACROSS A HOLD, A READ OR A WRITE. `waitForHold` blocks before classification and this
+	// lock is taken after it, so a deliberately held request cannot make /counters hang behind it — which
+	// would turn the hold primitive into a way to freeze the instrument that measures it.
+	accounting sync.Mutex
 }
 
 // Hold makes every subsequent ranged request for one object BLOCK until Release, or until maxHold elapses.
@@ -285,6 +406,7 @@ func New(opts Options) (*Server, error) {
 	s := &Server{
 		listener:      listener,
 		objects:       map[string]Object{},
+		objectOrdinal: map[string]int{},
 		faults:        map[string]*faultState{},
 		holds:         map[string]chan struct{}{},
 		maxHold:       opts.MaxHold,
@@ -377,6 +499,22 @@ func (s *Server) AddObject(ref string, size int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.objects[ref] = Object{Ref: ref, Size: size}
+	s.assignOrdinal(ref)
+}
+
+// assignOrdinal gives a newly registered object its place in the per-object byte array. Callers hold s.mu.
+// Re-registering a reference keeps its original slot, so a size correction does not shuffle the array under
+// a gate that has already taken a snapshot.
+func (s *Server) assignOrdinal(ref string) {
+	if _, seen := s.objectOrdinal[ref]; seen {
+		return
+	}
+	s.objectOrdinal[ref] = len(s.objectBytes)
+	s.objectBytes = append(s.objectBytes, &atomic.Int64{})
+	s.objectChunk = append(s.objectChunk, &atomic.Int64{})
+	s.objectPartial = append(s.objectPartial, &atomic.Int64{})
+	s.objectSmall = append(s.objectSmall, &atomic.Int64{})
+	s.objectOversized = append(s.objectOversized, &atomic.Int64{})
 }
 
 // AddFileObject registers a servable object whose bytes are a file's. The size is the file's own, read once
@@ -396,6 +534,7 @@ func (s *Server) AddFileObject(ref, path string) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.objects[ref] = Object{Ref: ref, Size: info.Size(), Path: path}
+	s.assignOrdinal(ref)
 	return info.Size(), nil
 }
 
@@ -430,8 +569,15 @@ func (s *Server) ObjectFor(ref string) (Object, bool) {
 // CountersSnapshot is the wire shape of Counters. It exists because a gate that runs this server in its own
 // container cannot read atomics across a process boundary, and a budget nobody can read is not a budget.
 type CountersSnapshot struct {
-	Resolutions   int64 `json:"resolutions"`
+	Resolutions int64 `json:"resolutions"`
+	// RangeRequests is ARRIVALS: counted when a request reaches the handler, before its outcome is known.
+	// It is the denominator a request ceiling wants. It is NOT the partition's side — a request in flight at
+	// a snapshot is an arrival with no class yet, which is exactly how gate9's partition failed 5 against 4.
 	RangeRequests int64 `json:"rangeRequests"`
+	// AccountedResponses is the partition's side: requests whose outcome has been recorded, incremented in
+	// the same critical section as the class and the bytes. Named for what it counts rather than for HTTP
+	// completion, which has not happened yet when it moves.
+	AccountedResponses int64 `json:"accountedResponses"`
 	// HeldRequests is a lifetime count; CurrentHeldWaiters is how many are blocked at this instant, which is
 	// the only one that can support "a request was still blocked while X happened"; HoldTimeouts is how many
 	// holds lapsed rather than being released, which is how a gate detects that its window had a gap in it.
@@ -444,12 +590,12 @@ type CountersSnapshot struct {
 	ExpiredRejected    int64 `json:"expiredRejected"`
 	PeakConcurrent     int64 `json:"peakConcurrent"`
 	PeakConns          int64 `json:"peakConns"`
-	// Request shape, in three flat buckets. See Counters.
+	// Request shape, in four flat size buckets. See Counters.
 	//
 	// TWO PARTITIONS, AND A CALLER SHOULD CHECK BOTH:
 	//
-	//	ChunkBytes + SmallBytes + OtherBytes                          == BytesServed
-	//	ChunkResponses + SmallResponses + OtherResponses + Bodyless   == RangeRequests
+	//	ChunkBytes + SmallBytes + PartialBytes + OversizedBytes                 == BytesServed
+	//	Chunk + Small + Partial + Oversized + BodylessResponses (as counts)     == RangeRequests
 	//
 	// THE SECOND ONE RECONCILES AGAINST BodylessResponses, NOT AGAINST A LIST OF REFUSALS. This comment used
 	// to say the counts sum to RangeRequests less Served429 and ExpiredRejected, which was short by every
@@ -458,18 +604,118 @@ type CountersSnapshot struct {
 	//
 	// Bytes alone are not enough: two responses filed as one leave the byte total intact and the count
 	// wrong, and the count is what a request geometry is derived from.
-	ChunkResponses    int64 `json:"chunkResponses"`
-	ChunkBytes        int64 `json:"chunkBytes"`
-	SmallResponses    int64 `json:"smallResponses"`
-	SmallBytes        int64 `json:"smallBytes"`
-	OtherResponses    int64 `json:"otherResponses"`
-	OtherBytes        int64 `json:"otherBytes"`
-	BodylessResponses int64 `json:"bodylessResponses"`
+	ChunkResponses     int64 `json:"chunkResponses"`
+	ChunkBytes         int64 `json:"chunkBytes"`
+	SmallResponses     int64 `json:"smallResponses"`
+	SmallBytes         int64 `json:"smallBytes"`
+	PartialResponses   int64 `json:"partialResponses"`
+	PartialBytes       int64 `json:"partialBytes"`
+	OversizedResponses int64 `json:"oversizedResponses"`
+	OversizedBytes     int64 `json:"oversizedBytes"`
+	BodylessResponses  int64 `json:"bodylessResponses"`
+	// ObjectBytes is bytes served per registered object, indexed by the order the caller registered them.
+	//
+	// THE PARTITION A CALLER SHOULD CHECK: sum(ObjectBytes) == BytesServed. A shortfall means a body was
+	// served for a reference this server never registered, which is the only way attribution can go missing.
+	//
+	// IT CARRIES ONE ORDERING AND NOT THE OTHER, which is the only honest way to say this. The index IS the
+	// registration order of objects, deliberately, because that is what makes a position a stable handle
+	// across two snapshots. What is absent is any PER-REQUEST temporal ordering: no reference, URL, lease,
+	// offset, status or timestamp, and no record of which request came when or in what sequence bytes were
+	// asked for. See the field it is built from.
+	ObjectBytes []int64 `json:"objectBytes"`
+	// ObjectSizes is each registered object's own length, in the SAME order as ObjectBytes.
+	//
+	// IT IS HERE SO NOTHING HAS TO PAIR TWO ORDERINGS. The per-object ceiling is a function of the object's
+	// size, and the caller's list of sizes is in the caller's order while this array is in registration
+	// order. Matching them by position would silently judge one object against another's length — a defect
+	// that reports confident per-object verdicts about the wrong objects. The endpoint already knows every
+	// size, because the caller told it at registration, so it answers with them and the question does not
+	// arise. This reveals nothing the caller did not supply.
+	ObjectSizes []int64 `json:"objectSizes"`
+	// PER-OBJECT RESPONSE-CLASS COUNTS, in the SAME order as ObjectBytes and ObjectSizes.
+	//
+	// WHY THEY EXIST. gate9 failed one object at 4.487x of its own length, and identifying which responses
+	// were its required noticing that 35,415,553 + 3 x 1,048,576 happened to equal its byte total exactly.
+	// That is a coincidence that worked once, not a method: bytes alone cannot say which CLASS a given
+	// object's traffic fell into, so the per-object arithmetic the model is built on could not be checked
+	// against the object it describes. These four arrays make it observable.
+	//
+	// THE IDENTITY A CALLER SHOULD CHECK, per object i:
+	//
+	//	ObjectChunk[i] + ObjectSmall[i] + ObjectPartial[i] + ObjectOversized[i]  ==  its served responses
+	//
+	// and summed across i, each column equals its aggregate counter.
+	ObjectChunk     []int64 `json:"objectChunk"`
+	ObjectSmall     []int64 `json:"objectSmall"`
+	ObjectPartial   []int64 `json:"objectPartial"`
+	ObjectOversized []int64 `json:"objectOversized"`
 }
 
-// Snapshot reads every counter. It is not atomic across counters and does not need to be: each one is
-// asserted against its own budget.
+// recordObjectServedLocked attributes one served response to the object it came from, by registration
+// ordinal, in both bytes and class. The caller holds s.accounting.
+//
+// It takes the CLASS recordShape actually chose rather than recomputing it, because two switch statements
+// over the same boundaries are how an aggregate and its per-object mirror drift apart.
+//
+// An unregistered reference cannot reach here with a body — serveRange has already refused it — but if one
+// ever did, the bytes stay in the aggregate and are simply unattributed, which a caller detects by the
+// attribution partition failing rather than by silently losing them.
+func (s *Server) recordObjectServedLocked(ref string, n int64, class responseClass) {
+	s.mu.Lock()
+	ordinal, known := s.objectOrdinal[ref]
+	var bytes, classCounter *atomic.Int64
+	if known && ordinal < len(s.objectBytes) {
+		bytes = s.objectBytes[ordinal]
+		switch class {
+		case classChunk:
+			classCounter = s.objectChunk[ordinal]
+		case classSmall:
+			classCounter = s.objectSmall[ordinal]
+		case classPartial:
+			classCounter = s.objectPartial[ordinal]
+		case classOversized:
+			classCounter = s.objectOversized[ordinal]
+		}
+	}
+	s.mu.Unlock()
+	if bytes == nil {
+		return
+	}
+	bytes.Add(n)
+	if classCounter != nil {
+		classCounter.Add(1)
+	}
+}
+
+// Snapshot reads the RESPONSE-ACCOUNTING SET under the accounting lock, and everything else independently.
+//
+// WHAT IS COHERENT, EXACTLY: the four size classes, BytesServed, BodylessResponses, AccountedResponses and
+// the per-object columns. Those are the counters that appear together in an assertion, and they are the only
+// ones the accounting lock covers.
+//
+// WHAT IS NOT, AND SAYING SO MATTERS: RangeRequests, the hold counters, Resolutions, the connection peaks and
+// the fault tallies all move outside that lock, at their own points in a request's life. A snapshot can
+// therefore show an arrival with no accounted response — that is a request in flight, and it is expected.
+// The first version of this comment claimed every counter was coherent, which is a larger promise than the
+// lock makes and the kind of overstatement this file has had to retract twice.
+//
+// AN EARLIER VERSION SAID COHERENCE WAS UNNECESSARY ALTOGETHER because each counter is individually atomic
+// and each is asserted against its own budget. gate9 falsified that: the request partition failed 5 against
+// 4 because a request in flight had been counted as an arrival but not yet classified. Individually atomic
+// counters are not a coherent SET, and an assertion relating two of them needs one.
+//
+// THE LOCK IS THE ONE THE ACCOUNTING PATH TAKES, held there for a few adds and never across a hold, a read
+// or a socket write. So a deliberately held request cannot make this hang — which would turn the hold
+// primitive into a way to freeze the instrument that measures it.
+//
+// The per-object columns come from one call for the same reason: taken separately, an object registered in
+// between produced arrays of different lengths, and a caller pairing them by index would read one object's
+// bytes against the next object's size.
 func (s *Server) Snapshot() CountersSnapshot {
+	s.accounting.Lock()
+	defer s.accounting.Unlock()
+	objects, objectSizes := s.objectTotalsAndSizes()
 	return CountersSnapshot{
 		Resolutions:        s.counters.Resolutions.Load(),
 		RangeRequests:      s.counters.RangeRequests.Load(),
@@ -486,8 +732,17 @@ func (s *Server) Snapshot() CountersSnapshot {
 		ChunkBytes:         s.counters.ChunkBytes.Load(),
 		SmallResponses:     s.counters.SmallResponses.Load(),
 		SmallBytes:         s.counters.SmallBytes.Load(),
-		OtherResponses:     s.counters.OtherResponses.Load(),
-		OtherBytes:         s.counters.OtherBytes.Load(),
+		PartialResponses:   s.counters.PartialResponses.Load(),
+		PartialBytes:       s.counters.PartialBytes.Load(),
+		OversizedResponses: s.counters.OversizedResponses.Load(),
+		OversizedBytes:     s.counters.OversizedBytes.Load(),
+		ObjectBytes:        objects.bytes,
+		ObjectSizes:        objectSizes,
+		ObjectChunk:        objects.chunk,
+		ObjectSmall:        objects.small,
+		ObjectPartial:      objects.partial,
+		ObjectOversized:    objects.oversized,
+		AccountedResponses: s.counters.AccountedResponses.Load(),
 		BodylessResponses:  s.counters.BodylessResponses.Load(),
 	}
 }
@@ -653,16 +908,52 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 	// was classified. A new no-body branch is counted correctly the day it is written, by nobody.
 	bodyClassified := false
 	defer func() {
-		if !bodyClassified {
-			s.counters.BodylessResponses.Add(1)
+		if bodyClassified {
+			return
 		}
+		// NO BODY WAS SERVED, so the outcome is recorded here — and Bodyless and AccountedResponses move together
+		// under the same lock the classified path uses, which is what makes the partition exact.
+		s.accounting.Lock()
+		s.counters.BodylessResponses.Add(1)
+		s.counters.AccountedResponses.Add(1)
+		s.accounting.Unlock()
 	}()
-	// serveBody is the ONE way a body is recorded. Routing every body-producing branch through it is what
-	// keeps the flag and the buckets from drifting apart.
-	serveBody := func(n int64) {
+	// serveBody is the ONE way a body is recorded AND the one way it is written. Routing every body-producing
+	// branch through it is what keeps the flag and the buckets from drifting apart.
+	//
+	// IT COUNTS BEFORE IT WRITES, AND THAT ORDER IS THE POINT.
+	//
+	// THE DEFECT THIS CLOSES. Every branch used to write the body and then record it. A client that read its
+	// response to completion could therefore observe the counters BEFORE the handler had counted the very
+	// response it had just finished reading — the handler had returned from Write, but not yet reached the
+	// increment. The test that drives all four size classes caught it under `-race` with a second package
+	// running alongside: the fourth response was still uncounted when the snapshot was taken, and the "other"
+	// bucket read zero. The window is small, but a counter snapshot taken at a phase boundary is exactly the
+	// case where it matters: the last response of a scan would be attributed to the NEXT window, making one
+	// budget look cheaper and the following one dearer, with the totals still summing correctly.
+	//
+	// COUNTING FIRST MEANS THE COUNTERS DESCRIBE WHAT THE ENDPOINT COMMITTED TO SERVE rather than what a
+	// client is known to have received. That is the honest reading for a budget: the bytes left the endpoint's
+	// control. A body abandoned by a broken pipe is still a cost the provider paid.
+	//
+	// It also takes the payload rather than a length, so a branch cannot record a size that disagrees with
+	// what it wrote.
+	serveBody := func(payload []byte) {
+		n := int64(len(payload))
+		// ONE CRITICAL SECTION FOR THE WHOLE ACCOUNTING SET, and it closes BEFORE the write. Count-before-
+		// write is preserved — the bytes cannot reach the client until every counter describing them has
+		// moved — and now the counters also move as a SET, so a snapshot cannot catch this response half
+		// recorded. The lock covers adds only; the write happens outside it, so a slow client cannot block
+		// another object's accounting or the counters endpoint.
+		s.accounting.Lock()
 		s.counters.BytesServed.Add(n)
-		s.counters.recordShape(n)
+		class := s.counters.recordShape(n)
+		s.recordObjectServedLocked(ref, n, class)
+		s.counters.AccountedResponses.Add(1)
 		bodyClassified = true
+		s.accounting.Unlock()
+
+		_, _ = w.Write(payload)
 	}
 
 	// The request has arrived and is counted; holding it blocks the READER, which is the point.
@@ -738,8 +1029,7 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		}
 		w.Header().Set("Content-Length", strconv.FormatInt(object.Size, 10))
 		w.WriteHeader(http.StatusOK)
-		_, _ = w.Write(full)
-		serveBody(object.Size)
+		serveBody(full)
 		return
 	case FaultMalformedRange:
 		w.Header().Set("Content-Range", "octets "+strconv.FormatInt(start, 10))
@@ -756,18 +1046,16 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		short := data[:len(data)/2]
 		w.Header().Set("Content-Length", strconv.FormatInt(int64(len(data)), 10))
 		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write(short)
-		serveBody(int64(len(short)))
+		serveBody(short)
 		return
 	case FaultDelayedClose:
 		// No Content-Length, so the response is chunked; the body is correct and complete, but the terminal
 		// chunk is late.
 		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write(data)
+		serveBody(data)
 		if flusher, ok := w.(http.Flusher); ok {
 			flusher.Flush()
 		}
-		serveBody(int64(len(data)))
 		time.Sleep(s.timeoutFor)
 		return
 	case FaultLongBody:
@@ -776,15 +1064,13 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 		// obtain them would turn the fault into an I/O error instead.
 		long := append(data, ObjectBytes(ref, end+1, 64)...)
 		w.WriteHeader(http.StatusPartialContent)
-		_, _ = w.Write(long)
-		serveBody(int64(len(long)))
+		serveBody(long)
 		return
 	}
 
 	w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
 	w.WriteHeader(http.StatusPartialContent)
-	_, _ = w.Write(data)
-	serveBody(length)
+	serveBody(data)
 }
 
 func parseRange(value string, size int64) (int64, int64, bool) {
@@ -811,4 +1097,58 @@ func parseRange(value string, size int64) (int64, int64, bool) {
 		end = size - 1
 	}
 	return start, end, true
+}
+
+// objectTotalsAndSizes returns bytes-served and length for every registered object, in registration order,
+// read under a SINGLE lock so the two arrays always describe the same set of objects.
+//
+// A caller pairs them by index. If they could be taken at different moments, a registration in between would
+// make index i mean two different objects in the two arrays, and every per-object verdict after it would be
+// judging the wrong pair. The counters themselves are atomic; only the slice headers need the lock.
+// It returns the class columns too, for the same reason and in the same order.
+func (s *Server) objectTotalsAndSizes() (perObject, []int64) {
+	s.mu.Lock()
+	count := len(s.objectBytes)
+	bytesCounters := make([]*atomic.Int64, count)
+	chunkCounters := make([]*atomic.Int64, count)
+	smallCounters := make([]*atomic.Int64, count)
+	partialCounters := make([]*atomic.Int64, count)
+	oversizedCounters := make([]*atomic.Int64, count)
+	copy(bytesCounters, s.objectBytes)
+	copy(chunkCounters, s.objectChunk)
+	copy(smallCounters, s.objectSmall)
+	copy(partialCounters, s.objectPartial)
+	copy(oversizedCounters, s.objectOversized)
+	sizes := make([]int64, count)
+	for ref, ordinal := range s.objectOrdinal {
+		if ordinal < count {
+			sizes[ordinal] = s.objects[ref].Size
+		}
+	}
+	s.mu.Unlock()
+
+	load := func(counters []*atomic.Int64) []int64 {
+		out := make([]int64, len(counters))
+		for i, counter := range counters {
+			out[i] = counter.Load()
+		}
+		return out
+	}
+	return perObject{
+		bytes:     load(bytesCounters),
+		chunk:     load(chunkCounters),
+		small:     load(smallCounters),
+		partial:   load(partialCounters),
+		oversized: load(oversizedCounters),
+	}, sizes
+}
+
+// perObject is the ordinal-aligned per-object view, carried as one value so the columns cannot be returned
+// from different moments and paired by a caller who assumes they match.
+type perObject struct {
+	bytes     []int64
+	chunk     []int64
+	small     []int64
+	partial   []int64
+	oversized []int64
 }

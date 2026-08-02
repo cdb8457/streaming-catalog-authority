@@ -571,7 +571,7 @@ func (r *Reader) blockBytesEpoch(ctx context.Context, h *Handle, b block, epoch 
 			r.Stats.ProbeHits.Add(1)
 			return buf, nil
 		}
-	} else if r.playback.Get(key, buf) {
+	} else if r.playback.Get(h.ID, key, buf) {
 		r.Stats.PlaybackHits.Add(1)
 		return buf, nil
 	}

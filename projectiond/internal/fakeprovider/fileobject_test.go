@@ -4,11 +4,13 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -396,20 +398,31 @@ func itoa(v int64) string {
 	return digits
 }
 
-// TestRequestShapeBucketsClassifyEverySizeExactlyOnce drives the three request-shape buckets over the sizes
-// that actually occur, and holds them to the one property that makes them trustworthy: they partition.
+// TestRequestShapeBucketsClassifyEverySizeExactlyOnce drives the four request-shape buckets over every
+// boundary that separates them, and holds them to the one property that makes them trustworthy: they
+// partition.
 //
 // WHY THIS TELEMETRY EXISTS. A gate measured 32,505,856 bytes over 10 ranged requests for one object and
 // could say nothing about the mix — 7.75 demand blocks is not a whole number of anything. Without the shape,
 // the only way to turn that total into a budget is to pick a multiplier that clears it, which records the
 // observation instead of constraining it.
+//
+// WHY FOUR BUCKETS, AND WHY EVERY BOUNDARY IS DRIVEN FROM BOTH SIDES. The middle used to be one "other"
+// bucket. gate7's corpus scan produced thirteen of them and failed a budget asserting they could not exist —
+// but they were legitimate: `readpath.demandBlock` clips a block to the gap between cached probe windows, so
+// a read bounded by cached data returns something between a window and a block. A body ABOVE a demand block
+// is a different thing entirely and still must never occur. One bucket could not admit the first without
+// admitting the second, so the boundaries below are asserted at exactly the byte where they change.
 func TestRequestShapeBucketsClassifyEverySizeExactlyOnce(t *testing.T) {
 	server, err := New(Options{})
 	if err != nil {
 		t.Fatalf("new: %v", err)
 	}
 	defer server.Close()
-	server.AddObject("obj-shape", 32*1024*1024)
+	server.AddObject("obj-shape", 64*1024*1024)
+
+	const window = 1024 * 1024
+	const block = 4 * 1024 * 1024
 
 	get := func(from, to int64) {
 		request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-shape", nil)
@@ -418,48 +431,152 @@ func TestRequestShapeBucketsClassifyEverySizeExactlyOnce(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ranged get: %v", err)
 		}
-		io.Copy(io.Discard, response.Body)
+		if _, err := io.Copy(io.Discard, response.Body); err != nil {
+			t.Fatalf("reading the body: %v", err)
+		}
 		response.Body.Close()
 	}
+	// getSize requests exactly n bytes starting at a distinct offset, so no two reads overlap.
+	var cursor int64
+	getSize := func(n int64) {
+		get(cursor, cursor+n-1)
+		cursor += n
+	}
 
-	// One exact demand block, one exact probe window, one sub-window read, and one that is neither.
-	get(0, 4*1024*1024-1)
-	get(8*1024*1024, 8*1024*1024+1024*1024-1)
-	get(20*1024*1024, 20*1024*1024+4095)
-	get(24*1024*1024, 24*1024*1024+2*1024*1024-1)
+	// EVERY BOUNDARY, FROM BOTH SIDES.
+	getSize(4096)       // small: well under a window
+	getSize(window)     // small: EXACTLY one probe window, the closed end of the small bucket
+	getSize(window + 1) // partial: one byte more is no longer small
+	getSize(block - 1)  // partial: one byte short of a block is still partial
+	getSize(block)      // chunk: EXACTLY one demand block
+	getSize(block + 1)  // oversized: one byte more is no longer a block
+	getSize(2 * block)  // oversized: and so is anything larger
 
 	snapshot := server.Snapshot()
-	if snapshot.ChunkResponses != 1 || snapshot.ChunkBytes != 4*1024*1024 {
+
+	if snapshot.ChunkResponses != 1 || snapshot.ChunkBytes != block {
 		t.Fatalf("chunk bucket: got %d responses / %d bytes, want 1 / %d",
-			snapshot.ChunkResponses, snapshot.ChunkBytes, 4*1024*1024)
+			snapshot.ChunkResponses, snapshot.ChunkBytes, block)
 	}
-	// The exact probe window and the 4 KiB read are both "small": at or under one window.
-	if snapshot.SmallResponses != 2 || snapshot.SmallBytes != 1024*1024+4096 {
-		t.Fatalf("small bucket: got %d responses / %d bytes, want 2 / %d",
-			snapshot.SmallResponses, snapshot.SmallBytes, 1024*1024+4096)
+	if snapshot.SmallResponses != 2 || snapshot.SmallBytes != 4096+window {
+		t.Fatalf("small bucket: got %d responses / %d bytes, want 2 / %d — a body of EXACTLY one probe "+
+			"window is small, not partial", snapshot.SmallResponses, snapshot.SmallBytes, 4096+window)
 	}
-	if snapshot.OtherResponses != 1 || snapshot.OtherBytes != 2*1024*1024 {
-		t.Fatalf("other bucket: got %d responses / %d bytes, want 1 / %d",
-			snapshot.OtherResponses, snapshot.OtherBytes, 2*1024*1024)
+	if snapshot.PartialResponses != 2 || snapshot.PartialBytes != (window+1)+(block-1) {
+		t.Fatalf("partial bucket: got %d responses / %d bytes, want 2 / %d — one byte over a window and one "+
+			"byte under a block are both partial", snapshot.PartialResponses, snapshot.PartialBytes,
+			(window+1)+(block-1))
 	}
+	if snapshot.OversizedResponses != 2 || snapshot.OversizedBytes != (block+1)+2*block {
+		t.Fatalf("oversized bucket: got %d responses / %d bytes, want 2 / %d — one byte over a block is "+
+			"oversized", snapshot.OversizedResponses, snapshot.OversizedBytes, (block+1)+2*block)
+	}
+
 	// THE TWO PARTITION PROPERTIES, which are what make the buckets usable as evidence.
 	//
 	// BYTES: every served byte is in exactly one bucket.
-	if sum := snapshot.ChunkBytes + snapshot.SmallBytes + snapshot.OtherBytes; sum != snapshot.BytesServed {
-		t.Fatalf("the byte buckets do not partition: %d + %d + %d = %d, but %d bytes were served",
-			snapshot.ChunkBytes, snapshot.SmallBytes, snapshot.OtherBytes, sum, snapshot.BytesServed)
+	sum := snapshot.ChunkBytes + snapshot.SmallBytes + snapshot.PartialBytes + snapshot.OversizedBytes
+	if sum != snapshot.BytesServed {
+		t.Fatalf("the byte buckets do not partition: %d + %d + %d + %d = %d, but %d bytes were served",
+			snapshot.ChunkBytes, snapshot.SmallBytes, snapshot.PartialBytes, snapshot.OversizedBytes,
+			sum, snapshot.BytesServed)
 	}
 	// REQUESTS: and every ranged request lands in exactly one bucket, bodyless ones included. This is the
 	// property bytes alone cannot give — two responses filed as one leave the byte total intact and the
 	// count wrong, and the count is what a request geometry is derived from.
-	count := snapshot.ChunkResponses + snapshot.SmallResponses + snapshot.OtherResponses
-	if total := count + snapshot.BodylessResponses; total != snapshot.RangeRequests {
+	count := snapshot.ChunkResponses + snapshot.SmallResponses +
+		snapshot.PartialResponses + snapshot.OversizedResponses
+	if total := count + snapshot.BodylessResponses; total != snapshot.AccountedResponses {
 		t.Fatalf("the response buckets do not partition: %d classified + %d bodyless = %d, but %d ranged requests arrived",
-			count, snapshot.BodylessResponses, total, snapshot.RangeRequests)
+			count, snapshot.BodylessResponses, total, snapshot.AccountedResponses)
 	}
-	if count != 4 || snapshot.BodylessResponses != 0 {
-		t.Fatalf("four bodies were served and none refused, but %d classified / %d bodyless",
+	if count != 7 || snapshot.BodylessResponses != 0 {
+		t.Fatalf("seven bodies were served and none refused, but %d classified / %d bodyless",
 			count, snapshot.BodylessResponses)
+	}
+}
+
+// TestAFullBodyAnsweringARangedRequestIsCountedOversized is the case the oversized bucket exists for.
+//
+// A 200 with the whole object, in answer to a ranged request, is the most expensive protocol failure this
+// endpoint can inject — the daemon downloading a file to answer a probe. Before the split it landed in the
+// same bucket as a harmless clipped block, so no budget could refuse one without also refusing the other.
+func TestAFullBodyAnsweringARangedRequestIsCountedOversized(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	const size = 40 * 1024 * 1024
+	server.AddObject("obj-full", size)
+	server.InjectFault("obj-full", FaultFullBodyOnRange, 1)
+
+	request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-full", nil)
+	request.Header.Set("Range", byteRange(0, 1024*1024-1))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("ranged get: %v", err)
+	}
+	read, err := io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatalf("reading the body: %v", err)
+	}
+	if read != size {
+		t.Fatalf("the fault should have served the whole %d-byte object, served %d", size, read)
+	}
+
+	snapshot := server.Snapshot()
+	if snapshot.OversizedResponses != 1 || snapshot.OversizedBytes != size {
+		t.Fatalf("a whole-object answer to a ranged request must be OVERSIZED: got %d responses / %d bytes",
+			snapshot.OversizedResponses, snapshot.OversizedBytes)
+	}
+	if snapshot.PartialResponses != 0 {
+		t.Fatalf("and it must not be filed as a clipped block: partial=%d", snapshot.PartialResponses)
+	}
+	if snapshot.FullBodyServed != 1 {
+		t.Fatalf("the dedicated full-body counter still counts it too: %d", snapshot.FullBodyServed)
+	}
+}
+
+// TestAClippedBlockIsPartialAndNotOversized covers the shape gate7 actually met: a demand block clipped by
+// the end of the object, which is what a read near EOF produces.
+func TestAClippedBlockIsPartialAndNotOversized(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	// 13,981,407 bytes: the anchor fixture's real length. Its last aligned block is 1,398,495 bytes — over a
+	// probe window, under a demand block — which is exactly the class gate7 measured thirteen of.
+	const size = 13_981_407
+	server.AddObject("obj-anchor", size)
+
+	const block = 4 * 1024 * 1024
+	request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-anchor", nil)
+	request.Header.Set("Range", byteRange(3*block, size-1))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("ranged get: %v", err)
+	}
+	read, err := io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+	if err != nil {
+		t.Fatalf("reading the body: %v", err)
+	}
+
+	want := int64(size - 3*block)
+	if read != want {
+		t.Fatalf("the clipped block should be %d bytes, served %d", want, read)
+	}
+	snapshot := server.Snapshot()
+	if snapshot.PartialResponses != 1 || snapshot.PartialBytes != want {
+		t.Fatalf("a block clipped by EOF is PARTIAL: got %d responses / %d bytes, want 1 / %d",
+			snapshot.PartialResponses, snapshot.PartialBytes, want)
+	}
+	if snapshot.OversizedResponses != 0 || snapshot.ChunkResponses != 0 {
+		t.Fatalf("and it is neither oversized nor a full block: oversized=%d chunk=%d",
+			snapshot.OversizedResponses, snapshot.ChunkResponses)
 	}
 }
 
@@ -511,7 +628,8 @@ func TestEveryBodylessReturnIsCounted(t *testing.T) {
 	}
 
 	snapshot := server.Snapshot()
-	classified := snapshot.ChunkResponses + snapshot.SmallResponses + snapshot.OtherResponses
+	classified := snapshot.ChunkResponses + snapshot.SmallResponses +
+		snapshot.PartialResponses + snapshot.OversizedResponses
 	if classified != 1 {
 		t.Fatalf("exactly one request served a body, but %d were classified", classified)
 	}
@@ -520,13 +638,14 @@ func TestEveryBodylessReturnIsCounted(t *testing.T) {
 	}
 	// THE EQUATION THE GATES ASSERT. If either side changes, this breaks here rather than in a thirty-minute
 	// Docker run.
-	if total := classified + snapshot.BodylessResponses; total != snapshot.RangeRequests {
+	if total := classified + snapshot.BodylessResponses; total != snapshot.AccountedResponses {
 		t.Fatalf("partition: %d classified + %d bodyless = %d, but %d ranged requests arrived",
-			classified, snapshot.BodylessResponses, total, snapshot.RangeRequests)
+			classified, snapshot.BodylessResponses, total, snapshot.AccountedResponses)
 	}
 	// ...and none of the bodyless returns contributed bytes to any bucket.
-	if sum := snapshot.ChunkBytes + snapshot.SmallBytes + snapshot.OtherBytes; sum != snapshot.BytesServed {
-		t.Fatalf("byte buckets %d do not match bytes served %d", sum, snapshot.BytesServed)
+	bucketed := snapshot.ChunkBytes + snapshot.SmallBytes + snapshot.PartialBytes + snapshot.OversizedBytes
+	if bucketed != snapshot.BytesServed {
+		t.Fatalf("byte buckets %d do not match bytes served %d", bucketed, snapshot.BytesServed)
 	}
 	if snapshot.BytesServed != 1024 {
 		t.Fatalf("only the one good request should have served bytes, got %d", snapshot.BytesServed)
@@ -576,8 +695,595 @@ func TestRequestShapeCountersCarryNothingIdentifying(t *testing.T) {
 		t.Fatalf("decode: %v", err)
 	}
 	for key, value := range generic {
-		if _, ok := value.(float64); !ok {
+		if _, ok := value.(float64); ok {
+			continue
+		}
+		// The one non-scalar is the per-object byte array, and the rule holds inside it: every ELEMENT must
+		// be a number too. An array of numbers carries no reference, URL, lease, offset or per-request
+		// sequence — its index is the registration order of objects, which is a deliberate part of the
+		// contract rather than a leak. An array
+		// containing anything else would be a request record in disguise.
+		elements, isArray := value.([]any)
+		// The array-valued counters are the ordinal-aligned per-object columns. The rule holds INSIDE each of
+		// them: every element must be a number, so an array of numbers carries no reference, URL, lease, offset
+		// or per-request sequence — only the registration ordering the contract documents.
+		perObjectColumns := map[string]bool{
+			"objectBytes": true, "objectSizes": true, "objectChunk": true,
+			"objectSmall": true, "objectPartial": true, "objectOversized": true,
+		}
+		if !isArray || !perObjectColumns[key] {
 			t.Fatalf("counter %q is not a number: %#v", key, value)
 		}
+		for index, element := range elements {
+			if _, ok := element.(float64); !ok {
+				t.Fatalf("%s[%d] is not a number: %#v", key, index, element)
+			}
+		}
 	}
+}
+
+// TestAResponseIsCountedBeforeItsBytesLeave pins the ORDER of counting and writing, which is what makes a
+// counter snapshot taken at a phase boundary trustworthy.
+//
+// THE DEFECT THIS CLOSES. Every body-serving branch used to write the body and then record it. A client that
+// read its response to completion could therefore snapshot the counters BEFORE the handler had counted the
+// very response it had just finished reading. It surfaced as a "flaky" shape test under `-race` with a
+// second package running alongside — the fourth response was still uncounted and the "other" bucket read
+// zero — but the flake was the honest signal. A gate takes its counter snapshot immediately after a phase,
+// so the last response of a scan could be attributed to the NEXT window: one budget cheaper, the next
+// dearer, and the totals still summing correctly so nothing else would notice.
+//
+// WITH THE INCREMENT AHEAD OF THE WRITE THIS IS NO LONGER A RACE THE TEST HAS TO CATCH IN THE ACT. The bytes
+// cannot reach the client before the counter has moved, so "read the body, then snapshot" must agree every
+// time. That is asserted per request rather than in aggregate, because an aggregate at the end would pass
+// even if every individual observation had been late.
+func TestAResponseIsCountedBeforeItsBytesLeave(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-order", 64*1024*1024)
+
+	// One of each size class, so the ordering is pinned on every branch a scan actually exercises.
+	sizes := []int64{4 * 1024 * 1024, 1024 * 1024, 4096, 2 * 1024 * 1024}
+	var offset int64
+	for round := 0; round < 6; round++ {
+		for _, size := range sizes {
+			request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-order", nil)
+			request.Header.Set("Range", byteRange(offset, offset+size-1))
+			response, err := http.DefaultClient.Do(request)
+			if err != nil {
+				t.Fatalf("ranged get: %v", err)
+			}
+			read, err := io.Copy(io.Discard, response.Body)
+			response.Body.Close()
+			if err != nil {
+				t.Fatalf("reading the body: %v", err)
+			}
+			if read != size {
+				t.Fatalf("wanted %d bytes, read %d", size, read)
+			}
+			offset += size
+
+			// THE ASSERTION: the response this client has just finished reading is already counted.
+			snapshot := server.Snapshot()
+			if snapshot.BytesServed != offset {
+				t.Fatalf("round %d, %d-byte read: %d bytes served but only %d counted -- the body reached "+
+					"the client before the counter moved", round, size, offset, snapshot.BytesServed)
+			}
+			classified := snapshot.ChunkResponses + snapshot.SmallResponses +
+				snapshot.PartialResponses + snapshot.OversizedResponses
+			if classified+snapshot.BodylessResponses != snapshot.AccountedResponses {
+				t.Fatalf("round %d: %d classified + %d bodyless != %d requests, so a response is in flight "+
+					"between the two halves of the partition",
+					round, classified, snapshot.BodylessResponses, snapshot.AccountedResponses)
+			}
+		}
+	}
+}
+
+// TestTheCountingWriterIsTheOnlyWayABodyLeavesServeRange asserts the ordering STRUCTURALLY, because the
+// behavioural test above cannot be trusted to catch a regression in the act.
+//
+// WHY A SOURCE ASSERTION AND NOT A TIMING ONE. The window between writing a body and counting it is
+// sub-microsecond. Reordering the two and re-running the behavioural test passes: the flake that exposed
+// this originally needed a second package running under `-race` to widen the gap. A test that only fails
+// when the machine is busy is not a regression test, it is a lottery ticket. The invariant is a property of
+// the code — every body goes through one closure, and that closure counts before it writes — so it is
+// asserted where it can be asserted deterministically.
+func TestTheCountingWriterIsTheOnlyWayABodyLeavesServeRange(t *testing.T) {
+	source, err := os.ReadFile("fakeprovider.go")
+	if err != nil {
+		t.Fatalf("reading the endpoint source: %v", err)
+	}
+	text := string(source)
+	start := strings.Index(text, "func (s *Server) serveRange(")
+	if start < 0 {
+		t.Fatal("serveRange is not where this test expects it; the assertion below would be vacuous")
+	}
+	end := strings.Index(text[start+1:], "\nfunc ")
+	if end < 0 {
+		t.Fatal("could not find the end of serveRange")
+	}
+	body := text[start : start+1+end]
+
+	// ONE WRITER. Every body-producing branch routes through the closure; a branch that wrote directly would
+	// be counted late, or not at all.
+	if writes := strings.Count(body, "w.Write("); writes != 1 {
+		t.Fatalf("serveRange contains %d body writes, want exactly 1 (the counting closure). A branch that "+
+			"writes its own body is counted after its bytes have left, or not counted at all", writes)
+	}
+
+	closure := strings.Index(body, "serveBody := func(payload []byte) {")
+	if closure < 0 {
+		t.Fatal("the counting closure is not shaped as this test expects")
+	}
+	tail := body[closure:]
+	counted := strings.Index(tail, "recordShape(")
+	bytesAdded := strings.Index(tail, "BytesServed.Add(")
+	written := strings.Index(tail, "w.Write(")
+	if counted < 0 || bytesAdded < 0 || written < 0 {
+		t.Fatal("the closure no longer both counts and writes")
+	}
+	// COUNT FIRST. This is the whole invariant: the increment must happen-before the bytes are observable,
+	// so a client that has read its response cannot then read counters that omit it.
+	if !(counted < written && bytesAdded < written) {
+		t.Fatal("the body is written before it is counted, so a client can observe the counters without its " +
+			"own response in them -- at a phase boundary that misattributes the response to the next window")
+	}
+}
+
+// TestPerObjectBytesAttributeEveryServedByte is the counter that turns an aggregate budget into a per-object
+// one, and the property that makes it usable: it partitions.
+//
+// WHY IT EXISTS. gate8's corpus window exceeded its byte ceiling by 47,065 bytes and the telemetry could not
+// say which of forty objects spent them — one large object reading itself twice over looks exactly like
+// thirty-eight small ones taking an extra pass. A budget that cannot attribute cannot diagnose.
+func TestPerObjectBytesAttributeEveryServedByte(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	// Registration order IS the array order, which is the whole indexing contract.
+	server.AddObject("obj-a", 8*1024*1024)
+	server.AddObject("obj-b", 2*1024*1024)
+	server.AddObject("obj-c", 64*1024)
+
+	get := func(ref string, from, to int64) {
+		request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/"+ref, nil)
+		request.Header.Set("Range", byteRange(from, to))
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			t.Fatalf("ranged get: %v", err)
+		}
+		if _, err := io.Copy(io.Discard, response.Body); err != nil {
+			t.Fatalf("reading the body: %v", err)
+		}
+		response.Body.Close()
+	}
+
+	// Deliberately lopsided: one object is read many times over, the others once. That is the shape the
+	// aggregate cannot distinguish, so it is the shape this test asserts on.
+	for i := 0; i < 4; i++ {
+		get("obj-a", 0, 4*1024*1024-1)
+	}
+	get("obj-b", 0, 1024*1024-1)
+	get("obj-c", 0, 64*1024-1)
+
+	snapshot := server.Snapshot()
+	if len(snapshot.ObjectBytes) != 3 {
+		t.Fatalf("one entry per registered object, want 3, got %d", len(snapshot.ObjectBytes))
+	}
+	if want := int64(4 * 4 * 1024 * 1024); snapshot.ObjectBytes[0] != want {
+		t.Fatalf("obj-a was read four times over: want %d bytes attributed, got %d",
+			want, snapshot.ObjectBytes[0])
+	}
+	if want := int64(1024 * 1024); snapshot.ObjectBytes[1] != want {
+		t.Fatalf("obj-b: want %d, got %d", want, snapshot.ObjectBytes[1])
+	}
+	if want := int64(64 * 1024); snapshot.ObjectBytes[2] != want {
+		t.Fatalf("obj-c: want %d, got %d", want, snapshot.ObjectBytes[2])
+	}
+
+	// THE PARTITION. Every served byte is attributed to exactly one object; a shortfall means a body went
+	// out for a reference that was never registered, which is the only way attribution can go missing.
+	var attributed int64
+	for _, bytes := range snapshot.ObjectBytes {
+		attributed += bytes
+	}
+	if attributed != snapshot.BytesServed {
+		t.Fatalf("per-object attribution does not partition: %d attributed, %d served",
+			attributed, snapshot.BytesServed)
+	}
+
+	// AND THE RATIO THE BUDGET CARES ABOUT IS NOW COMPUTABLE PER OBJECT. obj-a read 2x its own length while
+	// the aggregate over all three is only 1.55x — the exact confusion that failed gate8 undiagnosed.
+	if ratio := float64(snapshot.ObjectBytes[0]) / float64(8*1024*1024); ratio != 2.0 {
+		t.Fatalf("obj-a's own ratio is computable and is 2.0, got %v", ratio)
+	}
+	aggregate := float64(snapshot.BytesServed) / float64(8*1024*1024+2*1024*1024+64*1024)
+	if aggregate >= 2.0 {
+		t.Fatalf("and the aggregate ratio %v hides it by staying under 2.0, which is the point", aggregate)
+	}
+}
+
+// TestPerObjectBytesCarryNothingIdentifying is a redaction assertion over the new telemetry surface.
+//
+// The array is bytes-per-object indexed by registration order. It must never acquire a reference, a URL, a
+// lease, an offset, a status or an ordering — the moment it does, it is a request log wearing a counter's
+// name, and this endpoint serves media for a product whose whole argument is about not leaking access
+// material.
+func TestPerObjectBytesCarryNothingIdentifying(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("a-very-distinctive-reference-name", 1024)
+
+	request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/a-very-distinctive-reference-name", nil)
+	request.Header.Set("Range", byteRange(0, 1023))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("ranged get: %v", err)
+	}
+	io.Copy(io.Discard, response.Body)
+	response.Body.Close()
+
+	// THE WHOLE PAYLOAD, NOT JUST THE ARRAY. A previous version marshalled ObjectBytes alone, which cannot
+	// catch a reference leaking into some field added beside it. What a gate publishes is the whole snapshot,
+	// so the whole snapshot is what gets checked.
+	encoded, err := json.Marshal(server.Snapshot())
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	rendered := string(encoded)
+	if strings.Contains(rendered, "a-very-distinctive-reference") {
+		t.Fatalf("the counters payload names a reference: %s", rendered)
+	}
+	// Every VALUE is a number, or an array of numbers. Keys are field names this test file can read; values
+	// are the only place a request could leave a trace.
+	var generic map[string]any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for key, value := range generic {
+		if _, ok := value.(float64); ok {
+			continue
+		}
+		elements, isArray := value.([]any)
+		if !isArray {
+			t.Fatalf("counter %q is neither a number nor an array of them: %#v", key, value)
+		}
+		for index, element := range elements {
+			if _, ok := element.(float64); !ok {
+				t.Fatalf("%s[%d] is not a number: %#v", key, index, element)
+			}
+		}
+	}
+	// And it is BOUNDED by registration, not by traffic: one entry, however many requests arrive.
+	for i := 0; i < 25; i++ {
+		again, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/a-very-distinctive-reference-name", nil)
+		again.Header.Set("Range", byteRange(0, 511))
+		resp, err := http.DefaultClient.Do(again)
+		if err != nil {
+			t.Fatalf("ranged get: %v", err)
+		}
+		io.Copy(io.Discard, resp.Body)
+		resp.Body.Close()
+	}
+	if got := len(server.Snapshot().ObjectBytes); got != 1 {
+		t.Fatalf("twenty-six requests must still be one entry, got %d", got)
+	}
+
+	// AND THE ONE THING THE ARRAYS DO CARRY IS AN OBJECT ORDERING, which the comments now say outright. It
+	// is asserted here so the claim and the behaviour cannot drift apart: position is stable and meaningful.
+	server.AddObject("second-object", 2048)
+	if got := len(server.Snapshot().ObjectSizes); got != 2 {
+		t.Fatalf("a second registration takes the next slot, want 2 entries, got %d", got)
+	}
+	if sizes := server.Snapshot().ObjectSizes; sizes[0] != 1024 || sizes[1] != 2048 {
+		t.Fatalf("registration order is the array order, got %v", sizes)
+	}
+}
+
+// TestConcurrentRegistrationKeepsTheTwoArraysCoherent is the race the single-lock snapshot exists for.
+//
+// THE DEFECT THIS CLOSES. ObjectBytes and ObjectSizes were built by two methods that each took the lock
+// separately. An AddObject landing between them produced arrays of DIFFERENT LENGTHS, and a caller pairing
+// them by index would read one object's bytes against the next object's size — silently, and only under a
+// race it could never reproduce on demand. A gate registers objects while earlier ones are being read, so
+// the window is real rather than theoretical.
+//
+// TWO PROPERTIES, BOTH ASSERTED ON EVERY SNAPSHOT TAKEN DURING THE STORM:
+//
+//	the arrays are the same length, always — a snapshot never straddles a registration
+//	the ordinal prefix is STABLE — object i keeps its slot and its size forever, so a delta taken across
+//	two snapshots is a delta for one object rather than for whatever landed in that slot
+//
+// It also re-registers existing references, because AddObject is idempotent by reference and a re-register
+// that reassigned an ordinal would shuffle the array under a gate mid-measurement.
+func TestConcurrentRegistrationKeepsTheTwoArraysCoherent(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+
+	const objects = 60
+	sizeFor := func(i int) int64 { return int64(1024 * (i + 1)) }
+	refFor := func(i int) string { return fmt.Sprintf("obj-%03d", i) }
+
+	// One object exists before the storm, so every snapshot has a prefix to be stable about.
+	server.AddObject(refFor(0), sizeFor(0))
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	// Registrations, and re-registrations of references already present.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for i := 1; i < objects; i++ {
+			server.AddObject(refFor(i), sizeFor(i))
+			server.AddObject(refFor(i/2), sizeFor(i/2)) // re-register an existing reference
+		}
+		close(stop)
+	}()
+
+	// Snapshots taken continuously against it, each one checked as it arrives.
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		previous := []int64{}
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			snapshot := server.Snapshot()
+			if len(snapshot.ObjectBytes) != len(snapshot.ObjectSizes) {
+				t.Errorf("a snapshot straddled a registration: %d byte totals against %d sizes",
+					len(snapshot.ObjectBytes), len(snapshot.ObjectSizes))
+				return
+			}
+			// THE PREFIX NEVER CHANGES. Whatever this snapshot knows, it agrees with every earlier one about
+			// the objects they both knew — including their sizes, which is what makes an ordinal a handle.
+			if len(snapshot.ObjectSizes) < len(previous) {
+				t.Errorf("the array shrank, from %d to %d", len(previous), len(snapshot.ObjectSizes))
+				return
+			}
+			for i, size := range previous {
+				if snapshot.ObjectSizes[i] != size {
+					t.Errorf("ordinal %d changed size from %d to %d: a re-registration shuffled the array",
+						i, size, snapshot.ObjectSizes[i])
+					return
+				}
+			}
+			previous = snapshot.ObjectSizes
+		}
+	}()
+
+	wg.Wait()
+
+	// And the finished state is exactly what was registered, in registration order.
+	final := server.Snapshot()
+	if len(final.ObjectSizes) != objects {
+		t.Fatalf("every distinct reference took one slot: want %d, got %d", objects, len(final.ObjectSizes))
+	}
+	for i := 0; i < objects; i++ {
+		if final.ObjectSizes[i] != sizeFor(i) {
+			t.Fatalf("ordinal %d holds size %d, want %d — registration order is the array order",
+				i, final.ObjectSizes[i], sizeFor(i))
+		}
+	}
+	if len(final.ObjectBytes) != len(final.ObjectSizes) {
+		t.Fatalf("the two arrays disagree at rest: %d and %d",
+			len(final.ObjectBytes), len(final.ObjectSizes))
+	}
+}
+
+// TestThePrivacyClaimStaysNarrowerThanTheContract stops one specific contradiction from coming back.
+//
+// THE DEFECT THIS CLOSES. The per-object arrays are indexed by REGISTRATION ORDER — that is the contract, it
+// is what makes a position a stable handle across two snapshots, and the field comment says so. Three other
+// comments in these same two files nevertheless denied the telemetry carried any ordering at all, which was
+// false. Both statements cannot be true, and the false one was the reassuring one.
+//
+// The rule is narrow and mechanical: any sentence in this package that denies an ordering must say WHICH one
+// it means. "No per-request ordering" is true and provable; the bare denial is false the moment an array is
+// indexed by anything. A privacy claim that overstates itself is worth less than a smaller accurate one,
+// because a reader who finds one overstatement has to doubt the rest.
+func TestThePrivacyClaimStaysNarrowerThanTheContract(t *testing.T) {
+	for _, name := range []string{"fakeprovider.go", "fileobject_test.go"} {
+		source, err := os.ReadFile(name)
+		if err != nil {
+			t.Fatalf("reading %s: %v", name, err)
+		}
+		for number, line := range strings.Split(string(source), "\n") {
+			// Only DENIALS are in scope. A line that merely mentions ordering is describing something, and
+			// a scan that flagged those would train its reader to skip it.
+			lower := strings.ToLower(line)
+			denies := strings.Contains(lower, "no ordering") || strings.Contains(lower, "or ordering") ||
+				strings.Contains(lower, "nor ordering") || strings.Contains(lower, "without ordering")
+			if !denies {
+				continue
+			}
+			// The assertion's own machinery is not a claim about the telemetry.
+			if strings.Contains(line, "strings.Contains(lower") {
+				continue
+			}
+			// Qualified denials are fine, and so is the paragraph that records the correction itself.
+			qualified := strings.Contains(line, "per-request") ||
+				strings.Contains(line, "registration") ||
+				strings.Contains(line, "temporal") ||
+				strings.Contains(line, "was") // the paragraph recording that the bare denial was false
+			if !qualified {
+				t.Errorf("%s:%d claims something about ordering without saying which ordering: %q\n"+
+					"the arrays ARE indexed by registration order; only per-request ordering is absent",
+					name, number+1, strings.TrimSpace(line))
+			}
+		}
+	}
+}
+
+// TestTheAccountedIdentityHoldsWithARequestInFlight is gate9's failure, reproduced deliberately.
+//
+// THE DEFECT THIS CLOSES. RangeRequests counts ARRIVALS; the class and bytes are recorded when the body is
+// served. A request in flight at a snapshot is therefore counted on one side of
+// `classified + bodyless == requests` and not the other, and gate9's PX9 window failed 5 against 4 for
+// exactly that reason — one request had arrived before the window opened and was classified inside it.
+//
+// A HELD REQUEST MAKES THE WINDOW DETERMINISTIC. The hold blocks inside serveRange AFTER the arrival is
+// counted and BEFORE anything is classified, which is precisely the state that broke the old identity.
+func TestTheAccountedIdentityHoldsWithARequestInFlight(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	server.AddObject("obj-flight", 8*1024*1024)
+	server.Hold("obj-flight")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-flight", nil)
+		request.Header.Set("Range", byteRange(0, 1024*1024-1))
+		response, err := http.DefaultClient.Do(request)
+		if err != nil {
+			return
+		}
+		io.Copy(io.Discard, response.Body)
+		response.Body.Close()
+	}()
+
+	// Wait until the request has ARRIVED and is blocked in the hold.
+	deadline := time.Now().Add(5 * time.Second)
+	for server.Counters().CurrentHeldWaiters.Load() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("the request never reached the hold")
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	// THE SNAPSHOT TAKEN MID-FLIGHT. This is the state gate9 hit.
+	inFlight := server.Snapshot()
+	classified := inFlight.ChunkResponses + inFlight.SmallResponses +
+		inFlight.PartialResponses + inFlight.OversizedResponses
+	if classified+inFlight.BodylessResponses != inFlight.AccountedResponses {
+		t.Fatalf("the accounted identity must hold mid-flight: %d classified + %d bodyless != %d accounted",
+			classified, inFlight.BodylessResponses, inFlight.AccountedResponses)
+	}
+	// AND THE OLD IDENTITY MUST NOT, or this test would prove nothing about the change.
+	if classified+inFlight.BodylessResponses == inFlight.RangeRequests {
+		t.Fatalf("arrivals and accounted responses agree mid-flight (%d), so this test is not exercising "+
+			"the skew it exists for", inFlight.RangeRequests)
+	}
+	if inFlight.RangeRequests != 1 || inFlight.AccountedResponses != 0 {
+		t.Fatalf("mid-flight expects 1 arrival and 0 accounted, got %d and %d",
+			inFlight.RangeRequests, inFlight.AccountedResponses)
+	}
+
+	server.Release("obj-flight")
+	<-done
+
+	// AND AFTERWARDS BOTH AGREE, because the request is no longer straddling anything.
+	settled := server.Snapshot()
+	settledClassified := settled.ChunkResponses + settled.SmallResponses +
+		settled.PartialResponses + settled.OversizedResponses
+	if settledClassified+settled.BodylessResponses != settled.AccountedResponses {
+		t.Fatalf("the accounted identity must hold at rest: %d + %d != %d",
+			settledClassified, settled.BodylessResponses, settled.AccountedResponses)
+	}
+	if settled.AccountedResponses != settled.RangeRequests {
+		t.Fatalf("with nothing in flight the two sides should agree: %d accounted, %d arrivals",
+			settled.AccountedResponses, settled.RangeRequests)
+	}
+}
+
+// TestSnapshotIsCoherentUnderConcurrentAccounting hammers the compound critical section from both sides.
+//
+// The identity must hold on EVERY snapshot taken while bodies are being served, not merely at rest: a
+// snapshot that caught the class incremented and the accounted counter not yet moved would be the same
+// defect gate9 found, just harder to reproduce. It also asserts the per-object class columns reconcile with
+// the aggregate ones, which is what makes per-object arithmetic checkable rather than inferred.
+func TestSnapshotIsCoherentUnderConcurrentAccounting(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("new: %v", err)
+	}
+	defer server.Close()
+	for i := 0; i < 4; i++ {
+		server.AddObject(fmt.Sprintf("obj-%d", i), 8*1024*1024)
+	}
+
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+	for worker := 0; worker < 4; worker++ {
+		wg.Add(1)
+		go func(worker int) {
+			defer wg.Done()
+			ref := fmt.Sprintf("obj-%d", worker)
+			for i := 0; i < 40; i++ {
+				request, _ := http.NewRequest(http.MethodGet, server.DirectURL()+"/"+ref, nil)
+				// A mix of classes, so every column moves.
+				length := int64(4096 + (i%3)*1024*1024)
+				request.Header.Set("Range", byteRange(0, length-1))
+				response, err := http.DefaultClient.Do(request)
+				if err != nil {
+					return
+				}
+				io.Copy(io.Discard, response.Body)
+				response.Body.Close()
+			}
+		}(worker)
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			snapshot := server.Snapshot()
+			classified := snapshot.ChunkResponses + snapshot.SmallResponses +
+				snapshot.PartialResponses + snapshot.OversizedResponses
+			if classified+snapshot.BodylessResponses != snapshot.AccountedResponses {
+				t.Errorf("an incoherent snapshot: %d classified + %d bodyless != %d accounted",
+					classified, snapshot.BodylessResponses, snapshot.AccountedResponses)
+				return
+			}
+			// THE PER-OBJECT COLUMNS RECONCILE WITH THE AGGREGATE, on the same snapshot.
+			var chunk, small, partial, oversized, bytes int64
+			for i := range snapshot.ObjectBytes {
+				chunk += snapshot.ObjectChunk[i]
+				small += snapshot.ObjectSmall[i]
+				partial += snapshot.ObjectPartial[i]
+				oversized += snapshot.ObjectOversized[i]
+				bytes += snapshot.ObjectBytes[i]
+			}
+			if chunk != snapshot.ChunkResponses || small != snapshot.SmallResponses ||
+				partial != snapshot.PartialResponses || oversized != snapshot.OversizedResponses {
+				t.Errorf("per-object class columns do not sum to their aggregates: "+
+					"chunk %d/%d small %d/%d partial %d/%d oversized %d/%d",
+					chunk, snapshot.ChunkResponses, small, snapshot.SmallResponses,
+					partial, snapshot.PartialResponses, oversized, snapshot.OversizedResponses)
+				return
+			}
+			if bytes != snapshot.BytesServed {
+				t.Errorf("per-object bytes %d do not sum to bytes served %d", bytes, snapshot.BytesServed)
+				return
+			}
+		}
+	}()
+
+	// Let the workers finish, then stop the observer.
+	go func() { time.Sleep(1500 * time.Millisecond); close(stop) }()
+	wg.Wait()
 }

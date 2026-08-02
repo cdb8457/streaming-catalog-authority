@@ -147,14 +147,18 @@ so scanning and playback on an air-gapped Plex are **not** established.
 It also records something §5 should not be read as already covering for Plex. §5's byte budgets are measured
 against a **synthetic** scan, and its own preamble says none of those numbers is evidence about a real media
 server's metadata pass. Against a real Plex the *budget* for identifying one object is
-`2 opens x min(3 x 4 MiB demand blocks, object size)` — which tops out at 24 MiB, but only for objects of at
-least 12 MiB; below that it clamps to twice the object. **So on a small fixture that ceiling already permits
-a whole-object read, and satisfying it would prove nothing about the fraction.** That is a limit of the
-instrument and not a lower bound — it does not mean a below-one read is unreachable there. The 1.28x and
+`BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size)` — the per-response-class caps (8 demand blocks + 3
+probe windows) evaluated at the object's own length. **So on a small fixture that ceiling already
+permits a whole-object read, and satisfying it would prove nothing about the fraction.** That is a limit of
+the instrument and not a lower bound — it does not mean a below-one read is unreachable there. The 1.28x and
 1.66x measured over the 8.6 MB and 14.0 MB fixtures are separately just observations of what was read: they
 neither prove nor disprove the argument. The Plex gate therefore asserts the fraction where an actual-byte
-measurement has margin — **one 96 MiB object**, against the same 0.5 the Jellyfin gate is held to — and that
-assertion has not yet been observed to hold, because no run of that gate has passed.
+measurement has margin — **one object above 94 MiB**, against the same 0.5 the Jellyfin gate is held to — and
+that assertion has not yet been observed to hold, because no run of that gate has passed. On an object that
+size the envelope (0.348 on the 105.4 MB fixture) is the tighter of the two bounds, so 0.5 remains the
+explicit headline but is not what would fail first. An earlier per-open model —
+`2 opens x min(3 x 4 MiB, size)`, saturating at 24 MiB — was **retired** when gate6 exceeded it, 32,505,856
+against 25,165,824.
 
 ### 6.2 What the five-minute gates prove, and the one thing G10 does not
 

@@ -398,6 +398,10 @@ type playbackEntry struct {
 	data     []byte
 	lastUsed time.Time
 	handle   uint64
+	// key is carried so an EVICTION can be reported in the same terms as the put that preceded it. Without
+	// it the diagnostic could say a block left the cache but not WHICH block, and a summariser would then
+	// have to blame the later handle release for a deletion that capacity had already performed.
+	key Key
 }
 
 // PlaybackCache holds recently read chunks for open handles. It is not persisted and it does not outlive the
@@ -416,6 +420,11 @@ type PlaybackCache struct {
 	Misses  int64
 	Evicts  int64
 	Refused int64
+
+	// OFF UNLESS AN OPERATOR TURNS IT ON. See diagnostic.go: a bounded, secret-free record of which block
+	// was fetched, by which handle, and when a handle release deleted it. Nil means not recording, so the
+	// hot path costs one nil check.
+	diagnostic *diagnostic
 }
 
 func NewPlaybackCache(maxTotal, maxPerHandle int64) *PlaybackCache {
@@ -428,13 +437,20 @@ func NewPlaybackCache(maxTotal, maxPerHandle int64) *PlaybackCache {
 	return &PlaybackCache{
 		maxTotal: maxTotal, maxPerHandle: maxPerHandle,
 		entries: map[string]*playbackEntry{}, byHnd: map[uint64]int64{}, now: time.Now,
+		diagnostic: newDiagnosticFromEnv(),
 	}
 }
 
-func (c *PlaybackCache) Get(key Key, dst []byte) bool {
+// Get takes the REQUESTING handle, not merely the key.
+//
+// THE DEFECT THIS CLOSES. The diagnostic recorded a miss with handle 0 and a hit with the CACHE OWNER's
+// handle, so a sequence of sequential opens all looked like one handle and the per-handle trace could not
+// show which open asked for what. A cache lookup is made BY somebody; the instrument has to know who.
+func (c *PlaybackCache) Get(handle uint64, key Key, dst []byte) bool {
 	if key.Length <= 0 || int64(len(dst)) < key.Length {
 		c.mu.Lock()
 		c.Misses++
+		c.diagnostic.record(EventMiss, objectNamespace(key), handle, key.Offset, key.Length)
 		c.mu.Unlock()
 		return false
 	}
@@ -443,11 +459,13 @@ func (c *PlaybackCache) Get(key Key, dst []byte) bool {
 	entry, ok := c.entries[key.String()]
 	if !ok || int64(len(entry.data)) != key.Length {
 		c.Misses++
+		c.diagnostic.record(EventMiss, objectNamespace(key), handle, key.Offset, key.Length)
 		return false
 	}
 	entry.lastUsed = c.now()
 	copy(dst, entry.data)
 	c.Hits++
+	c.diagnostic.record(EventHit, objectNamespace(key), handle, key.Offset, key.Length)
 	return true
 }
 
@@ -481,9 +499,10 @@ func (c *PlaybackCache) Put(handle uint64, key Key, data []byte) {
 	}
 	stored := make([]byte, size)
 	copy(stored, data)
-	c.entries[name] = &playbackEntry{data: stored, lastUsed: c.now(), handle: handle}
+	c.entries[name] = &playbackEntry{data: stored, lastUsed: c.now(), handle: handle, key: key}
 	c.total += size
 	c.byHnd[handle] += size
+	c.diagnostic.record(EventPut, objectNamespace(key), handle, key.Offset, key.Length)
 	c.evictLocked()
 }
 
@@ -505,6 +524,8 @@ func (c *PlaybackCache) evictOldestForHandleLocked(handle uint64) bool {
 	c.byHnd[handle] -= int64(len(oldest.data))
 	delete(c.entries, oldestName)
 	c.Evicts++
+	c.diagnostic.record(EventEvict, objectNamespace(oldest.key), oldest.handle,
+		oldest.key.Offset, oldest.key.Length)
 	return true
 }
 
@@ -517,6 +538,7 @@ func (c *PlaybackCache) DropHandle(handle uint64) {
 }
 
 func (c *PlaybackCache) dropHandleLocked(handle uint64) {
+	c.diagnostic.record(EventDrop, "", handle, 0, 0)
 	for name, entry := range c.entries {
 		if entry.handle == handle {
 			c.total -= int64(len(entry.data))
@@ -550,6 +572,8 @@ func (c *PlaybackCache) evictLocked() {
 		c.byHnd[entry.handle] -= int64(len(entry.data))
 		delete(c.entries, name)
 		c.Evicts++
+		c.diagnostic.record(EventEvict, objectNamespace(entry.key), entry.handle,
+			entry.key.Offset, entry.key.Length)
 	}
 }
 

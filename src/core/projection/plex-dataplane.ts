@@ -307,20 +307,22 @@ export function plexPrefsPath(prefs: ReadonlyArray<readonly [string, string]> = 
  * THE SECOND WRONG ANSWER, in the comment this replaces, was to read those ratios as a product defect —
  * "Plex reads the whole object, so the fraction argument is contradicted". It is not, because **neither
  * fixture was large enough for the argument to be about them**. The daemon serves a 4 MiB demand block for a
- * one-byte read, and Plex opens each new item twice — its own log shows `Plex Media Scanner --analyze`
- * launched per item with the scheduled task off — touching about three blocks per open. Identifying ONE
- * object therefore has a BUDGET of `2 x min(3 x 4 MiB, size)` — topping out at 24 MiB, but clamping to twice
- * the object below 12 MiB. Against an 8.6 MB soak source and a 14.0 MB anchor that ceiling already permits a
+ * one-byte read, so identifying ONE object costs whole blocks whatever the object's size. The budget for that
+ * is the class caps evaluated against that object: `BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size)` — see
+ * `plexObjectByteCeiling`. Against an 8.6 MB soak source and a 14.0 MB anchor that still permits a
  * whole-object read, so **satisfying it would prove nothing about the fraction** — which is a limit of the
  * instrument, not a lower bound on what the daemon reads.
  *
  * SO THE HISTORICAL RATIOS ARE KEPT AND RELABELLED: 1.28x and 1.66x are observations of what was read on
  * undersized fixtures. They are not evidence of waste and they are not evidence for the claim.
  *
- * WHAT IS ASSERTED NOW. A ceiling derived from that geometry rather than from any fixture's size; a floor
- * derived per object so no entry can be paid for by another; and the product's actual claim, moved to the
- * one place it can be tested — a 96 MiB fixture, four times the fixed window, held to the SHARED
- * `MAX_SCAN_BYTE_FRACTION`. **That last assertion has not yet been observed to hold: no gate run has passed.**
+ * WHAT IS ASSERTED NOW. A CEILING PER OBJECT, derived from the class caps rather than from any fixture's
+ * size and checked against the endpoint's own per-object byte attribution, so a breach names the object that
+ * caused it. A FLOOR whose terms are per object but which is still summed and checked against one counter,
+ * so it remains an aggregate. And the product's actual claim, moved to the one place it can be tested — a fixture
+ * above `PLEX_LARGE_FIXTURE.MIN_BYTES`, computed as the smallest whole MiB at which the ~35 MiB envelope is
+ * within three quarters of the fraction (94 MiB today) — held to the SHARED `MAX_SCAN_BYTE_FRACTION`.
+ * **That last assertion has not yet been observed to hold: no gate run has passed.**
  *
  * AND ONE THING NEITHER ANSWER TOUCHED, WHICH REMAINS THE STRONGEST AMPLIFICATION CLAIM PLEX SUPPORTS: a
  * re-scan of an unchanged generation costs the provider zero ranged GETs and zero bytes.
@@ -342,57 +344,22 @@ export const PLEX_READ_GEOMETRY = Object.freeze({
    * TWO, AND THE SECOND ONE IS IN THE SERVER'S OWN LOG: Plex launches `Plex Media Scanner --analyze` for
    * every new item, in addition to the scan that found it, even with the scheduled deep-analysis task off.
    *
-   * IT IS NOT A MEASURED APPORTIONMENT, AND NOTHING MAY DIVIDE BY IT. The provider counters are aggregate by
-   * design — they retain no association between a response and the open that caused it — so "blocks per
-   * open" cannot be recovered from them by dividing, and doing so would re-introduce exactly the attribution
-   * the telemetry deliberately does not keep. What the ceiling below actually uses is the PRODUCT of this
-   * and `DEMAND_BLOCKS_PER_OPEN`; the split into two factors is presentational, and only the product has
-   * ever been measured. See `PLEX_SCAN_REQUESTS_PER_NEW_ITEM`.
+   * **NO SCAN BUDGET USES THIS.** It survives as a description of observed server behaviour and nothing
+   * more. The scan envelope is expressed per ENTRY (see `PLEX_SCAN_ENVELOPE`) because the provider counters
+   * are aggregate and retain no association between a response and the open that caused it — so no quantity
+   * may be divided by this, and none is.
    */
   OPENS_PER_NEW_ITEM: 2,
   /**
-   * How many distinct demand blocks one open can touch: a container header, the `moov` wherever it is, and
-   * one interior probe.
+   * Demand blocks one encoder open may touch: a container header, the `moov`, and one interior probe.
    *
-   * SEE THE CAVEAT ON `OPENS_PER_NEW_ITEM`: this factor has never been measured on its own either, and it
-   * cannot be, from aggregate counters. Only the product is real.
+   * **ITS ONLY REMAINING USE IS THE SEEK CEILING**, where an open really is the unit: a Plex seek restarts
+   * the encoder, and one restart is one open. `plexSeekByteCeiling` multiplies by it. Scans do NOT — the
+   * scan model that did was retired when a full gate exceeded it, and because the demand-block count proved
+   * load- and timing-sensitive rather than a fixed per-open figure.
    */
   DEMAND_BLOCKS_PER_OPEN: 3,
 } as const);
-
-/**
- * THE PER-NEW-ITEM REQUEST GEOMETRY, WHICH IS WHAT A DIAGNOSTIC CAN HONESTLY DERIVE.
- *
- * A first draft of the diagnostic plan proposed computing blocks-per-open as `chunkResponses / 2`. That is
- * not available: the counters are cumulative across the window and carry no link between a response and the
- * open it belonged to, so the division would be an attribution the data does not support — precisely the
- * kind of number that reads like a measurement and is not one.
- *
- * WHAT IS AVAILABLE, from one object scanned in its own counter window, is the total request geometry for
- * that item: how many full demand blocks, how many probe-sized reads, how many others, and how many bytes
- * each accounted for. Those are the terms a ceiling can be built from directly — `requests per new item` and
- * `bytes per new item` — with no per-open apportionment anywhere in it.
- *
- * Until such a window is measured, these are `undefined` and the gate uses the geometry ceiling above.
- * Nothing here is filled in from gate6, because gate6 could not decompose its 10 requests.
- */
-export interface PlexScanRequestGeometry {
-  /** Responses of exactly one demand block, for one newly scanned item. */
-  readonly chunkResponses: number;
-  /** Responses of one probe window or less. */
-  readonly smallResponses: number;
-  /** Everything else. */
-  readonly otherResponses: number;
-  readonly bytes: number;
-}
-
-/**
- * The measured per-new-item geometry, once a diagnostic has produced one.
- *
- * IT IS DELIBERATELY EMPTY. Writing a plausible shape in here before it is measured is how a placeholder
- * becomes a citation.
- */
-export const PLEX_SCAN_REQUESTS_PER_NEW_ITEM: PlexScanRequestGeometry | undefined = undefined;
 
 /**
  * THE CEILING ON WHAT A PLEX SCAN MAY COST AT THE PROVIDER, PER OBJECT, FROM BLOCK GEOMETRY.
@@ -403,11 +370,17 @@ export const PLEX_SCAN_REQUESTS_PER_NEW_ITEM: PlexScanRequestGeometry | undefine
  * it: it would have passed a daemon that read every object three times over, and it quietly retired the
  * product's central claim rather than testing it.
  *
- * THE ARITHMETIC THE MULTIPLIER WAS HIDING. The daemon serves a 4 MiB demand block for a one-byte read. Plex
- * opens a new item twice and touches about three blocks per open. So the CEILING on scanning ONE object is
- * `opens x min(blocks x chunk, size)` = `2 x min(3 x 4 MiB, size)` — saturating at 24 MiB for an object of
- * 12 MiB or more, and equal to twice the object below that. It is the same shape whether the object is 40 KB
- * or 400 MB.
+ * THE ARITHMETIC THE MULTIPLIER WAS HIDING. The daemon serves a 4 MiB demand block for a one-byte read, so
+ * what a scan costs is set by how many blocks and windows the server touches, not by the object's length. The
+ * CEILING on scanning ONE object is therefore `BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size)`: the per-class caps of
+ * `PLEX_SCAN_ENVELOPE` evaluated against that object's own length. It is the same shape whether the object
+ * is 40 KB or 400 MB.
+ *
+ * A SECOND RETIRED MODEL, RECORDED SO IT IS NOT REBUILT. Before this one the ceiling was
+ * `opens x min(blocks x chunk, size)` = `2 x min(3 x 4 MiB, size)`, saturating at 24 MiB. **gate6 exceeded
+ * it — 32,505,856 bytes against 25,165,824 — and that is what retired it.** It divided aggregate provider
+ * counters by an assumed per-open factor the counters cannot support, and its block count proved load- and
+ * timing-sensitive rather than fixed. Nothing in the current model apportions per open.
  *
  * WHAT THAT MEANS FOR THE SMALL FIXTURES — AND WHAT IT DOES NOT. The soak source is 8.6 MB and the anchor
  * 14.0 MB, so at those sizes this ceiling permits **at least a whole-object read**. That is a statement
@@ -425,29 +398,394 @@ export const PLEX_SCAN_REQUESTS_PER_NEW_ITEM: PlexScanRequestGeometry | undefine
  * when it is smaller than a window. A ceiling asks "did this cost too much"; a floor asks "did it happen at
  * all", and a scan that fetched almost nothing would satisfy any ceiling while meaning the scanner never
  * opened the entries.
+ *
+ * WHAT THIS FUNCTION IS: ONE OBJECT'S ARITHMETIC. `plexScanByteCeiling` below is the aggregate; this is the
+ * single-object term it sums, and it is also what the CLI asserts per object against `objectBytes`.
+ *
+ * Each object's own length bounds its own term before the terms are summed, and that is a real tightening:
+ * against thirty-eight 40 KB entries the aggregate allowance is ~3 MB rather than the ~1.4 GB a pooled
+ * envelope-per-entry would grant, and a pooled *size* denominator was what once let the gate measure a ratio
+ * against a quantity that was never the subject.
+ *
+ * THIS FUNCTION IS ARITHMETIC, NOT AN ASSERTION, AND THE DISTINCTION IS THE WHOLE DESIGN. It answers "what
+ * may ONE object of this size cost". Summing it, as `plexScanByteCeiling` does, gives an aggregate that
+ * cannot attribute — and gate8 proved that is not academic: its corpus window exceeded the sum by 47,065
+ * bytes and nothing could say which of forty objects spent them.
+ *
+ * THE ATTRIBUTED ASSERTION LIVES IN THE CLI, against `objectBytes` from the endpoint, which reports bytes
+ * per registered object. That is where each entry is held to this ceiling individually and a breach names
+ * its object. An earlier version of this paragraph said no per-reference attribution existed and that the
+ * tranche would not add one; both were true when written and neither is true now.
  */
+export function plexObjectByteCeiling(size: number): number {
+  const bounded = Math.max(0, size);
+  return PLEX_SCAN_ENVELOPE.BLOCK * Math.min(PLEX_READ_GEOMETRY.CHUNK_BYTES, bounded)
+    + PLEX_SCAN_ENVELOPE.SMALL * Math.min(PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES, bounded);
+}
+
 export function plexScanByteCeiling(objectSizes: readonly number[]): number {
-  const fixed = PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * PLEX_READ_GEOMETRY.CHUNK_BYTES;
-  return objectSizes.reduce(
-    (total, size) => total + PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * Math.min(fixed, Math.max(0, size)),
-    0,
+  return objectSizes.reduce((total, size) => total + plexObjectByteCeiling(size), 0);
+}
+
+/**
+ * EVERY INSTRUMENTED SCAN WINDOW, RECORDED ONCE, SO THE COUNT AND THE MAXIMUM CANNOT BE RESTATED WRONGLY.
+ *
+ * THE DEFECT THIS CLOSES, AND IT HAD ALREADY HAPPENED TWICE IN PROSE. The provenance was written out as
+ * sentences — "eight instrumented windows", "5 is the highest measured", "4 in six quiet windows" — and each
+ * of those is a fact about a dataset that lives nowhere. By the time gate7 added five more windows the
+ * contract said TEN and the real total was THIRTEEN, and the operator-facing note in the budget phase said
+ * "4 in six quiet windows" while seven windows had measured 4. Neither was caught by anything, because
+ * nothing could compare a sentence to the observations it described.
+ *
+ * So the observations are the data, and every count, maximum and comparison below is COMPUTED from them.
+ * Adding a window means adding a row; the cap check, the operator note and the documentation assertions all
+ * move with it.
+ *
+ * WHAT QUALIFIES AS INSTRUMENTED: the endpoint's class counters were running and the window was read in
+ * isolation. gate6 is deliberately ABSENT — it predates these counters and produced only an aggregate. It is
+ * described separately below as compatible-not-measured, and it must never be counted here.
+ *
+ * `blocks` is the sum of full and clipped demand blocks, because that is the quantity the cap governs.
+ */
+export interface PlexScanWindowObservation {
+  /** Where it came from, for a reader tracing a number back to a run. */
+  readonly source: 'diagnostic' | 'gate7' | 'gate8';
+  readonly label: string;
+  /** How many newly scanned remote entries the window covered. Per-entry figures divide by this. */
+  readonly entries: number;
+  /** Full demand blocks plus clipped ones: the block class, which is what `BLOCK` caps. */
+  readonly blocks: number;
+  readonly small: number;
+  readonly oversized: number;
+  readonly bodyless: number;
+}
+
+export const PLEX_INSTRUMENTED_SCAN_WINDOWS: readonly PlexScanWindowObservation[] = Object.freeze([
+  // The opt-in geometry diagnostic: two objects of the same codec and settings, 2.35x apart in length, each
+  // alone in its own counter window. Three quiet repetitions, then one under deliberate 30-worker CPU load.
+  { source: 'diagnostic', label: 'quiet run 1, 105 MB', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'diagnostic', label: 'quiet run 1, 44.9 MB', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'diagnostic', label: 'quiet run 2, 105 MB', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'diagnostic', label: 'quiet run 2, 44.9 MB', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'diagnostic', label: 'quiet run 3, 105 MB', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'diagnostic', label: 'quiet run 3, 44.9 MB', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'diagnostic', label: 'CPU load, 105 MB', entries: 1, blocks: 5, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'diagnostic', label: 'CPU load, 44.9 MB', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  // gate7, the first FULL gate with the counters running. PX9b is the window that retired `other = 0`: its
+  // thirteen block-class responses were all clipped, and it is the only window here that reads around
+  // already-cached data.
+  { source: 'gate7', label: 'PX9, cold 14.0 MB anchor', entries: 1, blocks: 4, small: 1, oversized: 0, bodyless: 0 },
+  { source: 'gate7', label: 'PX9c, cold 105 MB object', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'gate7', label: 'PX9b, warm 40-entry corpus', entries: 40, blocks: 13, small: 41, oversized: 0, bodyless: 0 },
+  { source: 'gate7', label: 'PX12b, restart re-scan', entries: 41, blocks: 0, small: 0, oversized: 0, bodyless: 0 },
+  { source: 'gate7', label: 'PX14, warm re-scan', entries: 1, blocks: 0, small: 0, oversized: 0, bodyless: 0 },
+  // gate8, the first full gate with the four-way split running. PX9 and PX9c reproduced gate7 exactly. PX9b
+  // did NOT: sixteen clipped blocks where gate7 had thirteen, on identical fixtures. The block count in that
+  // window is not stable run to run, and its byte cost moves with it.
+  { source: 'gate8', label: 'PX9, cold 14.0 MB anchor', entries: 1, blocks: 4, small: 1, oversized: 0, bodyless: 0 },
+  { source: 'gate8', label: 'PX9c, cold 105 MB object', entries: 1, blocks: 4, small: 3, oversized: 0, bodyless: 0 },
+  { source: 'gate8', label: 'PX9b, warm 40-entry corpus', entries: 40, blocks: 16, small: 41, oversized: 0, bodyless: 0 },
+  { source: 'gate8', label: 'PX12b, restart re-scan', entries: 41, blocks: 0, small: 0, oversized: 0, bodyless: 0 },
+  { source: 'gate8', label: 'PX14, warm re-scan', entries: 1, blocks: 0, small: 0, oversized: 0, bodyless: 0 },
+] as const);
+
+/**
+ * THE PER-OBJECT BYTE CEILING, WHICH IS NOW ASSERTED PER OBJECT RATHER THAN SUMMED.
+ *
+ * The ceiling is `BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size)`, and what changed with gate8 is both the
+ * expression and WHERE it is applied. Summed, the old one let an object spend another's allowance: gate8's
+ * corpus window exceeded it by 47,065 bytes and nothing could say which of forty objects did it. Applied per
+ * object against `objectBytes`, each entry answers for itself and the answer names it.
+ */
+/**
+ * WHAT A CORPUS SCAN ACTUALLY READ, AS A MULTIPLE OF THE LIBRARY'S REMOTE BYTES.
+ *
+ * THIS EXISTS BECAUSE A CLAIM MADE FROM ONE OBSERVATION WAS CONTRADICTED BY THE SECOND. The byte clamp's
+ * justification read "two times the object is what the measurements support: the corpus scan read 1.66x its
+ * total remote bytes". One measurement. gate8 ran the same window on the same fixtures and read
+ * **2.001951x** — above the clamp, which is why `PX9b-corpus-scan-provider-bytes` failed at 48,269,773
+ * against 48,222,708, by 47,065 bytes or 0.098%.
+ *
+ * So the sentence was false as written, and it is retracted rather than repaired: two observations that
+ * straddle a constant do not support that constant, they bracket it.
+ *
+ * THE VARIANCE IS IN THE CLIPPED BLOCKS AND NOWHERE ELSE. Both runs served 41 probe-window reads for exactly
+ * 4,681,400 bytes and zero full demand blocks. gate7 served 13 clipped blocks, gate8 served 16, on identical
+ * fixtures at an identical average of 2,724,273 bytes each. Three extra gap-fill reads is the whole
+ * difference: +8,172,820 bytes.
+ *
+ * THE MULTIPLIER IS GONE RATHER THAN RAISED. Moving it to 2.01 or 2.1 would clear this run and nothing else
+ * — the exact move this gate has already rejected twice, once as a 3.0 multiplier and once as a patched
+ * request ceiling. It was replaced by the per-object maximum the class caps already permit, asserted per
+ * object against endpoint-reported attribution: a change of instrument, not of constant.
+ */
+export const PLEX_CORPUS_SCAN_RATIOS: readonly { readonly run: string; readonly ratio: number }[] =
+  Object.freeze([
+    { run: 'gate7', ratio: 40_096_953 / 24_111_354 },
+    { run: 'gate8', ratio: 48_269_773 / 24_111_354 },
+  ]);
+
+/** The highest corpus read ratio on record: 2.001951x, which is what retired the two-times clamp. */
+export function plexHighestCorpusScanRatio(): number {
+  return PLEX_CORPUS_SCAN_RATIOS.reduce((highest, r) => Math.max(highest, r.ratio), 0);
+}
+
+/** The highest per-entry value of one class across every instrumented window. Rounded UP, never down. */
+export function plexHighestMeasuredPerEntry(field: 'blocks' | 'small' | 'oversized' | 'bodyless'): number {
+  return PLEX_INSTRUMENTED_SCAN_WINDOWS.reduce(
+    (highest, window) => Math.max(highest, window[field] / Math.max(1, window.entries)), 0,
   );
+}
+
+/** How many instrumented windows are on record, and how many of them came from each source. */
+export function plexInstrumentedWindowCounts(): { total: number; diagnostic: number; gate: number } {
+  const diagnostic = PLEX_INSTRUMENTED_SCAN_WINDOWS.filter((w) => w.source === 'diagnostic').length;
+  return {
+    total: PLEX_INSTRUMENTED_SCAN_WINDOWS.length,
+    diagnostic,
+    gate: PLEX_INSTRUMENTED_SCAN_WINDOWS.length - diagnostic,
+  };
+}
+
+/**
+ * The one figure that is NOT measured, kept beside the measurements so the distinction cannot be lost.
+ *
+ * gate6 ran before the class counters existed and produced 10 ranged requests over 32,505,856 bytes with no
+ * breakdown. That total is COMPATIBLE with 7 block-class responses plus 3 probe windows, but it does not
+ * measure them: 6 blocks plus four 1,835,008-byte responses is also 10 requests and the same byte total.
+ */
+export const PLEX_GATE6_COMPATIBLE_BLOCKS = Object.freeze({
+  BLOCKS: 7,
+  REQUESTS: 10,
+  BYTES: 32_505_856,
+  MEASURED: false,
+} as const);
+
+/**
+ * WHAT ONE PLEX SCAN OF ONE NEW REMOTE ENTRY MAY COST, AS A CAP PER RESPONSE CLASS.
+ *
+ * WHY PER CLASS AND NOT AS ONE TOTAL. A single ceiling of eleven requests can be spent as eleven 4 MiB
+ * demand blocks — 44 MiB — which is not what any observation looks like and is not what the budget means to
+ * permit. Capping each class separately means the expensive class has its own limit and the cheap one cannot
+ * lend it headroom.
+ *
+ * WHY THE EXPENSIVE CLASS IS "BLOCK" AND NOT "CHUNK", WHICH A REAL GATE RUN TAUGHT. The endpoint separates a
+ * FULL demand block from a PARTIAL one — a block clipped by the end of the object, or by the gap between two
+ * already-cached probe windows, which `readpath.demandBlock` produces by design. Both are one block-sized
+ * FETCH, so both spend from the same cap. Capping them separately would either refuse the partial case
+ * outright, which gate7 proved is legitimate, or give it a second allowance on top of the first.
+ *
+ * PROVENANCE OF EACH NUMBER, SEPARATED INTO WHAT WAS MEASURED AND WHAT IS ONLY COMPATIBLE WITH A MEASUREMENT,
+ * because these are the load-bearing constants and the distinction is exactly where a gate goes wrong.
+ *
+ * INSTRUMENTED — EVERY WINDOW IS IN `PLEX_INSTRUMENTED_SCAN_WINDOWS` ABOVE, AND THE COUNT AND MAXIMUM BELOW
+ * ARE COMPUTED FROM IT rather than written here. `partial` was not measured separately before gate7; the
+ * diagnostic windows recorded it inside a single undifferentiated bucket at zero. The table is a reading aid
+ * — the data is the array:
+ *
+ *   | window                             | object      | chunk | part | small | over | bodyless |
+ *   |------------------------------------|-------------|-------|------|-------|------|----------|
+ *   | diagnostic, quiet, three runs      | 105 MB      |   4   |   0  |   3   |   0  |    0     |
+ *   | diagnostic, quiet, three runs      | 44.9 MB     |   4   |   0  |   3   |   0  |    0     |
+ *   | diagnostic, 30-worker load, first  | 105 MB      |   5   |   0  |   3   |   0  |    0     |
+ *   | diagnostic, 30-worker load, second | 44.9 MB     |   4   |   0  |   3   |   0  |    0     |
+ *   | gate7 PX9, cold anchor             | 14.0 MB     |   4   |   0  |   1   |   0  |    0     |
+ *   | gate7 PX9c, cold large object      | 105 MB      |   4   |   0  |   3   |   0  |    0     |
+ *   | gate7 PX9b, WARM mixed corpus      | 40 entries  |   0   |  13  |  41   |   0  |    0     |
+ *   | gate7 PX12b / PX14, fully warm     | —           |   0   |   0  |   0   |   0  |    0     |
+ *
+ * NOT INSTRUMENTED — ONE HISTORICAL AGGREGATE:
+ *
+ *   gate6, the full gate, on the 105 MB object: **10 ranged requests, 32,505,856 bytes, no class breakdown.**
+ *   gate6 RAN BEFORE THESE COUNTERS EXISTED. Its total is COMPATIBLE with 7 chunk + 3 small
+ *   (7 x 4 MiB + 3 x 1 MiB = 32,505,856 exactly), but it does not measure that decomposition and no reading
+ *   of it can: 6 chunks plus four 1,835,008-byte responses is also 10 requests and the same 32,505,856 bytes.
+ *   Calling it "7 + 3 measured" would be inventing a measurement out of an arithmetic coincidence, which is
+ *   the same class of error as picking a multiplier that clears an observation. gate7 ran the same window
+ *   instrumented and measured 4 chunk + 3 small, so the inferred 7 is not the steady state either.
+ *
+ * `SMALL` IS A MEASURED MAXIMUM, NOT AN INVARIANT, AND CALLING IT ONE WAS WRONG. Three per entry is the
+ * HIGHEST figure recorded, in the eight diagnostic windows and in gate7's cold large object. It is not what
+ * every window measures: gate7's `PX9`, the cold 14.0 MB anchor, measured **one**, and the corpus window
+ * averaged 1.025 per entry. A probe plan whose windows are already partly cached costs fewer probe reads,
+ * which is the same mechanism that produces clipped blocks.
+ *
+ * So the cap is an upper bound on the probe plan, and the honest reading of a window below it is "part of
+ * the plan was already held", not "the plan changed". A window ABOVE three is what should be investigated.
+ *
+ * `OVERSIZED` AND `BODYLESS` ARE MEASURED AT ZERO in every one of the thirteen instrumented windows, and are
+ * asserted at exactly zero — the count is checked against `PLEX_INSTRUMENTED_SCAN_WINDOWS`, not restated.
+ * A body larger than a demand block can only be a coalesced read or a full-body answer to a ranged request,
+ * and a bodyless return is a refusal; neither has ever occurred in a healthy window.
+ *
+ * `BLOCK` IS AN EMPIRICAL WATCHDOG AND NOT A DERIVATION. It is LOAD- AND TIMING-SENSITIVE: the one window
+ * that moved, moved to 5 under deliberate CPU contention, while the second window of that same loaded run
+ * stayed at 4. That is one observation of movement, not a demonstrated relationship: asserting that the
+ * count rises with load would be inferring a cause from two loaded windows, and those two disagree with each
+ * other. Eight is the gate6-compatible worst case of 7 plus one block, chosen conservatively BECAUSE that
+ * upper end is inferred rather than measured. It is not a claim that eight is the maximum possible.
+ *
+ * WHAT gate7's THIRTEEN PARTIALS DID NOT DO: raise this cap. Thirteen block-class responses across FORTY
+ * entries is 0.33 per entry against an allowance of 8, so the measurement that broke the old `OTHER = 0`
+ * assertion sits nowhere near the block cap. Nothing here was widened to accommodate it; a bucket was split
+ * so that the harmless shape could be admitted without also admitting the harmful one.
+ *
+ * **A BREACH OF `BLOCK` IS A FINDING TO INVESTIGATE, NEVER AN AUTOMATIC BUMP.** Raising it requires a new
+ * measurement and explicit sign-off. This gate has already once answered a failing byte budget by choosing a
+ * multiplier that cleared the observation, and that patch was rightly rejected; the same move here would be
+ * the same mistake wearing a different constant.
+ */
+/**
+ * THE BLOCK CAP, AND THE ONE THING IT MUST NEVER BE: below what has actually been measured.
+ *
+ * Eight is a judgement — the gate6-COMPATIBLE 7, which is inferred and not measured, plus one block. What is
+ * NOT a judgement is that it must sit above every measured per-entry figure, and that comparison is made
+ * against `PLEX_INSTRUMENTED_SCAN_WINDOWS` rather than against a remembered number. If a future window
+ * measures more than this, the constant is wrong and a test says so at once instead of a gate failing after
+ * thirty minutes of Docker.
+ */
+const SCAN_CAP_BLOCK = 8;
+const SCAN_CAP_SMALL = 3;
+const SCAN_CAP_OVERSIZED = 0;
+const SCAN_CAP_BODYLESS = 0;
+
+export const PLEX_SCAN_ENVELOPE = Object.freeze({
+  /**
+   * Block-sized fetches per new remote entry: FULL demand blocks and CLIPPED ones together.
+   *
+   * THEY SHARE ONE CAP BECAUSE THEY ARE ONE COST. A block clipped by a cache gap or by EOF is still one
+   * round trip for up to a demand block, and it is cheaper in bytes than the full one, never dearer. Giving
+   * the partial class its own allowance would let an entry spend 8 full blocks AND 8 clipped ones.
+   */
+  BLOCK: SCAN_CAP_BLOCK,
+  /** Responses of one probe window or less. Three is the measured MAXIMUM per entry; PX9 measured one. */
+  SMALL: SCAN_CAP_SMALL,
+  /** Bodies LARGER than a demand block: coalesced reads, or a full body answering a ranged request. Never seen. */
+  OVERSIZED: SCAN_CAP_OVERSIZED,
+  /** Ranged requests that served no body. Never observed in a healthy window. */
+  BODYLESS: SCAN_CAP_BODYLESS,
+  /** The sum, computed rather than written, so it cannot drift when a cap changes. */
+  TOTAL: SCAN_CAP_BLOCK + SCAN_CAP_SMALL + SCAN_CAP_OVERSIZED + SCAN_CAP_BODYLESS,
+  /**
+   * The byte envelope per entry, COMPUTED FROM THE CAPS ABOVE.
+   *
+   * IT IS BUILT FROM THE SAME BINDINGS THE CAPS ARE, not from repeated literals. An earlier version wrote
+   * `8 * 4 MiB + 3 * 1 MiB` here and called itself derived, which it was not: changing the block cap to 9
+   * would have left this at the old value and the two halves of the envelope would have disagreed silently.
+   * The only way to change the byte figure now is to change a cap.
+   *
+   * SPLITTING THE MIDDLE BUCKET DID NOT MOVE IT, and that is the point of folding partials into the block
+   * cap: a partial block is bounded ABOVE by a full one, so admitting the class costs no bytes. This figure
+   * is the same 36,700,160 it was before gate7.
+   *
+   * A CORRECTION WORTH RECORDING: the review that specified this envelope named 35,651,584, and that figure
+   * came from me. It is one probe window short — 34 MiB where the caps permit 35. Computing it removes the
+   * class of error rather than this instance of it.
+   */
+  BYTES_PER_ENTRY: SCAN_CAP_BLOCK * PLEX_READ_GEOMETRY.CHUNK_BYTES
+    + SCAN_CAP_SMALL * PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES,
+  /**
+   * THERE IS NO SIZE MULTIPLIER ANY MORE, AND ITS ABSENCE IS THE POINT.
+   *
+   * WHAT WAS HERE. A size-multiplier constant of 2, clamping each object's allowance to twice its length, with
+   * the justification "two times the object is what the measurements support: the corpus scan read 1.66x".
+   * One observation. gate8 ran the same window on the same fixtures and read **2.001951x**, failing the
+   * ceiling by 47,065 bytes — so the justification was false by direct evidence, and two observations that
+   * straddle a constant bracket it rather than support it. See `PLEX_CORPUS_SCAN_RATIOS`.
+   *
+   * WHY IT WAS NOT SIMPLY RAISED. Moving it to 2.01 or 2.1 would clear that run and nothing else: a constant
+   * fitted to a measurement whose SUBJECT WAS UNKNOWN, because the window pooled forty objects and could not
+   * say which of them spent the bytes. This gate has rejected that move twice already, as a 3.0 multiplier
+   * and as a patched request ceiling.
+   *
+   * WHAT REPLACED IT, in `plexObjectByteCeiling`: the per-object maximum the CLASS CAPS ALREADY PERMIT —
+   * `BLOCK x min(CHUNK_BYTES, size) + SMALL x min(PROBE_WINDOW_BYTES, size)`. Nothing is fitted; it is the
+   * arithmetic of the caps asserted a few lines above, evaluated for one object. A 40 KB entry is held to
+   * 444,532 bytes and a 105 MB one to the full 36,700,160.
+   *
+   * IT IS LOOSER PER OBJECT THAN THE RETIRED CLAMP WAS, AND THAT IS ONLY SAFE BECAUSE ATTRIBUTION CAME WITH IT.
+   * The old clamp was tight but unattributable: it was summed, so one object could spend another's
+   * allowance and no verdict could name the culprit. The endpoint now reports bytes per object, so the
+   * ceiling is asserted per object — a tiny entry read eleven times over fails on its own, where before it
+   * could hide inside a forty-object total. Tighter arithmetic on an unattributable aggregate is worth less
+   * than exact arithmetic on an attributed one.
+   */
+} as const);
+
+/** The per-class request ceiling for a window covering `entries` newly scanned remote objects. */
+export function plexScanRequestCeilings(entries: number): {
+  block: number; small: number; oversized: number; bodyless: number; total: number;
+} {
+  const n = Math.max(0, entries);
+  return {
+    // FULL AND CLIPPED BLOCKS SHARE THIS ONE. The caller sums the two measured classes before comparing.
+    block: n * PLEX_SCAN_ENVELOPE.BLOCK,
+    small: n * PLEX_SCAN_ENVELOPE.SMALL,
+    // NOT SCALED BY ENTRIES. Zero times anything is zero, and writing it as a product would suggest a
+    // library large enough to earn one.
+    oversized: PLEX_SCAN_ENVELOPE.OVERSIZED,
+    bodyless: PLEX_SCAN_ENVELOPE.BODYLESS,
+    total: n * PLEX_SCAN_ENVELOPE.TOTAL,
+  };
 }
 
 /**
  * THE OBJECT THE FRACTION CLAIM IS ASSERTED AGAINST, and why it has to be this big.
  *
- * The ceiling `opens x min(blocks x chunk, size)` saturates at 24 MiB once the object reaches 12 MiB, and
- * below that it is simply twice the object — so on a small fixture the ceiling already permits a whole-object
- * read and CANNOT ITSELF establish a sub-one fraction. (It also cannot rule one out: a ceiling is not a lower
- * bound.) At 96 MiB the saturated 24 MiB is 0.25 of the object, so an actual-byte measurement there has real
- * margin, and that is where the product's claim — that identifying an object does not require downloading it
- * — is tested. The size is not a round number picked for comfort: it is the smallest multiple of the
- * saturated ceiling at which a sub-0.5 fraction sits clear of the boundary.
+ * The per-object ceiling is `BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size)`. For an object below one demand block
+ * that permits a whole-object read many times over, so at those sizes the ceiling CANNOT ITSELF establish a
+ * sub-one fraction. (It also cannot rule one out: a ceiling is not a lower bound.)
+ * AT AND ABOVE ONE DEMAND BLOCK the ceiling SATURATES at the full envelope, and from there it becomes a
+ * smaller and smaller share of the object as the object grows — which is the only regime in which an actual-byte measurement says anything
+ * about the product's claim that identifying an object does not require downloading it.
+ *
+ * SO THE MINIMUM SIZE IS COMPUTED, NOT CHOSEN. `BYTES_PER_ENTRY / MAX_SCAN_BYTE_FRACTION` = 73,400,320 is the
+ * exact point at which the envelope stops being looser than the headline fraction; a fixture at that size
+ * would make the two assertions identical and leave no room to tell them apart. Requiring the envelope to be
+ * at most `LARGE_FIXTURE_MARGIN_OF_FRACTION` of the headline — three quarters of it — puts the minimum at
+ * 94 MiB, and the 105.4 MB fixture the gate builds sits above it at 0.348. Both inputs are bindings, so the
+ * minimum moves if a cap moves or if the shared fraction moves.
+ *
+ * THE PREVIOUS 96 MiB WAS FOUR TIMES THE RETIRED 24 MiB SATURATION POINT and derived from nothing once that
+ * model was retired. This figure moves whenever a cap moves, which is the property that was missing.
+ *
+ * A CONSEQUENCE WORTH STATING PLAINLY, BECAUSE IT IS EASY TO MISREAD THE OTHER WAY. At these sizes the
+ * envelope is TIGHTER than the 0.5 fraction, so the fraction assertion does not mathematically bind — any run
+ * inside the byte ceiling is already inside 0.5. The fraction is kept as the explicit headline anyway,
+ * because it is the product's claim in the product's own terms and it is the SHARED constant; but the
+ * envelope is what would actually catch a regression first, and saying otherwise would overstate the gate.
  */
+/**
+ * The margin between the envelope and the headline fraction at the minimum fixture size.
+ *
+ * THREE QUARTERS, AND IT IS A RATIO OF THE SHARED CONSTANT RATHER THAN A COPY OF ITS VALUE. Writing 0.375
+ * here would be the same defect the envelope's byte figure had: a number that reads as derived but does not
+ * move when its input does. If `MAX_SCAN_BYTE_FRACTION` ever changed, a literal would silently keep sizing
+ * the fixture against the old claim.
+ */
+const LARGE_FIXTURE_MARGIN_OF_FRACTION = 0.75;
+
+/**
+ * The smallest object on which the envelope and the fraction are distinguishable with margin.
+ *
+ * Exported as a FUNCTION OF ITS TWO INPUTS so a test can show the answer moves when either moves, rather
+ * than only that it matches today's literal. `envelope / fraction` is the point at which the two bounds
+ * coincide; dividing by the margin instead puts the minimum above it, and the whole-MiB rounding is only so
+ * the shell's fixture check can carry an integer.
+ */
+export function plexLargeFixtureMinBytes(envelopeBytes: number, fraction: number): number {
+  const share = fraction * LARGE_FIXTURE_MARGIN_OF_FRACTION;
+  return Math.ceil(envelopeBytes / share / (1024 * 1024)) * 1024 * 1024;
+}
+
 export const PLEX_LARGE_FIXTURE = Object.freeze({
-  /** 96 MiB: four times the 24 MiB the per-object budget saturates at, so the expected fraction is ~0.25. */
-  MIN_BYTES: 96 * 1024 * 1024,
+  /**
+   * 94 MiB today — computed, and strictly above the 73,400,320-byte point where envelope and fraction meet.
+   */
+  MIN_BYTES: plexLargeFixtureMinBytes(
+    PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION,
+  ),
   /**
    * The fraction of ITS OWN LENGTH a scan of the large object may read.
    *

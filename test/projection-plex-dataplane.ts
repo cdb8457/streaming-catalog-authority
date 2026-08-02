@@ -14,8 +14,11 @@ import {
 import {
   PLEX_ACCEPT_JSON, PLEX_CLIENT, PLEX_ENCODER_FLOORS, PLEX_HAS_NO_CLIENT_WRITABLE_PLAY_METHOD, PLEX_LIBRARY,
   PLEX_AIR_GAPPED_TESTED_PATHS, PLEX_LARGE_FIXTURE, PLEX_READ_GEOMETRY,
-  PLEX_REJECTS_UNRECOGNISED_HOST_HEADER, PLEX_SEEK_IS_AN_OFFSET_RESTART,
-  PLEX_SEGMENT_CONTAINER, PLEX_SERVER_PREFS, plexScanByteCeiling, plexSeekByteCeiling,
+  PLEX_REJECTS_UNRECOGNISED_HOST_HEADER, PLEX_SCAN_ENVELOPE, PLEX_SEEK_IS_AN_OFFSET_RESTART,
+  PLEX_SEGMENT_CONTAINER, PLEX_SERVER_PREFS, PLEX_GATE6_COMPATIBLE_BLOCKS,
+  PLEX_INSTRUMENTED_SCAN_WINDOWS, plexHighestCorpusScanRatio, plexHighestMeasuredPerEntry,
+  plexInstrumentedWindowCounts, plexObjectByteCeiling,
+  plexLargeFixtureMinBytes, plexScanByteCeiling, plexScanRequestCeilings, plexSeekByteCeiling,
   PLEX_UNCLAIMED_LOCAL_API_REQUIRES_PLEX_TV_REACHABILITY,
   PlexScanBarrier, analysePlexEncoderLiveness, parsePlexVariantPlaylist, plexActivityIsLibraryWork,
   plexClientQuery, plexCreateSectionPath, plexDirectPlayPath, plexHasQueryCredential, plexIsStartingUp,
@@ -92,6 +95,28 @@ console.log('Projection Phase 1 — Plex data plane (offline)');
 
 // Read once, up here, because several sections below assert against the gate script.
 const GATE = read('deploy/projection-plex-dataplane-gate.sh');
+
+// EVERY FILE THAT DESCRIBES THE SCAN BUDGET, listed once so a regression ban cannot be satisfied by moving a
+// stale claim into a file the ban did not name. The scan model has now been restated four times, and each
+// sweep left a copy somewhere the previous test was not looking.
+// A BAN THAT SCANS THIS SUITE TOO HAS TO SKIP THE LINES THAT DECLARE IT, or every ban trips on its own
+// regex. Only the assertion lines are dropped — comments are kept, because a stale claim parked in a test
+// comment is exactly how one of these survived two sweeps.
+const withoutBanDeclarations = (text: string): string => text.split('\n')
+  .filter((line) => !line.includes('assert(!/') && !line.includes('.test(text)')
+    && !line.includes('${source} does not')
+    // The retired-formula scan declares its patterns and its human labels as data; both necessarily quote
+    // the phrases being banned, and a ban that trips on its own table is a ban nobody keeps.
+    && !line.includes('pattern: /') && !line.includes('what: \''))
+  .join('\n');
+
+const SCAN_MODEL_SOURCES = Object.freeze([
+  'src/core/projection/plex-dataplane.ts',
+  'src/ops/projection-plex-dataplane-cli.ts',
+  'deploy/projection-plex-dataplane-gate.sh',
+  'docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md',
+  'docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md',
+]);
 
 // ---------------------------------------------------------------------------------------------------------
 // The variant playlist, and the server's own arithmetic
@@ -1446,6 +1471,670 @@ await test('redaction-check reads the NDJSON the gate actually writes, not whate
   assert(/redaction-safe/.test(ok.stdout), 'and it says so');
 });
 
+// ---------------------------------------------------------------------------------------------------------
+// EXECUTION-LEVEL COVERAGE OF THE BUDGET PHASE. Everything above reads the source; these RUN it, because the
+// defect they close was invisible to source reading: the code contained a correct byte assertion, and the
+// gate's own call site simply never reached it.
+// ---------------------------------------------------------------------------------------------------------
+
+/** Runs `budget` with a real counter pair and returns the recorded NDJSON verdicts. */
+function runBudget(argv: readonly string[], before: Record<string, unknown>, after: Record<string, unknown>):
+{ status: number; stderr: string; results: Array<{ gate: string; verdict: string; measured?: number; budget?: number }> } {
+  const dir = mkdtempSync(join(tmpdir(), 'plex-budget-'));
+  const beforePath = join(dir, 'before.json');
+  const afterPath = join(dir, 'after.json');
+  const resultsPath = join(dir, 'results.json');
+  writeFileSync(beforePath, JSON.stringify(before));
+  writeFileSync(afterPath, JSON.stringify(after));
+  const run = runCli(['budget', '--before', beforePath, '--after', afterPath,
+    '--results', resultsPath, ...argv]);
+  const results = existsSync(resultsPath)
+    ? readFileSync(resultsPath, 'utf8').split('\n').filter((line) => line.trim() !== '')
+      .map((line) => JSON.parse(line) as { gate: string; verdict: string; measured?: number; budget?: number })
+    : [];
+  return { status: run.status, stderr: run.stderr, results };
+}
+
+const QUIET_COUNTERS = Object.freeze({
+  bytesServed: 1_000_000, rangeRequests: 40, resolutions: 5,
+  chunkResponses: 8, smallResponses: 12, partialResponses: 3, oversizedResponses: 0,
+  chunkBytes: 0, smallBytes: 0, partialBytes: 0, oversizedBytes: 0, bodylessResponses: 0,
+  // The partition side. 8 + 12 + 3 + 0 + 0 = 23, so the baseline is internally consistent and a fixture
+  // that moves a class without moving this one fails the partition rather than the assertion under test.
+  accountedResponses: 23,
+});
+
+await test('PX14\'s EXACT argument shape asserts zero bytes - the assertion that was never running', () => {
+  // THE BLOCKER THIS CLOSES, AND IT IS THE WORST KIND OF DEFECT THIS REPOSITORY EXISTS TO CATCH. The byte
+  // assertion lived inside `if (sizes.length > 0)`. PX14 - the warm re-scan, the strongest amplification
+  // claim the gate makes - passes `--entries 1 --windows 0` and NO `--object-sizes`, because it asserts the
+  // provider was not touched and has no reason to name a size. So the block was skipped and NO byte
+  // assertion ran at all, while the code comment, both documents and an offline test said `--windows 0`
+  // forced bytes to zero. A check that cannot fail, described as the strongest claim in the gate.
+  //
+  // These use the EXACT flags of the gate's own PX14 call site, so the two cannot drift apart.
+  const px14 = ['--gate', 'PX14-rescan', '--entries', '1', '--windows', '0'];
+  assert(GATE.includes('--gate PX14-rescan --entries 1 --windows 0'),
+    'the gate really does call it with these flags and no --object-sizes');
+
+  // A TRULY WARM WINDOW PASSES: nothing moved.
+  const warm = runBudget(px14, QUIET_COUNTERS, { ...QUIET_COUNTERS });
+  assertEq(warm.status, 0, `an untouched window is accepted: ${warm.stderr}`);
+  const warmBytes = warm.results.find((result) => result.gate === 'PX14-rescan-provider-bytes');
+  assert(warmBytes !== undefined,
+    'and the byte assertion RAN - its absence is the entire defect, so its presence is asserted first');
+  assertEq(warmBytes?.verdict, 'pass', 'with a passing verdict');
+
+  // AND ONE THAT TOUCHED THE PROVIDER FAILS. A single 4 KiB read is enough.
+  const touched = runBudget(px14, QUIET_COUNTERS,
+    { ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 4096 });
+  const failed = touched.results.find((result) => result.gate === 'PX14-rescan-provider-bytes');
+  assertEq(failed?.verdict, 'fail', 'a warm re-scan that served 4 KiB is a failure, not a silent pass');
+  assertEq(failed?.measured, 4096, 'and the report carries what it actually measured');
+
+  // A LARGE READ FAILS TOO, and so does a NEGATIVE delta - counters reset underneath the window is not
+  // "within budget", which is why this is an equality and not a ceiling of zero.
+  const wholeObject = runBudget(px14, QUIET_COUNTERS,
+    { ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 105_406_871 });
+  assertEq(wholeObject.results.find((r) => r.gate === 'PX14-rescan-provider-bytes')?.verdict, 'fail',
+    'a re-scan that re-downloaded the object fails');
+  const reset = runBudget(px14, QUIET_COUNTERS, { ...QUIET_COUNTERS, bytesServed: 0 });
+  assertEq(reset.results.find((r) => r.gate === 'PX14-rescan-provider-bytes')?.verdict, 'fail',
+    'and a negative delta fails rather than passing as "under budget"');
+
+  // The no-floor record is emitted in the size-free form too, so the report is complete rather than silent.
+  assert(warm.results.some((r) => r.gate === 'PX14-rescan-provider-bytes-floor-not-applicable'),
+    'and the window records WHY it carries no floor, instead of omitting the subject');
+});
+
+await test('EXECUTION: a clipped block spends the block cap, and an oversized body is refused outright', () => {
+  // THE REGRESSION FOR gate7's ONLY FAILURE, DRIVEN THROUGH THE REAL PHASE. Its corpus window measured
+  // 0 full blocks and 13 clipped ones against a budget asserting the middle class could not exist. These
+  // cases replay that shape and the two shapes either side of it.
+  const base = ['--gate', 'PXcls', '--entries', '1', '--object-sizes', '100000000'];
+  const before = { ...QUIET_COUNTERS };
+  const baseline = QUIET_COUNTERS as Record<string, number>;
+  const after = (over: Record<string, number>): Record<string, number> =>
+    ({ ...QUIET_COUNTERS, ...Object.fromEntries(
+      Object.entries(over).map(([k, v]) => [k, (baseline[k] ?? 0) + v])) });
+
+  // gate7's ACTUAL SHAPE, scaled to one entry: clipped blocks, no full ones. It must pass now.
+  const clipped = runBudget(base, before, after({
+    partialResponses: 5, partialBytes: 5 * 2_724_273, rangeRequests: 5, bytesServed: 5 * 2_724_273,
+  }));
+  assertEq(clipped.status, 0, `clipped blocks are legitimate: ${clipped.stderr}`);
+  assertEq(clipped.results.find((r) => r.gate === 'PXcls-block-responses')?.verdict, 'pass',
+    'five clipped blocks are inside the block cap of eight');
+  assertEq(clipped.results.find((r) => r.gate === 'PXcls-oversized-responses')?.verdict, 'pass',
+    'and none of them is oversized');
+
+  // FULL AND CLIPPED SHARE ONE ALLOWANCE. Four of each is eight, which fits; one more of either does not.
+  const atTheCap = runBudget(base, before, after({
+    chunkResponses: 4, chunkBytes: 4 * 4 * 1024 * 1024, partialResponses: 4, partialBytes: 4 * 2_000_000,
+    rangeRequests: 8, bytesServed: 4 * 4 * 1024 * 1024 + 4 * 2_000_000,
+  }));
+  assertEq(atTheCap.results.find((r) => r.gate === 'PXcls-block-responses')?.verdict, 'pass',
+    '4 full + 4 clipped = 8 is exactly the cap');
+  assertEq(atTheCap.results.find((r) => r.gate === 'PXcls-block-responses')?.measured, 8,
+    'and the measurement is their SUM, which is what stops the two being additive allowances');
+  const overTheCap = runBudget(base, before, after({
+    chunkResponses: 5, chunkBytes: 5 * 4 * 1024 * 1024, partialResponses: 4, partialBytes: 4 * 2_000_000,
+    rangeRequests: 9, bytesServed: 5 * 4 * 1024 * 1024 + 4 * 2_000_000,
+  }));
+  assertEq(overTheCap.results.find((r) => r.gate === 'PXcls-block-responses')?.verdict, 'fail',
+    'nine block-sized fetches for one entry is a breach, whichever kind they are');
+
+  // AN OVERSIZED BODY IS REFUSED AT ONE. This is the case the split exists to keep refusing: before it, a
+  // whole-object answer to a ranged request sat in the same bucket as a harmless clipped block.
+  const oversized = runBudget(base, before, after({
+    oversizedResponses: 1, oversizedBytes: 40_000_000, rangeRequests: 1, bytesServed: 40_000_000,
+  }));
+  assertEq(oversized.results.find((r) => r.gate === 'PXcls-oversized-responses')?.verdict, 'fail',
+    'a single body larger than a demand block fails');
+  assertEq(oversized.results.find((r) => r.gate === 'PXcls-oversized-responses')?.measured, 1,
+    'and it is reported as the count it was');
+});
+
+await test('EXECUTION: per-object verdicts use ENDPOINT-reported sizes, not the caller ordering', () => {
+  // THE DEFECT THIS CLOSES, AND MY FIRST DRAFT HAD IT. `--object-sizes` is in the GATE's order; the
+  // attribution array is in the endpoint's REGISTRATION order. Pairing them by position judges each object
+  // against some other object's length and reports confident per-object verdicts about the wrong objects.
+  // A mutation swapping one for the other passed every other test in this suite, which is why this exists.
+  //
+  // The two orderings are deliberately REVERSED here, and the sizes are far enough apart that judging by the
+  // wrong one flips the answer.
+  const endpointSizes = [40_000, 10_000_000];
+  const served = [400_000, 1_000_000];
+  const before = { ...QUIET_COUNTERS, objectBytes: [0, 0], objectSizes: endpointSizes };
+  const after = {
+    ...QUIET_COUNTERS,
+    bytesServed: QUIET_COUNTERS.bytesServed + served[0]! + served[1]!,
+    objectBytes: served,
+    objectSizes: endpointSizes,
+  };
+
+  // Correct pairing: 400,000 against a 40,000-byte object's ceiling of 440,000 passes, and 1,000,000
+  // against a 10,000,000-byte object's ceiling of 36,700,160 passes. Reversed, the second is judged against
+  // 440,000 and fails.
+  assertEq(plexObjectByteCeiling(endpointSizes[0]!), 440_000, 'the small object own ceiling');
+  assert(served[1]! > plexObjectByteCeiling(endpointSizes[0]!),
+    'and the large object traffic exceeds it, so a mispairing cannot pass unnoticed');
+
+  const run = runBudget(['--gate', 'PXpair', '--entries', '2',
+    '--object-sizes', `${endpointSizes[1]},${endpointSizes[0]}`], before, after);
+  assertEq(run.status, 0, `the window is legitimate and must pass: ${run.stderr}`);
+  assertEq(run.results.find((r) => r.gate === 'PXpair-provider-bytes-per-object')?.verdict, 'pass',
+    'no object breached its OWN ceiling, however the caller happened to order its size list');
+  assert(!run.results.some((r) => r.gate.startsWith('PXpair-provider-bytes-object-')),
+    'and no per-object breach was recorded, which is what a mispairing would have produced');
+  assertEq(run.results.find((r) => r.gate === 'PXpair-provider-bytes-attributed')?.verdict, 'pass',
+    'while the attribution partition still balances');
+});
+
+await test('EXECUTION: a per-object breach FAILS and names the object that caused it', () => {
+  // THE WHOLE POINT OF ATTRIBUTION, AND IT WAS ONLY COVERED IN THE PASSING DIRECTION. gate8's failure could
+  // not say which of forty objects spent the bytes. If a breach does not now name its object, nothing has
+  // actually changed except the arithmetic.
+  const endpointSizes = [40_000, 10_000_000];
+  const before = { ...QUIET_COUNTERS, objectBytes: [0, 0], objectSizes: endpointSizes };
+
+  // The SMALL object is the one that runs away: 5,000,000 bytes for a 40,000-byte object, 125x its length.
+  // Its own ceiling is 440,000. The aggregate would never notice — 5,000,000 sits far inside the sum of the
+  // two ceilings (37,140,160) — which is exactly the confusion this replaces.
+  const served = [5_000_000, 1_000_000];
+  const after = {
+    ...QUIET_COUNTERS,
+    bytesServed: QUIET_COUNTERS.bytesServed + served[0]! + served[1]!,
+    objectBytes: served, objectSizes: endpointSizes,
+  };
+  const run = runBudget(['--gate', 'PXrun', '--entries', '2',
+    '--object-sizes', `${endpointSizes[0]},${endpointSizes[1]}`], before, after);
+
+  const named = run.results.find((r) => r.gate === 'PXrun-provider-bytes-object-0');
+  assert(named !== undefined, 'the breaching object gets a verdict of its own, identified by its ordinal');
+  assertEq(named?.verdict, 'fail', 'and that verdict is a failure');
+  assertEq(named?.measured, 5_000_000, 'reporting what it actually served');
+  assertEq(run.results.find((r) => r.gate === 'PXrun-provider-bytes-per-object')?.verdict, 'fail',
+    'and the per-object roll-up fails with it');
+  assert(!run.results.some((r) => r.gate === 'PXrun-provider-bytes-object-1'),
+    'while the object that behaved gets no breach verdict at all');
+
+  // THE AGGREGATE CANNOT SEE IT, WHICH IS THE EVIDENCE THAT PER-OBJECT IS DOING THE WORK.
+  assertEq(run.results.find((r) => r.gate === 'PXrun-provider-bytes')?.verdict, 'pass',
+    'the aggregate ceiling passes this window, so the runaway is caught only by attribution');
+});
+
+await test('EXECUTION: unattributed bytes fail the attribution partition', () => {
+  // IF THE PER-OBJECT TOTALS DO NOT ADD UP TO THE WINDOW, THE PER-OBJECT VERDICTS ARE JUDGING AN INCOMPLETE
+  // PICTURE. A body served for an object the endpoint never registered would otherwise vanish: every named
+  // object inside its ceiling, the aggregate inside its sum, and bytes on the wire nobody accounted for.
+  const endpointSizes = [10_000_000];
+  const before = { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: endpointSizes };
+  const after = {
+    ...QUIET_COUNTERS,
+    // A million bytes attributed, but two million served.
+    bytesServed: QUIET_COUNTERS.bytesServed + 2_000_000,
+    objectBytes: [1_000_000], objectSizes: endpointSizes,
+  };
+  const run = runBudget(['--gate', 'PXattr', '--entries', '1', '--object-sizes', '10000000'], before, after);
+
+  const partition = run.results.find((r) => r.gate === 'PXattr-provider-bytes-attributed');
+  assertEq(partition?.verdict, 'fail', 'the shortfall is a failure, not a rounding note');
+  assertEq(partition?.measured, 1_000_000, 'reporting what was attributed...');
+  assertEq(partition?.budget, 2_000_000, '...against what was served');
+  // And the object that WAS attributed still passes on its own terms, which is why the partition has to be
+  // a separate assertion rather than something inferred from the per-object verdicts.
+  assertEq(run.results.find((r) => r.gate === 'PXattr-provider-bytes-per-object')?.verdict, 'pass',
+    'every named object is inside its own ceiling, so nothing else in the phase would have noticed');
+});
+
+await test('EXECUTION: a zero window stays at zero WITH attribution present', () => {
+  // THE ZERO-WINDOW PATH RUNS BEFORE THE PER-OBJECT BRANCH, so adding attribution could have quietly moved
+  // the warm re-scan onto a path that no longer asserts anything. PX14 is the strongest amplification claim
+  // in the gate and has already been silently unasserted once; it does not get to happen twice.
+  const px14 = ['--gate', 'PX14-rescan', '--entries', '1', '--windows', '0'];
+  const sizes = [10_000_000, 40_000];
+  const warm = runBudget(px14,
+    { ...QUIET_COUNTERS, objectBytes: [0, 0], objectSizes: sizes },
+    { ...QUIET_COUNTERS, objectBytes: [0, 0], objectSizes: sizes });
+  assertEq(warm.status, 0, `an untouched window still passes with attribution present: ${warm.stderr}`);
+  assertEq(warm.results.find((r) => r.gate === 'PX14-rescan-provider-bytes')?.verdict, 'pass',
+    'and the exact-zero byte assertion still runs');
+
+  // ONE BYTE ATTRIBUTED TO ONE OBJECT IS STILL A FAILURE. The zero window asserts the provider was not
+  // touched; attribution must not become a way to spend bytes it does not look at.
+  const touched = runBudget(px14,
+    { ...QUIET_COUNTERS, objectBytes: [0, 0], objectSizes: sizes },
+    {
+      ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 1,
+      objectBytes: [1, 0], objectSizes: sizes,
+    });
+  assertEq(touched.results.find((r) => r.gate === 'PX14-rescan-provider-bytes')?.verdict, 'fail',
+    'one attributed byte in a zero window fails');
+  // The zero window emits no per-object verdicts, because it has already asserted the stronger thing.
+  assert(!touched.results.some((r) => r.gate.startsWith('PX14-rescan-provider-bytes-object-')),
+    'and it does not also emit per-object verdicts, which would be a weaker claim beneath a stronger one');
+  assert(touched.results.some((r) => r.gate === 'PX14-rescan-provider-bytes-floor-not-applicable'),
+    'while still recording why it carries no floor');
+});
+
+await test('EXECUTION: a window WITHOUT attribution fails closed rather than falling back quietly', () => {
+  // THE DEFECT THIS CLOSES, AND IT IS THE ONE THIS GATE KEEPS MAKING. The per-object ceiling is what binds a
+  // scan window. If the endpoint reports no attribution, the phase used to skip those verdicts and assert
+  // only the aggregate — a window whose headline assertion silently did not run, reported as a pass. PX14
+  // taught exactly this lesson once already; it does not get to be relearned.
+  const base = ['--gate', 'PXclosed', '--entries', '1', '--object-sizes', '10000000'];
+  const noAttribution = runBudget(base, QUIET_COUNTERS, { ...QUIET_COUNTERS });
+  const verdict = noAttribution.results.find((r) => r.gate === 'PXclosed-provider-bytes-per-object');
+  assert(verdict !== undefined, 'the per-object gate is still recorded when attribution is missing...');
+  assertEq(verdict?.verdict, 'fail', '...and it FAILS, because the window is unbudgeted rather than cheap');
+
+  // MISMATCHED LENGTHS ARE THE SAME KIND OF BROKEN, because nothing can be paired with its own size.
+  const mismatched = runBudget(base,
+    { ...QUIET_COUNTERS, objectBytes: [0, 0], objectSizes: [10_000_000, 40_000] },
+    { ...QUIET_COUNTERS, objectBytes: [1_000, 2_000], objectSizes: [10_000_000] });
+  assertEq(mismatched.results.find((r) => r.gate === 'PXclosed-provider-bytes-per-object')?.verdict, 'fail',
+    'two arrays of different lengths cannot pair an object with its length, so the window fails');
+
+  // AND A SHRINKING ARRAY MEANS THE ENDPOINT RESTARTED UNDER THE WINDOW.
+  const shrunk = runBudget(base,
+    { ...QUIET_COUNTERS, objectBytes: [0, 0], objectSizes: [10_000_000, 40_000] },
+    { ...QUIET_COUNTERS, objectBytes: [1_000], objectSizes: [10_000_000] });
+  // This one pairs cleanly, so it is caught by the continuity gate rather than the pairing gate: the arrays
+  // are self-consistent, but the endpoint knew fewer objects at the end than at the start.
+  assertEq(shrunk.results.find((r) => r.gate === 'PXclosed-provider-bytes-attribution-continuous')?.verdict,
+    'fail', 'an endpoint that knows fewer objects than it did at the start of the window fails it');
+});
+
+await test('EXECUTION: a malformed counter array is fatal, never silently zero', () => {
+  // JSON FROM A PROCESS OVER HTTP IS NOT A number[] BECAUSE A CAST SAYS SO. A string, a null or a fraction
+  // reaching the arithmetic gives NaN, every `>` comparison against NaN is false, and every per-object
+  // verdict PASSES while meaning nothing. That is worse than a crash, so it is a crash.
+  const base = ['--gate', 'PXbad', '--entries', '1', '--object-sizes', '10000000'];
+  const sizes = [10_000_000];
+  for (const [broken, why] of [
+    [['1000'], 'a string element'],
+    [[null], 'a null element'],
+    [[1000.5], 'a fractional byte count'],
+    [[-5], 'a negative total'],
+    [[Number.NaN], 'a NaN'],
+  ] as Array<[unknown[], string]>) {
+    const run = runBudget(base,
+      { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: sizes },
+      { ...QUIET_COUNTERS, objectBytes: broken, objectSizes: sizes });
+    assertEq(run.status, 1, `${why} is fatal rather than dropped`);
+    assert(/objectBytes\[0\]/.test(run.stderr), `and the message names the element: ${run.stderr}`);
+  }
+  // A non-array where an array belongs is refused the same way.
+  const notAnArray = runBudget(base,
+    { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: sizes },
+    { ...QUIET_COUNTERS, objectBytes: 12_345 as unknown as number[], objectSizes: sizes });
+  assertEq(notAnArray.status, 1, 'a scalar where the array belongs is fatal');
+});
+
+await test('EXECUTION: a per-object counter that went BACKWARDS fails rather than reading as idle', () => {
+  // Cumulative totals only rise. A smaller AFTER means the endpoint restarted mid-window, and treating the
+  // negative delta as "this object did nothing" is the reading most likely to be wrong AND the one that
+  // passes — the same trap the aggregate byte assertion avoids by using an equality rather than a ceiling.
+  const sizes = [10_000_000, 40_000];
+  const run = runBudget(['--gate', 'PXreset', '--entries', '2', '--object-sizes', '10000000,40000'],
+    { ...QUIET_COUNTERS, objectBytes: [5_000_000, 20_000], objectSizes: sizes },
+    {
+      ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 1_000,
+      objectBytes: [1_000_000, 21_000], objectSizes: sizes,
+    });
+  const backwards = run.results.find((r) => r.gate === 'PXreset-provider-bytes-object-0');
+  assertEq(backwards?.verdict, 'fail', 'the object whose counter fell is failed by name');
+  assert((backwards?.measured ?? 0) < 0, 'and its negative delta is reported rather than clamped to zero');
+  assertEq(run.results.find((r) => r.gate === 'PXreset-provider-bytes-per-object')?.verdict, 'fail',
+    'and the roll-up fails with it');
+});
+
+await test('EXECUTION: a BEFORE snapshot without attribution is fatal, not treated as zero history', () => {
+  // THE DEFECT THIS CLOSES. `readCounterArray(before, ...) ?? []` read a MISSING array as "this endpoint had
+  // served nothing yet", which is a different claim from "the field is absent". Every AFTER total would then
+  // be attributed to this window, so a window opened late in a run inherits every earlier phase's traffic —
+  // and the error always runs toward a LARGER delta being charged here, which is the direction that turns a
+  // clean window into a spurious breach and an over-budget one into someone else's fault.
+  const sizes = [10_000_000];
+  const run = runBudget(['--gate', 'PXhist', '--entries', '1', '--object-sizes', '10000000'],
+    { ...QUIET_COUNTERS },                                        // no objectBytes at all
+    { ...QUIET_COUNTERS, objectBytes: [9_000_000], objectSizes: sizes });
+  assertEq(run.status, 1, 'the phase refuses to guess at missing history');
+  assert(/BEFORE counters do not/.test(run.stderr), `and says why: ${run.stderr}`);
+
+  // THE LEGITIMATE CASE IS AN EXPLICIT ZERO ARRAY, which is a statement rather than an absence: an endpoint
+  // that has registered objects and served none of them yet.
+  const fresh = runBudget(['--gate', 'PXhist', '--entries', '1', '--object-sizes', '10000000'],
+    { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: sizes },
+    { ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 1_000, objectBytes: [1_000],
+      objectSizes: sizes });
+  assertEq(fresh.status, 0, `an explicit zero history is accepted: ${fresh.stderr}`);
+  assertEq(fresh.results.find((r) => r.gate === 'PXhist-provider-bytes-per-object')?.verdict, 'pass',
+    'and the window is measured against it');
+});
+
+await test('the per-object ceiling SATURATES at one demand block, not at any crossover', () => {
+  // THE STALE ARITHMETIC THIS CLOSES. The prose said the two halves agreed at `BYTES_PER_ENTRY / 2`, about
+  // 17.5 MiB. That was the point where the RETIRED 2x clamp met the envelope. There is no clamp now, so
+  // there is no such point: the ceiling is `BLOCK x min(CHUNK, size) + SMALL x min(WINDOW, size)`, and both
+  // terms stop growing once the object can serve a full block.
+  const CHUNK = PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  const WINDOW = PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES;
+  const saturation = Math.max(CHUNK, WINDOW);
+  assertEq(saturation, CHUNK, 'the later of the two terms to saturate is the demand block');
+  assertEq(saturation, 4 * 1024 * 1024, 'which is 4 MiB');
+
+  assertEq(plexObjectByteCeiling(saturation), PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    'exactly one demand block already earns the whole envelope');
+  assert(plexObjectByteCeiling(saturation - 1) < PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    'one byte less does not');
+  for (const size of [saturation, saturation + 1, 17_500_000, 105_406_871, 4 * 1024 * 1024 * 1024]) {
+    assertEq(plexObjectByteCeiling(size), PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+      `every object at or above saturation earns the same envelope, at ${size}`);
+  }
+  // THE OLD FIGURE IS NOT THE SATURATION POINT, and asserting that is the whole content of this test.
+  const retiredCrossover = PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY / 2;
+  assert(retiredCrossover > saturation,
+    'the retired 17.5 MiB crossover is far above the real saturation point of 4 MiB');
+  assertEq(plexObjectByteCeiling(retiredCrossover), plexObjectByteCeiling(saturation),
+    'and the ceiling has been flat between them all along, so it marked nothing');
+
+  // NO SOURCE MAY STATE IT ANY MORE.
+  for (const source of SCAN_MODEL_SOURCES) {
+    const text = withoutBanDeclarations(read(source));
+    assert(!/17\.5 ?MiB/.test(text), `${source} no longer names the retired crossover`);
+    assert(!/BYTES_PER_ENTRY \/ 2/.test(text), `${source} no longer computes it`);
+  }
+});
+
+await test('EXECUTION: per-object CLASS caps are asserted, not just per-object bytes', () => {
+  // COLUMN SUMS ARE AGGREGATE ATTRIBUTION; THESE ARE THE PER-OBJECT ARITHMETIC. The byte ceiling is
+  // BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size). Checking only its total leaves both terms
+  // unchecked: a short object can make far more block-sized fetches than BLOCK permits and still sit inside
+  // the byte figure, because each fetch is small when the object is small.
+  //
+  // EVERY FIXTURE BELOW IS INTERNALLY TRUTHFUL, which matters more than it sounds. A window that moves a
+  // class count without moving its class BYTES, its bytesServed and its accountedResponses would fail the
+  // two partition assertions for reasons unrelated to the cap under test — and a mutation that fails for
+  // the wrong reason proves nothing about the assertion it was written for.
+  const CHUNK = 4 * 1024 * 1024;
+  const size = 10_000_000;
+  const sizes = [size];
+  const zero = [0];
+  const base = ['--gate', 'PXcap', '--entries', '1', '--object-sizes', String(size)];
+
+  /** One object serves N full blocks, M bodies of partialLen, and S bodies of smallLen. */
+  const serve = (chunks: number, partials: number, partialLen: number, smalls = 0, smallLen = 4096) => {
+    const bytes = chunks * CHUNK + partials * partialLen + smalls * smallLen;
+    const responses = chunks + partials + smalls;
+    return runBudget(base,
+      { ...QUIET_COUNTERS, objectBytes: zero, objectSizes: sizes, objectChunk: zero, objectSmall: zero,
+        objectPartial: zero, objectOversized: zero },
+      {
+        ...QUIET_COUNTERS,
+        bytesServed: QUIET_COUNTERS.bytesServed + bytes,
+        accountedResponses: QUIET_COUNTERS.accountedResponses + responses,
+        rangeRequests: QUIET_COUNTERS.rangeRequests + responses,
+        chunkResponses: QUIET_COUNTERS.chunkResponses + chunks,
+        chunkBytes: QUIET_COUNTERS.chunkBytes + chunks * CHUNK,
+        partialResponses: QUIET_COUNTERS.partialResponses + partials,
+        partialBytes: QUIET_COUNTERS.partialBytes + partials * partialLen,
+        smallResponses: QUIET_COUNTERS.smallResponses + smalls,
+        smallBytes: QUIET_COUNTERS.smallBytes + smalls * smallLen,
+        objectBytes: [bytes], objectSizes: sizes,
+        objectChunk: [chunks], objectSmall: [smalls], objectPartial: [partials], objectOversized: zero,
+      });
+  };
+  const gateOf = (run: ReturnType<typeof runBudget>, id: string) =>
+    run.results.find((r) => r.gate === id);
+
+  // NINE BLOCK-CLASS FETCHES FOR ONE OBJECT, all clipped and individually well under a block. The bytes stay
+  // inside the per-object ceiling, so the byte check alone would pass this window.
+  const nineClipped = serve(0, 9, 2_000_000);
+  assertEq(gateOf(nineClipped, 'PXcap-provider-block-class-object-0')?.verdict, 'fail',
+    'nine block-sized fetches for one object breaches BLOCK');
+  assertEq(gateOf(nineClipped, 'PXcap-provider-block-class-object-0')?.measured, 9, 'reported as its count');
+  assertEq(gateOf(nineClipped, 'PXcap-provider-block-class-object-0')?.budget, PLEX_SCAN_ENVELOPE.BLOCK,
+    'against the cap the byte formula uses');
+  assertEq(gateOf(nineClipped, 'PXcap-provider-bytes-object-0'), undefined,
+    'while the BYTE ceiling passes — 18 MB is inside 36,700,160 — which is why the class caps exist');
+  assertEq(gateOf(nineClipped, 'PXcap-provider-classes-per-object')?.verdict, 'fail',
+    'and the CLASS roll-up carries it...');
+  assertEq(gateOf(nineClipped, 'PXcap-provider-bytes-per-object')?.verdict, 'pass',
+    '...while the BYTE roll-up stays truthful about having found nothing');
+  // The partitions must be undisturbed, or this fixture would be failing for the wrong reason.
+  assertEq(gateOf(nineClipped, 'PXcap-request-shape-accounts-for-every-request')?.verdict, 'pass',
+    'the request partition is unaffected');
+  assertEq(gateOf(nineClipped, 'PXcap-request-shape-accounts-for-every-byte')?.verdict, 'pass',
+    'and so is the byte partition');
+
+  // FULL AND CLIPPED SHARE THE ALLOWANCE. 5 + 4 = 9 breaches; 4 + 4 = 8 is exactly the cap and does not.
+  // Both stay under the 36,700,160 ceiling: 5 x 4 MiB + 4 x 1.5 MB = 27,262,976.
+  const nineMixed = serve(5, 4, 1_500_000);
+  assertEq(gateOf(nineMixed, 'PXcap-provider-block-class-object-0')?.verdict, 'fail',
+    '5 full + 4 clipped is nine block-sized fetches for one object');
+  assertEq(gateOf(nineMixed, 'PXcap-provider-bytes-object-0'), undefined,
+    'and its bytes are inside the ceiling, so only the class cap catches it');
+  const atCap = serve(4, 4, 1_500_000);
+  assertEq(gateOf(atCap, 'PXcap-provider-block-class-object-0'), undefined,
+    '4 + 4 is exactly the cap, so no breach is recorded');
+  assertEq(gateOf(atCap, 'PXcap-provider-classes-per-object')?.verdict, 'pass', 'and the roll-up passes');
+
+  // SMALL, per object: four probe-window reads against a cap of three.
+  const fourSmall = serve(0, 0, 0, 4);
+  assertEq(gateOf(fourSmall, 'PXcap-provider-small-class-object-0')?.verdict, 'fail',
+    'four probe-window reads for one object breaches SMALL');
+
+  // OVERSIZED, PER OBJECT AND AT ONE. The aggregate oversized assertion has existed since the split, but it
+  // says nothing about the per-object COLUMN or the per-object cap — a body larger than a demand block
+  // attributed to an object has to fail on that object, by name, or the column is decorative.
+  const oversizedBytes = 9_000_000;
+  const oversized = runBudget(base,
+    { ...QUIET_COUNTERS, objectBytes: zero, objectSizes: sizes, objectChunk: zero, objectSmall: zero,
+      objectPartial: zero, objectOversized: zero },
+    {
+      ...QUIET_COUNTERS,
+      bytesServed: QUIET_COUNTERS.bytesServed + oversizedBytes,
+      oversizedResponses: QUIET_COUNTERS.oversizedResponses + 1,
+      oversizedBytes: QUIET_COUNTERS.oversizedBytes + oversizedBytes,
+      accountedResponses: QUIET_COUNTERS.accountedResponses + 1,
+      rangeRequests: QUIET_COUNTERS.rangeRequests + 1,
+      objectBytes: [oversizedBytes], objectSizes: sizes,
+      objectChunk: zero, objectSmall: zero, objectPartial: zero, objectOversized: [1],
+    });
+  assertEq(gateOf(oversized, 'PXcap-provider-oversized-class-object-0')?.verdict, 'fail',
+    'one oversized body attributed to an object fails on that object at one');
+  assertEq(gateOf(oversized, 'PXcap-provider-oversized-class-object-0')?.measured, 1, 'reported as one');
+  assertEq(gateOf(oversized, 'PXcap-provider-objectOversized-reconciles')?.verdict, 'pass',
+    'while the column reconciles with the aggregate, so the failure is the CAP and not the attribution');
+  assertEq(gateOf(oversized, 'PXcap-provider-classes-per-object')?.verdict, 'fail',
+    'and the class roll-up carries it');
+
+  // A ZERO-BYTE WINDOW WHOSE CLASSES MOVED. A zero-length body is classified SMALL, so this object is
+  // ACTIVE with a zero byte delta — the case that used to be skipped entirely.
+  const zeroLength = serve(0, 0, 0, 4, 0);
+  assertEq(gateOf(zeroLength, 'PXcap-provider-small-class-object-0')?.verdict, 'fail',
+    'an object that served four zero-length bodies is still checked against SMALL');
+});
+
+await test('EXECUTION: the class columns fail closed on absence, misalignment and reset', () => {
+  const sizes = [10_000_000, 40_000];
+  const zero = [0, 0];
+  const full = { objectBytes: zero, objectSizes: sizes, objectChunk: zero, objectSmall: zero,
+    objectPartial: zero, objectOversized: zero };
+  const base = ['--gate', 'PXcls2', '--entries', '2', '--object-sizes', '10000000,40000'];
+  // ONE TRUTHFUL SMALL RESPONSE, ATTRIBUTED TO OBJECT 0. Moving bytes without the matching class, byte-class,
+  // accounted and arrival counters would fail the partitions, and a structural mutation that fails for a
+  // partition reason proves nothing about the structural check it was written for.
+  const served = {
+    ...QUIET_COUNTERS,
+    bytesServed: QUIET_COUNTERS.bytesServed + 1_000,
+    smallResponses: QUIET_COUNTERS.smallResponses + 1,
+    smallBytes: QUIET_COUNTERS.smallBytes + 1_000,
+    accountedResponses: QUIET_COUNTERS.accountedResponses + 1,
+    rangeRequests: QUIET_COUNTERS.rangeRequests + 1,
+    objectBytes: [1_000, 0], objectSizes: sizes, objectChunk: zero, objectSmall: [1, 0],
+    objectPartial: zero, objectOversized: zero,
+  };
+
+  // A MISSING BEFORE COLUMN. This is the `?? []` defect, one function below where it was already fixed
+  // once: absent history read as zero charges every response the endpoint ever classified to this window.
+  const noBefore = runBudget(base,
+    { ...QUIET_COUNTERS, objectBytes: zero, objectSizes: sizes, objectSmall: zero,
+      objectPartial: zero, objectOversized: zero },
+    served);
+  assertEq(noBefore.results.find((r) => r.gate === 'PXcls2-provider-objectChunk-present')?.verdict, 'fail',
+    'a class column missing from BEFORE fails the window');
+
+  // A MISSING AFTER COLUMN.
+  const noAfter = runBudget(base, { ...QUIET_COUNTERS, ...full },
+    { ...served, objectPartial: undefined as unknown as number[] });
+  assertEq(noAfter.results.find((r) => r.gate === 'PXcls2-provider-objectPartial-present')?.verdict, 'fail',
+    'a class column missing from AFTER fails the window');
+
+  // A TRUNCATED BEFORE COLUMN FOR AN ALREADY-REGISTERED OBJECT. Both byte columns have two entries, so no
+  // object was registered during the window; a one-entry class column therefore drops an object's history
+  // and `?? 0` would re-charge its lifetime class traffic here. It must be an EQUALITY against
+  // objectBytesBefore, not merely no longer than AFTER.
+  const truncated = runBudget(base,
+    { ...QUIET_COUNTERS, ...full, objectChunk: [3] },
+    served);
+  assertEq(truncated.results.find((r) => r.gate === 'PXcls2-provider-objectChunk-aligned')?.verdict, 'fail',
+    'a BEFORE class column shorter than the BEFORE byte column fails');
+
+  // AND A LEGITIMATELY SHORTER BEFORE IS NOT THIS CASE: an object registered during the window is absent
+  // from objectBytesBefore and from every class BEFORE column together, so the lengths still match.
+  const grew = runBudget(base,
+    { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: [10_000_000], objectChunk: [0], objectSmall: [0],
+      objectPartial: [0], objectOversized: [0] },
+    served);
+  assert(!grew.results.some((r) => r.gate.endsWith('-aligned') && r.verdict === 'fail'),
+    'an object registered during the window is legitimate and does not trip the alignment rule');
+
+  // A CLASS COUNTER THAT WENT BACKWARDS.
+  const reset = runBudget(base,
+    { ...QUIET_COUNTERS, ...full, objectChunk: [4, 0] },
+    { ...served, objectChunk: [1, 0] });
+  assertEq(reset.results.find((r) => r.gate === 'PXcls2-provider-objectChunk-object-0')?.verdict, 'fail',
+    'a per-object class counter that fell across the window fails by name');
+});
+
+await test('EXECUTION: a zero window forces the SPLIT classes to zero as well', () => {
+  // The split added two counters. A zero window that forgot either of them would be a window asserting
+  // "nothing happened" while a whole class of response went unexamined — the PX14 defect, reintroduced.
+  const px14 = ['--gate', 'PX14-rescan', '--entries', '1', '--windows', '0'];
+  const warm = runBudget(px14, QUIET_COUNTERS, { ...QUIET_COUNTERS });
+  assertEq(warm.status, 0, `a truly warm window passes: ${warm.stderr}`);
+  for (const cls of ['block', 'small', 'oversized', 'bodyless']) {
+    const result = warm.results.find((r) => r.gate === `PX14-rescan-${cls}-responses`);
+    assert(result !== undefined, `the ${cls} class is asserted even in a zero window`);
+    assertEq(result?.verdict, 'pass', `and passes at zero: ${cls}`);
+  }
+  // ...AND EACH ONE FAILS IF IT MOVED. One per class, so a missing assertion cannot hide behind a sibling.
+  for (const [counter, gateId] of [
+    ['chunkResponses', 'PX14-rescan-block-responses'],
+    ['partialResponses', 'PX14-rescan-block-responses'],
+    ['smallResponses', 'PX14-rescan-small-responses'],
+    ['oversizedResponses', 'PX14-rescan-oversized-responses'],
+    ['bodylessResponses', 'PX14-rescan-bodyless-responses'],
+  ] as Array<[string, string]>) {
+    const moved = runBudget(px14, QUIET_COUNTERS, {
+      ...QUIET_COUNTERS,
+      [counter]: ((QUIET_COUNTERS as Record<string, number>)[counter] ?? 0) + 1,
+      rangeRequests: QUIET_COUNTERS.rangeRequests + 1,
+    });
+    assertEq(moved.results.find((r) => r.gate === gateId)?.verdict, 'fail',
+      `a single ${counter} in a zero window fails ${gateId}`);
+  }
+  // And the byte assertion is still exact and still outside the object-size guard.
+  const bytes = runBudget(px14, QUIET_COUNTERS,
+    { ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 1 });
+  assertEq(bytes.results.find((r) => r.gate === 'PX14-rescan-provider-bytes')?.verdict, 'fail',
+    'one byte in a zero window is still a failure');
+});
+
+await test('a non-zero budget window REFUSES to run without valid object sizes', () => {
+  // THE FOOTGUN THIS CLOSES. The sizes were parsed with a `.filter()` that dropped anything unparseable, so
+  // `1000,,2000` silently became a two-object denominator, `abc,2000` a one-object one, and an unset shell
+  // variable an empty list - which skipped the byte ceiling entirely. Every one of those makes the budget
+  // LOOSER than the gate reads as, from a typo, invisibly. A denominator is not a place to be forgiving.
+  const base = ['--gate', 'PXtest', '--entries', '1'];
+
+  const missing = runBudget(base, QUIET_COUNTERS, { ...QUIET_COUNTERS });
+  assertEq(missing.status, 1, 'a window with no --object-sizes is refused');
+  assert(/--object-sizes is required/.test(missing.stderr), `and says why: ${missing.stderr}`);
+  assert(!missing.results.some((r) => r.gate === 'PXtest-provider-bytes'),
+    'and does not quietly report a phase with no byte assertion in it');
+
+  for (const [sizes, why] of [
+    ['1000,,2000', 'an empty token'],
+    ['abc,2000', 'a non-numeric token'],
+    ['1000,0', 'a zero size'],
+    ['1000,-5', 'a negative size'],
+    ['1000,NaN', 'a NaN token'],
+    ['   ', 'nothing but whitespace'],
+  ] as Array<[string, string]>) {
+    const run = runBudget([...base, '--object-sizes', sizes], QUIET_COUNTERS, { ...QUIET_COUNTERS });
+    assertEq(run.status, 1, `${why} is fatal rather than dropped (${sizes})`);
+  }
+
+  // AND THE VALID FORM STILL WORKS, with every named object in the denominator.
+  const ok = runBudget([...base, '--object-sizes', '1000,2000'],
+    QUIET_COUNTERS, { ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 1_000 });
+  assertEq(ok.status, 0, `a well-formed list runs: ${ok.stderr}`);
+  assertEq(ok.results.find((r) => r.gate === 'PXtest-provider-bytes')?.verdict, 'pass',
+    'and the byte ceiling is asserted');
+  // The two objects are under a probe window, so each is capped at 11 x its own length: 11,000 + 22,000 =
+  // 33,000. A window that served 40,000 bytes for 3,000 bytes of object is a runaway and fails.
+  assertEq(plexScanByteCeiling([1_000, 2_000]), 33_000, 'the aggregate is the sum of the two ceilings');
+  const over = runBudget([...base, '--object-sizes', '1000,2000'],
+    QUIET_COUNTERS, { ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 40_000 });
+  assertEq(over.results.find((r) => r.gate === 'PXtest-provider-bytes')?.verdict, 'fail',
+    'and it still has teeth: 40,000 bytes against a 33,000-byte ceiling fails');
+});
+
+await test('the byte CEILING is asserted per object; the FLOOR is still an aggregate', () => {
+  // AN EARLIER VERSION OF THIS SUITE CLAIMED THE OPPOSITE, and the claim was false. Both the ceiling and the
+  // floor are sums checked against ONE counter - `bytesServed` for the whole window - so nothing here can
+  // distinguish "each object cost its own share" from "one object cost everything and the rest cost
+  // nothing". This test records what the budget DOES buy and what it does not, so neither is overstated.
+  const tiny = Array.from({ length: 38 }, () => 40_000);
+  const large = 105_406_871;
+  const sizes = [large, ...tiny];
+
+  // WHAT IT BUYS: a far tighter allowance than a pooled size would give. Pooling would grant every entry the
+  // full envelope, because a pooled total is above one demand block and so saturates for every entry.
+  const derived = plexScanByteCeiling(sizes);
+  const pooledStyle = sizes.length * PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY;
+  assert(derived < pooledStyle / 10, `the derived aggregate (${derived}) is far under a pooled one`);
+  assertEq(derived, PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY + 38 * plexObjectByteCeiling(40_000),
+    'the large object contributes the full envelope and each tiny one the caps against its own length');
+
+  // WHAT IT DOES NOT BUY: attribution. A window in which the large object alone consumed the whole
+  // allowance, and the thirty-eight tiny entries were never opened, PASSES both the ceiling and the floor.
+  const floor = sizes.reduce(
+    (total, size) => total + Math.min(size, PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES), 0);
+  assert(floor < PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    'the whole floor is smaller than what the large object alone may spend, so the other thirty-eight '
+    + 'can be paid for by it - exactly the cross-subsidy this instrument cannot detect');
+  const oneObjectSpentEverything = derived;
+  assert(oneObjectSpentEverything <= derived && oneObjectSpentEverything >= floor,
+    'and such a window sits inside the ceiling and above the floor, so it passes');
+
+  // AND EVERY SOURCE SAYS SO, rather than claiming a per-object guarantee it cannot deliver.
+  for (const source of ['src/core/projection/plex-dataplane.ts', 'src/ops/projection-plex-dataplane-cli.ts',
+    'docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md']) {
+    const text = read(source);
+    assert(/aggregate/i.test(text), `${source} calls the budget an aggregate`);
+    assert(/per-reference|attribution/i.test(text), `${source} names what closing it would require`);
+    assert(!/cannot be cross-subsidised|not cross-subsidised/i.test(text),
+      `${source} does not claim cross-subsidy is prevented`);
+  }
+  assert(/Cross-subsidy in the byte FLOOR/.test(read('docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md')),
+    'and the document lists the remaining floor cross-subsidy under what is still not proved');
+});
+
 await test('redaction-check still CATCHES a leak in that same NDJSON format', () => {
   // A reader that parsed the file but stopped checking it would be worse than the crash: the crash was
   // visible. This proves the fix kept the teeth.
@@ -1472,23 +2161,399 @@ await test('an empty results artifact is a failure, not a vacuous pass', () => {
 // What a Plex scan costs, and the claim that is NOT being made about it
 // ---------------------------------------------------------------------------------------------------------
 
-await test('the scan ceiling is BLOCK GEOMETRY, and is independent of the fixture\'s size', () => {
-  // THE MULTIPLIER THIS REPLACES WAS REJECTED, AND RIGHTLY. Three byte budgets failed and the first answer
-  // was `MAX_SCAN_BYTE_MULTIPLIER = 3.0` — a number above 1.0 chosen to sit above what had been measured.
-  // That is a record of an observation with room around it, not a budget: it would have passed a daemon that
-  // read every object three times over, and it retired the product's central claim rather than testing it.
-  const chunk = PLEX_READ_GEOMETRY.CHUNK_BYTES;
-  const fixed = PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN * chunk;
-  assertEq(chunk, 4 * 1024 * 1024, 'the demand block is the daemon\'s readpath.ChunkBytes');
+await test('the UNCLAMPED envelope component is derived from the caps and cannot drift from them', () => {
+  // WHAT THIS DOES AND DOES NOT SAY, because an earlier version of this test overstated it.
+  //
+  // IT SAYS: the envelope COMPONENT of the byte ceiling — `BYTES_PER_ENTRY`, the term before the clamp — is
+  // exactly what the class caps permit. A scan serving eight demand blocks and three probe windows satisfies
+  // every request cap, and on an object at or above one demand block it also satisfies the byte ceiling, so the two
+  // agree there. Computing it from the same bindings is what stops them drifting when a cap moves.
+  //
+  // IT DOES NOT SAY that every object gets 35 MiB. The same caps yield LESS for an object shorter than a
+  // demand block, because it cannot serve one: a 40 KB entry is held to eleven reads of its own length,
+  // 444,532 bytes. That is one rule evaluated against two objects, not two rules.
+  //
+  // THE REVIEW THAT SPECIFIED THIS ENVELOPE NAMED 35,651,584, AND I HAD PROPOSED THAT NUMBER. It is one
+  // probe window short of the caps: 34 MiB where they permit 35. Deriving it makes the mistake unrepeatable
+  // rather than merely fixed once.
+  const derived = PLEX_SCAN_ENVELOPE.BLOCK * PLEX_READ_GEOMETRY.CHUNK_BYTES
+    + PLEX_SCAN_ENVELOPE.SMALL * PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES;
+  assertEq(PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY, derived, 'the envelope is exactly what the caps permit');
+  assertEq(derived, 36_700_160, 'which is 35 MiB');
+  assert(PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY !== 35_651_584,
+    'and NOT the 34 MiB figure, which would have been below the caps');
+  // AN OBJECT AT OR ABOVE A DEMAND BLOCK GETS THE FULL ENVELOPE; a smaller one gets the caps evaluated
+  // against its own length, which is less. Neither is a separate rule — both are this same arithmetic.
+  assertEq(plexScanByteCeiling([PLEX_READ_GEOMETRY.CHUNK_BYTES * 4]), derived,
+    'a large object gets exactly the envelope the caps permit');
+  assert(plexScanByteCeiling([40_000]) < derived,
+    'while a small one is bounded by its own length, because it cannot serve a full block');
+});
+
+await test('every request class is capped separately, so a total cannot be spent as demand blocks', () => {
+  assertEq(PLEX_SCAN_ENVELOPE.BLOCK, 8, 'block: full and clipped demand blocks together');
+  assertEq(PLEX_SCAN_ENVELOPE.SMALL, 3, 'small');
+  assertEq(PLEX_SCAN_ENVELOPE.OVERSIZED, 0, 'oversized');
+  assertEq(PLEX_SCAN_ENVELOPE.BODYLESS, 0, 'bodyless');
+  assertEq(PLEX_SCAN_ENVELOPE.TOTAL, 11, 'total');
+  assertEq(PLEX_SCAN_ENVELOPE.TOTAL, PLEX_SCAN_ENVELOPE.BLOCK + PLEX_SCAN_ENVELOPE.SMALL,
+    'and the total is exactly their sum, not an independent number');
+  // THE PROPERTY THE PER-CLASS CAPS EXIST FOR. Eleven requests spent as eleven demand blocks would be 44 MiB;
+  // the block cap makes that unreachable, and the byte envelope agrees.
+  const asAllBlocks = PLEX_SCAN_ENVELOPE.TOTAL * PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  assert(asAllBlocks > PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    'spending the whole total on demand blocks would exceed the byte envelope...');
+  const ceilings = plexScanRequestCeilings(1);
+  assert(ceilings.block < ceilings.total, '...and the block cap is what makes it unreachable');
+  // Caps scale per entry; the zero-response classes do not, because zero times anything is still zero.
+  assertEq(plexScanRequestCeilings(40).block, 320, 'block scales with entries');
+  assertEq(plexScanRequestCeilings(40).small, 120, 'and so does small');
+  assertEq(plexScanRequestCeilings(40).oversized, 0, 'oversized stays zero however many entries there are');
+  assertEq(plexScanRequestCeilings(40).bodyless, 0, 'and so does bodyless');
+});
+
+await test('a clipped block spends the SAME allowance as a full one, and cannot earn a second', () => {
+  // WHAT gate7 TAUGHT, AND THE SHAPE OF THE FIX. Its corpus window served 0 full blocks and 13 CLIPPED ones
+  // and failed a budget that asserted the clipped class could not exist. It can, legitimately:
+  // readpath.demandBlock clips a block to the gap between cached probe windows, so a read bounded by cached
+  // data returns less than a full block. The fix folds both into ONE cap rather than giving the new class
+  // its own, because two caps of 8 would let an entry spend sixteen block-sized fetches.
+  const ceilings = plexScanRequestCeilings(1);
+  assertEq(ceilings.block, 8, 'one entry may make eight block-sized fetches in total');
+  assert(!Object.prototype.hasOwnProperty.call(ceilings, 'chunk')
+    && !Object.prototype.hasOwnProperty.call(ceilings, 'partial'),
+    'and there is no separate allowance for either kind, which is what stops them being additive');
+
+  // THE BYTE ENVELOPE DID NOT MOVE, which is the property that makes admitting the class safe: a clipped
+  // block is bounded ABOVE by a full one, so the worst case is unchanged.
+  assertEq(PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY, 36_700_160, 'still exactly 35 MiB per entry');
+
+  // AND gate7's MEASUREMENT SITS NOWHERE NEAR THE CAP, so nothing was widened to accommodate it.
+  const gate7CorpusEntries = 40;
+  const gate7BlockResponses = 0 + 13;
+  assert(gate7BlockResponses <= plexScanRequestCeilings(gate7CorpusEntries).block,
+    'the gate7 corpus window, 13 block-class responses across 40 entries, fits the unchanged cap');
+  assert(gate7BlockResponses * 24 < plexScanRequestCeilings(gate7CorpusEntries).block,
+    'with more than an order of magnitude to spare: 0.33 per entry against an allowance of 8');
+  // The other gate7 windows, at the per-entry cap rather than the per-library one.
+  for (const [full, clipped, where] of [[4, 0, 'PX9, cold anchor'], [4, 0, 'PX9c, cold large object'],
+    [0, 0, 'PX12b and PX14, fully warm']] as Array<[number, number, string]>) {
+    assert(full + clipped <= plexScanRequestCeilings(1).block, `${where} fits the block cap`);
+  }
+});
+
+await test('the window COUNT and the measured MAXIMUM are computed, and no prose restates them wrongly', () => {
+  // THE DEFECT THIS CLOSES, WHICH HAD ALREADY HAPPENED TWICE. The provenance was prose: "eight instrumented
+  // windows", "5 is the highest measured", "4 in six quiet windows". Each is a claim about a dataset that
+  // existed nowhere, so nothing could check it. By the time gate7 added five windows the contract said TEN
+  // and the truth was THIRTEEN, and the operator note said "4 in six quiet windows" while SEVEN windows had
+  // measured 4. Both survived a full review. The observations are now the data and every count and maximum
+  // is derived from them.
+  const counts = plexInstrumentedWindowCounts();
+  assertEq(counts.total, PLEX_INSTRUMENTED_SCAN_WINDOWS.length, 'the total is the array length, not a claim');
+  assertEq(counts.diagnostic + counts.gate, counts.total, 'and the two sources partition it');
+  assert(counts.gate > 0, 'gate7 contributed instrumented windows, which the earlier prose omitted');
+
+  // gate6 IS NOT IN THE DATASET, because it has no class breakdown to contribute.
+  assert(!PLEX_INSTRUMENTED_SCAN_WINDOWS.some((w) => /gate6/i.test(w.label) || w.source === 'gate7'
+    && /gate6/i.test(w.label)), 'gate6 is not counted among instrumented windows');
+  assertEq(PLEX_GATE6_COMPATIBLE_BLOCKS.MEASURED, false, 'and it is flagged as not measured');
+  assertEq(PLEX_GATE6_COMPATIBLE_BLOCKS.BLOCKS * PLEX_READ_GEOMETRY.CHUNK_BYTES
+    + 3 * PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES, PLEX_GATE6_COMPATIBLE_BLOCKS.BYTES,
+    'its inferred decomposition really does reproduce its byte total, which is why it is compatible');
+
+  // THE CAP MUST SIT ABOVE EVERY MEASURED FIGURE. This is the check that turns the dataset into a guard: a
+  // future window measuring more than the cap makes this fail here rather than in a thirty-minute gate.
+  const highestBlocks = plexHighestMeasuredPerEntry('blocks');
+  assert(PLEX_SCAN_ENVELOPE.BLOCK > highestBlocks,
+    `the block cap ${PLEX_SCAN_ENVELOPE.BLOCK} is above the highest measured ${highestBlocks} per entry`);
+  assert(PLEX_SCAN_ENVELOPE.SMALL >= plexHighestMeasuredPerEntry('small'),
+    'and the small cap is at or above its own highest measurement');
+  assertEq(plexHighestMeasuredPerEntry('oversized'), 0, 'oversized has never been measured above zero...');
+  assertEq(PLEX_SCAN_ENVELOPE.OVERSIZED, 0, '...which is why it is asserted at exactly zero');
+  assertEq(plexHighestMeasuredPerEntry('bodyless'), 0, 'and neither has bodyless');
+
+  // EVERY RECORDED WINDOW FITS THE CAPS IT IS THE EVIDENCE FOR. If one did not, the caps would be a fiction.
+  for (const window of PLEX_INSTRUMENTED_SCAN_WINDOWS) {
+    const ceilings = plexScanRequestCeilings(window.entries);
+    assert(window.blocks <= ceilings.block, `${window.label}: ${window.blocks} blocks fits the cap`);
+    assert(window.small <= ceilings.small, `${window.label}: ${window.small} small fits the cap`);
+    assertEq(window.oversized, ceilings.oversized, `${window.label}: no oversized responses`);
+    assertEq(window.bodyless, ceilings.bodyless, `${window.label}: no bodyless responses`);
+  }
+
+  // THE OPERATOR-FACING NOTE INTERPOLATES THE DERIVED FIGURES rather than spelling them out. A literal count
+  // in that string is the exact thing that drifted, so its absence is asserted.
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  const budget = cli.split("case 'budget':")[1]?.split("case 'traffic-window'")[0] ?? '';
+  assert(/plexHighestMeasuredPerEntry\('blocks'\)/.test(budget),
+    'the watchdog note derives its maximum');
+  assert(/plexInstrumentedWindowCounts\(\)\.total/.test(budget), 'and its window count');
+  assert(/PLEX_GATE6_COMPATIBLE_BLOCKS\.BLOCKS/.test(budget), 'and names the inferred figure as a constant');
+  assert(!/six quiet windows|eight instrumented|ten instrumented/i.test(budget),
+    'and spells no count out in prose');
+});
+
+await test('the DOCUMENT quotes the same derived count and maximum as the code', () => {
+  // A document is prose by nature, so it cannot compute — but it can be held to the computed values. These
+  // are the two numbers that drifted, so these are the two the document is checked on.
+  const doc = read('docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md');
+  const counts = plexInstrumentedWindowCounts();
+  const highest = plexHighestMeasuredPerEntry('blocks');
+
+  const words = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten',
+    'eleven', 'twelve', 'thirteen', 'fourteen', 'fifteen', 'sixteen', 'seventeen', 'eighteen', 'nineteen',
+    'twenty', 'twenty-one', 'twenty-two', 'twenty-three'];
+  const spelled = (n: number): string => words[n] ?? String(n);
+
+  // THE COUNT. Digits or a word, "instrumented windows" or "windows in all" — the phrasing is the
+  // document's business. Naming a DIFFERENT total is not.
+  const total = `(${counts.total}|${spelled(counts.total)})`;
+  assert(new RegExp(`${total}\\s+(instrumented\\s+)?windows`, 'i').test(doc),
+    `the document names ${counts.total} windows, which is what the dataset holds`);
+  // ...and no stale TOTAL survives in either phrasing. Only the two forms that carry a total are rejected,
+  // so the document stays free to count a SUBSET — "the two cold single-object windows" is not a total.
+  for (let wrong = 1; wrong <= 23; wrong += 1) {
+    if (wrong === counts.total) continue;
+    const other = `(${wrong}|${spelled(wrong)})`;
+    for (const form of [`${other}\\s+instrumented\\s+windows`, `${other}\\s+windows in all`]) {
+      assert(!new RegExp(form, 'i').test(doc), `no stale total of ${wrong} windows survives as "${form}"`);
+    }
+  }
+  // AND THE SUBSET ARITHMETIC IS SPELLED OUT, because eight diagnostic rows above a two-row gate7 table
+  // reads as ten unless the document says what the other three are. It names them.
+  for (const named of ['PX9b', 'PX12b', 'PX14']) {
+    assert(doc.includes(named), `the document names ${named}, a recorded window that is in no table`);
+  }
+
+  // NO SOURCE MAY CALL THE SMALL CAP AN INVARIANT. Three is the highest figure measured, not a constant of
+  // Plex's probe plan: gate7's PX9 measured ONE on the cold anchor, and the corpus window averaged 1.025 per
+  // entry, because a probe plan already partly cached costs fewer probe reads. Calling the cap unvarying
+  // said a window measuring less was impossible, which the dataset in this very repository contradicts.
+  const belowTheCap = PLEX_INSTRUMENTED_SCAN_WINDOWS
+    .filter((w) => w.small / Math.max(1, w.entries) < PLEX_SCAN_ENVELOPE.SMALL && w.small > 0);
+  assert(belowTheCap.length > 0,
+    'at least one recorded window measured fewer probe reads than the cap, which is why it is a maximum');
+  assert(belowTheCap.some((w) => w.label.startsWith('PX9,')),
+    'and PX9 is one of them, at 1 probe read for a cold 14.0 MB object');
+  for (const source of [...SCAN_MODEL_SOURCES, 'test/projection-plex-dataplane.ts']) {
+    const text = withoutBanDeclarations(read(source));
+    assert(!/invariant at 3|measured invariant|invariant, per entry|3 per entry in every/i.test(text),
+      `${source} calls the small cap a measured maximum rather than an invariant`);
+  }
+
+  // THE MAXIMUM, in the cap table's basis column.
+  assert(doc.includes(`${highest} is the highest **measured**`),
+    `the class table names ${highest} as the highest measured figure`);
+  assert(doc.includes(`${PLEX_GATE6_COMPATIBLE_BLOCKS.BLOCKS} is the **inferred**`),
+    `and ${PLEX_GATE6_COMPATIBLE_BLOCKS.BLOCKS} as the inferred one, kept distinct from it`);
+  assert(doc.includes(`**${PLEX_SCAN_ENVELOPE.BLOCK}**`), 'and the cap itself');
+});
+
+await test('the chunk cap separates what was MEASURED from what is only COMPATIBLE with a measurement', () => {
+  // THE CORRECTION THIS ENFORCES. gate6 ran BEFORE the class counters existed. Its 10 requests /
+  // 32,505,856 bytes is compatible with 7 chunk + 3 small, but it does not measure that decomposition, and
+  // an aggregate cannot be made to yield one. Recording it as "7 + 3 measured" would manufacture evidence.
+  const contract = read('src/core/projection/plex-dataplane.ts');
+  assert(/EMPIRICAL WATCHDOG AND NOT A DERIVATION/.test(contract), 'it says what kind of number it is');
+  assert(/INSTRUMENTED — EVERY WINDOW IS IN `PLEX_INSTRUMENTED_SCAN_WINDOWS`/.test(contract),
+    'the provenance points at the dataset instead of spelling a count out');
+  assert(/NOT INSTRUMENTED/.test(contract), 'and gate6 is filed separately from them');
+  assert(/COMPATIBLE with 7 chunk \+ 3 small/.test(contract), 'gate6 is described as compatible, not measured');
+  assert(/does not measure that decomposition/.test(contract), 'and explicitly not as a measurement');
+  assert(/NEVER AN AUTOMATIC BUMP/.test(contract),
+    'and that a breach is a finding to investigate rather than a number to raise');
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  assert(/EMPIRICAL WATCHDOG/.test(cli), 'and the gate report says so too, where an operator reads it');
+  assert(/\$\{PLEX_GATE6_COMPATIBLE_BLOCKS\.BLOCKS\} is INFERRED/.test(cli),
+    'the operator-visible note names the inferred figure from the constant, not as a literal');
+
+  // THE ARITHMETIC THAT MAKES THE POINT UNARGUABLE: the decomposition is not unique.
+  const CHUNK = PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  const WINDOW = PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES;
+  assertEq(7 * CHUNK + 3 * WINDOW, 32_505_856, 'the gate6 total is consistent with 7 chunk + 3 small');
+  // ...and equally with six demand blocks plus four responses of a size in neither class.
+  const alternative = 6 * CHUNK + 4 * 1_835_008;
+  assertEq(alternative, 32_505_856, 'and with 6 chunk + 4 mid-sized responses, which is a different mix');
+  assertEq(6 + 4, 10, 'at the same request count, so the aggregate cannot distinguish them');
+
+  // NO SOURCE MAY STATE THE CAUSAL CLAIM. Two loaded windows disagreed with each other; that is not a trend.
+  // The ban is on the RELATIONSHIP being asserted, in any of the phrasings it has appeared in — one of which
+  // survived two earlier sweeps inside a test comment, which is why this suite scans itself as well.
+  for (const source of [...SCAN_MODEL_SOURCES, 'test/projection-plex-dataplane.ts']) {
+    const text = withoutBanDeclarations(read(source));
+    assert(!/tracks? (host )?contention|tracked (host )?contention|tracking (host )?contention/.test(text),
+      `${source} does not assert the count tracks contention`);
+    assert(!/nine windows|all nine|nine measured/.test(text),
+      `${source} does not count gate6 among the instrumented windows`);
+  }
+});
+
+await test('no source states the two backwards claims this amendment corrected', () => {
+  // BOTH WERE WRITTEN BY ME, BOTH READ AS REASSURING, AND BOTH SAID THE OPPOSITE OF WHAT IS TRUE. Banning
+  // the phrasings is worth more than fixing the instances: each survived a sweep by being reworded slightly.
+  //
+  // 1. THE BINDING ORDER. On the large fixture the ENVELOPE (0.348) is tighter than the 0.5 fraction, so the
+  //    fraction cannot fail on its own. Naming the fraction as the operative bound, or demoting the envelope
+  //    to a catch that only refuses the unseen, claims a strictness the fraction does not have there.
+  // 2. THE CONTRADICTION CLAIM. Saying the envelope derives from the caps and therefore the two can never
+  //    disagree is only
+  //    true for an object that can serve a full demand block. A shorter one earns less from the same caps, and a
+  //    scan can satisfy every class cap and still fail on bytes.
+  for (const source of [...SCAN_MODEL_SOURCES, 'test/projection-plex-dataplane.ts']) {
+    const text = withoutBanDeclarations(read(source));
+    assert(!/fraction is the binding constraint/i.test(text),
+      `${source} does not call the fraction the binding constraint`);
+    assert(!/runaway catch/i.test(text),
+      `${source} does not describe the envelope as a runaway catch beneath the fraction`);
+    assert(!/so the two cannot contradict|cannot fail on bytes|cannot then fail on bytes/i.test(text),
+      `${source} does not claim the caps subsume the byte ceiling`);
+  }
+  // AND THE POSITIVE STATEMENT IS PRESENT, so the ban cannot be satisfied by saying nothing at all.
+  for (const source of SCAN_MODEL_SOURCES) {
+    assert(/does not mathematically bind|is not what binds|not what would fail first|ENVELOPE is what binds|envelope\*\* is the binding constraint/
+      .test(read(source)), `${source} says which of the two actually binds`);
+  }
+});
+
+await test('the byte ceiling admits every measurement, including the one that broke the old ceiling', () => {
+  // gate6 EXCEEDED the previous 24 MiB saturated ceiling — 32,505,856 against 25,165,824 — which is what
+  // retired it. Every observation must fit the replacement, or it is not a replacement.
+  const large = 105_406_871;
+  const ceiling = plexScanByteCeiling([large]);
+  for (const [measured, condition] of [
+    [19_922_944, 'quiet, three runs'], [24_117_248, 'under CPU load'],
+    [32_505_856, 'gate6 (an aggregate, not a class measurement)'],
+  ] as Array<[number, string]>) {
+    assert(measured <= ceiling, `${condition} (${measured}) fits the ceiling ${ceiling}`);
+  }
+  assert(32_505_856 > 25_165_824, 'and the old ceiling really was exceeded, which is why it is gone');
+});
+
+await test('an object ceiling is the class caps evaluated against ITS OWN length', () => {
+  // THE FITTED 2x CLAMP IS GONE. It claimed the measurements supported it; gate8 measured 2.001951x and
+  // refuted that. What replaced it is not another constant: it is the caps' own arithmetic per object,
+  // `BLOCK x min(CHUNK, size) + SMALL x min(WINDOW, size)`.
+  const CHUNK = PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  const WINDOW = PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES;
+  const expected = (size: number): number =>
+    PLEX_SCAN_ENVELOPE.BLOCK * Math.min(CHUNK, size) + PLEX_SCAN_ENVELOPE.SMALL * Math.min(WINDOW, size);
+
+  assertEq(plexObjectByteCeiling(40_412), expected(40_412), 'a tiny entry: 11 reads of its own length');
+  assertEq(plexObjectByteCeiling(40_412), 11 * 40_412, 'which is 444,532 bytes, not 35 MiB');
+  assertEq(plexObjectByteCeiling(105_406_871), PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    'and a large one gets the full envelope, because it can serve full blocks');
+  assertEq(plexObjectByteCeiling(CHUNK), PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    'exactly one demand block is already large enough to earn the whole envelope');
+  assertEq(plexObjectByteCeiling(0), 0, 'and nothing costs nothing');
+
+  // IT IS MONOTONIC IN SIZE, so a bigger object can never be held to a smaller allowance.
+  let previous = 0;
+  for (const size of [1, 1024, WINDOW, WINDOW + 1, CHUNK - 1, CHUNK, CHUNK * 10]) {
+    const ceiling = plexObjectByteCeiling(size);
+    assert(ceiling >= previous, `the ceiling does not decrease as size grows, at ${size}`);
+    previous = ceiling;
+  }
+  // The aggregate is the sum of these, and nothing else.
+  assertEq(plexScanByteCeiling([40_412, 40_412]), 2 * plexObjectByteCeiling(40_412), 'per object, summed');
+});
+
+await test('the gate8 corpus total is ADMITTED by the rule, and a genuine runaway is not', () => {
+  // THE ARITHMETIC THE CORRECTION HAS TO SURVIVE. gate8's corpus window served 48,269,773 bytes across a
+  // library of one 13,981,407-byte anchor, one 8,594,275-byte soak source and 38 corpus entries of about
+  // 40,412 bytes. Under the retired 2x clamp the SUMMED ceiling was 48,222,708 and it failed by 47,065
+  // bytes, with no way to say which object spent them.
+  const anchor = 13_981_407;
+  const soak = 8_594_275;
+  const corpus = Array.from({ length: 38 }, () => 40_412);
+  const gate8Bytes = 48_269_773;
+
+  // ADMITTED. The two large objects alone are allowed more than the whole window cost, so no distribution
+  // of gate8's bytes across this library breaches a per-object ceiling unless one object took an
+  // implausible share — which is exactly what the per-object verdicts now check for.
+  assert(plexObjectByteCeiling(anchor) + plexObjectByteCeiling(soak) > gate8Bytes,
+    'the anchor and soak ceilings together exceed the entire gate8 corpus window');
+  assert(plexScanByteCeiling([anchor, soak, ...corpus]) > gate8Bytes,
+    'and so does the aggregate cross-check, so the window is admitted');
+
+  // AND IT STILL HAS TEETH, per object, which is where they now live.
+  assert(3 * anchor > plexObjectByteCeiling(anchor),
+    'an anchor read three times over breaches its own ceiling');
+  assert(50 * 40_412 > plexObjectByteCeiling(40_412),
+    'a 40 KB entry read fifty times over breaches its own ceiling...');
+  assert(50 * 40_412 < plexScanByteCeiling([anchor, soak, ...corpus]) / 10,
+    '...while being far too small to trouble the aggregate, which is why per-object is what binds');
+
+  // THE OLD RULE, FOR THE RECORD: it refused gate8 and could not say why.
+  // The corpus entries are not all exactly 40,412 bytes — each is encoded from a different pattern — so
+  // the recorded budget is used rather than recomputed from a rounded size.
+  const retiredBudget = 48_222_708;
+  assertEq(gate8Bytes - retiredBudget, 47_065, 'gate8 exceeded the retired clamp by the recorded figure');
+  const recomputed = [anchor, soak, ...corpus].reduce(
+    (total, size) => total + Math.min(PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY, 2 * size), 0);
+  assert(Math.abs(recomputed - retiredBudget) < 1_000,
+    'and recomputing it from nominal corpus sizes lands within a kilobyte of the recorded budget');
+});
+
+await test('an explicit --windows 0 forces every class AND the bytes to zero', () => {
+  // The warm re-scan asserts that a second scan of an unchanged generation costs the provider nothing. That
+  // is the whole assertion, so every class ceiling and the byte ceiling must be zero — and a floor beneath
+  // a zero assertion would contradict it outright.
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  assert(/const zeroWindow = args\.flags\.get\('windows'\) === '0';/.test(cli),
+    'it is the EXPLICIT flag, not a default, that does this');
+  assert(/zeroWindow\s*\n?\s*\? \{ block: 0, small: 0, oversized: 0, bodyless: 0, total: 0 \}/.test(cli),
+    'every request class is zeroed, the newly split ones included');
+  assert(/zeroWindow \? 0 : Math\.ceil\(entries \* MEDIA_SERVER_BUDGETS\.MAX_SCAN_RESOLUTION_MULTIPLIER\)/
+    .test(cli), 'and the resolutions');
+  assert(/provider-bytes-floor-not-applicable/.test(cli), 'and no floor is applied beneath it');
+  // THE BYTE ASSERTION IS OUTSIDE THE `sizes` GUARD, which is the whole point of the fix below it.
+  const zeroBlock = cli.split('if (zeroWindow) {')[1]?.split('} else if (sizes.length > 0) {')[0] ?? '';
+  assert(/exactly\(`\$\{gate\}-provider-bytes`, delta\('bytesServed'\), 0/.test(zeroBlock),
+    'a zero window asserts bytes at exactly zero, with no object size involved');
+  assert(GATE.includes('--gate PX14-rescan --entries 1 --windows 0'),
+    'and the warm re-scan is the window that uses it');
+});
+
+await test('the 0.5 large-object fraction is untouched and remains the headline assertion', () => {
+  assertEq(PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION, MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION,
+    'still the shared constant');
+  assertEq(MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION, 0.5, 'still 0.5');
+  // ON THE 105 MB FIXTURE THE ENVELOPE IS TIGHTER THAN THE FRACTION, so the ENVELOPE is what binds and the
+  // fraction cannot fail on its own there. The fraction is kept as the explicit headline because it carries
+  // the product's argument in the product's own terms, not because it is the operative bound.
+  const large = 105_406_871;
+  const envelopeFraction = plexScanByteCeiling([large]) / large;
+  assert(envelopeFraction < PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION,
+    `the envelope is ${envelopeFraction.toFixed(3)} of the object, inside the 0.5 fraction`);
+  assert(GATE.includes('--large-bytes "$LARGE_SIZE"'), 'and the fraction is still asserted on it');
+});
+
+await test('no per-open attribution has crept back in', () => {
+  // The counters keep no association between a response and the open that caused it, so any constant of the
+  // form "blocks per open" is an attribution the data cannot support. The envelope is expressed per ENTRY.
+  const contract = read('src/core/projection/plex-dataplane.ts');
+  const envelope = contract.split('export const PLEX_SCAN_ENVELOPE')[1]?.split('} as const);')[0] ?? '';
+  assert(envelope.length > 0, 'the envelope exists');
+  assert(!/OPENS_PER_NEW_ITEM|DEMAND_BLOCKS_PER_OPEN/.test(envelope),
+    'and is defined without reference to any per-open factor');
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  const budget = cli.split("case 'budget':")[1]?.split("case 'traffic-window'")[0] ?? '';
+  assert(!/OPENS_PER_NEW_ITEM/.test(budget), 'and the budget no longer multiplies by an assumed open count');
+});
+
+await test('the daemon-side geometry constants are still read off the daemon', () => {
+  // These two are what the envelope is built out of, and they are not this gate's to choose.
+  assertEq(PLEX_READ_GEOMETRY.CHUNK_BYTES, 4 * 1024 * 1024, 'the demand block is readpath.ChunkBytes');
   assertEq(PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES, 1_048_576, 'and the probe window is the manifest\'s');
-  // A LARGE OBJECT'S CEILING SATURATES AT THE FIXED WINDOW, WHATEVER ITS SIZE. That is the shape of the
-  // model — a ceiling on what a scan may read, not a prediction of what it will.
-  assertEq(plexScanByteCeiling([512 * 1024 * 1024]), fixed, 'a 512 MiB object saturates the window');
-  assertEq(plexScanByteCeiling([100 * 1024 * 1024]), fixed, 'and so does a 100 MiB one');
-  // ...AND A SMALL ONE IS CLAMPED BY ITSELF: forty kilobytes cannot be allowed a four-megabyte block.
-  assertEq(plexScanByteCeiling([40_000]), PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * 40_000,
-    'a tiny corpus entry is clamped by its own length');
-  assertEq(plexScanByteCeiling([40_000, 40_000]), plexScanByteCeiling([40_000]) * 2, 'and they sum');
+  // ...and the envelope saturates for any object large enough, whatever its size. The diagnostic supports
+  // SIZE INDEPENDENCE in the windows observed — two objects 2.35x apart measured identically in three quiet
+  // runs — and load/timing sensitivity in the one window that moved. It does not support a demonstrated
+  // relationship between the count and contention, and this comment used to assert one.
+  assertEq(plexScanByteCeiling([512 * 1024 * 1024]), PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    'a 512 MiB object gets the envelope');
+  assertEq(plexScanByteCeiling([100 * 1024 * 1024]), PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+    'and so does a 100 MiB one');
   assertEq(plexScanByteCeiling([]), 0, 'nothing costs nothing');
 });
 
@@ -1507,28 +2572,210 @@ await test('the block-geometry ceiling admits every measured scan and refuses a 
 });
 
 await test('the product\'s fraction claim is asserted, on an object big enough for it to mean something', () => {
-  // On a fixture smaller than the 24 MiB the ceiling saturates at, the ceiling already permits a
-  // whole-object read — so satisfying it proves nothing about the fraction. That is a limit of the
-  // INSTRUMENT, not a lower bound: it does not mean a below-one read is unreachable at those sizes. The
-  // claim therefore moves to a fixture where an ACTUAL-BYTE measurement has margin, held to the SHARED
-  // constant the Jellyfin gate is held to rather than one of Plex's own.
-  const saturated = PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM * PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN
-    * PLEX_READ_GEOMETRY.CHUNK_BYTES;
+  // Below saturation the ceiling still permits a whole-object read many times over — so satisfying it proves nothing
+  // about the fraction. That is a limit of the INSTRUMENT, not a lower bound: it does not mean a below-one
+  // read is unreachable at those sizes. The claim therefore moves to a fixture where an ACTUAL-BYTE
+  // measurement has margin, held to the SHARED constant the Jellyfin gate is held to rather than a Plex one.
   assertEq(PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION, MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION,
     'the same fraction, not a Plex-specific one');
   assertEq(MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION, 0.5, 'and the shared constant is untouched');
-  assert(PLEX_LARGE_FIXTURE.MIN_BYTES >= saturated / PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION,
-    'and the fixture is large enough that the saturated ceiling sits under the fraction with margin');
+  // THE MINIMUM IS COMPUTED FROM THE ENVELOPE, so a cap change moves it. The meeting point of the two bounds
+  // is envelope/fraction = 73,400,320; a fixture there would make them identical, so the minimum is above it.
+  const meetingPoint = PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY / PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION;
+  assertEq(meetingPoint, 73_400_320, 'the envelope and the fraction meet at 73,400,320 bytes');
+  assert(PLEX_LARGE_FIXTURE.MIN_BYTES > meetingPoint,
+    'and the fixture minimum is strictly above it, so the two bounds are distinguishable');
+  assertEq(PLEX_LARGE_FIXTURE.MIN_BYTES, 98_566_144, 'which is 94 MiB today');
+  assertEq(PLEX_LARGE_FIXTURE.MIN_BYTES,
+    plexLargeFixtureMinBytes(PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY,
+      MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION),
+    'and today\'s literal is what the function returns for today\'s inputs, not a parallel constant');
   assert(GATE.includes('--large-bytes "$LARGE_SIZE"'), 'the gate asserts the fraction on it');
-  assert(/test "\$LARGE_SIZE" -ge 100663296/.test(GATE),
-    'and refuses to run the claim against a fixture that came out too small to test it');
+  assert(GATE.includes(`test "$LARGE_SIZE" -ge ${PLEX_LARGE_FIXTURE.MIN_BYTES}`),
+    'and refuses to run the claim against a fixture under the SAME computed minimum');
+});
+
+await test('the fixture minimum moves with BOTH its inputs, algebraically and not by coincidence', () => {
+  // A LITERAL THAT HAPPENS TO MATCH TODAY IS NOT A DERIVATION. Matching 98,566,144 proves only that someone
+  // did the arithmetic once. These cases prove the fixture is sized by the envelope and the SHARED fraction
+  // as they stand at the time, so neither can move without moving it — the drift this whole amendment is
+  // about. `LARGE_FIXTURE_MARGIN_OF_FRACTION` is 0.75, so the divisor is `fraction * 0.75`.
+  const envelope = PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY;
+  const fraction = MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION;
+  const MiB = 1024 * 1024;
+
+  // A TIGHTER SHARED CLAIM DEMANDS A BIGGER OBJECT: halving the permitted fraction doubles the minimum.
+  assertEq(plexLargeFixtureMinBytes(envelope, fraction / 2),
+    Math.ceil(envelope / (fraction / 2 * 0.75) / MiB) * MiB, 'halving the fraction is the doubled minimum');
+  assert(plexLargeFixtureMinBytes(envelope, fraction / 2) > 2 * PLEX_LARGE_FIXTURE.MIN_BYTES - 2 * MiB,
+    'and that really is about twice today\'s figure, not a rounding artefact');
+  // A LOOSER ONE PERMITS A SMALLER OBJECT.
+  assert(plexLargeFixtureMinBytes(envelope, 0.8) < PLEX_LARGE_FIXTURE.MIN_BYTES,
+    'a more permissive fraction lowers the minimum');
+  // AND A BIGGER ENVELOPE DEMANDS A BIGGER OBJECT, so raising the CHUNK cap cannot quietly leave the
+  // fraction assertion sitting on a fixture too small to distinguish the two bounds.
+  assert(plexLargeFixtureMinBytes(envelope * 2, fraction) >= 2 * PLEX_LARGE_FIXTURE.MIN_BYTES - MiB,
+    'doubling the envelope roughly doubles the minimum');
+  assert(plexLargeFixtureMinBytes(envelope / 2, fraction) < PLEX_LARGE_FIXTURE.MIN_BYTES,
+    'and a smaller envelope lowers it');
+
+  // THE INVARIANT THAT MAKES THE FIXTURE WORTH HAVING, at every combination: the envelope must come out
+  // strictly under the fraction on an object of the minimum size, with the stated margin.
+  for (const f of [0.2, 0.35, 0.5, 0.8]) {
+    for (const e of [envelope / 4, envelope, envelope * 3]) {
+      const min = plexLargeFixtureMinBytes(e, f);
+      assert(e / min < f, `at fraction ${f} the envelope is under it on the minimum object`);
+      assert(e / min <= f * 0.75 + 1e-9, 'and by the full three-quarters margin');
+    }
+  }
+});
+
+await test('the envelope binds tighter than the fraction on the large object, and says so', () => {
+  // THE ORDERING MATTERS AND IS EASY TO REPORT BACKWARDS. On an object this size the byte ceiling is the
+  // stricter of the two, so the 0.5 fraction cannot fail on its own: anything inside the ceiling is inside
+  // the fraction. The fraction stays the headline because it is the product's claim in the product's terms,
+  // but a report calling it the binding constraint here would overstate the gate.
+  const large = 105_406_871;
+  const envelopeFraction = plexScanByteCeiling([large]) / large;
+  assert(envelopeFraction < PLEX_LARGE_FIXTURE.MAX_SCAN_BYTE_FRACTION,
+    `the envelope is ${envelopeFraction.toFixed(3)} of the object, inside 0.5`);
+  assertEq(Number(envelopeFraction.toFixed(3)), 0.348, 'measured at 0.348 on the fixture the gate builds');
+  for (const source of ['src/core/projection/plex-dataplane.ts',
+    'docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md', 'docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md']) {
+    assert(/does not mathematically bind|is not what binds|not what would fail first/.test(read(source)),
+      `${source} says which of the two actually binds`);
+  }
+});
+
+await test('no source states a retired formula or a retracted absence in the present tense', () => {
+  // THREE FALSE CLAIMS OUTLIVED THEIR CODE, AND EACH READ AS REASSURING. The scan model has been restated
+  // five times now, and every sweep left a copy somewhere the previous ban was not looking. This one covers
+  // the eight files the model touches and rejects a claim unless the same line marks it retired.
+  const RETIRED = [
+    { pattern: /min\(\s*36,?700,?160/, what: 'the retired min(36,700,160, 2 x size) ceiling' },
+    { pattern: /2 x object size|2 × size|2 x its own size|twice its own length|twice the object/i,
+      what: 'the retired 2x size clamp' },
+    { pattern: /no per-reference attribution|does not add it|tranche does not add/i,
+      what: 'the retracted claim that per-reference attribution does not exist' },
+    // Scoped to the ENDPOINT. "the aggregate cannot attribute" is true and must stay sayable; "the
+    // endpoint cannot attribute" is the retracted claim.
+    { pattern: /endpoint (does not keep|cannot attribute|does not attribute)|telemetry cannot attribute/i,
+      what: 'the retracted claim that the endpoint cannot attribute bytes' },
+    // THREE PHRASINGS THE FIRST VERSION OF THIS SCAN MISSED, each a different way of saying the same
+    // retracted thing. A ban that only knows the wording it was written against catches the instance and
+    // not the class, which is how this model has now drifted six times.
+    { pattern: /counts bytes for the whole window|cannot say which reference|which reference spent/i,
+      what: 'the retracted claim that the endpoint measures only whole-window bytes' },
+    { pattern: /both are aggregates|neither can attribute|both AGGREGATES/i,
+      what: 'the retracted claim that the ceiling is an aggregate' },
+    { pattern: /clamped by the object|clamp below the crossover|stricter one below/i,
+      what: 'the retired separate clamp' },
+    // SCOPED TO NaN. A bare "would pass" is ordinary English about anything at all — this same scan once
+    // flagged a sentence about substring checks. The retracted claim is specifically that NaN passes, and
+    // it does not: every helper compares with <=, >= or ===, and each is false against NaN, so NaN FAILS.
+    { pattern: /NaN[^.]{0,80}(pass|silently)/i,
+      what: 'the false claim that NaN makes a budget pass' },
+  ];
+  // CASE-INSENSITIVE, because these paragraphs shout their headings. A case-sensitive version of this list
+  // rejected the very sentence that retracts the NaN claim, whose label reads "AN EARLIER VERSION ... WAS
+  // WRONG" in capitals — a ban that fails on correct text teaches its reader to disable it.
+  const LABELLED =
+    /RETIRED|was refuted|no longer|earlier version|used to|had that backwards|retracted|was wrong|not because/i;
+
+  for (const source of [...SCAN_MODEL_SOURCES, 'test/projection-plex-dataplane.ts',
+    'projectiond/internal/fakeprovider/fakeprovider.go']) {
+    const lines = withoutBanDeclarations(read(source)).split(String.fromCharCode(10));
+    for (let index = 0; index < lines.length; index += 1) {
+      const line = lines[index] ?? '';
+      for (const { pattern, what } of RETIRED) {
+        if (!pattern.test(line)) continue;
+        // A label may sit on the line itself or in the two lines above it, because these are prose
+        // paragraphs and a heading commonly carries the label for the sentence beneath.
+        const context = [lines[index - 2] ?? '', lines[index - 1] ?? '', line].join(' ');
+        assert(LABELLED.test(context),
+          `${source}:${index + 1} states ${what} in the present tense: ${line.trim().slice(0, 80)}`);
+      }
+    }
+  }
+});
+
+await test('the retired 2x clamp is gone from the code, not merely unused', () => {
+  // IT WAS REFUTED, SO IT IS REMOVED. Leaving the constant defined but unreferenced is how a retired rule
+  // comes back: the next reader finds it, assumes it means something, and writes prose around it.
+  for (const source of ['src/core/projection/plex-dataplane.ts',
+    'src/ops/projection-plex-dataplane-cli.ts']) {
+    assert(!/BYTE_SIZE_MULTIPLIER/.test(read(source)), `${source} no longer defines or reads the clamp`);
+  }
+  // AND THE CEILING IS THE CAPS' OWN ARITHMETIC, with nothing fitted in it.
+  const contract = read('src/core/projection/plex-dataplane.ts');
+  assert(/PLEX_SCAN_ENVELOPE\.BLOCK \* Math\.min\(PLEX_READ_GEOMETRY\.CHUNK_BYTES/.test(contract),
+    'the per-object ceiling multiplies the BLOCK cap by the object-clamped demand block');
+  assert(/PLEX_SCAN_ENVELOPE\.SMALL \* Math\.min\(PLEX_READ_GEOMETRY\.PROBE_WINDOW_BYTES/.test(contract),
+    'and the SMALL cap by the object-clamped probe window');
+  // The refutation is recorded rather than quietly dropped.
+  assert(plexHighestCorpusScanRatio() > 2,
+    'the highest recorded corpus ratio exceeds two, which is what refuted the clamp');
+  // 2.00195198... — quoted as 2.001951x throughout, which is the truncation rather than the rounding.
+  assert(Math.abs(plexHighestCorpusScanRatio() - 2.001951) < 1e-5, 'gate8 measured 2.001951x');
+  assertEq(Number(plexHighestCorpusScanRatio().toFixed(3)), 2.002, 'which is 2.002 to three places');
+  assert(!/cannot fail on bytes/.test(read('src/ops/projection-plex-dataplane-cli.ts')),
+    'and the budget phase claims no equivalence between the caps and the byte ceiling');
+});
+
+await test('the envelope is computed from the caps, not from repeated literals', () => {
+  // THE DEFECT THIS CLOSES: BYTES_PER_ENTRY was written as `8 * 4 MiB + 3 * 1 MiB`, so raising CHUNK to 9
+  // would have left the byte half at the old value and the two halves would have disagreed in silence.
+  const contract = read('src/core/projection/plex-dataplane.ts');
+  const envelope = contract.split('export const PLEX_SCAN_ENVELOPE')[1]?.split('} as const);')[0] ?? '';
+  assert(envelope.length > 0, 'the envelope exists');
+  assert(/BYTES_PER_ENTRY: SCAN_CAP_BLOCK \* PLEX_READ_GEOMETRY\.CHUNK_BYTES/.test(envelope),
+    'the byte figure is built from the same binding the BLOCK cap is');
+  assert(/\+ SCAN_CAP_SMALL \* PLEX_READ_GEOMETRY\.PROBE_WINDOW_BYTES/.test(envelope),
+    'and from the same binding the SMALL cap is');
+  assert(/TOTAL: SCAN_CAP_BLOCK \+ SCAN_CAP_SMALL/.test(envelope), 'and the total is summed, not written');
+  assert(!/BYTES_PER_ENTRY: \d/.test(envelope) && !/8 \* 4 \* 1024/.test(envelope),
+    'and no literal cap is repeated inside it');
+  // The arithmetic itself, so a "derived" expression that derives the wrong thing is still caught.
+  assertEq(PLEX_SCAN_ENVELOPE.BYTES_PER_ENTRY, 36_700_160, '8 demand blocks + 3 probe windows');
+  assertEq(PLEX_SCAN_ENVELOPE.TOTAL, 11, 'and eleven responses in total');
+});
+
+await test('the retired 24 MiB per-open scan model is not stated as current anywhere', () => {
+  // Retired-model mentions are allowed ONLY as labelled history. Any occurrence must sit near the word that
+  // marks it retired, and near the envelope that replaced it — otherwise a reader meets the old model as if
+  // it were the contract, which is how this text drifted the first time.
+  const sources = ['src/core/projection/plex-dataplane.ts', 'src/ops/projection-plex-dataplane-cli.ts',
+    'deploy/projection-plex-dataplane-gate.sh', 'docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md',
+    'docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md'];
+  // `96 MiB` joins the list: it was four times the retired 24 MiB saturation point, so it is a survival of
+  // the same model wearing a different number, and it outlived two sweeps that only looked for "24 MiB".
+  const stale = /24 ?MiB|25,?165,?824|opens x min|opens × min|2 opens|96 ?MiB|96\+ ?MiB|100663296/;
+  for (const source of sources) {
+    const text = read(source);
+    for (const line of text.split('\n')) {
+      if (!stale.test(line)) continue;
+      const at = text.indexOf(line);
+      const window = text.slice(Math.max(0, at - 900), at + 900);
+      assert(/retired|RETIRED|exceeded it|previous|used to be|An earlier/.test(window),
+        `${source}: "${line.trim().slice(0, 70)}" is labelled as retired history`);
+      assert(/envelope|36,700,160|BYTES_PER_ENTRY|class cap/.test(window),
+        `${source}: and is paired with the model that replaced it`);
+    }
+  }
+  // And the two flags whose pooled totals caused the wrong denominator are gone from the phase entirely.
+  const cli = read('src/ops/projection-plex-dataplane-cli.ts');
+  const budget = cli.split("case 'budget':")[1]?.split("case 'traffic-window'")[0] ?? '';
+  assert(budget.length > 0 && !/optionalNumber\(args, 'bytes'/.test(budget),
+    'the budget phase no longer reads a pooled --bytes total');
+  assert(!/--bytes |--small-bytes /.test(GATE.replace(/^#.*$/gm, '')),
+    'and no gate call site still passes one');
 });
 
 await test('the re-scan budget is untouched, and it is the strongest claim Plex does support', () => {
   // A second scan of an unchanged generation must cost the provider ZERO ranged GETs and ZERO bytes. That is
   // the daemon's scan-window cache doing exactly what it exists for; it holds on Plex, and nothing above
   // relaxes it.
-  assert(GATE.includes('--gate PX14-rescan --entries 1 --bytes 0 --windows 0'),
+  assert(GATE.includes('--gate PX14-rescan --entries 1 --windows 0'),
     'the re-scan is budgeted at zero bytes and zero windows');
   const cli = read('src/ops/projection-plex-dataplane-cli.ts');
   assert(/if \(sizes\.length > 0\)/.test(cli),
@@ -1600,15 +2847,18 @@ await test('every post-large baseline carries the large item, and the denominato
   }
 });
 
-await test('the byte floor is per object, and cannot be cross-subsidised or defaulted away', () => {
+await test('the byte floor sums per-object terms, and cannot be defaulted away', () => {
   // THE DEFECT THIS CLOSES. The floor was `min(totalRemote, count x 1 MiB)` and `totalRemote` came from
   // `--bytes`, which defaults to 1 — so the restart-scan call, which names sizes but no `--bytes`, had a
-  // floor of ONE BYTE and could not fail. And even when `--bytes` was given, the terms were pooled: thirty-
-  // eight tiny objects that were never opened could be paid for by one large one that was.
+  // floor of ONE BYTE and could not fail.
+  //
+  // WHAT THIS TEST NO LONGER CLAIMS. It used to end with "a run that opened only the two large objects
+  // cannot clear the floor for the other thirty-eight". That is false, and the arithmetic below shows why:
+  // the floor is a SUM checked against ONE aggregate counter. See the cross-subsidy test that follows.
   const cli = read('src/ops/projection-plex-dataplane-cli.ts');
   assert(/sizes\.reduce\(\s*\(total, size\) => total \+ Math\.min\(size, PLEX_READ_GEOMETRY\.PROBE_WINDOW_BYTES\)/
-    .test(cli), 'the floor sums one probe window per object, clamped by the object');
-  assert(!/Math\.min\(totalRemote, sizes\.length/.test(cli), 'and never pools them');
+    .test(cli), 'the floor sums one probe window per object, or the object when it is shorter');
+  assert(!/Math\.min\(totalRemote, sizes\.length/.test(cli), 'and the pooled-total form is gone');
   assert(!/const totalRemote/.test(cli), 'the pooled total is gone entirely');
   // The arithmetic, on a mixed library: 38 tiny objects plus two large ones.
   const window = PLEX_READ_GEOMETRY.PROBE_WINDOW_BYTES;
@@ -1617,8 +2867,6 @@ await test('the byte floor is per object, and cannot be cross-subsidised or defa
     .reduce((total, size) => total + Math.min(size, window), 0);
   assertEq(mixedFloor, 38 * 40_000 + 2 * window,
     'each tiny object contributes its own length and each large one contributes one window');
-  assert(mixedFloor > 2 * window,
-    'so a run that opened only the two large objects cannot clear the floor for the other thirty-eight');
   // NAMING SIZES IS WHAT FEEDS THE CEILING, AND THAT IS ALL IT DOES HERE. The restart-scan window supplies
   // `--object-sizes` so its ceiling is the per-object geometry rather than a default — but it is separately
   // marked `--warm-capable`, so it carries no floor at all. The next test is what proves that; this one
@@ -1665,9 +2913,13 @@ await test('the request-shape diagnostic is wired in, and is asserted to account
   // instead of picking a multiplier that clears the observation.
   const cli = read('src/ops/projection-plex-dataplane-cli.ts');
   for (const bucket of ['chunkResponses', 'chunkBytes', 'smallResponses', 'smallBytes',
-    'otherResponses', 'otherBytes']) {
+    'partialResponses', 'partialBytes', 'oversizedResponses', 'oversizedBytes']) {
     assert(cli.includes(bucket), `the ${bucket} bucket is read from the counters`);
   }
+  // AND THE BUCKET THEY REPLACED IS GONE, not merely unread. `other` conflated a clipped block with a body
+  // larger than a demand block, so no budget could admit the harmless one without admitting the harmful one.
+  assert(!/otherResponses|otherBytes/.test(cli),
+    'the undifferentiated other bucket is gone from the phase entirely');
   assert(/-request-shape-accounts-for-every-byte/.test(cli),
     'and the BYTE partition is ASSERTED, so a response that escaped classification is visible');
   // THE REQUEST PARTITION IS A SEPARATE GATE, because bytes summing correctly says nothing about the count:

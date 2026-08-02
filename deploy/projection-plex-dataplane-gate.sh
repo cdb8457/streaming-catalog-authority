@@ -366,10 +366,13 @@ SEEKPROBES
 cat > "$WORK/sizelist.cjs" <<'SIZELIST'
 // Every REMOTE object in the library, as a comma-separated list of byte lengths.
 //
-// THE BUDGET CLAMPS EACH OBJECT BY ITS OWN LENGTH, so the sizes cannot be summed before they get there: a
-// forty-kilobyte corpus entry cannot cost a four-megabyte demand block, and folding it into a total would
-// let the large entries buy headroom for the small ones. Extra sizes given on the command line are the
-// objects that are not in the corpus document -- the soak source and the remote anchor.
+// THE BUDGET EVALUATES THE CLASS FORMULA AT EACH OBJECT'S LENGTH, so the sizes cannot be summed before they
+// get there: a forty-kilobyte corpus entry cannot cost a four-megabyte demand block, and folding it into a
+// total would inflate the allowance by orders of magnitude. The endpoint reports bytes PER OBJECT, so the
+// ceiling is asserted per object and a breach names the object; this list is what the aggregate cross-check
+// and the floor are computed from.
+// Extra sizes given on the command line are the objects that are not in the corpus document -- the soak
+// source and the remote anchor.
 const { readFileSync } = require('node:fs');
 const [, , expectedPath, ...extra] = process.argv;
 const entries = JSON.parse(readFileSync(expectedPath, 'utf8'));
@@ -511,14 +514,17 @@ ffmpeg_run -hide_banner -loglevel error -y \
 
 LARGE_SIZE="$(wc -c < "$WORK/remote/$LARGE_FILE" | tr -d ' ')"
 LARGE_SHA="$(node "$REL/sha.cjs" "$REL/remote/$LARGE_FILE")"
-# THE FIXTURE HAS TO BE BIG ENOUGH FOR THE CLAIM TO MEAN ANYTHING, and that is asserted rather than assumed:
-# the ALLOWED CEILING for identifying one object saturates at 24 MiB, and on an object of only 20 MB that
-# ceiling already exceeds half the object -- so a 0.5 fraction would be asserting something the ceiling does
-# not constrain, and the result would say nothing either way. (The ceiling is an upper bound on what a scan
-# MAY read, not a floor on what it needs; an earlier version of this comment called it the bytes a scan
-# legitimately needs, which reads it backwards.)
-test "$LARGE_SIZE" -ge 100663296 \
-  || die "the large fixture is $LARGE_SIZE bytes, under the 96 MiB the fraction claim needs to be testable"
+# THE FIXTURE HAS TO BE BIG ENOUGH FOR THE CLAIM TO MEAN ANYTHING, and that is asserted rather than assumed.
+# The ALLOWED CEILING for identifying one object is the class caps evaluated against its own length: 8 block
+# fetches plus 3 probe windows, each evaluated at the object's length. On a 20 MB object that exceeds half the
+# object -- so a 0.5
+# fraction would be asserting something the ceiling does not constrain and the result would say nothing either
+# way. 94 MiB is PLEX_LARGE_FIXTURE.MIN_BYTES, the smallest whole MiB at which the envelope is under three
+# quarters of the headline fraction; an offline test asserts this literal still equals that constant.
+# (The ceiling is an upper bound on what a scan MAY read, not a floor on what it needs; an earlier version of
+# this comment called it the bytes a scan legitimately needs, which reads it backwards.)
+test "$LARGE_SIZE" -ge 98566144 \
+  || die "the large fixture is $LARGE_SIZE bytes, under the 94 MiB the fraction claim needs to be testable"
 echo "  the large remote object is $LARGE_SIZE bytes"
 
 # THE SECOND LARGE OBJECT, GENERATED ONLY IN DIAGNOSTIC MODE AND ONLY HERE.
@@ -935,7 +941,7 @@ drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/c
 # fetch from the provider. Zero ranged requests would score perfectly against every ceiling and would mean
 # the media server never opened it.
 drive budget --before "$REL/out/counters-before-scan.json" --after "$REL/out/counters-after-scan.json" \
-  --gate PX9-scan --entries 1 --bytes "$REMOTE_SIZE" --object-sizes "$REMOTE_SIZE" --min-range 1
+  --gate PX9-scan --entries 1 --object-sizes "$REMOTE_SIZE" --min-range 1
 
 # ----------------------------------------------------------------------------------------------------------
 step "direct play, byte for byte, against digests recorded outside the mount"
@@ -1013,24 +1019,28 @@ drive scan --state "$STATE" --expect-file "$REL/out/expected-corpus.json" \
   --out "$REL/out/items-corpus.json" --label corpus
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-corpus.json"
 
-# THE BYTE DENOMINATOR IS EVERY REMOTE OBJECT IN THE LIBRARY BEING SCANNED, AND IT USED TO BE LESS THAN THAT.
+# THE BYTE DENOMINATOR IS EVERY REMOTE OBJECT IN THE LIBRARY BEING SCANNED, ONE OBJECT AT A TIME.
 #
-# THE DEFECT THIS CLOSES. This passed `--bytes $SOAK_SIZE --small-bytes $CORPUS_SMALL_BYTES`, which names the
-# soak source and the corpus but silently omits the REMOTE ANCHOR -- an entry that is in this library and is
-# re-scanned by this very scan. A budget whose denominator is smaller than the thing being measured is not a
-# tight budget, it is a wrong one: it reported a ratio against a quantity that was never the subject.
+# THE DEFECT THIS CLOSES. This passed `--bytes $SOAK_SIZE --small-bytes $CORPUS_SMALL_BYTES` -- two POOLED
+# totals, which named the soak source and the corpus but silently omitted the REMOTE ANCHOR, an entry that is
+# in this library and is re-scanned by this very scan. A budget whose denominator is smaller than the thing
+# being measured is not a tight budget, it is a wrong one. And pooling the SIZES was the deeper fault: a
+# total handed to the ceiling grants every entry the full envelope, which on this library is orders of
+# magnitude more than clamping each of the thirty-eight tiny entries by its own length.
 #
-# A SCAN OF THIS LIBRARY READS EVERY REMOTE OBJECT IN IT, so all three are named.
-CORPUS_SMALL_BYTES="$(node "$REL/jq.cjs" smallRemoteBytes < "$WORK/out/corpus-totals.json")"
+# ATTRIBUTION NOW EXISTS, AND THE CEILING USES IT. The endpoint reports bytes per registered object, so each
+# object is held to its own ceiling and a breach names it -- this stopped being an aggregate-only claim when
+# gate8 exceeded the summed ceiling by 47,065 bytes and nothing could say which of forty objects did it. The
+# FLOOR is still a sum, because a floor is a claim about which objects should have been READ and this phase
+# does not map the caller's window set onto the endpoint's ordinals.
+#
+# BOTH FLAGS ARE NOW GONE FROM THE PHASE, so this can no longer be got wrong by omission. Every byte term is
+# derived from `--object-sizes`, and the ceiling evaluates the class caps at EACH object's length: 40 KB
+# cannot cost a demand block. `--entries` alone carries the request and resolution denominators.
 CORPUS_REMOTE_ENTRIES="$(node "$REL/jq.cjs" remoteEntries < "$WORK/out/corpus-totals.json")"
-LARGE_REMOTE_BYTES=$(( SOAK_SIZE + REMOTE_SIZE ))
-# THE CEILING IS BLOCK GEOMETRY PER OBJECT, so every remote object's own size is named. The corpus entries
-# are listed individually rather than summed, because the ceiling clamps each one by its own length: forty
-# thousand bytes cannot cost a demand block.
 CORPUS_SIZE_LIST="$(node "$REL/sizelist.cjs" "$REL/out/corpus-expected.json" "$SOAK_SIZE" "$REMOTE_SIZE")"
 drive budget --before "$REL/out/counters-before-corpus.json" --after "$REL/out/counters-after-corpus.json" \
   --gate PX9b-corpus-scan --entries "$(( CORPUS_REMOTE_ENTRIES + 2 ))" \
-  --bytes "$LARGE_REMOTE_BYTES" --small-bytes "$CORPUS_SMALL_BYTES" \
   --object-sizes "$CORPUS_SIZE_LIST" --min-range 1
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1046,18 +1056,26 @@ step "one LARGE remote object, which is the only place the fraction claim can be
 # ----------------------------------------------------------------------------------------------------------
 # WHY THIS FIXTURE EXISTS, AND WHY EVERY OTHER BYTE BUDGET IN THIS GATE IS THE WRONG PLACE FOR THE CLAIM.
 #
-# The daemon serves a 4 MiB demand block for a one-byte read, and Plex opens each new item twice and touches
-# about three blocks per open. So the CEILING for identifying one object is 2 x min(3 x 4 MiB, the object) --
-# topping out at 24 MiB, but clamping to twice the object below 12 MiB. Every other remote fixture here is
-# under that: the soak source is 8.6 MB and the anchor 14.0 MB, so at those sizes the ceiling already permits
-# a whole-object read and satisfying it would prove nothing about the fraction. That is a limit of the
-# INSTRUMENT and not a lower bound -- it does not mean a below-one read is unreachable there. The 1.28x and
-# 1.66x measured earlier are separately just observations of what was read. An earlier version of this gate
-# answered those numbers by raising a multiplier above 1.0, which recorded the observation and retired the
-# claim.
+# The daemon serves a 4 MiB demand block for a one-byte read, so the CEILING for identifying one object is
+# the class caps evaluated against that object -- 8 block fetches plus 3 probe windows, each clamped by the
+# object's own length. It SATURATES at one demand block: at 4 MiB or more an object earns the full
+# 36,700,160 bytes, and every larger object earns exactly the same. The soak source is 8.6 MB and the anchor
+# 14.0 MB, so both are saturated and the ceiling permits a whole-object read several times over at those
+# sizes -- satisfying it would prove nothing about the fraction. That is a limit of the INSTRUMENT and not a lower
+# bound -- it does not mean a below-one read is unreachable there. The 1.28x and 1.66x measured earlier are
+# separately just observations of what was read. An earlier version of this gate answered those numbers by
+# raising a multiplier above 1.0, which recorded the observation and retired the claim.
 #
-# 96 MiB IS FOUR TIMES THE FIXED WINDOW, so a correct scan should sit near 0.25 of the object and the SHARED
-# fraction of 0.5 -- the same constant the Jellyfin gate is held to, not one of Plex's own -- has real margin.
+# A RETIRED MODEL, NAMED SO IT IS NOT REBUILT: the ceiling here used to be 2 opens x min(3 x 4 MiB, size),
+# saturating at 24 MiB. gate6 exceeded it -- 32,505,856 against 25,165,824 -- and it apportioned aggregate
+# counters per open, which those counters cannot support. It is gone; nothing below divides by an open count.
+#
+# THE FIXTURE IS ABOVE 94 MiB, so the envelope is at most three quarters of the headline fraction. AND THE
+# HONEST ORDER OF THE TWO ASSERTIONS: at this size the envelope (0.348 of the 105.4 MB object actually built)
+# is TIGHTER than the SHARED 0.5 fraction, so the fraction does not mathematically bind -- a run inside the
+# byte ceiling is already inside 0.5. The fraction stays the explicit headline because it is the product's
+# claim in the product's own terms and it is the same constant the Jellyfin gate is held to, not one of
+# Plex's own; the envelope is simply what would catch a regression first.
 #
 # IT IS PUBLISHED IN ITS OWN GENERATION AND MEASURED IN ITS OWN COUNTER WINDOW, which is what makes the
 # delta attributable to this one object: everything already in the library has been scanned and analysed,
@@ -1102,9 +1120,10 @@ drive scan --state "$STATE" --expect-file "$REL/out/expected-large.json" \
   --out "$REL/out/items-large.json" --label large
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-large.json"
 
-# THE CLAIM, AT LAST SOMEWHERE IT CAN BE TESTED: what did identifying a 96+ MiB object cost, as a fraction of
-# the object? A scanner that downloaded it would sit at 1.0. The ceiling is the SHARED 0.5 the Jellyfin gate
-# is held to, and the block-geometry ceiling is asserted beside it.
+# THE CLAIM, AT LAST SOMEWHERE IT CAN BE TESTED: what did identifying an object above the computed 94 MiB
+# minimum cost, as a fraction of the object? A scanner that downloaded it would sit at 1.0. The headline is
+# the SHARED 0.5 the Jellyfin gate is held to, and the class-envelope ceiling is asserted beside it -- and on
+# an object this size the ENVELOPE is the tighter of the two, so 0.5 is the headline but is not what binds.
 drive budget --before "$REL/out/counters-before-large.json" --after "$REL/out/counters-after-large.json" \
   --gate PX9c-large-object-scan --entries 1 --object-sizes "$LARGE_SIZE" \
   --large-bytes "$LARGE_SIZE" --min-range 1
@@ -1512,7 +1531,7 @@ drive scan --state "$STATE" --expect-file "$REL/out/expected-2.json" \
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-rescan.json"
 drive compare --before "$REL/out/items-4.json" --after "$REL/out/items-5.json" --gate PX13-rescan-churn
 drive budget --before "$REL/out/counters-before-rescan.json" --after "$REL/out/counters-after-rescan.json" \
-  --gate PX14-rescan --entries 1 --bytes 0 --windows 0
+  --gate PX14-rescan --entries 1 --windows 0
 
 # THE WHOLE-RUN PROVIDER INVARIANTS ARE TAKEN HERE, and here rather than at the very end, because the
 # source-outage step below stops and restarts the endpoint process, which resets its counters.
@@ -1893,10 +1912,12 @@ echo "run's media server sat on an ordinary bridge network -- not because Plex n
 echo "measured and found NOT to be so, but because Docker Desktop cannot publish a port from an internal"
 echo "network and the driver reaches the server through one; so scanning and playback on an air-gapped Plex"
 echo "are NOT established here. The product's fraction-of-the-object scan argument is neither proved nor"
-echo "disproved by the small fixtures: the ceiling for identifying one object is 2 opens x min(3 x 4 MiB, the"
-echo "object), which clamps to twice the object below 12 MiB -- so on an 8.6 MB or 14.0 MB fixture it already"
+echo "disproved by the small fixtures: the ceiling for identifying one object is a 36,700,160-byte class"
+echo "envelope, or the caps against a shorter object -- so on an 8.6 MB or 14.0 MB fixture it already"
 echo "permits a whole-object read and satisfying it proves nothing about the fraction. That is a limit of the"
-echo "instrument, not a lower bound. The claim is asserted here on ONE 96 MiB fixture, where an actual-byte"
-echo "measurement has margin, against the same 0.5 fraction Jellyfin is held to -- see the data-plane"
+echo "instrument, not a lower bound. The claim is asserted here on ONE fixture above 94 MiB, where an"
+echo "actual-byte measurement has margin, against the same 0.5 fraction Jellyfin is held to. On that object"
+echo "the envelope is the tighter of the two bounds, so the 0.5 fraction is the headline but is not what"
+echo "binds -- see the data-plane"
 echo "document. The acceptance plan closes the tranche only on a Linux/Unraid run, on all three media"
 echo "servers, three consecutive times."

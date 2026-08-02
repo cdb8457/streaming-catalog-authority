@@ -7,8 +7,10 @@ import {
   type GateResult, type SeekDecode, type SoakProbe,
 } from '../core/projection/media-server-dataplane.js';
 import {
-  PLEX_ENCODER_FLOORS, PLEX_LARGE_FIXTURE, PLEX_READ_GEOMETRY, analysePlexEncoderLiveness,
-  plexScanByteCeiling, plexSeekByteCeiling,
+  PLEX_ENCODER_FLOORS, PLEX_GATE6_COMPATIBLE_BLOCKS, PLEX_LARGE_FIXTURE, PLEX_READ_GEOMETRY,
+  PLEX_SCAN_ENVELOPE, analysePlexEncoderLiveness, plexHighestMeasuredPerEntry,
+  plexInstrumentedWindowCounts, plexObjectByteCeiling, plexScanByteCeiling, plexScanRequestCeilings,
+  plexSeekByteCeiling,
 } from '../core/projection/plex-dataplane.js';
 import {
   GateFailure, addMovieLibrary, appendResult, applyPreferences, assertAnonymousLocalApi, awaitFile,
@@ -46,7 +48,7 @@ import {
 //   resume        --state F --items F --key K --expect-file F
 //   compare       --before F --after F --gate G [--expect-added N]
 //   counters      --url U --out F
-//   budget        --before F --after F --gate G --entries N --bytes N [--small-bytes N] [--windows N]
+//   budget        --before F --after F --gate G --entries N --object-sizes N,N,... [--windows N]
 //   traffic-window --before F --after F --gate G --object-bytes N [--max-object-multiplier N]
 //   assert-scan-in-flight --state F
 //   provider-invariants --counters F --gate G
@@ -104,6 +106,42 @@ function itemFor(items: readonly ItemRecord[], key: string): ItemRecord {
 
 function readItems(path: string): ItemRecord[] {
   return JSON.parse(readFileSync(path, 'utf8')) as ItemRecord[];
+}
+
+/**
+ * A COUNTERS SNAPSHOT AS IT ACTUALLY IS, WHICH IS NOT A MAP OF NUMBERS.
+ *
+ * THE DEFECT THIS CLOSES. Every phase read the endpoint's JSON `as Record<string, number>`. That was a lie
+ * the moment per-object attribution arrived: two of the fields are ARRAYS, and a cast does not make them
+ * scalars. TypeScript then cheerfully typed `snapshot.objectBytes` as a number and every arithmetic on it
+ * as valid, which is precisely the checking the cast was pretending to provide.
+ *
+ * The honest type says the values are unknown, and `counterValue` is the only way a scalar comes out of one.
+ */
+type ProviderCounterSnapshot = Record<string, unknown>;
+
+/**
+ * Reads one SCALAR counter, and refuses anything that is not a whole non-negative count.
+ *
+ * A MISSING COUNTER IS ZERO, DELIBERATELY, because the endpoint omits nothing it tracks and older artifacts
+ * legitimately lack fields added later. A PRESENT counter that is not a number is a broken instrument, and
+ * it is rejected HERE rather than left to the arithmetic.
+ *
+ * NOT BECAUSE IT WOULD PASS — AN EARLIER VERSION OF THIS COMMENT SAID SO AND WAS WRONG. Every comparison
+ * against NaN is false, and the helpers read `measured <= budget`, `measured >= floor` and
+ * `measured === expected` with pass on the true branch, so NaN makes each of them FAIL. The reason to
+ * validate is that those failures are meaningless: a gate reporting "PX9b-provider-bytes NaN/48222708"
+ * blames the data plane for a broken counters file, and an operator would spend the investigation in the
+ * wrong place. Corrupt instrumentation should say it is corrupt, by name, at the point it is read.
+ */
+function counterValue(snapshot: ProviderCounterSnapshot, key: string): number {
+  const raw = snapshot[key];
+  if (raw === undefined) return 0;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || !Number.isInteger(raw)) {
+    fail(`the counter ${key} is ${JSON.stringify(raw)}, which is not a whole non-negative count. Every `
+      + 'budget reading it would fail against NaN and blame the data plane for a broken counters file');
+  }
+  return raw as number;
 }
 
 function record(args: Args, result: GateResult): void {
@@ -468,52 +506,466 @@ async function main(): Promise<void> {
       const response = await fetch(need(args, 'url'), { signal: controller.signal })
         .finally(() => clearTimeout(timer));
       if (!response.ok) fail(`the provider counters endpoint answered ${response.status}`);
-      const snapshot = await response.json() as Record<string, number>;
+      const snapshot = await response.json() as ProviderCounterSnapshot;
       writeFileSync(need(args, 'out'), `${JSON.stringify(snapshot, null, 2)}\n`);
       console.log(`  provider counters: ${JSON.stringify(snapshot)}`);
       return;
     }
 
     case 'budget': {
-      const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as Record<string, number>;
-      const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as Record<string, number>;
+      const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as ProviderCounterSnapshot;
+      const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as ProviderCounterSnapshot;
       const gate = need(args, 'gate');
       const entries = optionalNumber(args, 'entries', 1);
-      const remoteBytes = optionalNumber(args, 'bytes', 1);
-      const windows = optionalNumber(args, 'windows', MEDIA_SERVER_BUDGETS.MAX_SCAN_RANGE_MULTIPLIER);
-      const delta = (key: string): number => (after[key] ?? 0) - (before[key] ?? 0);
+      const delta = (key: string): number => counterValue(after, key) - counterValue(before, key);
+      // AN EXPLICIT `--windows 0` MEANS THIS WINDOW MAY COST NOTHING AT ALL, and it forces every class and
+      // every byte to zero. It is what the warm re-scan uses: a second scan of an unchanged generation is
+      // served entirely from the daemon's persistent probe cache, and "zero" there is the whole assertion.
+      // A default of zero would be wrong, so it is only the EXPLICIT flag that does this.
+      const zeroWindow = args.flags.get('windows') === '0';
+      const caps = zeroWindow
+        ? { block: 0, small: 0, oversized: 0, bodyless: 0, total: 0 }
+        : plexScanRequestCeilings(entries);
 
-      record(args, withinBudget(`${gate}-range-requests`, delta('rangeRequests'),
-        Math.ceil(entries * windows), `denominator: ${entries} remote entries x ${windows} windows`));
-      record(args, withinBudget(`${gate}-resolutions`, delta('resolutions'),
-        Math.ceil(entries * MEDIA_SERVER_BUDGETS.MAX_SCAN_RESOLUTION_MULTIPLIER),
-        `denominator: ${entries} remote entries`));
-      // WHAT A PLEX SCAN MAY COST, AS A CEILING DERIVED FROM BLOCK GEOMETRY RATHER THAN A MULTIPLE OF THE
-      // FIXTURE.
+      // THE REQUEST BUDGET IS PER RESPONSE CLASS, NOT ONE TOTAL.
       //
-      // The daemon serves a 4 MiB demand block for a one-byte read; Plex opens each new item twice. So the
-      // CEILING on scanning one object is `opens x min(blocks x chunk, size)`, which saturates once the
-      // object is large and clamps to a multiple of the object when it is small. On a small fixture that
-      // ceiling already permits a whole-object read, so satisfying it proves nothing about the fraction —
-      // a limit of the instrument, not a lower bound, and not a claim that a below-one read is impossible
-      // there. The earlier attempt to express this as a >1.0 multiplier recorded the observation instead of
-      // constraining it. The product's fraction claim is asserted separately, against an object several
-      // times larger than the saturation point: `--large-bytes`. See `plexScanByteCeiling` and
-      // `PLEX_LARGE_FIXTURE`.
-      // EVERY BYTE TERM COMES FROM `--object-sizes`, ONE OBJECT AT A TIME. `--bytes` and `--small-bytes`
-      // survive only for the range/resolution denominators above; nothing about the byte budget is derived
-      // from a pooled total any more, because a pooled total is what let one large object pay for
-      // thirty-eight tiny ones.
-      const sizes = (args.flags.get('object-sizes') ?? '').split(',')
-        .map((entry) => Number(entry.trim())).filter((entry) => Number.isFinite(entry) && entry > 0);
-      if (sizes.length > 0) {
-        const byteBudget = plexScanByteCeiling(sizes);
-        record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), byteBudget,
-          `${sizes.length} remote objects, each at most `
-          + `${PLEX_READ_GEOMETRY.OPENS_PER_NEW_ITEM} opens x `
-          + `${PLEX_READ_GEOMETRY.DEMAND_BLOCKS_PER_OPEN} demand blocks of `
-          + `${PLEX_READ_GEOMETRY.CHUNK_BYTES} bytes, clamped by the object`));
-        // A FLOOR, DERIVED PER OBJECT AND NOT CROSS-SUBSIDISED.
+      // A single ceiling of eleven can be spent as eleven 4 MiB demand blocks — 44 MiB — which is not what
+      // any observation looks like and is not what the budget means to permit. Capping each class separately
+      // means the expensive class has its own limit and the cheap one cannot lend it headroom. The total is
+      // asserted too, as a cross-check, but it is the per-class caps that constrain the mix.
+      //
+      // FULL AND CLIPPED BLOCKS ARE SUMMED AND HELD TO ONE CAP, WHICH gate7 IS THE REASON FOR. That run's
+      // corpus window served 0 full blocks and 13 clipped ones and failed a budget asserting the clipped
+      // class could not exist. It can: `readpath.demandBlock` clips a block to the gap between cached probe
+      // windows, so a read bounded by cached data legitimately returns less than a full block. Both are one
+      // block-sized fetch, so both spend the same allowance — and a clipped block can never cost more bytes
+      // than a full one, so admitting the class widened no byte budget.
+      const blockResponses = delta('chunkResponses') + delta('partialResponses');
+      record(args, withinBudget(`${gate}-block-responses`, blockResponses, caps.block,
+        `${entries} entries x ${PLEX_SCAN_ENVELOPE.BLOCK} block-sized fetches, full or clipped `
+        + `(${delta('chunkResponses')} full, ${delta('partialResponses')} clipped). EMPIRICAL WATCHDOG: `
+        + `highest MEASURED is ${plexHighestMeasuredPerEntry('blocks')} per entry across `
+        + `${plexInstrumentedWindowCounts().total} instrumented windows `
+        + `(${plexInstrumentedWindowCounts().diagnostic} diagnostic, ${plexInstrumentedWindowCounts().gate} `
+        + `in a full gate); ${PLEX_GATE6_COMPATIBLE_BLOCKS.BLOCKS} is INFERRED, the decomposition compatible `
+        + `with the uninstrumented gate6 aggregate of ${PLEX_GATE6_COMPATIBLE_BLOCKS.REQUESTS} requests / `
+        + `${PLEX_GATE6_COMPATIBLE_BLOCKS.BYTES} bytes. A breach is a finding to investigate, never a bump`));
+      record(args, withinBudget(`${gate}-small-responses`, delta('smallResponses'), caps.small,
+        `${entries} entries x ${PLEX_SCAN_ENVELOPE.SMALL} probe-window reads; highest measured is `
+        + `${plexHighestMeasuredPerEntry('small')} per entry across every instrumented window`));
+      record(args, exactly(`${gate}-oversized-responses`, delta('oversizedResponses'), caps.oversized,
+        'a body LARGER than one demand block can only be a coalesced read or a full body answering a '
+        + 'ranged request, and neither has ever occurred'));
+      record(args, exactly(`${gate}-bodyless-responses`, delta('bodylessResponses'), caps.bodyless,
+        'a ranged request the endpoint refused has never occurred in a healthy window'));
+      record(args, withinBudget(`${gate}-range-requests`, delta('rangeRequests'), caps.total,
+        `${entries} entries x ${PLEX_SCAN_ENVELOPE.TOTAL}; a cross-check on the per-class caps above, which `
+        + 'are what stop this being spendable as demand blocks'));
+      record(args, withinBudget(`${gate}-resolutions`, delta('resolutions'),
+        zeroWindow ? 0 : Math.ceil(entries * MEDIA_SERVER_BUDGETS.MAX_SCAN_RESOLUTION_MULTIPLIER),
+        `denominator: ${entries} remote entries`));
+      // THE BYTE CEILING IS THE CLASS FORMULA EVALUATED AT THE OBJECT'S LENGTH.
+      //
+      // BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size). One expression, no second rule beside it and
+      // nothing in it fitted: the caps asserted above, asked what they permit for an object this long.
+      //
+      // IT SATURATES AT ONE DEMAND BLOCK — 4 MiB, being `max(CHUNK_BYTES, PROBE_WINDOW_BYTES)`. At or above
+      // that, an object can serve full blocks and full probe windows, so it earns the whole 36,700,160-byte
+      // envelope and every larger object earns exactly the same. Shorter objects earn less from the same
+      // caps, because a 40 KB entry cannot serve a 4 MiB block: it is held to eleven reads of its own
+      // length, 444,532 bytes.
+      //
+      // TWO RETIRED READINGS, RECORDED SO NEITHER IS REBUILT. This comment once said a scan satisfying every
+      // request cap could not then fail on bytes, which was false. It then said the stricter of two halves
+      // was a clamp below a crossover — also false, and by then describing a clamp that no longer existed:
+      // there is no separate clamp and no crossover, only this one formula, flat from 4 MiB upward.
+      //
+      // THE OLD HALF-ENVELOPE FIGURE IS GONE. It marked where the retired clamp met the envelope; with no
+      // clamp there is no such point, and the ceiling has been flat from one demand block upward regardless.
+      //
+      // WHAT IT REPLACES, AND WHY THAT ONE WAS WRONG. The previous ceiling was
+      // `opens x min(blocks x chunk, size)` = 24 MiB saturated, and gate6 exceeded it: 32,505,856 against
+      // 25,165,824. It was built on a per-open apportionment the aggregate counters cannot support and on a
+      // demand-block count that proved load- and timing-sensitive rather than fixed.
+      //
+      // ON A SMALL OBJECT THIS CEILING STILL PERMITS A WHOLE-OBJECT READ, so satisfying it proves nothing
+      // about the fraction — a limit of the instrument, not a lower bound, and not a claim that a below-one
+      // read is impossible there. The fraction is asserted separately, on one object large enough for it to
+      // mean something: `--large-bytes`. On the 105 MB fixture the envelope is 0.348 of the object, tighter
+      // than the 0.5 fraction — so the ENVELOPE is what binds there and the fraction cannot fail on its own.
+      // The fraction stays the explicit headline because it is the product's claim in the product's terms;
+      // calling it the binding constraint here would overstate the gate.
+      // EVERY BYTE TERM COMES FROM `--object-sizes`, ONE OBJECT AT A TIME. `--bytes` and `--small-bytes` are
+      // GONE, not merely unused: they named a pooled remote total, and a pooled total is exactly what let one
+      // large object pay for thirty-eight tiny ones. The request and resolution denominators come from
+      // `--entries`. Nothing in this phase reads a pooled byte figure any more, so nothing accepts one.
+      // EVERY TOKEN IS PARSED, AND A BAD ONE IS FATAL RATHER THAN DROPPED.
+      //
+      // THE DEFECT THIS CLOSES. This used to `.filter()` out anything that was not a finite positive number,
+      // which meant `1000,,2000` silently became a two-object denominator, `abc,2000` a one-object one, and a
+      // shell variable that expanded to nothing an empty list — and an empty list skipped the byte ceiling
+      // altogether. Every one of those makes the budget LOOSER than the gate reads as, invisibly, from a
+      // typo. The denominator of a budget is not a place to be forgiving.
+      const rawSizes = (args.flags.get('object-sizes') ?? '').trim();
+      const sizes = rawSizes === '' ? [] : rawSizes.split(',').map((token) => {
+        const size = Number(token.trim());
+        if (token.trim() === '' || !Number.isFinite(size) || size <= 0) {
+          fail(`--object-sizes contains ${JSON.stringify(token)}, which is not a positive byte count. `
+            + 'Every object in the window must name its own size; dropping one would quietly shrink the '
+            + 'denominator the byte budget is measured against');
+        }
+        return size;
+      });
+      // AND FOR ANY WINDOW THAT IS NOT AN EXPLICIT ZERO, THE FLAG IS REQUIRED. The usage line has always
+      // declared it so. Absent it, the byte ceiling simply did not run and the phase still reported success.
+      if (!zeroWindow && sizes.length === 0) {
+        fail('--object-sizes is required for a budget window: without it no provider-byte ceiling can be '
+          + 'computed, and a phase that silently omits its byte assertion is the failure this gate exists '
+          + 'to catch. The one size-free form is an explicit --windows 0, which asserts zero bytes instead');
+      }
+
+      // A ZERO WINDOW IS ASSERTED WITHOUT REFERENCE TO ANY OBJECT, AND THAT IS WHY THIS SITS OUTSIDE THE
+      // `sizes` GUARD.
+      //
+      // THE DEFECT THIS CLOSES, AND IT WAS THE WORST KIND. The byte assertion used to live inside
+      // `if (sizes.length > 0)`. `PX14`, the warm re-scan, passes `--entries 1 --windows 0` and NO
+      // `--object-sizes` — it has no reason to name a size, because it asserts that the provider was not
+      // touched at all. So the whole block was skipped and **no byte assertion ran**: the re-scan window
+      // could have served any number of bytes and this phase would have reported nothing about it, while the
+      // code comment, the document and an offline test all said `--windows 0` forced bytes to zero. A check
+      // that cannot fail, described as the strongest amplification claim the gate makes.
+      //
+      // Zero needs no denominator. `exactly` rather than a ceiling of zero, so a negative delta — counters
+      // reset underneath the window — is a failure too rather than something "within budget".
+      if (zeroWindow) {
+        record(args, exactly(`${gate}-provider-bytes`, delta('bytesServed'), 0,
+          'an explicit --windows 0 window asserts the provider was not touched: zero bytes, whether or not '
+          + 'any object size was named'));
+        // An explicit zero window asserts zero above; a floor beneath it would contradict that outright.
+        record(args, {
+          gate: `${gate}-provider-bytes-floor-not-applicable`, verdict: 'pass',
+          note: 'an explicit --windows 0 window is asserted at zero, so it carries no floor',
+        });
+      } else if (sizes.length > 0) {
+        // ORDINARY BYTE BUDGETING STILL REQUIRES SIZES, because every term of it is per object.
+        //
+        // AND IT IS NOW ASSERTED PER OBJECT, WHICH IS WHAT gate8 FORCED. That run exceeded the SUMMED ceiling
+        // by 47,065 bytes across forty objects and the telemetry could not say which one spent them: one
+        // large object read twice over looks exactly like thirty-eight small ones taking an extra pass. The
+        // endpoint now attributes bytes per registered object, so each entry answers for itself.
+        //
+        // THE PER-OBJECT LIMIT IS THE CAPS' OWN ARITHMETIC, not a fitted multiple. The retired 2x clamp was
+        // refuted by gate8's 2.001951x; raising it to clear that run would have fitted a constant to a
+        // measurement whose subject was unknown, because the window pooled forty objects.
+        // EVERY ELEMENT IS VALIDATED, AND A MALFORMED ARRAY IS FATAL RATHER THAN EMPTY.
+        //
+        // These arrive as JSON from the endpoint over HTTP. Casting them to number[] and hoping is how a
+        // budget ends up computing verdicts from `undefined`. NaN comparisons are all false, so those
+        // verdicts FAIL rather than pass — an earlier version of this comment had that backwards — but they
+        // fail meaninglessly, naming the data plane for what is a broken counters file. A broken instrument
+        // says so by name, at the point it is read.
+        const readCounterArray = (snapshot: Record<string, unknown>, key: string): number[] | undefined => {
+          const raw = snapshot[key];
+          if (raw === undefined) return undefined;
+          if (!Array.isArray(raw)) {
+            fail(`${key} is ${typeof raw} rather than an array; the counters endpoint is not what this `
+              + 'phase was written against');
+          }
+          return (raw as unknown[]).map((element, index) => {
+            if (typeof element !== 'number' || !Number.isFinite(element)
+              || element < 0 || !Number.isInteger(element)) {
+              fail(`${key}[${index}] is ${JSON.stringify(element)}, which is not a non-negative whole `
+                + 'number of bytes. A per-object verdict computed from it would fail against NaN and blame '
+                + 'the object for a broken counters file');
+            }
+            return element as number;
+          });
+        };
+        // THE BEFORE SNAPSHOT MUST SAY SO EXPLICITLY. `?? []` treated a MISSING array as "no cumulative
+        // history", which is not the same statement at all: it silently reads every AFTER total as though it
+        // had all been served inside this window. On a window opened late in a run that turns another
+        // phase's traffic into this one's, and the direction of the error is always toward a bigger
+        // measured delta being attributed here. A counters file without the field is an older or foreign
+        // endpoint, not an endpoint that had served nothing.
+        const objectBytesBeforeRaw = readCounterArray(before, 'objectBytes');
+        const objectBytesAfter = readCounterArray(after, 'objectBytes') ?? [];
+        if (objectBytesAfter.length > 0 && objectBytesBeforeRaw === undefined) {
+          fail('the AFTER counters carry per-object attribution but the BEFORE counters do not. Treating '
+            + 'the missing history as zero would attribute every byte this endpoint has ever served to this '
+            + 'one window. Take both snapshots from the same endpoint');
+        }
+        const objectBytesBefore = objectBytesBeforeRaw ?? [];
+        // THE SIZES COME FROM THE ENDPOINT, IN THE ENDPOINT'S OWN ORDER, and that is not a convenience.
+        // `--object-sizes` is in the GATE's order; the attribution array is in registration order. Pairing
+        // them by position would judge one object against another's length and report confident per-object
+        // verdicts about the wrong objects. The endpoint knows every size because the gate told it, so it
+        // answers with them and the two orderings never meet.
+        const objectSizes = readCounterArray(after, 'objectSizes') ?? [];
+
+        // THE CLASS COLUMNS, READ WITH THE SAME FAIL-CLOSED RULE AS THE BYTES.
+        //
+        // MY FIRST DRAFT USED `?? []` ON THE **BEFORE** SIDE, WHICH IS THE DEFECT I HAD JUST FIXED FOR
+        // `objectBytes`, REINTRODUCED ONE FUNCTION LOWER. An absent BEFORE column is not "this object had no
+        // class traffic yet"; it is a counters file that cannot describe the window. Treating it as zero
+        // charges every response the endpoint has EVER classified to this one window, and the error always
+        // runs toward a larger delta, which is the direction that invents breaches.
+        const CLASS_COLUMNS = ['objectChunk', 'objectSmall', 'objectPartial', 'objectOversized'] as const;
+        type ClassColumn = typeof CLASS_COLUMNS[number];
+        const classDelta: Record<string, number[]> = {};
+        let classColumnsUsable = true;
+        for (const column of CLASS_COLUMNS) {
+          const beforeColumn = readCounterArray(before, column);
+          const afterColumn = readCounterArray(after, column);
+          if (afterColumn === undefined || beforeColumn === undefined) {
+            record(args, {
+              gate: `${gate}-provider-${column}-present`, verdict: 'fail',
+              measured: afterColumn === undefined ? 0 : 1, budget: 1,
+              note: `${column} is missing from the ${afterColumn === undefined ? 'AFTER' : 'BEFORE'} `
+                + 'counters. The per-object class caps are what the byte formula is derived from, so a '
+                + 'window without them is unbudgeted rather than cheaply budgeted',
+            });
+            classColumnsUsable = false;
+            continue;
+          }
+          // TWO EXACT EQUALITIES, NOT AN INEQUALITY, AND THE BEFORE ONE IS THE SUBTLE HALF.
+          //
+          // AFTER must equal objectBytesAfter: every attributed object needs its class counts.
+          //
+          // BEFORE must equal objectBytesBefore — not merely be no longer than AFTER. A class column
+          // TRUNCATED relative to the byte column describes an object that WAS already registered, and
+          // `?? 0` would then read its missing history as "no class traffic yet" and charge this window with
+          // everything the endpoint had ever classified for it. Objects registered DURING the window are the
+          // legitimate case and are unaffected: they are absent from objectBytesBefore and from every class
+          // BEFORE column together, so the two lengths still match and the new ordinals start from zero.
+          if (afterColumn.length !== objectBytesAfter.length
+            || beforeColumn.length !== objectBytesBefore.length) {
+            record(args, {
+              gate: `${gate}-provider-${column}-aligned`, verdict: 'fail',
+              measured: afterColumn.length, budget: objectBytesAfter.length,
+              note: `${column} is ${beforeColumn.length} before and ${afterColumn.length} after, against `
+                + `${objectBytesBefore.length} and ${objectBytesAfter.length} for the byte attribution it `
+                + 'shares ordinals with. A short BEFORE column would re-charge an already-registered '
+                + 'object\'s lifetime class traffic to this window',
+            });
+            classColumnsUsable = false;
+            continue;
+          }
+          classDelta[column] = afterColumn.map((value, index) => value - (beforeColumn[index] ?? 0));
+        }
+        const classFor = (column: ClassColumn, index: number): number => classDelta[column]?.[index] ?? 0;
+
+        // FAIL CLOSED. Attribution is what carries the per-object claim, so its ABSENCE cannot be a quiet
+        // downgrade to the aggregate — that is a window whose headline assertion silently did not run, which
+        // is the defect PX14 already taught this gate once. Missing, empty, or two arrays of different
+        // lengths: each is a broken instrument and each fails here, named.
+        const perObject = objectBytesAfter.length > 0 && objectSizes.length === objectBytesAfter.length;
+        if (!perObject) {
+          const why = objectBytesAfter.length === 0
+            ? 'the endpoint reported no per-object byte attribution at all'
+            : `the endpoint reported ${objectBytesAfter.length} per-object byte totals but `
+              + `${objectSizes.length} sizes, so no object can be paired with its own length`;
+          record(args, {
+            gate: `${gate}-provider-bytes-per-object`, verdict: 'fail', measured: objectBytesAfter.length,
+            budget: objectSizes.length,
+            note: `${why}. The per-object ceiling is what binds this window, so a window without `
+              + 'attribution is unbudgeted rather than cheaply budgeted',
+          });
+        }
+        if (perObject && objectBytesBefore.length > objectBytesAfter.length) {
+          // Objects cannot un-register. A shorter AFTER array means the endpoint restarted mid-window and
+          // its counters began again, so every delta below would be measured against a stranger.
+          record(args, {
+            gate: `${gate}-provider-bytes-attribution-continuous`, verdict: 'fail',
+            measured: objectBytesAfter.length, budget: objectBytesBefore.length,
+            note: 'the endpoint knew fewer objects at the end of this window than at the start, so its '
+              + 'counters were reset underneath the measurement',
+          });
+        }
+        if (perObject) {
+          // THE ATTRIBUTION PARTITION FIRST. If the per-object totals do not add up to the window's bytes, a
+          // body went out for an object the endpoint never registered and the per-object verdicts below
+          // would be judging an incomplete picture.
+          const attributed = objectBytesAfter.reduce((total, bytes, index) =>
+            total + (bytes - (objectBytesBefore[index] ?? 0)), 0);
+          record(args, exactly(`${gate}-provider-bytes-attributed`, attributed, delta('bytesServed'),
+            'every served byte is attributed to exactly one registered object; a shortfall means a body '
+            + 'went out for a reference the endpoint never registered'));
+
+          // ONE VERDICT PER OBJECT THAT MOVED. Objects that served nothing in this window are not asserted
+          // on: a window that legitimately touches two of forty entries would otherwise emit thirty-eight
+          // passes that say nothing, and a report padded with vacuous passes is how a gate stops being read.
+          let worstRatio = 0;
+          // TWO COUNTERS, BECAUSE ONE ROLL-UP CANNOT HONESTLY NAME TWO KINDS OF FAILURE. A byte-ratio note
+          // over a count that includes class breaches tells an operator to go and look at bytes when the
+          // breach was a fetch count, which is the sort of misdirection that costs an investigation.
+          let byteBreaches = 0;
+          let classBreaches = 0;
+          for (let index = 0; index < objectBytesAfter.length; index += 1) {
+            const servedBytes = (objectBytesAfter[index] ?? 0) - (objectBytesBefore[index] ?? 0);
+
+            // WHAT "INACTIVE" MEANS, AND WHY ZERO BYTES IS NOT ENOUGH TO DECIDE IT.
+            //
+            // THE DEFECT THIS CLOSES. The loop skipped an object the moment its byte delta was zero, which
+            // silently skipped its CLASS checks too. A zero-length body is classified SMALL by the endpoint,
+            // so an object can legitimately move a class counter without moving a byte counter — and a
+            // class counter that went BACKWARDS while bytes stayed still would have been read as "this
+            // object did nothing" and passed. An object is inactive only when nothing moved at all.
+            const classDeltasHere = classColumnsUsable
+              ? CLASS_COLUMNS.map((column) => classFor(column, index))
+              : [];
+            const classesMoved = classDeltasHere.some((value) => value !== 0);
+
+            // NEGATIVE CLASS DELTAS ARE CHECKED BEFORE ANY SKIP, for the same reason: a reset is the reading
+            // least likely to be benign and the one that would otherwise pass unexamined.
+            let classWentBackwards = false;
+            for (const [position, column] of CLASS_COLUMNS.entries()) {
+              if ((classDeltasHere[position] ?? 0) >= 0) continue;
+              record(args, {
+                gate: `${gate}-provider-${column}-object-${index}`, verdict: 'fail',
+                measured: classDeltasHere[position],
+                note: 'this object\'s class counter fell across the window, so the endpoint counters were '
+                  + 'reset and nothing measured here describes the window',
+              });
+              classBreaches += 1;
+              classWentBackwards = true;
+            }
+            // A BYTE COUNTER THAT WENT BACKWARDS, CHECKED BESIDE THE CLASS ONE RATHER THAN AFTER IT.
+            //
+            // THE DEFECT THIS CLOSES. `continue`ing the moment a CLASS counter went backwards skipped this
+            // check entirely, so an object whose bytes AND classes both reset was recorded as a class
+            // breach only — and the BYTE roll-up, having counted nothing, PASSED. Both resets are real,
+            // both are reported, and only then is the object abandoned as unmeasurable.
+            let bytesWentBackwards = false;
+            if (servedBytes < 0) {
+              record(args, {
+                gate: `${gate}-provider-bytes-object-${index}`, verdict: 'fail', measured: servedBytes,
+                note: 'this object served a NEGATIVE number of bytes across the window, so the endpoint '
+                  + 'counters were reset and nothing measured here describes the window',
+              });
+              byteBreaches += 1;
+              bytesWentBackwards = true;
+            }
+            if (classWentBackwards || bytesWentBackwards) continue;
+            if (servedBytes === 0 && !classesMoved) continue;
+            // BYTE CHECKS RUN ONLY WHEN BYTES MOVED. An object whose classes moved with a zero byte delta
+            // is still ACTIVE — a zero-length body is classified SMALL — and its class caps below must be
+            // reached. Gating the whole tail on bytes is what hid that case.
+            if (servedBytes > 0) {
+              const size = objectSizes[index];
+              if (size === undefined || size <= 0) {
+                record(args, {
+                  gate: `${gate}-provider-bytes-object-${index}`, verdict: 'fail', measured: servedBytes,
+                  note: 'this object served bytes but the endpoint reports no length for it, so no ceiling '
+                    + 'can be computed and the verdict cannot be reached',
+                });
+                byteBreaches += 1;
+              } else {
+                worstRatio = Math.max(worstRatio, servedBytes / size);
+                if (servedBytes > plexObjectByteCeiling(size)) {
+                  record(args, withinBudget(`${gate}-provider-bytes-object-${index}`, servedBytes,
+                    plexObjectByteCeiling(size),
+                    `a ${size}-byte object served ${(servedBytes / size).toFixed(3)}x its own length`));
+                  byteBreaches += 1;
+                }
+              }
+            }
+
+            // AND THE CLASS CAPS THE BYTE CEILING IS DERIVED FROM, ASSERTED ON THIS OBJECT, ALWAYS.
+            //
+            // The byte ceiling is BLOCK x min(4 MiB, size) + SMALL x min(1 MiB, size). Checking only the
+            // bytes leaves its two terms unchecked: an object could stay inside the byte figure while making
+            // far more block-sized fetches than BLOCK permits, each one small because the object is short.
+            // These are the same caps the aggregate asserts, evaluated where they were derived — per object.
+            // Negative deltas were already failed above, before any skip.
+            if (!classColumnsUsable) continue;
+            const blockClass = classFor('objectChunk', index) + classFor('objectPartial', index);
+            if (blockClass > PLEX_SCAN_ENVELOPE.BLOCK) {
+              record(args, withinBudget(`${gate}-provider-block-class-object-${index}`, blockClass,
+                PLEX_SCAN_ENVELOPE.BLOCK,
+                `${classFor('objectChunk', index)} full and ${classFor('objectPartial', index)} clipped `
+                + 'block fetches for one object; full and clipped share one allowance because both are one '
+                + 'block-sized fetch'));
+              classBreaches += 1;
+            }
+            if (classFor('objectSmall', index) > PLEX_SCAN_ENVELOPE.SMALL) {
+              record(args, withinBudget(`${gate}-provider-small-class-object-${index}`,
+                classFor('objectSmall', index), PLEX_SCAN_ENVELOPE.SMALL,
+                'probe-window reads for one object, against the cap the byte formula uses'));
+              classBreaches += 1;
+            }
+            if (classFor('objectOversized', index) !== PLEX_SCAN_ENVELOPE.OVERSIZED) {
+              record(args, exactly(`${gate}-provider-oversized-class-object-${index}`,
+                classFor('objectOversized', index), PLEX_SCAN_ENVELOPE.OVERSIZED,
+                'a body larger than one demand block, attributed to this object'));
+              classBreaches += 1;
+            }
+          }
+          // AND THE COLUMNS RECONCILE WITH THE AGGREGATE, which is a different question from the caps
+          // above: the caps ask whether each object behaved, this asks whether the attribution is complete.
+          // A response classified for the window but attributed to no object would pass every per-object
+          // check by never appearing in one.
+          for (const [column, aggregate] of [
+            ['objectChunk', 'chunkResponses'], ['objectSmall', 'smallResponses'],
+            ['objectPartial', 'partialResponses'], ['objectOversized', 'oversizedResponses'],
+          ] as Array<[ClassColumn, string]>) {
+            if (!classColumnsUsable) break;
+            const summed = (classDelta[column] ?? []).reduce((total, value) => total + value, 0);
+            record(args, exactly(`${gate}-provider-${column}-reconciles`, summed, delta(aggregate),
+              `the per-object ${column} column must sum to the window's ${aggregate} delta; a shortfall `
+              + 'means a response was classified for the window but attributed to no object'));
+          }
+          // TWO ROLL-UPS, EACH NAMING ONLY WHAT IT COUNTS. The byte one keeps its byte-ratio note; the class
+          // one is about fetch counts and says so. A single figure under a byte-shaped note would send an
+          // operator to look at bytes when what breached was a count of fetches.
+          record(args, exactly(`${gate}-provider-bytes-per-object`, byteBreaches, 0,
+            `${objectBytesAfter.length} objects attributed, worst ${worstRatio.toFixed(3)}x of its own `
+            + 'length, each against the class formula evaluated at that length'));
+          // AND IT CANNOT PASS WHEN THE COLUMNS WERE UNUSABLE. A structural failure above — a missing or
+          // misaligned class column — means no per-object class cap was evaluated at all, so a roll-up
+          // reporting zero breaches would contradict the very gate that just failed. It reports the
+          // structural failure instead of a count it never took.
+          if (!classColumnsUsable) {
+            record(args, {
+              gate: `${gate}-provider-classes-per-object`, verdict: 'fail', measured: classBreaches,
+              note: 'the per-object class columns were missing or misaligned, so no per-object class cap '
+                + 'was evaluated in this window. Zero breaches here would mean nothing was checked, not '
+                + 'that nothing breached',
+            });
+          } else {
+            record(args, exactly(`${gate}-provider-classes-per-object`, classBreaches, 0,
+              `${objectBytesAfter.length} objects attributed; each held to ${PLEX_SCAN_ENVELOPE.BLOCK} `
+              + `block-sized fetches (full and clipped together), ${PLEX_SCAN_ENVELOPE.SMALL} probe `
+              + `windows, and ${PLEX_SCAN_ENVELOPE.OVERSIZED} larger than a demand block. A class-counter `
+              + 'reset counts as a breach too, because a reset means nothing here describes the window'));
+          }
+        }
+
+        // THE AGGREGATE CEILING STAYS AT EXACTLY THE SUM OF THE PER-OBJECT ONES, AND NOT A BYTE MORE.
+        //
+        // I nearly wrote a scaling factor here so the sum would sit above the per-object verdicts. That is
+        // the fitted-constant move this gate has rejected three times, and it is unnecessary: if every
+        // object is inside its own ceiling then the total is inside their sum, arithmetically. So when
+        // attribution is available this assertion is IMPLIED by the ones above, and the only way it can fail
+        // while they pass is unattributed bytes — which the partition catches first and names as such.
+        //
+        // It is kept anyway, at the honest value, because attribution is not available on every window.
+        record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), plexScanByteCeiling(sizes),
+          `${sizes.length} remote objects, each at most the per-class maximum for its own length`
+          + (perObject ? '; implied by the per-object verdicts above, which are what bind' : '')));
+        // A FLOOR SUMMED FROM PER-OBJECT TERMS — WHICH MAKES IT AN AGGREGATE, NOT A PER-OBJECT ASSERTION.
+        //
+        // AN EARLIER VERSION OF THIS COMMENT CLAIMED CROSS-SUBSIDY WAS RULED OUT HERE. THAT WAS FALSE. The
+        // measurement is `bytesServed`, one number for the window, so a run that opened two large objects and
+        // none of the other thirty-eight clears this floor easily on the strength of the two.
+        //
+        // AND THE REASON IS NO LONGER THAT THE ENDPOINT CANNOT ATTRIBUTE — IT CAN, AND THE CEILING ABOVE USES
+        // IT. What this phase lacks is the other half of the mapping: `--object-sizes` names the objects the
+        // WINDOW is about, in the caller's order, and nothing here relates that set to the endpoint's
+        // ordinals. The ceiling does not need the relation, because each object is judged against the
+        // endpoint's own size for it; a per-object FLOOR would, because a floor is a claim about which
+        // objects should have been READ, and only the caller knows which those are. Implementing that
+        // mapping is what would make the floor per-object. Until then the floor proves the window was not
+        // free; which entries paid for it, it cannot say.
         //
         // THE DEFECT THIS CLOSES. It was `min(totalRemote, count x 1 MiB)`, and `totalRemote` came from
         // `--bytes`, which defaults to 1 — so on the restart-scan call, which names sizes but no `--bytes`,
@@ -537,6 +989,10 @@ async function main(): Promise<void> {
         // The ceilings stay: a warm-capable window may cost nothing, and it may not cost more than a cold
         // one. Only the floors are dropped, only where the flag says so, and never on a scan that is
         // expected to reach the provider.
+        // A ZERO WINDOW NEVER REACHES HERE. It is handled in the branch above, which asserts zero bytes and
+        // records `-provider-bytes-floor-not-applicable` itself. This arm used to re-test `zeroWindow` and
+        // emit that same record a second time — unreachable, because the enclosing `else if` already proves
+        // it false, and duplicative if it ever had been reached.
         if (args.flags.get('warm-capable') === 'true') {
           record(args, {
             gate: `${gate}-provider-bytes-warm-capable`, verdict: 'pass',
@@ -562,21 +1018,29 @@ async function main(): Promise<void> {
       // A window that cost 32,505,856 bytes over 10 ranged requests cannot be turned into a budget: 7.75
       // demand blocks is not a whole number of anything, so the total is some unknown mix of full 4 MiB
       // blocks and smaller probe or tail reads. Decomposing it is the difference between a ceiling derived
-      // from geometry and a multiplier picked to clear an observation. These three buckets are cumulative
-      // counts and byte totals only — no offsets, no references, no ordering — and they sum to the bytes
+      // from geometry and a multiplier picked to clear an observation. These four buckets are cumulative
+      // counts and byte totals only — no offsets, no references, no per-request sequence — and they sum to the bytes
       // served, which is asserted so a response that escaped classification is visible rather than silent.
+      //
+      // FOUR AND NOT THREE, BECAUSE THE MIDDLE ONE WAS HIDING TWO DIFFERENT THINGS. A block clipped by a
+      // cache gap and a body larger than a demand block both used to land in "other", so no budget could
+      // admit the first without admitting the second. gate7 met thirteen of the first and failed.
       const shape = (key: string): number => delta(key);
-      const bucketedBytes = shape('chunkBytes') + shape('smallBytes') + shape('otherBytes');
-      const bucketedRequests = shape('chunkResponses') + shape('smallResponses') + shape('otherResponses');
+      const bucketedBytes = shape('chunkBytes') + shape('smallBytes')
+        + shape('partialBytes') + shape('oversizedBytes');
+      const bucketedRequests = shape('chunkResponses') + shape('smallResponses')
+        + shape('partialResponses') + shape('oversizedResponses');
       record(args, {
         gate: `${gate}-request-shape`, verdict: 'pass',
         note: `${shape('chunkResponses')} responses of exactly one 4 MiB demand block `
-          + `(${shape('chunkBytes')} bytes), ${shape('smallResponses')} of one probe window or less `
-          + `(${shape('smallBytes')} bytes), ${shape('otherResponses')} other (${shape('otherBytes')} bytes)`,
+          + `(${shape('chunkBytes')} bytes), ${shape('partialResponses')} clipped blocks over a probe `
+          + `window and under a demand block (${shape('partialBytes')} bytes), `
+          + `${shape('smallResponses')} of one probe window or less (${shape('smallBytes')} bytes), `
+          + `${shape('oversizedResponses')} larger than a demand block (${shape('oversizedBytes')} bytes)`,
       });
       record(args, exactly(`${gate}-request-shape-accounts-for-every-byte`,
         bucketedBytes, delta('bytesServed'),
-        'the three buckets partition the bytes served; a shortfall means a response was not classified'));
+        'the four buckets partition the bytes served; a shortfall means a response was not classified'));
       // ...AND FOR EVERY REQUEST, WHICH THE BYTE PARTITION ALONE DOES NOT CATCH.
       //
       // Bytes summing correctly says nothing about the COUNT: two responses filed as one, or a served body
@@ -589,10 +1053,33 @@ async function main(): Promise<void> {
       // was short on every one of them while its gate id claimed to account for every request. The endpoint
       // now counts bodyless returns structurally, so this side does not enumerate anything and cannot go
       // stale when a fault is added.
+      // AND IT RECONCILES AGAINST ACCOUNTED RESPONSES, NOT ARRIVALS — WHICH gate9 IS THE REASON FOR.
+      //
+      // THE DEFECT THIS CLOSES. This compared the classified buckets to `rangeRequests`, which the endpoint
+      // increments when a request ARRIVES, while the class is recorded when the body is served. A request in
+      // flight across a snapshot is therefore counted on one side only, and gate9's PX9 window failed 5
+      // against 4 for exactly that reason: one request had arrived before the window opened and was
+      // classified inside it. The byte partition passed throughout, because bytes and class move together.
+      //
+      // `accountedResponses` advances in the same critical section as the class, so both sides of this
+      // identity move at one point in the request's life and the equation holds with any number in flight.
+      // Arrivals remain the denominator for the request CEILING above, which genuinely wants arrivals.
       record(args, exactly(`${gate}-request-shape-accounts-for-every-request`,
-        bucketedRequests + shape('bodylessResponses'), delta('rangeRequests'),
+        bucketedRequests + shape('bodylessResponses'), delta('accountedResponses'),
         `${bucketedRequests} classified responses plus ${shape('bodylessResponses')} that served no body `
-        + 'must equal every ranged request the endpoint saw'));
+        + 'must equal every response the endpoint accounted for in this window'));
+      // IN-FLIGHT AT THE BOUNDARIES, RECORDED RATHER THAN INFERRED. A window whose arrivals and accounted
+      // responses differ had a request straddling it; that is normal and is not a failure, but a reader
+      // comparing the two counters deserves to be told rather than left to deduce it.
+      if (delta('rangeRequests') !== delta('accountedResponses')) {
+        record(args, {
+          gate: `${gate}-requests-in-flight-at-a-boundary`, verdict: 'pass',
+          measured: delta('rangeRequests'), budget: delta('accountedResponses'),
+          note: 'arrivals and accounted responses differ across this window, so a request straddled one of '
+            + 'its boundaries. The partition above is asserted on accounted responses precisely so this is '
+            + 'a recorded observation rather than a failure',
+        });
+      }
 
       const largeBytes = optionalNumber(args, 'large-bytes', 0);
       if (largeBytes > 0) {
@@ -605,7 +1092,7 @@ async function main(): Promise<void> {
       record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
-      record(args, withinBudget(`${gate}-peak-connections`, after.peakConns ?? 0,
+      record(args, withinBudget(`${gate}-peak-connections`, counterValue(after, 'peakConns'),
         MEDIA_SERVER_BUDGETS.MAX_PEAK_CONNECTIONS));
       const floor = args.flags.get('min-range');
       if (floor !== undefined) {
@@ -618,8 +1105,8 @@ async function main(): Promise<void> {
     case 'traffic-window': {
       // WHAT A FIVE-MINUTE READ COST AT THE PROVIDER. The scan budgets do not apply: a playback legitimately
       // reads the object, so a fraction budget over it could not pass. What is bounded is AMPLIFICATION.
-      const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as Record<string, number>;
-      const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as Record<string, number>;
+      const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as ProviderCounterSnapshot;
+      const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as ProviderCounterSnapshot;
       const gate = need(args, 'gate');
       const objectBytes = optionalNumber(args, 'object-bytes', 1);
       const multiplier = optionalNumber(args, 'max-object-multiplier', 3);
@@ -629,7 +1116,7 @@ async function main(): Promise<void> {
       // statement about what a seek IS. Callers that measure a continuous window leave `events` at one and
       // nothing changes for them.
       const events = Math.max(1, optionalNumber(args, 'events', 1));
-      const delta = (key: string): number => (after[key] ?? 0) - (before[key] ?? 0);
+      const delta = (key: string): number => counterValue(after, key) - counterValue(before, key);
 
       // A SEEK WINDOW IS BUDGETED FROM BLOCK GEOMETRY, NOT FROM THE OBJECT'S SIZE. Each seek restarts the
       // encoder, and a restart is an open: up to three 4 MiB demand blocks, plus the session's setup reads.
@@ -651,7 +1138,7 @@ async function main(): Promise<void> {
       record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
-      record(args, withinBudget(`${gate}-peak-connections`, after.peakConns ?? 0,
+      record(args, withinBudget(`${gate}-peak-connections`, counterValue(after, 'peakConns'),
         MEDIA_SERVER_BUDGETS.MAX_PEAK_CONNECTIONS));
       return;
     }
@@ -664,26 +1151,29 @@ async function main(): Promise<void> {
       // would leave a `budget` call in the gate that scores nothing, which is exactly the shape of thing
       // somebody later reads as a passing budget. The command is named for what it does, and the geometry
       // diagnostic is the only caller.
-      const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as Record<string, number>;
-      const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as Record<string, number>;
+      const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as ProviderCounterSnapshot;
+      const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as ProviderCounterSnapshot;
       const gate = need(args, 'gate');
-      const delta = (key: string): number => (after[key] ?? 0) - (before[key] ?? 0);
+      const delta = (key: string): number => counterValue(after, key) - counterValue(before, key);
 
-      const bucketedBytes = delta('chunkBytes') + delta('smallBytes') + delta('otherBytes');
-      const bucketedRequests = delta('chunkResponses') + delta('smallResponses') + delta('otherResponses');
+      const bucketedBytes = delta('chunkBytes') + delta('smallBytes')
+        + delta('partialBytes') + delta('oversizedBytes');
+      const bucketedRequests = delta('chunkResponses') + delta('smallResponses')
+        + delta('partialResponses') + delta('oversizedResponses');
       record(args, {
         gate: `${gate}-request-shape`, verdict: 'pass',
         note: `${delta('chunkResponses')} responses of exactly one 4 MiB demand block `
           + `(${delta('chunkBytes')} bytes), ${delta('smallResponses')} of one probe window or less `
-          + `(${delta('smallBytes')} bytes), ${delta('otherResponses')} other `
-          + `(${delta('otherBytes')} bytes); ${delta('rangeRequests')} ranged requests, `
+          + `(${delta('smallBytes')} bytes), ${delta('partialResponses')} clipped blocks `
+          + `(${delta('partialBytes')} bytes), ${delta('oversizedResponses')} oversized `
+          + `(${delta('oversizedBytes')} bytes); ${delta('rangeRequests')} ranged requests, `
           + `${delta('bytesServed')} bytes, ${delta('resolutions')} resolutions`,
       });
       // THE PARTITIONS STILL HOLD, because a shape nobody reconciled is a shape nobody can build on.
       record(args, exactly(`${gate}-request-shape-accounts-for-every-byte`,
         bucketedBytes, delta('bytesServed')));
       record(args, exactly(`${gate}-request-shape-accounts-for-every-request`,
-        bucketedRequests + delta('bodylessResponses'), delta('rangeRequests')));
+        bucketedRequests + delta('bodylessResponses'), delta('accountedResponses')));
       return;
     }
 
@@ -701,15 +1191,15 @@ async function main(): Promise<void> {
 
     case 'provider-invariants': {
       // ABSOLUTE, NOT A DELTA. Zero 429s for the WHOLE run is a much stronger claim than zero during a window.
-      const snapshot = JSON.parse(readFileSync(need(args, 'counters'), 'utf8')) as Record<string, number>;
+      const snapshot = JSON.parse(readFileSync(need(args, 'counters'), 'utf8')) as ProviderCounterSnapshot;
       const gate = need(args, 'gate');
-      record(args, withinBudget(`${gate}-http-429-total`, snapshot.served429 ?? 0,
+      record(args, withinBudget(`${gate}-http-429-total`, counterValue(snapshot, 'served429'),
         MEDIA_SERVER_BUDGETS.MAX_HTTP_429, 'across the whole run'));
-      record(args, withinBudget(`${gate}-full-body-total`, snapshot.fullBodyServed ?? 0,
+      record(args, withinBudget(`${gate}-full-body-total`, counterValue(snapshot, 'fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED, 'across the whole run'));
-      record(args, withinBudget(`${gate}-peak-connections-total`, snapshot.peakConns ?? 0,
+      record(args, withinBudget(`${gate}-peak-connections-total`, counterValue(snapshot, 'peakConns'),
         MEDIA_SERVER_BUDGETS.MAX_PEAK_CONNECTIONS, 'across the whole run'));
-      record(args, withinBudget(`${gate}-peak-concurrent-reads`, snapshot.peakConcurrent ?? 0,
+      record(args, withinBudget(`${gate}-peak-concurrent-reads`, counterValue(snapshot, 'peakConcurrent'),
         MEDIA_SERVER_BUDGETS.MAX_PEAK_CONNECTIONS, 'across the whole run'));
       return;
     }
