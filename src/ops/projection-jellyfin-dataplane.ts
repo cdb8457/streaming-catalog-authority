@@ -1299,14 +1299,21 @@ export interface TranscodeSoakOutcome {
  * WHY PACED, WHEN THE OBVIOUS THING IS TO FETCH EVERY SEGMENT AS FAST AS POSSIBLE. Because fetching them as
  * fast as possible takes under a minute, and the only way to reach five minutes from there is to sleep — at
  * which point the gate has measured a directory listing. A player asks for segment N at about the moment
- * second N of the media arrives, which keeps the encoding job alive, keeps it producing, and keeps the reads
- * flowing through the mount for the whole window. That is the thing G10 says exercises read-ahead
- * cancellation, and it only exists if the client behaves like a client.
+ * second N of the media arrives, which keeps SEGMENT REQUESTS AND THEIR DECODED OUTPUT flowing for the whole
+ * window. That is what makes the five minutes five minutes of consumption rather than of elapsed time.
+ *
+ * IT SAYS NOTHING ABOUT THE ENCODER STAYING ALIVE, AND THIS COMMENT USED TO. It claimed pacing "keeps the
+ * encoding job alive, keeps it producing", which the measurements contradict: on this host the encoder races
+ * ahead of the paced client, finishes the whole source in about 1.6 seconds, and exits — after which the
+ * client is served from output already written. Whether the reads still flow through the mount for the whole
+ * window is therefore a property of when the ENCODER read, not of when the client asked.
  *
  * WHAT IS COLLECTED, AND WHY THREE DIFFERENT KINDS. The segments and their arrival times are the client's
- * side. The session samples are the server's own bookkeeping, taken repeatedly rather than once, because a
- * transcode that died at second forty would still have a session record. The producer's file mtimes are the
- * ENCODER's side, and they are read BEFORE the job is stopped because stopping it is what deletes them.
+ * side, and they are what the five-minute claim rests on. The session samples are supporting telemetry about
+ * whether a session belonging to THIS GATE'S device existed for this item at all, taken repeatedly rather
+ * than once so that a window without one can be told from a window with one — they are not evidence about
+ * how long a transcode lived, and nothing asserts them as such. The producer's file mtimes are the ENCODER's
+ * side, recorded rather than asserted, and read BEFORE the job is stopped because stopping it deletes them.
  *
  * NOTHING HERE ASSERTS. It returns measurements; the CLI holds them against the acceptance plan's numbers,
  * and the segments are decoded by a real decoder outside this process.
