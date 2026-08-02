@@ -293,12 +293,26 @@ The gate had a counter window around the warm scan and none around the restart s
 half of a two-part measurement with the expensive half unmeasured. It is budgeted now, as a cold scan, because
 from the daemon's side that is what it is.
 
-**The byte budget names two denominators.** Above the contract's single-probe threshold an object is
-identified from a **fraction** of itself, and that fraction carries the product's entire argument. Below it,
-the contract's own probe plan is a single window covering the **whole** object, so identifying such an entry
-costs its whole length by construction and a sub-1.0 budget over it could never pass. One combined budget
-would let the large entries pay for the small ones — and a regression in the large read path would disappear
-into the average.
+**The byte budget has one denominator per object, and it is not the single-probe threshold.** An earlier
+version of this paragraph said that any object above the contract's 3 MiB single-probe threshold is
+identified from a *fraction* of itself. **Plex's own numbers disprove that**: the 8.6 MB soak source and the
+14.0 MB anchor are both well above 3 MiB and both cost more than their own length. The threshold governs how
+many probe windows the *manifest* plans; it says nothing about what a media server's scanner will read, and
+what decides that here is the 4 MiB demand block.
+
+So each object carries its own ceiling and its own floor, and neither is pooled:
+
+| | per object |
+|---|---|
+| **ceiling** | `opens x min(blocks x chunk, size)` — 2 opens, 3 demand blocks of 4 MiB, clamped by the object |
+| **floor** | `min(size, 1 MiB probe window)` — the least a scanner that actually opened it could have cost |
+
+Pooling either would let one large entry pay for thirty-eight small ones, and a regression in the large read
+path would disappear into the average — which is why sizes reach the budget one at a time rather than summed.
+
+**And the fraction contract lives in exactly one place: the 96 MiB fixture**, against the shared
+`MAX_SCAN_BYTE_FRACTION` of 0.5. Nowhere else in this gate is a sub-1.0 byte fraction asserted, because
+nowhere else is there an object big enough for one to be meaningful.
 
 **Plex's own background jobs are turned off, and that is not a weakening of the read path.**
 `ButlerTaskDeepMediaAnalysis` and its relatives read **whole media files** on a schedule; a run whose butler

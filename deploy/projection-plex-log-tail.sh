@@ -23,6 +23,16 @@ set -uo pipefail
 
 CONTAINER="${1:?container name}"
 LINES="${2:-40}"
+
+# THE LINE COUNT IS VALIDATED BEFORE IT IS INTERPOLATED, because it IS interpolated — into an `sh -c` string
+# that runs inside the media server's container. `40; rm -rf /` is not a line count, and a diagnostic that
+# executed one would be a far worse failure than the one it was called to explain. The cap is here for the
+# same reason the byte cap below is: a caller that asked for a million lines would turn a bounded diagnostic
+# into an unbounded one.
+case "$LINES" in
+  ''|*[!0-9]*) LINES=40 ;;
+esac
+if [ "$LINES" -lt 1 ] || [ "$LINES" -gt 200 ]; then LINES=40; fi
 # The time bound, and the command that is bounded. `PROJECTION_PLEX_LOG_TAIL_DOCKER` is the seam the offline
 # suite replaces with a script that hangs, so the bound is exercised as behaviour rather than read as source.
 TIMEOUT_SECONDS="${PROJECTION_PLEX_LOG_TAIL_TIMEOUT_SECONDS:-15}"
@@ -45,9 +55,27 @@ scrub() {
       -e 's#[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}\.[0-9]\{1,3\}#<address>#g'
 }
 
-raw="$(timeout "$TIMEOUT_SECONDS" "$DOCKER_BIN" exec "$CONTAINER" \
-  sh -c "tail -n ${LINES} '${LOG}'" 2>/dev/null)"
+# THE BYTE CAP, WHICH THE LINE CAP DOES NOT GIVE YOU. Forty lines is not forty short lines: Plex logs
+# base64-encoded plugin payloads that run to tens of kilobytes on ONE line, and this gate has seen them. A
+# line-bounded diagnostic is still unbounded in bytes, and dumping a megabyte into a failing gate's stderr
+# buries the failure it was called to explain. `head -c` truncates the collected text before it is scrubbed
+# or printed.
+MAX_BYTES="${PROJECTION_PLEX_LOG_TAIL_MAX_BYTES:-32768}"
+case "$MAX_BYTES" in
+  ''|*[!0-9]*) MAX_BYTES=32768 ;;
+esac
+if [ "$MAX_BYTES" -lt 1024 ] || [ "$MAX_BYTES" -gt 262144 ]; then MAX_BYTES=32768; fi
+
+# COLLECTED TO A FILE, THEN TRUNCATED — not piped straight into `head -c`. With `pipefail` set, `head`
+# closing the pipe early makes the upstream die of SIGPIPE and the pipeline report 141, so the huge-line case
+# this cap exists for would have been reported as a collection failure. Writing first keeps the timeout's own
+# status readable and keeps the truncation honest.
+COLLECTED="$(mktemp)"
+trap 'rm -f "$COLLECTED"' EXIT
+timeout "$TIMEOUT_SECONDS" "$DOCKER_BIN" exec "$CONTAINER" \
+  sh -c "tail -n ${LINES} '${LOG}'" > "$COLLECTED" 2>/dev/null
 status=$?
+raw="$(head -c "$MAX_BYTES" "$COLLECTED")"
 
 if [ "$status" -eq 124 ]; then
   # THE BOUND FIRED. Say so, and say nothing else: the caller's own failure is the thing that matters and it

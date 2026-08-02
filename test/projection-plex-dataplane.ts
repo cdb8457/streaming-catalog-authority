@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { spawnSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1129,18 +1129,20 @@ await test('a seek that throws mid-set still leaves the completed seeks as evide
 // The failure diagnostic, which must not become the failure
 // ---------------------------------------------------------------------------------------------------------
 
-function runLogTail(dockerStub: string, timeoutSeconds: string): {
+function runLogTail(dockerStub: string, timeoutSeconds: string, lines = '40', maxBytes?: string): {
   status: number; stdout: string; elapsedMs: number;
 } {
   const startedAt = Date.now();
-  const result = spawnSync('bash', [join(repoRoot, 'deploy/projection-plex-log-tail.sh'), 'container', '40'], {
-    encoding: 'utf8',
-    env: {
-      ...process.env,
-      PROJECTION_PLEX_LOG_TAIL_DOCKER: dockerStub,
-      PROJECTION_PLEX_LOG_TAIL_TIMEOUT_SECONDS: timeoutSeconds,
-    },
-  });
+  const result = spawnSync('bash',
+    [join(repoRoot, 'deploy/projection-plex-log-tail.sh'), 'container', lines], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        PROJECTION_PLEX_LOG_TAIL_DOCKER: dockerStub,
+        PROJECTION_PLEX_LOG_TAIL_TIMEOUT_SECONDS: timeoutSeconds,
+        ...(maxBytes === undefined ? {} : { PROJECTION_PLEX_LOG_TAIL_MAX_BYTES: maxBytes }),
+      },
+    });
   return { status: result.status ?? -1, stdout: result.stdout ?? '', elapsedMs: Date.now() - startedAt };
 }
 
@@ -1188,6 +1190,39 @@ await test('a collector that fails outright says so, without pretending it had a
   const result = runLogTail(failing, '15');
   assertEq(result.status, 0, 'still exits 0');
   assert(/no media-server log was available/.test(result.stdout), 'and says there was nothing to show');
+});
+
+await test('a hostile line count never reaches the shell that runs inside the container', () => {
+  // THE LINE COUNT IS INTERPOLATED INTO AN `sh -c` STRING that runs inside the media server's container, so
+  // it is validated before it gets there. A diagnostic that executed `40; touch /tmp/pwned` would be a far
+  // worse failure than the one it was called to explain.
+  const marker = join(mkdtempSync(join(tmpdir(), 'plex-inject-')), 'pwned');
+  // The stub echoes the command it was asked to run, so the test can see exactly what would have executed.
+  const echoing = writeStub('echo "ARGS: $*"');
+  for (const hostile of [`40; touch ${marker}`, '$(touch /tmp/x)', '`id`', '-1', '0', '99999', 'abc', '']) {
+    const result = runLogTail(echoing, '15', hostile);
+    assertEq(result.status, 0, `it survives ${JSON.stringify(hostile)}`);
+    assert(/tail -n 40 /.test(result.stdout),
+      `an invalid or out-of-range line count falls back to 40, got: ${result.stdout.trim()}`);
+    assert(!result.stdout.includes('touch'), 'and nothing hostile is passed through');
+  }
+  assert(!existsSync(marker), 'and no injected command ran');
+  // A LEGITIMATE value is still honoured, so the validation is not just a constant.
+  const ok = runLogTail(echoing, '15', '25');
+  assert(/tail -n 25 /.test(ok.stdout), `a valid line count is used as given: ${ok.stdout.trim()}`);
+  const capped = runLogTail(echoing, '15', '201');
+  assert(/tail -n 40 /.test(capped.stdout), 'and one over the cap of 200 falls back');
+});
+
+await test('one enormous log line is truncated, so the diagnostic cannot bury the failure', () => {
+  // A LINE BOUND IS NOT A BYTE BOUND. Plex logs base64 plugin payloads that run to tens of kilobytes on a
+  // single line; forty of those is a megabyte of stderr on top of a failure somebody has to read.
+  const huge = writeStub(String.raw`printf 'A%.0s' $(seq 1 200000); printf '\n'`);
+  const result = runLogTail(huge, '15', '40', '4096');
+  assertEq(result.status, 0, 'it collects');
+  assert(result.stdout.length <= 8_192,
+    `the output is bounded, got ${result.stdout.length} bytes`);
+  assert(result.stdout.includes('AAAA'), 'while still showing the start of what was there');
 });
 
 await test('the gate calls the bounded collector rather than docker exec directly', () => {
