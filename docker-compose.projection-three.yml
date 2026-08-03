@@ -1,0 +1,43 @@
+# Projection Phase 1 — a real, migrated PostgreSQL for the THREE-SERVER CONCURRENT SCAN gate (G18).
+#
+# WHY A SIXTH DATABASE COMPOSE FILE. `docker-compose.yml` is the development stack and binds 5432.
+# `docker-compose.projection-publisher.yml` is the publisher-to-mount gate and binds 5470.
+# `docker-compose.projection-jellyfin.yml` binds 5480, `…-plex.yml` binds 5490, `…-emby.yml` binds 5500.
+# This one has to be startable BESIDE all five — the whole point of running a gate three times in a row is
+# that a previous run, or another gate, or an installation, must not be able to lend it state. So it takes
+# its own project name, its own network, its own port, and throwaway storage.
+#
+# NEITHER THE DAEMON NOR ANY OF THE THREE MEDIA SERVERS IS HERE, and on this gate that omission is doing more
+# work than on the other three. `deploy/projection-three-server-concurrency-gate.sh` starts one projectiond
+# with the narrow authority a FUSE mount needs, and then THREE media servers — Plex, Jellyfin and Emby — each
+# binding the SAME mount directory, each with the capability set and the privilege-drop mechanism its own
+# image actually requires, and each stood up through its own driver. Writing that arrangement into a Compose
+# file would read as a deployment somebody should copy. It is a measurement rig, and running three competing
+# media servers over one library is not a thing anybody should do on purpose except to measure it.
+
+name: projection-three-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image this gate touches. A moving tag would mean three
+    # consecutive runs were three runs of possibly different things, which is not what the repetition is for.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_THREE_GATE_PG_PORT:-5510}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. Three consecutive runs mean three runs from nothing, or they mean very little.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-three-gate

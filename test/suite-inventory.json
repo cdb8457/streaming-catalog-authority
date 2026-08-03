@@ -392,6 +392,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-three-server-concurrency.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-host-preflight.ts",
       "group": "offline"
     },

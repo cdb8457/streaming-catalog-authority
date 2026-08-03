@@ -58,6 +58,18 @@ func main() {
 	// The origin a RESOLVED url names. Listening on 0.0.0.0 means the listener cannot describe itself in a
 	// way any client could dial, so a resolver mode server has to be told what it is reachable as.
 	publicBase := flag.String("public-base-url", "", "origin to advertise in resolved access URLs")
+	// HOW LONG A HELD RANGED REQUEST MAY BLOCK, AND WHY A CALLER GETS TO SAY.
+	//
+	// The default is 15s, chosen to sit under the range adapter's 20s per-request timeout. That is the right
+	// default for a gate that arms a hold and releases it inside the same phase. It is NOT right for the
+	// three-server concurrency gate, whose hold is a RENDEZVOUS the scanners arrive at one at a time: there
+	// the relevant ceiling is `PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS`, which is 10s, because a held
+	// response that has not begun by then is abandoned and the read FAILS. A gate that crashed between arm
+	// and release would then be manufacturing the very defect it claims to measure.
+	//
+	// So the bound is a flag, and that gate passes something comfortably under ten seconds. Zero keeps the
+	// package default.
+	maxHold := flag.Duration("max-hold", 0, "how long a held ranged request may block; 0 keeps the default")
 	var objects objectList
 	var files fileList
 	flag.Var(&objects, "object", "ref:size, repeatable — bytes from the deterministic content function")
@@ -69,7 +81,7 @@ func main() {
 	}
 
 	server, err := fakeprovider.New(fakeprovider.Options{
-		Addr: *addr, LeasePrefix: *leasePrefix, PublicBaseURL: *publicBase,
+		Addr: *addr, LeasePrefix: *leasePrefix, PublicBaseURL: *publicBase, MaxHold: *maxHold,
 	})
 	if err != nil {
 		fail(err.Error())
