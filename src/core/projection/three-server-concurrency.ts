@@ -227,7 +227,8 @@ export const BARRIER_RELEASE_OVERSHOOT_MS = 2 * CONCURRENCY_DEADLINES_MS.BARRIER
  * THE ARM WINDOW AND THE BACKSTOP DO NOT START AT THE SAME MOMENT, AND A REAL RUN FAILED ON THE DIFFERENCE.
  *
  * The endpoint's `maxHold` starts when a request ACTUALLY BLOCKS. This gate's arm window starts when the
- * observer NOTICES it has blocked, which it learns by polling `/counters` once per tick. Those are different
+ * observer NOTICES it has blocked, which it learns from a dedicated watchdog polling `/counters` on its own
+ * `BARRIER_WATCHDOG_INTERVAL` cadence. Those are different
  * clocks, and the second lags the first.
  *
  * RUN 2 OF THE FIRST FULLY REMEDIATED SEQUENCE FAILED EXACTLY THERE. The release fired 4.1 s after
@@ -242,8 +243,11 @@ export const BARRIER_RELEASE_OVERSHOOT_MS = 2 * CONCURRENCY_DEADLINES_MS.BARRIER
  *
  *	arm 3,000 + lag <=1,000 + slack 500  =  backstop 4,500  <  queue-wait 5,000  <  first-byte 10,000
  *
- * THE OTHER HALF OF THE FIX IS IN THE OBSERVER: the barrier gauge is polled FIRST in each tick, before the
- * three server polls, so their latency is not added to the lag this margin has to cover.
+ * THE OTHER HALF OF THE FIX TOOK THE RELEASE OFF THE OBSERVATION TICK ALTOGETHER. Polling the gauge earlier
+ * in the tick narrowed the detection lag but left the RELEASE at tick granularity — one sleep plus three
+ * server polls, each of which may take up to `SAMPLE_MAX_SPAN`. Both detection and release now live in a
+ * watchdog loop on its own cadence, so server-poll latency is not on that path at all and this margin only
+ * has to cover two watchdog periods.
  *
  * WHY NOT SIMPLY STOP ASSERTING `holdTimeouts == 0`? Because it would be weakening a check to make a run
  * pass. The endpoint's backstop is already strictly under the queue-wait budget, so a lapse starves nothing

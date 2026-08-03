@@ -200,8 +200,10 @@ on the same mount directory as the same library root.
 only place that says what has been run: **fourteen runs, one failing and thirteen green, twelve of the
 thirteen through the committed three-consecutive-fresh-run wrapper in four sequences of three, each 59
 assertions with none failed and none skipped. All fourteen are Windows / Docker Desktop, which §6 says closes
-none of G7–G13 or G18 — and all fourteen predate a coordinator review that tightened what the gate asserts,
-so the REMEDIATED gate has not been run on a real host at all.** The one failure is worth reading: it was the gate's, not the product's — the barrier
+none of G7–G13 or G18. Fourteen of them predate a coordinator review that tightened what the gate asserts;
+the remediated gate has since been run too — one failure that exposed a real defect in it, then **three
+consecutive fresh green runs, 62 assertions each with none failed and none skipped**, still on Docker
+Desktop and still closing nothing.** The one failure is worth reading: it was the gate's, not the product's — the barrier
 was released the instant the rendezvous succeeded, which destroyed the overlap it had just created.
 
 **It is not a wrapper around the other three gates, and the distinction is the whole point.** Running those

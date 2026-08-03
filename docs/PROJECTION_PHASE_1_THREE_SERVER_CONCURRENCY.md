@@ -335,8 +335,37 @@ sequences of three, with no edit to any tracked file inside a sequence. That is 
 plan asks for — **on the wrong platform**. §6 of the plan says the media-server gates close on a Linux or
 Unraid host, and none of these fourteen runs was one.
 
-**ALL FOURTEEN RUNS WERE AGAINST THE PRE-REMEDIATION GATE, AND THE REMEDIATED GATE HAS NOT BEEN RUN ON
-DOCKER.** A coordinator review afterwards found five defects — per-object telemetry that was not fail-closed,
+| 15 | Windows / Docker Desktop | **FAILED** at `TS3-cold-window` with `hold-lapsed: 1` | — | **The first run of the fully remediated gate, and a real defect in it.** The endpoint's backstop is timed from when a request ACTUALLY blocks; the arm window was timed from when the gate's polled `/counters` NOTICED. Run 15 detected the block one tick later than run 14 had and the release missed the 4,500 ms backstop. Fixed in `c677065`: the release moved off the observation tick onto its own 250 ms watchdog, and the arm window shortened to 3 s so arm + overshoot fits under the backstop. See §3.4 |
+| 16–18 | Windows / Docker Desktop | **PASSED**, three consecutive fresh runs through the committed wrapper against `c677065` | **62 each, none failed, none skipped** | wrapper exit 0. The first green sequence of the fully remediated gate — see §7.2 |
+
+### 7.2 What the three remediated runs measured
+
+Every figure below held **identically in all three runs** unless a range is given.
+
+| | |
+|---|---|
+| assertions | **62** per run, **0 failed, 0 skipped** (the pre-remediation runs recorded 59; the extra three are the split continuous-overlap ids, the recorded media-server multiplier and the additional block-geometry G15) |
+| **overlap** | **7 samples with all three servers scanning at the same instant, in one unbroken run**, credited **3.0 s** (wall 3.1 s), **0 runs broken by a gap**. Shorter than the pre-remediation 4.1–4.6 s **because the hold is now 3 s rather than 4.1 s** — the margin over the 2 s floor is 1.5×, which is real but thinner than before and is the number to watch |
+| observation quality | 53–65 samples per run, 12 with two or more servers scanning, **0 too wide to describe one instant** (widest 0.02–0.03 s), **0 with a server that could not be read** |
+| scan durations | Plex 26–32 s, Emby 7 s, Jellyfin 4 s |
+| barrier | one provider request blocked, released after **3.1 s** every time — arm 3,000 ms plus ~100 ms of watchdog overshoot, against a 4,500 ms backstop — and **`holdTimeouts` 0** in all three |
+| cold window | endpoint served **0 bytes** for any corpus object beforehand; daemon scan-window cache grew **33,187 → 5,093,165 bytes**; **47 ranged GETs covered 43 uncached remote entries** |
+| per server | **50 / 50 matched** on Jellyfin, Plex and Emby, through each server's own predicate |
+| **G14a** | **47** against the acceptance plan's **155** (`⌈1.2 × 43 × 3⌉`) |
+| **G14b** | **43** against the plan's **52** (`⌈1.2 × 43⌉`) |
+| **G15** | **13,205,874 bytes** against the plan's **162,319,564** — and against the stricter block-geometry sum of **116,514,941**, asserted in addition |
+| G16 | **0** HTTP 429, in-window and whole-run |
+| G17 | peak concurrent provider reads **4 / 4** (the configured per-endpoint cap, reached and not exceeded); peak connections on accept **6 / 8** |
+| request shape | **0** oversized responses; every object inside 3× the per-entry envelope |
+| sharing ratio | **0.076** of the three-independent-scanner worst case — recorded, asserted on by nothing |
+| lease redaction | **43 access leases** minted per run; none found in the manifest directory, the probe cache or any of the three servers' library state; report **redaction-safe** |
+| cleanup | the namespace was **gone** after the daemon stopped, in all three runs |
+
+**These are Docker Desktop runs and they close nothing.** §6 of the acceptance plan says the media-server
+gates close on a Linux or Unraid host. No run of this gate — remediated or not — has happened on one, no real
+provider endpoint has ever been contacted, and the §6.1 table still carries **G18 as NOT RUN**.
+
+**AND THE FOURTEEN EARLIER RUNS WERE AGAINST THE PRE-REMEDIATION GATE.** A coordinator review afterwards found five defects — per-object telemetry that was not fail-closed,
 an overlap "span" that was not a duration, a preflight that ran after the `/dev/fuse` probe container, a
 `report` that exited zero over a skipped assertion, and G14a/G14b/G15 asserted against the media-server
 gates' ×6 multipliers instead of the acceptance plan's ×1.2 — and the fixes changed what the gate asserts.
@@ -355,8 +384,9 @@ Concretely:
 - **one runtime constant moved**: the endpoint's hard hold backstop, 5 s → 4.5 s, so that it is strictly
   below the 5 s admission queue-wait budget rather than equal to it. It governs only the crash path.
 
-**So this document claims nothing about the remediated gate's behaviour on a real host.** Runs 15+ are
-outstanding.
+**Runs 15–18 settled that.** The remediated gate has now been run: one failure that exposed a real defect in
+it, then three consecutive fresh green runs against `c677065`. The continuous-overlap floor has been
+exercised against live timelines and holds at 1.5× margin.
 
 **The row for runs 12–14 was necessarily written after they finished**, which is true of every run record and
 is not a gap in this one: that edit changed this document and nothing the gate reads. Re-running after each

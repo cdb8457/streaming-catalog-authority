@@ -943,10 +943,11 @@ async function main(): Promise<void> {
       const url = req.url ?? '';
       requests.push(url);
       if (url === '/counters') {
-        // THE FIRST POLL IS THE BASELINE READ, taken before the hold is armed, and it must report ZERO —
-        // otherwise the baseline itself is 1, no later poll is ever "greater than baseline", and the block
-        // is never detected. The block appears from the second poll onward, so the arm window starts almost
-        // immediately and this test is about RELEASE latency rather than about detection.
+        // THE FIRST POLL IS THE BASELINE READ, taken after the hold is ARMED but before any request has
+        // BLOCKED on it, and it must report ZERO — otherwise the baseline itself is 1, no later poll is ever
+        // "greater than baseline", and the block is never detected. The block appears from the second poll
+        // onward, so the arm window starts almost immediately and this test is about RELEASE latency rather
+        // than about detection.
         countersPolls += 1;
         if (countersPolls > 1 && held === 0) { held = 1; blockedAt = Date.now(); }
         res.setHeader('content-type', 'application/json');
@@ -1509,6 +1510,20 @@ async function main(): Promise<void> {
     for (const subject of ['docker desktop', 'linux', 'unraid', 'real provider', 'g22', 'g27', 'phase 1']) {
       assert(joined.includes(subject), `the nonclaims must name ${subject}`);
     }
+  });
+
+  await test('the success banner names the CANONICAL Phase 1 ceilings, not the media-server ones', () => {
+    // The banner is what an operator reads. It said G14a-G17 came "from the same MEDIA_SERVER_BUDGETS the
+    // three single-server gates hold" -- which is what the gate did BEFORE the canonical correction, and
+    // stating it afterwards would misdescribe the evidence in the one place most likely to be quoted.
+    const banner = GATE.split('gate PASSED. Exactly what was proved:')[1] ?? '';
+    assert(banner.length > 0, 'the gate must have a success banner');
+    assert(!/same MEDIA_SERVER_BUDGETS/.test(banner),
+      'the banner must not say the required ceilings are the media-server gates\' looser multipliers');
+    assert(/PROJECTION_PHASE_1_BUDGETS|acceptance plan's own/.test(banner),
+      'it must name the acceptance plan\'s own ceilings as the required ones');
+    assert(/block geometry|block-geometry/.test(banner),
+      'and say the stricter per-object model is asserted IN ADDITION');
   });
 
   await test('the gate never claims a Docker Desktop run closed anything', () => {
