@@ -117,6 +117,21 @@ export const CONCURRENCY_DEADLINES_MS = Object.freeze({
    * `assertCadenceIsFailClosed` below refuses the whole file if that relation ever stops holding.
    */
   MAX_CONTINUOUS_GAP: 500 * 2,
+  /**
+   * How often the BARRIER WATCHDOG polls, independently of the observation tick.
+   *
+   * THE BARRIER RELEASE IS A REAL-TIME SAFETY ACTION AND MUST NOT BE SCHEDULED BEHIND UNBOUNDED WORK. It
+   * used to live in the observation loop: detect the block, then three server polls, then check whether the
+   * arm window had elapsed. Moving the detection to the top of the tick was not enough — the RELEASE still
+   * fired at tick granularity, and a tick is one sleep plus three server polls, each of which may take up to
+   * `SAMPLE_MAX_SPAN`. Worst case the release lands a full 2.5 s after it was due, which is more overshoot
+   * than any arm window under the backstop can absorb.
+   *
+   * So the watchdog is its own loop on its own cadence, and the server polls cannot delay it at all. Half a
+   * nominal tick bounds BOTH the detection lag and the release lag, and the arm window only has to leave
+   * room for two of them.
+   */
+  BARRIER_WATCHDOG_INTERVAL: 500 / 2,
 } as const);
 
 /**
@@ -180,7 +195,6 @@ function assertCadenceIsFailClosed(): void {
  * servers' own in-flight state at one instant. The hold makes that observation likelier and makes the scans
  * provably COLD; it does not make the claim.
  */
-export const HOLD_ARM_MS = PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS - 1_000;
 
 /**
  * The endpoint's own hard backstop, for the case where this gate dies between arming and releasing.
@@ -197,7 +211,64 @@ export const HOLD_ARM_MS = PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS - 1_00
  * The arm window is what governs a healthy run; the backstop only matters if this process dies mid-hold, and
  * even then no other object's read can be starved and no held read can miss its first byte.
  */
-export const HOLD_MAX_MS = PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS - 500;
+const HOLD_MAX_MS_INTERNAL = PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS - 500;
+export const HOLD_MAX_MS = HOLD_MAX_MS_INTERNAL;
+
+export const HOLD_ARM_MS = HOLD_MAX_MS_INTERNAL
+  - CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP - CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL;
+
+/**
+ * The overshoot the arm window must leave room for: one watchdog period to NOTICE the block, and one more to
+ * ACT on the arm window having elapsed. Nothing else is on that path, which is the point of the watchdog.
+ */
+export const BARRIER_RELEASE_OVERSHOOT_MS = 2 * CONCURRENCY_DEADLINES_MS.BARRIER_WATCHDOG_INTERVAL;
+
+/**
+ * THE ARM WINDOW AND THE BACKSTOP DO NOT START AT THE SAME MOMENT, AND A REAL RUN FAILED ON THE DIFFERENCE.
+ *
+ * The endpoint's `maxHold` starts when a request ACTUALLY BLOCKS. This gate's arm window starts when the
+ * observer NOTICES it has blocked, which it learns by polling `/counters` once per tick. Those are different
+ * clocks, and the second lags the first.
+ *
+ * RUN 2 OF THE FIRST FULLY REMEDIATED SEQUENCE FAILED EXACTLY THERE. The release fired 4.1 s after
+ * detection — inside the old 4,000 ms arm window — but the true block had begun some hundreds of
+ * milliseconds earlier, so the endpoint's 4,500 ms backstop fired first and `holdTimeouts` moved to 1. Run 1
+ * of the same sequence passed with identical code: it happened to detect the block one tick sooner. A gate
+ * whose verdict depends on which tick a poll lands in is not measuring the data plane.
+ *
+ * SO THE ARM WINDOW LEAVES ROOM FOR THE LAG, and the room is the lag's own bound: one missed poll
+ * (`MAX_CONTINUOUS_GAP`, the tolerance this file already uses for exactly "how stale may an observation be")
+ * plus one nominal tick of slack. Every term is derived:
+ *
+ *	arm 3,000 + lag <=1,000 + slack 500  =  backstop 4,500  <  queue-wait 5,000  <  first-byte 10,000
+ *
+ * THE OTHER HALF OF THE FIX IS IN THE OBSERVER: the barrier gauge is polled FIRST in each tick, before the
+ * three server polls, so their latency is not added to the lag this margin has to cover.
+ *
+ * WHY NOT SIMPLY STOP ASSERTING `holdTimeouts == 0`? Because it would be weakening a check to make a run
+ * pass. The endpoint's backstop is already strictly under the queue-wait budget, so a lapse starves nothing
+ * — but the gate says it releases the hold deliberately, and this assertion is what makes that a fact rather
+ * than a hope. The timing was wrong; the assertion was right.
+ */
+function assertHoldChainIsFailClosed(): void {
+  const lagAllowance = BARRIER_RELEASE_OVERSHOOT_MS;
+  if (!(HOLD_ARM_MS > 0 && HOLD_ARM_MS + lagAllowance <= HOLD_MAX_MS_INTERNAL)) {
+    throw new Error(`the arm window (${HOLD_ARM_MS}ms) plus the watchdog overshoot it must tolerate `
+      + `(${lagAllowance}ms) must fit inside the endpoint backstop (${HOLD_MAX_MS_INTERNAL}ms), or the `
+      + 'backstop fires before the gate releases and a correct run reports a lapsed hold');
+  }
+  // THE OVERSHOOT MUST BE THE WATCHDOG'S, NOT THE OBSERVATION TICK'S. If the release ever moved back into the
+  // observation loop, its granularity would become one sleep plus three server polls — up to
+  // `SAMPLE_INTERVAL + SAMPLE_MAX_SPAN` — which does not fit under the backstop at any usable arm window.
+  const tickGranularity = CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL + CONCURRENCY_DEADLINES_MS.SAMPLE_MAX_SPAN;
+  if (!(BARRIER_RELEASE_OVERSHOOT_MS < tickGranularity)) {
+    throw new Error('the barrier watchdog must be faster than the observation tick, or moving the release '
+      + 'off that tick bought nothing');
+  }
+  if (!(HOLD_MAX_MS_INTERNAL < PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS)) {
+    throw new Error('the endpoint backstop must stay strictly below the admission queue-wait budget');
+  }
+}
 
 export const CONCURRENCY_RULES = Object.freeze({
   /**
@@ -243,8 +314,9 @@ export const CONCURRENCY_RULES = Object.freeze({
   MAX_TRIGGER_SPREAD_SECONDS: 15,
 } as const);
 
-// Checked once, here, where both constants it relates are in scope.
+// Checked once, here, where every constant they relate is in scope.
 assertCadenceIsFailClosed();
+assertHoldChainIsFailClosed();
 
 /**
  * WHY A TRIGGER SPREAD IS NOT EVIDENCE OF CONCURRENCY, STATED AS A CONSTANT SO A TEST CAN HOLD IT.

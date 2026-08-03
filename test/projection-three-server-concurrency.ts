@@ -1,4 +1,6 @@
 import { spawnSync } from 'node:child_process';
+import { createServer } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -13,7 +15,8 @@ import {
 import { PLEX_LARGE_FIXTURE, PLEX_SCAN_ENVELOPE } from '../src/core/projection/plex-dataplane.js';
 import {
   CONCURRENCY_DEADLINES_MS, CONCURRENCY_RULES, COUNTER_ARRAY_KEYS, COUNTER_KEYS_REQUIRED, HOLD_ARM_MS,
-  HOLD_MAX_MS, REQUIRED_SERVER_COUNT, THREE_SERVER_IDS, THREE_SERVER_NONCLAIMS, analyseOverlap,
+  HOLD_MAX_MS, BARRIER_RELEASE_OVERSHOOT_MS, REQUIRED_SERVER_COUNT, THREE_SERVER_IDS,
+  THREE_SERVER_NONCLAIMS, analyseOverlap,
   attributionProblems, breachedObjects, breachedShapes, coldStateProblems, corpusAttribution,
   daemonBlockByteCeiling, objectByteVerdicts, objectShapeVerdicts, overlapProblems, parseProviderCounters,
   triggerSpreadSeconds, CANONICAL_SCAN_WINDOWS_PER_ENTRY, canonicalRangeRequestCeiling,
@@ -903,6 +906,117 @@ async function main(): Promise<void> {
       `arm ${HOLD_ARM_MS} < backstop ${HOLD_MAX_MS} < queue-wait `
       + `${PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS} < first-byte `
       + `${PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS} must hold, strictly, at every step`);
+  });
+
+  await test('THE ARM WINDOW LEAVES ROOM FOR THE LAG BETWEEN THE BLOCK AND ITS DETECTION', () => {
+    // RUN 2 OF THE FIRST FULLY REMEDIATED SEQUENCE FAILED HERE. The endpoint's backstop is measured from the
+    // moment a request ACTUALLY blocks; the arm window is measured from the moment the observer's polled
+    // `/counters` NOTICES it. Those are different clocks. At arm=4,000 against backstop=4,500 the difference
+    // only had to reach 500ms, and it did -- `holdTimeouts` moved to 1 -- while run 1 of the same sequence
+    // passed on identical code by detecting the block one tick sooner. A gate whose verdict depends on which
+    // tick a poll lands in is not measuring the data plane.
+    const lagAllowance = CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP
+      + CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL;
+    assert(HOLD_ARM_MS + lagAllowance <= HOLD_MAX_MS,
+      `the arm window (${HOLD_ARM_MS}ms) plus the observation lag it must tolerate (${lagAllowance}ms) must `
+      + `fit inside the endpoint backstop (${HOLD_MAX_MS}ms), or a correct run reports a lapsed hold`);
+    assert(HOLD_ARM_MS > 0, 'and the arm window must still exist');
+    assert(CORE.includes('assertHoldChainIsFailClosed'),
+      'and the relation must be machine-checked at load, not written down in a comment');
+  });
+
+  await test('EXECUTABLE: slow server polls cannot delay the barrier release', async () => {
+    // THE REGRESSION FOR THE DEFECT RUN 2 FOUND, AND FOR THE HALF-FIX THAT FOLLOWED IT.
+    //
+    // The release used to be checked in the observation loop, below the three server polls. This drives the
+    // real `runConcurrentScans` against a real (loopback) endpoint with adapters whose `scanIsRunningNow`
+    // takes far longer than the arm window. Under the old shape the release could not fire until those polls
+    // returned, so it would land at least one poll-length late — and at the real constants that is what made
+    // the endpoint's backstop lapse. With the watchdog on its own cadence, server latency is not on the
+    // release path at all.
+    let held = 0;
+    let countersPolls = 0;
+    let releasedAt = 0;
+    let blockedAt = 0;
+    const requests: string[] = [];
+    const server = createServer((req, res) => {
+      const url = req.url ?? '';
+      requests.push(url);
+      if (url === '/counters') {
+        // THE FIRST POLL IS THE BASELINE READ, taken before the hold is armed, and it must report ZERO —
+        // otherwise the baseline itself is 1, no later poll is ever "greater than baseline", and the block
+        // is never detected. The block appears from the second poll onward, so the arm window starts almost
+        // immediately and this test is about RELEASE latency rather than about detection.
+        countersPolls += 1;
+        if (countersPolls > 1 && held === 0) { held = 1; blockedAt = Date.now(); }
+        res.setHeader('content-type', 'application/json');
+        res.end(JSON.stringify({ heldRequests: held }));
+        return;
+      }
+      if (url.startsWith('/control/release/')) { releasedAt = Date.now(); res.statusCode = 204; res.end(); return; }
+      if (url.startsWith('/control/hold/')) { res.statusCode = 204; res.end(); return; }
+      res.statusCode = 404; res.end();
+    });
+    await new Promise<void>((resolve) => { server.listen(0, '127.0.0.1', resolve); });
+    const port = (server.address() as AddressInfo).port;
+
+    const SLOW_POLL_MS = 1_500;
+    const ARM_MS = 300;
+    try {
+      const slowAdapter = (id: string): ServerAdapter => ({
+        id: id as never,
+        readState: () => ({}),
+        scanIsRunningNow: async () => {
+          // The latency that used to sit between the gate deciding to release and actually releasing.
+          await new Promise((resolve) => { setTimeout(resolve, SLOW_POLL_MS); });
+          return true;
+        },
+        scanLibrary: async () => {
+          await new Promise((resolve) => { setTimeout(resolve, 3_000); });
+          return { observedInFlight: true };
+        },
+        catalogue: async () => [],
+      });
+      const adapters = THREE_SERVER_IDS.map((id) => slowAdapter(id));
+      await runConcurrentScans({
+        adapters,
+        states: new Map(adapters.map((adapter) => [adapter.id, {}])),
+        endpointBaseUrl: `http://127.0.0.1:${port}`,
+        barrierRef: 'obj-test-barrier',
+        sampleIntervalMs: 50,
+        holdArmMs: ARM_MS,
+        deadlineMs: 20_000,
+      });
+
+      assert(blockedAt > 0, 'the fake endpoint must have reported a block');
+      assert(releasedAt > 0, 'and the barrier must have been released');
+      const overshoot = releasedAt - blockedAt - ARM_MS;
+      // THE BOUND IS THE WATCHDOG'S OWN, and it is far below one server poll -- which is what makes this
+      // discriminating rather than decorative. If the release were queued behind the polls again, or the
+      // watchdog's cadence were slowed to theirs, the overshoot would be at least SLOW_POLL_MS.
+      const bound = BARRIER_RELEASE_OVERSHOOT_MS + 250;
+      assert(bound * 2 <= SLOW_POLL_MS,
+        'the fixture must separate a correct release from a poll-queued one by at least a factor of two');
+      assert(overshoot <= bound,
+        `the release landed ${overshoot}ms after its arm window, above the watchdog's own bound of `
+        + `${bound}ms. One ${SLOW_POLL_MS}ms server poll on the release path would look exactly like this`);
+    } finally {
+      await new Promise<void>((resolve) => { server.close(() => resolve()); });
+    }
+  });
+
+  await test('the barrier release lives on its OWN loop, not in the observation tick', () => {
+    // Structural companion to the executable regression above: the release must not be reachable from the
+    // tick body at all, because that is where the unbounded server polls are.
+    const tickBody = DRIVER.split('const tickStart = now();')[1] ?? '';
+    assert(!tickBody.includes('readCounters(opts.endpointBaseUrl'),
+      'the barrier gauge must not be polled from the observation tick');
+    assert(!/blockingSinceMs !== 0 && now\(\) - blockingSinceMs >= armMs/.test(tickBody),
+      'and the arm-window release must not be checked from it either');
+    const watchdog = DRIVER.split('const watchdog = (async () =>')[1] ?? '';
+    assert(watchdog.includes('readCounters(opts.endpointBaseUrl'), 'the watchdog polls the gauge');
+    assert(watchdog.includes('BARRIER_WATCHDOG_INTERVAL'), 'on its own cadence');
+    assert(watchdog.includes('await release('), 'and it is what releases');
   });
 
   await test('the arm clock starts when a request BLOCKS, not when the hold is armed', () => {

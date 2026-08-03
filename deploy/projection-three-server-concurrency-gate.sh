@@ -43,7 +43,9 @@
 #   endpoint before any scan is triggered. A scanner that reaches that object stops there and waits, so the
 #   three arrive at their own pace and then coexist. THE HOLD IS NOT RELEASED WHEN THE RENDEZVOUS SUCCEEDS —
 #   the first real run did that and destroyed the overlap it had just created — it runs for its whole bounded
-#   window: FOUR seconds of actual blocking, with the endpoint's own backstop at 4.5 s. Both sit strictly
+#   window: THREE seconds of actual blocking, with the endpoint's own backstop at 4.5 s. The gap between them
+#   is the lag between a request blocking and this gate's polled `/counters` NOTICING that it has, which a
+#   real run proved is not free. Both sit strictly
 #   under the daemon's five-second admission queue-wait budget, so no other object's read can be starved, and
 #   far under its ten-second first-byte deadline, so no held read can fail. The hold makes the observation
 #   likely; the observation makes the claim.

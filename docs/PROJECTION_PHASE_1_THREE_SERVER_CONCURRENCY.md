@@ -117,7 +117,7 @@ break the run:**
 | Bound | Derived from | Why |
 |---|---|---|
 | the endpoint's `--max-hold`, **4.5 s** | `PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS` = 10 s, **and** `MAX_QUEUE_WAIT_MS` = 5 s, which it must be STRICTLY under | a held response that has not begun by the first-byte deadline is abandoned and the **read fails**, so a media server would catalogue a file it could not open — the gate would be manufacturing the defect it claims to measure |
-| the blocking window, 4 s | `PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS` = 5 s | held requests occupy the daemon's four per-endpoint slots, and a read that cannot get one inside that budget returns EIO — a longer hold would mis-catalogue forty-nine entries it has nothing to do with |
+| the blocking window, **3 s** | `PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS` = 5 s, **less the release overshoot** | held requests occupy the daemon's four per-endpoint slots, and a read that cannot get one inside that budget returns EIO — a longer hold would mis-catalogue forty-nine entries it has nothing to do with. It is 3 s rather than 4 because the arm window is timed from when this gate NOTICES a block while the backstop is timed from when the request actually blocks; see §3.4 |
 
 **The backstop is strictly below the queue-wait budget, and an earlier version was exactly equal to it.** It
 was 5 s against a 5 s budget while the text beside it claimed "strictly shorter". At equality the guarantee is
@@ -125,6 +125,28 @@ gone on the boundary: a read arriving an instant after another blocks would wait
 be refused admission — the very starvation the bound exists to prevent. The chain is now strictly ordered and
 every term derived:
 `arm 4,000 ms < backstop 4,500 ms < MAX_QUEUE_WAIT_MS 5,000 ms < FIRST_BYTE_DEADLINE_MS 10,000 ms`.
+
+### 3.4 The two clocks, and the run that failed on the difference
+
+**The endpoint's backstop is timed from when a request ACTUALLY blocks; this gate's arm window is timed from
+when it NOTICES.** Those are different clocks, and the second lags the first.
+
+**Run 2 of the first fully remediated sequence failed exactly there** — `holdTimeouts` moved to 1 while run 1
+of the same sequence passed on identical code, because run 1 happened to detect the block one tick sooner. A
+gate whose verdict depends on which tick a poll lands in is not measuring the data plane.
+
+The fix has two halves, and the first alone was not enough:
+
+- **the arm window leaves room for the lag** — 3 s, so that arm + overshoot still fits under the 4.5 s
+  backstop, machine-checked at load by `assertHoldChainIsFailClosed`;
+- **the release moved off the observation tick onto its own watchdog.** Moving only the *detection* to the
+  top of the tick narrowed the lag and did not close it: the *release* still fired at tick granularity, and a
+  tick is one sleep plus three server polls, each of which may take up to `SAMPLE_MAX_SPAN`. Worst case the
+  release lands 2.5 s late — more than any arm window under the backstop can absorb. A release is a real-time
+  safety action and must not queue behind unbounded work, so it no longer does: the watchdog polls the
+  endpoint's own uncounted `/counters` on a 250 ms cadence and releases exactly when the window elapses.
+  An executable regression drives the real function against a loopback endpoint with 1.5 s server polls and
+  fails if the release is ever queued behind them again.
 
 **The blocking clock starts when a request first blocks, not when the hold is armed.** An armed hold nothing
 has reached costs nothing and starves nobody, so it stays armed until a scanner actually arrives. Timing it

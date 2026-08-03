@@ -303,6 +303,45 @@ export async function runConcurrentScans(opts: ConcurrentScanOptions): Promise<C
     }
   };
 
+  // THE BARRIER WATCHDOG: ITS OWN LOOP, ON ITS OWN CADENCE, OFF THE OBSERVATION TICK.
+  //
+  // THE DEFECT THIS CLOSES, AND IT TOOK TWO ATTEMPTS TO SEE PROPERLY. Detection and release both used to
+  // live in the observation loop. Run 2 of the first fully remediated sequence failed with `holdTimeouts=1`
+  // because the arm window is timed from when the poll NOTICES a block while the endpoint's backstop is
+  // timed from when the request ACTUALLY blocks. Moving the DETECTION to the top of the tick narrowed that
+  // lag and did not close it: the RELEASE still fired at tick granularity, and a tick is one sleep plus
+  // three server polls, each of which may take up to `SAMPLE_MAX_SPAN`. Worst case the release lands 2.5 s
+  // after it was due — more overshoot than any arm window under the backstop can absorb.
+  //
+  // A RELEASE IS A REAL-TIME SAFETY ACTION AND MUST NOT QUEUE BEHIND UNBOUNDED WORK. So it does not: this
+  // loop polls the endpoint's own uncounted `/counters` surface every `BARRIER_WATCHDOG_INTERVAL`, notes the
+  // first moment a request is actually blocked, and releases exactly `armMs` later. Server-poll latency is
+  // not on this path at all, and the arm window only has to leave room for two watchdog periods — one to
+  // notice, one to act — which `assertHoldChainIsFailClosed` checks against the backstop at load.
+  let watchdogStopped = false;
+  const watchdog = (async () => {
+    if (!barrierArmed) return;
+    while (!watchdogStopped && releasedAtMs === 0) {
+      try {
+        const counters = await readCounters(opts.endpointBaseUrl as string);
+        const held = Number(counters.heldRequests ?? 0);
+        if (blockingSinceMs === 0 && held > heldBaseline) {
+          blockingSinceMs = now();
+          note('a provider read is blocked at the barrier; the bounded blocking window starts now');
+        }
+      } catch {
+        // A counters poll that failed says nothing about the hold. The endpoint's own maxHold remains the
+        // backstop, and the unconditional release on the way out remains the floor.
+      }
+      if (blockingSinceMs !== 0 && now() - blockingSinceMs >= armMs) {
+        await release('the bounded blocking window elapsed, which is strictly inside the daemon\'s '
+          + 'admission queue-wait budget so no other object\'s read can have been starved');
+        return;
+      }
+      await sleep(CONCURRENCY_DEADLINES_MS.BARRIER_WATCHDOG_INTERVAL);
+    }
+  })();
+
   // THE SCANS. Launched together, awaited later, and never allowed to reject this function on their own:
   // a failure is recorded per server so the observer can still finish and the timeline still be reported.
   const triggeredAtMs: number[] = [];
@@ -362,23 +401,6 @@ export async function runConcurrentScans(opts: ConcurrentScanOptions): Promise<C
       unreadable,
     });
 
-    // THE BARRIER'S OWN GAUGE, ON THE SAME TICK. `/counters` is the endpoint's UNCOUNTED control surface —
-    // reading it is not a ranged request and not a resolution — so watching the hold cannot widen the budget
-    // the hold exists to make measurable.
-    if (barrierArmed && releasedAtMs === 0) {
-      try {
-        const counters = await readCounters(opts.endpointBaseUrl as string);
-        const held = Number(counters.heldRequests ?? 0);
-        if (blockingSinceMs === 0 && held > heldBaseline) {
-          blockingSinceMs = now();
-          note('a provider read is blocked at the barrier; the bounded blocking window starts now');
-        }
-      } catch {
-        // A counters poll that failed says nothing about the hold. The release below is still bounded by the
-        // deadline, and the endpoint's own maxHold is the backstop.
-      }
-    }
-
     // THE RENDEZVOUS IS NOTED AND THE BARRIER IS *NOT* RELEASED ON IT, AND THE FIRST REAL RUN IS WHY.
     //
     // The first version released the moment all three were seen scanning at once. It worked perfectly and it
@@ -396,10 +418,6 @@ export async function runConcurrentScans(opts: ConcurrentScanOptions): Promise<C
       note('all servers were observed scanning at once; the barrier stays on for the rest of its window so '
         + 'the overlap can be measured rather than glimpsed');
     }
-    if (barrierArmed && releasedAtMs === 0 && blockingSinceMs !== 0 && now() - blockingSinceMs >= armMs) {
-      await release('the bounded blocking window elapsed, which is strictly inside the daemon\'s '
-        + 'admission queue-wait budget so no other object\'s read can have been starved');
-    }
     if (scansFinished) break;
     if (now() - startedAtMs > deadlineMs) {
       await release('the concurrent-scan deadline fired');
@@ -407,6 +425,9 @@ export async function runConcurrentScans(opts: ConcurrentScanOptions): Promise<C
     }
     await sleep(interval);
   }
+
+  watchdogStopped = true;
+  await watchdog;
 
   // THE BARRIER IS RELEASED WHATEVER HAPPENED. A gate that failed between arming and releasing would leave
   // the endpoint blocking a read that the NEXT phase would then time out on, and the failure would name the
