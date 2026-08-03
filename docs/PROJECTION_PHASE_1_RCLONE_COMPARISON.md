@@ -225,15 +225,19 @@ rejected rather than quoted, because there the committed length is counted and t
 | 6–8 | Windows / Docker Desktop | **COMPLETED**, a second wrapper sequence, same commit, no tracked file edited between them | 66 each, none failed, none skipped | wrapper exit 0 |
 | 9–11 | Windows / Docker Desktop | **COMPLETED**, a third wrapper sequence, same commit | 66 each, none failed, none skipped | wrapper exit 0; the working tree was still clean at `5cdf55b` afterwards |
 | 12 | Windows / Docker Desktop | **COMPLETED**, against `12ffef1` — the tree as finally committed | 66, none failed, none skipped | **a confirming run, and it is here because the nine wrapper runs predate the last commit.** That commit changed `.gitignore` and one offline assertion and nothing the gate reads, so it could not have invalidated them — but "could not have" is an argument and this is a measurement. Every figure landed inside the ranges §7.1 records: 981 ranged GETs, 1,832,756,755 media bytes, **17.077×**, 52 PROPFIND, 90,249 bytes of listing XML, the ~105 MB fixture at 1,794,384,634 bytes over 22 GETs, and the client accounting for 34,991,428 bytes over 880 transfers |
+| 13 | Windows / Docker Desktop | **COMPLETED**, against `330a9e7` — the first run of the REMEDIATED instrument | 70, none failed, none skipped | **the run that showed how far off the retracted claim was.** 2,783,683,960 bytes COMMITTED against 120,343,984 OBSERVED, with 117 of 1,057 bodies abandoned part-way. See §7.3 and §7.4 |
+| 14–16 | Windows / Docker Desktop | **COMPLETED**, three consecutive fresh runs through the committed wrapper, same commit, no tracked file edited inside them | 70 each, none failed, none skipped | wrapper exit 0, `3 of 3 consecutive … none skipped`; the working tree was still clean at `330a9e7` afterwards. §7.4 |
 
-**Eleven completed runs and one failure, all on Windows / Docker Desktop, and the §6.1 table of the acceptance
-plan still reads NOT RUN.** Nine of the eleven came through the committed three-consecutive-fresh-run wrapper,
-in three sequences of three, with no tracked file edited inside or between them. That is the repetition the
+**Fifteen completed runs and one failure, all on Windows / Docker Desktop, and the §6.1 table of the
+acceptance plan still reads NOT RUN.** Twelve of the fifteen came through the committed
+three-consecutive-fresh-run wrapper, in four sequences of three, with no tracked file edited inside or
+between them. **Runs 1–12 were taken with an instrument whose byte counter is now known to have measured
+something other than what it was reported as — see §7.3** — and their COMMITTED figures stand as such. That is the repetition the
 acceptance plan asks for — **on the wrong platform**. §6 of the plan says G22 closes on a Linux or Unraid
-host, and none of these twelve runs was one. No real provider endpoint has ever been contacted — the WebDAV
+host, and none of these sixteen runs was one. No real provider endpoint has ever been contacted — the WebDAV
 endpoint is the in-repository fake — and Phase 1 remains open.
 
-**The rows for runs 3–12 were necessarily written after they finished**, which is true of every run record in
+**The rows for runs 3–16 were necessarily written after they finished**, which is true of every run record in
 this repository and is not a gap in this one: that edit changes this document and nothing the gate reads.
 Re-running after each edit that records a run would not terminate.
 
@@ -348,6 +352,50 @@ and a live in-flight gauge so a snapshot taken mid-write is **refused** rather t
 Go tests drive a client that reads 512 bytes of an 8 MiB body and closes, and require the two totals to come
 apart; a control test requires them to agree exactly when the body is fully consumed. §7.4 is what the
 remediated instrument measured.
+
+### 7.4 What the remediated instrument measured, and how far off the retracted claim was
+
+Runs 13–16, on Windows / Docker Desktop, against `330a9e7`. Run 13 is a standalone run; 14–16 are three
+consecutive fresh runs through the committed wrapper, with no tracked file edited inside them. **70 assertions
+each, none failed, none skipped.**
+
+| | across runs 13–16 |
+|---|---|
+| ranged GETs | **959 – 1,057**, every one answered `206`; **0** whole-body answers |
+| **media bytes COMMITTED** | **1,831,428,173 – 2,783,683,960** |
+| **media bytes OBSERVED** | **94,316,026 – 120,343,984** |
+| **as a multiple of the corpus's own 107,316,990 bytes** | **committed 17.065× – 25.938×; OBSERVED 0.878× – 1.121×** |
+| bodies completed / abandoned part-way | **866 – 940 completed, 87 – 117 truncated** |
+| the ~105 MB fixture | committed **17.023× – 26.023×**; **observed 0.543× – 0.766×** — the client never received it once in full, in any run |
+| over the 43 comparable entries | committed **1,826,340,081 – 2,778,909,482**; **observed 88,930,627 – 115,663,883**; over **820 – 941** GETs |
+| the client's own accounting | **34,497,096 – 38,024,565 bytes** over **868 – 928 transfers** |
+| everything else | unchanged from §7.1: 52 depth-1 PROPFINDs and 90,249 bytes of listing XML in every run, 0 HTTP 429, 0 mutating requests, 50/50 matched on all three servers, 8 samples / 3.5 s of three-way overlap, cold on both instruments, seek preserved, nothing leaked |
+
+**THE RETRACTED CLAIM WAS WRONG BY ROUGHLY A FACTOR OF TWENTY, AND IN THE DIRECTION THAT FLATTERED THE
+FINDING.** It said the client's own figure understates what this topology costs a provider by more than fifty
+times. Measured properly, the endpoint **wrote** 94–120 MB while the client accounted for 34–38 MB: a ratio of
+about **2.7× to 3.1×**, which is read-ahead and discard and is a real but ordinary property of a VFS. The
+remaining ~23× was the endpoint's own optimism about reads the client had abandoned, and it was never a
+statement about rclone at all.
+
+**And the headline changes with it.** Over the 43 entries both topologies fetch remotely, the product's own
+gate reports 13,205,874 bytes in every run. This topology **asked for** 1.83–2.78 GB — roughly 138–210× — and
+**received** 88.9–115.7 MB, roughly **6.7× – 8.8×**. Both are divisions of measured numbers; the first
+describes request amplification and the second describes delivered traffic, and only the second is what a
+provider would transfer.
+
+**What did not change, and is the more durable half of the comparison.** The request count — **959–1,057
+ranged GETs against 47** — is unaffected by any of this, because a request is a request whether or not its
+body was drained. So is the metadata cost: **52 PROPFINDs and 90,249 bytes of listing XML** for a namespace
+that is discovered rather than published, against a product topology that has no counterpart figure because
+its namespace arrives in one admitted manifest. So is the absence of a resolution step, the per-server
+catalogue evidence, the overlap evidence and the cold-state evidence.
+
+**The run-to-run instability in §7.2 survives too, and now has a second dimension.** Committed still varies
+17.065×–25.938×; observed varies 0.878×–1.122×. The same cause explains both — how many times each media
+server happens to re-open the ~105 MB fixture and seek backwards in it — but the observed spread is far
+narrower, which is itself informative: the client asks for wildly different amounts between runs and ends up
+receiving roughly the corpus's own size every time.
 
 ## 8. What this gate does not prove
 
