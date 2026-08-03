@@ -197,9 +197,9 @@ stands up **one** PostgreSQL, **one** publisher, **one** admitted generation, **
 **one** FUSE mount and **one** fake HTTP Range endpoint, and puts **three** real, digest-pinned media servers
 on the same mount directory as the same library root.
 `docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md` describes what it asserts, and §7 of that document is the
-only place that says what has been run: **eleven runs, one failing and ten green, nine of the ten through the
-committed three-consecutive-fresh-run wrapper in three sequences of three with no edit between them, each 59
-assertions with none failed and none skipped. All eleven are Windows / Docker Desktop, which §6 says closes
+only place that says what has been run: **fourteen runs, one failing and thirteen green, twelve of the
+thirteen through the committed three-consecutive-fresh-run wrapper in four sequences of three, each 59
+assertions with none failed and none skipped. All fourteen are Windows / Docker Desktop, which §6 says closes
 none of G7–G13 or G18.** The one failure is worth reading: it was the gate's, not the product's — the barrier
 was released the instant the rendezvous succeeded, which destroyed the overlap it had just created.
 

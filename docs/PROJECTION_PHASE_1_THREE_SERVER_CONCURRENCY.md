@@ -258,12 +258,17 @@ count that is asserted is `matched` — published keys present at the published 
 | 3–5 | Windows / Docker Desktop | **PASSED**, three consecutive fresh runs through the committed wrapper `npm run go:three-server-concurrency-gate:three` | 59 each, none failed, none skipped | wrapper exit 0, `3 of 3 consecutive … none skipped` |
 | 6–8 | Windows / Docker Desktop | **PASSED**, a second wrapper sequence | 59 each, none failed, none skipped | wrapper exit 0 |
 | 9–11 | Windows / Docker Desktop | **PASSED**, a third wrapper sequence | 59 each, none failed, none skipped | wrapper exit 0 |
+| 12–14 | Windows / Docker Desktop | **PASSED**, a fourth wrapper sequence, against the tree exactly as committed at `974a7de` | 59 each, none failed, none skipped | wrapper exit 0 |
 
-**Ten green runs and one failure, all on Windows / Docker Desktop, and the §6.1 table still reads NOT RUN.**
-Nine of the ten came through the committed three-consecutive-fresh-run wrapper, in three sequences of three,
-with no edit to any tracked file between them. That is the repetition the acceptance plan asks for — **on the
-wrong platform**. §6 of the plan says the media-server gates close on a Linux or Unraid host, and none of
-these eleven runs was one.
+**Thirteen green runs and one failure, all on Windows / Docker Desktop, and the §6.1 table still reads NOT
+RUN.** Twelve of the thirteen came through the committed three-consecutive-fresh-run wrapper, in four
+sequences of three, with no edit to any tracked file inside a sequence. That is the repetition the acceptance
+plan asks for — **on the wrong platform**. §6 of the plan says the media-server gates close on a Linux or
+Unraid host, and none of these fourteen runs was one.
+
+**The row for runs 12–14 was necessarily written after they finished**, which is true of every run record and
+is not a gap in this one: that edit changed this document and nothing the gate reads. Re-running after each
+edit that records a run would not terminate.
 
 **The numbers are stable across the nine wrapper runs**, which is what a deterministic corpus should produce:
 provider bytes 13,205,874 in every run, 47 ranged GETs in every run, 43 resolutions in every run, the large
