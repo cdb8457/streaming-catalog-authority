@@ -192,24 +192,30 @@ export const PRODUCT_REMOTE_ENTRIES =
  */
 export const WEBDAV_COUNTER_KEYS_REQUIRED = Object.freeze([
   'requests', 'accountedResponses', 'propfind', 'propfindDepth0', 'propfindDepth1', 'propfindOther',
-  'options', 'head', 'gets', 'writeAttempts', 'rangedBodies', 'rangedBytes', 'fullBodies', 'fullBytes',
-  'bodylessResponses', 'bytesServed', 'metadataBytes', 'served429', 'peakConns', 'peakConcurrent',
+  'options', 'head', 'gets', 'writeAttempts', 'rangedBodies', 'fullBodies', 'bodylessResponses',
+  'rangedCommittedBytes', 'fullCommittedBytes', 'committedBytes',
+  'rangedObservedBytes', 'fullObservedBytes', 'observedBytes',
+  'completedBodies', 'truncatedBodies', 'bodiesInFlight',
+  'metadataBytes', 'served429', 'peakConns', 'peakConcurrent',
   'heldRequests', 'currentHeldWaiters', 'holdTimeouts',
 ] as const);
 
 /**
  * The counters that may never fall between two snapshots of ONE endpoint process.
  *
- * `currentHeldWaiters` is the one live GAUGE and is deliberately excluded: it rises and falls by design, and
- * requiring it to be monotonic would fail every correct run.
+ * THE TWO LIVE GAUGES ARE EXCLUDED, and they are excluded BY NAME rather than by a rule somebody could widen.
+ * `currentHeldWaiters` and `bodiesInFlight` rise and fall by design; requiring either to be monotonic would
+ * fail every correct run. Everything else is a lifetime total or a high-water mark, and neither kind falls.
  */
+export const WEBDAV_GAUGE_KEYS: readonly string[] = Object.freeze(['currentHeldWaiters', 'bodiesInFlight']);
+
 export const MONOTONIC_WEBDAV_COUNTER_KEYS: readonly string[] = Object.freeze(
-  WEBDAV_COUNTER_KEYS_REQUIRED.filter((key) => key !== 'currentHeldWaiters'),
+  WEBDAV_COUNTER_KEYS_REQUIRED.filter((key) => !WEBDAV_GAUGE_KEYS.includes(key)),
 );
 
 /** The per-object columns, paired BY INDEX, which is why they must all be the same length. */
 export const WEBDAV_COUNTER_ARRAY_KEYS = Object.freeze([
-  'objectSizes', 'objectBytes', 'objectGets', 'objectRanged', 'objectFull',
+  'objectSizes', 'objectCommitted', 'objectObserved', 'objectGets', 'objectRanged', 'objectFull',
 ] as const);
 
 export interface WebdavCounters {
@@ -224,11 +230,20 @@ export interface WebdavCounters {
   readonly gets: number;
   readonly writeAttempts: number;
   readonly rangedBodies: number;
-  readonly rangedBytes: number;
   readonly fullBodies: number;
-  readonly fullBytes: number;
   readonly bodylessResponses: number;
-  readonly bytesServed: number;
+  /** COMMITTED: what the responses promised in Content-Length. NOT what was delivered. */
+  readonly rangedCommittedBytes: number;
+  readonly fullCommittedBytes: number;
+  readonly committedBytes: number;
+  /** OBSERVED: what the writes actually put on the socket. Readable only once `bodiesInFlight` is zero. */
+  readonly rangedObservedBytes: number;
+  readonly fullObservedBytes: number;
+  readonly observedBytes: number;
+  readonly completedBodies: number;
+  readonly truncatedBodies: number;
+  /** A GAUGE. Non-zero means a body's committed length is counted and its observed length is not yet. */
+  readonly bodiesInFlight: number;
   readonly metadataBytes: number;
   readonly served429: number;
   readonly peakConns: number;
@@ -237,7 +252,8 @@ export interface WebdavCounters {
   readonly currentHeldWaiters: number;
   readonly holdTimeouts: number;
   readonly objectSizes: readonly number[];
-  readonly objectBytes: readonly number[];
+  readonly objectCommitted: readonly number[];
+  readonly objectObserved: readonly number[];
   readonly objectGets: readonly number[];
   readonly objectRanged: readonly number[];
   readonly objectFull: readonly number[];
@@ -317,8 +333,15 @@ export function parseWebdavCounters(
  *     is exactly how a topology under test comes out looking cheap.
  *   REQUEST PARTITION. `ranged + full + bodyless == accountedResponses`, on both snapshots. The endpoint's own
  *     statement that every request it accounted for landed in exactly one bucket.
- *   BYTE PARTITION. `rangedBytes + fullBytes == bytesServed`, likewise.
- *   ATTRIBUTION. `sum(objectBytes) == bytesServed`, and the same for the two request columns. A shortfall
+ *   BYTE PARTITIONS, BOTH OF THEM. `rangedCommittedBytes + fullCommittedBytes == committedBytes`, and the
+ *     same shape for the observed pair. They are separate partitions over separate totals.
+ *   SETTLEMENT. `bodiesInFlight == 0`. Between a body`s commit and its observation the committed length is
+ *     counted and the observed length is not, so a snapshot taken there understates delivery by an amount
+ *     that belongs to the clock rather than to the client.
+ *   PROMISE CEILING. `observedBytes <= committedBytes`. An endpoint cannot write more than it promised.
+ *   OUTCOME PARTITION, after settlement. `completedBodies + truncatedBodies == the body count`.
+ *   ATTRIBUTION. `sum(objectCommitted) == committedBytes`, likewise for observed, and the same for the two
+ *     request columns. A shortfall
  *     means a body was served for something this gate never registered, which is the only way "every byte
  *     belongs to the shared corpus" can fail invisibly.
  *   ARRAY GEOMETRY. Every per-object column must have one entry per registered object; a caller pairs them by
@@ -351,6 +374,18 @@ export function webdavAttributionProblems(
   }
 
   for (const [label, snapshot] of [['before', before], ['after', after]] as const) {
+    // SETTLEMENT FIRST, BECAUSE EVERYTHING ELSE IN THIS LOOP DEPENDS ON IT. Between a body's commit and its
+    // observation the committed length is counted and the observed length is not, so a snapshot taken there
+    // shows a deficit that belongs to the clock rather than to the client — and an observed-byte figure read
+    // off it would be a measurement of when somebody looked.
+    if (snapshot.bodiesInFlight !== 0) {
+      problems.push({
+        kind: 'telemetry-unsettled',
+        detail: `the ${label} snapshot was taken with ${snapshot.bodiesInFlight} body/bodies still writing, `
+          + 'so its committed and observed totals describe different sets of responses. Wait for the gauge to '
+          + 'reach zero rather than reading a half-written window',
+      });
+    }
     if (snapshot.rangedBodies + snapshot.fullBodies + snapshot.bodylessResponses
       !== snapshot.accountedResponses) {
       problems.push({
@@ -359,15 +394,52 @@ export function webdavAttributionProblems(
           + `sum to ${snapshot.rangedBodies + snapshot.fullBodies + snapshot.bodylessResponses}`,
       });
     }
-    if (snapshot.rangedBytes + snapshot.fullBytes !== snapshot.bytesServed) {
+    // THE PROPFIND DEPTH CENSUS IS A PARTITION OF THE PROPFIND TOTAL. Without this, a depth bucket that
+    // stopped being incremented would leave the total intact and the breakdown quietly wrong — and the
+    // breakdown is what the report calls "what a namespace costs when it is discovered".
+    if (snapshot.propfindDepth0 + snapshot.propfindDepth1 + snapshot.propfindOther !== snapshot.propfind) {
       problems.push({
-        kind: 'byte-partition',
-        detail: `the ${label} snapshot served ${snapshot.bytesServed} media bytes but its buckets sum to `
-          + `${snapshot.rangedBytes + snapshot.fullBytes}`,
+        kind: 'propfind-partition',
+        detail: `the ${label} snapshot counted ${snapshot.propfind} PROPFINDs but its depth buckets sum to `
+          + `${snapshot.propfindDepth0 + snapshot.propfindDepth1 + snapshot.propfindOther}`,
+      });
+    }
+    if (snapshot.rangedCommittedBytes + snapshot.fullCommittedBytes !== snapshot.committedBytes) {
+      problems.push({
+        kind: 'committed-byte-partition',
+        detail: `the ${label} snapshot committed ${snapshot.committedBytes} media bytes but its buckets sum `
+          + `to ${snapshot.rangedCommittedBytes + snapshot.fullCommittedBytes}`,
+      });
+    }
+    if (snapshot.rangedObservedBytes + snapshot.fullObservedBytes !== snapshot.observedBytes) {
+      problems.push({
+        kind: 'observed-byte-partition',
+        detail: `the ${label} snapshot observed ${snapshot.observedBytes} media bytes but its buckets sum to `
+          + `${snapshot.rangedObservedBytes + snapshot.fullObservedBytes}`,
+      });
+    }
+    // AN ENDPOINT CANNOT WRITE MORE THAN IT PROMISED. If it ever reports that it did, the two counters are
+    // no longer describing the same responses and neither can be quoted.
+    if (snapshot.observedBytes > snapshot.committedBytes) {
+      problems.push({
+        kind: 'observed-exceeds-committed',
+        detail: `the ${label} snapshot observed ${snapshot.observedBytes} bytes against `
+          + `${snapshot.committedBytes} committed; more was written than was ever promised`,
+      });
+    }
+    // THE OUTCOME PARTITION, WHICH IS ONLY TRUE AFTER SETTLEMENT and is therefore checked after the gauge.
+    if (snapshot.bodiesInFlight === 0
+      && snapshot.completedBodies + snapshot.truncatedBodies !== snapshot.rangedBodies + snapshot.fullBodies) {
+      problems.push({
+        kind: 'outcome-partition',
+        detail: `the ${label} snapshot served ${snapshot.rangedBodies + snapshot.fullBodies} bodies with `
+          + `nothing in flight, but records ${snapshot.completedBodies} completed and `
+          + `${snapshot.truncatedBodies} truncated`,
       });
     }
     const columns: ReadonlyArray<readonly [string, readonly number[]]> = [
-      ['objectSizes', snapshot.objectSizes], ['objectBytes', snapshot.objectBytes],
+      ['objectSizes', snapshot.objectSizes], ['objectCommitted', snapshot.objectCommitted],
+      ['objectObserved', snapshot.objectObserved],
       ['objectGets', snapshot.objectGets], ['objectRanged', snapshot.objectRanged],
       ['objectFull', snapshot.objectFull],
     ];
@@ -381,12 +453,19 @@ export function webdavAttributionProblems(
       }
     }
     const sum = (column: readonly number[]): number => column.reduce((total, value) => total + value, 0);
-    if (sum(snapshot.objectBytes) !== snapshot.bytesServed) {
+    if (sum(snapshot.objectCommitted) !== snapshot.committedBytes) {
       problems.push({
-        kind: 'unattributed-bytes',
-        detail: `the ${label} snapshot served ${snapshot.bytesServed} media bytes but attributes `
-          + `${sum(snapshot.objectBytes)} to registered objects; the difference was served for something this `
-          + 'gate never published',
+        kind: 'unattributed-committed-bytes',
+        detail: `the ${label} snapshot committed ${snapshot.committedBytes} media bytes but attributes `
+          + `${sum(snapshot.objectCommitted)} to registered objects; the difference was promised for `
+          + 'something this gate never published',
+      });
+    }
+    if (snapshot.bodiesInFlight === 0 && sum(snapshot.objectObserved) !== snapshot.observedBytes) {
+      problems.push({
+        kind: 'unattributed-observed-bytes',
+        detail: `the ${label} snapshot observed ${snapshot.observedBytes} media bytes but attributes `
+          + `${sum(snapshot.objectObserved)} to registered objects`,
       });
     }
     if (sum(snapshot.objectRanged) !== snapshot.rangedBodies
@@ -407,11 +486,26 @@ export function webdavAttributionProblems(
     }
   }
 
-  if (after.writeAttempts !== 0) {
+  // MUTATING REQUESTS, ASKED AS TWO SEPARATE QUESTIONS BECAUSE THEY ARE TWO SEPARATE FACTS.
+  //
+  // The window delta is the one this gate's figures depend on: a write that landed inside the measured window
+  // is a finding about what the media servers did to a read-only mount. A write that landed BEFORE it is a
+  // different finding — the endpoint was not read-only-clean when the window opened — and folding the two
+  // into one whole-run check would report the second as the first, or miss the second entirely once the
+  // check became a delta. Both are refused, separately, so the log names which happened.
+  if (after.writeAttempts - before.writeAttempts !== 0) {
     problems.push({
-      kind: 'write-attempted',
-      detail: `${after.writeAttempts} mutating WebDAV request(s) reached the endpoint. The mount is read-only `
-        + 'and so is the endpoint, so a client that tried is a finding about this topology rather than noise',
+      kind: 'write-attempted-in-window',
+      detail: `${after.writeAttempts - before.writeAttempts} mutating WebDAV request(s) reached the endpoint `
+        + 'inside the measured window. The mount is read-only and so is the endpoint, so a client that tried '
+        + 'is a finding about this topology rather than noise',
+    });
+  }
+  if (before.writeAttempts !== 0) {
+    problems.push({
+      kind: 'write-attempted-before-window',
+      detail: `${before.writeAttempts} mutating WebDAV request(s) had already reached the endpoint before the `
+        + 'window opened, so it was not read-only-clean when the measurement began',
     });
   }
 
@@ -432,7 +526,8 @@ export function webdavAttributionProblems(
     }
   }
   const cumulative: ReadonlyArray<readonly [string, readonly number[], readonly number[]]> = [
-    ['objectBytes', before.objectBytes, after.objectBytes],
+    ['objectCommitted', before.objectCommitted, after.objectCommitted],
+    ['objectObserved', before.objectObserved, after.objectObserved],
     ['objectGets', before.objectGets, after.objectGets],
     ['objectRanged', before.objectRanged, after.objectRanged],
     ['objectFull', before.objectFull, after.objectFull],
@@ -475,8 +570,10 @@ export interface ColdComparisonProblem {
  *
  *   THE CORPUS WAS REVEALED. Without this, "no corpus byte was served beforehand" is satisfied by a run in
  *     which the corpus was never there — and a scan of an empty library is cheap, correct and worthless.
- *   NO CORPUS BYTE HAD EVER BEEN SERVED. The endpoint's own per-object totals, before the window. This is the
- *     load-bearing one: a client cannot answer from a cache it never filled.
+ *   NO CORPUS BYTE HAD EVER BEEN ASKED FOR OR WRITTEN. The endpoint's own per-object totals, before the
+ *     window, on BOTH the committed and the observed column. Committed is the load-bearing one — a client
+ *     cannot answer from a cache it never asked to fill — and observed is checked beside it so a corpus that
+ *     had somehow been delivered without being promised could not slip past a committed-only test.
  *   THE CLIENT'S CACHE DIRECTORY WAS EMPTY. The second, independent instrument, on the other side of the
  *     wire, so one broken one cannot carry the claim.
  *   THE WINDOW REACHED THE ENDPOINT AT LEAST ONCE PER CORPUS OBJECT. A floor, not a ceiling. A window that
@@ -487,7 +584,10 @@ export interface ColdComparisonProblem {
  */
 export function comparisonColdStateProblems(input: {
   readonly revealedBefore: boolean;
-  readonly corpusBytesBefore: number;
+  /** Bytes the endpoint had already COMMITTED for corpus objects before the window. See below. */
+  readonly corpusCommittedBytesBefore: number;
+  /** ...and had actually WRITTEN for them. Checked separately, for the reason stated above. */
+  readonly corpusObservedBytesBefore: number;
   readonly clientCacheBytesBefore: number;
   readonly getDelta: number;
   readonly corpusObjectCount: number;
@@ -502,11 +602,19 @@ export function comparisonColdStateProblems(input: {
         + 'nothing would be a scan of an empty library rather than a cold scan of the corpus',
     });
   }
-  if (input.corpusBytesBefore !== 0) {
+  if (input.corpusCommittedBytesBefore !== 0) {
     problems.push({
       kind: 'corpus-already-read',
-      detail: `${input.corpusBytesBefore} bytes of the shared corpus had already been served before the `
-        + 'window opened, so this is not the corpus\'s first read and its cost is not what a cold scan costs',
+      detail: `${input.corpusCommittedBytesBefore} bytes of the shared corpus had already been promised by `
+        + 'the endpoint before the window opened, so this is not the corpus\'s first read and its cost is not '
+        + 'what a cold scan costs',
+    });
+  }
+  if (input.corpusObservedBytesBefore !== 0) {
+    problems.push({
+      kind: 'corpus-already-delivered',
+      detail: `${input.corpusObservedBytesBefore} bytes of the shared corpus had already been written by the `
+        + 'endpoint before the window opened',
     });
   }
   if (input.clientCacheBytesBefore !== 0) {
@@ -550,12 +658,17 @@ export function comparisonColdStateProblems(input: {
 export interface ObjectCost {
   readonly ordinal: number;
   readonly sizeBytes: number;
-  readonly servedBytes: number;
+  /** What the responses for this object PROMISED in Content-Length. */
+  readonly committedBytes: number;
+  /** What was actually written for it. Never above `committedBytes`; below it whenever a read was abandoned. */
+  readonly observedBytes: number;
   readonly gets: number;
   readonly rangedGets: number;
   readonly fullGets: number;
-  /** Served bytes as a multiple of the object's own length. The headline per-object figure. */
-  readonly multiplier: number;
+  /** Committed bytes as a multiple of the object's own length. */
+  readonly committedMultiplier: number;
+  /** Observed bytes as a multiple of the object's own length. The one that describes delivery. */
+  readonly observedMultiplier: number;
 }
 
 export interface ComparisonMeasurements {
@@ -570,17 +683,30 @@ export interface ComparisonMeasurements {
   readonly propfindOther: number;
   readonly options: number;
   readonly head: number;
-  /** Media bytes. Metadata bytes are counted separately and are never folded into this. */
-  readonly bytesServed: number;
+  /**
+   * Media bytes, BOTH WAYS. Metadata bytes are counted separately and folded into neither.
+   *
+   * `committedBytes` is what the responses promised; `observedBytes` is what was written. The first is the
+   * figure comparable with the product's own endpoint, which measures the same thing; the second is the only
+   * one that describes delivery. An earlier version had one number and called it both.
+   */
+  readonly committedBytes: number;
+  readonly observedBytes: number;
   readonly metadataBytes: number;
   readonly served429: number;
   readonly peakConns: number;
   readonly peakConcurrent: number;
   readonly writeAttempts: number;
-  /** Bytes served for objects inside the shared corpus, and for everything else, as an exact partition. */
-  readonly corpusBytes: number;
-  readonly nonCorpusBytes: number;
-  readonly unattributedBytes: number;
+  /** How the window's bodies ended: written in full, or abandoned part-way. */
+  readonly completedBodies: number;
+  readonly truncatedBodies: number;
+  /** Bytes for objects inside the shared corpus, and for everything else, as an exact partition — both ways. */
+  readonly corpusCommittedBytes: number;
+  readonly corpusObservedBytes: number;
+  readonly nonCorpusCommittedBytes: number;
+  readonly nonCorpusObservedBytes: number;
+  readonly unattributedCommittedBytes: number;
+  readonly unattributedObservedBytes: number;
   /** Per-object costs, worst multiplier first, so a report names the file rather than the total. */
   readonly perObject: readonly ObjectCost[];
   /**
@@ -594,14 +720,16 @@ export interface ComparisonMeasurements {
    * contributor to the headline byte total unnamed.
    */
   readonly perObjectByBytes: readonly ObjectCost[];
-  /** The corpus's own total length — the denominator `corpusMultiplier` is a multiple of, printed with it. */
+  /** The corpus's own total length — the denominator the two multipliers are multiples of, printed with them. */
   readonly corpusSizeBytes: number;
   /** How many corpus objects the window touched at all. A ceiling is satisfied by zero; this is not. */
   readonly objectsExercised: number;
-  /** Corpus bytes divided by the corpus's own total length. The single most comparable number here. */
-  readonly corpusMultiplier: number;
+  /** Corpus bytes divided by the corpus's own total length, both ways. */
+  readonly corpusCommittedMultiplier: number;
+  readonly corpusObservedMultiplier: number;
   /** The same, over just the subset the product serves from its own endpoint. See `PRODUCT_REMOTE_ENTRIES`. */
-  readonly productComparableBytes: number;
+  readonly productComparableCommittedBytes: number;
+  readonly productComparableObservedBytes: number;
   readonly productComparableGets: number;
 }
 
@@ -630,35 +758,45 @@ export function comparisonMeasurements(
   const delta = (a: readonly number[], b: readonly number[], index: number): number =>
     (a[index] ?? 0) - (b[index] ?? 0);
   const perObject: ObjectCost[] = [];
-  let corpusBytes = 0;
-  let nonCorpusBytes = 0;
+  let corpusCommittedBytes = 0;
+  let corpusObservedBytes = 0;
+  let nonCorpusCommittedBytes = 0;
+  let nonCorpusObservedBytes = 0;
   let objectsExercised = 0;
   let corpusSizeTotal = 0;
-  for (let ordinal = 0; ordinal < after.objectBytes.length; ordinal += 1) {
+  for (let ordinal = 0; ordinal < after.objectCommitted.length; ordinal += 1) {
     const size = after.objectSizes[ordinal] as number;
-    const served = delta(after.objectBytes, before.objectBytes, ordinal);
+    const committed = delta(after.objectCommitted, before.objectCommitted, ordinal);
+    const observed = delta(after.objectObserved, before.objectObserved, ordinal);
     const gets = delta(after.objectGets, before.objectGets, ordinal);
     const ranged = delta(after.objectRanged, before.objectRanged, ordinal);
     const full = delta(after.objectFull, before.objectFull, ordinal);
     if (ordinal >= firstCorpusOrdinal) {
-      corpusBytes += served;
+      corpusCommittedBytes += committed;
+      corpusObservedBytes += observed;
       corpusSizeTotal += size;
       if (gets > 0) objectsExercised += 1;
     } else {
-      nonCorpusBytes += served;
+      nonCorpusCommittedBytes += committed;
+      nonCorpusObservedBytes += observed;
     }
     perObject.push({
-      ordinal, sizeBytes: size, servedBytes: served, gets, rangedGets: ranged, fullGets: full,
-      multiplier: size > 0 ? served / size : 0,
+      ordinal, sizeBytes: size, committedBytes: committed, observedBytes: observed,
+      gets, rangedGets: ranged, fullGets: full,
+      committedMultiplier: size > 0 ? committed / size : 0,
+      observedMultiplier: size > 0 ? observed / size : 0,
     });
   }
-  const totalBytes = after.bytesServed - before.bytesServed;
+  const totalCommitted = after.committedBytes - before.committedBytes;
+  const totalObserved = after.observedBytes - before.observedBytes;
   const comparable = new Set(productComparableOrdinals);
-  let productComparableBytes = 0;
+  let productComparableCommittedBytes = 0;
+  let productComparableObservedBytes = 0;
   let productComparableGets = 0;
   for (const cost of perObject) {
     if (!comparable.has(cost.ordinal)) continue;
-    productComparableBytes += cost.servedBytes;
+    productComparableCommittedBytes += cost.committedBytes;
+    productComparableObservedBytes += cost.observedBytes;
     productComparableGets += cost.gets;
   }
   return {
@@ -671,7 +809,8 @@ export function comparisonMeasurements(
     propfindOther: after.propfindOther - before.propfindOther,
     options: after.options - before.options,
     head: after.head - before.head,
-    bytesServed: totalBytes,
+    committedBytes: totalCommitted,
+    observedBytes: totalObserved,
     metadataBytes: after.metadataBytes - before.metadataBytes,
     served429: after.served429 - before.served429,
     // PEAKS ARE HIGH-WATER MARKS AND NOT DELTAS. Subtracting two peaks produces a number that is neither the
@@ -679,17 +818,117 @@ export function comparisonMeasurements(
     peakConns: after.peakConns,
     peakConcurrent: after.peakConcurrent,
     writeAttempts: after.writeAttempts - before.writeAttempts,
-    corpusBytes,
-    nonCorpusBytes,
-    unattributedBytes: totalBytes - corpusBytes - nonCorpusBytes,
-    perObject: [...perObject].sort((a, b) => b.multiplier - a.multiplier),
-    perObjectByBytes: [...perObject].sort((a, b) => b.servedBytes - a.servedBytes),
+    completedBodies: after.completedBodies - before.completedBodies,
+    truncatedBodies: after.truncatedBodies - before.truncatedBodies,
+    corpusCommittedBytes,
+    corpusObservedBytes,
+    nonCorpusCommittedBytes,
+    nonCorpusObservedBytes,
+    unattributedCommittedBytes: totalCommitted - corpusCommittedBytes - nonCorpusCommittedBytes,
+    unattributedObservedBytes: totalObserved - corpusObservedBytes - nonCorpusObservedBytes,
+    // THE WORST-MULTIPLIER ORDERING IS BY COMMITTED and the most-bytes ordering by OBSERVED, deliberately.
+    // The first answers "which object did this topology ask for most relative to its size", which is a
+    // property of the request pattern; the second answers "where did the delivered traffic actually go",
+    // which is a property of the transfer. Ordering both by the same number would collapse two questions.
+    perObject: [...perObject].sort((a, b) => b.committedMultiplier - a.committedMultiplier),
+    perObjectByBytes: [...perObject].sort((a, b) => b.observedBytes - a.observedBytes),
     corpusSizeBytes: corpusSizeTotal,
     objectsExercised,
-    corpusMultiplier: corpusSizeTotal > 0 ? corpusBytes / corpusSizeTotal : 0,
-    productComparableBytes,
+    corpusCommittedMultiplier: corpusSizeTotal > 0 ? corpusCommittedBytes / corpusSizeTotal : 0,
+    corpusObservedMultiplier: corpusSizeTotal > 0 ? corpusObservedBytes / corpusSizeTotal : 0,
+    productComparableCommittedBytes,
+    productComparableObservedBytes,
     productComparableGets,
   };
+}
+
+// ---------------------------------------------------------------------------------------------------------
+// The mount client's own accounting, which is the OTHER instrument and is read just as strictly
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * The mount client's own byte and transfer totals, as this gate is entitled to read them.
+ *
+ * WHY THIS IS A PARSER AND NOT `Number(value ?? 0)`, WHICH IS WHAT IT USED TO BE. That expression turns a
+ * missing field into a confident **zero**, a string `"123"` into 123, a fraction into a fraction and a
+ * negative into a negative — and every one of those flows straight into a published comparison between this
+ * number and the endpoint's. A zero here does not read as "unknown"; it reads as "the client transferred
+ * nothing", which is the most dramatic possible version of the very claim this figure is used to make.
+ *
+ * SO IT COERCES NOTHING. An object, its own `bytes` and `transfers`, finite, integral, non-negative and
+ * inside the safe-integer range. Anything else is refused by name.
+ */
+export interface ClientStats {
+  readonly bytes: number;
+  readonly transfers: number;
+}
+
+export const CLIENT_STATS_KEYS_REQUIRED: readonly string[] = Object.freeze(['bytes', 'transfers']);
+
+export function parseClientStats(
+  value: unknown, label: string,
+): { stats?: ClientStats; problems: TelemetryProblem[] } {
+  if (value === null || typeof value !== 'object' || Array.isArray(value)) {
+    return {
+      problems: [{
+        kind: 'missing-client-telemetry',
+        detail: `the ${label} mount-client stats document is not an object, so nothing can be read from it`,
+      }],
+    };
+  }
+  const document = value as Record<string, unknown>;
+  const problems: TelemetryProblem[] = [];
+  const out: Record<string, number> = {};
+  for (const key of CLIENT_STATS_KEYS_REQUIRED) {
+    // OWN PROPERTY, so a value inherited from a prototype cannot answer for one the client never sent.
+    if (!Object.prototype.hasOwnProperty.call(document, key)) {
+      problems.push({
+        kind: 'missing-client-telemetry',
+        detail: `the ${label} mount-client stats have no "${key}" of their own. Read through a coercing `
+          + 'default this would become zero, and a zero here reads as "the client transferred nothing" rather '
+          + 'than as "the client did not say"',
+      });
+      continue;
+    }
+    const raw = document[key];
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || !Number.isInteger(raw) || raw < 0
+      || !Number.isSafeInteger(raw)) {
+      problems.push({
+        kind: 'missing-client-telemetry',
+        detail: `the ${label} mount-client stats have no usable "${key}" (${JSON.stringify(raw)}); it must be `
+          + 'a finite, whole, non-negative, safe-integer NUMBER, and a string that looks like one is refused '
+          + 'rather than coerced',
+      });
+      continue;
+    }
+    out[key] = raw;
+  }
+  if (problems.length > 0) return { problems };
+  return { stats: out as unknown as ClientStats, problems: [] };
+}
+
+/**
+ * Everything that makes a PAIR of client-stats readings unfit to difference.
+ *
+ * The client's totals are lifetime counters within one mount process. A fall means the process restarted
+ * inside the window, so the two readings describe different processes and their difference describes
+ * neither — and a negative delta beside the endpoint's positive one is exactly how a comparison acquires an
+ * impossible ratio.
+ */
+export function clientStatsProblems(before: ClientStats, after: ClientStats): TelemetryProblem[] {
+  const problems: TelemetryProblem[] = [];
+  for (const key of CLIENT_STATS_KEYS_REQUIRED) {
+    const from = (before as unknown as Record<string, number>)[key] as number;
+    const to = (after as unknown as Record<string, number>)[key] as number;
+    if (to < from) {
+      problems.push({
+        kind: 'client-counter-reset',
+        detail: `the mount client's "${key}" fell from ${from} to ${to} across the window, which only happens `
+          + 'when the mount process restarted inside it',
+      });
+    }
+  }
+  return problems;
 }
 
 // ---------------------------------------------------------------------------------------------------------
@@ -711,14 +950,30 @@ export const RESOLUTION_CALLS_DO_NOT_EXIST_ON_THIS_TOPOLOGY = true;
 /**
  * WHAT THE ENDPOINT'S NUMBERS ARE ABOUT, AND WHAT THEY ARE NOT ABOUT.
  *
- * Everything this gate counts is measured AT THE WEBDAV SERVER: it is what the mount client asked for. That
- * is not the same as what the client did — the client's own cache, its read-ahead, its chunk sizing and its
- * request pacing all sit between a media server's `read()` and a request arriving here, and a byte the client
- * fetched and threw away is indistinguishable at this end from one it used. So the client's OWN accounting is
- * read too, from its remote-control surface, and the two are reported side by side. **Where they disagree,
- * the disagreement is the finding**, and neither is corrected to match the other.
+ * Everything this gate counts is measured AT THE WEBDAV SERVER, and it counts two different things there.
+ * COMMITTED is what the mount client ASKED FOR — the Content-Length each response promised. OBSERVED is what
+ * the endpoint actually WROTE to the socket. Neither is what the client USED: its own cache, read-ahead and
+ * chunk sizing sit between a media server's `read()` and a request arriving here, and a byte the client
+ * received and discarded is indistinguishable at this end from one it passed upward.
+ *
+ * SO THERE ARE THREE NUMBERS AND THEY ANSWER THREE QUESTIONS. The client's own accounting is read from its
+ * remote-control surface and reported beside both endpoint totals. **A DIFFERENCE BETWEEN THEM IS NOT
+ * AUTOMATICALLY A FINDING, AND AN EARLIER VERSION OF THIS COMMENT SAID IT WAS.** Committed-minus-observed is
+ * the endpoint's own optimism about reads the client abandoned; observed-minus-client is the client's
+ * read-ahead and discard. Attributing the first to the second — which is what a committed-only counter
+ * forces — produces a confident ratio between a number that includes abandoned reads and one that does not.
+ * All three are reported and none is corrected to match another.
  */
 export const WEBDAV_SERVER_TRAFFIC_IS_NOT_CLIENT_BEHAVIOUR = true;
+
+/**
+ * COMMITTED IS NOT DELIVERED, AS A VALUE A TEST CAN HOLD.
+ *
+ * The offline suite asserts that no current-tense wording in this tranche describes a committed figure as
+ * served, delivered, or as what the topology cost a provider — because for one whole release of this gate,
+ * exactly that wording sat on top of a counter that had discarded its write count.
+ */
+export const COMMITTED_BYTES_ARE_NOT_DELIVERED_BYTES = true;
 
 /**
  * WHY NO BYTE HERE IS ATTRIBUTED TO A MEDIA SERVER, EXACTLY AS IN G18.
@@ -752,8 +1007,10 @@ export const RCLONE_COMPARISON_NONCLAIMS: readonly string[] = Object.freeze([
   'no real provider endpoint has ever been contacted; the WebDAV endpoint is the in-repository fake',
   'per-server attribution is impossible here and is not claimed: one mount client serves all three servers, '
     + 'so the endpoint sees the client and never the server behind a byte',
-  'the figures are what the endpoint was ASKED for; the mount client\'s own accounting is reported beside '
-    + 'them and is a different measurement',
+  'the endpoint reports COMMITTED bytes (what each response promised in Content-Length) and OBSERVED bytes '
+    + '(what it actually wrote) as two separate figures; a committed figure is not a delivery claim',
+  'the mount client\'s own accounting is a THIRD measurement, of what it believes it passed upward, and no '
+    + 'ratio between it and either endpoint figure is claimed as a provider cost',
   'there is no access-resolution figure because this topology has no resolution step, which is a property of '
     + 'it rather than an efficiency of it',
   'nothing here decodes anything: playback, seek-under-load and transcode belong to G8-G10 and are not run '

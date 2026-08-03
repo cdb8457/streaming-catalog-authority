@@ -25,6 +25,7 @@ import { readFileSync } from 'node:fs';
 //     the same `/control/hold/<ref>` and `/counters` shapes on purpose, so `runConcurrentScans` drives it
 //     unmodified.
 
+import { parseClientStats, type ClientStats } from '../core/projection/rclone-comparison.js';
 import {
   adapterFor, readCounters, setHold, allAdapters, runConcurrentScans,
   type CatalogueEntry, type ConcurrentScanOutcome, type ExpectedEntry, type ServerAdapter,
@@ -33,7 +34,7 @@ import {
 export {
   adapterFor, readCounters as readWebdavCounters, setHold, allAdapters, runConcurrentScans,
 };
-export type { CatalogueEntry, ConcurrentScanOutcome, ExpectedEntry, ServerAdapter };
+export type { CatalogueEntry, ClientStats, ConcurrentScanOutcome, ExpectedEntry, ServerAdapter };
 
 const CONTROL_TIMEOUT_MS = 15_000;
 
@@ -70,14 +71,47 @@ export async function revealCorpus(baseUrl: string): Promise<void> {
  * A NON-2XX IS A FAILURE RATHER THAN AN EMPTY OBJECT. A stats surface that answered 500 and was read through
  * `?? 0` would contribute a confident zero to a comparison table.
  */
-export async function readClientStats(rcUrl: string): Promise<Record<string, unknown>> {
+export async function readClientStats(rcUrl: string): Promise<ClientStats> {
   const response = await fetchWithDeadline(
     `${rcUrl}/core/stats`,
     { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' },
     CONTROL_TIMEOUT_MS,
   );
   if (!response.ok) throw new Error(`the mount client answered ${response.status} for its stats`);
-  return await response.json() as Record<string, unknown>;
+  // PARSED AT THE POINT OF READING, NOT LATER. An earlier version returned whatever the client sent and let
+  // the caller do `Number(value ?? 0)` on it, which turns a missing field into a confident zero and a string
+  // into a number. The live read is validated exactly as the persisted snapshot is, by the same function, so
+  // a client that stopped reporting a field is refused here rather than becoming a nought in a table.
+  const parsed = parseClientStats(await response.json(), 'live');
+  if (parsed.stats === undefined) {
+    throw new Error(`the mount client's stats cannot support a figure: ${
+      parsed.problems.map((problem) => problem.detail).join('; ')}`);
+  }
+  return parsed.stats;
+}
+
+/**
+ * Read the endpoint's counters ONCE EVERY BODY HAS FINISHED WRITING.
+ *
+ * WHY A PLAIN READ IS NOT ENOUGH, AND IT IS THE OTHER HALF OF THE COMMITTED/OBSERVED SPLIT. Between a body's
+ * commit and its observation the endpoint has counted the length it promised and not yet the length it wrote.
+ * A snapshot taken there understates delivery by an amount that depends on when the gate happened to look —
+ * so the "after" snapshot of a window has to wait for the gauge to reach zero before it means anything.
+ *
+ * IT IS BOUNDED AND IT FAILS RATHER THAN HANGING. A loop that waited forever would turn a client that never
+ * finished into a wedged gate, and the analysis refuses an unsettled snapshot anyway, so the honest shape is
+ * to try for a fixed budget and then report what was actually seen.
+ */
+export async function readSettledWebdavCounters(
+  baseUrl: string, budgetMs = 60_000, pollMs = 100,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + budgetMs;
+  let snapshot = await readCounters(baseUrl);
+  while (Number(snapshot.bodiesInFlight) !== 0 && Date.now() < deadline) {
+    await new Promise((resolve) => { setTimeout(resolve, pollMs); });
+    snapshot = await readCounters(baseUrl);
+  }
+  return snapshot;
 }
 
 /**

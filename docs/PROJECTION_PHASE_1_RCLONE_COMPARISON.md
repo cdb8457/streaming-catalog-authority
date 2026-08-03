@@ -106,7 +106,8 @@ the mount client's VFS and directory caches — and the shape of the answer is t
    warming that the visibility check itself caused. **Neither is a tuning**: dropping a cached listing can only
    ever *add* metadata traffic to the measured window, never remove any.
 4. **Five things are then asserted**, on two independent instruments on opposite sides of the wire: the corpus
-   was **visible**; the endpoint had served **zero bytes** for any corpus object; the client's cache directory
+   was **visible**; the endpoint had neither **promised nor written** a byte for any corpus object; the
+   client's cache directory
    was **empty**; the window reached the endpoint **at least once per corpus object**; and a request really was
    **blocked at the barrier and released** rather than lapsing.
 
@@ -150,24 +151,37 @@ compared — so the binding constraint here is the mount client's own IO deadlin
 |---|---|
 | GETs served a body, split **ranged (206)** against **whole-body (200)** | the headline shape of the comparison. A client that asks for whole bodies where the daemon asks for ranges is the finding, and one combined total would erase it |
 | **PROPFIND** (depth 0, depth 1, other), **OPTIONS**, **HEAD** | what a namespace costs when it is **discovered** rather than published. The product's topology has no equivalent figure, because its namespace arrives in one admitted manifest |
-| **media bytes**, per object and in total, worst multiplier first | an aggregate is exactly where one file read forty times over hides — and on this topology that is the expected shape rather than a defect |
+| **media bytes, COMMITTED and OBSERVED**, per object and in total, worst multiplier first | an aggregate is exactly where one file read many times over hides — and on this topology that is the expected shape rather than a defect. The two figures are separate because a Content-Length is what a response PROMISED and a write count is what it DELIVERED, and for one release of this gate only the first existed while the report called it the second. See §7.3 |
 | **listing bytes**, counted separately and never folded into the media total | a PROPFIND answer is XML the endpoint authored; counting it beside media would make the most-quoted figure partly a function of how verbose the listing format is |
 | **HTTP 429** observed | zero, and stated as a measurement that the client was never rate-limited rather than as evidence that a real service would not |
 | **peak connections** (sampled on every accept) and **peak in-flight requests** | the first includes the gate's own polls of the uncounted counters surface; the second does not and is the one that describes the client |
 | **scan duration per server** | recorded per server, like every other per-server fact here |
 | **item identity and size per server**, through each server's own ordinary-file predicate | this is asserted, not merely recorded: see §6.3 |
 | **cache and cold-state facts** — the client's cache directory before and after, its configured cache mode, its directory-cache window, its deadlines | so no figure above can be attributed to a bound the gate imposed without saying so |
-| **the client's own accounting**, beside the endpoint's | see §6.2 |
+| **body outcomes**: how many bodies were written in full and how many the client abandoned part-way | it is the difference between the two byte figures, and it is a fact about how a media server reads rather than a defect |
+| **the client's own accounting**, beside both endpoint figures | see §6.2 |
 
-### 6.2 The two instruments, and why they disagree
+### 6.2 THREE instruments, and why no ratio between them is a provider cost
 
-Everything the endpoint counts is **what the mount client asked for**. That is not the same as what the client
-*did*: its own cache, its read-ahead, its chunk sizing and its request pacing all sit between a media server's
-`read()` and a request arriving at the endpoint, and a byte the client fetched and discarded is
-indistinguishable at that end from one it used.
+There are three numbers, not two, and an earlier version of this section had two and drew a conclusion from
+their ratio that neither of them supported. See §7.3.
 
-So the client's own accounting is read from its remote-control surface and reported **beside** the endpoint's.
-**Where they disagree, the disagreement is the finding, and neither is corrected to match the other.**
+| Instrument | What it counts | Where it is measured |
+|---|---|---|
+| **committed** | the `Content-Length` each response promised, recorded before its first byte reaches the socket | at the endpoint |
+| **observed** | what the write actually put on the socket, recorded after it returned, with whether it finished | at the endpoint |
+| **the client's own** | what the mount client believes it passed upward | at the client's control surface |
+
+**Committed minus observed is the ENDPOINT's optimism**, about reads the client asked for and then abandoned.
+On this corpus that is the ordinary case: a media server opens the ~105 MB fixture, reads a header, and closes
+the handle. **Observed minus client is the CLIENT's read-ahead and discard** — bytes it received and did not
+pass upward. They have different causes, they are measured at different places, and **adding them together and
+calling the sum a provider cost is what this document did for one release**.
+
+All three are reported. **None is corrected to match another, and no ratio between them is claimed as what the
+topology costs a provider.** The endpoint refuses to answer for the observed column at all unless every body
+has finished writing — it publishes a live in-flight gauge for exactly that, and a snapshot taken mid-write is
+rejected rather than quoted, because there the committed length is counted and the observed one is not.
 
 ### 6.3 What is asserted rather than recorded
 
@@ -260,23 +274,27 @@ different runs, on the same host**. It is there so the distance is visible rathe
 |---|---|---|
 | **ranged GETs** | **911 – 1,064** | **47**, identical in every run |
 | over the 43 entries the product also fetches remotely | **780 – 924** | 47 |
-| **media bytes** | **1,829,512,472 – 2,468,279,423** | **13,205,874**, identical in every run |
-| over the 43 comparable entries | **1,824,388,554 – 2,462,665,227** | 13,205,874 |
-| **as a multiple of the corpus's own length** | **17.047× – 22.999×** | — |
-| the ~105 MB fixture | **1,794,384,634 / 1,899,791,505 / 2,426,891,803 bytes** over **22 / 23 / 29** GETs — **17.023× / 18.023× / 23.024×** its own length | **11,534,336 bytes = 0.109×** |
-| worst small object by multiplier | between **21×** and **27.9×** its own length, on a different file most runs | — |
+| **media bytes COMMITTED** (see §7.3) | **1,829,512,472 – 2,468,279,423** | **13,205,874**, identical in every run |
+| over the 43 comparable entries, committed | **1,824,388,554 – 2,462,665,227** | 13,205,874 |
+| **committed, as a multiple of the corpus's own length** | **17.047× – 22.999×** | — |
+| the ~105 MB fixture, committed | **1,794,384,634 / 1,899,791,505 / 2,426,891,803 bytes** over **22 / 23 / 29** GETs — **17.023× / 18.023× / 23.024×** its own length | **11,534,336 bytes = 0.109×** |
+| worst small object by committed multiplier | between **21×** and **27.9×** its own length, on a different file most runs | — |
 | peak connections / in flight | **5 – 6** on accept, **3 – 4** in flight | 6 on accept, 4 in flight |
 | Plex scan duration | **23 – 37 s** | 26–32 s |
 | observation samples | **45 – 74** | 53–65 |
 
 **The comparison, over the subset where the two sides fetch the same files.** 780–924 ranged GETs against
-**47**, and 1,824,388,554–2,462,665,227 bytes against **13,205,874**. Those ratios — roughly 17–20× the
-requests and roughly 138–186× the bytes — are divisions of the two measured numbers beside them and nothing
-more.
+**47**, and 1,824,388,554–2,462,665,227 COMMITTED bytes against **13,205,874**. Those ratios — roughly 17–20×
+the requests and roughly 138–186× the bytes — are divisions of the two measured numbers beside them and
+nothing more. **Both sides of the byte ratio are committed lengths**, which is why they are comparable: the
+product's endpoint counts its own traffic the same way. What neither side's figure is, is a delivery
+claim — see §7.3.
 
 ### 7.2 The one thing that is NOT reproducible, and that is the finding
 
-**The metadata cost is exactly reproducible and the byte cost is not.** Fifty-two PROPFINDs and 90,249 bytes
+*(every byte figure in this section is a COMMITTED length; see §7.3)*
+
+**The metadata cost is exactly reproducible and the committed byte cost is not.** Fifty-two PROPFINDs and 90,249 bytes
 of listing XML, in all nine runs, over a corpus whose generator is byte-for-byte deterministic — confirmed
 directly, by generating it twice and comparing every file's size. The media bytes over the same corpus, on the
 same host, from the same commit, ranged from **1.83 GB to 2.47 GB**: a spread of **35 %**.
@@ -288,7 +306,7 @@ in one of exactly **three** patterns — 22, 23 or 29 ranged GETs, for 1,794,384
 onward and a **backward** seek re-opens the object from the new position; three media servers each probing a
 ~105 MB container, and how many times each happens to seek backwards in it, is the variable.
 
-**So the naive path's provider bill is a property of the RUN and not of the LIBRARY.** The product's own gate
+**So what the naive path ASKS FOR is a property of the RUN and not of the LIBRARY.** The product's own gate
 reports 13,205,874 bytes and 47 ranged GETs in every one of nine wrapper runs, to the byte. This one cannot
 be quoted as a single number at all — which is a more useful result than either endpoint of its range, and it
 is the kind of thing only a repeated measurement finds.
@@ -298,13 +316,38 @@ for reasons that are not in these tables: a provider's URL space inside the medi
 identity that is a function of a remote path, and an outage that empties the mount. **A cheap number would not
 have reopened that, and these expensive ones are not what closed it.**
 
-**And the two instruments disagree by a factor of fifty.** The endpoint served 1.83–2.47 GB; the mount
-client's own accounting reports **33,082,964 – 38,412,143 bytes** over **826 – 938 transfers** for the same
-windows — a ratio of **50.8× to 64.8×**. Neither is corrected toward the other: the endpoint counts what it
-was asked for and the client counts what it believes it delivered upward, and everything between them is
-read-ahead, chunk sizing and bytes fetched and discarded. **A reader given only the client's own figure would
-understate what this topology costs a provider by more than fifty times**, which is the single most useful
-thing this control has produced and the reason both instruments are reported.
+### 7.3 RETRACTED: the "fifty-times" claim, and the instrument defect behind it
+
+**Runs 1–12 carried a conclusion this document no longer makes.** It read: the endpoint served 1.83–2.47 GB
+while the mount client's own accounting reported 33–38 MB for the same windows, a ratio of 50.8× to 64.8×,
+and therefore *"a reader given only the client's own figure would understate what this topology costs a
+provider by more than fifty times"*. It was called the single most useful thing this control had produced.
+
+**It was not supported by the instrument that produced it.** The endpoint incremented its byte counters by
+each response's **Content-Length, before the first byte reached the socket**, and then discarded both the
+byte count and the error returned by the write. So the figure it called "served" was **what the responses
+PROMISED**, not what was delivered — and a client that opens a large object, reads a header and closes the
+handle is indistinguishable, in a counter like that, from one that consumed everything. On a corpus built
+around a ~105 MB fixture read by three media servers, that is not a corner case; it is the expected shape,
+and it is exactly where the run-to-run spread in §7.2 comes from.
+
+**The gap therefore had at least two causes and the retracted sentence attributed all of it to one.**
+Committed-minus-observed is the endpoint's own optimism about reads the client abandoned.
+Observed-minus-client is the client's read-ahead and discard. Only the second was ever a statement about how
+rclone behaves, and the two were being added together and reported as the first.
+
+**What the figures in §7.1 and §7.2 still are.** They are **COMMITTED** bytes — what the client asked the
+endpoint for, measured identically to the way the product's own endpoint measures its own traffic, which is
+what makes the two sides comparable at all. Every one of them stands as that. **None of them is a delivery
+claim**, and the request counts, the PROPFIND census, the per-server catalogue results, the overlap evidence
+and the cold-state evidence are untouched by this.
+
+**What replaced it.** The endpoint now counts both: `committedBytes` before the write and `observedBytes`
+after it, per object and in aggregate, together with how many bodies finished and how many were abandoned,
+and a live in-flight gauge so a snapshot taken mid-write is **refused** rather than answered. Deterministic
+Go tests drive a client that reads 512 bytes of an 8 MiB body and closes, and require the two totals to come
+apart; a control test requires them to agree exactly when the body is fully consumed. §7.4 is what the
+remediated instrument measured.
 
 ## 8. What this gate does not prove
 
@@ -321,7 +364,9 @@ recommendation fails a test rather than a review.
 - **No run of this gate has ever happened on a real Linux or Unraid host.**
 - **No real provider endpoint has ever been contacted.**
 - **Per-server attribution is impossible here and is not claimed.**
-- **The figures are what the endpoint was ASKED for**; the client's own accounting is a different measurement.
+- **The endpoint reports COMMITTED and OBSERVED bytes as two separate figures**, and a committed figure is
+  not a delivery claim. The client's own accounting is a third measurement, and **no ratio between the three
+  is claimed as a provider cost** — see §7.3, where exactly that claim was retracted.
 - **There is no access-resolution figure**, because this topology has no resolution step.
 - **Nothing here decodes anything.**
 - **Phase 1 remains open.**

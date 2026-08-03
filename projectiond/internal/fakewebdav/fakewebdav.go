@@ -18,19 +18,48 @@
 // counted — and the single most interesting number this control produces is the one the product's transport
 // does not have: how much METADATA traffic a namespace costs when it is not published.
 //
-// WHAT IT COUNTS, AND THE PARTITIONS A CALLER MUST CHECK BEFORE READING ANY OF IT:
+// IT COUNTS BYTES TWICE, AND THE DIFFERENCE BETWEEN THE TWO IS THE WHOLE REASON THIS COMMENT IS LONG.
 //
-//	RangedBodies + FullBodies + BodylessResponses == AccountedResponses
-//	RangedBytes  + FullBytes                      == BytesServed
-//	sum(ObjectBytes)                              == BytesServed
-//	sum(ObjectRanged)                             == RangedBodies
-//	sum(ObjectFull)                               == FullBodies
+//	COMMITTED bytes are what a response PROMISED: the Content-Length it set, derived from the object's own
+//	  registered size and the range asked for. They are recorded BEFORE the first byte reaches the socket, so
+//	  no client can observe a byte the counters have not described yet, and they are the number that is
+//	  comparable with the product's own endpoint — which measures the same thing.
 //
-// BytesServed IS MEDIA BYTES AND NOTHING ELSE. A PROPFIND answer is XML this server authored; counting it in
-// the same total as a media body would make "what the naive path cost the provider" a number containing the
-// instrument's own prose. Metadata bytes are counted separately, in MetadataBytes, and reported beside it —
-// which is the honest shape, because on this topology metadata traffic is a real cost rather than an
-// accounting artefact.
+//	OBSERVED bytes are what `io.Copy` ACTUALLY WROTE, recorded after the write returns, together with whether
+//	  it returned the whole committed length or stopped early.
+//
+// THEY ARE NOT THE SAME NUMBER AND AN EARLIER VERSION OF THIS FILE HAD ONLY THE FIRST, while calling it
+// "served". A client that opens a large object, reads a header and closes the handle receives a small
+// fraction of a large committed length — and on a corpus built around a ~105 MB fixture read by three media
+// servers, that is not a corner case, it is the expected shape. Reporting the committed figure as what was
+// served overstates delivery by exactly the amount the client abandoned, and any conclusion drawn from
+// comparing it against a client's own accounting measures this endpoint's optimism rather than the topology.
+//
+// THE PARTITIONS A CALLER MUST CHECK BEFORE READING ANY OF IT:
+//
+//	RangedBodies + FullBodies + BodylessResponses    == AccountedResponses
+//	RangedCommittedBytes + FullCommittedBytes        == CommittedBytes
+//	RangedObservedBytes  + FullObservedBytes         == ObservedBytes
+//	sum(ObjectCommittedBytes)                        == CommittedBytes
+//	sum(ObjectObservedBytes)                         == ObservedBytes
+//	sum(ObjectRanged)                                == RangedBodies
+//	sum(ObjectFull)                                  == FullBodies
+//	ObservedBytes                                    <= CommittedBytes,   always
+//
+// ...AND TWO MORE THAT HOLD ONLY ONCE EVERY BODY HAS FINISHED WRITING:
+//
+//	CompletedBodies + TruncatedBodies                == RangedBodies + FullBodies
+//	BodiesInFlight                                   == 0
+//
+// A SNAPSHOT TAKEN WITH A BODY STILL IN FLIGHT CANNOT SUPPORT AN OBSERVED-BYTE FIGURE, because that body's
+// committed length is already counted and its observed length is not yet. `BodiesInFlight` is published so a
+// caller can WAIT for settlement rather than guess, and so a caller that did not wait is refused rather than
+// answered.
+//
+// BOTH BYTE TOTALS ARE MEDIA BYTES AND NOTHING ELSE. A PROPFIND answer is XML this server authored; counting
+// it in either total would put the instrument's own prose inside the number being compared. Metadata bytes
+// are counted separately, in MetadataBytes, and reported beside them — which is the honest shape, because on
+// this topology metadata traffic is a real cost rather than an accounting artefact.
 //
 // IT MUTATES NOTHING AND SERVES NOTHING BUT WHAT IT WAS GIVEN. Read-only: OPTIONS, PROPFIND, HEAD and GET.
 // PUT, DELETE, MKCOL, MOVE, COPY, PROPPATCH and LOCK are answered 405 and counted as bodiless, so a client
@@ -117,12 +146,28 @@ type Counters struct {
 
 	// The body classes, which are a partition of AccountedResponses together with BodylessResponses.
 	RangedBodies      atomic.Int64
-	RangedBytes       atomic.Int64
 	FullBodies        atomic.Int64
-	FullBytes         atomic.Int64
 	BodylessResponses atomic.Int64
-	BytesServed       atomic.Int64
-	// MetadataBytes is XML this server authored: PROPFIND multistatus bodies. Deliberately NOT in BytesServed.
+
+	// COMMITTED: the Content-Length each response promised, counted before its first byte reaches the socket.
+	RangedCommittedBytes atomic.Int64
+	FullCommittedBytes   atomic.Int64
+	CommittedBytes       atomic.Int64
+
+	// OBSERVED: what the write actually put on the socket, counted after it returned. See the package comment.
+	RangedObservedBytes atomic.Int64
+	FullObservedBytes   atomic.Int64
+	ObservedBytes       atomic.Int64
+	// CompletedBodies wrote their whole committed length with no error; TruncatedBodies did not — a client
+	// that closed the handle early, a broken pipe, or a read error on the fixture. The two sum to the body
+	// count only once nothing is still writing.
+	CompletedBodies atomic.Int64
+	TruncatedBodies atomic.Int64
+	// BodiesInFlight is a live GAUGE: how many bodies are between "committed" and "observed" right now. It is
+	// the only field that answers "may an observed-byte figure be read from this snapshot at all".
+	BodiesInFlight atomic.Int64
+
+	// MetadataBytes is XML this server authored: PROPFIND multistatus bodies. In NEITHER media total.
 	MetadataBytes atomic.Int64
 
 	// Served429 is never emitted by this server and is counted anyway, so "zero 429s observed" is a
@@ -171,13 +216,14 @@ type Server struct {
 	holds    map[string]chan struct{}
 	revealed bool
 
-	// accounting covers the response-classification set: the body classes, BytesServed, BodylessResponses,
+	// accounting covers the response-classification set: the body classes, both byte totals, BodylessResponses,
 	// AccountedResponses and the per-object columns. Nothing else, and Snapshot says so.
-	accounting  sync.Mutex
-	objectBytes []*atomic.Int64
-	objectGets  []*atomic.Int64
-	objectRange []*atomic.Int64
-	objectFull  []*atomic.Int64
+	accounting      sync.Mutex
+	objectCommitted []*atomic.Int64
+	objectObserved  []*atomic.Int64
+	objectGets      []*atomic.Int64
+	objectRange     []*atomic.Int64
+	objectFull      []*atomic.Int64
 
 	maxHold time.Duration
 	token   string
@@ -232,6 +278,25 @@ func New(opts Options) (*Server, error) {
 	}
 	go func() { _ = s.server.Serve(listener) }()
 	return s, nil
+}
+
+// WaitForSettlement blocks until no body is between its commit and its observation, or until the budget
+// elapses. It answers whether settlement was reached, so a caller that ran out of budget can refuse to read
+// an observed-byte figure rather than reading a half-written one.
+//
+// IT IS BOUNDED AND IT DOES NOT RETRY FOREVER. A gate that looped until the gauge happened to reach zero
+// would hang on a client that never finished, and a hang is a worse failure than a refusal.
+func (s *Server) WaitForSettlement(budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for {
+		if s.counters.BodiesInFlight.Load() == 0 {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return s.counters.BodiesInFlight.Load() == 0
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
 }
 
 func (s *Server) Close() error {
@@ -302,7 +367,8 @@ func (s *Server) AddFileObject(davPath, ref, file string, seed bool) (int64, err
 		s.dirs[dir] = true
 	}
 	s.accounting.Lock()
-	s.objectBytes = append(s.objectBytes, &atomic.Int64{})
+	s.objectCommitted = append(s.objectCommitted, &atomic.Int64{})
+	s.objectObserved = append(s.objectObserved, &atomic.Int64{})
 	s.objectGets = append(s.objectGets, &atomic.Int64{})
 	s.objectRange = append(s.objectRange, &atomic.Int64{})
 	s.objectFull = append(s.objectFull, &atomic.Int64{})
@@ -395,13 +461,26 @@ type CountersSnapshot struct {
 	WriteAttempts  int64 `json:"writeAttempts"`
 
 	RangedBodies      int64 `json:"rangedBodies"`
-	RangedBytes       int64 `json:"rangedBytes"`
 	FullBodies        int64 `json:"fullBodies"`
-	FullBytes         int64 `json:"fullBytes"`
 	BodylessResponses int64 `json:"bodylessResponses"`
-	BytesServed       int64 `json:"bytesServed"`
-	MetadataBytes     int64 `json:"metadataBytes"`
-	Served429         int64 `json:"served429"`
+
+	// COMMITTED — what the responses promised in their Content-Length. NOT what was delivered.
+	RangedCommittedBytes int64 `json:"rangedCommittedBytes"`
+	FullCommittedBytes   int64 `json:"fullCommittedBytes"`
+	CommittedBytes       int64 `json:"committedBytes"`
+
+	// OBSERVED — what the writes actually put on the socket. Readable only once BodiesInFlight is zero.
+	RangedObservedBytes int64 `json:"rangedObservedBytes"`
+	FullObservedBytes   int64 `json:"fullObservedBytes"`
+	ObservedBytes       int64 `json:"observedBytes"`
+	CompletedBodies     int64 `json:"completedBodies"`
+	TruncatedBodies     int64 `json:"truncatedBodies"`
+	// BodiesInFlight is a GAUGE, not a total. It is deliberately in the wire shape so a caller can wait for
+	// settlement, and so a caller that read the snapshot too early can be refused rather than answered.
+	BodiesInFlight int64 `json:"bodiesInFlight"`
+
+	MetadataBytes int64 `json:"metadataBytes"`
+	Served429     int64 `json:"served429"`
 
 	PeakConns      int64 `json:"peakConns"`
 	PeakConcurrent int64 `json:"peakConcurrent"`
@@ -417,11 +496,12 @@ type CountersSnapshot struct {
 	// The per-object columns, in REGISTRATION ORDER and carrying no path, reference or timestamp. A caller
 	// pairs them by index, which is why they are taken in one call under one lock: taken separately, an
 	// object registered in between produces columns of different lengths and index i means two objects.
-	ObjectSizes  []int64 `json:"objectSizes"`
-	ObjectBytes  []int64 `json:"objectBytes"`
-	ObjectGets   []int64 `json:"objectGets"`
-	ObjectRanged []int64 `json:"objectRanged"`
-	ObjectFull   []int64 `json:"objectFull"`
+	ObjectSizes     []int64 `json:"objectSizes"`
+	ObjectCommitted []int64 `json:"objectCommitted"`
+	ObjectObserved  []int64 `json:"objectObserved"`
+	ObjectGets      []int64 `json:"objectGets"`
+	ObjectRanged    []int64 `json:"objectRanged"`
+	ObjectFull      []int64 `json:"objectFull"`
 }
 
 func (s *Server) Snapshot() CountersSnapshot {
@@ -442,35 +522,42 @@ func (s *Server) Snapshot() CountersSnapshot {
 		return out
 	}
 	return CountersSnapshot{
-		Requests:           s.counters.Requests.Load(),
-		AccountedResponses: s.counters.AccountedResponses.Load(),
-		Propfind:           s.counters.Propfind.Load(),
-		PropfindDepth0:     s.counters.PropfindDepth0.Load(),
-		PropfindDepth1:     s.counters.PropfindDepth1.Load(),
-		PropfindOther:      s.counters.PropfindOther.Load(),
-		Options:            s.counters.Options.Load(),
-		Head:               s.counters.Head.Load(),
-		Gets:               s.counters.Gets.Load(),
-		WriteAttempts:      s.counters.WriteAttempts.Load(),
-		RangedBodies:       s.counters.RangedBodies.Load(),
-		RangedBytes:        s.counters.RangedBytes.Load(),
-		FullBodies:         s.counters.FullBodies.Load(),
-		FullBytes:          s.counters.FullBytes.Load(),
-		BodylessResponses:  s.counters.BodylessResponses.Load(),
-		BytesServed:        s.counters.BytesServed.Load(),
-		MetadataBytes:      s.counters.MetadataBytes.Load(),
-		Served429:          s.counters.Served429.Load(),
-		PeakConns:          s.counters.PeakConns.Load(),
-		PeakConcurrent:     s.counters.PeakConcurrent.Load(),
-		HeldRequests:       s.counters.HeldRequests.Load(),
-		CurrentHeldWaiters: s.counters.CurrentHeldWaiters.Load(),
-		HoldTimeouts:       s.counters.HoldTimeouts.Load(),
-		Revealed:           revealed,
-		ObjectSizes:        sizes,
-		ObjectBytes:        read(s.objectBytes),
-		ObjectGets:         read(s.objectGets),
-		ObjectRanged:       read(s.objectRange),
-		ObjectFull:         read(s.objectFull),
+		Requests:             s.counters.Requests.Load(),
+		AccountedResponses:   s.counters.AccountedResponses.Load(),
+		Propfind:             s.counters.Propfind.Load(),
+		PropfindDepth0:       s.counters.PropfindDepth0.Load(),
+		PropfindDepth1:       s.counters.PropfindDepth1.Load(),
+		PropfindOther:        s.counters.PropfindOther.Load(),
+		Options:              s.counters.Options.Load(),
+		Head:                 s.counters.Head.Load(),
+		Gets:                 s.counters.Gets.Load(),
+		WriteAttempts:        s.counters.WriteAttempts.Load(),
+		RangedBodies:         s.counters.RangedBodies.Load(),
+		FullBodies:           s.counters.FullBodies.Load(),
+		BodylessResponses:    s.counters.BodylessResponses.Load(),
+		RangedCommittedBytes: s.counters.RangedCommittedBytes.Load(),
+		FullCommittedBytes:   s.counters.FullCommittedBytes.Load(),
+		CommittedBytes:       s.counters.CommittedBytes.Load(),
+		RangedObservedBytes:  s.counters.RangedObservedBytes.Load(),
+		FullObservedBytes:    s.counters.FullObservedBytes.Load(),
+		ObservedBytes:        s.counters.ObservedBytes.Load(),
+		CompletedBodies:      s.counters.CompletedBodies.Load(),
+		TruncatedBodies:      s.counters.TruncatedBodies.Load(),
+		BodiesInFlight:       s.counters.BodiesInFlight.Load(),
+		MetadataBytes:        s.counters.MetadataBytes.Load(),
+		Served429:            s.counters.Served429.Load(),
+		PeakConns:            s.counters.PeakConns.Load(),
+		PeakConcurrent:       s.counters.PeakConcurrent.Load(),
+		HeldRequests:         s.counters.HeldRequests.Load(),
+		CurrentHeldWaiters:   s.counters.CurrentHeldWaiters.Load(),
+		HoldTimeouts:         s.counters.HoldTimeouts.Load(),
+		Revealed:             revealed,
+		ObjectSizes:          sizes,
+		ObjectCommitted:      read(s.objectCommitted),
+		ObjectObserved:       read(s.objectObserved),
+		ObjectGets:           read(s.objectGets),
+		ObjectRanged:         read(s.objectRange),
+		ObjectFull:           read(s.objectFull),
 	}
 }
 
@@ -710,22 +797,25 @@ func (s *Server) serveGet(w http.ResponseWriter, r *http.Request) bool {
 	w.Header().Set("Last-Modified", httpDate())
 	w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
 
-	// THE COUNTERS MOVE BEFORE THE BODY REACHES THE SOCKET, deliberately: bytes must never be observable to a
-	// client before the counters describing them. So this is "accounted", not "completed" — the response may
-	// still fail on a broken pipe afterwards, and calling it delivery would claim something this server does
-	// not observe. What is counted is the length the response COMMITS to in its Content-Length, which is
-	// derived from the object's own registered size and cannot disagree with what a complete read receives.
+	// PHASE ONE — COMMIT. The counters move BEFORE the body reaches the socket, deliberately: no client may
+	// observe a byte the counters have not described yet. What is counted here is the length the response
+	// COMMITS TO in its Content-Length, and the gauge that says this body has not finished writing.
+	//
+	// THE GAUGE IS INCREMENTED IN THE SAME CRITICAL SECTION AS THE COMMIT, and decremented in the same one as
+	// the observation. That is what makes a snapshot coherent: it can never see a committed length whose body
+	// is neither counted as in flight nor counted as observed.
 	s.accounting.Lock()
 	if ranged {
 		s.counters.RangedBodies.Add(1)
-		s.counters.RangedBytes.Add(length)
+		s.counters.RangedCommittedBytes.Add(length)
 	} else {
 		s.counters.FullBodies.Add(1)
-		s.counters.FullBytes.Add(length)
+		s.counters.FullCommittedBytes.Add(length)
 	}
-	s.counters.BytesServed.Add(length)
+	s.counters.CommittedBytes.Add(length)
 	s.counters.AccountedResponses.Add(1)
-	s.recordObjectLocked(object, length, ranged)
+	s.counters.BodiesInFlight.Add(1)
+	s.recordObjectCommittedLocked(object, length, ranged)
 	s.accounting.Unlock()
 
 	if ranged {
@@ -734,31 +824,78 @@ func (s *Server) serveGet(w http.ResponseWriter, r *http.Request) bool {
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
-	_, _ = io.Copy(w, io.NewSectionReader(handle, offset, length))
+
+	// PHASE TWO — OBSERVE. `io.Copy` returns how much it actually wrote and why it stopped, and BOTH are used.
+	//
+	// AN EARLIER VERSION DISCARDED BOTH — `_, _ = io.Copy(...)` — and the endpoint then reported the committed
+	// length as though it had been delivered. A client that opens a large object, reads a header and closes
+	// the handle receives a small fraction of a large committed length, and on this corpus that is the normal
+	// case rather than a corner one. The lock is taken only here, for a few adds, and never across the write
+	// itself: an endpoint that held its accounting lock for the length of a 105 MB transfer would freeze the
+	// instrument that measures it.
+	written, copyErr := io.Copy(w, io.NewSectionReader(handle, offset, length))
+	if written < 0 {
+		written = 0
+	}
+	s.accounting.Lock()
+	if ranged {
+		s.counters.RangedObservedBytes.Add(written)
+	} else {
+		s.counters.FullObservedBytes.Add(written)
+	}
+	s.counters.ObservedBytes.Add(written)
+	if copyErr == nil && written == length {
+		s.counters.CompletedBodies.Add(1)
+	} else {
+		// A SHORT WRITE AND AN ERRORED ONE ARE THE SAME FINDING and are not separated, because the endpoint
+		// cannot tell an abandoned read from a broken pipe and would be guessing if it named one.
+		s.counters.TruncatedBodies.Add(1)
+	}
+	s.recordObjectObservedLocked(object, written)
+	s.counters.BodiesInFlight.Add(-1)
+	s.accounting.Unlock()
 	return true
 }
 
-// recordObjectLocked attributes one served body to its registration ordinal. The caller holds s.accounting.
-func (s *Server) recordObjectLocked(object *Object, n int64, ranged bool) {
+// ordinalOf answers where an object sits in registration order, which is the only handle the per-object
+// columns carry. It is looked up rather than cached on the object so the columns and the registry cannot
+// disagree about an index.
+func (s *Server) ordinalOf(object *Object) int {
 	s.mu.Lock()
-	ordinal := -1
+	defer s.mu.Unlock()
 	for index, candidate := range s.objects {
 		if candidate == object {
-			ordinal = index
-			break
+			return index
 		}
 	}
-	s.mu.Unlock()
-	if ordinal < 0 || ordinal >= len(s.objectBytes) {
+	return -1
+}
+
+// recordObjectCommittedLocked attributes one body's COMMITTED length and its request class to its
+// registration ordinal. The caller holds s.accounting.
+func (s *Server) recordObjectCommittedLocked(object *Object, n int64, ranged bool) {
+	ordinal := s.ordinalOf(object)
+	if ordinal < 0 || ordinal >= len(s.objectCommitted) {
 		return
 	}
-	s.objectBytes[ordinal].Add(n)
+	s.objectCommitted[ordinal].Add(n)
 	s.objectGets[ordinal].Add(1)
 	if ranged {
 		s.objectRange[ordinal].Add(1)
 	} else {
 		s.objectFull[ordinal].Add(1)
 	}
+}
+
+// recordObjectObservedLocked attributes what was actually written for one body. The caller holds
+// s.accounting. It is a SEPARATE call from the commit above, at a separate moment, because the two numbers
+// are separated by however long the write took and by whether the client stayed to receive it.
+func (s *Server) recordObjectObservedLocked(object *Object, n int64) {
+	ordinal := s.ordinalOf(object)
+	if ordinal < 0 || ordinal >= len(s.objectObserved) {
+		return
+	}
+	s.objectObserved[ordinal].Add(n)
 }
 
 // ---------------------------------------------------------------------------------------------------------

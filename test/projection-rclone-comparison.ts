@@ -10,13 +10,15 @@ import {
   analyseOverlap, overlapProblems, type OverlapSample,
 } from '../src/core/projection/three-server-concurrency.js';
 import {
+  COMMITTED_BYTES_ARE_NOT_DELIVERED_BYTES,
   COMPARISON_CORPUS, COMPARISON_CORPUS_ENTRIES, COMPARISON_HAS_NO_PASS_THRESHOLD, COMPARISON_HOLD_ARM_MS,
   COMPARISON_HOLD_MAX_MS, COMPARISON_SERVER_COUNT, PRODUCT_REMOTE_ENTRIES,
   PER_SERVER_ATTRIBUTION_IS_IMPOSSIBLE_HERE, RCLONE_COMPARISON_NONCLAIMS, RCLONE_COMPARISON_TOPOLOGY,
   RCLONE_IS_A_TEST_CONTROL_NOT_A_CANDIDATE_FRONTEND, RCLONE_TIMEOUTS_MS,
   RESOLUTION_CALLS_DO_NOT_EXIST_ON_THIS_TOPOLOGY, WEBDAV_COUNTER_ARRAY_KEYS, WEBDAV_COUNTER_KEYS_REQUIRED,
-  WEBDAV_SERVER_TRAFFIC_IS_NOT_CLIENT_BEHAVIOUR,
-  comparisonColdStateProblems, comparisonMeasurements, parseWebdavCounters, webdavAttributionProblems,
+  WEBDAV_GAUGE_KEYS, WEBDAV_SERVER_TRAFFIC_IS_NOT_CLIENT_BEHAVIOUR,
+  clientStatsProblems, comparisonColdStateProblems, comparisonMeasurements, parseClientStats,
+  parseWebdavCounters, webdavAttributionProblems,
   type WebdavCounters,
 } from '../src/core/projection/rclone-comparison.js';
 import { runConcurrentScans, type ServerAdapter } from '../src/ops/projection-rclone-comparison.js';
@@ -116,25 +118,46 @@ const PLAN = read('docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md');
  * Building it rather than hand-writing one is what lets a test say "and now break exactly this", instead of
  * hand-writing thirty near-identical objects whose OTHER fields drift and make a refusal ambiguous.
  */
-function counters(objects: ReadonlyArray<{ size: number; bytes: number; ranged: number; full: number }>,
+interface ObjectFixture {
+  size: number;
+  /** What the responses for this object PROMISED. */
+  committed: number;
+  /** What was actually written for it. Defaults to `committed` — a fully consumed read. */
+  observed?: number;
+  ranged: number;
+  full: number;
+}
+
+function counters(objects: readonly ObjectFixture[],
   overrides: Partial<WebdavCounters> = {}): WebdavCounters {
+  const observedOf = (object: ObjectFixture): number => object.observed ?? object.committed;
   const rangedBodies = objects.reduce((total, object) => total + object.ranged, 0);
   const fullBodies = objects.reduce((total, object) => total + object.full, 0);
-  const bytesServed = objects.reduce((total, object) => total + object.bytes, 0);
+  const committedBytes = objects.reduce((total, object) => total + object.committed, 0);
+  const observedBytes = objects.reduce((total, object) => total + observedOf(object), 0);
   // The byte split between ranged and full is not derivable from the per-object columns, so the fixture puts
-  // every byte in the ranged bucket unless a test says otherwise. That keeps the byte partition exact.
+  // every byte in the ranged bucket unless a test says otherwise. That keeps both partitions exact.
   return {
     requests: rangedBodies + fullBodies,
     accountedResponses: rangedBodies + fullBodies,
     propfind: 0, propfindDepth0: 0, propfindDepth1: 0, propfindOther: 0,
     options: 0, head: 0, gets: rangedBodies + fullBodies, writeAttempts: 0,
-    rangedBodies, rangedBytes: bytesServed, fullBodies, fullBytes: 0,
-    bodylessResponses: 0, bytesServed, metadataBytes: 0, served429: 0,
+    rangedBodies, fullBodies, bodylessResponses: 0,
+    rangedCommittedBytes: committedBytes, fullCommittedBytes: 0, committedBytes,
+    rangedObservedBytes: observedBytes, fullObservedBytes: 0, observedBytes,
+    // Every body is treated as completed unless a fixture makes observed differ from committed.
+    completedBodies: objects.reduce(
+      (total, object) => total + (observedOf(object) === object.committed ? object.ranged + object.full : 0), 0),
+    truncatedBodies: objects.reduce(
+      (total, object) => total + (observedOf(object) === object.committed ? 0 : object.ranged + object.full), 0),
+    bodiesInFlight: 0,
+    metadataBytes: 0, served429: 0,
     peakConns: 4, peakConcurrent: 3,
     heldRequests: 1, currentHeldWaiters: 0, holdTimeouts: 0,
     revealed: true,
     objectSizes: objects.map((object) => object.size),
-    objectBytes: objects.map((object) => object.bytes),
+    objectCommitted: objects.map((object) => object.committed),
+    objectObserved: objects.map((object) => observedOf(object)),
     objectGets: objects.map((object) => object.ranged + object.full),
     objectRanged: objects.map((object) => object.ranged),
     objectFull: objects.map((object) => object.full),
@@ -148,11 +171,15 @@ function zeroLike(snapshot: WebdavCounters, overrides: Partial<WebdavCounters> =
     requests: 0, accountedResponses: 0,
     propfind: 0, propfindDepth0: 0, propfindDepth1: 0, propfindOther: 0,
     options: 0, head: 0, gets: 0, writeAttempts: 0,
-    rangedBodies: 0, rangedBytes: 0, fullBodies: 0, fullBytes: 0,
-    bodylessResponses: 0, bytesServed: 0, metadataBytes: 0, served429: 0,
+    rangedBodies: 0, fullBodies: 0, bodylessResponses: 0,
+    rangedCommittedBytes: 0, fullCommittedBytes: 0, committedBytes: 0,
+    rangedObservedBytes: 0, fullObservedBytes: 0, observedBytes: 0,
+    completedBodies: 0, truncatedBodies: 0, bodiesInFlight: 0,
+    metadataBytes: 0, served429: 0,
     peakConns: 0, peakConcurrent: 0,
     heldRequests: 0, currentHeldWaiters: 0, holdTimeouts: 0,
-    objectBytes: snapshot.objectSizes.map(() => 0),
+    objectCommitted: snapshot.objectSizes.map(() => 0),
+    objectObserved: snapshot.objectSizes.map(() => 0),
     objectGets: snapshot.objectSizes.map(() => 0),
     objectRanged: snapshot.objectSizes.map(() => 0),
     objectFull: snapshot.objectSizes.map(() => 0),
@@ -161,14 +188,14 @@ function zeroLike(snapshot: WebdavCounters, overrides: Partial<WebdavCounters> =
 }
 
 /** The 51-object registration the real gate produces: canary, seed, barrier, then forty-eight. */
-function realShapedObjects(): Array<{ size: number; bytes: number; ranged: number; full: number }> {
-  const out = [
-    { size: 262_144, bytes: 0, ranged: 0, full: 0 },      // 0 the canary, never touched in a window
-    { size: 33_000, bytes: 0, ranged: 0, full: 0 },       // 1 the seed, read before the window opened
-    { size: 105_406_871, bytes: 42_000_000, ranged: 3, full: 0 }, // 2 the barrier fixture
+function realShapedObjects(): ObjectFixture[] {
+  const out: ObjectFixture[] = [
+    { size: 262_144, committed: 0, ranged: 0, full: 0 },      // 0 the canary, never touched in a window
+    { size: 33_000, committed: 0, ranged: 0, full: 0 },       // 1 the seed, read before the window opened
+    { size: 105_406_871, committed: 42_000_000, ranged: 3, full: 0 }, // 2 the barrier fixture
   ];
   for (let index = 0; index < COMPARISON_CORPUS.GENERATED_ENTRIES; index += 1) {
-    out.push({ size: 40_000, bytes: 120_000, ranged: 3, full: 0 });
+    out.push({ size: 40_000, committed: 120_000, ranged: 3, full: 0 });
   }
   return out;
 }
@@ -237,7 +264,8 @@ async function main(): Promise<void> {
 
   const coldInput = {
     revealedBefore: true,
-    corpusBytesBefore: 0,
+    corpusCommittedBytesBefore: 0,
+    corpusObservedBytesBefore: 0,
     clientCacheBytesBefore: 0,
     getDelta: 60,
     corpusObjectCount: 49,
@@ -250,7 +278,7 @@ async function main(): Promise<void> {
   });
 
   await test('THE CHEAT: the corpus had already been served bytes before the window', () => {
-    const problems = comparisonColdStateProblems({ ...coldInput, corpusBytesBefore: 1 });
+    const problems = comparisonColdStateProblems({ ...coldInput, corpusCommittedBytesBefore: 1 });
     assert(problems.some((problem) => problem.kind === 'corpus-already-read'),
       'a window that is not the corpus first read does not describe what a cold scan costs');
   });
@@ -457,7 +485,7 @@ async function main(): Promise<void> {
     // comparison would charge the naive path for seven files the product never fetches, which would be a
     // thumb on the scale in the direction this repository is least entitled to push.
     assert(CLI.includes('product-comparable-subset'), 'the sub-total is reported');
-    assert(CLI.includes('would charge this path for files the product never fetches'),
+    assert(CLI.includes('total-against-total comparison'),
       'and the reason is stated in the report itself, not only in a document');
     assert(GATE.includes('PRODUCT_ORDINALS'), 'and the gate computes the subset by registration ordinal');
   });
@@ -520,20 +548,20 @@ async function main(): Promise<void> {
     const before = zeroLike(after);
     const tamperedBefore: WebdavCounters = {
       ...before,
-      objectBytes: before.objectBytes.map((value, index) => (index === 5 ? 500_000 : value)),
+      objectCommitted: before.objectCommitted.map((value, index) => (index === 5 ? 500_000 : value)),
     };
     const problems = webdavAttributionProblems(tamperedBefore, after, after.objectSizes.length);
     assert(problems.some((problem) => problem.kind === 'per-object-counter-reset'
-      || problem.kind === 'unattributed-bytes'),
+      || problem.kind === 'unattributed-committed-bytes'),
     'a per-object fall must be refused even though every aggregate is intact');
   });
 
   await test('THE CHEAT: a byte served for something the gate never registered', () => {
     const after = counters(realShapedObjects());
-    const leaky: WebdavCounters = { ...after, bytesServed: after.bytesServed + 1_000,
-      rangedBytes: after.rangedBytes + 1_000 };
+    const leaky: WebdavCounters = { ...after, committedBytes: after.committedBytes + 1_000,
+      rangedCommittedBytes: after.rangedCommittedBytes + 1_000 };
     const problems = webdavAttributionProblems(zeroLike(after), leaky, after.objectSizes.length);
-    assert(problems.some((problem) => problem.kind === 'unattributed-bytes'),
+    assert(problems.some((problem) => problem.kind === 'unattributed-committed-bytes'),
       'unattributed traffic is the only way "every byte belongs to the corpus" fails invisibly');
   });
 
@@ -560,7 +588,7 @@ async function main(): Promise<void> {
   await test('a mutating request against a read-only endpoint is a finding', () => {
     const after = counters(realShapedObjects(), { writeAttempts: 1 });
     const problems = webdavAttributionProblems(zeroLike(after), after, after.objectSizes.length);
-    assert(problems.some((problem) => problem.kind === 'write-attempted'),
+    assert(problems.some((problem) => problem.kind === 'write-attempted-in-window'),
       'the mount is read-only and so is the endpoint');
   });
 
@@ -571,17 +599,185 @@ async function main(): Promise<void> {
   });
 
   // --------------------------------------------------------------------------------------------------------
+  console.log('\nTHE CHEAT: a COMMITTED length reported as though it had been DELIVERED');
+  // --------------------------------------------------------------------------------------------------------
+
+  await test('THE CHEAT: an unsettled snapshot, whose committed and observed totals describe different sets', () => {
+    // THE DEFECT THIS CLOSES. Between a body's commit and its observation the endpoint has counted the length
+    // it promised and not yet the length it wrote. A window read there understates delivery by an amount that
+    // depends on WHEN the gate looked, and the deficit would then be reported as something the client did.
+    const after = counters(realShapedObjects(), { bodiesInFlight: 2 });
+    const problems = webdavAttributionProblems(zeroLike(after), after, after.objectSizes.length);
+    assert(problems.some((problem) => problem.kind === 'telemetry-unsettled'),
+      'a snapshot taken mid-write cannot support an observed-byte figure');
+    // ...AND THE BEFORE SNAPSHOT TOO, so a body left writing by library creation cannot skew the baseline.
+    const settled = counters(realShapedObjects());
+    const dirtyBefore = zeroLike(settled, { bodiesInFlight: 1 });
+    assert(webdavAttributionProblems(dirtyBefore, settled, settled.objectSizes.length)
+      .some((problem) => problem.kind === 'telemetry-unsettled'),
+    'an unsettled BEFORE snapshot is refused for the same reason');
+  });
+
+  await test('THE CHEAT: an endpoint claiming it wrote more than it promised', () => {
+    const after = counters(realShapedObjects(), {
+      observedBytes: 999_000_000_000, rangedObservedBytes: 999_000_000_000,
+    });
+    assert(webdavAttributionProblems(zeroLike(after), after, after.objectSizes.length)
+      .some((problem) => problem.kind === 'observed-exceeds-committed'),
+    'an endpoint cannot write more than its Content-Length promised, and if it says it did the two '
+    + 'counters have stopped describing the same responses');
+  });
+
+  await test('THE CHEAT: a body outcome that does not account for every body', () => {
+    const after = counters(realShapedObjects(), { completedBodies: 1, truncatedBodies: 0 });
+    assert(webdavAttributionProblems(zeroLike(after), after, after.objectSizes.length)
+      .some((problem) => problem.kind === 'outcome-partition'),
+    'after settlement every body is either completed or truncated, and a shortfall means one was lost');
+  });
+
+  await test('the observed column is attributed per object, not only in aggregate', () => {
+    const after = counters(realShapedObjects());
+    const skewed: WebdavCounters = {
+      ...after,
+      objectObserved: after.objectObserved.map((value, index) => (index === 4 ? value - 1_000 : value)),
+    };
+    assert(webdavAttributionProblems(zeroLike(after), skewed, after.objectSizes.length)
+      .some((problem) => problem.kind === 'unattributed-observed-bytes'),
+      'an aggregate that no longer matches its columns is a number with no denominator');
+  });
+
+  await test('a truncated read makes committed and observed diverge, and both are reported', () => {
+    // THIS IS THE SHAPE THE REAL RUN PRODUCES, modelled here so the arithmetic is checked offline: a client
+    // that promised to read a large object and abandoned it part-way.
+    const objects = realShapedObjects();
+    objects[2] = { size: 105_406_871, committed: 105_406_871, observed: 4_000_000, ranged: 1, full: 0 };
+    const after = counters(objects);
+    assertEq(webdavAttributionProblems(zeroLike(after), after, after.objectSizes.length).length, 0,
+      'divergence is not itself a defect; it is the measurement');
+    const measured = comparisonMeasurements(zeroLike(after), after, FIRST_CORPUS_ORDINAL, [2]);
+    assert(measured.observedBytes < measured.committedBytes,
+      'the two totals must come apart when a read is abandoned');
+    assertEq(measured.truncatedBodies, 1, 'and the abandoned body is counted as truncated');
+    assertEq(measured.perObject.find((cost) => cost.ordinal === 2)?.observedBytes, 4_000_000,
+      'per object, the observed column carries what was written');
+    assert((measured.corpusObservedMultiplier as number) < (measured.corpusCommittedMultiplier as number),
+      'and the two multipliers differ, so a reader cannot mistake one for the other');
+  });
+
+  await test('the PROPFIND depth census is a partition of the PROPFIND total', () => {
+    const after = counters(realShapedObjects(), {
+      propfind: 10, propfindDepth0: 2, propfindDepth1: 3, propfindOther: 0,
+    });
+    assert(webdavAttributionProblems(zeroLike(after), after, after.objectSizes.length)
+      .some((problem) => problem.kind === 'propfind-partition'),
+    'a depth bucket that stopped being incremented would leave the total intact and the breakdown wrong, '
+    + 'and the breakdown is what the report calls the cost of discovering a namespace');
+  });
+
+  await test('a mutating request BEFORE the window is a separate finding from one inside it', () => {
+    // WINDOW-CORRECTNESS BOTH WAYS. A whole-run check reports a pre-window write as though it happened in the
+    // window; a naive delta misses it entirely. Both are refused, separately, so the log names which.
+    const after = counters(realShapedObjects(), { writeAttempts: 3 });
+    const before = zeroLike(after, { writeAttempts: 3 });
+    const problems = webdavAttributionProblems(before, after, after.objectSizes.length);
+    assert(!problems.some((problem) => problem.kind === 'write-attempted-in-window'),
+      'nothing was written INSIDE the window, and a delta must say so');
+    assert(problems.some((problem) => problem.kind === 'write-attempted-before-window'),
+      'but the endpoint was not read-only-clean when the window opened, and that must not be silent');
+  });
+
+  // --------------------------------------------------------------------------------------------------------
+  console.log('\nTHE CHEAT: the mount client\'s own stats, read permissively');
+  // --------------------------------------------------------------------------------------------------------
+
+  await test('a well-formed client stats document parses', () => {
+    const parsed = parseClientStats({ bytes: 12, transfers: 3, elapsedTime: 1.5 }, 'test');
+    assertEq(parsed.problems.length, 0, 'extra fields are ignored, not refused');
+    assertEq(parsed.stats?.bytes, 12, 'and the two required ones are read');
+    assertEq(parsed.stats?.transfers, 3, 'both of them');
+  });
+
+  await test('THE CHEAT: a MISSING field becoming a confident zero', () => {
+    // THE DEFECT THIS CLOSES. The call site was `Number(value ?? 0)`. A zero in this position does not read
+    // as "the client did not say"; it reads as "the client transferred nothing", which is the most dramatic
+    // possible version of the very claim the figure was being used to make.
+    for (const document of [{ transfers: 3 }, { bytes: 12 }, {}]) {
+      assert(parseClientStats(document, 'test').stats === undefined,
+        `a document missing a required field must be refused: ${JSON.stringify(document)}`);
+    }
+  });
+
+  await test('THE CHEAT: a STRING that looks like a number, coerced', () => {
+    for (const value of ['12', '', ' 12 ', true, null, []]) {
+      assert(parseClientStats({ bytes: value, transfers: 3 }, 'test').stats === undefined,
+        `a non-number "bytes" must be refused rather than coerced: ${JSON.stringify(value)}`);
+    }
+  });
+
+  await test('THE CHEAT: a fractional, negative, infinite or unsafe count', () => {
+    for (const value of [4.5, -1, Infinity, -Infinity, NaN, Number.MAX_SAFE_INTEGER + 2]) {
+      assert(parseClientStats({ bytes: value, transfers: 3 }, 'test').stats === undefined,
+        `an unusable "bytes" must be refused: ${String(value)}`);
+      assert(parseClientStats({ bytes: 12, transfers: value }, 'test').stats === undefined,
+        `an unusable "transfers" must be refused: ${String(value)}`);
+    }
+  });
+
+  await test('THE CHEAT: a document that is not an object at all', () => {
+    for (const document of [null, undefined, 'stats', 42, [1, 2, 3]]) {
+      assert(parseClientStats(document, 'test').stats === undefined,
+        `a non-object must be refused: ${JSON.stringify(document ?? null)}`);
+    }
+  });
+
+  await test('THE CHEAT: an inherited field answering for one the client never sent', () => {
+    const inherited = Object.create({ bytes: 99, transfers: 9 }) as Record<string, unknown>;
+    assert(parseClientStats(inherited, 'test').stats === undefined,
+      'a value from a prototype is not a value the client reported');
+  });
+
+  await test('THE CHEAT: client totals that FELL across the window', () => {
+    // Lifetime counters within one mount process. A fall means the process restarted inside the window, and
+    // a negative client delta beside a positive endpoint one is exactly how a comparison acquires an
+    // impossible ratio.
+    const before = parseClientStats({ bytes: 500, transfers: 9 }, 'b').stats as never;
+    const after = parseClientStats({ bytes: 400, transfers: 9 }, 'a').stats as never;
+    assert(clientStatsProblems(before, after).some((problem) => problem.kind === 'client-counter-reset'),
+      'a fall must be refused before any figure is derived from the pair');
+    const rising = parseClientStats({ bytes: 900, transfers: 11 }, 'a').stats as never;
+    assertEq(clientStatsProblems(before, rising).length, 0, 'and a rising pair is fine');
+  });
+
+  await test('the live read and the persisted snapshot go through the SAME parser', () => {
+    // TWO PARSERS WOULD DRIFT, and the one that drifted would be the one nobody re-read. The driver's live
+    // read and the CLI's file read both call `parseClientStats`, and neither does its own coercion.
+    assert(DRIVER.includes('parseClientStats'), 'the driver parses the live read');
+    assert(!/Number\(\s*\w+\.(bytes|transfers)/.test(DRIVER), 'and does not coerce it');
+    assert(CLI.includes('readClientStatsFile'), 'the CLI parses the persisted snapshots');
+    assert(!/Number\(client(After|Before)\./.test(CLI), 'and does not coerce them either');
+    // THE CHECK IS ABOUT CODE, AND COMMENTS ARE STRIPPED BEFORE IT RUNS. The first version of this assertion
+    // failed on the explanatory note that NAMES the removed defect — a rule catching its own history, which
+    // is exactly the accidental scoping this repository keeps having to correct.
+    const measureCode = (CLI.split("case 'measure'")[1]?.split("case 'nonclaims'")[0] ?? '')
+      .split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+    assert(measureCode.length > 500, 'the measurement command was found');
+    assert(!/\?\?\s*0\s*\)/.test(measureCode),
+      'and the measurement command has no coercing default left in its CODE');
+  });
+
+  // --------------------------------------------------------------------------------------------------------
   console.log('\nTHE MEASUREMENT ITSELF');
   // --------------------------------------------------------------------------------------------------------
 
   await test('the measurement partitions the window exactly, corpus against everything else', () => {
     const objects = realShapedObjects();
-    objects[0] = { size: 262_144, bytes: 1_024, ranged: 1, full: 0 }; // the canary, read by the readiness probe
+    objects[0] = { size: 262_144, committed: 1_024, ranged: 1, full: 0 }; // the canary, read by the readiness probe
     const after = counters(objects);
     const measured = comparisonMeasurements(zeroLike(after), after, FIRST_CORPUS_ORDINAL, [2, 3, 4]);
-    assertEq(measured.unattributedBytes, 0, 'corpus plus non-corpus must equal the endpoint total');
-    assertEq(measured.nonCorpusBytes, 1_024, 'the canary is outside the corpus');
-    assertEq(measured.corpusBytes, after.bytesServed - 1_024, 'and everything else is inside it');
+    assertEq(measured.unattributedCommittedBytes, 0, 'committed corpus plus non-corpus equals the total');
+    assertEq(measured.unattributedObservedBytes, 0, 'and so does the observed pair');
+    assertEq(measured.nonCorpusCommittedBytes, 1_024, 'the canary is outside the corpus');
+    assertEq(measured.corpusCommittedBytes, after.committedBytes - 1_024, 'and everything else is inside it');
     assertEq(measured.objectsExercised, 1 + COMPARISON_CORPUS.GENERATED_ENTRIES,
       'every corpus object was reached');
   });
@@ -589,8 +785,9 @@ async function main(): Promise<void> {
   await test('the product-comparable subset is a subset and is computed by ordinal', () => {
     const after = counters(realShapedObjects());
     const measured = comparisonMeasurements(zeroLike(after), after, FIRST_CORPUS_ORDINAL, [2, 3]);
-    assertEq(measured.productComparableBytes, 42_000_000 + 120_000, 'only the named ordinals count');
-    assert(measured.productComparableBytes < measured.corpusBytes, 'and a subset is smaller than the whole');
+    assertEq(measured.productComparableCommittedBytes, 42_000_000 + 120_000, 'only the named ordinals count');
+    assert(measured.productComparableCommittedBytes < measured.corpusCommittedBytes,
+      'and a subset is smaller than the whole');
   });
 
   await test('peaks are reported as high-water marks and never as a difference', () => {
@@ -608,21 +805,21 @@ async function main(): Promise<void> {
     // fixture, which at a lower multiple was the overwhelming majority of the window's bytes. The headline
     // figure's biggest single contributor was missing from the report that produced the headline figure.
     const objects = realShapedObjects();
-    objects[7] = { size: 40_000, bytes: 4_000_000, ranged: 1, full: 0 };
+    objects[7] = { size: 40_000, committed: 4_000_000, ranged: 1, full: 0 };
     const after = counters(objects);
     const measured = comparisonMeasurements(zeroLike(after), after, FIRST_CORPUS_ORDINAL, [2]);
     assertEq(measured.perObject[0]?.ordinal, 7, 'the worst multiplier comes first');
-    assertEq(measured.perObject[0]?.multiplier, 100, 'and is reported as a multiple of the object\'s length');
+    assertEq(measured.perObject[0]?.committedMultiplier, 100, 'as a multiple of the object\'s own length');
     assertEq(measured.perObjectByBytes[0]?.ordinal, 2,
       'while the most-bytes ordering names the large fixture, which the multiplier ordering does not reach');
-    assert(measured.perObjectByBytes[0]?.multiplier as number < 1,
+    assert(measured.perObjectByBytes[0]?.committedMultiplier as number < 1,
       'and it is there at a multiple BELOW one, which is exactly why the other ordering misses it');
     assert(measured.corpusSizeBytes > 0, 'the multiplier\'s denominator is reported beside it');
   });
 
   await test('a whole-body answer is counted apart from a ranged one', () => {
     const objects = realShapedObjects();
-    objects[4] = { size: 40_000, bytes: 40_000, ranged: 0, full: 1 };
+    objects[4] = { size: 40_000, committed: 40_000, ranged: 0, full: 1 };
     const after = counters(objects);
     const measured = comparisonMeasurements(zeroLike(after), after, FIRST_CORPUS_ORDINAL, [2]);
     assertEq(measured.fullGets, 1, 'a client that asks for a whole body is visible as such');
@@ -1004,7 +1201,7 @@ async function main(): Promise<void> {
   await test('EXECUTABLE: broken telemetry fails closed rather than reporting a cheap comparison', () => {
     const after = counters(realShapedObjects());
     const broken = JSON.parse(JSON.stringify(after)) as Record<string, unknown>;
-    delete broken.bytesServed;
+    delete broken.committedBytes;
     const beforePath = writeJson('broken-before.json', zeroLike(after));
     const afterPath = writeJson('broken-after.json', broken);
     const result = runCli(['telemetry', '--before', beforePath, '--after', afterPath,
@@ -1017,9 +1214,13 @@ async function main(): Promise<void> {
   await test('EXECUTABLE: a warm window fails the cold check with a named reason', () => {
     const after = counters(realShapedObjects());
     const warmBefore = zeroLike(after, {
-      objectBytes: after.objectSizes.map((_size, index) => (index >= FIRST_CORPUS_ORDINAL ? 1_000 : 0)),
-      bytesServed: (after.objectSizes.length - FIRST_CORPUS_ORDINAL) * 1_000,
-      rangedBytes: (after.objectSizes.length - FIRST_CORPUS_ORDINAL) * 1_000,
+      objectCommitted: after.objectSizes.map((_size, index) => (index >= FIRST_CORPUS_ORDINAL ? 1_000 : 0)),
+      objectObserved: after.objectSizes.map((_size, index) => (index >= FIRST_CORPUS_ORDINAL ? 1_000 : 0)),
+      committedBytes: (after.objectSizes.length - FIRST_CORPUS_ORDINAL) * 1_000,
+      rangedCommittedBytes: (after.objectSizes.length - FIRST_CORPUS_ORDINAL) * 1_000,
+      observedBytes: (after.objectSizes.length - FIRST_CORPUS_ORDINAL) * 1_000,
+      rangedObservedBytes: (after.objectSizes.length - FIRST_CORPUS_ORDINAL) * 1_000,
+      completedBodies: after.objectSizes.length - FIRST_CORPUS_ORDINAL,
       rangedBodies: after.objectSizes.length - FIRST_CORPUS_ORDINAL,
       accountedResponses: after.objectSizes.length - FIRST_CORPUS_ORDINAL,
       requests: after.objectSizes.length - FIRST_CORPUS_ORDINAL,
@@ -1052,14 +1253,20 @@ async function main(): Promise<void> {
     const results = JSON.parse(readFileSync(resultsPath, 'utf8')) as GateResult[];
     assert(results.length >= 12, `every figure is recorded (${results.length})`);
     for (const entry of results) {
-      const isArithmetic = entry.gate.includes('fully-attributed') || entry.gate.includes('objects-exercised');
+      // THE EXEMPT ONES ARE INSTRUMENT CHECKS, NOT COST FIGURES. They assert that the numbers add up and
+      // that the instruments were coherent; a budget on one of those is a correctness bound, which G22 has,
+      // rather than a cost threshold, which it does not.
+      const isArithmetic = entry.gate.includes('fully-attributed') || entry.gate.includes('objects-exercised')
+        || entry.gate.includes('telemetry-coherent');
       if (isArithmetic) continue;
       assert(entry.budget === undefined,
         `${entry.gate} carries a budget of ${entry.budget}; G22 has no pass threshold and a control with a `
         + 'budget is a competitor');
     }
     for (const needed of ['RC4-requests-gets', 'RC4-requests-metadata', 'RC4-requests-resolution',
-      'RC4-bytes', 'RC4-http-429', 'RC4-peak-connections', 'RC4-client-own-accounting',
+      'RC4-committed-bytes', 'RC4-observed-bytes', 'RC4-body-outcomes',
+      'RC4-http-429', 'RC4-peak-connections', 'RC4-client-own-accounting',
+      'RC4-client-telemetry-coherent',
       'RC4-per-server-attribution', 'RC4-topology']) {
       assert(results.some((entry) => entry.gate === needed), `the report is missing ${needed}`);
     }
@@ -1072,7 +1279,7 @@ async function main(): Promise<void> {
 
   await test('EXECUTABLE: a window that missed an object fails the coverage floor', () => {
     const objects = realShapedObjects();
-    objects[10] = { size: 40_000, bytes: 0, ranged: 0, full: 0 };
+    objects[10] = { size: 40_000, committed: 0, ranged: 0, full: 0 };
     const after = counters(objects);
     const beforePath = writeJson('short-before.json', zeroLike(after));
     const afterPath = writeJson('short-after.json', after);
@@ -1153,10 +1360,13 @@ async function main(): Promise<void> {
 
   await test('the distinction between endpoint traffic and client behaviour is stated and instrumented', () => {
     assertEq(WEBDAV_SERVER_TRAFFIC_IS_NOT_CLIENT_BEHAVIOUR, true, 'the code states it');
-    assert(CLI.includes('THE TWO ARE DIFFERENT MEASUREMENTS'),
-      'the report says the two instruments measure different things');
-    assert(CLI.includes('neither is corrected to match the other'),
-      'and that neither is adjusted toward the other');
+    assert(CLI.includes('THESE ARE THREE DIFFERENT MEASUREMENTS'),
+      'the report names all three instruments: committed, observed, and the client\x27s own');
+    assert(CLI.includes('none is corrected to match another'),
+      'and says none is adjusted toward another');
+    assert(CLI.includes('NO RATIO BETWEEN THEM IS A PROVIDER COST'),
+      'and refuses the ratio an earlier version published as one');
+    assertEq(COMMITTED_BYTES_ARE_NOT_DELIVERED_BYTES, true, 'and the code states it as a value');
     assert(GATE.includes('client-stats'), 'and the gate reads the client\'s own accounting');
   });
 

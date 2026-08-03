@@ -102,29 +102,57 @@ func snapshot(t *testing.T, server *Server) CountersSnapshot {
 
 // THE PARTITIONS, CHECKED AS THE GATE CHECKS THEM. If these ever stop holding, every figure the comparison
 // reports is a number with no denominator.
-func assertPartitions(t *testing.T, snap CountersSnapshot) {
+//
+// IT TAKES THE SNAPSHOT AFTER SETTLEMENT, because two of the partitions are only true then. A body between
+// its commit and its observation has its committed length counted and its observed length not, which is not a
+// defect — it is the state the gauge exists to describe.
+func assertPartitions(t *testing.T, server *Server) CountersSnapshot {
 	t.Helper()
+	if !server.WaitForSettlement(5 * time.Second) {
+		t.Fatal("bodies were still in flight after five seconds; no observed-byte figure can be read")
+	}
+	snap := snapshot(t, server)
+	if snap.BodiesInFlight != 0 {
+		t.Fatalf("the gauge says %d bodies are still writing", snap.BodiesInFlight)
+	}
 	if snap.RangedBodies+snap.FullBodies+snap.BodylessResponses != snap.AccountedResponses {
 		t.Fatalf("the request partition does not balance: %d+%d+%d != %d",
 			snap.RangedBodies, snap.FullBodies, snap.BodylessResponses, snap.AccountedResponses)
 	}
-	if snap.RangedBytes+snap.FullBytes != snap.BytesServed {
-		t.Fatalf("the byte partition does not balance: %d+%d != %d",
-			snap.RangedBytes, snap.FullBytes, snap.BytesServed)
+	if snap.RangedCommittedBytes+snap.FullCommittedBytes != snap.CommittedBytes {
+		t.Fatalf("the committed byte partition does not balance: %d+%d != %d",
+			snap.RangedCommittedBytes, snap.FullCommittedBytes, snap.CommittedBytes)
 	}
-	var attributed, ranged, full, gets int64
-	for index := range snap.ObjectBytes {
-		attributed += snap.ObjectBytes[index]
+	if snap.RangedObservedBytes+snap.FullObservedBytes != snap.ObservedBytes {
+		t.Fatalf("the observed byte partition does not balance: %d+%d != %d",
+			snap.RangedObservedBytes, snap.FullObservedBytes, snap.ObservedBytes)
+	}
+	if snap.ObservedBytes > snap.CommittedBytes {
+		t.Fatalf("more was written than was promised: %d observed against %d committed",
+			snap.ObservedBytes, snap.CommittedBytes)
+	}
+	if snap.CompletedBodies+snap.TruncatedBodies != snap.RangedBodies+snap.FullBodies {
+		t.Fatalf("the outcome partition does not balance after settlement: %d+%d != %d",
+			snap.CompletedBodies, snap.TruncatedBodies, snap.RangedBodies+snap.FullBodies)
+	}
+	var committed, observed, ranged, full, gets int64
+	for index := range snap.ObjectCommitted {
+		committed += snap.ObjectCommitted[index]
+		observed += snap.ObjectObserved[index]
 		ranged += snap.ObjectRanged[index]
 		full += snap.ObjectFull[index]
 		gets += snap.ObjectGets[index]
 	}
-	if attributed != snap.BytesServed {
-		t.Fatalf("bytes are not fully attributed: %d against %d", attributed, snap.BytesServed)
+	if committed != snap.CommittedBytes {
+		t.Fatalf("committed bytes are not fully attributed: %d against %d", committed, snap.CommittedBytes)
+	}
+	if observed != snap.ObservedBytes {
+		t.Fatalf("observed bytes are not fully attributed: %d against %d", observed, snap.ObservedBytes)
 	}
 	if ranged != snap.RangedBodies || full != snap.FullBodies || gets != snap.RangedBodies+snap.FullBodies {
 		t.Fatalf("requests are not fully attributed: %d/%d/%d", ranged, full, gets)
 	}
+	return snap
 }
 
 func TestRevealGatesTheCorpusAndNotTheSeed(t *testing.T) {
@@ -184,14 +212,20 @@ func TestRangedAndFullBodiesAreCountedSeparately(t *testing.T) {
 		t.Fatalf("a whole-body response was %d bytes, not 9000", length)
 	}
 
-	snap := snapshot(t, server)
+	snap := assertPartitions(t, server)
 	if snap.RangedBodies != 1 || snap.FullBodies != 1 {
 		t.Fatalf("the split is wrong: %d ranged, %d full", snap.RangedBodies, snap.FullBodies)
 	}
-	if snap.RangedBytes != 100 || snap.FullBytes != 9000 || snap.BytesServed != 9100 {
-		t.Fatalf("the byte columns are wrong: %d/%d/%d", snap.RangedBytes, snap.FullBytes, snap.BytesServed)
+	if snap.RangedCommittedBytes != 100 || snap.FullCommittedBytes != 9000 || snap.CommittedBytes != 9100 {
+		t.Fatalf("the committed columns are wrong: %d/%d/%d",
+			snap.RangedCommittedBytes, snap.FullCommittedBytes, snap.CommittedBytes)
 	}
-	assertPartitions(t, snap)
+	// BOTH BODIES WERE READ TO THE END HERE, so observed equals committed and both outcomes are "completed".
+	// The test that separates the two numbers is the early-close one below.
+	if snap.ObservedBytes != 9100 || snap.CompletedBodies != 2 || snap.TruncatedBodies != 0 {
+		t.Fatalf("a fully consumed pair must observe all it committed: %d observed, %d completed, %d truncated",
+			snap.ObservedBytes, snap.CompletedBodies, snap.TruncatedBodies)
+	}
 }
 
 func TestMetadataBytesAreNeverFoldedIntoMediaBytes(t *testing.T) {
@@ -206,9 +240,10 @@ func TestMetadataBytesAreNeverFoldedIntoMediaBytes(t *testing.T) {
 		t.Fatalf("PROPFIND was not answered 207: %d", response.StatusCode)
 	}
 	listing := body(t, response)
-	snap := snapshot(t, server)
-	if snap.BytesServed != 0 {
-		t.Fatalf("a listing put %d bytes into the media total", snap.BytesServed)
+	snap := assertPartitions(t, server)
+	if snap.CommittedBytes != 0 || snap.ObservedBytes != 0 {
+		t.Fatalf("a listing put %d committed / %d observed bytes into the media totals",
+			snap.CommittedBytes, snap.ObservedBytes)
 	}
 	if snap.MetadataBytes != int64(len(listing)) {
 		t.Fatalf("metadata bytes are %d against a %d-byte listing", snap.MetadataBytes, len(listing))
@@ -217,7 +252,9 @@ func TestMetadataBytesAreNeverFoldedIntoMediaBytes(t *testing.T) {
 		t.Fatalf("the PROPFIND census is wrong: %d/%d/%d",
 			snap.Propfind, snap.PropfindDepth1, snap.PropfindDepth0)
 	}
-	assertPartitions(t, snap)
+	if snap.PropfindDepth0+snap.PropfindDepth1+snap.PropfindOther != snap.Propfind {
+		t.Fatal("the depth census is not a partition of the PROPFIND total")
+	}
 }
 
 func TestAnAbsentDepthCountsAsDepthOne(t *testing.T) {
@@ -246,11 +283,10 @@ func TestAWrongCredentialIsRefusedAndCounted(t *testing.T) {
 	if response := request(t, http.MethodGet, server.DavURL()+corpusPath, "s3cret-value", nil); response.StatusCode != 200 {
 		t.Fatalf("the right credential was refused: %d", response.StatusCode)
 	}
-	snap := snapshot(t, server)
+	snap := assertPartitions(t, server)
 	if snap.BodylessResponses != 1 {
 		t.Fatalf("the refusal was not counted as bodiless: %d", snap.BodylessResponses)
 	}
-	assertPartitions(t, snap)
 }
 
 func TestEveryMutatingMethodIsRefusedAndVisible(t *testing.T) {
@@ -265,11 +301,10 @@ func TestEveryMutatingMethodIsRefusedAndVisible(t *testing.T) {
 			t.Fatalf("%s was not refused: %d", method, response.StatusCode)
 		}
 	}
-	snap := snapshot(t, server)
+	snap := assertPartitions(t, server)
 	if snap.WriteAttempts != 7 {
 		t.Fatalf("write attempts were counted as %d, not 7", snap.WriteAttempts)
 	}
-	assertPartitions(t, snap)
 }
 
 func TestAHoldBlocksAReadAndIsCountedThreeWays(t *testing.T) {
@@ -306,12 +341,11 @@ func TestAHoldBlocksAReadAndIsCountedThreeWays(t *testing.T) {
 	if length := <-done; length != 9000 {
 		t.Fatalf("the released read returned %d bytes, not the whole object", length)
 	}
-	snap := snapshot(t, server)
+	snap := assertPartitions(t, server)
 	if snap.HeldRequests != 1 || snap.CurrentHeldWaiters != 0 || snap.HoldTimeouts != 0 {
 		t.Fatalf("the hold counters are wrong: %d held, %d waiting, %d lapsed",
 			snap.HeldRequests, snap.CurrentHeldWaiters, snap.HoldTimeouts)
 	}
-	assertPartitions(t, snap)
 }
 
 func TestAHoldThatIsNeverReleasedLapsesAndSaysSo(t *testing.T) {
@@ -336,6 +370,168 @@ func TestAHoldThatIsNeverReleasedLapsesAndSaysSo(t *testing.T) {
 	}
 }
 
+// readAndCloseEarly issues a GET, reads exactly `take` bytes, and then closes the connection without draining
+// the rest — which is what a client that opens a large object, reads a header and gives up actually does.
+//
+// IT USES ITS OWN TRANSPORT WITH KEEP-ALIVES DISABLED so that closing the body closes the TCP connection
+// rather than returning it to a pool after a background drain. A pooled connection would let Go quietly read
+// the remainder for reuse, and the test would then prove nothing: the endpoint would observe the whole body
+// and this file would be asserting the very confusion it exists to refuse.
+func readAndCloseEarly(t *testing.T, url string, take int) int {
+	t.Helper()
+	transport := &http.Transport{DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport}
+	response, err := client.Get(url)
+	if err != nil {
+		t.Fatalf("issuing the request: %v", err)
+	}
+	buffer := make([]byte, take)
+	read, _ := io.ReadFull(response.Body, buffer)
+	_ = response.Body.Close()
+	return read
+}
+
+func TestAnEarlyClientCloseMakesCOMMITTEDAndOBSERVEDBytesDIVERGE(t *testing.T) {
+	// THE DEFECT THIS EXISTS TO REFUSE, AND IT SHIPPED. An earlier version wrote `_, _ = io.Copy(...)`, threw
+	// away both the byte count and the error, and reported the COMMITTED Content-Length as though it had been
+	// delivered. The gate's report then compared that number against the mount client's own accounting and
+	// concluded the client understated "what this topology costs a provider" by more than fifty times.
+	//
+	// THAT CONCLUSION WAS UNSUPPORTED BY THE INSTRUMENT THAT PRODUCED IT: a client that abandons a read is
+	// indistinguishable, in a committed-only counter, from one that consumed everything. This test builds the
+	// abandonment deliberately and requires the two numbers to come apart.
+	// THE FIXTURE HAS TO BE BIGGER THAN A SOCKET BUFFER, AND FINDING THAT OUT IS ITSELF THE POINT. The first
+	// version of this test used the 9,000-byte corpus entry and FAILED: the whole body fits in the kernel's
+	// send buffer, so `io.Copy` completes before the client's close is even noticed and observed legitimately
+	// equals committed. That is not the endpoint being wrong — it is a small object genuinely being delivered.
+	// Divergence needs a body the write must BLOCK on, which is precisely the ~105 MB fixture the shared
+	// corpus is built around and precisely where the real run's bytes go.
+	const largeSize = 8 << 20
+	server := newServer(t, "")
+	seedAndCorpus(t, server)
+	largePath := "/Movies/Projection Barrier (2026)/Projection Barrier (2026).mp4"
+	if _, err := server.AddFileObject(largePath, "obj-large",
+		writeFixture(t, "large.mp4", largeSize), false); err != nil {
+		t.Fatalf("registering the large fixture: %v", err)
+	}
+	server.Reveal()
+
+	const take = 512
+	if read := readAndCloseEarly(t, server.DavURL()+largePath, take); read != take {
+		t.Fatalf("the client read %d bytes, not the %d it meant to", read, take)
+	}
+
+	snap := assertPartitions(t, server)
+	if snap.CommittedBytes != largeSize {
+		t.Fatalf("the committed length must still be the whole object: %d", snap.CommittedBytes)
+	}
+	if snap.ObservedBytes >= snap.CommittedBytes {
+		t.Fatalf("observed (%d) did not come apart from committed (%d); the write count is being discarded "+
+			"again, and every delivery claim built on it is unsupported",
+			snap.ObservedBytes, snap.CommittedBytes)
+	}
+	if snap.TruncatedBodies != 1 || snap.CompletedBodies != 0 {
+		t.Fatalf("an abandoned body must be recorded as truncated: %d truncated, %d completed",
+			snap.TruncatedBodies, snap.CompletedBodies)
+	}
+	// ...AND PER OBJECT, because an aggregate that came apart while every column agreed would mean the
+	// attribution had silently stopped describing the same responses. The large fixture is ordinal 3.
+	if snap.ObjectObserved[3] >= snap.ObjectCommitted[3] {
+		t.Fatalf("the per-object columns did not come apart: %d observed against %d committed",
+			snap.ObjectObserved[3], snap.ObjectCommitted[3])
+	}
+	if snap.ObjectCommitted[3] != largeSize {
+		t.Fatalf("the per-object committed column is not the whole object: %d", snap.ObjectCommitted[3])
+	}
+}
+
+func TestAFullyConsumedBodyDoesNOTDiverge(t *testing.T) {
+	// THE CONTROL FOR THE TEST ABOVE. If observed were simply always lower — a miscount, a missing final
+	// chunk — the divergence assertion would pass for the wrong reason and the endpoint would understate every
+	// figure instead of overstating it. A client that reads to the end must see the two numbers agree exactly.
+	server := newServer(t, "")
+	_, corpusPath := seedAndCorpus(t, server)
+	server.Reveal()
+	if length := len(body(t, request(t, http.MethodGet, server.DavURL()+corpusPath, "", nil))); length != 9000 {
+		t.Fatalf("the whole body was not received: %d", length)
+	}
+	snap := assertPartitions(t, server)
+	if snap.ObservedBytes != snap.CommittedBytes || snap.ObservedBytes != 9000 {
+		t.Fatalf("a fully consumed body must observe exactly what it committed: %d against %d",
+			snap.ObservedBytes, snap.CommittedBytes)
+	}
+	if snap.CompletedBodies != 1 || snap.TruncatedBodies != 0 {
+		t.Fatalf("a fully consumed body is completed, not truncated: %d/%d",
+			snap.CompletedBodies, snap.TruncatedBodies)
+	}
+}
+
+func TestASnapshotTakenMIDWRITECannotSupportAnObservedFigure(t *testing.T) {
+	// INCOMPLETE TELEMETRY MUST BE VISIBLE AS INCOMPLETE. Between a body's commit and its observation the
+	// committed length is counted and the observed length is not, so a snapshot taken there shows a deficit
+	// that is an artefact of timing rather than of the client. The gauge is what lets a reader tell the two
+	// apart, and this test proves the gauge actually rises.
+	server := newServer(t, "")
+	_, corpusPath := seedAndCorpus(t, server)
+	server.Reveal()
+	server.Hold("obj-corpus")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		response, err := http.Get(server.DavURL() + corpusPath)
+		if err != nil {
+			return
+		}
+		defer func() { _ = response.Body.Close() }()
+		_, _ = io.ReadAll(response.Body)
+	}()
+
+	// The barrier blocks BEFORE the commit, so the gauge is still zero here: nothing has been promised yet.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && snapshot(t, server).CurrentHeldWaiters == 0 {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if held := snapshot(t, server); held.CurrentHeldWaiters != 1 {
+		t.Fatalf("the request never blocked at the barrier: %d waiting", held.CurrentHeldWaiters)
+	}
+	if held := snapshot(t, server); held.BodiesInFlight != 0 {
+		t.Fatalf("nothing has been committed yet, so nothing can be in flight: %d", held.BodiesInFlight)
+	}
+	// AND SETTLEMENT IS ALREADY TRUE HERE, which is the honest answer: a request that has not committed a
+	// body is not a body half-written. What the gauge must never do is stay at zero while a body IS writing.
+	if !server.WaitForSettlement(50 * time.Millisecond) {
+		t.Fatal("a barrier-blocked request must not be reported as an unsettled body")
+	}
+
+	server.Release("obj-corpus")
+	<-done
+	snap := assertPartitions(t, server)
+	if snap.BodiesInFlight != 0 {
+		t.Fatalf("the gauge did not return to zero: %d", snap.BodiesInFlight)
+	}
+	if snap.ObservedBytes != snap.CommittedBytes {
+		t.Fatalf("a released, fully drained body must observe what it committed: %d against %d",
+			snap.ObservedBytes, snap.CommittedBytes)
+	}
+}
+
+func TestWaitForSettlementIsBoundedAndReportsFailureRatherThanHanging(t *testing.T) {
+	// A GATE THAT LOOPED UNTIL THE GAUGE HAPPENED TO REACH ZERO would hang on a client that never finished,
+	// and a hang is a worse failure than a refusal. There is nothing in flight here, so the only property
+	// under test is that the bounded form answers rather than blocking.
+	server := newServer(t, "")
+	seedAndCorpus(t, server)
+	started := time.Now()
+	if !server.WaitForSettlement(10 * time.Millisecond) {
+		t.Fatal("an idle endpoint is settled")
+	}
+	if elapsed := time.Since(started); elapsed > time.Second {
+		t.Fatalf("the bounded wait took %s on an idle endpoint", elapsed)
+	}
+}
+
 func TestObjectColumnsPairByRegistrationOrdinalAndCarryNoName(t *testing.T) {
 	// THE ONLY HANDLE THE TELEMETRY CARRIES IS AN ORDINAL, and the gate splits corpus from non-corpus at a
 	// boundary in it. If the columns ever carried a path the report would have to redact them; if they ever
@@ -343,14 +539,17 @@ func TestObjectColumnsPairByRegistrationOrdinalAndCarryNoName(t *testing.T) {
 	server := newServer(t, "")
 	_, corpusPath := seedAndCorpus(t, server)
 	server.Reveal()
-	request(t, http.MethodGet, server.DavURL()+corpusPath, "", map[string]string{"Range": "bytes=0-9"})
-	snap := snapshot(t, server)
+	body(t, request(t, http.MethodGet, server.DavURL()+corpusPath, "", map[string]string{"Range": "bytes=0-9"}))
+	snap := assertPartitions(t, server)
 	if len(snap.ObjectSizes) != 3 || snap.ObjectSizes[0] != 4096 || snap.ObjectSizes[1] != 2048 ||
 		snap.ObjectSizes[2] != 9000 {
 		t.Fatalf("the size column is not in registration order: %v", snap.ObjectSizes)
 	}
-	if snap.ObjectBytes[0] != 0 || snap.ObjectBytes[1] != 0 || snap.ObjectBytes[2] != 10 {
-		t.Fatalf("bytes were attributed to the wrong ordinal: %v", snap.ObjectBytes)
+	if snap.ObjectCommitted[0] != 0 || snap.ObjectCommitted[1] != 0 || snap.ObjectCommitted[2] != 10 {
+		t.Fatalf("committed bytes went to the wrong ordinal: %v", snap.ObjectCommitted)
+	}
+	if snap.ObjectObserved[0] != 0 || snap.ObjectObserved[1] != 0 || snap.ObjectObserved[2] != 10 {
+		t.Fatalf("observed bytes went to the wrong ordinal: %v", snap.ObjectObserved)
 	}
 	raw, err := json.Marshal(snap)
 	if err != nil {
@@ -400,12 +599,11 @@ func TestAnUnsatisfiableRangeIsRefusedWithoutABody(t *testing.T) {
 	if response.StatusCode != http.StatusRequestedRangeNotSatisfiable {
 		t.Fatalf("an unsatisfiable range was answered %d", response.StatusCode)
 	}
-	snap := snapshot(t, server)
-	if snap.BytesServed != 0 || snap.BodylessResponses != 1 {
-		t.Fatalf("an unsatisfiable range was not accounted as bodiless: %d bytes, %d bodiless",
-			snap.BytesServed, snap.BodylessResponses)
+	snap := assertPartitions(t, server)
+	if snap.CommittedBytes != 0 || snap.BodylessResponses != 1 {
+		t.Fatalf("an unsatisfiable range was not accounted as bodiless: %d committed, %d bodiless",
+			snap.CommittedBytes, snap.BodylessResponses)
 	}
-	assertPartitions(t, snap)
 }
 
 func TestTheControlAndCounterSurfacesAreNotTraffic(t *testing.T) {

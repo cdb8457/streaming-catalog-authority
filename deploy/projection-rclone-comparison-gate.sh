@@ -33,7 +33,8 @@
 #     has measured nothing.
 #
 #   RECORDED, WITH NO THRESHOLD — every cost figure, without exception: ranged and whole-body GETs, PROPFIND /
-#     OPTIONS / HEAD, media bytes, metadata bytes, 429s, peak connections, per-server scan duration, per-object
+#     OPTIONS / HEAD, COMMITTED and OBSERVED media bytes as two separate figures, metadata bytes, 429s,
+#     peak connections, per-server scan duration, per-object
 #     cost, and the mount client's own accounting beside the endpoint's. An expensive number here is THE
 #     FINDING. A gate that failed on one would be a gate nobody could run to produce it.
 #
@@ -41,7 +42,8 @@
 # already been filled answers a scan without reaching the endpoint at all, and the naive path would then be
 # reported as costing a fraction of what it costs — far worse for a control than any expensive number. So the
 # corpus is HELD BACK at the endpoint until every library exists, the client's cached listings are dropped
-# explicitly, and the gate asserts all of: the corpus was visible, the endpoint had served ZERO bytes for any
+# explicitly, and the gate asserts all of: the corpus was visible, the endpoint had neither promised nor
+# written a single byte for any
 # corpus object beforehand, the client's cache directory was EMPTY, the window reached the endpoint at least
 # once per corpus object, and a request really was blocked at the barrier and released rather than lapsing.
 #
@@ -796,6 +798,13 @@ drive concurrent-scan \
   --out "$REL/out/concurrent-scan.json" --catalogue-dir "$REL/out" \
   || { logs_tail "$MOUNT_CONTAINER"; die "the concurrent scan did not complete"; }
 
+# THE AFTER SNAPSHOT WAITS FOR EVERY BODY TO FINISH WRITING BEFORE IT IS TAKEN.
+#
+# The endpoint counts a response's COMMITTED length before its first byte reaches the socket and its OBSERVED
+# length after the write returns. A snapshot taken between those two moments has the first counted and the
+# second not, so the gap between the totals would be a measurement of when this script happened to look. The
+# `counters` command polls the endpoint's own in-flight gauge and REFUSES to write a snapshot that never
+# settled, rather than recording a half-written window and letting the analysis quote it.
 drive counters --url "$DAV_BASE" --out "$REL/out/counters-after.json"
 plain client-stats --rc "$RC_BASE" --out "$REL/out/client-after.json"
 CACHE_AFTER="$(cache_bytes)"
@@ -960,11 +969,13 @@ echo "  - THREE LIBRARY SCANS OBSERVED IN FLIGHT AT THE SAME INSTANT, by the SAM
 echo "    drivers and the SAME barrier the product's own three-server gate uses -- because a comparison"
 echo "    whose two sides were measured by two implementations would include the difference between them."
 echo "  - a COLD window, on two independent instruments on opposite sides of the wire: the endpoint had"
-echo "    served ZERO bytes for any corpus object before the scans opened, and the mount client's cache"
-echo "    directory was EMPTY."
+echo "    neither PROMISED nor WRITTEN a byte for any corpus object before the scans opened, and the mount"
+echo "    client's cache directory was EMPTY."
 echo "  - EACH SERVER catalogued every identity at the size recorded outside the mount, as an ORDINARY FILE,"
 echo "    THROUGH ITS OWN ordinary-file predicate rather than through a flattened one."
-echo "  - and then the COST: ranged and whole-body GETs, PROPFIND/OPTIONS/HEAD, media bytes, listing bytes,"
+echo "  - and then the COST: ranged and whole-body GETs, PROPFIND/OPTIONS/HEAD, COMMITTED media bytes (what"
+echo "    the responses promised in Content-Length) and OBSERVED media bytes (what was actually written) as"
+echo "    TWO SEPARATE FIGURES, listing bytes,"
 echo "    429s, peak connections, per-server scan duration, per-object cost worst-first, and the mount"
 echo "    client's OWN accounting beside the endpoint's. EVERY ONE OF THOSE IS RECORDED AND COMPARED"
 echo "    AGAINST NOTHING. G22 has no pass threshold, and an expensive number here is the finding."

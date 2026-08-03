@@ -11,12 +11,13 @@ import {
 import {
   COMPARISON_CORPUS_ENTRIES, COMPARISON_HOLD_ARM_MS, PRODUCT_REMOTE_ENTRIES,
   RCLONE_COMPARISON_NONCLAIMS, RCLONE_COMPARISON_TOPOLOGY, RCLONE_TIMEOUTS_MS,
-  comparisonColdStateProblems, comparisonMeasurements, parseWebdavCounters, webdavAttributionProblems,
-  type WebdavCounters,
+  clientStatsProblems, comparisonColdStateProblems, comparisonMeasurements, parseClientStats,
+  parseWebdavCounters, webdavAttributionProblems,
+  type ClientStats, type WebdavCounters,
 } from '../core/projection/rclone-comparison.js';
 import {
   adapterFor, allAdapters, forgetClientCache, clientVersion, readClientStats, readWebdavCounters,
-  readRegisteredObjects, revealCorpus, runConcurrentScans, setHold,
+  readSettledWebdavCounters, readRegisteredObjects, revealCorpus, runConcurrentScans, setHold,
   type CatalogueEntry, type ConcurrentScanOutcome,
 } from './projection-rclone-comparison.js';
 
@@ -133,6 +134,16 @@ function readCounterFile(path: string, label: string): WebdavCounters {
   return parsed.counters;
 }
 
+/** Read a persisted mount-client stats snapshot through the SAME parser the live read uses. */
+function readClientStatsFile(path: string, label: string): ClientStats {
+  const parsed = parseClientStats(JSON.parse(readFileSync(path, 'utf8')), label);
+  if (parsed.stats === undefined) {
+    for (const problem of parsed.problems.slice(0, 10)) console.error(`  ${problem.kind}: ${problem.detail}`);
+    fail(`the ${label} mount-client stats cannot support a comparison figure`);
+  }
+  return parsed.stats;
+}
+
 function readScanOutcome(path: string): ConcurrentScanOutcome {
   return JSON.parse(readFileSync(path, 'utf8')) as ConcurrentScanOutcome;
 }
@@ -155,16 +166,34 @@ async function main(): Promise<void> {
   switch (args.command) {
     // -----------------------------------------------------------------------------------------------------
     case 'counters': {
-      const snapshot = await readWebdavCounters(need(args, 'url'));
+      // IT WAITS FOR EVERY BODY TO FINISH WRITING BEFORE IT READS, and that is not an optimisation.
+      //
+      // A snapshot taken mid-write has each in-flight body's COMMITTED length counted and its OBSERVED length
+      // not, so the gap between the two totals would be a measurement of when the gate happened to look
+      // rather than of what the client did. Both ends of the window wait: the `after` one obviously, and the
+      // `before` one so that a body left writing by library creation cannot skew the baseline either.
+      const url = need(args, 'url');
+      const settled = args.flags.get('settled') !== 'false';
+      const snapshot = settled
+        ? await readSettledWebdavCounters(url, optionalNumber(args, 'settle-ms', 60_000))
+        : await readWebdavCounters(url);
       writeFileSync(need(args, 'out'), `${JSON.stringify(snapshot, null, 2)}\n`);
-      console.log('  endpoint counters recorded');
+      const inFlight = Number(snapshot.bodiesInFlight);
+      console.log(`  endpoint counters recorded (${inFlight} body/bodies still writing)`);
+      if (settled && inFlight !== 0) {
+        fail(`the endpoint still had ${inFlight} body/bodies writing after the settle budget, so no `
+          + 'observed-byte figure can be read from this snapshot');
+      }
       return;
     }
 
     case 'client-stats': {
+      // STRICTLY PARSED AT THE POINT OF READING. `readClientStats` refuses anything that is not an object
+      // with its own whole, finite, non-negative `bytes` and `transfers`, so a client that stopped reporting
+      // one fails here rather than contributing a confident zero to a published comparison.
       const stats = await readClientStats(need(args, 'rc'));
       writeFileSync(need(args, 'out'), `${JSON.stringify(stats, null, 2)}\n`);
-      console.log('  mount client stats recorded');
+      console.log(`  mount client stats recorded: ${stats.bytes} bytes over ${stats.transfers} transfers`);
       return;
     }
 
@@ -376,13 +405,16 @@ async function main(): Promise<void> {
       const after = readCounterFile(need(args, 'after'), 'after');
       const gate = need(args, 'gate');
       const firstCorpusOrdinal = needNumber(args, 'first-corpus-ordinal');
-      let corpusBytesBefore = 0;
-      for (let ordinal = firstCorpusOrdinal; ordinal < before.objectBytes.length; ordinal += 1) {
-        corpusBytesBefore += before.objectBytes[ordinal] ?? 0;
+      let corpusCommittedBytesBefore = 0;
+      let corpusObservedBytesBefore = 0;
+      for (let ordinal = firstCorpusOrdinal; ordinal < before.objectCommitted.length; ordinal += 1) {
+        corpusCommittedBytesBefore += before.objectCommitted[ordinal] ?? 0;
+        corpusObservedBytesBefore += before.objectObserved[ordinal] ?? 0;
       }
       const problems = comparisonColdStateProblems({
         revealedBefore: before.revealed,
-        corpusBytesBefore,
+        corpusCommittedBytesBefore,
+        corpusObservedBytesBefore,
         clientCacheBytesBefore: needNumber(args, 'client-cache-before'),
         getDelta: (after.rangedBodies + after.fullBodies) - (before.rangedBodies + before.fullBodies),
         corpusObjectCount: needNumber(args, 'corpus-objects'),
@@ -391,9 +423,9 @@ async function main(): Promise<void> {
       });
       for (const problem of problems) console.error(`  ${problem.kind}: ${problem.detail}`);
       record(args, exactly(`${gate}-cold-window`, problems.length, 0,
-        'the corpus was visible and had never been served a byte, the mount client\'s cache directory was '
-        + 'empty, the window reached the endpoint at least once per corpus object, and a request really was '
-        + 'blocked at the barrier and released rather than lapsing'));
+        'the corpus was visible and had had neither a byte promised nor a byte written for it, the mount '
+        + 'client\'s cache directory was empty, the window reached the endpoint at least once per corpus '
+        + 'object, and a request really was blocked at the barrier and released rather than lapsing'));
       return;
     }
 
@@ -408,10 +440,14 @@ async function main(): Promise<void> {
         before, after, firstCorpusOrdinal, ordinalList(args, 'product-ordinals'),
       );
 
-      // THE ONE PARTITION THAT IS STILL AN ASSERTION, because a figure that does not add up is not a figure.
-      record(args, exactly(`${gate}-bytes-fully-attributed`, measurements.unattributedBytes, 0,
-        'corpus bytes plus non-corpus bytes equals the endpoint\'s own total for the window; a shortfall '
-        + 'would mean a body was served for something this gate never registered'));
+      // THE PARTITIONS THAT ARE STILL ASSERTIONS, because a figure that does not add up is not a figure.
+      record(args, exactly(`${gate}-committed-bytes-fully-attributed`,
+        measurements.unattributedCommittedBytes, 0,
+        'corpus plus non-corpus COMMITTED bytes equals the endpoint\'s own total for the window; a shortfall '
+        + 'would mean a body was promised for something this gate never registered'));
+      record(args, exactly(`${gate}-observed-bytes-fully-attributed`,
+        measurements.unattributedObservedBytes, 0,
+        'and the same for the OBSERVED column, which is a separate total over the same responses'));
       record(args, atLeast(`${gate}-objects-exercised`, measurements.objectsExercised,
         needNumber(args, 'corpus-objects'),
         'every corpus object was reached at least once. A cost figure over a corpus the scan did not read is '
@@ -431,20 +467,39 @@ async function main(): Promise<void> {
         'ABSENT rather than zero: this topology has no access-resolution step, because the namespace IS the '
         + 'URL space. G14b\'s figure has no counterpart here, and reporting a zero would read as an '
         + 'efficiency rather than as the property ADR 002 rejected the topology for'));
-      record(args, figure(`${gate}-bytes`,
-        `${measurements.bytesServed} media bytes served, of which ${measurements.corpusBytes} were for corpus `
-        + `objects and ${measurements.nonCorpusBytes} for the readiness canary. A further `
-        + `${measurements.metadataBytes} bytes of listing XML are counted SEPARATELY and are never folded `
-        + 'into the media total'));
+      // TWO BYTE FIGURES, NEVER ONE, AND THE DISTINCTION IS THE CORRECTION THIS GATE MOST NEEDED.
+      //
+      // COMMITTED is what the responses promised in Content-Length. OBSERVED is what was actually written.
+      // An earlier version of this report had only the first and called it "served", which overstates
+      // delivery by exactly the amount the client abandoned — and on a corpus built around a ~105 MB fixture,
+      // a media server reading a header and closing the handle abandons a great deal.
+      record(args, figure(`${gate}-committed-bytes`,
+        `${measurements.committedBytes} media bytes COMMITTED — the Content-Length the responses promised, `
+        + `not what was delivered — of which ${measurements.corpusCommittedBytes} were for corpus objects and `
+        + `${measurements.nonCorpusCommittedBytes} for the readiness canary. A further `
+        + `${measurements.metadataBytes} bytes of listing XML are counted SEPARATELY and are folded into `
+        + 'neither media total'));
+      record(args, figure(`${gate}-observed-bytes`,
+        `${measurements.observedBytes} media bytes OBSERVED — what the endpoint actually wrote to the socket `
+        + `— of which ${measurements.corpusObservedBytes} were for corpus objects and `
+        + `${measurements.nonCorpusObservedBytes} for the readiness canary`));
+      record(args, figure(`${gate}-body-outcomes`,
+        `${measurements.completedBodies} bodies were written in full and ${measurements.truncatedBodies} `
+        + 'were abandoned part-way by the client or failed. A truncated body is the difference between the '
+        + 'two byte figures above, and it is a fact about how the client reads rather than a defect'));
       record(args, figure(`${gate}-byte-multiplier`,
-        `${Math.round(measurements.corpusMultiplier * 1000) / 1000}x the corpus's own total length of `
-        + `${measurements.corpusSizeBytes} bytes, for a scan that identified it. THE DENOMINATOR IS NAMED `
-        + 'because a multiplier of an unstated quantity is not a measurement'));
+        `COMMITTED ${Math.round(measurements.corpusCommittedMultiplier * 1000) / 1000}x and OBSERVED `
+        + `${Math.round(measurements.corpusObservedMultiplier * 1000) / 1000}x the corpus's own total length `
+        + `of ${measurements.corpusSizeBytes} bytes, for a scan that identified it. THE DENOMINATOR IS NAMED `
+        + 'because a multiplier of an unstated quantity is not a measurement, and BOTH numerators are given '
+        + 'because a multiplier of an unstated numerator is not one either'));
       record(args, figure(`${gate}-product-comparable-subset`,
         `over the ${PRODUCT_REMOTE_ENTRIES} entries the product serves from its own endpoint: `
-        + `${measurements.productComparableBytes} bytes over ${measurements.productComparableGets} GETs. `
-        + 'The other entries are local passthrough on the product\'s topology and remote on this one, so a '
-        + 'total-against-total comparison would charge this path for files the product never fetches'));
+        + `${measurements.productComparableCommittedBytes} committed and `
+        + `${measurements.productComparableObservedBytes} observed bytes over `
+        + `${measurements.productComparableGets} GETs. The other entries are local passthrough on the `
+        + 'product\'s topology and remote on this one, so a total-against-total comparison would charge this '
+        + 'path for files the product never fetches'));
       record(args, figure(`${gate}-http-429`,
         `${measurements.served429} observed. The endpoint never emits one, so this is a measurement that the `
         + 'client was never rate-limited rather than evidence that it would not be by a real service'));
@@ -466,9 +521,10 @@ async function main(): Promise<void> {
       // single contributor to the headline total unnamed.
       const describeCost = (label: string, cost: typeof measurements.perObject[number]): void => {
         record(args, figure(`${gate}-object-cost-${label}:#${cost.ordinal}`,
-          `${cost.servedBytes} bytes over ${cost.gets} GETs (${cost.rangedGets} ranged, ${cost.fullGets} `
-          + `whole-body) for an object of ${cost.sizeBytes} bytes: `
-          + `${Math.round(cost.multiplier * 1000) / 1000}x its own length`));
+          `${cost.committedBytes} committed and ${cost.observedBytes} observed bytes over ${cost.gets} GETs `
+          + `(${cost.rangedGets} ranged, ${cost.fullGets} whole-body) for an object of ${cost.sizeBytes} `
+          + `bytes: ${Math.round(cost.committedMultiplier * 1000) / 1000}x committed and `
+          + `${Math.round(cost.observedMultiplier * 1000) / 1000}x observed, of its own length`));
       };
       for (const cost of measurements.perObject.filter((entry) => entry.gets > 0).slice(0, 5)) {
         describeCost('by-multiplier', cost);
@@ -477,19 +533,29 @@ async function main(): Promise<void> {
         describeCost('by-bytes', cost);
       }
 
-      // THE SECOND INSTRUMENT, ON THE OTHER SIDE OF THE WIRE.
-      const clientBefore = JSON.parse(readFileSync(need(args, 'client-stats-before'), 'utf8')) as
-        Record<string, unknown>;
-      const clientAfter = JSON.parse(readFileSync(need(args, 'client-stats-after'), 'utf8')) as
-        Record<string, unknown>;
-      const clientBytes = Number(clientAfter.bytes ?? 0) - Number(clientBefore.bytes ?? 0);
-      const clientTransfers = Number(clientAfter.transfers ?? 0) - Number(clientBefore.transfers ?? 0);
+      // THE THIRD INSTRUMENT, ON THE OTHER SIDE OF THE WIRE, READ AS STRICTLY AS THE FIRST TWO.
+      //
+      // THE PERSISTED SNAPSHOTS GO THROUGH THE SAME PARSER THE LIVE READ USES. An earlier version did
+      // `Number(value ?? 0)` here, which turns a missing field into a confident zero — and a zero in this
+      // position does not read as "unknown", it reads as "the client transferred nothing", which is the most
+      // dramatic possible version of the claim this figure was being used to make.
+      const clientBefore = readClientStatsFile(need(args, 'client-stats-before'), 'before');
+      const clientAfter = readClientStatsFile(need(args, 'client-stats-after'), 'after');
+      const clientResets = clientStatsProblems(clientBefore, clientAfter);
+      for (const problem of clientResets) console.error(`  ${problem.kind}: ${problem.detail}`);
+      record(args, exactly(`${gate}-client-telemetry-coherent`, clientResets.length, 0,
+        'the mount client\'s own lifetime totals did not fall across the window, so their difference '
+        + 'describes one mount process rather than two'));
+      const clientBytes = clientAfter.bytes - clientBefore.bytes;
+      const clientTransfers = clientAfter.transfers - clientBefore.transfers;
       record(args, figure(`${gate}-client-own-accounting`,
-        `the mount client accounts for ${clientBytes} bytes over ${clientTransfers} transfers, against the `
-        + `${measurements.bytesServed} the endpoint actually served. THE TWO ARE DIFFERENT MEASUREMENTS and `
-        + 'neither is corrected to match the other: the endpoint counts what it was asked for, the client '
-        + 'counts what it believes it delivered upward, and everything between them is read-ahead, chunking '
-        + 'and discarded bytes'));
+        `the mount client accounts for ${clientBytes} bytes over ${clientTransfers} transfers, against `
+        + `${measurements.committedBytes} committed and ${measurements.observedBytes} observed at the `
+        + 'endpoint. THESE ARE THREE DIFFERENT MEASUREMENTS and none is corrected to match another: the '
+        + 'endpoint promised the first, wrote the second, and the client believes it passed the third '
+        + 'upward. NO RATIO BETWEEN THEM IS A PROVIDER COST — committed-minus-observed is the endpoint\'s '
+        + 'own optimism about reads the client abandoned, and observed-minus-client is read-ahead and '
+        + 'discard, and the two have different causes'));
       record(args, figure(`${gate}-client-cache`,
         `the client's cache directory held ${needNumber(args, 'client-cache-before')} bytes before the window `
         + `and ${needNumber(args, 'client-cache-after')} after it`));
