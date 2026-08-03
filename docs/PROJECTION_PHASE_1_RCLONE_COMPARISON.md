@@ -353,6 +353,15 @@ Go tests drive a client that reads 512 bytes of an 8 MiB body and closes, and re
 apart; a control test requires them to agree exactly when the body is fully consumed. §7.4 is what the
 remediated instrument measured.
 
+**One thing this remediation did NOT change, stated so nobody has to rediscover it.** The product's own fake
+endpoint, `projectiond/internal/fakeprovider`, counts its bytes the same way — before the write, discarding
+the result. It is left alone here deliberately: its bodies are at most one buffered demand block rather than a
+105 MB stream, its client is `projectiond` rather than a media server's prober so it does not abandon reads,
+its figures are used as **ceilings** where over-counting is the safe direction, and **it draws no delivery
+conclusion from a ratio against a client-side number** — which is the specific thing that made the same shape
+wrong here. Changing it would also invalidate G18's recorded run figures. **It is a smaller instance of the
+same defect and it is recorded rather than fixed under this tranche.**
+
 ### 7.4 What the remediated instrument measured, and how far off the retracted claim was
 
 Runs 13–16, on Windows / Docker Desktop, against `330a9e7`. Run 13 is a standalone run; 14–16 are three

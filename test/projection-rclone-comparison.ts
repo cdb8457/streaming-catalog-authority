@@ -1184,7 +1184,7 @@ async function main(): Promise<void> {
 
   await test('EXECUTABLE: an all-pass results file exits zero', () => {
     const path = writeJson('results-clean.json', [
-      { gate: 'RC4-bytes', verdict: 'pass', note: '13205874 media bytes served' },
+      { gate: 'RC4-committed-bytes', verdict: 'pass', note: '13205874 media bytes committed' },
     ]);
     assertEq(runCli(['report', '--results', path]).status, 0, 'a clean report must pass');
   });
