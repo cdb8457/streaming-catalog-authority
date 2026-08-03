@@ -49,3 +49,15 @@ deploy/ci/acceptance/playwright-report/
 # and on failure, and this is what stops an INTERRUPTED run leaving that file where `git add -A` could reach
 # it.
 .projection-emby-gate/
+
+# ...and for the THREE-SERVER CONCURRENCY gate, which holds three media servers' whole config directories at
+# once. It had no entry here; every other gate in this family does, and the reason each of those gives applies
+# to it unchanged.
+.projection-three-gate/
+
+# ...and for the RCLONE/WEBDAV COMPARISON CONTROL (G22). Same reasons as the four above, plus the one the Emby
+# entry names: this gate mints a throwaway endpoint credential per run and writes it to a file inside its run
+# directory, because a credential on a command line is in an argv, a container inspect and a shell history.
+# The cleanup trap deletes the directory on success and on failure. This is what stops an INTERRUPTED run from
+# leaving that file where `git add -A` could reach it.
+.projection-rclone-gate/

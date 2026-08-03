@@ -85,7 +85,7 @@ could never have passed however well the daemon behaved.
 | G19 | **Re-scan** | A second synthetic scan with an unchanged manifest issues **zero** ranged GETs and **zero** resolutions — the persistent scan-window cache already holds every byte such a scan reads, at all three windows, and survives a daemon restart. |
 | G20 | **Duplicate probe / single-flight** | Twenty concurrent opens of the same entry, each reading the same first chunk, produce **exactly one** provider request. |
 | G21 | **Range discipline** | A fake server that answers a ranged request with a full-body `200` causes the source to fail immediately; bytes read from that response: **0**. A server that returns a short body, a mismatched `Content-Range`, or a total size disagreeing with the manifest is likewise failed. |
-| G22 | **Comparison control** | The same corpus behind an rclone/WebDAV mount, measured the same way. This is **evidence, not architecture**: it exists to record what the naive approach costs. It has no pass threshold. |
+| G22 | **Comparison control** | The same corpus behind an rclone/WebDAV mount, measured the same way. This is **evidence, not architecture**: it exists to record what the naive approach costs. It has no pass threshold. A gate now exists — `deploy/projection-rclone-comparison-gate.sh`, described in `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` — and **a gate existing is not a gate run**: §6.1 below is the authority on that. What it holds to a threshold is the **instrumentation** (the mount works, the corpus is exact, the telemetry is coherent and fully attributed, the window is cold, nothing leaks); **no cost figure it produces is compared against anything**, because an expensive number here is the finding. |
 
 **What G14a–G21 measure, and what they deliberately do not.** These budgets are the **daemon's** traffic while
 a library is scanned and played. They do **not** include the traffic the **control plane** spends computing
@@ -138,6 +138,15 @@ on the tranche-closing host, because nothing has.
 | **A traversable run directory** | the paced consumer runs as uid 1000 and writes into directories the gates `chmod 777`; those are reached *through* the run root, which `mkdir -p` creates under the operator's umask. At `077` it is `0700` and uid 1000 cannot traverse it, however permissive the leaf is. The gates now `chmod 755` it explicitly rather than inheriting a umask | the preflight's `traversal` command |
 | **No SELinux enforcement, or relabelled binds** | on an enforcing host a container cannot read an unrelabelled bind, and every gate binds several. Unraid does not use SELinux, so this bounds "Linux" generally rather than the tranche-closing host. **Recorded rather than handled**, because adding `:z` relabels files on the operator's disk | `getenforce` |
 
+**THE COMPARISON CONTROL NEEDS EVERY ONE OF THESE TOO, AND THAT IS ITSELF A SMALL RESULT.**
+`deploy/projection-rclone-comparison-gate.sh` stands up no daemon and no database — the naive path has
+neither — but it still mounts FUSE from a container and propagates the namespace `rshared` to three media
+servers beside it. So Node and `npx` on the **host**, a **shared** mount for the run directory, `/dev/fuse`
+reachable from a container, a **traversable** run directory and Compose v2 are required of it exactly as they
+are of the four `projectiond` gates, and it runs the same `src/ops/projection-host-preflight-cli.ts` before it
+starts a container. **The naive topology avoids none of the host requirements this table lists** — whatever
+else differs between the two, the host they need does not.
+
 **The preflight diagnoses and does not repair.** Making a host mount shared is `mount --make-rshared`, which
 changes the machine the operator is standing on and outlives the run. A gate that did that quietly would be
 mutating a host to make itself pass, so it names the remedy instead.
@@ -163,7 +172,7 @@ the same and only the second is evidence.
 | G12 **Kill and recover** | run — `SIGKILL` mid-stream, restart, remount: zero added, zero removed, zero item-id churn; playback resumable | not run | run on Docker Desktop only — `SIGKILL` mid-stream, restart, remount, followed by a byte-for-byte read through the media server's own mount so it cannot pass on a dead one: zero added, removed, duplicated, item-id-churned, metadata-drifted or path-drifted; the published generation did not move; playback resumable |
 | G13 **Re-scan churn** | run — twice, plus across a media-server restart | not run | run on Docker Desktop only — a repeat corpus scan, a scan after the media-server restart, and a plain re-scan, each with zero churn of any kind; the plain re-scan cost the provider **zero** ranged GETs and **zero** bytes |
 | G18 **High-concurrency scan** | **NOT RUN** for tranche purposes. A gate now exists and has been run on Docker Desktop only: `deploy/projection-three-server-concurrency-gate.sh` puts a real, digest-pinned Plex, Jellyfin and Emby on the SAME production mount, SAME admitted generation, SAME ~50-entry corpus and SAME fake endpoint, and observes all three scanning at the same instant. §6 says Docker Desktop closes none of G7–G13 or G18, so this column stays NOT RUN | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
-| G22 **Comparison control** | **not run** | — | — |
+| G22 **Comparison control** | **NOT RUN** for tranche purposes. A gate now exists and has been run on **Docker Desktop only**: `deploy/projection-rclone-comparison-gate.sh` puts the SAME ~50-entry corpus behind a digest-pinned rclone mount of a deterministic WebDAV endpoint and drives the SAME three real, digest-pinned media servers over it, with the SAME observer, the SAME barrier and the SAME overlap floors G18 uses. §6 says Docker Desktop closes none of G7–G13, G18 or G22, so this column stays NOT RUN. `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` §7 is the only place that says what has been run, and it carries **sixteen runs — one failure and fifteen completed, twelve of them through the committed three-consecutive-fresh-run wrapper in four sequences of three**. A coordinator review then found that the endpoint counted each response's Content-Length and reported it as what had been served, which invalidated one conclusion the document drew and none of its request, catalogue, overlap or cold-state evidence; the remediated instrument counts COMMITTED and OBSERVED bytes separately and has been run four more times, 70 assertions each with none failed and none skipped | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
 | G24–G26 **Lease gates** | **not run** through a media server; the fake endpoint supports the mode, this gate uses the direct one | — | — |
 | G27 **Path immutability** | admission half closed by `npm run test:projection-publisher`; **the three-server half is not run** | not run | not run |
 
@@ -202,7 +211,12 @@ thirteen through the committed three-consecutive-fresh-run wrapper in four seque
 assertions with none failed and none skipped. All fourteen are Windows / Docker Desktop, which §6 says closes
 none of G7–G13 or G18. Fourteen of them predate a coordinator review that tightened what the gate asserts;
 the remediated gate has since been run too — one failure that exposed a real defect in it, then **three
-consecutive fresh green runs, 62 assertions each with none failed and none skipped**, still on Docker
+consecutive fresh green runs, 62 assertions each with none failed and none skipped. A later review found that
+its fake endpoint counted each response's COMMITTED payload length and discarded what its write returned; the
+endpoint now records both columns, its byte ceilings are asserted against BOTH at unchanged values, and four
+further runs — one standalone and three through the wrapper — measured 64 assertions each with none failed and
+none skipped, with COMMITTED and OBSERVED bytes IDENTICAL at 13,205,874 because the daemon drains every
+body**, still on Docker
 Desktop and still closing nothing.** The one failure is worth reading: it was the gate's, not the product's — the barrier
 was released the instant the rendezvous succeeded, which destroyed the overlap it had just created.
 
@@ -228,9 +242,37 @@ entry on purpose and a local entry's own byte-identity window lands in the same 
 **WHAT THAT GATE STILL DOES NOT CLOSE, AND WHY THE ROW ABOVE READS `NOT RUN`.** Every run has been on Windows /
 Docker Desktop, which §6 says closes none of G7–G13 or G18. **Per-server provider attribution is impossible
 there and is not claimed**: one daemon serves all three servers, so the endpoint sees the daemon and never the
-server behind a byte — every byte is attributed to a corpus OBJECT and none to a SERVER. **G22 is not run.
-G27's three-server half is not run.** No real provider endpoint has ever been contacted, no run has ever
-happened on Linux or Unraid, and **Phase 1 remains open**.
+server behind a byte — every byte is attributed to a corpus OBJECT and none to a SERVER. **G22 is NOT RUN — a
+fifth gate now exists for it and has been run on Docker Desktop only; see below. G27's three-server half is not
+run.** No real provider endpoint has ever been contacted, no run has ever happened on Linux or Unraid, and
+**Phase 1 remains open**.
+
+**A FIFTH GATE EXISTS, IT IS THE COMPARISON CONTROL, AND THE G22 ROW STILL READS NOT RUN.**
+`deploy/projection-rclone-comparison-gate.sh` — `npm run go:rclone-comparison-gate` — stands up **one**
+deterministic WebDAV endpoint serving the **same** ~50-entry corpus, generated from a generator body that is
+character-for-character the three-server gate's and compared to it by an offline test; **one** read-only,
+digest-pinned rclone mount of that endpoint with a **fresh** cache; and the **same three** real, digest-pinned
+media servers on that one mount directory as their library root. It uses G18's **own** observer, **own**
+overlap analysis, **own** floors and **own** barrier, imported rather than reimplemented, because "measured the
+same way" is only true if it is the same measurement.
+
+**IT STANDS UP NO POSTGRESQL, NO PUBLISHER, NO MANIFEST AND NO `projectiond`, AND THE ABSENCE IS HALF OF WHAT
+IS BEING COMPARED.** The naive path has none of those.
+
+**WHAT IT ASSERTS AND WHAT IT REFUSES TO ASSERT ARE DIFFERENT KINDS OF THING, AND THE SPLIT IS THE POINT.** G22
+has no pass threshold, so **every cost figure is recorded and compared against nothing** — a gate that failed
+on an expensive number would be a gate nobody could run to produce the finding. What fails closed is the
+instrumentation: the mount works and is proved to carry the bytes, the corpus is exactly the corpus, all three
+servers really scan and really overlap, the telemetry is coherent, monotonic and fully attributed, the window
+is **cold** on two instruments on opposite sides of the wire, no credential leaks, every image is
+digest-pinned, every wait is bounded and cleanup succeeds.
+
+**AND IT IS A CONTROL, NOT A CANDIDATE.** `docs/ADR_002_PROJECTION_APPLIANCE.md` §2 rejected rclone over WebDAV
+as production architecture for reasons no cost figure touches, and kept it as a test control in those words. A
+cheap number would not reopen that decision and an expensive one is not what closed it.
+`docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` describes what it measures, §7 of that document is the only
+place that says what has been run, and **every run so far has been on Windows / Docker Desktop, which §6 says
+closes nothing**.
 
 **With that, all three media servers have a gate, and the tranche is no closer to closing than it was.** §6 says
 the media-server gates close on a Linux or Unraid host; **none of the three gates has ever run on one**. What

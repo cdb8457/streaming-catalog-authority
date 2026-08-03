@@ -6,6 +6,7 @@
     "jellyfin-contract-kit.ts",
     "_launch-proofing-evidence.ts",
     "aggregate-suite.ts",
+    "projection-delivery-wording.ts",
     "jellyfin-fake-server.ts"
   ],
   "suites": [
@@ -393,6 +394,10 @@
     },
     {
       "file": "projection-three-server-concurrency.ts",
+      "group": "offline"
+    },
+    {
+      "file": "projection-rclone-comparison.ts",
       "group": "offline"
     },
     {

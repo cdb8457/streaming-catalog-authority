@@ -7,6 +7,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
+  G18_WORDING_FILES, deliveryOverstatements, readForWordingScan,
+} from './projection-delivery-wording.js';
+import {
   MEDIA_SERVER_BUDGETS, findRedactionProblems,
 } from '../src/core/projection/media-server-dataplane.js';
 import {
@@ -16,6 +19,7 @@ import { PLEX_LARGE_FIXTURE, PLEX_SCAN_ENVELOPE } from '../src/core/projection/p
 import {
   CONCURRENCY_DEADLINES_MS, CONCURRENCY_RULES, COUNTER_ARRAY_KEYS, COUNTER_KEYS_REQUIRED, HOLD_ARM_MS,
   HOLD_MAX_MS, BARRIER_RELEASE_OVERSHOOT_MS, REQUIRED_SERVER_COUNT, THREE_SERVER_IDS,
+  GAUGE_COUNTER_KEYS, MONOTONIC_COUNTER_KEYS, OBSERVED_BYTES_ARE_APPLICATION_WRITES,
   THREE_SERVER_NONCLAIMS, analyseOverlap,
   attributionProblems, breachedObjects, breachedShapes, coldStateProblems, corpusAttribution,
   daemonBlockByteCeiling, objectByteVerdicts, objectShapeVerdicts, overlapProblems, parseProviderCounters,
@@ -134,7 +138,11 @@ const PACKAGE = JSON.parse(readRepoFile('package.json')) as { scripts: Record<st
 // A counters document that is coherent by construction, so a test can break exactly one thing about it.
 // ----------------------------------------------------------------------------------------------------------
 
-interface FakeObject { size: number; small: number; chunk: number; partial: number; oversized: number }
+interface FakeObject {
+  size: number; small: number; chunk: number; partial: number; oversized: number;
+  /** Bytes the writes for this object actually RETURNED. Defaults to the committed length: a drained body. */
+  observed?: number;
+}
 
 /**
  * Build a counters snapshot whose every partition holds.
@@ -171,7 +179,17 @@ function counters(objects: readonly FakeObject[], overrides: Partial<ProviderCou
     bodylessResponses: 0,
     holdTimeouts: 0,
     heldRequests: 1,
+    // THE APPLICATION-WRITE COLUMN. It defaults to the committed length — a body the client drained — so an
+    // existing test that says nothing about it keeps describing the case it always described. A test that
+    // wants divergence sets `observed` on an object and gets a coherent truncated-body document.
+    observedBytes: sum(objects.map((o, i) => o.observed ?? (objectBytes[i] as number))),
+    completedBodies: sum(objects.map((o, i) => ((o.observed ?? (objectBytes[i] as number))
+      === (objectBytes[i] as number) ? o.small + o.chunk + o.partial + o.oversized : 0))),
+    truncatedBodies: sum(objects.map((o, i) => ((o.observed ?? (objectBytes[i] as number))
+      === (objectBytes[i] as number) ? 0 : o.small + o.chunk + o.partial + o.oversized))),
+    bodiesInFlight: 0,
     objectBytes,
+    objectObserved: objects.map((o, i) => o.observed ?? (objectBytes[i] as number)),
     objectSizes: objects.map((o) => o.size),
     objectChunk: objects.map((o) => o.chunk),
     objectSmall: objects.map((o) => o.small),
@@ -186,10 +204,11 @@ function zeroLike(reference: ProviderCounters): ProviderCounters {
   return {
     ...reference,
     resolutions: 0, rangeRequests: 0, accountedResponses: 0, bytesServed: 0,
+    observedBytes: 0, completedBodies: 0, truncatedBodies: 0, bodiesInFlight: 0,
     chunkResponses: 0, chunkBytes: 0, smallResponses: 0, smallBytes: 0,
     partialResponses: 0, partialBytes: 0, oversizedResponses: 0, oversizedBytes: 0,
     bodylessResponses: 0, heldRequests: 0, holdTimeouts: 0,
-    objectBytes: empty, objectChunk: empty, objectSmall: empty,
+    objectBytes: empty, objectObserved: empty, objectChunk: empty, objectSmall: empty,
     objectPartial: empty, objectOversized: empty,
   };
 }
@@ -1084,6 +1103,147 @@ async function main(): Promise<void> {
   });
 
   // --------------------------------------------------------------------------------------------------------
+  console.log('\nTHE CHEAT: a COMMITTED length standing in for what was WRITTEN');
+  // --------------------------------------------------------------------------------------------------------
+
+  const realShaped: FakeObject[] = [
+    { size: 262_144, small: 0, chunk: 0, partial: 0, oversized: 0 },
+    { size: 105_406_871, small: 3, chunk: 2, partial: 0, oversized: 0 },
+    { size: 40_000, small: 3, chunk: 0, partial: 0, oversized: 0 },
+  ];
+
+  await test('no G18 surface claims delivery, receipt, wire traffic or billing in the present tense', () => {
+    // THIS WORDING HAS NOW BEEN CORRECTED THREE TIMES. A committed counter was reported as "served"; the
+    // correction said "put on the socket" and "actually written"; and a comparison of one instrument's
+    // observed column against another's committed one was published as "delivered". Each round fixed the
+    // sentences somebody looked at. This one is executed, over every G18 surface, so the next round cannot
+    // depend on who reads which file.
+    const findings = G18_WORDING_FILES.flatMap((file) =>
+      deliveryOverstatements(readForWordingScan(file), file));
+    assert(findings.length === 0, `G18 surfaces make delivery claims:\n    ${findings.join('\n    ')}`);
+  });
+
+  await test('...and the rule is live in BOTH directions, so neither half is decorative', () => {
+    // A PROSE RULE THAT NEVER FIRES IS INDISTINGUISHABLE FROM ONE THAT IS BROKEN. So the check is driven
+    // against text built to fail it, and against the two shapes it must NOT fail.
+    assert(deliveryOverstatements('the endpoint actually wrote 12 bytes to the socket', 'x').length > 0,
+      'a plain current-tense delivery claim must be caught');
+    assert(deliveryOverstatements('committed bytes left the endpoint\'s control', 'x').length > 0,
+      'and so must the committed-length overstatement this round removed');
+    assertEq(deliveryOverstatements('it is NOT proof of peer receipt, NOT a TCP acknowledgement', 'x').length,
+      0, 'a NEGATED phrase is the nonclaim these gates are required to carry');
+    assertEq(deliveryOverstatements('an earlier version said the endpoint actually wrote it', 'x').length, 0,
+      'and a line that declares itself historical may quote what it retracts');
+    // THE HISTORICAL ESCAPE IS NOT A BLANKET ONE: the marker has to be on the line making the claim.
+    assert(deliveryOverstatements('the second answers where the delivered traffic went', 'x').length > 0,
+      'a claim on a line with no marker and no negation is still a claim');
+  });
+
+  await test('the endpoint reports what Write RETURNED, not only what it promised', () => {
+    // THE DEFECT THIS CLOSES, WHICH SHIPPED IN BOTH FAKE ENDPOINTS. Every body-producing branch ended
+    // `_, _ = w.Write(payload)`, discarding the count and the error, so the only byte figure that existed was
+    // the COMMITTED payload length. The sibling gate then built a delivery-shaped conclusion on it.
+    const endpoint = readRepoFile('projectiond/internal/fakeprovider/fakeprovider.go');
+    const code = endpoint.split('\n').filter((line) => !line.trim().startsWith('//')).join('\n');
+    assert(!code.includes('_, _ = w.Write('),
+      'the write count and error are discarded again, so no figure built on this endpoint describes writing');
+    assert(code.includes('ObservedBytes.Add('), 'the write return is recorded');
+    assert(code.includes('CompletedBodies.Add(') && code.includes('TruncatedBodies.Add('),
+      'and whether the body finished is recorded beside it');
+    assert(code.includes('BodiesInFlight.Add('), 'and a gauge says when the observed column may be read');
+  });
+
+  await test('THE CHEAT: an unsettled snapshot, whose two byte columns describe different sets', () => {
+    const after = counters(realShaped, { bodiesInFlight: 2 });
+    assert(attributionProblems(zeroLike(after), after, after.objectSizes.length)
+      .some((problem) => problem.kind === 'telemetry-unsettled'),
+    'a snapshot taken mid-write cannot support an observed-byte figure');
+    const settled = counters(realShaped);
+    assert(attributionProblems({ ...zeroLike(settled), bodiesInFlight: 1 }, settled,
+      settled.objectSizes.length).some((problem) => problem.kind === 'telemetry-unsettled'),
+    'and an unsettled BEFORE snapshot is refused for the same reason');
+  });
+
+  await test('THE CHEAT: an endpoint claiming it wrote more than it committed to', () => {
+    const after = counters(realShaped, { observedBytes: 999_000_000_000 });
+    assert(attributionProblems(zeroLike(after), after, after.objectSizes.length)
+      .some((problem) => problem.kind === 'observed-exceeds-committed'),
+    'if it says it did, the two columns have stopped describing the same responses');
+  });
+
+  await test('THE CHEAT: an outcome count that does not account for every body', () => {
+    const after = counters(realShaped, { completedBodies: 1, truncatedBodies: 0 });
+    assert(attributionProblems(zeroLike(after), after, after.objectSizes.length)
+      .some((problem) => problem.kind === 'outcome-partition'),
+    'after settlement every body is completed or truncated, and a shortfall means one was lost');
+  });
+
+  await test('the observed column is attributed per object and refused when it is not', () => {
+    const after = counters(realShaped);
+    const skewed = {
+      ...after,
+      objectObserved: after.objectObserved.map((value, index) => (index === 1 ? value - 1 : value)),
+    };
+    assert(attributionProblems(zeroLike(after), skewed, after.objectSizes.length)
+      .some((problem) => problem.kind === 'unattributed-observed-bytes'),
+    'an aggregate that no longer matches its columns is a number with no denominator');
+  });
+
+  await test('THE BUDGET IS ASSERTED ON BOTH COLUMNS, so the observed one cannot weaken anything', () => {
+    // THE POINT. Observed can never exceed committed, so a ceiling moved FROM committed TO observed would be
+    // laxer. Asserting both keeps every historical assertion and adds the bytes-written bound beside it.
+    const objects: FakeObject[] = [{ size: 40_000, small: 1, chunk: 0, partial: 0, oversized: 0 }];
+    const after = counters(objects);
+    const verdicts = objectByteVerdicts(zeroLike(after), after, daemonBlockByteCeiling,
+      PLEX_LARGE_FIXTURE.MIN_BYTES, MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION);
+    assertEq(verdicts[0]?.withinBudget, true, 'a well-behaved object passes on committed');
+    assertEq(verdicts[0]?.observedWithinBudget, true, 'and on observed');
+    const breachedOnObserved = objectByteVerdicts(zeroLike(after),
+      { ...after, objectObserved: [999_999_999], observedBytes: 999_999_999 },
+      daemonBlockByteCeiling, PLEX_LARGE_FIXTURE.MIN_BYTES, MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION);
+    assertEq(breachedOnObserved[0]?.observedWithinBudget, false, 'an observed breach is a breach');
+    assertEq(breachedObjects(breachedOnObserved).length, 1,
+      'and it is REPORTED as one, so the column that is reported is the column that is enforced');
+  });
+
+  await test('a truncated body makes the two columns diverge without breaking any partition', () => {
+    const objects: FakeObject[] = [{
+      size: 40_000, small: 1, chunk: 0, partial: 0, oversized: 0, observed: 4_096,
+    }];
+    const after = counters(objects);
+    assertEq(attributionProblems(zeroLike(after), after, after.objectSizes.length).length, 0,
+      'divergence is not a defect; it is the measurement');
+    assertEq(after.truncatedBodies, 1, 'and the abandoned body is counted as truncated');
+    assert(after.observedBytes < after.bytesServed, 'with the two totals genuinely apart');
+  });
+
+  await test('a byte total above the safe-integer range is refused rather than silently rounded', () => {
+    // ABOVE 2^53 A JSON NUMBER HAS ALREADY LOST PRECISION while `Number.isInteger` still answers true, and
+    // every difference taken from it is quietly wrong. A byte total is exactly the field that gets there.
+    const after = counters(realShaped);
+    const huge = JSON.parse(JSON.stringify(after)) as Record<string, unknown>;
+    huge.bytesServed = Number.MAX_SAFE_INTEGER + 2;
+    assert(parseProviderCounters(huge, 'test').counters === undefined, 'an unsafe integer must not parse');
+    const hugeColumn = JSON.parse(JSON.stringify(after)) as Record<string, unknown>;
+    (hugeColumn.objectBytes as number[])[0] = Number.MAX_SAFE_INTEGER + 2;
+    assert(parseProviderCounters(hugeColumn, 'test').counters === undefined,
+      'and neither must an unsafe per-object entry');
+  });
+
+  await test('the gauges are excluded from the monotonicity rule, by name', () => {
+    assert(GAUGE_COUNTER_KEYS.includes('bodiesInFlight'), 'the in-flight gauge is a gauge');
+    assert(GAUGE_COUNTER_KEYS.includes('currentHeldWaiters'), 'and so is the held-waiter gauge');
+    for (const key of GAUGE_COUNTER_KEYS) {
+      assert(!MONOTONIC_COUNTER_KEYS.includes(key), `${key} must not be held to monotonicity`);
+    }
+    assertEq(MONOTONIC_COUNTER_KEYS.length, COUNTER_KEYS_REQUIRED.length - 1,
+      'and everything else still is: only bodiesInFlight is in both lists, since currentHeldWaiters was '
+      + 'never a required key');
+    assertEq(OBSERVED_BYTES_ARE_APPLICATION_WRITES, true,
+      'and what an observed byte is — and is not — is stated as a value a test can hold');
+  });
+
+  // --------------------------------------------------------------------------------------------------------
   console.log('\nTHE CHEAT: a wrapper that swallows a SKIP or a FAILURE');
   // --------------------------------------------------------------------------------------------------------
 
@@ -1602,7 +1762,7 @@ async function main(): Promise<void> {
       const stale = currentTenseLines(text, retiredArm);
       assertEq(stale.length, 0,
         `${where} states the retired 4,000ms arm window in the present tense: ${stale[0]?.trim() ?? ''}`);
-      // The POSITIVE half applies only where the chain is actually written out. The driver explains the
+      // The POSITIVE half applies only where the chain is spelled out in full. The driver explains the
       // clocks and defers the numbers to the core module, and demanding it repeat them would be demanding a
       // fifth copy of the thing this check exists to keep in sync.
       if (where === 'the driver') continue;

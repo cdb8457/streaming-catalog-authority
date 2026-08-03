@@ -89,14 +89,32 @@ type Counters struct {
 	HeldRequests       atomic.Int64
 	CurrentHeldWaiters atomic.Int64
 	HoldTimeouts       atomic.Int64
-	BytesServed        atomic.Int64
-	Served429          atomic.Int64
-	FullBodyServed     atomic.Int64
-	ExpiredRejected    atomic.Int64
-	PeakConcurrent     atomic.Int64
-	CurrentConcurrent  atomic.Int64
-	PeakConns          atomic.Int64
-	CurrentConns       atomic.Int64
+	// BytesServed is the COMMITTED payload length: what the handler undertook to write, counted before it
+	// wrote it. IT IS NOT A DELIVERY FIGURE, and the wire key keeps its historical spelling only because the
+	// three single-server data-plane gates read it and their recorded runs describe exactly this quantity.
+	// Everything that needs "what the handler's write calls returned" reads ObservedBytes instead.
+	BytesServed atomic.Int64
+	// ObservedBytes is the sum of the counts `http.ResponseWriter.Write` RETURNED, recorded after each call.
+	//
+	// WHAT THAT IS AND, MORE IMPORTANTLY, WHAT IT IS NOT. It is the number of bytes this handler successfully
+	// handed to the HTTP stack. It is NOT proof of peer receipt, NOT a TCP acknowledgement, NOT the exact
+	// count of bytes on the wire (chunked framing, TLS and headers are not in it) and NOT provider billing.
+	// It is strictly an APPLICATION-WRITE observation, and every figure derived from it says so.
+	ObservedBytes atomic.Int64
+	// CompletedBodies wrote their whole committed payload with no error; TruncatedBodies did not. The two sum
+	// to the count of bodied responses only once nothing is still writing — see BodiesInFlight.
+	CompletedBodies atomic.Int64
+	TruncatedBodies atomic.Int64
+	// BodiesInFlight is a live GAUGE: how many bodies are between their commit and their observation right
+	// now. It is the only field that answers "may an observed-byte figure be read from this snapshot at all".
+	BodiesInFlight    atomic.Int64
+	Served429         atomic.Int64
+	FullBodyServed    atomic.Int64
+	ExpiredRejected   atomic.Int64
+	PeakConcurrent    atomic.Int64
+	CurrentConcurrent atomic.Int64
+	PeakConns         atomic.Int64
+	CurrentConns      atomic.Int64
 
 	// REQUEST SHAPE, IN FOUR SIZE BUCKETS AND NOTHING ELSE.
 	//
@@ -258,6 +276,9 @@ type Server struct {
 	// incremented after releasing it, so a served body never blocks on another object's accounting.
 	objectOrdinal map[string]int
 	objectBytes   []*atomic.Int64
+	// objectObserved mirrors objectBytes for the APPLICATION-WRITE observation. Same ordinals, same privacy
+	// properties, separate number: one is what was promised, the other what Write returned.
+	objectObserved []*atomic.Int64
 	// ORDINAL-ALIGNED PER-OBJECT CLASS COUNTS, so per-object class arithmetic is OBSERVED, not inferred.
 	//
 	// gate9 failed one object at 4.487x and the only way to say which responses were its was to notice that
@@ -511,6 +532,7 @@ func (s *Server) assignOrdinal(ref string) {
 	}
 	s.objectOrdinal[ref] = len(s.objectBytes)
 	s.objectBytes = append(s.objectBytes, &atomic.Int64{})
+	s.objectObserved = append(s.objectObserved, &atomic.Int64{})
 	s.objectChunk = append(s.objectChunk, &atomic.Int64{})
 	s.objectPartial = append(s.objectPartial, &atomic.Int64{})
 	s.objectSmall = append(s.objectSmall, &atomic.Int64{})
@@ -584,12 +606,22 @@ type CountersSnapshot struct {
 	HeldRequests       int64 `json:"heldRequests"`
 	CurrentHeldWaiters int64 `json:"currentHeldWaiters"`
 	HoldTimeouts       int64 `json:"holdTimeouts"`
-	BytesServed        int64 `json:"bytesServed"`
-	Served429          int64 `json:"served429"`
-	FullBodyServed     int64 `json:"fullBodyServed"`
-	ExpiredRejected    int64 `json:"expiredRejected"`
-	PeakConcurrent     int64 `json:"peakConcurrent"`
-	PeakConns          int64 `json:"peakConns"`
+	// BytesServed is COMMITTED payload length. The key keeps its historical spelling because three other
+	// gates read it and their run records describe exactly this quantity; it is not a delivery figure.
+	BytesServed int64 `json:"bytesServed"`
+	// ObservedBytes is what `http.ResponseWriter.Write` RETURNED, summed. An APPLICATION-WRITE observation:
+	// not peer receipt, not a TCP acknowledgement, not exact wire bytes, not billing.
+	ObservedBytes   int64 `json:"observedBytes"`
+	CompletedBodies int64 `json:"completedBodies"`
+	TruncatedBodies int64 `json:"truncatedBodies"`
+	// BodiesInFlight is a GAUGE, published so a caller can WAIT for settlement rather than guess, and so a
+	// caller that did not wait is refused rather than answered.
+	BodiesInFlight  int64 `json:"bodiesInFlight"`
+	Served429       int64 `json:"served429"`
+	FullBodyServed  int64 `json:"fullBodyServed"`
+	ExpiredRejected int64 `json:"expiredRejected"`
+	PeakConcurrent  int64 `json:"peakConcurrent"`
+	PeakConns       int64 `json:"peakConns"`
 	// Request shape, in four flat size buckets. See Counters.
 	//
 	// TWO PARTITIONS, AND A CALLER SHOULD CHECK BOTH:
@@ -624,6 +656,9 @@ type CountersSnapshot struct {
 	// offset, status or timestamp, and no record of which request came when or in what sequence bytes were
 	// asked for. See the field it is built from.
 	ObjectBytes []int64 `json:"objectBytes"`
+	// ObjectObserved is the APPLICATION-WRITE observation per object, in the SAME order. Readable only once
+	// BodiesInFlight is zero.
+	ObjectObserved []int64 `json:"objectObserved"`
 	// ObjectSizes is each registered object's own length, in the SAME order as ObjectBytes.
 	//
 	// IT IS HERE SO NOTHING HAS TO PAIR TWO ORDERINGS. The per-object ceiling is a function of the object's
@@ -661,6 +696,39 @@ type CountersSnapshot struct {
 // An unregistered reference cannot reach here with a body — serveRange has already refused it — but if one
 // ever did, the bytes stay in the aggregate and are simply unattributed, which a caller detects by the
 // attribution partition failing rather than by silently losing them.
+// recordObjectObservedLocked attributes what Write RETURNED for one body to its registration ordinal. It is a
+// SEPARATE call from the commit above, at a separate moment, because the two numbers are separated by however
+// long the write took and by whether the peer stayed to receive it. The caller holds s.accounting.
+func (s *Server) recordObjectObservedLocked(ref string, n int64) {
+	s.mu.Lock()
+	ordinal, known := s.objectOrdinal[ref]
+	var observed *atomic.Int64
+	if known && ordinal < len(s.objectObserved) {
+		observed = s.objectObserved[ordinal]
+	}
+	s.mu.Unlock()
+	if observed == nil {
+		return
+	}
+	observed.Add(n)
+}
+
+// WaitForSettlement blocks until no body is between its commit and its observation, or until the budget
+// elapses, and answers whether settlement was reached. It is BOUNDED: a loop that waited forever would turn a
+// client that never finished into a wedged gate, and a refusal is a better failure than a hang.
+func (s *Server) WaitForSettlement(budget time.Duration) bool {
+	deadline := time.Now().Add(budget)
+	for {
+		if s.counters.BodiesInFlight.Load() == 0 {
+			return true
+		}
+		if !time.Now().Before(deadline) {
+			return s.counters.BodiesInFlight.Load() == 0
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
 func (s *Server) recordObjectServedLocked(ref string, n int64, class responseClass) {
 	s.mu.Lock()
 	ordinal, known := s.objectOrdinal[ref]
@@ -723,6 +791,10 @@ func (s *Server) Snapshot() CountersSnapshot {
 		CurrentHeldWaiters: s.counters.CurrentHeldWaiters.Load(),
 		HoldTimeouts:       s.counters.HoldTimeouts.Load(),
 		BytesServed:        s.counters.BytesServed.Load(),
+		ObservedBytes:      s.counters.ObservedBytes.Load(),
+		CompletedBodies:    s.counters.CompletedBodies.Load(),
+		TruncatedBodies:    s.counters.TruncatedBodies.Load(),
+		BodiesInFlight:     s.counters.BodiesInFlight.Load(),
 		Served429:          s.counters.Served429.Load(),
 		FullBodyServed:     s.counters.FullBodyServed.Load(),
 		ExpiredRejected:    s.counters.ExpiredRejected.Load(),
@@ -737,6 +809,7 @@ func (s *Server) Snapshot() CountersSnapshot {
 		OversizedResponses: s.counters.OversizedResponses.Load(),
 		OversizedBytes:     s.counters.OversizedBytes.Load(),
 		ObjectBytes:        objects.bytes,
+		ObjectObserved:     objects.observed,
 		ObjectSizes:        objectSizes,
 		ObjectChunk:        objects.chunk,
 		ObjectSmall:        objects.small,
@@ -932,28 +1005,55 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 	// case where it matters: the last response of a scan would be attributed to the NEXT window, making one
 	// budget look cheaper and the following one dearer, with the totals still summing correctly.
 	//
-	// COUNTING FIRST MEANS THE COUNTERS DESCRIBE WHAT THE ENDPOINT COMMITTED TO SERVE rather than what a
-	// client is known to have received. That is the honest reading for a budget: the bytes left the endpoint's
-	// control. A body abandoned by a broken pipe is still a cost the provider paid.
+	// COUNTING FIRST MEANS THE COMMITTED COUNTERS DESCRIBE WHAT THE ENDPOINT UNDERTOOK TO SERVE rather than
+	// anything about what became of the bytes. That is the honest reading for a conservative budget: the
+	// handler committed to a length, and a body abandoned part-way is still work the handler set out to do.
+	// WHAT IT IS NOT is any statement that those bytes were written, let alone received — a committed payload
+	// length proves neither, which is exactly what ObservedBytes exists to measure separately.
+	//
+	// AND IT IS NOT, ON ITS OWN, A DELIVERY FIGURE — WHICH THIS PACKAGE ONCE LET A REPORT PRETEND. Every
+	// branch here used to end `_, _ = w.Write(payload)`, discarding both the count and the error, so the only
+	// byte number that existed was the committed one. `internal/fakewebdav` had the same shape and a report
+	// built on it concluded something about delivery that its instrument could not support. So the write's
+	// OWN return is now recorded too, in a second phase, and the two are never conflated.
 	//
 	// It also takes the payload rather than a length, so a branch cannot record a size that disagrees with
 	// what it wrote.
 	serveBody := func(payload []byte) {
 		n := int64(len(payload))
-		// ONE CRITICAL SECTION FOR THE WHOLE ACCOUNTING SET, and it closes BEFORE the write. Count-before-
-		// write is preserved — the bytes cannot reach the client until every counter describing them has
-		// moved — and now the counters also move as a SET, so a snapshot cannot catch this response half
-		// recorded. The lock covers adds only; the write happens outside it, so a slow client cannot block
-		// another object's accounting or the counters endpoint.
+		// PHASE ONE — COMMIT. ONE CRITICAL SECTION FOR THE WHOLE ACCOUNTING SET, and it closes BEFORE the
+		// write. Count-before-write is preserved — the bytes cannot reach the client until every counter
+		// describing them has moved — and the counters move as a SET, so a snapshot cannot catch this
+		// response half recorded. The in-flight gauge rises in the SAME critical section, so a snapshot can
+		// never see a committed length whose body is neither in flight nor observed.
 		s.accounting.Lock()
 		s.counters.BytesServed.Add(n)
 		class := s.counters.recordShape(n)
 		s.recordObjectServedLocked(ref, n, class)
 		s.counters.AccountedResponses.Add(1)
+		s.counters.BodiesInFlight.Add(1)
 		bodyClassified = true
 		s.accounting.Unlock()
 
-		_, _ = w.Write(payload)
+		// PHASE TWO — OBSERVE. The write's own return value and error, both used. `written` is what this
+		// handler successfully handed to the HTTP stack; see ObservedBytes for what that does and does not
+		// mean. The lock is taken again for a few adds and is never held across the write itself.
+		written, writeErr := w.Write(payload)
+		if written < 0 {
+			written = 0
+		}
+		s.accounting.Lock()
+		s.counters.ObservedBytes.Add(int64(written))
+		s.recordObjectObservedLocked(ref, int64(written))
+		if writeErr == nil && int64(written) == n {
+			s.counters.CompletedBodies.Add(1)
+		} else {
+			// A SHORT WRITE AND AN ERRORED ONE ARE THE SAME FINDING and are not separated: the endpoint
+			// cannot tell an abandoned read from a broken pipe and would be guessing if it named one.
+			s.counters.TruncatedBodies.Add(1)
+		}
+		s.counters.BodiesInFlight.Add(-1)
+		s.accounting.Unlock()
 	}
 
 	// The request has arrived and is counted; holding it blocks the READER, which is the point.
@@ -1114,7 +1214,9 @@ func (s *Server) objectTotalsAndSizes() (perObject, []int64) {
 	smallCounters := make([]*atomic.Int64, count)
 	partialCounters := make([]*atomic.Int64, count)
 	oversizedCounters := make([]*atomic.Int64, count)
+	observedCounters := make([]*atomic.Int64, count)
 	copy(bytesCounters, s.objectBytes)
+	copy(observedCounters, s.objectObserved)
 	copy(chunkCounters, s.objectChunk)
 	copy(smallCounters, s.objectSmall)
 	copy(partialCounters, s.objectPartial)
@@ -1136,6 +1238,7 @@ func (s *Server) objectTotalsAndSizes() (perObject, []int64) {
 	}
 	return perObject{
 		bytes:     load(bytesCounters),
+		observed:  load(observedCounters),
 		chunk:     load(chunkCounters),
 		small:     load(smallCounters),
 		partial:   load(partialCounters),
@@ -1147,6 +1250,7 @@ func (s *Server) objectTotalsAndSizes() (perObject, []int64) {
 // from different moments and paired by a caller who assumes they match.
 type perObject struct {
 	bytes     []int64
+	observed  []int64
 	chunk     []int64
 	small     []int64
 	partial   []int64

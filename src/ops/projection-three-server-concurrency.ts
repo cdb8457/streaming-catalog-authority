@@ -177,6 +177,29 @@ export async function readCounters(baseUrl: string): Promise<Record<string, unkn
 }
 
 /**
+ * Read the endpoint's counters ONCE EVERY BODY HAS FINISHED WRITING.
+ *
+ * WHY A PLAIN READ IS NOT ENOUGH. The endpoint counts a response's COMMITTED payload length before it writes
+ * it and the count its write RETURNED afterwards. Between those two moments the first is counted and the
+ * second is not, so a snapshot taken there understates the write column by an amount that depends on when the
+ * gate looked — and the analysis refuses such a snapshot rather than quoting it.
+ *
+ * IT IS BOUNDED AND IT FAILS RATHER THAN HANGING. A loop that waited forever would turn a client that never
+ * finished into a wedged gate.
+ */
+export async function readSettledCounters(
+  baseUrl: string, budgetMs = 60_000, pollMs = 100,
+): Promise<Record<string, unknown>> {
+  const deadline = Date.now() + budgetMs;
+  let snapshot = await readCounters(baseUrl);
+  while (Number(snapshot.bodiesInFlight) !== 0 && Date.now() < deadline) {
+    await new Promise((resolve) => { setTimeout(resolve, pollMs); });
+    snapshot = await readCounters(baseUrl);
+  }
+  return snapshot;
+}
+
+/**
  * Block, or unblock, every ranged request for one object.
  *
  * THE CONTROL SURFACE IS NOT TRAFFIC. `/control/hold` and `/control/release` are deliberately not counted as
