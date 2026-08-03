@@ -1541,6 +1541,51 @@ async function main(): Promise<void> {
       'and the nonclaims must say so');
   });
 
+  await test('every PROSE copy of the hold chain agrees with the constants', () => {
+    // THE DEFECT THIS CLOSES. The chain was written out in three places -- the gate document, the gate
+    // script's header, and the core module -- and when the arm window moved from 4,000ms to 3,000ms two of
+    // them kept the old number in the PRESENT TENSE, beside a table that already said 3 s. A reader has no
+    // way to tell which sentence is the stale one, and the numbers are exactly what an operator would quote.
+    //
+    // So the current-tense copies are checked against the constants rather than against each other. Text
+    // that describes an EARLIER version is deliberately not in scope -- §3.4 and the run records exist to
+    // record what was wrong, and rewriting them would erase the history this repository keeps on purpose.
+    const doc = readRepoFile('docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md');
+    const currentTense: ReadonlyArray<readonly [string, string]> = [
+      ['the gate document', doc],
+      ['the gate script header', GATE],
+    ];
+    for (const [where, text] of currentTense) {
+      assert(!new RegExp(`arm ${HOLD_ARM_MS + 1000}`).test(text)
+        && !/arm 4,000|arm 4000/.test(text),
+        `${where} still states the retired 4,000ms arm window in the present tense`);
+      assert(text.includes(`${HOLD_ARM_MS.toLocaleString('en-US')}`)
+        || text.includes(String(HOLD_ARM_MS)),
+        `${where} must state the arm window that is actually configured (${HOLD_ARM_MS}ms)`);
+      assert(text.includes(`${HOLD_MAX_MS.toLocaleString('en-US')}`)
+        || text.includes(String(HOLD_MAX_MS)),
+        `${where} must state the backstop that is actually configured (${HOLD_MAX_MS}ms)`);
+    }
+    // ...and the relation the prose claims is the one the code enforces.
+    assert(HOLD_ARM_MS + BARRIER_RELEASE_OVERSHOOT_MS <= HOLD_MAX_MS,
+      'the chain the prose states must be the chain assertHoldChainIsFailClosed enforces');
+  });
+
+  await test('every PROSE copy of the gap ceiling states the derivation actually in force', () => {
+    // The bullet describing the CURRENT rule said the ceiling is "one tick sleep plus the widest a tick may
+    // be and still describe one instant" -- which is the retired 2.5 s formula, stated in the present tense
+    // two paragraphs after the correct 1 s value.
+    const doc = readRepoFile('docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md');
+    assert(!/The gap ceiling is derived — one tick sleep/.test(doc),
+      'the document still derives the gap ceiling from the retired SAMPLE_INTERVAL + SAMPLE_MAX_SPAN formula');
+    assert(/2 × SAMPLE_INTERVAL|twice the\s+nominal tick|twice the nominal tick/.test(doc),
+      'it must state the derivation in force: twice the nominal tick');
+    assert(/credited at most one nominal tick/.test(doc),
+      'and the credited-duration rule, which is the half a gap ceiling alone does not give');
+    assertEq(CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP,
+      CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL * 2, 'and the constant must match the prose');
+  });
+
   await test('the roadmap and the acceptance plan still say G18 is NOT RUN for tranche purposes', () => {
     const plan = readRepoFile('docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md');
     const roadmap = readRepoFile('docs/PROJECTION_ROADMAP.md');

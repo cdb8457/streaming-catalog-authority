@@ -539,9 +539,15 @@ LEASE_MARKER="PJDLEASE$(node -e "console.log(require('node:crypto').randomBytes(
 # wait the entire budget and could be refused admission — the very starvation the bound exists to prevent.
 # The chain is now strictly ordered and every term is derived:
 #
-#   arm 4,000ms  <  backstop 4,500ms  <  MAX_QUEUE_WAIT_MS 5,000ms  <  FIRST_BYTE_DEADLINE_MS 10,000ms
+#   arm 3,000ms + release overshoot 500ms  <=  backstop 4,500ms  <  MAX_QUEUE_WAIT_MS 5,000ms
+#                                                                  <  FIRST_BYTE_DEADLINE_MS 10,000ms
 #
-# The driver releases four seconds after a request actually BLOCKS; the backstop only matters if this gate
+# THE OVERSHOOT TERM IS WHY THE ARM IS THREE SECONDS AND NOT FOUR. The arm window is timed from when the
+# driver NOTICES a block; the backstop from when the request ACTUALLY blocks. The barrier watchdog bounds the
+# distance between them at two of its own 250ms periods — one to notice, one to act — and the arm window has
+# to leave room for it. A real run failed on exactly that gap before the watchdog existed.
+#
+# The driver releases three seconds after a request actually blocks; the backstop only matters if this gate
 # dies mid-hold, and even then no other object's read can be starved and no held read can miss its first byte.
 HOLD_MAX=4500ms
 

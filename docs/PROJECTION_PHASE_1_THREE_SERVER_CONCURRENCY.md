@@ -91,9 +91,12 @@ Three properties are required of the observation, and each closes a different wa
   span. Three simultaneous samples scattered across two minutes, with the servers observed *idle* between
   them, cleared both while nothing had overlapped for two seconds at any point. `last − first` is not a
   duration: it counts every idle, unreadable and imprecise sample in between as though it had been overlap,
-  and it counts stretches in which nothing was sampled at all. The gap ceiling is derived — one tick sleep
-  plus the widest a tick may be and still describe one instant — because **unobserved time cannot become
-  overlap duration**. The totals are still reported, and the distance between them and the unbroken run is
+  and it counts stretches in which nothing was sampled at all. The gap ceiling is derived as **twice the
+  nominal tick — `2 × SAMPLE_INTERVAL` = 1 s, one missed poll and no more** — and it is strictly below the
+  two-second duration floor, so a run cannot be assembled out of ceiling-width gaps and still clear it. On
+  top of that, **each gap is credited at most one nominal tick** whatever the clock said, so a run whose
+  ticks all ran late is credited half its wall span and needs twice as many samples: **unobserved time cannot
+  become overlap duration**, even inside the tolerance. The totals are still reported, and the distance between them and the unbroken run is
   itself informative; so is the distance between the credited duration and the same run's wall span;
 - **every tick's three answers within two seconds of each other**. A tick is not an instant. If the slowest
   answer arrived thirty seconds after the fastest, "all three said Running in this tick" is compatible with
@@ -124,7 +127,14 @@ was 5 s against a 5 s budget while the text beside it claimed "strictly shorter"
 gone on the boundary: a read arriving an instant after another blocks would wait the entire budget and could
 be refused admission — the very starvation the bound exists to prevent. The chain is now strictly ordered and
 every term derived:
-`arm 4,000 ms < backstop 4,500 ms < MAX_QUEUE_WAIT_MS 5,000 ms < FIRST_BYTE_DEADLINE_MS 10,000 ms`.
+
+`arm 3,000 ms + release overshoot 500 ms ≤ backstop 4,500 ms < MAX_QUEUE_WAIT_MS 5,000 ms < FIRST_BYTE_DEADLINE_MS 10,000 ms`
+
+**The overshoot term is why the arm is 3 s and not 4 s.** The arm window is timed from when this gate notices
+a block; the backstop from when the request actually blocks. The barrier watchdog bounds the distance between
+them at two of its own 250 ms periods — one to notice, one to act — and the arm window has to leave room for
+it. `assertHoldChainIsFailClosed` checks the whole relation at module load, so a future edit to any single
+term fails immediately rather than three real Docker runs later. See §3.4.
 
 ### 3.4 The two clocks, and the run that failed on the difference
 
