@@ -291,7 +291,14 @@ echo "  the seed entry is $(wc -c < "$WORK/media/seed/$SEED_FILE" | tr -d ' ') b
 # measurement before the gate has done anything. So the readiness probe reads a canary: registered at the
 # endpoint, served from a path no library root contains, never visible to a media server. Its share of the
 # window's bytes is then reported separately and the corpus's own is exact.
-CANARY_FILE="Projection Canary.bin"
+#
+# ITS NAME CARRIES NO SPACE, AND THAT IS DELIBERATE RATHER THAN INCONSISTENT. Every other name in this corpus
+# does, because a naive mount meeting spaces and parentheses is exactly the kind of thing a comparison should
+# find out about — and the whole corpus exercises that, through rclone, which percent-encodes them properly.
+# The canary is reached by a BUSYBOX `wget` in a readiness probe instead, which does not, and a readiness
+# probe that failed on its own URL quoting would be a gate that never got as far as measuring anything. The
+# first real run of this gate failed exactly there.
+CANARY_FILE="projection-canary.bin"
 CANARY_REF="obj-projection-canary"
 mkdir -p "$WORK/media/canary"
 head -c 262144 /dev/urandom > "$WORK/media/canary/$CANARY_FILE"

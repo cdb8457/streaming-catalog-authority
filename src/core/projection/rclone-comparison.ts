@@ -583,6 +583,19 @@ export interface ComparisonMeasurements {
   readonly unattributedBytes: number;
   /** Per-object costs, worst multiplier first, so a report names the file rather than the total. */
   readonly perObject: readonly ObjectCost[];
+  /**
+   * The same costs, most BYTES first.
+   *
+   * TWO ORDERINGS BECAUSE THEY ANSWER TWO QUESTIONS AND THE ANSWERS DIFFER. Worst-multiplier names the object
+   * the topology treated worst *relative to its size* — a 16 KB file fetched twenty-four times. Most-bytes
+   * names where the traffic actually went, which on a corpus containing one ~105 MB fixture is somewhere
+   * else entirely: a large object at a modest multiple can be most of the window while sitting nowhere near
+   * the top of the multiplier list. Reporting only the first ordering would leave the single biggest
+   * contributor to the headline byte total unnamed.
+   */
+  readonly perObjectByBytes: readonly ObjectCost[];
+  /** The corpus's own total length — the denominator `corpusMultiplier` is a multiple of, printed with it. */
+  readonly corpusSizeBytes: number;
   /** How many corpus objects the window touched at all. A ceiling is satisfied by zero; this is not. */
   readonly objectsExercised: number;
   /** Corpus bytes divided by the corpus's own total length. The single most comparable number here. */
@@ -670,6 +683,8 @@ export function comparisonMeasurements(
     nonCorpusBytes,
     unattributedBytes: totalBytes - corpusBytes - nonCorpusBytes,
     perObject: [...perObject].sort((a, b) => b.multiplier - a.multiplier),
+    perObjectByBytes: [...perObject].sort((a, b) => b.servedBytes - a.servedBytes),
+    corpusSizeBytes: corpusSizeTotal,
     objectsExercised,
     corpusMultiplier: corpusSizeTotal > 0 ? corpusBytes / corpusSizeTotal : 0,
     productComparableBytes,

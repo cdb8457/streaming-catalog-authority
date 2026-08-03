@@ -205,7 +205,8 @@ So the client's own accounting is read from its remote-control surface and repor
 
 | # | Host | Outcome | Assertions | What it measured, or why it failed |
 |---|---|---|---|---|
-| — | — | — | — | *(no run has been recorded yet; see §7.1 once one has)* |
+| 1 | Windows / Docker Desktop | **FAILED** at the endpoint readiness probe | — | **A real defect in this gate, found by running it, and it never reached a measurement.** The readiness canary was named `Projection Canary.bin`, like everything else in this corpus, and the probe that reads it is a BusyBox `wget` which does not percent-encode a space in a URL. The whole corpus carries spaces and parentheses on purpose — and rclone escapes them correctly, which the endpoint's own unit tests and every later run confirm — but a readiness probe that failed on its own URL quoting is a gate that never gets as far as measuring anything. The canary was renamed; nothing else changed |
+| 2 | Windows / Docker Desktop | **COMPLETED** | 63, none failed, none skipped | the first completed run, and the source of the figures in §7.1. **Its assertion count is not the current gate's**: reading this run showed that the per-object costs were reported by MULTIPLIER only, which named five small files at 21–26× and left the ~105 MB fixture — the overwhelming majority of the window's bytes — unnamed in the very report that produced the headline byte total. A second ordering, by bytes, was added, so a later run records more assertions and the five multiplier ids gained a suffix. **Nothing measured in this run was invalidated**; the figures in §7.1 are what it measured |
 
 **Every run of this gate has been on Windows / Docker Desktop, and the §6.1 table of the acceptance plan still
 reads NOT RUN.** §6 of the plan says G22 closes on a Linux or Unraid host, and none of these runs was one. No
@@ -214,7 +215,52 @@ remains open.
 
 ### 7.1 What a completed run measures
 
-*(filled in from a real run; see §7)*
+From run 2, on Windows / Docker Desktop. **Every figure below is RECORDED. None of them is a pass or a
+failure**, and the column headed "the product, for scale" is quoted from
+`docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md` §7.2 — a **different gate, in different runs, on the
+same host**. It is there so the distance is visible rather than argued about; it is **not** a measurement this
+gate took.
+
+| | this topology | the product, for scale |
+|---|---|---|
+| corpus | **50 identities**, one mount, one endpoint — all 50 served over WebDAV, because this topology has no local passthrough | 50 identities, 43 remote and 7 local |
+| **ranged GETs** | **992**, every one answered `206`; **0** whole-body answers | 47 |
+| over the 43 the product also fetches remotely | **861 GETs** | 47 |
+| **listing / metadata calls** | **52 PROPFIND** (all depth-1), 0 OPTIONS, 0 HEAD, **90,249 bytes** of listing XML | **no counterpart**: the namespace arrives in one admitted manifest |
+| access resolutions | **ABSENT** — this topology has no resolution step | 43 |
+| **media bytes** | **1,833,291,069** — 1,833,224,857 for corpus objects, 66,212 for the readiness canary | 13,205,874 |
+| over the 43 comparable entries | **1,827,996,073** | 13,205,874 |
+| **as a multiple of the corpus's own length** | **17.082×** of 107,321,247 bytes | — |
+| the ~105 MB fixture | most of the window's bytes, at **~17×** its own length | 11,534,336 bytes = **0.109×** |
+| worst object by multiplier | ordinal 36: **2,310,516 bytes over 26 GETs** for an 88,866-byte file — **26×** | — |
+| HTTP 429 | **0** observed | 0 |
+| peak connections / in flight | **5** on accept, **3** requests in flight | 6 on accept, 4 in flight |
+| scan duration | Plex **31 s**, Emby **7 s**, Jellyfin **5 s** | Plex 26–32 s, Emby 7 s, Jellyfin 4 s |
+| per server | **50 / 50 matched** on Jellyfin, Plex and Emby, through each server's own predicate: zero missing, wrong-sized, not-ordinary, duplicated or unexpected | 50 / 50 on all three |
+| overlap | **8 samples with all three scanning at one instant, in one unbroken run**, credited **3.5 s** (wall 3.6 s), 0 broken by a gap, 0 imprecise, 0 unreadable, out of 63 samples | 7 samples, credited 3.0 s |
+| barrier | one request blocked, released after **3.2 s**, **0** holds lapsed | released after 3.1 s, 0 lapsed |
+| cold window | endpoint served **0 bytes** for any corpus object beforehand; client cache directory **0 bytes** before and **0** after (`--vfs-cache-mode off`) | endpoint 0 bytes; daemon cache grew 33,187 → 5,093,165 |
+| mutating requests | **0** reached the read-only endpoint | — |
+| seek | forward seek past the middle, **backward** seek to the start and a whole-object read all returned the bytes recorded outside the mount | — |
+| credential | minted per run, never in an argv or an environment value; **found in none of** the client's cache, the client's configuration, or any of the three servers' library state; report **redaction-safe** | — |
+| cleanup | the namespace was **gone** after the mount client stopped | gone |
+
+**The two instruments disagree by a factor of fifty, and the disagreement is a finding rather than a fault.**
+The endpoint served **1,833,291,069** bytes. The mount client's own accounting reports **35,266,185** bytes
+over **893** transfers. Neither number is corrected toward the other: the endpoint counts what it was asked
+for and the client counts what it believes it delivered upward, and everything between them is read-ahead,
+chunk sizing and bytes fetched and discarded. **A reader given only the client's figure would understate what
+this topology costs a provider by a factor of about fifty**, which is the most useful single thing this
+control has produced.
+
+**Where the bytes went, stated plainly.** With `--vfs-cache-mode off` and the default 128 MiB read chunk, a
+read at an offset fetches from that offset onward, and a *backward* seek re-opens the object from the new
+position. Three media servers each probing a ~105 MB container, several times, is most of the 1.83 GB. **That
+is what the naive path does**; it is not a defect in rclone, which is behaving exactly as configured, and it
+is not evidence that a different cache mode would behave the same way — see §6.4.
+
+**What none of this decides.** ADR 002 rejected this topology for reasons that are not in this table, and no
+row in it is a threshold.
 
 ## 8. What this gate does not prove
 

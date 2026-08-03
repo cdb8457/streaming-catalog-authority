@@ -602,13 +602,22 @@ async function main(): Promise<void> {
     assertEq(measured.peakConcurrent, 6, 'for both connection gauges');
   });
 
-  await test('per-object costs are ordered worst-first, so a report names the file not the total', () => {
+  await test('per-object costs are ordered TWO ways, because the two orderings name different objects', () => {
+    // THE DEFECT THIS CLOSES, FOUND BY READING A REAL RUN. The first version reported the top five by
+    // MULTIPLIER only. On this corpus that named five small files at 21-26x — and left unnamed the ~105 MB
+    // fixture, which at a lower multiple was the overwhelming majority of the window's bytes. The headline
+    // figure's biggest single contributor was missing from the report that produced the headline figure.
     const objects = realShapedObjects();
     objects[7] = { size: 40_000, bytes: 4_000_000, ranged: 1, full: 0 };
     const after = counters(objects);
     const measured = comparisonMeasurements(zeroLike(after), after, FIRST_CORPUS_ORDINAL, [2]);
     assertEq(measured.perObject[0]?.ordinal, 7, 'the worst multiplier comes first');
     assertEq(measured.perObject[0]?.multiplier, 100, 'and is reported as a multiple of the object\'s length');
+    assertEq(measured.perObjectByBytes[0]?.ordinal, 2,
+      'while the most-bytes ordering names the large fixture, which the multiplier ordering does not reach');
+    assert(measured.perObjectByBytes[0]?.multiplier as number < 1,
+      'and it is there at a multiple BELOW one, which is exactly why the other ordering misses it');
+    assert(measured.corpusSizeBytes > 0, 'the multiplier\'s denominator is reported beside it');
   });
 
   await test('a whole-body answer is counted apart from a ranged one', () => {
@@ -1039,6 +1048,10 @@ async function main(): Promise<void> {
       'RC4-bytes', 'RC4-http-429', 'RC4-peak-connections', 'RC4-client-own-accounting',
       'RC4-per-server-attribution', 'RC4-topology']) {
       assert(results.some((entry) => entry.gate === needed), `the report is missing ${needed}`);
+    }
+    for (const ordering of ['by-multiplier', 'by-bytes']) {
+      assert(results.some((entry) => entry.gate.startsWith(`RC4-object-cost-${ordering}:`)),
+        `the report is missing the per-object costs ordered ${ordering}`);
     }
     assertEq(findRedactionProblems(results).length, 0, 'and the whole results file is redaction-safe');
   });

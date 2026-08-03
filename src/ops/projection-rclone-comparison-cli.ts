@@ -437,8 +437,9 @@ async function main(): Promise<void> {
         + `${measurements.metadataBytes} bytes of listing XML are counted SEPARATELY and are never folded `
         + 'into the media total'));
       record(args, figure(`${gate}-byte-multiplier`,
-        `${Math.round(measurements.corpusMultiplier * 1000) / 1000}x the corpus's own total length, for a `
-        + 'scan that identified it'));
+        `${Math.round(measurements.corpusMultiplier * 1000) / 1000}x the corpus's own total length of `
+        + `${measurements.corpusSizeBytes} bytes, for a scan that identified it. THE DENOMINATOR IS NAMED `
+        + 'because a multiplier of an unstated quantity is not a measurement'));
       record(args, figure(`${gate}-product-comparable-subset`,
         `over the ${PRODUCT_REMOTE_ENTRIES} entries the product serves from its own endpoint: `
         + `${measurements.productComparableBytes} bytes over ${measurements.productComparableGets} GETs. `
@@ -454,14 +455,26 @@ async function main(): Promise<void> {
       record(args, figure(`${gate}-write-attempts`,
         `${measurements.writeAttempts} mutating WebDAV requests reached a read-only endpoint`));
 
-      // PER OBJECT, WORST FIRST. An aggregate is exactly where one file read forty times over hides, and on
-      // this topology that is the expected shape rather than a defect to be caught.
-      const worst = measurements.perObject.filter((cost) => cost.gets > 0).slice(0, 5);
-      for (const cost of worst) {
-        record(args, figure(`${gate}-object-cost:#${cost.ordinal}`,
+      // PER OBJECT, IN TWO ORDERINGS, BECAUSE THEY NAME DIFFERENT OBJECTS AND BOTH ARE THE FINDING.
+      //
+      // An aggregate is exactly where one file read many times over hides — and on this topology that is the
+      // expected shape rather than a defect to be caught, so it is reported rather than refused. WORST
+      // MULTIPLIER first names the object the topology treated worst relative to its size. MOST BYTES first
+      // names where the traffic actually went, which on a corpus carrying one ~105 MB fixture is a different
+      // object entirely: a large object at a modest multiple can be most of the window while sitting nowhere
+      // near the top of the multiplier list, and reporting only the first ordering would leave the biggest
+      // single contributor to the headline total unnamed.
+      const describeCost = (label: string, cost: typeof measurements.perObject[number]): void => {
+        record(args, figure(`${gate}-object-cost-${label}:#${cost.ordinal}`,
           `${cost.servedBytes} bytes over ${cost.gets} GETs (${cost.rangedGets} ranged, ${cost.fullGets} `
           + `whole-body) for an object of ${cost.sizeBytes} bytes: `
           + `${Math.round(cost.multiplier * 1000) / 1000}x its own length`));
+      };
+      for (const cost of measurements.perObject.filter((entry) => entry.gets > 0).slice(0, 5)) {
+        describeCost('by-multiplier', cost);
+      }
+      for (const cost of measurements.perObjectByBytes.filter((entry) => entry.gets > 0).slice(0, 3)) {
+        describeCost('by-bytes', cost);
       }
 
       // THE SECOND INSTRUMENT, ON THE OTHER SIDE OF THE WIRE.
