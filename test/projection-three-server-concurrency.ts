@@ -285,18 +285,30 @@ async function main(): Promise<void> {
   console.log('\nTHE CHEAT: a WARM cache, so the window costs nothing and every ceiling passes');
   // --------------------------------------------------------------------------------------------------------
 
-  await test('a warm daemon probe cache is refused', () => {
+  await test('a daemon scan-window cache that did not GROW is refused', () => {
     const problems = coldStateProblems({
-      probeCacheBytesBefore: 4_194_304, corpusBytesBefore: 0,
+      probeCacheBytesBefore: 4_194_304, probeCacheBytesAfter: 4_194_304, corpusBytesBefore: 0,
       rangeRequestDelta: 100, remoteObjectCount: 43, heldRequestDelta: 1, holdTimeoutDelta: 0,
     });
-    assert(problems.some((problem) => problem.kind === 'warm-probe-cache'),
-      'a daemon holding scan-window cache before the window must be refused');
+    assert(problems.some((problem) => problem.kind === 'probe-cache-did-not-grow'),
+      'a cold scan of a ~50-entry corpus fills the scan-window cache; a window that added nothing to it was '
+      + 'reading windows it already held');
+  });
+
+  await test('...and a NON-EMPTY cache before the window is NOT refused, because a local entry fills it', () => {
+    // MEASURED ON THE FIRST REAL RUN: 33,187 bytes before the concurrent scan, and nothing was wrong. The
+    // gate publishes a LOCAL seed entry on purpose so Plex's unavoidable creation scan has something to find
+    // that costs the provider nothing, and a local entry's own byte-identity window lands in the same cache.
+    // An emptiness assertion would have failed every correct run.
+    assertEq(coldStateProblems({
+      probeCacheBytesBefore: 33_187, probeCacheBytesAfter: 8_000_000, corpusBytesBefore: 0,
+      rangeRequestDelta: 100, remoteObjectCount: 43, heldRequestDelta: 1, holdTimeoutDelta: 0,
+    }).length, 0, 'a non-empty cache that grew is a cold window');
   });
 
   await test('a corpus the endpoint had already served bytes for is refused', () => {
     const problems = coldStateProblems({
-      probeCacheBytesBefore: 0, corpusBytesBefore: 1,
+      probeCacheBytesBefore: 0, probeCacheBytesAfter: 8_000_000, corpusBytesBefore: 1,
       rangeRequestDelta: 100, remoteObjectCount: 43, heldRequestDelta: 1, holdTimeoutDelta: 0,
     });
     assert(problems.some((problem) => problem.kind === 'corpus-already-read'),
@@ -305,7 +317,7 @@ async function main(): Promise<void> {
 
   await test('a window with ZERO provider traffic is refused rather than scoring perfectly', () => {
     const problems = coldStateProblems({
-      probeCacheBytesBefore: 0, corpusBytesBefore: 0,
+      probeCacheBytesBefore: 0, probeCacheBytesAfter: 8_000_000, corpusBytesBefore: 0,
       rangeRequestDelta: 0, remoteObjectCount: 43, heldRequestDelta: 0, holdTimeoutDelta: 0,
     });
     assert(problems.some((problem) => problem.kind === 'no-cold-traffic'),
@@ -316,7 +328,7 @@ async function main(): Promise<void> {
 
   await test('fewer ranged GETs than uncached remote objects is refused', () => {
     const problems = coldStateProblems({
-      probeCacheBytesBefore: 0, corpusBytesBefore: 0,
+      probeCacheBytesBefore: 0, probeCacheBytesAfter: 8_000_000, corpusBytesBefore: 0,
       rangeRequestDelta: 42, remoteObjectCount: 43, heldRequestDelta: 1, holdTimeoutDelta: 0,
     });
     assert(problems.some((problem) => problem.kind === 'no-cold-traffic'),
@@ -325,7 +337,7 @@ async function main(): Promise<void> {
 
   await test('a LAPSED hold is refused: the instrument degraded the scan instead of measuring it', () => {
     const problems = coldStateProblems({
-      probeCacheBytesBefore: 0, corpusBytesBefore: 0,
+      probeCacheBytesBefore: 0, probeCacheBytesAfter: 8_000_000, corpusBytesBefore: 0,
       rangeRequestDelta: 100, remoteObjectCount: 43, heldRequestDelta: 2, holdTimeoutDelta: 1,
     });
     assert(problems.some((problem) => problem.kind === 'hold-lapsed'), 'a lapsed hold must be a failure');
@@ -333,7 +345,7 @@ async function main(): Promise<void> {
 
   await test('a genuinely cold window passes', () => {
     assertEq(coldStateProblems({
-      probeCacheBytesBefore: 0, corpusBytesBefore: 0,
+      probeCacheBytesBefore: 0, probeCacheBytesAfter: 8_000_000, corpusBytesBefore: 0,
       rangeRequestDelta: 100, remoteObjectCount: 43, heldRequestDelta: 1, holdTimeoutDelta: 0,
     }).length, 0, 'a cold window must not be refused');
   });
@@ -609,11 +621,22 @@ async function main(): Promise<void> {
 
   await test('the barrier is released on every path out of the observation loop', () => {
     const releases = DRIVER.split('await release(').length - 1;
-    assert(releases >= 4,
-      `the barrier must be released on the three-way sample, on the arm window, on the deadline and on the `
-      + `way out; found ${releases} release sites`);
+    assert(releases >= 3,
+      'the barrier must be released when its bounded window elapses, when the deadline fires, and '
+      + `unconditionally on the way out; found ${releases} release sites`);
     assert(DRIVER.includes('THE BARRIER IS RELEASED WHATEVER HAPPENED'),
       'and the unconditional release must say why it is unconditional');
+  });
+
+  await test('the barrier is NOT released on the three-way sample, and the first real run is why', () => {
+    // Releasing the moment the rendezvous succeeded destroyed the overlap it had just created: the measured
+    // three-way window was two samples spanning 0.75s, under the two-second floor. The hold now runs for its
+    // whole bounded window.
+    assert(DRIVER.includes('the barrier stays on for the rest of its window'),
+      'the three-way observation must note itself without releasing the hold');
+    const threeWayBlock = DRIVER.split('sawThreeWay = true;')[1]?.split('}')[0] ?? '';
+    assert(!threeWayBlock.includes('release('),
+      'releasing on success destroys the thing success created');
   });
 
   // --------------------------------------------------------------------------------------------------------

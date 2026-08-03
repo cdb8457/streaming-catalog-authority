@@ -320,6 +320,7 @@ async function main(): Promise<void> {
       const smallBytes = needNumber(args, 'small-bytes');
       const windows = optionalNumber(args, 'windows', MEDIA_SERVER_BUDGETS.MAX_SCAN_RANGE_MULTIPLIER);
       const probeCacheBefore = needNumber(args, 'probe-cache-before');
+      const probeCacheAfter = needNumber(args, 'probe-cache-after');
       const delta = (key: keyof ProviderCounters): number =>
         (after[key] as number) - (before[key] as number);
 
@@ -349,6 +350,7 @@ async function main(): Promise<void> {
       // 2. THE WINDOW WAS COLD.
       const cold = coldStateProblems({
         probeCacheBytesBefore: probeCacheBefore,
+        probeCacheBytesAfter: probeCacheAfter,
         corpusBytesBefore: attributed.corpusBytesBefore,
         rangeRequestDelta: delta('rangeRequests'),
         remoteObjectCount: remoteEntries,
@@ -357,9 +359,10 @@ async function main(): Promise<void> {
       });
       record(args, exactly(`${gate}-cold-window`, cold.length, 0,
         cold.length === 0
-          ? `the daemon held no scan-window cache before the scan, ${delta('rangeRequests')} ranged GETs `
-            + `covered ${remoteEntries} uncached remote entries, and ${delta('heldRequests')} provider `
-            + 'request(s) were actually blocked at the barrier'
+          ? `the endpoint had served ZERO bytes for any corpus object before the window, the daemon's own `
+            + `scan-window cache grew from ${probeCacheBefore} to ${probeCacheAfter} bytes across it, `
+            + `${delta('rangeRequests')} ranged GETs covered ${remoteEntries} uncached remote entries, and `
+            + `${delta('heldRequests')} provider request(s) were actually blocked at the barrier`
           : cold.map((problem) => `${problem.kind}: ${problem.detail}`).join(' | ')));
 
       // 3. G14a, G14b, G15, G16, G17 — the same budgets the three single-server gates hold, unchanged.

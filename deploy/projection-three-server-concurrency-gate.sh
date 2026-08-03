@@ -606,8 +606,10 @@ echo "  pointer digest verified against the artifact file"
 # ----------------------------------------------------------------------------------------------------------
 step "mounting with the production image: /dev/fuse, CAP_SYS_ADMIN, strict direct mount, nothing else"
 # ----------------------------------------------------------------------------------------------------------
-# `maxConnections` IS SET EXPLICITLY RATHER THAN DEFAULTED, and that is what makes G17 a check on a
-# CONFIGURED cap rather than on an implementation detail. G17 says "concurrent provider connections never
+# THE ADMISSION CAPS ARE SET EXPLICITLY RATHER THAN DEFAULTED, and that is what makes G17 a check on a
+# CONFIGURED cap rather than on an implementation detail. All three of `maxConnections` (the transport's
+# per-host connection cap), `perEndpointMaxInflight` and `globalMaxInflight` default to exactly these values,
+# and that is the point: G17 says "concurrent provider connections never
 # exceed the configured per-endpoint cap, sampled at the server on every accept"; a gate that let the value
 # default would be asserting against a number nobody configured.
 cat > "$WORK/config.json" <<'JSON'
@@ -617,6 +619,8 @@ cat > "$WORK/config.json" <<'JSON'
   "probeCacheDir": "/var/lib/projectiond/cache",
   "statusAddr": "127.0.0.1:9099",
   "localRoots": { "media": "/var/lib/projectiond/media" },
+  "globalMaxInflight": 8,
+  "perEndpointMaxInflight": 4,
   "endpoints": [
     {
       "id": "vault",
@@ -817,7 +821,9 @@ plex library --state "$PLEX_STATE" --mount-path /media/projection/Movies --name 
 # generation and waits for Plex's own barrier to say it settled. It costs the provider nothing: the seed
 # entry is a LOCAL passthrough source and contacts no endpoint at all.
 node "$REL/seed-expect.cjs" "$REL/out/seed-expected.json" "$SEED_FILE" "$SEED_SIZE" "$SEED_SHA"
-plex scan --state "$PLEX_STATE" --expect-file "$REL/out/seed-expected.json"   --out "$REL/out/plex-seed-items.json" --label seed   || { logs_tail "$PLEX_CONTAINER"; die "Plex never settled after its own library-creation scan"; }
+plex scan --state "$PLEX_STATE" --expect-file "$REL/out/seed-expected.json" \
+  --out "$REL/out/plex-seed-items.json" --label seed \
+  || { logs_tail "$PLEX_CONTAINER"; die "Plex never settled after its own library-creation scan"; }
 
 # ----------------------------------------------------------------------------------------------------------
 step "publishing the ~50-entry corpus — AFTER every library exists, and BEFORE anything has scanned it"
@@ -851,6 +857,12 @@ step "the state of the world immediately before the concurrent scan"
 # ----------------------------------------------------------------------------------------------------------
 # THE COLD-WINDOW EVIDENCE IS TAKEN HERE, NOT INFERRED LATER. Two independent instruments: the daemon's own
 # scan-window cache level, and the endpoint's own per-object byte totals.
+#
+# MEASURED ON THE FIRST REAL RUN: the cache is NOT empty at this point and nothing is wrong. It holds the
+# LOCAL seed entry's own byte-identity window -- 33,187 bytes -- because this gate publishes a local entry on
+# purpose so that Plex's unavoidable library-creation scan has something to find that costs the provider
+# nothing. So the daemon-side assertion is that the cache GREW across the window, and the emptiness question
+# is asked where it can actually be answered: at the endpoint, per corpus object.
 daemon_status "$WORK/out/daemon-before.json"
 PROBE_CACHE_BEFORE="$(field probeCacheBytes < "$WORK/out/daemon-before.json")"
 echo "  the daemon's scan-window cache holds ${PROBE_CACHE_BEFORE:-0} bytes"
@@ -871,6 +883,7 @@ drive concurrent-scan \
 
 drive counters --url "http://127.0.0.1:${RANGE_PORT}" --out "$REL/out/counters-after.json"
 daemon_status "$WORK/out/daemon-after.json"
+PROBE_CACHE_AFTER="$(field probeCacheBytes < "$WORK/out/daemon-after.json")"
 
 # ----------------------------------------------------------------------------------------------------------
 step "was it actually simultaneous?"
@@ -900,7 +913,7 @@ drive window --before "$REL/out/counters-before.json" --after "$REL/out/counters
   --gate TS3 --objects "$REGISTERED_OBJECTS" --non-corpus-objects 1 \
   --remote-entries "$REMOTE_ENTRIES" \
   --large-bytes "$LARGE_REMOTE_BYTES" --small-bytes "$SMALL_REMOTE_BYTES" \
-  --probe-cache-before "${PROBE_CACHE_BEFORE:-0}"
+  --probe-cache-before "${PROBE_CACHE_BEFORE:-0}" --probe-cache-after "${PROBE_CACHE_AFTER:-0}"
 
 # ----------------------------------------------------------------------------------------------------------
 step "the whole-run provider invariants"
@@ -1000,8 +1013,10 @@ echo "    seconds apart does not count as one instant, and three SEQUENTIAL scan
 echo "  - a RENDEZVOUS rather than luck: one remote object's provider read was held at the endpoint before"
 echo "    any trigger, so a scanner that reached it waited there. The hold is bounded below the daemon's own"
 echo "    first-byte deadline and the gate asserts that none lapsed."
-echo "  - a COLD window, on two independent instruments: the daemon's own scan-window cache was empty, and"
-echo "    the endpoint had served ZERO bytes for any corpus object before the scans opened."
+echo "  - a COLD window, on two independent instruments: the endpoint had served ZERO bytes for any corpus"
+echo "    object before the scans opened, and the daemon's own scan-window cache GREW across the window."
+echo "    NOT 'the cache was empty' -- it is not, and nothing is wrong: this gate publishes a LOCAL seed"
+echo "    entry on purpose, and a local entry's own byte-identity window lands in the same cache."
 echo "  - EACH SERVER catalogued every published identity at the published size as an ORDINARY FILE -- not"
 echo "    symlinks, not .strm placeholders, not remote media sources -- with zero missing, zero wrong-sized,"
 echo "    zero duplicated and zero unexpected, THROUGH ITS OWN ordinary-file predicate rather than through a"

@@ -83,21 +83,28 @@ export function adapterFor(id: ThreeServerId): ServerAdapter {
         readState: (path) => emby.readState(path),
         scanIsRunningNow: (state) => emby.scanIsRunningNow(state as emby.GateState),
         scanLibrary: async (state) => emby.scanLibrary(state as emby.GateState),
-        catalogue: async (state) => (await emby.listMovies(state as emby.GateState)).map((item) => {
-          const problems = embyOrdinaryFileProblems({
-            key: item.key,
-            protocol: item.protocol,
-            container: item.container,
-            isRemote: item.isRemote,
-            supportsDirectPlay: item.supportsDirectPlay,
-            mediaSourceType: item.mediaSourceType,
-            path: item.path,
-            mediaSourcePath: item.mediaSourcePath,
+        catalogue: async (state) => {
+          // THE LIBRARY ID IS RESOLVED BEFORE THE LISTING, exactly as this server's own CLI does it. Without
+          // it the listing is unscoped, which happens to be equivalent here because one library exists — and
+          // "happens to be equivalent" is the shape of assumption that stops being true the day somebody adds
+          // a second one.
+          await emby.resolveLibraryId(state as emby.GateState);
+          return (await emby.listMovies(state as emby.GateState)).map((item) => {
+            const problems = embyOrdinaryFileProblems({
+              key: item.key,
+              protocol: item.protocol,
+              container: item.container,
+              isRemote: item.isRemote,
+              supportsDirectPlay: item.supportsDirectPlay,
+              mediaSourceType: item.mediaSourceType,
+              path: item.path,
+              mediaSourcePath: item.mediaSourcePath,
+            });
+            return {
+              key: item.key, sizeBytes: item.sizeBytes, ordinaryFile: problems.length === 0, problems,
+            };
           });
-          return {
-            key: item.key, sizeBytes: item.sizeBytes, ordinaryFile: problems.length === 0, problems,
-          };
-        }),
+        },
       };
     case 'jellyfin':
       return {
@@ -105,12 +112,18 @@ export function adapterFor(id: ThreeServerId): ServerAdapter {
         readState: (path) => jellyfin.readState(path),
         scanIsRunningNow: (state) => jellyfin.scanIsRunningNow(state as jellyfin.GateState),
         scanLibrary: async (state) => jellyfin.scanLibrary(state as jellyfin.GateState),
-        catalogue: async (state) => (await jellyfin.listMovies(state as jellyfin.GateState)).map((item) => {
-          const problems = jellyfinOrdinaryProblems(item);
-          return {
-            key: item.key, sizeBytes: item.sizeBytes, ordinaryFile: problems.length === 0, problems,
-          };
-        }),
+        catalogue: async (state) => {
+          // MEASURED, AND IT IS A JELLYFIN-ONLY FACT: this server leaves a virtual folder's `ItemId` absent
+          // until the first refresh has run. It exists by the time this is called, and resolving it scopes the
+          // listing to the library rather than to everything the server knows about.
+          await jellyfin.resolveLibraryId(state as jellyfin.GateState);
+          return (await jellyfin.listMovies(state as jellyfin.GateState)).map((item) => {
+            const problems = jellyfinOrdinaryProblems(item);
+            return {
+              key: item.key, sizeBytes: item.sizeBytes, ordinaryFile: problems.length === 0, problems,
+            };
+          });
+        },
       };
     case 'plex':
       return {
@@ -362,10 +375,22 @@ export async function runConcurrentScans(opts: ConcurrentScanOptions): Promise<C
       }
     }
 
+    // THE RENDEZVOUS IS NOTED AND THE BARRIER IS *NOT* RELEASED ON IT, AND THE FIRST REAL RUN IS WHY.
+    //
+    // The first version released the moment all three were seen scanning at once. It worked perfectly and it
+    // defeated itself: the rendezvous landed inside one tick, the hold came off, the three scans finished at
+    // three different speeds, and the measured three-way overlap was TWO SAMPLES spanning 0.75 s — below the
+    // two-second floor. Releasing on success destroys the thing success created.
+    //
+    // So the hold runs for its whole bounded window. Those seconds are not manufactured overlap: every
+    // server in them is genuinely mid-scan, each one's OWN barrier says so independently, and a scanner
+    // waiting on a provider read is exactly as in-flight as one walking a directory. What the hold buys is
+    // that the overlap lasts long enough to be OBSERVED rather than glimpsed.
     if (!sawThreeWay && unreadable.length === 0
       && opts.adapters.every((adapter) => inFlight[adapter.id] === true)) {
       sawThreeWay = true;
-      await release('all servers were observed scanning at once');
+      note('all servers were observed scanning at once; the barrier stays on for the rest of its window so '
+        + 'the overlap can be measured rather than glimpsed');
     }
     if (barrierArmed && releasedAtMs === 0 && blockingSinceMs !== 0 && now() - blockingSinceMs >= armMs) {
       await release('the bounded blocking window elapsed, which is strictly inside the daemon\'s '

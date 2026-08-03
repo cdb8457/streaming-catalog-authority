@@ -109,6 +109,14 @@ has reached costs nothing and starves nobody, so it stays armed until a scanner 
 from the arming would have expired it before the first scanner got there on a slow host, and the gate would
 then fail its own "a provider request was actually blocked" assertion for having been too careful.
 
+**The hold runs for its whole window and is not released when the rendezvous succeeds**, which is the second
+thing the first real run taught. The first version released the moment all three servers were seen scanning at
+once; it worked, and it defeated itself — the hold came off, the three scans finished at three different
+speeds, and the measured three-way overlap was **two samples spanning 0.75 s**, under the two-second floor.
+Releasing on success destroys what success created. Those held seconds are not manufactured overlap: every
+server in them is genuinely mid-scan, each one's own barrier says so independently, and a scanner waiting on a
+provider read is exactly as in-flight as one walking a directory.
+
 **The hold is not the evidence and this document will not pretend otherwise.** Four seconds is not long enough
 to guarantee a three-way rendezvous on a slow host. What the hold does is make the observation likelier and
 make the scans provably **cold**; the claim rests on the simultaneous samples.
@@ -127,10 +135,19 @@ Three things make it cold, and all three are asserted:
    it exists and nothing in its API asks it not to. The gate drives one explicit scan of the one-entry
    generation and waits for Plex's own barrier to say it settled, *then* publishes the corpus. Without this
    step Plex would catalogue part of the corpus before the concurrent scan was triggered.
-3. **Two independent instruments say the window was cold**: the daemon's own `probeCacheBytes` was zero
-   before the scan, and the endpoint had served **zero bytes for any corpus object**. Plus a floor — at least
-   one ranged GET per uncached remote entry — because a scan that reached the provider zero times scores
-   perfectly against every ceiling in this gate.
+3. **Two independent instruments say the window was cold**: the endpoint had served **zero bytes for any
+   corpus object** before it opened, and the daemon's own `probeCacheBytes` **grew** across it. Plus a floor
+   — at least one ranged GET per uncached remote entry — because a scan that reached the provider zero times
+   scores perfectly against every ceiling in this gate.
+
+   **The daemon-side check is a growth and not an emptiness, and that is a measured correction rather than a
+   softening.** The first real run read **33,187 bytes** of scan-window cache immediately before the
+   concurrent scan and nothing was wrong: the gate publishes a LOCAL seed entry on purpose — so Plex's
+   unavoidable creation scan has something to find that costs the provider nothing — and a local passthrough
+   entry's own byte-identity window lands in the same cache. An emptiness assertion would have failed every
+   correct run. "The cache is empty" was never the property that mattered anyway; "no CORPUS window is in it"
+   is, and the endpoint's per-object totals answer that exactly while the daemon's single aggregate cannot
+   answer it at all.
 
 **The readiness canary.** The endpoint's range semantics have to be checked before anything depends on them,
 and the obvious way — one ranged GET against a corpus object — would put bytes on that object and destroy the
@@ -234,9 +251,35 @@ count that is asserted is `matched` — published keys present at the published 
 
 **A gate existing is not a gate passing.** This section is the only place that says what has been run.
 
-| # | Date | Host | Outcome | Assertions | Notes |
-|---|---|---|---|---|---|
-| _(to be filled by the first real run)_ | | | | | |
+| # | Host | Outcome | Assertions | What it measured, or why it failed |
+|---|---|---|---|---|
+| 1 | Windows / Docker Desktop | **FAILED** at `TS1-simultaneous-samples`, 2 against a floor of 3 | — | **A real defect in this gate, found by running it.** The barrier was released the instant the three-way rendezvous was observed. It worked — all three servers were seen scanning at once — and releasing on success destroyed what success had created: the three scans then finished at three different speeds and the measured overlap was two samples spanning 0.75 s. It also measured **33,187 bytes of scan-window cache before the window** and would have failed the "the cache was empty" assertion, which was itself wrong: the gate publishes a LOCAL seed entry on purpose and a local entry's own byte-identity window lands in that cache. Both were fixed: the hold now runs for its whole bounded window, and the daemon-side cold check is a GROWTH rather than an emptiness |
+| 2 | Windows / Docker Desktop | **PASSED** | 59, none failed, none skipped | see §7.1 |
+
+### 7.1 What run 2 measured
+
+| | |
+|---|---|
+| corpus | **50 published identities**, one generation, one mount, one endpoint — 43 remote (one of them the 105,406,871-byte barrier fixture) and 7 local |
+| **overlap** | **9 samples with all three servers scanning at the same instant**, spanning **4.1 s**, out of 61 samples. 13 samples had two or more. **0 samples were too wide to describe one instant** (widest tick 0.02 s) and **0 had a server that could not be read** |
+| scan durations | Plex 30 s (55 samples in flight), Emby 8 s (13), Jellyfin 5 s (9) |
+| trigger spread | 0 s — **recorded, and not the evidence** |
+| barrier | one provider request blocked, held for **4.1 s**, **zero holds lapsed** |
+| cold window | endpoint had served **0 bytes** for any corpus object beforehand; the daemon's scan-window cache grew **33,187 → 5,093,165 bytes** |
+| per server | **50 / 50 matched** on all three, through each server's own predicate: zero missing, zero wrong-sized, zero not-ordinary, zero duplicated, zero unexpected |
+| G14a | **47** ranged GETs against a ceiling of 258 |
+| G14b | **43** resolutions against 258 |
+| G15 aggregate | **13,205,874 bytes** against 116,514,941 |
+| G15 large fixture | **11,534,336 bytes = 0.109x** of the object's own length, against the x0.5 ceiling. Three independent scanners each paying a full envelope would have been 110,100,480 bytes and would have breached it |
+| G15 per object | **0 breaches** across 43 exercised objects |
+| G16 | **0** HTTP 429, in the window and across the whole run |
+| G17 | peak concurrent provider reads **4 / 4** (the configured per-endpoint in-flight cap — held exactly at it); peak connections on accept **6 / 8** |
+| request shape | **0** oversized responses; every object inside 3x the daemon's own per-entry envelope |
+| sharing ratio | **0.076** of the three-independent-scanner worst case. **Recorded, asserted on by nothing** |
+
+**The G17 reading is worth stating plainly: the in-flight cap was reached and not exceeded.** Four concurrent
+provider reads against a configured cap of four is the admission limiter doing its job under three
+simultaneous scanners, which is the only condition in this repository that has ever pushed it there.
 
 ## 8. What this gate does not prove
 

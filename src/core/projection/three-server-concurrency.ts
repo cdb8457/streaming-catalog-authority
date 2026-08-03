@@ -73,8 +73,16 @@ export const CONCURRENCY_DEADLINES_MS = Object.freeze({
   PER_SERVER_SCAN: 600_000,
   /** Standing all three servers up, in parallel, from cold containers. */
   BOOTSTRAP_ALL: 420_000,
-  /** One tick of the observer. Fine enough to see a short overlap, coarse enough not to be a request storm. */
-  SAMPLE_INTERVAL: 750,
+  /**
+   * One tick of the observer. Fine enough to see a short overlap, coarse enough not to be a request storm.
+   *
+   * FIVE HUNDRED MILLISECONDS BUYS MARGIN AND NOTHING ELSE. The floors it feeds are a COUNT and a SPAN, and
+   * only the count moves with the tick rate: a two-second overlap is two seconds however often it is looked
+   * at. Sampling faster does not make a short overlap pass — the span floor is what stops that — it stops a
+   * genuine overlap being missed for want of looking. The first real run measured a three-way overlap of two
+   * samples at 750 ms, which is the shape of failure this rate exists to avoid.
+   */
+  SAMPLE_INTERVAL: 500,
   /**
    * How long ONE tick's three polls may take before the tick stops being evidence of SIMULTANEITY.
    *
@@ -808,17 +816,30 @@ export interface ColdStateProblem {
  *
  * SO THREE THINGS ARE REQUIRED, AND EACH CLOSES A DIFFERENT HALF:
  *
- *   THE CACHE WAS EMPTY WHEN THE DAEMON STARTED. `probeCacheBytes` on the daemon's own status surface,
- *     before the window. Not the directory's size on the host — the daemon's own number, because that is
- *     what decides whether a read reaches the provider.
+ *   NO CORPUS BYTE HAD EVER BEEN SERVED. The endpoint's own per-object totals, before the window. This is
+ *     the load-bearing one: the daemon cannot serve a corpus entry from a cache it never filled, so a zero
+ *     here means the window really is the corpus's first read, whatever else is cached.
+ *   THE DAEMON'S SCAN-WINDOW CACHE GREW ACROSS THE WINDOW. A cold scan fills it; a warm one has nothing to
+ *     add. This is the daemon-side half, and it is a GROWTH rather than an emptiness — see below.
  *   THE WINDOW REACHED THE PROVIDER AT LEAST ONCE PER REMOTE OBJECT. Nothing was cached, so every remote
  *     entry the servers catalogued must have cost at least one ranged GET. A floor, not a ceiling; a scan
  *     that issued zero requests scores perfectly against every budget in this file.
  *   A PROVIDER READ WAS ACTUALLY BLOCKED. `heldRequests` moved, which means the barrier hold was HIT — the
  *     scanners really were waiting on provider bytes rather than reading a warm cache and calling it a scan.
+ *
+ * WHY THE DAEMON-SIDE CHECK IS A GROWTH AND NOT `probeCacheBytes == 0`, MEASURED RATHER THAN REASONED. The
+ * first real run of this gate read **33,187 bytes** of scan-window cache immediately before the concurrent
+ * scan, and nothing was wrong: the gate publishes a LOCAL seed entry on purpose — so Plex's unavoidable
+ * library-creation scan has something to find that costs the provider nothing — and a local passthrough
+ * entry's own byte-identity window lands in the same cache. An emptiness assertion would therefore have
+ * failed every correct run, and "the cache is empty" is not the property that matters anyway: what matters
+ * is that no CORPUS window was in it, which the endpoint's per-object totals answer exactly and the daemon's
+ * single aggregate cannot answer at all. So the level is reported, and the daemon-side assertion is that the
+ * cache GREW — a cold scan fills it, a warm one has nothing to add.
  */
 export function coldStateProblems(input: {
   readonly probeCacheBytesBefore: number;
+  readonly probeCacheBytesAfter: number;
   readonly corpusBytesBefore: number;
   readonly rangeRequestDelta: number;
   readonly remoteObjectCount: number;
@@ -826,16 +847,17 @@ export function coldStateProblems(input: {
   readonly holdTimeoutDelta: number;
 }): ColdStateProblem[] {
   const problems: ColdStateProblem[] = [];
-  if (input.probeCacheBytesBefore !== 0) {
+  if (input.probeCacheBytesAfter <= input.probeCacheBytesBefore) {
     problems.push({
-      kind: 'warm-probe-cache',
-      detail: `the daemon already held ${input.probeCacheBytesBefore} bytes of scan-window cache before the `
-        + 'concurrent scan, so the window cannot show what a cold scan costs',
+      kind: 'probe-cache-did-not-grow',
+      detail: `the daemon's scan-window cache went from ${input.probeCacheBytesBefore} to `
+        + `${input.probeCacheBytesAfter} bytes across the window. A COLD scan of a ~50-entry corpus fills it; `
+        + 'a window that added nothing was reading windows it already held',
     });
   }
-  // THE ENDPOINT'S OWN VIEW OF THE SAME QUESTION, AND IT IS THE STRONGER OF THE TWO. The daemon's cache
-  // level is one place a warm read can come from; the endpoint's per-object totals say whether ANY corpus
-  // byte had ever been served before the window opened, whatever cached it.
+  // THE ENDPOINT'S OWN VIEW, AND IT IS THE LOAD-BEARING ONE. The daemon's cache level is one aggregate over
+  // every version it has ever cached, including the local seed; the endpoint's per-object totals say whether
+  // ANY corpus byte had ever been served before the window opened, whatever cached it.
   if (input.corpusBytesBefore !== 0) {
     problems.push({
       kind: 'corpus-already-read',
