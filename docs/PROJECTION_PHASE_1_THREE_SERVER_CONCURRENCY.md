@@ -350,6 +350,8 @@ Unraid host, and none of these fourteen runs was one.
 
 | 15 | Windows / Docker Desktop | **FAILED** at `TS3-cold-window` with `hold-lapsed: 1` | — | **The first run of the fully remediated gate, and a real defect in it.** The endpoint's backstop is timed from when a request ACTUALLY blocks; the arm window was timed from when the gate's polled `/counters` NOTICED. Run 15 detected the block one tick later than run 14 had and the release missed the 4,500 ms backstop. Fixed in `c677065`: the release moved off the observation tick onto its own 250 ms watchdog, and the arm window shortened to 3 s so arm + overshoot fits under the backstop. See §3.4 |
 | 16–18 | Windows / Docker Desktop | **PASSED**, three consecutive fresh runs through the committed wrapper against `c677065` | **62 each, none failed, none skipped** | wrapper exit 0. The first green sequence of the fully remediated gate — see §7.2 |
+| 19 | Windows / Docker Desktop | **PASSED**, against `9f1d4de` — the first run after the endpoint learned to count what its writes RETURNED | **64, none failed, none skipped** | see §7.3. The two extra assertions are the observed-column G15 and the body-outcome record; `TS3-G15-provider-bytes` is now `…-committed`, so a future run record must not be compared against 62 |
+| 20–22 | Windows / Docker Desktop | **PASSED**, three consecutive fresh runs through the committed wrapper against `9f1d4de` | 64 each, none failed, none skipped | wrapper exit 0; the working tree was still clean at `9f1d4de` afterwards |
 
 ### 7.2 What the three remediated runs measured
 
@@ -434,6 +436,43 @@ spanning 4.1–4.6 s**, and Plex's scan took 25–32 s against Emby's 8 s and Je
 **The G17 reading is worth stating plainly: the in-flight cap was reached and not exceeded.** Four concurrent
 provider reads against a configured cap of four is the admission limiter doing its job under three
 simultaneous scanners, which is the only condition in this repository that has ever pushed it there.
+
+### 7.3 The endpoint now counts what its writes RETURNED, and the two columns are identical here
+
+**WHAT WAS WRONG.** `internal/fakeprovider` counted a response's **committed** payload length before writing
+it and then did `_, _ = w.Write(payload)`, discarding both the byte count and the error. Every byte figure
+this gate has ever reported — including the 13,205,874 in §7.1 and §7.2 — was therefore what the endpoint
+**undertook to write**, not what its writes returned. That was found by a review of the sibling G22 gate,
+where the same shape had supported a conclusion about delivery that the instrument could not carry.
+
+**WHAT IS THERE NOW.** The write's own returned count and error, recorded in a second phase, per object and in
+aggregate; completed and truncated body outcomes; and a live in-flight gauge whose non-zero value makes the
+analysis **refuse** the snapshot rather than quote it. The gate's counter reads wait, boundedly, for that
+gauge to reach zero. Deterministic Go controls drive an early client close on an 8 MiB body and require the
+two columns to come apart, and a fully consumed body and require them to agree exactly.
+
+**WHAT FOUR RUNS AGAINST `9f1d4de` MEASURED, and it is the reassuring answer:**
+
+| | runs 19–22 |
+|---|---|
+| bodies written in full / abandoned part-way | **47 / 0**, in every run |
+| **COMMITTED** bytes | **13,205,874**, in every run |
+| **OBSERVED** application-write bytes | **13,205,874**, in every run |
+
+**The daemon drains every body it asks for**, so the two columns are equal and every historical figure in §7.1
+and §7.2 stands unchanged as both. That is a measurement, not an assumption — it is exactly what was
+unmeasured before, and a topology whose client abandoned reads would have shown a gap here.
+
+**THE CEILINGS DID NOT MOVE, AND ARE NOW ASSERTED TWICE.** G15 and the per-object byte bounds are checked
+against the committed column — every assertion this gate has ever made, at the same numbers — **and** against
+the observed column beside it, which is the acceptance intent when the question is bytes written. Observed can
+never exceed committed, so adding the second check cannot weaken the first; it exists so the column that is
+reported is also the column that is enforced, and `breachedObjects` fires on either.
+
+**AND "OBSERVED" IS A PRECISE, LIMITED WORD.** It is the count `http.ResponseWriter.Write` returned: bytes the
+application handler handed to the HTTP stack. **NOT** proof of peer receipt, **NOT** a TCP acknowledgement,
+**NOT** exact wire bytes — chunked framing, headers and any TLS overhead sit outside it — and **NOT** provider
+billing. `OBSERVED_BYTES_ARE_APPLICATION_WRITES` states that as a value, and the offline suite holds it.
 
 ## 8. What this gate does not prove
 

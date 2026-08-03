@@ -1380,6 +1380,11 @@ export const THREE_SERVER_NONCLAIMS: readonly string[] = Object.freeze([
     + 'servers, so the provider sees the daemon and never the server behind a byte',
   'G22, the rclone/WebDAV comparison control, is NOT RUN for tranche purposes: a gate for it now exists and '
     + 'has been run on Docker Desktop only, which closes nothing',
+  'the endpoint reports COMMITTED payload length and OBSERVED application-write bytes as two separate '
+    + 'columns; on this topology they are equal because the daemon drains every body, which is measured '
+    + 'rather than assumed',
+  'an OBSERVED byte is what http.ResponseWriter.Write returned: NOT peer receipt, NOT a TCP '
+    + 'acknowledgement, NOT exact wire bytes, and NOT provider billing',
   'G27’s three-server half is not run',
   'Phase 1 remains open',
 ]);

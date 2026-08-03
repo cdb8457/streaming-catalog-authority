@@ -169,7 +169,7 @@ their ratio that neither of them supported. See §7.3.
 | Instrument | What it counts | Where it is measured |
 |---|---|---|
 | **committed** | the `Content-Length` each response promised, recorded before its first byte reaches the socket | at the endpoint |
-| **observed** | what the write actually put on the socket, recorded after it returned, with whether it finished | at the endpoint |
+| **observed** | the count the write RETURNED, recorded after it returned, with whether it finished. An application-write observation: not peer receipt, not a TCP acknowledgement, not exact wire bytes, not billing | at the endpoint |
 | **the client's own** | what the mount client believes it passed upward | at the client's control surface |
 
 **Committed minus observed is the ENDPOINT's optimism**, about reads the client asked for and then abandoned.
@@ -227,17 +227,18 @@ rejected rather than quoted, because there the committed length is counted and t
 | 12 | Windows / Docker Desktop | **COMPLETED**, against `12ffef1` — the tree as finally committed | 66, none failed, none skipped | **a confirming run, and it is here because the nine wrapper runs predate the last commit.** That commit changed `.gitignore` and one offline assertion and nothing the gate reads, so it could not have invalidated them — but "could not have" is an argument and this is a measurement. Every figure landed inside the ranges §7.1 records: 981 ranged GETs, 1,832,756,755 media bytes, **17.077×**, 52 PROPFIND, 90,249 bytes of listing XML, the ~105 MB fixture at 1,794,384,634 bytes over 22 GETs, and the client accounting for 34,991,428 bytes over 880 transfers |
 | 13 | Windows / Docker Desktop | **COMPLETED**, against `330a9e7` — the first run of the REMEDIATED instrument | 70, none failed, none skipped | **the run that showed how far off the retracted claim was.** 2,783,683,960 bytes COMMITTED against 120,343,984 OBSERVED, with 117 of 1,057 bodies abandoned part-way. See §7.3 and §7.4 |
 | 14–16 | Windows / Docker Desktop | **COMPLETED**, three consecutive fresh runs through the committed wrapper, same commit, no tracked file edited inside them | 70 each, none failed, none skipped | wrapper exit 0, `3 of 3 consecutive … none skipped`; the working tree was still clean at `330a9e7` afterwards. §7.4 |
+| 17 | Windows / Docker Desktop | **COMPLETED**, against `9f1d4de` — after an independent review found §7.4 comparing G22's observed column against the product's committed one | 70, none failed, none skipped | the confirmation that shared runtime code still works: 1,054 GETs, 2,572,593,873 bytes COMMITTED against 131,196,070 OBSERVED, 941 bodies written in full and 113 abandoned, and 2,567,722,747 / 126,400,276 over the 43 comparable entries. §7.5 and §7.6 |
 
-**Fifteen completed runs and one failure, all on Windows / Docker Desktop, and the §6.1 table of the
-acceptance plan still reads NOT RUN.** Twelve of the fifteen came through the committed
+**Sixteen completed runs and one failure, all on Windows / Docker Desktop, and the §6.1 table of the
+acceptance plan still reads NOT RUN.** Twelve of the sixteen came through the committed
 three-consecutive-fresh-run wrapper, in four sequences of three, with no tracked file edited inside or
 between them. **Runs 1–12 were taken with an instrument whose byte counter is now known to have measured
 something other than what it was reported as — see §7.3** — and their COMMITTED figures stand as such. That is the repetition the
 acceptance plan asks for — **on the wrong platform**. §6 of the plan says G22 closes on a Linux or Unraid
-host, and none of these sixteen runs was one. No real provider endpoint has ever been contacted — the WebDAV
+host, and none of these seventeen runs was one. No real provider endpoint has ever been contacted — the WebDAV
 endpoint is the in-repository fake — and Phase 1 remains open.
 
-**The rows for runs 3–16 were necessarily written after they finished**, which is true of every run record in
+**The rows for runs 3–17 were necessarily written after they finished**, which is true of every run record in
 this repository and is not a gap in this one: that edit changes this document and nothing the gate reads.
 Re-running after each edit that records a run would not terminate.
 
@@ -440,7 +441,45 @@ both sides by instruments that now count the same way.
 
 ### 7.6 The like-for-like comparison, measured on both sides after the remediation
 
-*(filled in from the runs recorded in §7 below)*
+`internal/fakeprovider` now counts the same two columns `internal/fakewebdav` does, so the product side has an
+observed figure of its own for the first time. Four G18 runs against `9f1d4de` — one standalone and three
+through its committed wrapper — measured it, and it is the same number every time:
+
+| G18, the product's own topology | measured |
+|---|---|
+| bodies written in full / abandoned part-way | **47 / 0**, in all four runs |
+| **COMMITTED** bytes over 43 remote entries | **13,205,874**, in all four runs |
+| **OBSERVED** application-write bytes, same window | **13,205,874**, in all four runs |
+
+**The daemon drains every body it asks for.** That is why the two columns are identical there, and it is the
+substantive reason the committed-only instrument had never misled anyone on the product side: with zero
+truncated bodies there was nothing for it to overstate. It was still unmeasured until now.
+
+**So the comparison can finally be made in both currencies, each against its own kind:**
+
+| over the 43 entries both topologies fetch remotely | G22 rclone/WebDAV | G18 the product |
+|---|---|---|
+| ranged GETs | **780 – 941** | **47** |
+| **COMMITTED** bytes | **1,824,388,554 – 2,778,909,482** | **13,205,874** |
+| **OBSERVED** application-write bytes | **88,930,627 – 126,400,276** | **13,205,874** |
+| bodies abandoned part-way | **87 – 117** | **0** |
+
+Committed against committed is roughly **138× – 210×**. Observed against observed is roughly **6.7× – 9.6×**.
+Both are divisions of two measured numbers of the same kind, taken from instruments that now count the same
+way.
+
+**THE RETRACTED FIGURE TURNS OUT TO HAVE BEEN NUMERICALLY RIGHT, AND IT WAS STILL RIGHT TO RETRACT IT.**
+§7.5 withdrew "6.7× – 8.8× delivered" because it divided G22's observed column by G18's committed one. Now
+that G18's observed column exists, it equals its committed one exactly, so the arithmetic lands in the same
+place. That is a fact discovered afterwards, by measuring; at the time the claim was made, nobody knew
+whether the product side had truncated bodies, and the ratio could have moved in either direction. **A number
+that happens to be correct is not the same as a number that was supported**, and the difference is the whole
+subject of §7.3 and §7.5.
+
+**AND IT IS STILL NOT A DELIVERY OR BILLING FIGURE.** Both sides' observed columns are counts that
+`http.ResponseWriter.Write` returned — bytes an application handler handed to the HTTP stack. Neither side
+proves peer receipt, neither is a TCP acknowledgement, neither counts exact wire bytes, and neither is
+provider billing. No real provider has ever been contacted by any automated gate here.
 
 ## 8. What this gate does not prove
 

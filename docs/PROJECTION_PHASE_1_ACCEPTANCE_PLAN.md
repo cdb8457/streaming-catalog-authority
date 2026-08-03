@@ -211,7 +211,12 @@ thirteen through the committed three-consecutive-fresh-run wrapper in four seque
 assertions with none failed and none skipped. All fourteen are Windows / Docker Desktop, which §6 says closes
 none of G7–G13 or G18. Fourteen of them predate a coordinator review that tightened what the gate asserts;
 the remediated gate has since been run too — one failure that exposed a real defect in it, then **three
-consecutive fresh green runs, 62 assertions each with none failed and none skipped**, still on Docker
+consecutive fresh green runs, 62 assertions each with none failed and none skipped. A later review found that
+its fake endpoint counted each response's COMMITTED payload length and discarded what its write returned; the
+endpoint now records both columns, its byte ceilings are asserted against BOTH at unchanged values, and four
+further runs — one standalone and three through the wrapper — measured 64 assertions each with none failed and
+none skipped, with COMMITTED and OBSERVED bytes IDENTICAL at 13,205,874 because the daemon drains every
+body**, still on Docker
 Desktop and still closing nothing.** The one failure is worth reading: it was the gate's, not the product's — the barrier
 was released the instant the rendezvous succeeded, which destroyed the overlap it had just created.
 
