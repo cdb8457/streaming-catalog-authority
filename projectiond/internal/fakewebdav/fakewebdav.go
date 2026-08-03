@@ -43,6 +43,7 @@ import (
 	"encoding/xml"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -691,41 +692,49 @@ func (s *Server) serveGet(w http.ResponseWriter, r *http.Request) bool {
 		}
 		offset, length, ranged = start, end-start+1, true
 	}
-	body, err := readAt(object.file, offset, length)
+	// THE BODY IS STREAMED, NOT BUFFERED, AND THAT IS A CORRECTNESS PROPERTY RATHER THAN A NICETY. The shared
+	// corpus carries a ~105 MB fixture on purpose, and a naive client asks for it whole; three media servers
+	// reading one mount can have several such responses in flight at once. An endpoint that read each one into
+	// memory first would be the reason a run failed, and "the comparison ran out of memory" is not a fact
+	// about the topology under test.
+	handle, err := os.Open(object.file)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		return false
 	}
+	defer func() { _ = handle.Close() }()
+
 	w.Header().Set("Content-Type", contentTypeOf(object.Path))
 	w.Header().Set("Accept-Ranges", "bytes")
 	w.Header().Set("ETag", object.etag)
 	w.Header().Set("Last-Modified", httpDate())
-	w.Header().Set("Content-Length", strconv.Itoa(len(body)))
+	w.Header().Set("Content-Length", strconv.FormatInt(length, 10))
 
 	// THE COUNTERS MOVE BEFORE THE BODY REACHES THE SOCKET, deliberately: bytes must never be observable to a
 	// client before the counters describing them. So this is "accounted", not "completed" — the response may
 	// still fail on a broken pipe afterwards, and calling it delivery would claim something this server does
-	// not observe.
+	// not observe. What is counted is the length the response COMMITS to in its Content-Length, which is
+	// derived from the object's own registered size and cannot disagree with what a complete read receives.
 	s.accounting.Lock()
 	if ranged {
 		s.counters.RangedBodies.Add(1)
-		s.counters.RangedBytes.Add(int64(len(body)))
+		s.counters.RangedBytes.Add(length)
 	} else {
 		s.counters.FullBodies.Add(1)
-		s.counters.FullBytes.Add(int64(len(body)))
+		s.counters.FullBytes.Add(length)
 	}
-	s.counters.BytesServed.Add(int64(len(body)))
+	s.counters.BytesServed.Add(length)
 	s.counters.AccountedResponses.Add(1)
-	s.recordObjectLocked(object, int64(len(body)), ranged)
+	s.recordObjectLocked(object, length, ranged)
 	s.accounting.Unlock()
 
 	if ranged {
-		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+int64(len(body))-1, object.Size))
+		w.Header().Set("Content-Range", fmt.Sprintf("bytes %d-%d/%d", offset, offset+length-1, object.Size))
 		w.WriteHeader(http.StatusPartialContent)
 	} else {
 		w.WriteHeader(http.StatusOK)
 	}
-	_, _ = w.Write(body)
+	_, _ = io.Copy(w, io.NewSectionReader(handle, offset, length))
 	return true
 }
 
@@ -927,21 +936,4 @@ func parseRange(value string, size int64) (int64, int64, bool) {
 		}
 	}
 	return start, end, true
-}
-
-func readAt(file string, offset, length int64) ([]byte, error) {
-	handle, err := os.Open(file)
-	if err != nil {
-		return nil, err
-	}
-	defer func() { _ = handle.Close() }()
-	if length < 0 {
-		length = 0
-	}
-	buffer := make([]byte, length)
-	read, err := handle.ReadAt(buffer, offset)
-	if err != nil && read == 0 {
-		return nil, err
-	}
-	return buffer[:read], nil
 }
