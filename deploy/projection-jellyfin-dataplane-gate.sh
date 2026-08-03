@@ -110,6 +110,19 @@ mkdir -p "$WORK/manifest" "$WORK/media" "$WORK/remote" "$WORK/cache" "$WORK/mnt"
 # The media server runs non-root and owns nothing on this host, so its state directories are made writable by
 # whoever it turns out to be. The MEDIA is not: it is 444 through the mount, and that is under test.
 chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/jf-config" "$WORK/jf-cache"
+# ...AND THE PATH INTO THEM IS TRAVERSABLE BY A UID THAT DID NOT CREATE IT.
+#
+# A DEFECT DOCKER DESKTOP CANNOT SHOW YOU. The permissive directories above are reached THROUGH `$GATE_ROOT`
+# and `$WORK`, which `mkdir -p` created under whatever umask the operator happens to have. At the common 022
+# they land at 0755 and everything works; at 077 -- an ordinary hardened default, and one some operators set
+# for root -- they land at 0700, and a container running as uid 1000 cannot traverse into them however
+# permissive the leaf is. The five-minute paced play then dies on a permission error four phases in.
+#
+# On Docker Desktop none of this is visible, because the host side of a bind carries no modes at all. So the
+# traversal is made explicit rather than inherited: 0755, not 0777, because traversal is all that is needed
+# and the writable leaves are already 0777.
+chmod 755 "$GATE_ROOT" "$WORK"
+
 
 cat > "$WORK/jq.cjs" <<'JQ'
 let raw = '';
@@ -332,6 +345,27 @@ if ! docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/f
   exit "$GATE_SKIP_STATUS"
 fi
 echo "  /dev/fuse is reachable from a container"
+
+# ----------------------------------------------------------------------------------------------------------
+# ...AND WHETHER ITS MOUNTS LET THE DAEMON PUBLISH A NAMESPACE AT ALL.
+#
+# THE FAILURE THIS CATCHES IS THE MOST LIKELY FIRST FAILURE OF THE FIRST UNRAID RUN, and no run on Docker
+# Desktop could ever have revealed it. The daemon binds its mount point `rshared` so the FUSE namespace it
+# creates inside its container becomes visible to the media server beside it, and the kernel only permits
+# `rshared` on a bind whose SOURCE IS ALREADY A SHARED MOUNT. Docker refuses the container outright otherwise
+# -- the daemon never starts. On Docker Desktop the bind source lives inside Docker's own Linux VM, whose root
+# is shared, so the condition holds by construction; Unraid is not systemd, and a checkout under /mnt/user is
+# on a FUSE share. Neither is shared by default.
+#
+# IT DIAGNOSES AND DOES NOT REPAIR. Making a host mount shared changes the machine the operator is standing
+# on and outlives the run, so the check names the remedy rather than performing it.
+#
+# `--require` MAKES A `not-shared` ANSWER FATAL, and an UNDETERMINED one is deliberately not: a Windows host
+# publishes no /proc/self/mountinfo and the gates demonstrably pass there. A check that cannot run says so on
+# stderr rather than passing quietly.
+npx tsx src/ops/projection-host-preflight-cli.ts propagation --path "$GATE_ROOT" --require
+npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" --path "$WORK"
+
 
 # ----------------------------------------------------------------------------------------------------------
 step "building the production projectiond image"
@@ -670,6 +704,7 @@ cat > "$WORK/config.json" <<'JSON'
   "mountPoint": "/mnt/projection",
   "pointerPath": "/var/lib/projectiond/manifest/pointer.json",
   "probeCacheDir": "/var/lib/projectiond/cache",
+  "statusAddr": "127.0.0.1:9099",
   "localRoots": { "media": "/var/lib/projectiond/media" },
   "endpoints": [
     {
@@ -696,6 +731,41 @@ start_daemon() {
     -v "$WORK/config.json:/etc/projectiond/config.json:ro" \
     -v "$WORK/mnt:/mnt/projection:rshared" \
     "$IMAGE" --config /etc/projectiond/config.json --poll 2s --strict-direct-mount >/dev/null
+}
+
+# THE DAEMON'S OWN PLAYBACK-CACHE COUNTERS, over the same window the provider's are measured across.
+#
+# WHY THIS GATE NEEDED IT AND DID NOT HAVE IT. Its playback traffic windows asserted an unconditional floor of
+# one provider request, on the reasoning that a window which never reached the provider must have been served
+# by something other than the daemon. A daemon repair falsified that: once a handle release stopped deleting
+# the playback cache, an object that fits in memory is served from memory on every later open. This gate was
+# never re-run against the repaired daemon, so it kept the invalidated inference and failed at
+# `JD18-paced-play-traffic-range-requests-floor` measuring 0 against 1 -- in a run where independent decoders
+# proved 300 s of real playback. "Zero provider requests" has two explanations that demand opposite responses,
+# and only the daemon can say which, so the daemon is asked.
+#
+# WHY IT JOINS THE CONTAINER'S NETWORK NAMESPACE. The status server binds LOOPBACK ONLY and that restriction
+# is not being relaxed for a test -- a published port would not reach it and must not be made to. A container
+# started with `--network container:<name>` shares that namespace, so the daemon's own 127.0.0.1 is reachable
+# without the daemon listening anywhere else. The image that serves the mount is distroless and has no shell
+# and no HTTP client, which is why the request comes from a separate, pinned one.
+#
+# THE TWO SNAPSHOT ORDERS ARE DELIBERATELY ASYMMETRIC, AND THAT ASYMMETRY IS THE POINT.
+#
+#   at the START:  provider first, THEN daemon
+#   at the END:    daemon first,   THEN provider
+#
+# So the daemon's evidence interval is CONTAINED INSIDE the provider's rather than overlapping it. Any read
+# landing between the two closing snapshots counts on the PROVIDER side only, where it can push the request
+# delta above zero and take the window out of the warm arm altogether. Reverse the closing order and a late
+# read would add cache hits the provider delta never saw -- an inflated warm claim built out of activity the
+# provider window excludes. The conservative direction is the one where straggling work can only make the
+# window look COLDER.
+DAEMON_STATUS_PORT=9099
+daemon_counters() {
+  docker run --rm --network "container:$MOUNT_CONTAINER" "$VERIFY_IMAGE" \
+    wget -q -T 15 -O - "http://127.0.0.1:${DAEMON_STATUS_PORT}/readyz" > "$1" \
+    || die "the daemon's status surface did not answer; a warm window cannot be told from a bypassed daemon"
 }
 
 await_namespace() {
@@ -956,9 +1026,11 @@ step "ten real media-time seeks, including backwards and beyond 90% of duration"
 drive configure-encoding --state "$STATE" --temp-path /cache/transcodes --throttle-seconds 30
 
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-seeks.json"
+daemon_counters "$WORK/out/daemon-before-seeks.json"
 drive media-seeks --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
   --duration-seconds "$SOAK_DURATION_INT" --segment-dir "$REL/out/seek-segments" \
   --out "$REL/out/seeks.json"
+daemon_counters "$WORK/out/daemon-after-seeks.json"
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-seeks.json"
 
 # EVERY SEEK'S SEGMENT DECODED, BY A DECODER, OUTSIDE THE PROCESS THAT FETCHED IT. "Playable video within
@@ -988,6 +1060,7 @@ drive seek-verify --key "$SOAK_FILE" --seeks "$REL/out/seeks.json" --probes "$RE
 
 drive traffic-window --before "$REL/out/counters-before-seeks.json" \
   --after "$REL/out/counters-after-seeks.json" --gate JD19-seek-traffic \
+  --daemon-before "$REL/out/daemon-before-seeks.json" --daemon-after "$REL/out/daemon-after-seeks.json" \
   --object-bytes "$SOAK_SIZE" --max-object-multiplier 6 --max-range-requests 400
 
 # ----------------------------------------------------------------------------------------------------------
@@ -1004,11 +1077,13 @@ step "direct play, PACED, for five minutes"
 # the fourth; a sleep-and-decode-nothing fails the third. The stall ceiling is the "without a stall" half,
 # which no start-and-end measurement can see at all.
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-play.json"
+daemon_counters "$WORK/out/daemon-before-play.json"
 drive paced-play --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
   --image "$JELLYFIN_IMAGE" --ffmpeg "$JELLYFIN_FFMPEG" --network "$NETWORK" \
   --container-name "$PLAY_CONTAINER" --work-dir "$WORK" \
   --stream-base "http://${JELLYFIN_CONTAINER}:8096" --output-rel "out/paced-play.mp4" \
   --trace "$REL/out/paced-play-trace.json" --seconds 300
+daemon_counters "$WORK/out/daemon-after-play.json"
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-play.json"
 
 # THE CONSUMER'S OWN OUTPUT, DECODED. Five minutes of progress records is evidence that a decoder was running;
@@ -1023,6 +1098,7 @@ drive paced-play-output --probed-seconds "${PLAY_OUT_SECONDS%%.*}" --probed-pack
 
 drive traffic-window --before "$REL/out/counters-before-play.json" \
   --after "$REL/out/counters-after-play.json" --gate JD18-paced-play-traffic \
+  --daemon-before "$REL/out/daemon-before-play.json" --daemon-after "$REL/out/daemon-after-play.json" \
   --object-bytes "$SOAK_SIZE" --max-object-multiplier 3 --max-range-requests 400
 
 # THE MOUNT'S OWN VIEW, AFTER FIVE MINUTES OF BEING READ. Metadata is a snapshot the daemon holds, and five
@@ -1059,9 +1135,11 @@ step "a forced transcode, run and consumed for five minutes"
 #     persists; live `TranscodingInfo` goes null when the encoder exits, and is recorded rather than asserted
 #     for exactly that reason.
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-before-soak.json"
+daemon_counters "$WORK/out/daemon-before-soak.json"
 drive transcode-soak --state "$STATE" --items "$REL/out/items-corpus-2.json" --key "$SOAK_FILE" \
   --segment-dir "$REL/out/soak-segments" --producer-dir "$REL/jf-cache/transcodes" \
   --out "$REL/out/soak.json" --seconds 300
+daemon_counters "$WORK/out/daemon-after-soak.json"
 drive counters --url "http://127.0.0.1:${RANGE_PORT}/counters" --out "$REL/out/counters-after-soak.json"
 
 cat > "$WORK/out/probe-soak.sh" <<'PROBESOAK'
@@ -1087,6 +1165,7 @@ drive transcode-soak-verify --key "$SOAK_FILE" --items "$REL/out/items-corpus-2.
 
 drive traffic-window --before "$REL/out/counters-before-soak.json" \
   --after "$REL/out/counters-after-soak.json" --gate JD20-transcode-soak-traffic \
+  --daemon-before "$REL/out/daemon-before-soak.json" --daemon-after "$REL/out/daemon-after-soak.json" \
   --object-bytes "$SOAK_SIZE" --max-object-multiplier 4 --max-range-requests 600
 
 # THE TRANSCODING JOB IS GONE. A five-minute encode left running would occupy the machine for the rest of the

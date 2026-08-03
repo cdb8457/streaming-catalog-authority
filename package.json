@@ -101,6 +101,7 @@
     "test:projection-jellyfin-dataplane": "tsx test/projection-jellyfin-dataplane.ts",
     "test:projection-plex-dataplane": "tsx test/projection-plex-dataplane.ts",
     "test:projection-emby-dataplane": "tsx test/projection-emby-dataplane.ts",
+    "test:projection-host-preflight": "tsx test/projection-host-preflight.ts",
     "ops:projection-contract-export": "tsx src/ops/projection-contract-export-cli.ts",
     "ops:projection-register": "tsx src/ops/projection-register-cli.ts",
     "ops:projection-publish": "tsx src/ops/projection-publish-cli.ts",

@@ -429,6 +429,38 @@ there from a leak — the endpoint's host name, a real URL scheme, the lease hea
 authorization header — and the manifest directory, which is text the control plane authored, keeps the strict
 rule.
 
+## 4.1 A defect found by re-running this gate, months after it last ran
+
+**`JD18-paced-play-traffic-range-requests-floor`, measured 0 against a floor of 1 — in a run where independent
+decoders proved 300 s of real playback.** Nothing was wrong with the playback, the mount or the daemon.
+
+Every playback traffic window in this gate asserted an **unconditional floor of one provider request**, on the
+reasoning that a window which never reached the provider must have been served by something other than the
+daemon. **A daemon repair falsified that reasoning**: once a handle release stopped deleting the playback
+cache, an object that fits in memory is served from memory on every later open. The Plex gate met this,
+diagnosed it, and replaced its floors with an accounting question; the Emby gate inherited the replacement.
+**This gate was never re-run against the repaired daemon**, so it kept an inference that had already been
+retired elsewhere in the same repository.
+
+**The floor was not dropped.** A zero-provider window now has to be *explained*: the daemon's own cumulative
+playback-cache counters, read over exactly the same window, must show that it served the bytes. Zero provider
+traffic with no daemon evidence is still a failure, and it is the same failure the old floor was aimed at.
+A window that *did* reach the provider is still held to the original floor, under its original name, so no
+cold run's verdicts move. Measured on the run that fixed it: **0 provider requests, 499 daemon cache hits,
+1,359,412,525 bytes**, over the paced-play window alone.
+
+**Two things this cost are worth stating.** The gate needed a status surface it was not asking for — the
+daemon now publishes `/readyz` on **loopback only**, and the reader joins the daemon's own network namespace
+rather than a port being published for it. And the snapshots are deliberately **asymmetric**: provider first
+then daemon at the start, daemon first then provider at the end, so the daemon's evidence interval is
+*contained inside* the provider's. Straggling work can then only make a window look colder, never warmer than
+it was.
+
+**What this says about the other two gates is the uncomfortable part.** The defect was not in the data plane
+and was not introduced by any change to this gate. It was a true statement that stopped being true, in a gate
+nobody had re-run — and it was found only because a portability audit re-ran all three. A gate that is not
+run is a gate whose assertions are dated.
+
 ## 5. Where this can and cannot be run
 
 | Environment | What the gate closes |
@@ -454,6 +486,10 @@ rule.
 - **Five minutes of ENCODER work under G10.** What is proved is five minutes of paced, continuously decoded,
   transcoded playback; the encoder finishes in about 1.6 seconds on this hardware and that number is
   recorded rather than dressed up. See §3.7.
+- **The COLD arm of the playback traffic windows.** Since the daemon's playback cache began surviving a handle
+  release, the paced-play window on this hardware is served entirely from memory — 0 provider requests — so
+  what §4.1's replacement exercises here is the WARM arm. The cold floor is unchanged and still asserted, but
+  it has not fired in these runs.
 - **Three consecutive green runs on Linux or Unraid**, which is what the acceptance plan means by passing.
 
 A Windows or Docker Desktop green run is not a Phase 1 pass and is not reported as one. **Phase 1 is open.**

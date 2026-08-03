@@ -109,6 +109,45 @@ cost and would hide a real regression in the scan path.
 **This split is a statement about evidence, not a schedule.** A Windows green run is not a Phase 1 pass and
 **SHALL NOT** be reported as one. The tranche closes on a Linux/Unraid run, three times.
 
+### 6.0 What the tranche-closing host has to have, and why Docker Desktop cannot tell you
+
+The row above says the Linux/Unraid environment can close everything. It does **not** say the gates will start
+there, and until one is run the difference is unmeasured. **Docker Desktop hides an entire class of
+host-shaped defect**: its bind sources live inside a Linux VM whose root is already a shared mount, and it
+ignores uid, gid and mode on the host side of a bind. A host-shaped assumption that is simply wrong on Linux
+therefore produces a green run here, every time, forever.
+
+Two such assumptions have already been found, and neither was found by a check:
+
+- a token file written `0600` that the consumer container's uid could not have read — invisible here because
+  Docker Desktop ignores modes;
+- a path spelling that a Windows `node` resolved to `C:\c\Users\…`, which killed a run twenty minutes in.
+
+`deploy/projection-*-dataplane-gate.sh` now run `src/ops/projection-host-preflight-cli.ts` **before** they
+build an image or start a container, and `npm run test:projection-host-preflight` holds the rules offline
+against the mount tables of hosts none of us has. What the preflight and this table are derived from is
+**platform semantics plus the two defects measured above — not an Unraid run.** Nothing here has been observed
+on the tranche-closing host, because nothing has.
+
+| Requirement | Why | Check |
+|---|---|---|
+| **Node.js and npx on the HOST** | every gate drives its media server from `npx tsx src/ops/…`, which runs on the host, not in a container. **A stock Unraid installation has no Node.js**, so the command this plan names as tranche-closing cannot start there | `node --version && npx --version` |
+| **The gate's working directory on a `shared` mount** | the daemon binds its mount point `rshared` so the FUSE namespace reaches the media server beside it, and the kernel permits `rshared` only from an already-shared source. Docker refuses the container outright otherwise — **the daemon never starts**. Systemd remounts `/` shared at boot; **Unraid is not systemd**, and a checkout under `/mnt/user` is on `shfs`, a FUSE share. Neither is shared by default | `findmnt -no PROPAGATION -T .` |
+| **Docker Compose v2** (`docker compose`, not `docker-compose`) | each gate stands up its throwaway PostgreSQL with `up -d --wait`, and `--wait` is v2. On Unraid this is the Compose Manager plugin | `docker compose version` |
+| **`/dev/fuse` reachable from a container** | the daemon serves the projection over FUSE. Already probed: the gates exit **77** — a SKIP, never a pass — when it is missing | `docker run --rm --device /dev/fuse:/dev/fuse alpine test -c /dev/fuse` |
+| **A traversable run directory** | the paced consumer runs as uid 1000 and writes into directories the gates `chmod 777`; those are reached *through* the run root, which `mkdir -p` creates under the operator's umask. At `077` it is `0700` and uid 1000 cannot traverse it, however permissive the leaf is. The gates now `chmod 755` it explicitly rather than inheriting a umask | the preflight's `traversal` command |
+| **No SELinux enforcement, or relabelled binds** | on an enforcing host a container cannot read an unrelabelled bind, and every gate binds several. Unraid does not use SELinux, so this bounds "Linux" generally rather than the tranche-closing host. **Recorded rather than handled**, because adding `:z` relabels files on the operator's disk | `getenforce` |
+
+**The preflight diagnoses and does not repair.** Making a host mount shared is `mount --make-rshared`, which
+changes the machine the operator is standing on and outlives the run. A gate that did that quietly would be
+mutating a host to make itself pass, so it names the remedy instead.
+
+**Its verdicts are three-valued, and the third value is the point.** On a host with no `/proc/self/mountinfo`
+— any Windows host — propagation is `undetermined`, reported on stderr, and **not** treated as a pass; the same
+is true of the traversal check, which declines to judge a platform that carries no POSIX modes. A check that
+could not run is not a check that passed, and the alternative was a preflight that broke the only environment
+these gates have ever run in.
+
 ### 6.1 What has actually been run, and against which server
 
 The table above says where a gate *can* be closed. This one says what has been *run*, because the two are not

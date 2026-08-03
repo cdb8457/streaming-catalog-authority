@@ -115,6 +115,98 @@ function isOrdinaryFile(item: ItemRecord): boolean {
     && item.container !== '' && item.locationType === 'FileSystem' && item.supportsDirectPlay;
 }
 
+/**
+ * One counter, refused rather than coerced when it is not a whole non-negative count.
+ *
+ * A `NaN` out of a malformed counters file makes every budget below it fail, and the failure blames the data
+ * plane for a broken instrument. Naming it here means the instrument is what fails.
+ */
+function counterValue(snapshot: Record<string, unknown>, key: string): number {
+  const raw = snapshot[key];
+  if (raw === undefined) return 0;
+  if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || !Number.isInteger(raw)) {
+    fail(`the counter ${key} is ${JSON.stringify(raw)}, which is not a whole non-negative count. Every `
+      + 'budget reading it would fail against NaN and blame the data plane for a broken counters file');
+  }
+  return raw;
+}
+
+/**
+ * What the DAEMON's own playback cache did over a window, read from two `/readyz` documents.
+ *
+ * WHY THIS ARRIVED LATE, AND WHAT IT COST TO FIND OUT. This gate asserted an unconditional floor of one
+ * provider request on every playback traffic window, on the reasoning that a window which never reached the
+ * provider must have been served by something other than the daemon. A daemon repair made that false: once a
+ * handle release stopped deleting the playback cache, an object that fits in memory is served from memory on
+ * every later open. The Plex gate hit this, diagnosed it and replaced its floors; **this gate was never
+ * re-run against the repaired daemon**, so it kept an inference that had already been invalidated — and
+ * failed at `JD18-paced-play-traffic-range-requests-floor` measuring **0 against 1**, in a run where
+ * independent decoders proved 300 s of real playback.
+ *
+ * THE FLOOR IS NOT DROPPED. A zero-provider window now has to be EXPLAINED: the daemon's own cumulative
+ * playback-cache counters, over exactly the same window, must show it served the bytes. Zero provider traffic
+ * with no daemon evidence is still a failure, and it is the same failure the old floor was aimed at.
+ *
+ * WHAT IT REFUSES, and none of it is pedantry: absent snapshots (a caller that measured nothing has proved
+ * nothing); a missing `playback` object (a daemon too old to publish these reads as all-zero through a
+ * forgiving parser, which is indistinguishable from one that served nothing); and a NEGATIVE delta, which
+ * means the daemon RESTARTED inside the window — this gate restarts it on purpose elsewhere in the same run.
+ */
+interface WarmCacheEvidence {
+  present: boolean;
+  coherent: boolean;
+  hits: number;
+  hitBytes: number;
+  coherenceNote: string;
+}
+
+function readWarmCacheEvidence(args: Args): WarmCacheEvidence {
+  const beforePath = args.flags.get('daemon-before');
+  const afterPath = args.flags.get('daemon-after');
+  const absent: WarmCacheEvidence = {
+    present: false, coherent: false, hits: 0, hitBytes: 0,
+    coherenceNote: 'no daemon cache snapshots were supplied for this window, so nothing here can say what '
+      + 'served it. Pass --daemon-before and --daemon-after',
+  };
+  if (beforePath === undefined || afterPath === undefined) return absent;
+  if (!existsSync(beforePath) || !existsSync(afterPath)) {
+    return { ...absent, coherenceNote: 'a daemon cache snapshot named for this window is missing from disk' };
+  }
+  const read = (path: string): { hits: number; hitBytes: number; misses: number } | undefined => {
+    const document = JSON.parse(readFileSync(path, 'utf8')) as { playback?: Record<string, unknown> };
+    if (document.playback === undefined || document.playback === null) return undefined;
+    return {
+      hits: counterValue(document.playback, 'hits'),
+      hitBytes: counterValue(document.playback, 'hitBytes'),
+      misses: counterValue(document.playback, 'misses'),
+    };
+  };
+  const before = read(beforePath);
+  const after = read(afterPath);
+  if (before === undefined || after === undefined) {
+    return {
+      ...absent, present: true,
+      coherenceNote: 'a daemon status document carries no `playback` counters, so this daemon cannot report '
+        + 'what its playback cache served',
+    };
+  }
+  const hits = after.hits - before.hits;
+  const hitBytes = after.hitBytes - before.hitBytes;
+  const misses = after.misses - before.misses;
+  if (hits < 0 || hitBytes < 0 || misses < 0) {
+    return {
+      present: true, coherent: false, hits: 0, hitBytes: 0,
+      coherenceNote: `a cumulative counter fell across this window (hits ${hits}, bytes ${hitBytes}, misses `
+        + `${misses}), which only happens when the daemon RESTARTED inside it; the two readings are from `
+        + 'different processes and their difference describes neither',
+    };
+  }
+  return {
+    present: true, coherent: true, hits, hitBytes,
+    coherenceNote: `daemon playback cache over this window: ${hits} hits, ${hitBytes} bytes, ${misses} misses`,
+  };
+}
+
 function record(args: Args, result: GateResult): void {
   const path = args.flags.get('results');
   if (path !== undefined) appendResult(path, result);
@@ -953,8 +1045,56 @@ async function main(): Promise<void> {
         'a ranged read per window the daemon needed, and a ceiling a runaway read-ahead would blow'));
       // A FLOOR AS WELL, because a window in which the provider was never reached would score perfectly
       // against every ceiling above and would mean the entry was served from somewhere else entirely.
-      record(args, atLeast(`${gate}-range-requests-floor`, delta('rangeRequests'),
-        optionalNumber(args, 'min-range-requests', 1)));
+      // A WARM WINDOW IS NOT A FAILURE, AND IT IS NOT A FREE PASS EITHER. See `readWarmCacheEvidence` for the
+      // unconditional floor this replaces and the daemon repair that invalidated it.
+      const providerRequests = delta('rangeRequests');
+      if (providerRequests > 0) {
+        // COLD, AND UNCHANGED. The window reached the provider, so the original floor is exactly right and is
+        // asserted under its original name. Nothing about a cold run's verdicts moves.
+        record(args, atLeast(`${gate}-range-requests-floor`, providerRequests,
+          optionalNumber(args, 'min-range-requests', 1),
+          'a window in which the provider was never reached means the bytes came from somewhere else'));
+      } else if (providerRequests < 0) {
+        // A PROVIDER COUNTER THAT FELL IS A BROKEN INSTRUMENT, NOT A WARM WINDOW: the endpoint restarted or
+        // its counters were reset between the two readings, so the window describes no interval at all and
+        // neither a ceiling nor a warm claim can be made about it. The warm arm is reached on EXACTLY zero.
+        record(args, {
+          gate: `${gate}-provider-counters-coherent`, verdict: 'fail',
+          measured: providerRequests, budget: 0,
+          note: 'the provider\'s request counter FELL across this window, which happens only when the '
+            + 'endpoint restarted or its counters were reset between the two readings. The window describes '
+            + 'no interval, so neither a ceiling nor a warm-cache claim can be made about it',
+        });
+      } else {
+        const warm = readWarmCacheEvidence(args);
+        record(args, {
+          gate: `${gate}-warm-daemon-counters-coherent`,
+          verdict: warm.coherent ? 'pass' : 'fail',
+          measured: warm.present ? 1 : 0, budget: 1,
+          note: warm.coherenceNote,
+        });
+        record(args, atLeast(`${gate}-warm-daemon-cache-hits`, warm.hits, 1,
+          'the daemon\'s own playback cache answered this many reads over exactly this window; zero means '
+          + 'the bytes did not come from this daemon\'s memory and the window proves nothing'));
+        record(args, atLeast(`${gate}-warm-daemon-cache-hit-bytes`, warm.hitBytes, 1,
+          'and served this many bytes doing it. A hit COUNT alone cannot separate a window served from '
+          + 'memory from one that hit once on a trivial read'));
+        // THE HEADLINE, NAMED FOR THE ASSERTION IT REPLACES so a reader of two runs sees the substitution
+        // rather than a floor that silently vanished.
+        const served = warm.coherent && warm.hits > 0 && warm.hitBytes > 0;
+        record(args, {
+          gate: `${gate}-range-requests-warm-capable`,
+          verdict: served ? 'pass' : 'fail',
+          measured: providerRequests, budget: 0,
+          note: served
+            ? 'this window never reached the provider, and the daemon\'s playback cache is what served it: '
+              + `${warm.hits} hits, ${warm.hitBytes} bytes, over exactly this window. Warm reuse across `
+              + 'opens is the intended behaviour, not a bypass'
+            : 'this window never reached the provider AND the daemon\'s playback cache cannot account for '
+              + `it (${warm.coherenceNote}). Zero provider traffic with no daemon cache evidence is what a `
+              + 'stale mount, a bypassed daemon or a read that never happened also look like',
+        });
+      }
       record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));

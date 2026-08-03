@@ -171,6 +171,19 @@ mkdir -p "$WORK/manifest" "$WORK/media" "$WORK/remote" "$WORK/cache" "$WORK/mnt"
 # The media server runs non-root and owns nothing on this host, so its state directories are made writable by
 # whoever it turns out to be. The MEDIA is not: it is 444 through the mount, and that is under test.
 chmod 777 "$WORK/cache" "$WORK/mnt" "$WORK/out" "$WORK/plex-config" "$WORK/plex-transcode"
+# ...AND THE PATH INTO THEM IS TRAVERSABLE BY A UID THAT DID NOT CREATE IT.
+#
+# A DEFECT DOCKER DESKTOP CANNOT SHOW YOU. The permissive directories above are reached THROUGH `$GATE_ROOT`
+# and `$WORK`, which `mkdir -p` created under whatever umask the operator happens to have. At the common 022
+# they land at 0755 and everything works; at 077 -- an ordinary hardened default, and one some operators set
+# for root -- they land at 0700, and a container running as uid 1000 cannot traverse into them however
+# permissive the leaf is. The five-minute paced play then dies on a permission error four phases in.
+#
+# On Docker Desktop none of this is visible, because the host side of a bind carries no modes at all. So the
+# traversal is made explicit rather than inherited: 0755, not 0777, because traversal is all that is needed
+# and the writable leaves are already 0777.
+chmod 755 "$GATE_ROOT" "$WORK"
+
 
 cat > "$WORK/jq.cjs" <<'JQ'
 let raw = '';
@@ -420,6 +433,27 @@ if ! docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/f
   exit "$GATE_SKIP_STATUS"
 fi
 echo "  /dev/fuse is reachable from a container"
+
+# ----------------------------------------------------------------------------------------------------------
+# ...AND WHETHER ITS MOUNTS LET THE DAEMON PUBLISH A NAMESPACE AT ALL.
+#
+# THE FAILURE THIS CATCHES IS THE MOST LIKELY FIRST FAILURE OF THE FIRST UNRAID RUN, and no run on Docker
+# Desktop could ever have revealed it. The daemon binds its mount point `rshared` so the FUSE namespace it
+# creates inside its container becomes visible to the media server beside it, and the kernel only permits
+# `rshared` on a bind whose SOURCE IS ALREADY A SHARED MOUNT. Docker refuses the container outright otherwise
+# -- the daemon never starts. On Docker Desktop the bind source lives inside Docker's own Linux VM, whose root
+# is shared, so the condition holds by construction; Unraid is not systemd, and a checkout under /mnt/user is
+# on a FUSE share. Neither is shared by default.
+#
+# IT DIAGNOSES AND DOES NOT REPAIR. Making a host mount shared changes the machine the operator is standing
+# on and outlives the run, so the check names the remedy rather than performing it.
+#
+# `--require` MAKES A `not-shared` ANSWER FATAL, and an UNDETERMINED one is deliberately not: a Windows host
+# publishes no /proc/self/mountinfo and the gates demonstrably pass there. A check that cannot run says so on
+# stderr rather than passing quietly.
+npx tsx src/ops/projection-host-preflight-cli.ts propagation --path "$GATE_ROOT" --require
+npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" --path "$WORK"
+
 
 # THERE IS NO plex.tv REACHABILITY CHECK HERE, AND THERE USED TO BE ONE.
 #
