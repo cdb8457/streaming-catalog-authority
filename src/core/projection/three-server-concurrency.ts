@@ -21,6 +21,11 @@
 // timeline, including the timelines that are awkward to produce against three real media servers: the
 // sequential one, the two-of-three one, the one where a server was in flight for a single sample.
 
+import {
+  PROJECTIOND_ADMISSION_LIMITS, PROJECTION_PHASE_1_BUDGETS,
+} from './runtime-contract.js';
+import { PROJECTION_PROBE_PLAN } from './manifest-v1.js';
+
 // ---------------------------------------------------------------------------------------------------------
 // Who is in the room
 // ---------------------------------------------------------------------------------------------------------
@@ -93,6 +98,17 @@ export const CONCURRENCY_DEADLINES_MS = Object.freeze({
    * wider than this is recorded as IMPRECISE and cannot count toward the simultaneous total.
    */
   SAMPLE_MAX_SPAN: 2_000,
+  /**
+   * The widest gap between two adjacent qualifying samples that may still be treated as ONE continuous run.
+   *
+   * IT IS DERIVED, NOT CHOSEN: one sleep between ticks (`SAMPLE_INTERVAL`) plus the widest a tick may be and
+   * still describe one instant (`SAMPLE_MAX_SPAN`). Anything wider is time in which the observer was not
+   * watching, and **unobserved time cannot become overlap duration** — which is precisely how a run that
+   * stalled for a minute and resumed would otherwise report a minute of overlap it never saw.
+   *
+   * The measured runs sit at ~0.51 s per gap, against this 2.5 s ceiling: roughly five times the margin.
+   */
+  MAX_CONTINUOUS_GAP: 500 + 2_000,
 } as const);
 
 /**
@@ -108,7 +124,8 @@ export const CONCURRENCY_DEADLINES_MS = Object.freeze({
  *
  *   `PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS` (10 s) bounds the HELD REQUEST ITSELF. A held response
  *     that has not begun by then is abandoned and the read FAILS, so a media server would catalogue a file
- *     it could not open. `HOLD_MAX_MS` is half of it.
+ *     it could not open. `HOLD_MAX_MS` sits well under it — and, more tightly, strictly under the queue-wait
+ *     budget below, which is the binding constraint of the two.
  *
  *   `PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS` (5 s) bounds EVERY OTHER READ. The daemon admits at
  *     most `PER_ENDPOINT_MAX_INFLIGHT_REQUESTS` provider requests at once; held requests occupy those slots,
@@ -129,10 +146,24 @@ export const CONCURRENCY_DEADLINES_MS = Object.freeze({
  * servers' own in-flight state at one instant. The hold makes that observation likelier and makes the scans
  * provably COLD; it does not make the claim.
  */
-export const HOLD_ARM_MS = 4_000;
+export const HOLD_ARM_MS = PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS - 1_000;
 
-/** What the endpoint is told. Half the daemon's first-byte deadline, and above `HOLD_ARM_MS`. */
-export const HOLD_MAX_MS = 5_000;
+/**
+ * The endpoint's own hard backstop, for the case where this gate dies between arming and releasing.
+ *
+ * IT IS STRICTLY BELOW THE QUEUE-WAIT BUDGET, AND AN EARLIER VERSION WAS NOT. It was 5,000 ms — exactly
+ * `MAX_QUEUE_WAIT_MS` — while the comment beside it claimed the bound was "strictly shorter". At equality the
+ * guarantee is gone: a read that arrives one instant after another blocks would wait the full queue-wait
+ * budget and could be refused admission, so the very starvation the bound exists to prevent sits on the
+ * boundary. Half a second under it restores the strict inequality, and the whole chain is now ordered and
+ * derived rather than asserted:
+ *
+ *	HOLD_ARM_MS (4,000) < HOLD_MAX_MS (4,500) < MAX_QUEUE_WAIT_MS (5,000) < FIRST_BYTE_DEADLINE_MS (10,000)
+ *
+ * The arm window is what governs a healthy run; the backstop only matters if this process dies mid-hold, and
+ * even then no other object's read can be starved and no held read can miss its first byte.
+ */
+export const HOLD_MAX_MS = PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS - 500;
 
 export const CONCURRENCY_RULES = Object.freeze({
   /**
@@ -143,12 +174,19 @@ export const CONCURRENCY_RULES = Object.freeze({
    * still technically overlaps. Three samples at the observer's tick rate mean the overlap had duration.
    */
   MIN_SIMULTANEOUS_SAMPLES: 3,
+  // ...AND THE COUNT IS APPLIED TO THE SAME UNBROKEN RUN AS THE DURATION, NOT TO A TOTAL. Three simultaneous
+  // samples anywhere in a window is a fact about the window; three in a row is a fact about an overlap.
   /**
-   * ...and how long that overlap must have lasted end to end.
+   * ...and how long ONE UNBROKEN RUN of them must have lasted.
    *
-   * MEASURED BETWEEN THE FIRST AND LAST SIMULTANEOUS SAMPLE, so a burst of three samples inside one tick
-   * cannot satisfy both this and the count. Two seconds is not a lot; it does not need to be. What it rules
-   * out is an instantaneous graze, not a short scan.
+   * MEASURED ACROSS THE LONGEST CONTINUOUS RUN, NOT FROM THE FIRST SIMULTANEOUS SAMPLE TO THE LAST. It used
+   * to be the latter, and that is not a duration: `last - first` counts every idle, unreadable and imprecise
+   * sample in between as though it had been overlap, and counts stretches in which nothing was sampled at
+   * all. Three simultaneous samples scattered across two minutes cleared both floors while nothing had
+   * overlapped for two seconds at any point.
+   *
+   * Two seconds is not a lot; it does not need to be. What it rules out is an instantaneous graze — and now
+   * also a scattering of grazes, which is what the old form could not see.
    */
   MIN_SIMULTANEOUS_SPAN_SECONDS: 2,
   /**
@@ -182,6 +220,63 @@ export const CONCURRENCY_RULES = Object.freeze({
 export const TRIGGER_SPREAD_IS_NOT_OVERLAP_EVIDENCE = true;
 
 // ---------------------------------------------------------------------------------------------------------
+// G14a, G14b and G15 — the CANONICAL ceilings, which are the acceptance plan's own and nobody else's
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * WHY THESE EXIST, AND WHY THE FIRST VERSION OF THIS GATE WAS WRONG WITHOUT THEM.
+ *
+ * G18 says "G14a–G17 still hold, UNCHANGED". The first version of the window command asserted
+ * `MEDIA_SERVER_BUDGETS.MAX_SCAN_RANGE_MULTIPLIER` = 6 and `MAX_SCAN_RESOLUTION_MULTIPLIER` = 6 — the looser
+ * multipliers the three single-server gates use because a real scanner is not a synthetic reader — and
+ * mentioned the acceptance plan's own 1.2x numbers only as a passing observation. Against 43 remote entries
+ * that is a ceiling of 258 where the plan says 155, and a gate that asserts 258 while the plan says 155 is
+ * not G14a unchanged; it is a different budget wearing G14a's name. The measurements passed both, which is
+ * exactly what makes the mistake worth naming rather than shrugging at: nothing failed, and the gate was
+ * still claiming something it had not checked.
+ *
+ * SO THE CANONICAL CEILINGS ARE ASSERTED, AND THE STRICTER ONES ARE ASSERTED AS WELL. Where the block-geometry
+ * model is tighter than the plan's arithmetic it stays, in ADDITION — never instead. A gate may be stricter
+ * than the plan; it may not be looser and keep the plan's gate id.
+ *
+ * EVERY MULTIPLIER AND EVERY DENOMINATOR COMES FROM `PROJECTION_PHASE_1_BUDGETS` AND `PROJECTION_PROBE_PLAN`,
+ * imported rather than restated. There is no flag, no default and no override by which a caller can move any
+ * of them: an earlier `--windows` option let a caller pass a scan-window count of its own, which is a way to
+ * weaken a required gate from the command line.
+ */
+export const CANONICAL_SCAN_WINDOWS_PER_ENTRY = PROJECTION_PHASE_1_BUDGETS.SCAN_WINDOWS_PER_ENTRY;
+
+/** G14a: ranged GETs, as `1.2 x (entry count x scan windows per entry)`. The plan's own arithmetic. */
+export function canonicalRangeRequestCeiling(remoteEntries: number): number {
+  return Math.ceil(
+    PROJECTION_PHASE_1_BUDGETS.MAX_RANGE_REQUEST_MULTIPLIER
+    * remoteEntries * CANONICAL_SCAN_WINDOWS_PER_ENTRY,
+  );
+}
+
+/** G14b: access resolutions, as `1.2 x entry count`. */
+export function canonicalResolutionCeiling(remoteEntries: number): number {
+  return Math.ceil(PROJECTION_PHASE_1_BUDGETS.MAX_RESOLUTION_REQUEST_MULTIPLIER * remoteEntries);
+}
+
+/**
+ * G15: provider bytes, as `1.2 x (probe window x scan windows per entry x entry count)`.
+ *
+ * THE FLAT FORM IS THE PLAN'S FORM, DELIBERATELY, AND ITS LOOSENESS IS RECORDED RATHER THAN CORRECTED HERE.
+ * Below `SINGLE_PROBE_BELOW_BYTES` the contract's own probe plan is a single window covering the whole
+ * object, so a per-entry denominator that followed the plan exactly would be much tighter than this for a
+ * corpus of small files. That tighter number is not what §5 says — §5's worked example is flat — and this
+ * function's job is to reproduce §5, not to improve on it. The improvement lives beside it, in the per-object
+ * block-geometry ceilings, which are asserted at the same time and are the tighter of the two on this corpus.
+ */
+export function canonicalScanByteCeiling(remoteEntries: number): number {
+  return Math.floor(
+    PROJECTION_PHASE_1_BUDGETS.MAX_BYTE_MULTIPLIER
+    * PROJECTION_PROBE_PLAN.WINDOW_BYTES * CANONICAL_SCAN_WINDOWS_PER_ENTRY * remoteEntries,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // The timeline
 // ---------------------------------------------------------------------------------------------------------
 
@@ -213,10 +308,39 @@ export interface OverlapSample {
 
 export interface OverlapAnalysis {
   readonly samples: number;
-  /** Samples in which every server in the set was in flight at once. THE NUMBER THE CLAIM RESTS ON. */
+  /**
+   * Samples in which every server in the set was in flight at once, ANYWHERE in the window.
+   *
+   * REPORTED, AND NO LONGER WHAT THE CLAIM RESTS ON. Three such samples scattered across a two-minute run —
+   * with idle, unreadable or imprecise samples between them — is not three servers scanning simultaneously
+   * for any length of time. See `longestContinuousSimultaneousSeconds`.
+   */
   readonly simultaneousSamples: number;
-  /** Wall seconds from the first such sample to the last. Zero when there was one or none. */
+  /**
+   * Wall seconds from the FIRST such sample to the LAST, disqualifying samples in between included.
+   *
+   * IT IS A REPORTED NUMBER AND IT IS NOT A DURATION, WHICH IS WHY IT NO LONGER CARRIES A FLOOR. Calling
+   * `last - first` an overlap duration is exactly the mistake that lets three scattered samples clear a
+   * two-second span while nothing overlapped for two seconds: everything between them is assumed to have
+   * been overlap, including the parts that were observed not to be and the parts that were not observed at
+   * all. It is kept because the gap between it and the continuous run is itself informative.
+   */
   readonly simultaneousSpanSeconds: number;
+  /**
+   * THE LONGEST UNBROKEN RUN of samples in which every server was in flight, in seconds. THE CLAIM.
+   *
+   * A run is broken by any sample that is not simultaneous, not readable or not precise, and ALSO by a gap
+   * between two adjacent qualifying samples wider than `MAX_CONTINUOUS_GAP_MS`. The second half matters as
+   * much as the first: unobserved time is not overlap, and without the gap ceiling a run that stopped
+   * sampling for a minute and resumed would have that minute counted as overlap it never watched.
+   */
+  readonly longestContinuousSimultaneousSeconds: number;
+  /** How many samples that longest run contained. Two samples 2 s apart is not the same evidence as ten. */
+  readonly longestContinuousSimultaneousSamples: number;
+  /** How many separate runs of simultaneity there were. More than one means the overlap was interrupted. */
+  readonly simultaneousRuns: number;
+  /** Adjacent qualifying samples that were too far apart to be joined. Reported so a stall is visible. */
+  readonly brokenByGap: number;
   /** The most servers ever seen in flight in one sample. One means the scans were sequential. */
   readonly maxServersInFlight: number;
   /** Samples in which at least two were in flight. Reported, never the claim. */
@@ -268,6 +392,15 @@ export function analyseOverlap(
   let widestSpanMs = 0;
   let firstAt = 0;
   let lastAt = 0;
+  // THE RUNNING STATE FOR THE CONTINUOUS RUN. `runStartAt` is where the current unbroken run began;
+  // `previousQualifyingAt` is the last sample that joined it, which is what the gap is measured from.
+  let runStartAt = 0;
+  let previousQualifyingAt = 0;
+  let runSamples = 0;
+  let runs = 0;
+  let brokenByGap = 0;
+  let longestRunMs = 0;
+  let longestRunSamples = 0;
 
   for (const sample of ordered) {
     const unreadable = new Set(sample.unreadable);
@@ -288,10 +421,36 @@ export function analyseOverlap(
     if (inFlightHere >= 2) pairwise += 1;
     // ALL OF THEM, NONE OF THEM UNREADABLE, AND THE TICK NARROW ENOUGH TO BE ONE INSTANT. All three halves;
     // see the notes on `unreadable` and on `SAMPLE_MAX_SPAN`.
-    if (inFlightHere === serverIds.length && unreadable.size === 0 && !imprecise) {
+    const qualifies = inFlightHere === serverIds.length && unreadable.size === 0 && !imprecise;
+    if (qualifies) {
       simultaneous += 1;
       if (simultaneous === 1) firstAt = sample.atMs;
       lastAt = sample.atMs;
+
+      // JOIN THE CURRENT RUN, OR START A NEW ONE. A qualifying sample continues the run only if the previous
+      // qualifying sample was close enough in wall time; otherwise the observer was not watching in between,
+      // and time nobody watched cannot be counted as overlap.
+      const joins = runSamples > 0
+        && (sample.atMs - previousQualifyingAt) <= CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP;
+      if (joins) {
+        runSamples += 1;
+      } else {
+        if (runSamples > 0) brokenByGap += 1;
+        runs += 1;
+        runStartAt = sample.atMs;
+        runSamples = 1;
+      }
+      previousQualifyingAt = sample.atMs;
+      const runMs = sample.atMs - runStartAt;
+      if (runMs > longestRunMs || (runMs === longestRunMs && runSamples > longestRunSamples)) {
+        longestRunMs = runMs;
+        longestRunSamples = runSamples;
+      }
+    } else if (runSamples > 0) {
+      // A DISQUALIFYING SAMPLE ENDS THE RUN, whatever disqualified it: a server idle, a server unreadable, or
+      // a tick too wide to describe one instant. Each of those is a moment at which "all three were scanning"
+      // was not observed to be true, and a run that spans one is not continuous.
+      runSamples = 0;
     }
   }
 
@@ -299,6 +458,10 @@ export function analyseOverlap(
     samples: ordered.length,
     simultaneousSamples: simultaneous,
     simultaneousSpanSeconds: simultaneous === 0 ? 0 : (lastAt - firstAt) / 1_000,
+    longestContinuousSimultaneousSeconds: longestRunMs / 1_000,
+    longestContinuousSimultaneousSamples: longestRunSamples,
+    simultaneousRuns: runs,
+    brokenByGap,
     maxServersInFlight: maxInFlight,
     pairwiseSamples: pairwise,
     perServerInFlightSamples: perServer,
@@ -334,15 +497,28 @@ export function overlapProblems(analysis: OverlapAnalysis): string[] {
     problems.push('no sample ever found more than one server scanning, which is what three SEQUENTIAL scans '
       + 'look like — the gate would have been reporting a concurrency it never observed');
   }
-  if (analysis.simultaneousSamples < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES) {
-    problems.push(`${analysis.simultaneousSamples} samples found all `
-      + `${CONCURRENCY_RULES.MIN_SERVERS_OBSERVED_IN_FLIGHT} servers scanning at once, against a floor of `
-      + `${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES}`);
+  // BOTH FLOORS ARE APPLIED TO THE LONGEST CONTINUOUS RUN, NOT TO THE TOTALS.
+  //
+  // THE DEFECT THIS CLOSES. Both used to be applied to totals: a count of simultaneous samples anywhere in
+  // the window, and `last - first` across them. Three simultaneous samples scattered across two minutes —
+  // with the servers observed IDLE in between, or unreadable, or the ticks too wide to mean anything —
+  // cleared a count of three and a span of two seconds while nothing had overlapped for two seconds at any
+  // point. The span was the worse of the two, because it silently counted every disqualifying sample between
+  // the first and the last as though it had been overlap.
+  if (analysis.longestContinuousSimultaneousSamples < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES) {
+    problems.push(`the longest UNBROKEN run of samples with all `
+      + `${CONCURRENCY_RULES.MIN_SERVERS_OBSERVED_IN_FLIGHT} servers scanning was `
+      + `${analysis.longestContinuousSimultaneousSamples} samples, against a floor of `
+      + `${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES} (${analysis.simultaneousSamples} such samples occurred `
+      + `in total, across ${analysis.simultaneousRuns} separate run(s) — scattered simultaneity is not `
+      + 'simultaneous scanning)');
   }
-  if (analysis.simultaneousSpanSeconds < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS) {
-    problems.push(`the three-way overlap spanned ${analysis.simultaneousSpanSeconds}s, against a floor of `
-      + `${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS}s — an instantaneous graze is not "scanning `
-      + 'simultaneously"');
+  if (analysis.longestContinuousSimultaneousSeconds < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS) {
+    problems.push(`the longest CONTINUOUS three-way overlap lasted `
+      + `${analysis.longestContinuousSimultaneousSeconds}s, against a floor of `
+      + `${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS}s. First-to-last across all simultaneous samples `
+      + `was ${analysis.simultaneousSpanSeconds}s, which is not a duration: it counts every idle, unreadable `
+      + 'and imprecise sample in between as though it had been overlap');
   }
   return problems;
 }
@@ -466,8 +642,16 @@ export function parseProviderCounters(
   const arrays: Record<string, number[]> = {};
   for (const key of COUNTER_ARRAY_KEYS) {
     const raw = document[key];
+    // WHOLE MEANS WHOLE, AND THE SCALARS ALREADY SAID SO WHILE THE ARRAYS DID NOT.
+    //
+    // THE DEFECT THIS CLOSES. The scalar branch above refuses anything that is not `Number.isInteger`, and
+    // this branch's own message called these "whole non-negative counts" — but it only checked `>= 0` and
+    // `isFinite`. A per-object column of 4.5 responses or 1.7 bytes therefore parsed cleanly, and every
+    // per-object budget below is a comparison against a ceiling: fractional counts compare, so they pass.
+    // A counters file that is wrong in a way the parser announced it would refuse is worse than one that is
+    // obviously broken, because nothing downstream has any reason to doubt it.
     if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== 'number'
-      || !Number.isFinite(entry) || entry < 0)) {
+      || !Number.isFinite(entry) || !Number.isInteger(entry) || entry < 0)) {
       problems.push({
         kind: 'missing-telemetry',
         detail: `the ${label} snapshot's "${key}" is not an array of whole non-negative counts, so per-object `
@@ -564,6 +748,68 @@ export function attributionProblems(
         detail: `the ${label} snapshot served ${snapshot.bytesServed} bytes but attributes ${attributed} to `
           + 'registered objects; the difference was served for a reference this gate never published',
       });
+    }
+  }
+
+  // A geometry failure above means the columns cannot be paired by index at all, and every elementwise check
+  // below would then be comparing objects that are not the same object. Stop rather than pile on.
+  if (problems.some((problem) => problem.kind === 'array-geometry')) return problems;
+
+  // ---------------------------------------------------------------------------------------------------
+  // ELEMENTWISE, WHICH IS THE HALF THE AGGREGATES CANNOT SEE
+  //
+  // THE DEFECT THIS CLOSES, AND IT IS THE ONE THAT MATTERS MOST HERE. Everything above is scalar
+  // monotonicity, array LENGTHS and array SUMS. All three survive a per-object reset that is compensated
+  // somewhere else: drop ordinal 7 from 40 MB to 0 and raise ordinal 8 by 40 MB, and every aggregate is
+  // unchanged, every partition still balances, and ordinal 7's window delta is NEGATIVE — which satisfies
+  // every ceiling in this file by arithmetic rather than by behaviour. An endpoint restart that reassigned
+  // ordinals does exactly this shape of damage.
+  //
+  // So three things are required per ordinal, and each closes a different way in:
+  //   SIZE STABILITY. `objectSizes[i]` is what every per-object ceiling is derived from. If it moved, the
+  //     ordinal is describing a different object and the ceiling belongs to something else. It also catches
+  //     a REORDER, for every pair of objects whose sizes differ.
+  //   MONOTONICITY, per column, per ordinal. These are lifetime totals; within one endpoint process they
+  //     cannot fall, so a fall means the process changed under the gate.
+  //   ...on EVERY cumulative column, not only bytes. A class column that reset would let the per-entry
+  //     request-shape check pass with a negative delta while the byte column looked fine.
+  //
+  // WHAT IT STILL CANNOT SEE, STATED RATHER THAN GLOSSED: a permutation of ordinals whose sizes AND whose
+  // every cumulative counter are pairwise identical. That permutation is unobservable here — and it is also
+  // harmless, because nothing downstream can reach a different verdict from two indistinguishable columns.
+  for (let ordinal = 0; ordinal < after.objectSizes.length; ordinal += 1) {
+    const sizeBefore = before.objectSizes[ordinal] as number;
+    const sizeAfter = after.objectSizes[ordinal] as number;
+    if (sizeBefore !== sizeAfter) {
+      problems.push({
+        kind: 'object-identity-moved',
+        detail: `object #${ordinal} was ${sizeBefore} bytes long in the before snapshot and ${sizeAfter} in `
+          + 'the after one. Registration ordinals are the only handle these columns carry, so a size that '
+          + 'moved means the ordinal is describing a different object and every per-object ceiling derived '
+          + 'from it belongs to something else',
+      });
+    }
+  }
+  const cumulativeColumns: ReadonlyArray<readonly [string, readonly number[], readonly number[]]> = [
+    ['objectBytes', before.objectBytes, after.objectBytes],
+    ['objectChunk', before.objectChunk, after.objectChunk],
+    ['objectSmall', before.objectSmall, after.objectSmall],
+    ['objectPartial', before.objectPartial, after.objectPartial],
+    ['objectOversized', before.objectOversized, after.objectOversized],
+  ];
+  for (const [name, from, to] of cumulativeColumns) {
+    for (let ordinal = 0; ordinal < to.length; ordinal += 1) {
+      const start = from[ordinal] as number;
+      const end = to[ordinal] as number;
+      if (end < start) {
+        problems.push({
+          kind: 'per-object-counter-reset',
+          detail: `${name}[${ordinal}] fell from ${start} to ${end} across the window. These are lifetime `
+            + 'totals within one endpoint process, so a fall means the process changed under the gate — and '
+            + 'a negative per-object delta satisfies every ceiling in this file by arithmetic rather than by '
+            + 'behaviour, while a compensating rise elsewhere leaves every aggregate partition intact',
+        });
+      }
     }
   }
   return problems;

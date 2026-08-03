@@ -3,12 +3,15 @@ import {
   MEDIA_SERVER_BUDGETS, corpusProblems, corpusSelfProblems, exactly, findRedactionProblems, opaqueRef,
   atLeast, withinBudget, type CorpusExpectation, type GateResult,
 } from '../core/projection/media-server-dataplane.js';
-import { PROJECTIOND_ADMISSION_LIMITS } from '../core/projection/runtime-contract.js';
+import {
+  PROJECTIOND_ADMISSION_LIMITS, PROJECTION_PHASE_1_BUDGETS,
+} from '../core/projection/runtime-contract.js';
 import {
   CONCURRENCY_DEADLINES_MS, CONCURRENCY_RULES, HOLD_ARM_MS, REQUIRED_SERVER_COUNT, THREE_SERVER_IDS,
   THREE_SERVER_NONCLAIMS, analyseOverlap, attributionProblems, breachedObjects, coldStateProblems,
-  breachedShapes, corpusAttribution, daemonBlockByteCeiling, objectByteVerdicts, objectShapeVerdicts,
-  overlapProblems, parseProviderCounters, triggerSpreadSeconds,
+  CANONICAL_SCAN_WINDOWS_PER_ENTRY, breachedShapes, canonicalRangeRequestCeiling,
+  canonicalResolutionCeiling, canonicalScanByteCeiling, corpusAttribution, daemonBlockByteCeiling,
+  objectByteVerdicts, objectShapeVerdicts, overlapProblems, parseProviderCounters, triggerSpreadSeconds,
   type OverlapSample, type ProviderCounters, type ThreeServerId,
 } from '../core/projection/three-server-concurrency.js';
 import { PLEX_LARGE_FIXTURE, PLEX_SCAN_ENVELOPE } from '../core/projection/plex-dataplane.js';
@@ -32,7 +35,7 @@ import {
 //   verify-corpus     --server ID --catalogue F --expect-file F
 //   counters          --url U --out F
 //   window            --before F --after F --gate G --large-bytes N --small-bytes N --remote-entries N
-//                     --objects N --probe-cache-before N [--windows N]
+//                     --objects N --probe-cache-before N --probe-cache-after N [--non-corpus-objects N]
 //   provider-invariants --counters F --gate G
 //   nonclaims
 //   report            --results F [--json F]        redaction-check --file F
@@ -182,14 +185,34 @@ async function main(): Promise<void> {
         REQUIRED_SERVER_COUNT,
         'one would be what three SEQUENTIAL scans look like, and three sequential scans is what this gate '
         + 'exists to refuse'));
-      record(args, atLeast('TS1-simultaneous-samples', analysis.simultaneousSamples,
-        CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
-        'samples in which every server was scanning at the same instant; a tick whose three answers were '
-        + `more than ${CONCURRENCY_DEADLINES_MS.SAMPLE_MAX_SPAN}ms apart is not one instant and does not count`));
-      record(args, atLeast('TS1-simultaneous-span-seconds',
-        Math.round(analysis.simultaneousSpanSeconds * 10) / 10,
+      // THE FLOORS ARE ON THE LONGEST UNBROKEN RUN, NOT ON TOTALS, AND THAT IS A CORRECTION.
+      //
+      // Both used to be totals: a count of simultaneous samples anywhere in the window, and `last - first`
+      // across them called a span. Three simultaneous samples scattered across two minutes — with the
+      // servers observed IDLE between them, or unreadable, or the ticks too wide to mean anything — cleared
+      // a count of three and a span of two seconds while nothing had overlapped for two seconds at any
+      // point. `last - first` is not a duration: it counts every disqualifying sample in between as though
+      // it had been overlap, and it counts time in which nothing was sampled at all.
+      record(args, atLeast('TS1-continuous-simultaneous-samples',
+        analysis.longestContinuousSimultaneousSamples, CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
+        'the longest UNBROKEN run of samples with every server scanning. A run is broken by any sample that '
+        + 'is idle, unreadable or too wide to describe one instant, and by any gap over '
+        + `${CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP}ms, because unobserved time is not overlap`));
+      record(args, atLeast('TS1-continuous-simultaneous-seconds',
+        Math.round(analysis.longestContinuousSimultaneousSeconds * 10) / 10,
         CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS,
-        'first to last three-way sample; an instantaneous graze is not "scanning simultaneously"'));
+        'how long that unbroken run actually lasted; an instantaneous graze, and a scattering of grazes, are '
+        + 'both refused'));
+      // TOTALS, RECORDED. The distance between them and the continuous run is itself informative: equal
+      // means one uninterrupted overlap, far apart means it kept breaking.
+      record(args, {
+        gate: 'TS1-simultaneous-totals', verdict: 'pass',
+        note: `${analysis.simultaneousSamples} simultaneous samples in total across `
+          + `${analysis.simultaneousRuns} run(s), first to last ${
+            Math.round(analysis.simultaneousSpanSeconds * 10) / 10}s, `
+          + `${analysis.brokenByGap} run(s) broken by a gap too wide to join. RECORDED; the floors are on `
+          + 'the longest unbroken run',
+      });
 
       // EVERY SERVER'S OWN BARRIER ALSO SAW ITS OWN SCANNER RUNNING, which is a SECOND, INDEPENDENT witness.
       // The observer above polls from outside; each driver's `ScanBarrier` watches from inside its own scan
@@ -318,7 +341,9 @@ async function main(): Promise<void> {
       const remoteEntries = needNumber(args, 'remote-entries');
       const largeBytes = needNumber(args, 'large-bytes');
       const smallBytes = needNumber(args, 'small-bytes');
-      const windows = optionalNumber(args, 'windows', MEDIA_SERVER_BUDGETS.MAX_SCAN_RANGE_MULTIPLIER);
+      // THERE IS NO `--windows` FLAG, AND ITS ABSENCE IS THE POINT. It used to let a caller supply the
+      // scan-window multiplier, defaulting to the media-server gates' loose 6 -- which is a way to weaken
+      // a REQUIRED acceptance gate from a command line. The scan-window count is the contract's, imported.
       const probeCacheBefore = needNumber(args, 'probe-cache-before');
       const probeCacheAfter = needNumber(args, 'probe-cache-after');
       const delta = (key: keyof ProviderCounters): number =>
@@ -365,15 +390,38 @@ async function main(): Promise<void> {
             + `${delta('heldRequests')} provider request(s) were actually blocked at the barrier`
           : cold.map((problem) => `${problem.kind}: ${problem.detail}`).join(' | ')));
 
-      // 3. G14a, G14b, G15, G16, G17 — the same budgets the three single-server gates hold, unchanged.
+      // 3. G14a, G14b, G15, G16, G17 — THE ACCEPTANCE PLAN'S OWN CEILINGS, because G18 says "unchanged".
+      //
+      // THE DEFECT THIS CLOSES. These used to be the three single-server gates' looser multipliers — 6 and 6
+      // — which against 43 remote entries is a ceiling of 258 where §5 of the plan says 155 and 52. The
+      // plan's own numbers appeared only in a note, as a "bonus observation". A gate that asserts 258 while
+      // the plan says 155 is not G14a UNCHANGED; it is a different budget wearing G14a's name, and the fact
+      // that the measurements cleared both is exactly what made it easy to miss.
+      //
+      // ONE DENOMINATOR FOR THREE SERVERS, not three. One daemon serves all three and its scan-window cache
+      // is what the second and third scan read from, so a 3x denominator would be a budget nothing could
+      // ever breach. That is a statement about the DENOMINATOR, which the plan fixes as the entry count. It
+      // is not licence to move the MULTIPLIER, which is what the previous version had done.
       record(args, withinBudget(`${gate}-G14a-range-requests`, delta('rangeRequests'),
-        Math.ceil(remoteEntries * windows),
-        `denominator: ${remoteEntries} remote entries x ${windows} windows. ONE denominator for three `
-        + 'servers, because one daemon serves all three and its scan-window cache is what the second and '
-        + 'third scan read from — a 3x denominator would be a budget nothing could ever breach'));
+        canonicalRangeRequestCeiling(remoteEntries),
+        `the acceptance plan's own G14a: x${PROJECTION_PHASE_1_BUDGETS.MAX_RANGE_REQUEST_MULTIPLIER} of `
+        + `(${remoteEntries} remote entries x ${CANONICAL_SCAN_WINDOWS_PER_ENTRY} scan windows per entry), `
+        + 'imported from PROJECTION_PHASE_1_BUDGETS and not settable from a command line'));
       record(args, withinBudget(`${gate}-G14b-resolutions`, delta('resolutions'),
-        Math.ceil(remoteEntries * MEDIA_SERVER_BUDGETS.MAX_SCAN_RESOLUTION_MULTIPLIER),
-        `denominator: ${remoteEntries} remote entries`));
+        canonicalResolutionCeiling(remoteEntries),
+        `the acceptance plan's own G14b: x${PROJECTION_PHASE_1_BUDGETS.MAX_RESOLUTION_REQUEST_MULTIPLIER} of `
+        + `${remoteEntries} remote entries`));
+      // ...AND THE LOOSER MEDIA-SERVER MULTIPLIER IS RECORDED, NOT ASSERTED. It is what the three
+      // single-server gates hold a REAL scanner to, and §5's own preamble says its numbers are measured
+      // against a SYNTHETIC scan and are not evidence about a real media server's metadata pass. Both are
+      // true; the REQUIRED ceiling is the plan's, and this is reported so the distance between them is
+      // visible rather than argued about.
+      record(args, {
+        gate: `${gate}-G14a-against-the-media-server-multiplier`, verdict: 'pass',
+        note: `${delta('rangeRequests')} ranged GETs against the real-scanner allowance of `
+          + `${Math.ceil(remoteEntries * MEDIA_SERVER_BUDGETS.MAX_SCAN_RANGE_MULTIPLIER)}. RECORDED, `
+          + 'asserted on by nothing: the required ceiling above is the acceptance plan\'s',
+      });
       // G15, AGGREGATE, AND EVERY TERM OF ITS DENOMINATOR NAMED.
       //
       // THE AGGREGATE IS THE SUM OF THE PER-OBJECT CEILINGS, NOT A MULTIPLIER OVER A POOLED SIZE. A pooled
@@ -384,13 +432,24 @@ async function main(): Promise<void> {
       const perObject = objectByteVerdicts(before, after, daemonBlockByteCeiling,
         PLEX_LARGE_FIXTURE.MIN_BYTES, MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION);
       const aggregateCeiling = perObject.reduce((total, verdict) => total + verdict.ceilingBytes, 0);
-      record(args, withinBudget(`${gate}-G15-provider-bytes`, delta('bytesServed'), aggregateCeiling,
-        `denominator: the sum of every registered object's own ceiling. ${largeBytes} bytes sit above the `
-        + `single-probe threshold and ${smallBytes} below it; the large fixture is held to the `
+      // G15, THE ACCEPTANCE PLAN'S OWN, FIRST — and the stricter block-geometry model IN ADDITION, never
+      // instead. A gate may be stricter than the plan; it may not be looser and keep the plan's gate id.
+      record(args, withinBudget(`${gate}-G15-provider-bytes`, delta('bytesServed'),
+        canonicalScanByteCeiling(remoteEntries),
+        `the acceptance plan's own G15: x${PROJECTION_PHASE_1_BUDGETS.MAX_BYTE_MULTIPLIER} of (probe window `
+        + `x ${CANONICAL_SCAN_WINDOWS_PER_ENTRY} scan windows per entry x ${remoteEntries} entries)`));
+      record(args, withinBudget(`${gate}-G15-provider-bytes-block-geometry`, delta('bytesServed'),
+        aggregateCeiling,
+        `STRICTER, AND IN ADDITION: the sum of every registered object's own ceiling. ${largeBytes} bytes sit `
+        + `above the single-probe threshold and ${smallBytes} below it; the large fixture is held to the `
         + `x${MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION} fraction, everything else to `
         + `${REQUIRED_SERVER_COUNT}x the daemon's own per-object block envelope`));
+      // G16 FROM THE PLAN'S OWN CONSTANT TOO, for the same reason as G14a and G14b. The two happen to be
+      // equal at zero, which is exactly why it was easy to reach for the wrong one: a gate id that names an
+      // acceptance gate should read the acceptance gate's constant even when nothing turns on it today.
       record(args, withinBudget(`${gate}-G16-http-429`, delta('served429'),
-        MEDIA_SERVER_BUDGETS.MAX_HTTP_429, 'not "few". Zero — a 429 means the admission limits did not hold'));
+        PROJECTION_PHASE_1_BUDGETS.MAX_HTTP_429,
+        'not "few". Zero — a 429 means the admission limits did not hold'));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
 
@@ -531,7 +590,28 @@ async function main(): Promise<void> {
       }
       const jsonOut = args.flags.get('json');
       if (jsonOut !== undefined) writeFileSync(jsonOut, `${JSON.stringify(results, null, 2)}\n`);
-      if (failed.length > 0) process.exit(1);
+
+      // A SKIPPED ASSERTION IS NOT A SUCCESS IN A REQUIRED GATE, AND THIS USED TO EXIT ZERO ON ONE.
+      //
+      // The count was printed and then ignored: only `fail` moved the exit status. So a run in which some
+      // assertion had declined to judge itself would print `0 failed, 7 skipped`, exit 0, and the gate
+      // script would go on to print the whole PASSED banner underneath it. That is the same shape as the
+      // skip-versus-pass mistake this gate is careful about at the PROCESS level — 77 is not 0 — reappearing
+      // one level down, at the assertion level, where nothing was guarding it.
+      //
+      // SKIP-AS-SUCCESS REMAINS AVAILABLE, DELIBERATELY, AND ONLY AT THE PROCESS LEVEL: the optional entry
+      // point maps status 77 and nothing else. A caller who wants "this host could not host it, and that is
+      // fine" has to choose that entry point; an assertion that skipped inside a run that DID happen is a
+      // different thing entirely and has no such escape.
+      if (failed.length > 0 || skipped.length > 0) {
+        if (skipped.length > 0 && failed.length === 0) {
+          console.error(`${skipped.length} assertion(s) SKIPPED and none failed. A skipped assertion in a `
+            + 'required gate is not a success: it is a question the gate declined to answer, and a run that '
+            + 'exited zero over one would be reporting evidence it does not have.');
+          for (const result of skipped.slice(0, 10)) console.error(`  skip ${result.gate}`);
+        }
+        process.exit(1);
+      }
       return;
     }
 

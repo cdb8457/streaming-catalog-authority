@@ -76,10 +76,19 @@ analysis to refuse it.
 
 Three properties are required of the observation, and each closes a different way of overstating it:
 
-- **at least three such samples** — one is a point, and a point can be produced by two scans that touched at
-  the edges, which is the closest thing to sequential that still technically overlaps;
-- **at least two seconds from the first to the last** — so a burst of samples inside one tick cannot satisfy
-  both the count and the span;
+- **at least three samples in ONE UNBROKEN RUN** — one is a point, and a point can be produced by two scans
+  that touched at the edges, which is the closest thing to sequential that still technically overlaps;
+- **that unbroken run must last at least two seconds** — so a burst of samples inside one tick cannot satisfy
+  both the count and the duration;
+- **a run is broken by any disqualifying sample and by any gap over 2.5 s**. Both floors used to be applied
+  to TOTALS — a count of simultaneous samples anywhere in the window, and `last − first` across them called a
+  span. Three simultaneous samples scattered across two minutes, with the servers observed *idle* between
+  them, cleared both while nothing had overlapped for two seconds at any point. `last − first` is not a
+  duration: it counts every idle, unreadable and imprecise sample in between as though it had been overlap,
+  and it counts stretches in which nothing was sampled at all. The gap ceiling is derived — one tick sleep
+  plus the widest a tick may be and still describe one instant — because **unobserved time cannot become
+  overlap duration**. The totals are still reported, and the distance between them and the unbroken run is
+  itself informative;
 - **every tick's three answers within two seconds of each other**. A tick is not an instant. If the slowest
   answer arrived thirty seconds after the fastest, "all three said Running in this tick" is compatible with
   the first having finished before the last was asked. Wider ticks are counted as **imprecise** and can never
@@ -101,8 +110,15 @@ break the run:**
 
 | Bound | Derived from | Why |
 |---|---|---|
-| the endpoint's `--max-hold`, 5 s | `PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS` = 10 s | a held response that has not begun by the first-byte deadline is abandoned and the **read fails**, so a media server would catalogue a file it could not open — the gate would be manufacturing the defect it claims to measure |
+| the endpoint's `--max-hold`, **4.5 s** | `PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS` = 10 s, **and** `MAX_QUEUE_WAIT_MS` = 5 s, which it must be STRICTLY under | a held response that has not begun by the first-byte deadline is abandoned and the **read fails**, so a media server would catalogue a file it could not open — the gate would be manufacturing the defect it claims to measure |
 | the blocking window, 4 s | `PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS` = 5 s | held requests occupy the daemon's four per-endpoint slots, and a read that cannot get one inside that budget returns EIO — a longer hold would mis-catalogue forty-nine entries it has nothing to do with |
+
+**The backstop is strictly below the queue-wait budget, and an earlier version was exactly equal to it.** It
+was 5 s against a 5 s budget while the text beside it claimed "strictly shorter". At equality the guarantee is
+gone on the boundary: a read arriving an instant after another blocks would wait the entire budget and could
+be refused admission — the very starvation the bound exists to prevent. The chain is now strictly ordered and
+every term derived:
+`arm 4,000 ms < backstop 4,500 ms < MAX_QUEUE_WAIT_MS 5,000 ms < FIRST_BYTE_DEADLINE_MS 10,000 ms`.
 
 **The blocking clock starts when a request first blocks, not when the hold is armed.** An armed hold nothing
 has reached costs nothing and starves nobody, so it stays armed until a scanner actually arrives. Timing it
@@ -180,13 +196,38 @@ budget over broken telemetry would pass.
 
 ### 5.2 The denominators, named
 
-**G14a — ranged GETs.** `≤ MAX_SCAN_RANGE_MULTIPLIER × remote entries`. **One denominator for three servers**,
-not three: one daemon serves all three, and its scan-window cache is what the second and third scan read
-from. A 3× denominator would be a budget nothing could ever breach.
+**G14a, G14b and G15 are the ACCEPTANCE PLAN'S OWN ceilings, imported from `PROJECTION_PHASE_1_BUDGETS`.**
+G18 says G14a–G17 hold *unchanged*, so the multipliers are the plan's ×1.2 and the denominators are the
+plan's:
 
-**G14b — access resolutions.** `≤ MAX_SCAN_RESOLUTION_MULTIPLIER × remote entries`, same reasoning.
+| Gate | Ceiling | Against 43 remote entries |
+|---|---|---|
+| G14a | `⌈1.2 × (entries × SCAN_WINDOWS_PER_ENTRY)⌉` | 155 |
+| G14b | `⌈1.2 × entries⌉` | 52 |
+| G15 | `⌊1.2 × (probe window × SCAN_WINDOWS_PER_ENTRY × entries)⌋` | 162,319,564 |
 
-**G15 — bytes, per object first and in aggregate second.** Two bounds, and the tighter one binds:
+**An earlier version of this gate asserted 258 and 258 instead**, using the three single-server gates' looser
+×6 real-scanner multipliers and relegating the plan's own numbers to a note headed "bonus observation". The
+measurements cleared both, which is precisely what made it easy to miss: nothing failed, and the gate was
+still claiming a budget it had not checked. A gate that asserts 258 while §5 says 155 is not G14a unchanged;
+it is a different budget wearing G14a's name. **There is no longer any flag by which the multiplier or the
+window count can be supplied** — a `--windows` option used to exist, and a required acceptance gate that can
+be weakened from a command line is not a required gate.
+
+The looser real-scanner allowance is still **recorded**, because §5's own preamble says its numbers are
+measured against a *synthetic* scan and are not evidence about a real media server's metadata pass. Both are
+true. The required ceiling is the plan's; the other is reported so the distance is visible rather than argued
+about.
+
+**One denominator for three servers, not three.** One daemon serves all three, and its scan-window cache is
+what the second and third scan read from, so a 3× denominator would be a budget nothing could ever breach.
+That is a statement about the *denominator*, which the plan fixes as the entry count — not licence to move
+the *multiplier*, which is what the earlier version had done.
+
+**G15's stricter companion — bytes, per object.** The plan's flat ceiling above is asserted first and always.
+Beside it, and never instead of it, the per-object model below is asserted too; on this corpus it is the
+tighter of the two (116,514,941 against the plan's 162,319,564). Two bounds inside it, and the tighter one
+binds per object:
 
 - **Block geometry × the number of scanners.** `daemonBlockByteCeiling(size)` is
   `8 × min(4 MiB, size) + 3 × min(1 MiB, size)` — the daemon's own demand block, the daemon's own probe
@@ -266,6 +307,29 @@ sequences of three, with no edit to any tracked file inside a sequence. That is 
 plan asks for — **on the wrong platform**. §6 of the plan says the media-server gates close on a Linux or
 Unraid host, and none of these fourteen runs was one.
 
+**ALL FOURTEEN RUNS WERE AGAINST THE PRE-REMEDIATION GATE, AND THE REMEDIATED GATE HAS NOT BEEN RUN ON
+DOCKER.** A coordinator review afterwards found five defects — per-object telemetry that was not fail-closed,
+an overlap "span" that was not a duration, a preflight that ran after the `/dev/fuse` probe container, a
+`report` that exited zero over a skipped assertion, and G14a/G14b/G15 asserted against the media-server
+gates' ×6 multipliers instead of the acceptance plan's ×1.2 — and the fixes changed what the gate asserts.
+Concretely:
+
+- **the numbers in §7.1 are still what those runs measured**; nothing measured was invalidated, and every one
+  of them clears the stricter canonical ceilings (47 ≤ 155, 43 ≤ 52, 13,205,874 ≤ 162,319,564);
+- **the assertion count and several gate ids have changed.** Those runs recorded 59 assertions and ids like
+  `TS1-simultaneous-samples`; the remediated gate records more, and the overlap ids are now
+  `TS1-continuous-simultaneous-samples` / `-seconds`. A future run record must not be compared against 59;
+- **the continuous-overlap floor has not been exercised against a live timeline.** The measured 9–10 samples
+  over 4.1–4.6 s are continuous at the 500 ms tick rate — `(n−1) × ~510 ms` accounts for the whole span, and
+  every run reported zero imprecise and zero unreadable samples — and the offline suite reproduces both
+  shapes and requires them to pass. That is an argument from the retained aggregates, not an observation of
+  the new code against a real timeline;
+- **one runtime constant moved**: the endpoint's hard hold backstop, 5 s → 4.5 s, so that it is strictly
+  below the 5 s admission queue-wait budget rather than equal to it. It governs only the crash path.
+
+**So this document claims nothing about the remediated gate's behaviour on a real host.** Runs 15+ are
+outstanding.
+
 **The row for runs 12–14 was necessarily written after they finished**, which is true of every run record and
 is not a gap in this one: that edit changed this document and nothing the gate reads. Re-running after each
 edit that records a run would not terminate.
@@ -280,15 +344,15 @@ spanning 4.1–4.6 s**, and Plex's scan took 25–32 s against Emby's 8 s and Je
 | | |
 |---|---|
 | corpus | **50 published identities**, one generation, one mount, one endpoint — 43 remote (one of them the 105,406,871-byte barrier fixture) and 7 local |
-| **overlap** | **9 samples with all three servers scanning at the same instant**, spanning **4.1 s**, out of 61 samples. 13 samples had two or more. **0 samples were too wide to describe one instant** (widest tick 0.02 s) and **0 had a server that could not be read** |
+| **overlap** | **9 samples with all three servers scanning at the same instant, in one unbroken run**, lasting **4.1 s**, out of 61 samples. 13 samples had two or more. **0 samples were too wide to describe one instant** (widest tick 0.02 s) and **0 had a server that could not be read** |
 | scan durations | Plex 30 s (55 samples in flight), Emby 8 s (13), Jellyfin 5 s (9) |
 | trigger spread | 0 s — **recorded, and not the evidence** |
 | barrier | one provider request blocked, held for **4.1 s**, **zero holds lapsed** |
 | cold window | endpoint had served **0 bytes** for any corpus object beforehand; the daemon's scan-window cache grew **33,187 → 5,093,165 bytes** |
 | per server | **50 / 50 matched** on all three, through each server's own predicate: zero missing, zero wrong-sized, zero not-ordinary, zero duplicated, zero unexpected |
-| G14a | **47** ranged GETs against a ceiling of 258 |
-| G14b | **43** resolutions against 258 |
-| G15 aggregate | **13,205,874 bytes** against 116,514,941 |
+| G14a | **47** ranged GETs against the acceptance plan's **155** |
+| G14b | **43** resolutions against the plan's **52** |
+| G15 aggregate | **13,205,874 bytes** against the plan's **162,319,564** — and against the stricter block-geometry sum of **116,514,941**, asserted in addition |
 | G15 large fixture | **11,534,336 bytes = 0.109x** of the object's own length, against the x0.5 ceiling. Three independent scanners each paying a full envelope would have been 110,100,480 bytes and would have breached it |
 | G15 per object | **0 breaches** across 43 exercised objects |
 | G16 | **0** HTTP 429, in the window and across the whole run |

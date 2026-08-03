@@ -35,18 +35,22 @@
 #
 #   AND BY A RENDEZVOUS, so the observation is not luck. One remote object's provider read is HELD at the
 #   endpoint before any scan is triggered. A scanner that reaches that object stops there and waits, so the
-#   three arrive at their own pace and then coexist. The hold is bounded at eight seconds and released the
-#   moment the three-way sample lands, both comfortably inside the daemon's own ten-second first-byte
-#   deadline — a hold that outlived it would fail the read and this gate would be manufacturing the defect it
-#   claims to measure. The hold makes the observation likely; the observation makes the claim.
+#   three arrive at their own pace and then coexist. THE HOLD IS NOT RELEASED WHEN THE RENDEZVOUS SUCCEEDS —
+#   the first real run did that and destroyed the overlap it had just created — it runs for its whole bounded
+#   window: FOUR seconds of actual blocking, with the endpoint's own backstop at 4.5 s. Both sit strictly
+#   under the daemon's five-second admission queue-wait budget, so no other object's read can be starved, and
+#   far under its ten-second first-byte deadline, so no held read can fail. The hold makes the observation
+#   likely; the observation makes the claim.
 #
 # HOW THE WINDOW IS KEPT COLD, WHICH IS THE OTHER WAY THIS GATE COULD LIE. G19 of the acceptance plan says a
 # re-scan over an unchanged manifest costs the provider ZERO — a correct property of the product and a
 # catastrophe for a concurrency measurement, because a warm window satisfies every ceiling by doing nothing.
 # So the corpus generation is published AFTER all three libraries exist, the three concurrent scans are the
-# FIRST thing that ever reads it, and the gate asserts all of: the daemon's own scan-window cache was empty,
-# the endpoint had served ZERO bytes for any corpus object, and a provider read was actually BLOCKED at the
-# barrier.
+# FIRST thing that ever reads it, and the gate asserts all of: the endpoint had served ZERO bytes for any
+# corpus object — the load-bearing one — the daemon's own scan-window cache GREW across the window, and a
+# provider read was actually BLOCKED at the barrier. NOT that the daemon's cache was empty: it is not, and
+# nothing is wrong, because this gate publishes a LOCAL seed entry on purpose and a local entry's own
+# byte-identity window lands in that same cache. The first real run measured 33,187 bytes there.
 #
 # WHAT IT DOES NOT PROVE, AND WILL NOT BE PRESENTED AS PROVING. A Docker Desktop pass is NOT Linux/Unraid
 # closure and closes NONE of G7–G13 or G18. No run has ever happened on a real Linux or Unraid host and no
@@ -314,6 +318,46 @@ docker compose -f docker-compose.projectiond.yml config -q
 echo "  both parse"
 
 # ----------------------------------------------------------------------------------------------------------
+step "the non-mutating host preflight, BEFORE this gate starts a single container"
+# ----------------------------------------------------------------------------------------------------------
+# WHETHER THIS HOST'S MOUNTS LET THE DAEMON PUBLISH A NAMESPACE AT ALL.
+#
+# THIS RUNS BEFORE ANY CONTAINER STARTS, AND THE ORDER IS THE POINT.
+#
+# IT USED TO RUN AFTER THE /dev/fuse PROBE, WHICH STARTS A CONTAINER. The offline suite asserted the preflight
+# came "before any container is started" and compared it against the RANGE container, three hundred lines
+# further down — so the assertion was true of the comparison it made and false of the sentence it existed to
+# defend. A preflight that runs after a container is diagnosing a host this gate has already begun using, and
+# its "the host was fine" verdict is a verdict about a host with side effects on it.
+#
+# WHAT MOVING IT COSTS, STATED RATHER THAN GLOSSED. On a host with no /dev/fuse the gate now runs two
+# host-local process invocations before deciding to skip; and a host whose propagation is `not-shared` AND
+# which has no /dev/fuse now FAILS where it used to SKIP. That is the stricter direction and it is the right
+# one: both are real reasons this gate cannot produce evidence, and a failure is louder than a skip.
+#
+# IT MUTATES NOTHING. Two read-only host queries — `findmnt` on the run root, and a mode check on two
+# directories this gate created itself. No container, no image, no database, no daemon.
+#
+# THE FAILURE IT CATCHES IS THE MOST LIKELY FIRST FAILURE OF THE FIRST UNRAID RUN, and no run on Docker
+# Desktop could ever have revealed it. The daemon binds its mount point `rshared` so the FUSE namespace it
+# creates inside its container becomes visible to the media servers beside it — and on this gate there are
+# THREE of them, so the propagation requirement is exercised three times over. The kernel only permits
+# `rshared` on a bind whose SOURCE IS ALREADY A SHARED MOUNT. Docker refuses the container outright otherwise
+# — the daemon never starts. On Docker Desktop the bind source lives inside Docker's own Linux VM, whose root
+# is shared, so the condition holds by construction; Unraid is not systemd, and a checkout under /mnt/user is
+# on a FUSE share. Neither is shared by default.
+#
+# IT DIAGNOSES AND DOES NOT REPAIR. Making a host mount shared changes the machine the operator is standing
+# on and outlives the run, so the check names the remedy rather than performing it.
+#
+# `--require` MAKES A `not-shared` ANSWER FATAL, and an UNDETERMINED one is deliberately not: a Windows host
+# publishes no /proc/self/mountinfo and the gates demonstrably pass there. A check that cannot run says so on
+# stderr rather than passing quietly.
+# ----------------------------------------------------------------------------------------------------------
+npx tsx src/ops/projection-host-preflight-cli.ts propagation --path "$GATE_ROOT" --require
+npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" --path "$WORK"
+
+# ----------------------------------------------------------------------------------------------------------
 step "checking this host can host the gate at all"
 # ----------------------------------------------------------------------------------------------------------
 # A SKIP IS NOT A PASS, AND IT DOES NOT EXIT 0.
@@ -335,32 +379,6 @@ if ! docker run --rm --device /dev/fuse:/dev/fuse "$VERIFY_IMAGE" test -c /dev/f
   exit "$GATE_SKIP_STATUS"
 fi
 echo "  /dev/fuse is reachable from a container"
-
-# ----------------------------------------------------------------------------------------------------------
-# ...AND WHETHER ITS MOUNTS LET THE DAEMON PUBLISH A NAMESPACE AT ALL.
-#
-# THIS RUNS BEFORE ANYTHING IS BUILT OR STARTED, AND THE ORDER IS THE POINT. A preflight that ran after the
-# image build and the database start would be diagnosing a host the gate had already begun changing, and its
-# "the host was fine" verdict would be a verdict about a host with side effects on it.
-#
-# THE FAILURE IT CATCHES IS THE MOST LIKELY FIRST FAILURE OF THE FIRST UNRAID RUN, and no run on Docker
-# Desktop could ever have revealed it. The daemon binds its mount point `rshared` so the FUSE namespace it
-# creates inside its container becomes visible to the media servers beside it — and on this gate there are
-# THREE of them, so the propagation requirement is exercised three times over. The kernel only permits
-# `rshared` on a bind whose SOURCE IS ALREADY A SHARED MOUNT. Docker refuses the container outright otherwise
-# — the daemon never starts. On Docker Desktop the bind source lives inside Docker's own Linux VM, whose root
-# is shared, so the condition holds by construction; Unraid is not systemd, and a checkout under /mnt/user is
-# on a FUSE share. Neither is shared by default.
-#
-# IT DIAGNOSES AND DOES NOT REPAIR. Making a host mount shared changes the machine the operator is standing
-# on and outlives the run, so the check names the remedy rather than performing it.
-#
-# `--require` MAKES A `not-shared` ANSWER FATAL, and an UNDETERMINED one is deliberately not: a Windows host
-# publishes no /proc/self/mountinfo and the gates demonstrably pass there. A check that cannot run says so on
-# stderr rather than passing quietly.
-# ----------------------------------------------------------------------------------------------------------
-npx tsx src/ops/projection-host-preflight-cli.ts propagation --path "$GATE_ROOT" --require
-npx tsx src/ops/projection-host-preflight-cli.ts traversal --path "$GATE_ROOT" --path "$WORK"
 
 # ----------------------------------------------------------------------------------------------------------
 step "building the production projectiond image"
@@ -508,10 +526,16 @@ LEASE_MARKER="PJDLEASE$(node -e "console.log(require('node:crypto').randomBytes(
 # with. The endpoint's own default is 15 s, chosen for gates whose hold is armed and released inside one
 # phase; this one is a RENDEZVOUS the three scanners arrive at one at a time, so it is set explicitly.
 #
-# HOLD_MAX is half the first-byte deadline; the driver releases four seconds after a request actually BLOCKS,
-# which is strictly inside the queue-wait budget. If this gate were killed between arming and releasing, the
-# worst case is a five-second read rather than a failed one.
-HOLD_MAX=5s
+# THE BACKSTOP IS STRICTLY BELOW THE QUEUE-WAIT BUDGET, AND IT USED TO BE EXACTLY EQUAL TO IT. At 5s against
+# a 5s budget the guarantee is gone on the boundary: a read arriving an instant after another blocks would
+# wait the entire budget and could be refused admission — the very starvation the bound exists to prevent.
+# The chain is now strictly ordered and every term is derived:
+#
+#   arm 4,000ms  <  backstop 4,500ms  <  MAX_QUEUE_WAIT_MS 5,000ms  <  FIRST_BYTE_DEADLINE_MS 10,000ms
+#
+# The driver releases four seconds after a request actually BLOCKS; the backstop only matters if this gate
+# dies mid-hold, and even then no other object's read can be starved and no held read can miss its first byte.
+HOLD_MAX=4500ms
 
 # EVERY OBJECT THE RUN WILL EVER NEED IS SERVED FROM THE START, in a registration order the window assertion
 # depends on: THE CANARY FIRST, then the barrier, then the corpus. The endpoint's per-object columns are

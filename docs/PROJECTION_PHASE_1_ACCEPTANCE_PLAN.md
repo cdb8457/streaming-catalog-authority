@@ -200,7 +200,8 @@ on the same mount directory as the same library root.
 only place that says what has been run: **fourteen runs, one failing and thirteen green, twelve of the
 thirteen through the committed three-consecutive-fresh-run wrapper in four sequences of three, each 59
 assertions with none failed and none skipped. All fourteen are Windows / Docker Desktop, which §6 says closes
-none of G7–G13 or G18.** The one failure is worth reading: it was the gate's, not the product's — the barrier
+none of G7–G13 or G18 — and all fourteen predate a coordinator review that tightened what the gate asserts,
+so the REMEDIATED gate has not been run on a real host at all.** The one failure is worth reading: it was the gate's, not the product's — the barrier
 was released the instant the rendezvous succeeded, which destroyed the overlap it had just created.
 
 **It is not a wrapper around the other three gates, and the distinction is the whole point.** Running those
@@ -217,8 +218,10 @@ is recorded as a harness health check and is explicitly not the evidence.
 **The window is COLD, on two independent instruments**, because G19 above says a re-scan legitimately costs the
 provider nothing — which would let a warm window satisfy every ceiling in §5 by doing nothing at all. The
 corpus is published only after all three libraries exist and after Plex's unavoidable library-creation scan has
-been waited out; the daemon's own scan-window cache is asserted empty; and the endpoint is asserted to have
-served zero bytes for any corpus object before the scans opened.
+been waited out; the endpoint is asserted to have served **zero bytes for any corpus object** before the scans
+opened — the load-bearing check — and the daemon's own scan-window cache is asserted to have **grown** across
+the window. **Not** that the daemon's cache was empty: it is not, because that gate publishes a local seed
+entry on purpose and a local entry's own byte-identity window lands in the same cache.
 
 **WHAT THAT GATE STILL DOES NOT CLOSE, AND WHY THE ROW ABOVE READS `NOT RUN`.** Every run has been on Windows /
 Docker Desktop, which §6 says closes none of G7–G13 or G18. **Per-server provider attribution is impossible

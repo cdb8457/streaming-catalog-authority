@@ -11,9 +11,12 @@
 # ON THIS GATE THAT MATTERS MORE THAN ON THE OTHER THREE. Its central measurement is a COLD window: the
 # corpus is published after the libraries exist and the three concurrent scans are the first thing that ever
 # reads it. A run that inherited a warm probe cache would measure a window in which the data plane did no
-# work, and every ceiling would be satisfied by an empty room. The gate asserts the cache was empty, so an
-# inherited one is a failure rather than a silent pass — but the reason it can assert that is that each run
-# starts from nothing, and this script is what makes that true three times.
+# work, and every ceiling would be satisfied by an empty room. The gate asserts that the ENDPOINT had served
+# zero bytes for any corpus object and that the daemon's cache GREW — NOT that the cache was empty, which is
+# false and correctly so: the gate publishes a local seed entry on purpose and a local entry's own
+# byte-identity window lands in that cache. An inherited warm cache is therefore a failure rather than a
+# silent pass — but the reason it can be is that each run starts from nothing, and this script is what makes
+# that true three times.
 #
 # A SKIPPED RUN IS NOT A COMPLETED RUN, AND THIS SCRIPT CANNOT SAY OTHERWISE. The gate exits 77 when the host
 # cannot host it. So: runs are COUNTED, the closing message is emitted only when the count reaches the

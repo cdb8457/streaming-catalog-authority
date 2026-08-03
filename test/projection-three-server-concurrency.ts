@@ -16,8 +16,12 @@ import {
   HOLD_MAX_MS, REQUIRED_SERVER_COUNT, THREE_SERVER_IDS, THREE_SERVER_NONCLAIMS, analyseOverlap,
   attributionProblems, breachedObjects, breachedShapes, coldStateProblems, corpusAttribution,
   daemonBlockByteCeiling, objectByteVerdicts, objectShapeVerdicts, overlapProblems, parseProviderCounters,
-  triggerSpreadSeconds, type OverlapSample, type ProviderCounters,
+  triggerSpreadSeconds, CANONICAL_SCAN_WINDOWS_PER_ENTRY, canonicalRangeRequestCeiling,
+  canonicalResolutionCeiling, canonicalScanByteCeiling,
+  type OverlapSample, type ProviderCounters,
 } from '../src/core/projection/three-server-concurrency.js';
+import { PROJECTION_PHASE_1_BUDGETS } from '../src/core/projection/runtime-contract.js';
+import { PROJECTION_PROBE_PLAN } from '../src/core/projection/manifest-v1.js';
 import { adapterFor, runConcurrentScans, type ServerAdapter } from '../src/ops/projection-three-server-concurrency.js';
 
 // Projection Phase 1 — the offline half of the THREE-SERVER CONCURRENT SCAN gate (G18).
@@ -174,15 +178,29 @@ function sequentialTimeline(): OverlapSample[] {
   return samples;
 }
 
-/** A timeline in which all three overlapped for a real interval. */
-function overlappingTimeline(ticks = 8, spanMs = 40): OverlapSample[] {
+/** A timeline in which all three overlapped for a real, CONTINUOUS interval. */
+function overlappingTimeline(ticks = 8, spanMs = 40, intervalMs = 500): OverlapSample[] {
   const samples: OverlapSample[] = [];
   for (let tick = 0; tick < ticks; tick += 1) {
     const inFlight: Record<string, boolean> = {};
     for (const id of THREE_SERVER_IDS) inFlight[id] = true;
-    samples.push({ atMs: tick * 750, spanMs, inFlight, unreadable: [] });
+    samples.push({ atMs: tick * intervalMs, spanMs, inFlight, unreadable: [] });
   }
   return samples;
+}
+
+/** One sample in which every server was in flight. */
+function allInFlight(atMs: number, spanMs = 40): OverlapSample {
+  const inFlight: Record<string, boolean> = {};
+  for (const id of THREE_SERVER_IDS) inFlight[id] = true;
+  return { atMs, spanMs, inFlight, unreadable: [] };
+}
+
+/** One sample in which nobody was scanning. */
+function noneInFlight(atMs: number): OverlapSample {
+  const inFlight: Record<string, boolean> = {};
+  for (const id of THREE_SERVER_IDS) inFlight[id] = false;
+  return { atMs, spanMs: 40, inFlight, unreadable: [] };
 }
 
 async function main(): Promise<void> {
@@ -226,10 +244,10 @@ async function main(): Promise<void> {
       samples.push({ atMs: tick * 100, spanMs: 20, inFlight, unreadable: [] });
     }
     const analysis = analyseOverlap(samples);
-    assert(analysis.simultaneousSamples >= CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
-      'the fixture is meant to clear the count floor');
-    assert(overlapProblems(analysis).some((problem) => problem.includes('graze')),
-      'a burst inside half a second must fail the span');
+    assert(analysis.longestContinuousSimultaneousSamples >= CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
+      'the fixture is meant to clear the count floor, continuously');
+    assert(overlapProblems(analysis).some((problem) => problem.includes('CONTINUOUS')),
+      'a burst inside half a second must fail the duration floor');
   });
 
   await test('a WIDE tick cannot be simultaneity: three answers 30s apart are not one instant', () => {
@@ -240,6 +258,81 @@ async function main(): Promise<void> {
       + 'finished before the last was asked');
     assertEq(analysis.impreciseSamples, 8, 'every wide tick must be counted as imprecise');
     assert(overlapProblems(analysis).length > 0, 'and the run must be refused');
+  });
+
+  await test('SCATTERED simultaneous samples separated by IDLE fail the continuous floor', () => {
+    // The exact cheat the totals could not see: three simultaneous samples spread across a long window with
+    // the servers observed NOT scanning in between. The count clears three and last-minus-first clears two
+    // seconds, and nothing overlapped for two seconds at any point.
+    const samples = [
+      allInFlight(0), noneInFlight(500), noneInFlight(1_000),
+      allInFlight(1_500), noneInFlight(2_000), noneInFlight(2_500),
+      allInFlight(3_000),
+    ];
+    const analysis = analyseOverlap(samples);
+    assertEq(analysis.simultaneousSamples, 3, 'the fixture is meant to clear the TOTAL count');
+    assert(analysis.simultaneousSpanSeconds >= CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS,
+      'and to clear the old first-to-last span');
+    assertEq(analysis.longestContinuousSimultaneousSamples, 1, 'no two of them were adjacent');
+    assertEq(analysis.longestContinuousSimultaneousSeconds, 0, 'so no run has any duration');
+    assert(overlapProblems(analysis).length > 0, 'and the run must be refused');
+  });
+
+  await test('simultaneous samples separated by an UNREADABLE server fail the continuous floor', () => {
+    const broken = { ...allInFlight(1_500), unreadable: ['plex'] };
+    const samples = [allInFlight(0), allInFlight(500), allInFlight(1_000), broken,
+      allInFlight(2_000), allInFlight(2_500)];
+    const analysis = analyseOverlap(samples);
+    assertEq(analysis.simultaneousSamples, 5, 'five samples still qualified');
+    assertEq(analysis.longestContinuousSimultaneousSamples, 3, 'but the longest unbroken run is three');
+    assertEq(analysis.longestContinuousSimultaneousSeconds, 1, 'lasting one second');
+    assert(overlapProblems(analysis).some((problem) => problem.includes('CONTINUOUS')),
+      'a poll this observer could not make is not an observation that all three were scanning');
+  });
+
+  await test('simultaneous samples separated by an IMPRECISE tick fail the continuous floor', () => {
+    const wide = allInFlight(1_500, CONCURRENCY_DEADLINES_MS.SAMPLE_MAX_SPAN + 1);
+    const samples = [allInFlight(0), allInFlight(500), allInFlight(1_000), wide,
+      allInFlight(2_000), allInFlight(2_500)];
+    const analysis = analyseOverlap(samples);
+    assertEq(analysis.longestContinuousSimultaneousSamples, 3,
+      'a tick too wide to describe one instant breaks the run like any other disqualifying sample');
+    assert(overlapProblems(analysis).length > 0, 'and the run must be refused');
+  });
+
+  await test('a LONG MISSING-SAMPLE gap cannot become overlap duration', () => {
+    // Two qualifying samples a minute apart, and nothing observed in between. Adjacent in the array is not
+    // adjacent in time, and the minute nobody watched is not a minute of overlap.
+    const samples = [allInFlight(0), allInFlight(60_000), allInFlight(60_500), allInFlight(61_000)];
+    const analysis = analyseOverlap(samples);
+    assertEq(analysis.simultaneousSamples, 4, 'all four qualified individually');
+    assert(analysis.simultaneousSpanSeconds > 60, 'and first-to-last is over a minute');
+    assertEq(analysis.longestContinuousSimultaneousSamples, 3, 'but the run restarts after the gap');
+    assertEq(analysis.longestContinuousSimultaneousSeconds, 1, 'and lasts one second, not sixty-one');
+    assertEq(analysis.brokenByGap, 1, 'and the break is reported');
+    assert(overlapProblems(analysis).length > 0, 'so the run is refused');
+  });
+
+  await test('a gap exactly at the ceiling still joins; one millisecond over does not', () => {
+    const at = CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP;
+    assertEq(analyseOverlap([allInFlight(0), allInFlight(at), allInFlight(at * 2)])
+      .longestContinuousSimultaneousSamples, 3, 'exactly at the ceiling is inside it');
+    assertEq(analyseOverlap([allInFlight(0), allInFlight(at + 1)])
+      .longestContinuousSimultaneousSamples, 1, 'one millisecond over is a new run');
+  });
+
+  await test('the REAL measured sequences still pass: 9-10 continuous samples over 4.1-4.6s', () => {
+    // The observer ticks at 500ms; the four wrapper sequences measured 9-10 simultaneous samples spanning
+    // 4.1-4.6s, which is (n-1) x ~510ms -- i.e. continuous at the tick rate. Both shapes are reproduced.
+    for (const [ticks, intervalMs] of [[9, 512], [10, 511]] as const) {
+      const analysis = analyseOverlap(overlappingTimeline(ticks, 40, intervalMs));
+      assertEq(analysis.longestContinuousSimultaneousSamples, ticks, 'the whole run is unbroken');
+      assert(analysis.longestContinuousSimultaneousSeconds >= 4
+        && analysis.longestContinuousSimultaneousSeconds <= 4.7,
+        `expected a 4.1-4.6s run, got ${analysis.longestContinuousSimultaneousSeconds}s`);
+      assertEq(overlapProblems(analysis).length, 0,
+        'the real measured shape must not be refused by the stricter rule');
+    }
   });
 
   await test('a trigger spread is deliberately NOT overlap evidence', () => {
@@ -450,6 +543,95 @@ async function main(): Promise<void> {
       'a fractional byte total is not a byte total');
   });
 
+  await test('a FRACTIONAL per-object column fails closed, as the scalars already did', () => {
+    // The parser's own message called these "whole non-negative counts" and only checked >= 0 and isFinite.
+    // 4.5 responses parsed cleanly, and every per-object budget is a comparison against a ceiling -- so
+    // fractional counts compare, and pass.
+    for (const key of COUNTER_ARRAY_KEYS) {
+      const document = { ...counters(twoObjects) } as Record<string, unknown>;
+      document[key] = (document[key] as number[]).map((value, index) => (index === 0 ? 1.5 : value));
+      assert(parseProviderCounters(document, 'test').counters === undefined,
+        `a fractional value in "${key}" must not parse into a budgetable snapshot`);
+    }
+  });
+
+  await test('a per-object RESET compensated elsewhere is refused, though every aggregate balances', () => {
+    // The shape an endpoint restart makes: ordinal 0 drops to zero, ordinal 1 absorbs its bytes. Lengths,
+    // sums, both partitions and every scalar are unchanged -- and ordinal 0's window delta is NEGATIVE,
+    // which satisfies every per-object ceiling by arithmetic rather than by behaviour.
+    const before = counters([
+      { size: 4_194_304, small: 1, chunk: 1, partial: 0, oversized: 0 },
+      { size: 4_194_304, small: 1, chunk: 1, partial: 0, oversized: 0 },
+    ]);
+    const moved = before.objectBytes[0] as number;
+    const after: ProviderCounters = {
+      ...before,
+      objectBytes: [0, (before.objectBytes[1] as number) + moved],
+      objectChunk: [0, (before.objectChunk[0] as number) + (before.objectChunk[1] as number)],
+      objectSmall: [0, (before.objectSmall[0] as number) + (before.objectSmall[1] as number)],
+    };
+    // The fixture really does leave every aggregate intact, or it would be testing the wrong thing.
+    assertEq(after.objectBytes.reduce((a, b) => a + b, 0), after.bytesServed,
+      'the compensating move must keep the attribution sum exact');
+    const problems = attributionProblems(before, after, 2);
+    assert(problems.some((problem) => problem.kind === 'per-object-counter-reset'),
+      `a compensated per-object reset must be refused: ${problems.map((p) => p.kind).join(', ') || 'none'}`);
+  });
+
+  await test('a per-object CLASS counter reset is refused even when bytes are untouched', () => {
+    // Every class column is non-zero in the BEFORE snapshot, or setting it to zero would not be a fall and
+    // the test would pass by not exercising anything.
+    const before = counters([{ size: 4_194_304, small: 3, chunk: 2, partial: 1, oversized: 1 }]);
+    for (const column of ['objectChunk', 'objectSmall', 'objectPartial', 'objectOversized'] as const) {
+      const after = { ...before, [column]: [0] } as ProviderCounters;
+      assert(attributionProblems(before, after, 1)
+        .some((problem) => problem.kind === 'per-object-counter-reset'),
+        `a reset of ${column} must be refused; a negative class delta would let the per-entry request-shape `
+        + 'check pass while the byte column looked fine');
+    }
+  });
+
+  await test('an object whose SIZE changed between snapshots is refused', () => {
+    const before = counters([{ size: 4_194_304, small: 1, chunk: 0, partial: 0, oversized: 0 }]);
+    const after = { ...before, objectSizes: [8_388_608] };
+    assert(attributionProblems(before, after, 1)
+      .some((problem) => problem.kind === 'object-identity-moved'),
+      'every per-object ceiling is derived from objectSizes[i]; if it moved, the ceiling belongs to a '
+      + 'different object');
+  });
+
+  await test('a REORDER of two differently sized objects is refused', () => {
+    const before = counters([
+      { size: 4_194_304, small: 1, chunk: 1, partial: 0, oversized: 0 },
+      { size: 262_144, small: 1, chunk: 0, partial: 0, oversized: 0 },
+    ]);
+    const after: ProviderCounters = {
+      ...before,
+      objectSizes: [before.objectSizes[1] as number, before.objectSizes[0] as number],
+      objectBytes: [before.objectBytes[1] as number, before.objectBytes[0] as number],
+      objectChunk: [before.objectChunk[1] as number, before.objectChunk[0] as number],
+      objectSmall: [before.objectSmall[1] as number, before.objectSmall[0] as number],
+    };
+    const kinds = attributionProblems(before, after, 2).map((problem) => problem.kind);
+    assert(kinds.includes('object-identity-moved'),
+      'a reorder moves the sizes at each ordinal, and the ordinal is the only handle these columns carry');
+    assert(kinds.includes('per-object-counter-reset'),
+      'and the swapped-down column is also a fall, which is a second independent refusal');
+  });
+
+  await test('these refusals happen BEFORE any budget verdict is reached', () => {
+    // Order is the guarantee: the CLI records the telemetry verdict first, and `record` throws on a failed
+    // verdict, so nothing downstream of it can produce a number over telemetry the gate does not trust.
+    const telemetryAt = CLI.indexOf('-telemetry-coherent');
+    for (const later of ['-cold-window', '-G14a-range-requests', '-G15-provider-bytes',
+      '-G15-per-object-breaches', '-per-entry-request-shape']) {
+      assert(CLI.indexOf(later) > telemetryAt,
+        `${later} must be recorded after the telemetry check, which throws on failure`);
+    }
+    assert(/if \(result\.verdict === 'fail'\) throw new GateFailure/.test(CLI),
+      'and a failed verdict must stop the phase rather than being counted');
+  });
+
   await test('the CLI reads counters through the validating parser, never through a cast', () => {
     assert(CLI.includes('parseProviderCounters'), 'the CLI must parse rather than cast');
     assert(!/as ProviderCounters/.test(CLI),
@@ -566,8 +748,40 @@ async function main(): Promise<void> {
   console.log('\nTHE CHEAT: a 429, or a connection cap, quietly breached');
   // --------------------------------------------------------------------------------------------------------
 
+  await test('G14a, G14b and G15 are the ACCEPTANCE PLAN\'s ceilings, not the media-server multipliers', () => {
+    // THE DEFECT THIS CLOSES. G18 says G14a-G17 hold UNCHANGED. The window command asserted the three
+    // single-server gates' x6 real-scanner multipliers -- 258 and 258 against 43 remote entries, where the
+    // plan says 155 and 52 -- and mentioned the plan's own numbers in a note as a "bonus observation".
+    assertEq(canonicalRangeRequestCeiling(43), 155, 'ceil(1.2 x 43 x 3)');
+    assertEq(canonicalResolutionCeiling(43), 52, 'ceil(1.2 x 43)');
+    assertEq(canonicalScanByteCeiling(43),
+      Math.floor(1.2 * PROJECTION_PROBE_PLAN.WINDOW_BYTES * 3 * 43), 'the plan\'s own flat byte arithmetic');
+    assertEq(CANONICAL_SCAN_WINDOWS_PER_ENTRY, PROJECTION_PHASE_1_BUDGETS.SCAN_WINDOWS_PER_ENTRY,
+      'the window count is the contract\'s');
+    assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_RANGE_REQUEST_MULTIPLIER, 1.2, 'and so is the multiplier');
+    assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_RESOLUTION_REQUEST_MULTIPLIER, 1.2, 'both of them');
+    assert(canonicalRangeRequestCeiling(43)
+      < Math.ceil(43 * MEDIA_SERVER_BUDGETS.MAX_SCAN_RANGE_MULTIPLIER),
+      'and the canonical ceiling must be the STRICTER of the two, or none of this mattered');
+  });
+
+  await test('the CLI derives those ceilings from the contract and cannot be told otherwise', () => {
+    assert(CLI.includes('canonicalRangeRequestCeiling') && CLI.includes('canonicalResolutionCeiling')
+      && CLI.includes('canonicalScanByteCeiling'), 'all three must come from the canonical helpers');
+    assert(!CLI.includes("optionalNumber(args, 'windows'"),
+      'a `--windows` flag is a way to weaken a REQUIRED acceptance gate from a command line');
+    assert(!/withinBudget\(`\$\{gate\}-G14a-range-requests`[^;]*MAX_SCAN_RANGE_MULTIPLIER/s.test(CLI),
+      'G14a must not be asserted against the looser real-scanner multiplier');
+    assert(CLI.includes('-G15-provider-bytes-block-geometry'),
+      'the stricter block-geometry ceiling must survive AS WELL, never instead');
+  });
+
   await test('the gate holds 429s to zero, not to "few"', () => {
-    assertEq(MEDIA_SERVER_BUDGETS.MAX_HTTP_429, 0, 'G16 says zero');
+    assertEq(PROJECTION_PHASE_1_BUDGETS.MAX_HTTP_429, 0, 'G16 says zero, in the plan own constant');
+    assertEq(MEDIA_SERVER_BUDGETS.MAX_HTTP_429, 0, 'and the media-server mirror agrees');
+    assert(CLI.includes('PROJECTION_PHASE_1_BUDGETS.MAX_HTTP_429'),
+      'a gate id that names an acceptance gate should read that acceptance gate constant, even where the '
+      + 'two happen to be equal — which is exactly what made it easy to reach for the wrong one');
     assert(CLI.includes('G16-http-429'), 'the window must assert it inside the concurrent window');
     assert(CLI.includes(`${'$'}{gate}-http-429-total`),
       'and the whole-run invariant must assert it outside any window, because a delta lets a 429 in one '
@@ -609,7 +823,24 @@ async function main(): Promise<void> {
     assert(GATE.includes('--max-hold "$HOLD_MAX"'),
       'the gate must set the endpoint bound explicitly rather than inheriting the 15s package default, '
       + 'which is ABOVE the first-byte deadline');
-    assert(GATE.includes('HOLD_MAX=5s'), 'and it must be the derived value');
+    assert(GATE.includes('HOLD_MAX=4500ms'), 'and it must be the derived value');
+  });
+
+  await test('the BACKSTOP is STRICTLY below the queue-wait budget, not equal to it', () => {
+    // IT WAS EXACTLY EQUAL, at 5,000 against 5,000, while the text beside it said "strictly shorter". On the
+    // boundary the guarantee is gone: a read arriving an instant after another blocks waits the entire
+    // budget and can be refused admission -- the starvation the bound exists to prevent.
+    assert(HOLD_MAX_MS < PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS,
+      `the endpoint backstop is ${HOLD_MAX_MS}ms against a `
+      + `${PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS}ms queue-wait budget; equality is not "strictly `
+      + 'shorter" and leaves a read on the boundary that can be refused admission');
+    // The whole chain, ordered, so a future edit to any one term is caught by the relation and not by prose.
+    assert(HOLD_ARM_MS < HOLD_MAX_MS
+      && HOLD_MAX_MS < PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS
+      && PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS < PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS,
+      `arm ${HOLD_ARM_MS} < backstop ${HOLD_MAX_MS} < queue-wait `
+      + `${PROJECTIOND_ADMISSION_LIMITS.MAX_QUEUE_WAIT_MS} < first-byte `
+      + `${PROJECTIOND_READ_POLICY.FIRST_BYTE_DEADLINE_MS} must hold, strictly, at every step`);
   });
 
   await test('the arm clock starts when a request BLOCKS, not when the hold is armed', () => {
@@ -888,16 +1119,50 @@ async function main(): Promise<void> {
   console.log('\nTHE CHEAT: a preflight that ran after the gate had already changed the host');
   // --------------------------------------------------------------------------------------------------------
 
-  await test('the host preflight runs BEFORE anything is built or started', () => {
-    const preflight = GATE.indexOf('projection-host-preflight-cli.ts propagation');
-    const traversal = GATE.indexOf('projection-host-preflight-cli.ts traversal');
-    const build = GATE.indexOf('docker build -t "$IMAGE"');
-    const compose = GATE.indexOf('docker compose -f "$COMPOSE_FILE" up');
-    const serverStart = GATE.indexOf('docker run -d --name "$RANGE_CONTAINER"');
-    assert(preflight > 0 && traversal > 0, 'both preflight checks must run');
-    assert(preflight < build && traversal < build, 'before the image build');
-    assert(preflight < compose && traversal < compose, 'before the database starts');
-    assert(preflight < serverStart, 'and before any container is started');
+  await test('the host preflight runs before the FIRST executable container start, whichever it is', () => {
+    // THE DEFECT THIS CLOSES, AND IT IS A DEFECT IN THE TEST RATHER THAN IN THE GATE. This asserted "before
+    // any container is started" and compared the preflight against the RANGE container, three hundred lines
+    // further down -- while the /dev/fuse probe started a container well before it. The claim was true of the
+    // comparison and false of the sentence. So the comparison is now against the FIRST container start in the
+    // file, computed rather than named, and it cannot go vacuous again when a new start is added above it.
+    //
+    // TOP-LEVEL LINES ONLY. Function bodies (`cleanup`, `start_daemon`, `daemon_status`, ...) are indented in
+    // this file and their `docker run`s execute when the function is CALLED, not where it is written; the
+    // cleanup trap in particular is defined near the top and runs last. So an unindented, non-comment line is
+    // what counts as an executable start, and the function CALLS that start containers are unindented too.
+    const lines = GATE.split('\n');
+    // ...AND A ONE-LINE FUNCTION DEFINITION IS NOT AN EXECUTION. `ffmpeg_run() { docker run …; }` sits at
+    // column 0 and starts nothing until it is called. Excluding definitions is the difference between a check
+    // that finds the first thing that RUNS and one that finds the first thing that MENTIONS docker — and the
+    // second is how this assertion went vacuous the first time.
+    const isDefinition = (line: string): boolean => /^[A-Za-z_][A-Za-z0-9_]*\(\)\s*\{/.test(line);
+    const startsAt = lines.findIndex((line) => !/^\s/.test(line) && !line.trimStart().startsWith('#')
+      && !isDefinition(line)
+      && (/\bdocker run\b/.test(line) || /\bdocker build\b/.test(line)
+        || /\bdocker compose\b[^|]*\bup\b/.test(line)
+        || /^start_(daemon|jellyfin|plex|emby)\b/.test(line)));
+    const preflightAt = lines.findIndex((line) => line.includes('projection-host-preflight-cli.ts propagation'));
+    const traversalAt = lines.findIndex((line) => line.includes('projection-host-preflight-cli.ts traversal'));
+    assert(preflightAt > 0 && traversalAt > 0, 'both preflight checks must run');
+    assert(startsAt > 0, 'the gate must start a container somewhere, or this check is meaningless');
+    assert(preflightAt < startsAt && traversalAt < startsAt,
+      `the first executable container start is line ${startsAt + 1} (${lines[startsAt]?.trim()}), and the `
+      + `preflight is at line ${preflightAt + 1}. A preflight that runs after a container is diagnosing a `
+      + 'host this gate has already begun using');
+    // ...and specifically before the /dev/fuse probe, which is the one it used to run after.
+    const fuseProbeAt = lines.findIndex((line) => line.includes('--device /dev/fuse:/dev/fuse'));
+    assert(fuseProbeAt > 0 && preflightAt < fuseProbeAt,
+      'the /dev/fuse probe starts a container and must come after the non-mutating preflight');
+  });
+
+  await test('the preflight itself starts nothing, so running it first is free', () => {
+    const lines = GATE.split('\n');
+    const preflightAt = lines.findIndex((line) => line.includes('projection-host-preflight-cli.ts propagation'));
+    const traversalAt = lines.findIndex((line) => line.includes('projection-host-preflight-cli.ts traversal'));
+    for (const at of [preflightAt, traversalAt]) {
+      assert(/^npx tsx /.test(lines[at] as string),
+        'the preflight must be a host-local process invocation, not a container');
+    }
   });
 
   await test('the preflight diagnoses and never repairs', () => {
@@ -1104,6 +1369,101 @@ async function main(): Promise<void> {
     assert(doc.includes('G18'), 'the gate document must name the gate it is about');
     assert(doc.includes('NOT') && /docker desktop/i.test(doc),
       'and it must state what a Docker Desktop run does not close');
+  });
+
+  // --------------------------------------------------------------------------------------------------------
+  console.log('\nEXECUTABLE: the CLI itself, run as a process, against crafted inputs');
+  // --------------------------------------------------------------------------------------------------------
+
+  const cliDir = mkdtempSync(join(tmpdir(), 'projection-three-cli-'));
+  const runCli = (argv: readonly string[]): { status: number; stdout: string; stderr: string } => {
+    const result = spawnSync('npx', ['tsx', join(repoRoot, 'src/ops/projection-three-server-concurrency-cli.ts'),
+      ...argv], { cwd: repoRoot, encoding: 'utf8', shell: process.platform === 'win32' });
+    return { status: result.status ?? -1, stdout: result.stdout ?? '', stderr: result.stderr ?? '' };
+  };
+
+  await test('EXECUTABLE: a results file containing a SKIP cannot exit zero or announce a pass', async () => {
+    // THE DEFECT THIS CLOSES. `report` counted skips, printed the count, and then moved the exit status on
+    // `fail` alone. A run with `0 failed, 7 skipped` exited 0 and the gate script printed the whole PASSED
+    // banner underneath it. That is the skip-versus-pass mistake this gate is careful about at the PROCESS
+    // level -- 77 is not 0 -- reappearing one level down, at the assertion level, unguarded.
+    const path = join(cliDir, 'results-with-skip.json');
+    writeFileSync(path, `${JSON.stringify([
+      { gate: 'TS1-something', verdict: 'pass', measured: 1, budget: 1 },
+      { gate: 'TS3-something-else', verdict: 'skip', note: 'declined to judge itself' },
+    ], null, 2)}\n`);
+    const result = runCli(['report', '--results', path]);
+    assert(result.status !== 0,
+      `a report over a skipped assertion must not exit zero (exited ${result.status})`);
+    assert(/SKIPPED/.test(result.stderr),
+      `and must say why: ${result.stderr.slice(0, 300)}`);
+    assert(!/\bPASSED\b/.test(result.stdout), 'and must not announce a pass');
+  });
+
+  await test('EXECUTABLE: an all-pass results file still exits zero', async () => {
+    const path = join(cliDir, 'results-clean.json');
+    writeFileSync(path, `${JSON.stringify([
+      { gate: 'TS1-something', verdict: 'pass', measured: 1, budget: 1 },
+    ], null, 2)}\n`);
+    assertEq(runCli(['report', '--results', path]).status, 0, 'a clean report must still pass');
+  });
+
+  await test('EXECUTABLE: traffic between the 1.2x and 6x multipliers FAILS G14a', async () => {
+    // 200 ranged GETs over 43 remote entries: comfortably inside the old 258 ceiling and well outside the
+    // acceptance plan's 155. If the canonical ceiling had not replaced the media-server one, this passes.
+    // Ordinal 0 is the READINESS CANARY and takes no traffic in the window, exactly as the real gate
+    // requires: bytes served for it would fail `bytes-outside-the-corpus` before G14a was ever reached.
+    const objects = [{ size: 262_144, small: 0, chunk: 0, partial: 0, oversized: 0 }];
+    for (let index = 0; index < 43; index += 1) {
+      objects.push({ size: 262_144, small: 1, chunk: 0, partial: 0, oversized: 0 });
+    }
+    const before = zeroLike(counters(objects));
+    const after = counters(objects);
+    const inflated: ProviderCounters = {
+      ...after,
+      rangeRequests: 200,
+      resolutions: 43,
+    };
+    const beforePath = join(cliDir, 'g14a-before.json');
+    const afterPath = join(cliDir, 'g14a-after.json');
+    writeFileSync(beforePath, `${JSON.stringify(before, null, 2)}\n`);
+    writeFileSync(afterPath, `${JSON.stringify(inflated, null, 2)}\n`);
+    assert(200 < Math.ceil(43 * MEDIA_SERVER_BUDGETS.MAX_SCAN_RANGE_MULTIPLIER),
+      'the fixture must sit INSIDE the old looser ceiling, or it proves nothing about the change');
+    assert(200 > canonicalRangeRequestCeiling(43), 'and outside the acceptance plan\'s');
+    const result = runCli(['window', '--before', beforePath, '--after', afterPath, '--gate', 'TSX',
+      '--objects', String(objects.length), '--non-corpus-objects', '1', '--remote-entries', '43',
+      '--large-bytes', '0', '--small-bytes', String(43 * 262_144),
+      '--probe-cache-before', '0', '--probe-cache-after', '5000000']);
+    assert(result.status !== 0, `G14a must fail at 200 ranged GETs (exited ${result.status})`);
+    assert(/G14a-range-requests/.test(result.stdout + result.stderr),
+      `and G14a must be the assertion that failed: ${(result.stdout + result.stderr).slice(-400)}`);
+  });
+
+  await test('EXECUTABLE: resolutions between the 1.2x and 6x multipliers FAIL G14b', async () => {
+    // Ordinal 0 is the READINESS CANARY and takes no traffic in the window, exactly as the real gate
+    // requires: bytes served for it would fail `bytes-outside-the-corpus` before G14a was ever reached.
+    const objects = [{ size: 262_144, small: 0, chunk: 0, partial: 0, oversized: 0 }];
+    for (let index = 0; index < 43; index += 1) {
+      objects.push({ size: 262_144, small: 1, chunk: 0, partial: 0, oversized: 0 });
+    }
+    const before = zeroLike(counters(objects));
+    const after = counters(objects);
+    const inflated: ProviderCounters = { ...after, rangeRequests: 47, resolutions: 120 };
+    const beforePath = join(cliDir, 'g14b-before.json');
+    const afterPath = join(cliDir, 'g14b-after.json');
+    writeFileSync(beforePath, `${JSON.stringify(before, null, 2)}\n`);
+    writeFileSync(afterPath, `${JSON.stringify(inflated, null, 2)}\n`);
+    assert(120 < Math.ceil(43 * MEDIA_SERVER_BUDGETS.MAX_SCAN_RESOLUTION_MULTIPLIER)
+      && 120 > canonicalResolutionCeiling(43),
+      'the fixture must sit between the two ceilings');
+    const result = runCli(['window', '--before', beforePath, '--after', afterPath, '--gate', 'TSX',
+      '--objects', String(objects.length), '--non-corpus-objects', '1', '--remote-entries', '43',
+      '--large-bytes', '0', '--small-bytes', String(43 * 262_144),
+      '--probe-cache-before', '0', '--probe-cache-after', '5000000']);
+    assert(result.status !== 0, `G14b must fail at 120 resolutions (exited ${result.status})`);
+    assert(/G14b-resolutions/.test(result.stdout + result.stderr),
+      `and G14b must be the assertion that failed: ${(result.stdout + result.stderr).slice(-400)}`);
   });
 
   // --------------------------------------------------------------------------------------------------------
