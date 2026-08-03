@@ -174,7 +174,7 @@ Releasing on success destroys what success created. Those held seconds are not m
 server in them is genuinely mid-scan, each one's own barrier says so independently, and a scanner waiting on a
 provider read is exactly as in-flight as one walking a directory.
 
-**The hold is not the evidence and this document will not pretend otherwise.** Four seconds is not long enough
+**The hold is not the evidence and this document will not pretend otherwise.** Three seconds is not long enough
 to guarantee a three-way rendezvous on a slow host. What the hold does is make the observation likelier and
 make the scans provably **cold**; the claim rests on the simultaneous samples.
 

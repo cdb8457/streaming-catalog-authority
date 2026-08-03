@@ -1047,11 +1047,20 @@ async function main(): Promise<void> {
     assert(watchdog.includes('await release('), 'and it is what releases');
   });
 
-  await test('the arm clock starts when a request BLOCKS, not when the hold is armed', () => {
+  await test('the arm clock starts when the WATCHDOG OBSERVES a blocked request, not when the hold is armed', () => {
+    // THE LABEL USED TO SAY "when a request BLOCKS", which is the BACKSTOP's clock and not this one. What
+    // the code below actually does is compare `heldRequests` against a baseline and stamp the moment the
+    // WATCHDOG SEES it rise -- so the clock starts at observation, which lags the true block by up to one
+    // watchdog period. That gap is the whole subject of §3.4 and of the run that failed on it; a test whose
+    // name asserted the other clock was restating the defect while passing.
     assert(DRIVER.includes('blockingSinceMs'),
       'an armed hold nothing has reached starves nobody; timing the window from the arming would expire it '
       + 'before the first scanner arrived on a slow host');
-    assert(DRIVER.includes('heldBaseline'), 'and the first block must be detected against a baseline');
+    assert(DRIVER.includes('heldBaseline'),
+      'and the block must be detected by the watchdog seeing heldRequests rise above a baseline');
+    // The stamp is taken at the moment of OBSERVATION, which is what makes the name above accurate.
+    assert(/held > heldBaseline\)\s*\{[\s\S]{0,120}blockingSinceMs = now\(\)/.test(DRIVER),
+      'blockingSinceMs must be stamped where the watchdog observes the rise, not passed in from elsewhere');
   });
 
   await test('the barrier is released on every path out of the observation loop', () => {
@@ -1579,15 +1588,24 @@ async function main(): Promise<void> {
     // RETROSPECTIVE_MARKERS. §3.4 and the run records exist to say what was wrong, and rewriting them would
     // erase the history this repository keeps on purpose, so a line that declares itself historical passes.
     const doc = readRepoFile('docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md');
+    // THE SOURCE MODULES ARE IN SCOPE TOO. They carry the same chain in prose, and a stale copy there is no
+    // more true for being in a comment -- the retired four-second arm survived in `three-server-concurrency.ts`
+    // precisely because this list stopped at the document and the shell script.
     const currentTense: ReadonlyArray<readonly [string, string]> = [
       ['the gate document', doc],
       ['the gate script header', GATE],
+      ['the core module', CORE],
+      ['the driver', DRIVER],
     ];
     const retiredArm = /arm 4,000|arm 4000/;
     for (const [where, text] of currentTense) {
       const stale = currentTenseLines(text, retiredArm);
       assertEq(stale.length, 0,
         `${where} states the retired 4,000ms arm window in the present tense: ${stale[0]?.trim() ?? ''}`);
+      // The POSITIVE half applies only where the chain is actually written out. The driver explains the
+      // clocks and defers the numbers to the core module, and demanding it repeat them would be demanding a
+      // fifth copy of the thing this check exists to keep in sync.
+      if (where === 'the driver') continue;
       assert(text.includes(`${HOLD_ARM_MS.toLocaleString('en-US')}`)
         || text.includes(String(HOLD_ARM_MS)),
         `${where} must state the arm window that is actually configured (${HOLD_ARM_MS}ms)`);
@@ -1598,6 +1616,38 @@ async function main(): Promise<void> {
     // ...and the relation the prose claims is the one the code enforces.
     assert(HOLD_ARM_MS + BARRIER_RELEASE_OVERSHOOT_MS <= HOLD_MAX_MS,
       'the chain the prose states must be the chain assertHoldChainIsFailClosed enforces');
+  });
+
+  await test('no current-tense prose restates the arm window in WORDS at its retired value', () => {
+    // `arm 4,000` was caught; "Four seconds is not long enough" was not, and it sat in the core module and
+    // the document saying the same retired number in English. A check that only recognises the digits is a
+    // check somebody can walk straight past.
+    const doc = readRepoFile('docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md');
+    const retiredInWords = /\bfour seconds\b/i;
+    for (const [where, text] of [['the gate document', doc], ['the core module', CORE],
+      ['the gate script header', GATE]] as const) {
+      const stale = currentTenseLines(text, retiredInWords);
+      assertEq(stale.length, 0,
+        `${where} states the retired four-second arm window in words: ${stale[0]?.trim() ?? ''}`);
+    }
+  });
+
+  await test('no current-tense prose times the ARM WINDOW from actual block time', () => {
+    // The companion to the release-timing check: the same wrong clock, one step earlier in the sentence.
+    const doc = readRepoFile('docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md');
+    // A TEMPERED MATCH, because the CORRECT sentences also contain both clocks. "The arm window is timed
+    // from when this gate NOTICES a block while the backstop is timed from when the request actually blocks"
+    // is exactly right, and a naive span would flag it. So the match stops at any observation or backstop
+    // word: it fires only where the arm clock is tied to the block with nothing standing between them.
+    const wrongClock =
+      /(arm (clock|window)|blocking clock)\s+(starts|is timed)(?:(?!notic|observ|watchdog|backstop)[^.])*?\brequest\s+(first\s+)?(actually\s+)?blocks?\b/i;
+    for (const [where, text] of [['the gate document', doc], ['the core module', CORE],
+      ['the driver', DRIVER], ['the gate script header', GATE], ['the focused suite', readRepoFile('test/projection-three-server-concurrency.ts')]] as const) {
+      const stale = currentTenseLines(text, wrongClock);
+      assertEq(stale.length, 0,
+        `${where} times the arm window from when a request blocks, which is the BACKSTOP's clock: `
+        + `${stale[0]?.trim() ?? ''}`);
+    }
   });
 
   await test('the scoping those checks CLAIM is the scoping they DO', () => {

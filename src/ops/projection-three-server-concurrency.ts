@@ -278,11 +278,15 @@ export async function runConcurrentScans(opts: ConcurrentScanOptions): Promise<C
     barrierArmed = true;
     note('the barrier object\'s provider read is held; a scanner that reaches it will wait there');
   }
-  // THE ARM CLOCK STARTS WHEN A REQUEST FIRST BLOCKS, NOT NOW. An armed hold nothing has reached costs
-  // nothing and starves no other read, so it stays armed until a scanner actually arrives; only the interval
-  // in which something is really waiting has to be bounded. Timing it from the arming would have made the
-  // hold expire before the first scanner got there on a slow host, and the gate would then fail its own
-  // "a provider request was actually blocked" assertion for having been too careful.
+  // THE ARM CLOCK STARTS WHEN THE WATCHDOG OBSERVES A BLOCKED REQUEST, NOT NOW — and not, despite how it
+  // reads, at the moment the request actually blocked. That is the BACKSTOP's clock; this one lags it by up
+  // to a watchdog period, which is the gap `HOLD_ARM_MS` leaves room for and the one a real run failed on.
+  //
+  // WHAT IT IS NOT TIMED FROM IS THE ARMING. An armed hold nothing has reached costs nothing and starves no
+  // other read, so it stays armed until a scanner actually arrives; only the interval in which something is
+  // really waiting has to be bounded. Timing it from the arming would have made the hold expire before the
+  // first scanner got there on a slow host, and the gate would then fail its own "a provider request was
+  // actually blocked" assertion for having been too careful.
   let blockingSinceMs = 0;
   const heldBaseline = barrierArmed
     ? Number(((await readCounters(opts.endpointBaseUrl as string)).heldRequests ?? 0)) : 0;

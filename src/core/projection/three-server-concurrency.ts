@@ -183,13 +183,14 @@ function assertCadenceIsFailClosed(): void {
  *     objects it has nothing to do with — and forty-nine other entries would be mis-catalogued because of an
  *     instrument. `HOLD_ARM_MS` is one second under it.
  *
- * THE ARM WINDOW STARTS WHEN A REQUEST FIRST BLOCKS, NOT WHEN THE HOLD IS ARMED. An armed hold that nothing
- * has reached costs nothing and starves nobody, so it stays armed until a scanner actually arrives; only then
- * does the clock that bounds the blocking start. Timing it from the arming instead would have made the hold
- * expire before the first scanner got there on a slow host — the gate would then assert that no provider
- * request was ever held and fail for having been too careful.
+ * THE ARM WINDOW STARTS WHEN THE WATCHDOG OBSERVES A BLOCKED REQUEST, NOT WHEN THE HOLD IS ARMED — and not
+ * at the moment the request actually blocked, which is the BACKSTOP's clock and lies up to a watchdog period
+ * earlier. An armed hold that nothing has reached costs nothing and starves nobody, so it stays armed until a
+ * scanner actually arrives; only then does the clock that bounds the blocking start. Timing it from the
+ * arming instead would have made the hold expire before the first scanner got there on a slow host — the gate
+ * would then assert that no provider request was ever held and fail for having been too careful.
  *
- * WHAT THE HOLD IS THEREFORE NOT. It is not the evidence. Four seconds is not long enough to guarantee a
+ * WHAT THE HOLD IS THEREFORE NOT. It is not the evidence. Three seconds is not long enough to guarantee a
  * three-way rendezvous on a slow host, and a gate whose concurrency claim rested on it would be claiming
  * something it cannot always produce. The evidence is `simultaneousSamples`: direct observation of all three
  * servers' own in-flight state at one instant. The hold makes that observation likelier and makes the scans
