@@ -547,8 +547,13 @@ LEASE_MARKER="PJDLEASE$(node -e "console.log(require('node:crypto').randomBytes(
 # distance between them at two of its own 250ms periods — one to notice, one to act — and the arm window has
 # to leave room for it. A real run failed on exactly that gap before the watchdog existed.
 #
-# The driver releases three seconds after a request actually blocks; the backstop only matters if this gate
-# dies mid-hold, and even then no other object's read can be starved and no held read can miss its first byte.
+# SO THE DRIVER RELEASES THREE SECONDS AFTER THE WATCHDOG NOTICES THE BLOCKED REQUEST -- which is NOT the
+# same as three seconds after the request blocked, and saying it the second way would contradict the
+# paragraph above. The notice can itself lag by up to one watchdog period, so the ACTUAL block runs a little
+# longer than the arm window: measured across the three green runs it was 3.1s, the 3,000ms arm plus roughly
+# one 250ms period of watchdog lag and overshoot, comfortably inside the 4,500ms backstop. The backstop only
+# matters if this gate dies mid-hold, and even then no other object's read can be starved and no held read
+# can miss its first byte.
 HOLD_MAX=4500ms
 
 # EVERY OBJECT THE RUN WILL EVER NEED IS SERVED FROM THE START, in a registration order the window assertion

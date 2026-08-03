@@ -158,7 +158,10 @@ The fix has two halves, and the first alone was not enough:
   An executable regression drives the real function against a loopback endpoint with 1.5 s server polls and
   fails if the release is ever queued behind them again.
 
-**The blocking clock starts when a request first blocks, not when the hold is armed.** An armed hold nothing
+**The blocking clock starts when the watchdog first OBSERVES a request blocked, not when the hold is armed.**
+(Not when the request blocks, either — that is the backstop's clock, and the gap between the two is exactly
+what §3.4 is about. Measured across the three green runs, the arm window of 3 s produced an actual block of
+3.1 s.) An armed hold nothing
 has reached costs nothing and starves nobody, so it stays armed until a scanner actually arrives. Timing it
 from the arming would have expired it before the first scanner got there on a slow host, and the gate would
 then fail its own "a provider request was actually blocked" assertion for having been too careful.

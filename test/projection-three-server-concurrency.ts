@@ -91,6 +91,33 @@ function assertEq<T>(actual: T, expected: T, message: string): void {
   if (actual !== expected) throw new Error(`${message}: expected ${String(expected)}, got ${String(actual)}`);
 }
 
+/**
+ * WHAT COUNTS AS A LINE THAT DECLARES ITSELF HISTORICAL.
+ *
+ * THE PROSE CHECKS BELOW ARE ABOUT CURRENT-TENSE CLAIMS ONLY, and an earlier version of them SAID so while
+ * testing the whole file. It passed, but only because no historical line happened to spell the retired
+ * number — accidental scoping, not scoping, and exactly the comment-contradicts-code defect those very
+ * checks exist to catch.
+ *
+ * So the rule is made explicit and checkable: a retired number or a retracted formula may appear ONLY on a
+ * line that marks itself as looking backwards. That permits — and protects — §3.4, the run records and every
+ * "an earlier version…" note this repository keeps on purpose, while still refusing a stale claim written in
+ * the present tense. It also makes history SELF-DECLARING: prose that describes what used to be true and
+ * forgets to say so fails, and the fix is to say so rather than to delete it.
+ */
+const RETROSPECTIVE_MARKERS: readonly RegExp[] = Object.freeze([
+  /\bused to\b/i, /\ban earlier\b/i, /\bearlier version\b/i, /\bretired\b/i, /\bpre-remediation\b/i,
+  /\bbefore the watchdog\b/i, /\bpreviously\b/i, /\bno longer\b/i, /\bFAILED\b/, /\bfailed on\b/i,
+  /\bit was\b/i, /\bwhich was\b/i, /\bwould contradict\b/i, /\bsaying it the second way\b/i,
+]);
+
+/** Lines matching `pattern` that do NOT declare themselves historical. The only lines the checks judge. */
+function currentTenseLines(text: string, pattern: RegExp): string[] {
+  return text.split('\n')
+    .filter((line) => pattern.test(line))
+    .filter((line) => !RETROSPECTIVE_MARKERS.some((marker) => marker.test(line)));
+}
+
 const repoRoot = fileURLToPath(new URL('..', import.meta.url));
 const readRepoFile = (relative: string): string => readFileSync(join(repoRoot, relative), 'utf8');
 
@@ -1547,18 +1574,20 @@ async function main(): Promise<void> {
     // them kept the old number in the PRESENT TENSE, beside a table that already said 3 s. A reader has no
     // way to tell which sentence is the stale one, and the numbers are exactly what an operator would quote.
     //
-    // So the current-tense copies are checked against the constants rather than against each other. Text
-    // that describes an EARLIER version is deliberately not in scope -- §3.4 and the run records exist to
-    // record what was wrong, and rewriting them would erase the history this repository keeps on purpose.
+    // So the current-tense copies are checked against the constants rather than against each other, and
+    // "current-tense" is decided by `currentTenseLines` rather than asserted in a comment -- see
+    // RETROSPECTIVE_MARKERS. §3.4 and the run records exist to say what was wrong, and rewriting them would
+    // erase the history this repository keeps on purpose, so a line that declares itself historical passes.
     const doc = readRepoFile('docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md');
     const currentTense: ReadonlyArray<readonly [string, string]> = [
       ['the gate document', doc],
       ['the gate script header', GATE],
     ];
+    const retiredArm = /arm 4,000|arm 4000/;
     for (const [where, text] of currentTense) {
-      assert(!new RegExp(`arm ${HOLD_ARM_MS + 1000}`).test(text)
-        && !/arm 4,000|arm 4000/.test(text),
-        `${where} still states the retired 4,000ms arm window in the present tense`);
+      const stale = currentTenseLines(text, retiredArm);
+      assertEq(stale.length, 0,
+        `${where} states the retired 4,000ms arm window in the present tense: ${stale[0]?.trim() ?? ''}`);
       assert(text.includes(`${HOLD_ARM_MS.toLocaleString('en-US')}`)
         || text.includes(String(HOLD_ARM_MS)),
         `${where} must state the arm window that is actually configured (${HOLD_ARM_MS}ms)`);
@@ -1571,13 +1600,50 @@ async function main(): Promise<void> {
       'the chain the prose states must be the chain assertHoldChainIsFailClosed enforces');
   });
 
+  await test('the scoping those checks CLAIM is the scoping they DO', () => {
+    // The previous version asserted over the whole file while its comment promised that historical text was
+    // out of scope. It passed by luck. This drives the helper directly, so the promise is a behaviour.
+    const historical = 'It used to be `arm 4,000 ms`, and an earlier version said so.';
+    const present = 'The chain is `arm 4,000 ms < backstop 4,500 ms`.';
+    const retiredArm = /arm 4,000|arm 4000/;
+    assertEq(currentTenseLines(historical, retiredArm).length, 0,
+      'a line that declares itself historical must be permitted, or the checks pressure somebody into '
+      + 'deleting the record of a defect');
+    assertEq(currentTenseLines(present, retiredArm).length, 1,
+      'and a line that states it in the present tense must be caught');
+    assertEq(currentTenseLines(`${historical}\n${present}`, retiredArm).length, 1,
+      'and the two must be separated line by line rather than judged as one blob');
+  });
+
+  await test('no current-tense prose times the RELEASE from when a request actually blocks', () => {
+    // THE DEFECT THIS CLOSES. The gate header said "the driver releases three seconds after a request
+    // actually blocks" two lines below a paragraph explaining that the arm window is timed from when the
+    // driver NOTICES a block and the backstop from when it actually blocks. Both cannot be true, and the
+    // live evidence agrees with the paragraph: the arm window is 3,000ms and the measured block was 3.1s.
+    const doc = readRepoFile('docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md');
+    const releaseTiming = /releases?\s+\w+\s+seconds?\s+after[^.]*actually\s+block/i;
+    for (const [where, text] of [['the gate document', doc], ['the gate script header', GATE]] as const) {
+      const offending = currentTenseLines(text, releaseTiming);
+      assertEq(offending.length, 0,
+        `${where} times the release from the moment a request ACTUALLY blocks, which is the BACKSTOP's `
+        + `clock, not the arm window's: ${offending[0]?.trim() ?? ''}`);
+    }
+    // ...and the corrected claim is present, naming the clock the arm window actually uses.
+    assert(/three seconds after the WATCHDOG NOTICES|after the watchdog notices/i.test(GATE),
+      'the gate header must say the release is timed from when the watchdog NOTICES the blocked request');
+    assert(/3\.1\s*s/.test(GATE),
+      'and record the measured actual block, which is longer than the arm window by the watchdog lag');
+  });
+
   await test('every PROSE copy of the gap ceiling states the derivation actually in force', () => {
     // The bullet describing the CURRENT rule said the ceiling is "one tick sleep plus the widest a tick may
     // be and still describe one instant" -- which is the retired 2.5 s formula, stated in the present tense
     // two paragraphs after the correct 1 s value.
     const doc = readRepoFile('docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md');
-    assert(!/The gap ceiling is derived — one tick sleep/.test(doc),
-      'the document still derives the gap ceiling from the retired SAMPLE_INTERVAL + SAMPLE_MAX_SPAN formula');
+    const retiredFormula = currentTenseLines(doc, /gap ceiling is derived — one tick sleep/);
+    assertEq(retiredFormula.length, 0,
+      'the document derives the gap ceiling from the retired SAMPLE_INTERVAL + SAMPLE_MAX_SPAN formula in '
+      + `the present tense: ${retiredFormula[0]?.trim() ?? ''}`);
     assert(/2 × SAMPLE_INTERVAL|twice the\s+nominal tick|twice the nominal tick/.test(doc),
       'it must state the derivation in force: twice the nominal tick');
     assert(/credited at most one nominal tick/.test(doc),
