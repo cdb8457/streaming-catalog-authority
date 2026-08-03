@@ -236,7 +236,12 @@ export interface WebdavCounters {
   readonly rangedCommittedBytes: number;
   readonly fullCommittedBytes: number;
   readonly committedBytes: number;
-  /** OBSERVED: what the writes actually put on the socket. Readable only once `bodiesInFlight` is zero. */
+  /**
+   * OBSERVED: the counts the endpoint's `Write` calls RETURNED. Readable only once `bodiesInFlight` is zero.
+   *
+   * AN APPLICATION-WRITE OBSERVATION AND NOTHING STRONGER: not peer receipt, not a TCP acknowledgement, not
+   * exact wire bytes, not billing. See `OBSERVED_BYTES_ARE_APPLICATION_WRITES`.
+   */
   readonly rangedObservedBytes: number;
   readonly fullObservedBytes: number;
   readonly observedBytes: number;
@@ -283,7 +288,10 @@ export function parseWebdavCounters(
   const scalars: Record<string, number> = {};
   for (const key of WEBDAV_COUNTER_KEYS_REQUIRED) {
     const raw = document[key];
-    if (typeof raw !== 'number' || !Number.isFinite(raw) || !Number.isInteger(raw) || raw < 0) {
+    // SAFE INTEGERS, NOT MERELY INTEGERS: above 2^53 `Number.isInteger` still answers true for a value that
+    // has already lost precision, and a byte total is exactly the field that gets there.
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || !Number.isInteger(raw) || raw < 0
+      || !Number.isSafeInteger(raw)) {
       problems.push({
         kind: 'missing-telemetry',
         detail: `the ${label} snapshot has no usable "${key}" counter (${JSON.stringify(raw)}); a comparison `
@@ -299,7 +307,8 @@ export function parseWebdavCounters(
     // WHOLE MEANS WHOLE. A fractional per-object count compares perfectly well against anything, so a column
     // of 4.5 requests would flow through every roll-up below and appear in a report as a fact.
     if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== 'number'
-      || !Number.isFinite(entry) || !Number.isInteger(entry) || entry < 0)) {
+      || !Number.isFinite(entry) || !Number.isInteger(entry) || entry < 0
+      || !Number.isSafeInteger(entry))) {
       problems.push({
         kind: 'missing-telemetry',
         detail: `the ${label} snapshot's "${key}" is not an array of whole non-negative counts, so per-object `
@@ -335,7 +344,7 @@ export function parseWebdavCounters(
  *     statement that every request it accounted for landed in exactly one bucket.
  *   BYTE PARTITIONS, BOTH OF THEM. `rangedCommittedBytes + fullCommittedBytes == committedBytes`, and the
  *     same shape for the observed pair. They are separate partitions over separate totals.
- *   SETTLEMENT. `bodiesInFlight == 0`. Between a body`s commit and its observation the committed length is
+ *   SETTLEMENT. `bodiesInFlight == 0`. Between a body's commit and its observation the committed length is
  *     counted and the observed length is not, so a snapshot taken there understates delivery by an amount
  *     that belongs to the clock rather than to the client.
  *   PROMISE CEILING. `observedBytes <= committedBytes`. An endpoint cannot write more than it promised.
@@ -1008,7 +1017,11 @@ export const RCLONE_COMPARISON_NONCLAIMS: readonly string[] = Object.freeze([
   'per-server attribution is impossible here and is not claimed: one mount client serves all three servers, '
     + 'so the endpoint sees the client and never the server behind a byte',
   'the endpoint reports COMMITTED bytes (what each response promised in Content-Length) and OBSERVED bytes '
-    + '(what it actually wrote) as two separate figures; a committed figure is not a delivery claim',
+    + '(the counts its Write calls returned) as two separate figures; a committed figure is not a delivery claim',
+  'an OBSERVED byte is an APPLICATION-WRITE observation: NOT peer receipt, NOT a TCP acknowledgement, NOT '
+    + 'exact wire bytes, and NOT provider billing',
+  'figures are compared like for like only -- committed against committed and observed against observed; an '
+    + 'observed figure over another instrument\'s committed one was published once and is retracted',
   'the mount client\'s own accounting is a THIRD measurement, of what it believes it passed upward, and no '
     + 'ratio between it and either endpoint figure is claimed as a provider cost',
   'there is no access-resolution figure because this topology has no resolution step, which is a property of '

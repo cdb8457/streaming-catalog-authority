@@ -683,6 +683,9 @@ export const COUNTER_KEYS_REQUIRED = Object.freeze([
   'peakConns', 'peakConcurrent', 'chunkResponses', 'chunkBytes', 'smallResponses', 'smallBytes',
   'partialResponses', 'partialBytes', 'oversizedResponses', 'oversizedBytes', 'bodylessResponses',
   'holdTimeouts', 'heldRequests',
+  // THE APPLICATION-WRITE COLUMN, added when the endpoint stopped discarding what `Write` returned. See
+  // `OBSERVED_BYTES_ARE_APPLICATION_WRITES` for what that number is and, more importantly, what it is not.
+  'observedBytes', 'completedBodies', 'truncatedBodies', 'bodiesInFlight',
 ] as const);
 
 /**
@@ -694,11 +697,16 @@ export const COUNTER_KEYS_REQUIRED = Object.freeze([
  * the gate reads it, but as a present-tense observation rather than as a window delta, and requiring it to be
  * monotonic would fail every correct run.
  */
-export const MONOTONIC_COUNTER_KEYS: readonly string[] = COUNTER_KEYS_REQUIRED;
+export const GAUGE_COUNTER_KEYS: readonly string[] = Object.freeze(['currentHeldWaiters', 'bodiesInFlight']);
+
+export const MONOTONIC_COUNTER_KEYS: readonly string[] = Object.freeze(
+  COUNTER_KEYS_REQUIRED.filter((key) => !GAUGE_COUNTER_KEYS.includes(key)),
+);
 
 /** The per-object columns, which a caller pairs BY INDEX and which must therefore all be the same length. */
 export const COUNTER_ARRAY_KEYS = Object.freeze([
-  'objectBytes', 'objectSizes', 'objectChunk', 'objectSmall', 'objectPartial', 'objectOversized',
+  'objectBytes', 'objectObserved', 'objectSizes', 'objectChunk', 'objectSmall', 'objectPartial',
+  'objectOversized',
 ] as const);
 
 /**
@@ -713,7 +721,14 @@ export interface ProviderCounters {
   readonly resolutions: number;
   readonly rangeRequests: number;
   readonly accountedResponses: number;
+  /** COMMITTED payload length: what the handler undertook to write. NOT a delivery figure. */
   readonly bytesServed: number;
+  /** What `http.ResponseWriter.Write` RETURNED, summed. An APPLICATION-WRITE observation and nothing more. */
+  readonly observedBytes: number;
+  readonly completedBodies: number;
+  readonly truncatedBodies: number;
+  /** A GAUGE. Non-zero means a body has a committed length counted and no observed length yet. */
+  readonly bodiesInFlight: number;
   readonly served429: number;
   readonly fullBodyServed: number;
   readonly peakConns: number;
@@ -730,6 +745,7 @@ export interface ProviderCounters {
   readonly holdTimeouts: number;
   readonly heldRequests: number;
   readonly objectBytes: readonly number[];
+  readonly objectObserved: readonly number[];
   readonly objectSizes: readonly number[];
   readonly objectChunk: readonly number[];
   readonly objectSmall: readonly number[];
@@ -764,7 +780,11 @@ export function parseProviderCounters(
   const scalars: Record<string, number> = {};
   for (const key of COUNTER_KEYS_REQUIRED) {
     const raw = document[key];
-    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || !Number.isInteger(raw)) {
+    // SAFE INTEGERS, NOT MERELY INTEGERS. Above 2^53 a JSON number is no longer exactly representable, so
+    // `Number.isInteger` still answers true while the value has already lost precision and every difference
+    // taken from it is quietly wrong. A byte total is exactly the field that can get there.
+    if (typeof raw !== 'number' || !Number.isFinite(raw) || raw < 0 || !Number.isInteger(raw)
+      || !Number.isSafeInteger(raw)) {
       problems.push({
         kind: 'missing-telemetry',
         detail: `the ${label} snapshot has no usable "${key}" counter (${JSON.stringify(raw)}), so any budget `
@@ -786,7 +806,8 @@ export function parseProviderCounters(
     // A counters file that is wrong in a way the parser announced it would refuse is worse than one that is
     // obviously broken, because nothing downstream has any reason to doubt it.
     if (!Array.isArray(raw) || raw.some((entry) => typeof entry !== 'number'
-      || !Number.isFinite(entry) || !Number.isInteger(entry) || entry < 0)) {
+      || !Number.isFinite(entry) || !Number.isInteger(entry) || entry < 0
+      || !Number.isSafeInteger(entry))) {
       problems.push({
         kind: 'missing-telemetry',
         detail: `the ${label} snapshot's "${key}" is not an array of whole non-negative counts, so per-object `
@@ -844,6 +865,39 @@ export function attributionProblems(
   }
 
   for (const [label, snapshot] of [['before', before], ['after', after]] as const) {
+    // SETTLEMENT FIRST, BECAUSE THE OBSERVED COLUMN DEPENDS ON IT. Between a body's commit and the moment its
+    // write returns, the committed length is counted and the observed length is not. A snapshot taken there
+    // shows a deficit that belongs to the clock rather than to the client, and a budget read off it would be
+    // measuring when the gate looked.
+    if (snapshot.bodiesInFlight !== 0) {
+      problems.push({
+        kind: 'telemetry-unsettled',
+        detail: `the ${label} snapshot was taken with ${snapshot.bodiesInFlight} body/bodies still writing, `
+          + 'so its committed and observed totals describe different sets of responses. Wait for the gauge to '
+          + 'reach zero rather than reading a half-written window',
+      });
+    }
+    // AN ENDPOINT CANNOT WRITE MORE THAN IT COMMITTED TO. If it ever reports that it did, the two columns
+    // have stopped describing the same responses and neither can be quoted.
+    if (snapshot.observedBytes > snapshot.bytesServed) {
+      problems.push({
+        kind: 'observed-exceeds-committed',
+        detail: `the ${label} snapshot observed ${snapshot.observedBytes} bytes against `
+          + `${snapshot.bytesServed} committed; more was written than was ever undertaken`,
+      });
+    }
+    // THE OUTCOME PARTITION IS OVER BODIES, not over responses, and it is only true after settlement. A
+    // bodyless refusal moves neither byte column and neither outcome.
+    const bodies = snapshot.chunkResponses + snapshot.smallResponses
+      + snapshot.partialResponses + snapshot.oversizedResponses;
+    if (snapshot.bodiesInFlight === 0
+      && snapshot.completedBodies + snapshot.truncatedBodies !== bodies) {
+      problems.push({
+        kind: 'outcome-partition',
+        detail: `the ${label} snapshot classified ${bodies} bodies with nothing in flight, but records `
+          + `${snapshot.completedBodies} completed and ${snapshot.truncatedBodies} truncated`,
+      });
+    }
     const classified = snapshot.chunkResponses + snapshot.smallResponses
       + snapshot.partialResponses + snapshot.oversizedResponses;
     if (classified + snapshot.bodylessResponses !== snapshot.accountedResponses) {
@@ -863,7 +917,8 @@ export function attributionProblems(
       });
     }
     const columns: ReadonlyArray<readonly [string, readonly number[]]> = [
-      ['objectBytes', snapshot.objectBytes], ['objectSizes', snapshot.objectSizes],
+      ['objectBytes', snapshot.objectBytes], ['objectObserved', snapshot.objectObserved],
+      ['objectSizes', snapshot.objectSizes],
       ['objectChunk', snapshot.objectChunk], ['objectSmall', snapshot.objectSmall],
       ['objectPartial', snapshot.objectPartial], ['objectOversized', snapshot.objectOversized],
     ];
@@ -880,8 +935,18 @@ export function attributionProblems(
     if (attributed !== snapshot.bytesServed) {
       problems.push({
         kind: 'unattributed-bytes',
-        detail: `the ${label} snapshot served ${snapshot.bytesServed} bytes but attributes ${attributed} to `
-          + 'registered objects; the difference was served for a reference this gate never published',
+        detail: `the ${label} snapshot committed ${snapshot.bytesServed} bytes but attributes ${attributed} `
+          + 'to registered objects; the difference was promised for a reference this gate never published',
+      });
+    }
+    // ...AND THE SAME FOR THE OBSERVED COLUMN, which is a separate total over the same responses. It is only
+    // checked once nothing is writing, for the reason the settlement problem above gives.
+    const observedAttributed = snapshot.objectObserved.reduce((total, value) => total + value, 0);
+    if (snapshot.bodiesInFlight === 0 && observedAttributed !== snapshot.observedBytes) {
+      problems.push({
+        kind: 'unattributed-observed-bytes',
+        detail: `the ${label} snapshot observed ${snapshot.observedBytes} bytes but attributes `
+          + `${observedAttributed} to registered objects`,
       });
     }
   }
@@ -927,6 +992,7 @@ export function attributionProblems(
   }
   const cumulativeColumns: ReadonlyArray<readonly [string, readonly number[], readonly number[]]> = [
     ['objectBytes', before.objectBytes, after.objectBytes],
+    ['objectObserved', before.objectObserved, after.objectObserved],
     ['objectChunk', before.objectChunk, after.objectChunk],
     ['objectSmall', before.objectSmall, after.objectSmall],
     ['objectPartial', before.objectPartial, after.objectPartial],
@@ -987,12 +1053,28 @@ export { plexObjectByteCeiling as daemonBlockByteCeiling } from './plex-dataplan
 export interface ObjectByteVerdict {
   readonly ordinal: number;
   readonly sizeBytes: number;
+  /**
+   * The COMMITTED bytes for this object in the window — what the endpoint undertook to write.
+   *
+   * IT KEEPS ITS NAME BECAUSE EVERY HISTORICAL RUN RECORD USES IT, and it is the quantity those records
+   * describe. `observedBytes` beside it is what `Write` returned.
+   */
   readonly servedBytes: number;
+  /** The APPLICATION-WRITE observation for the same object and window. Never above `servedBytes`. */
+  readonly observedBytes: number;
   readonly ceilingBytes: number;
   /** Which of the two bounds was the binding one, so a breach says what it breached. */
   readonly boundKind: 'block-geometry' | 'byte-fraction';
   readonly multiplier: number;
+  /** The same multiple, computed from the observed column. */
+  readonly observedMultiplier: number;
+  /**
+   * THE CEILING IS ASSERTED AGAINST BOTH COLUMNS, and that is what makes the move to an observed budget
+   * incapable of weakening anything. `withinBudget` is every assertion this gate has ever made;
+   * `observedWithinBudget` is the bytes-written bound added beside it. A caller requires both.
+   */
   readonly withinBudget: boolean;
+  readonly observedWithinBudget: boolean;
   /**
    * Served bytes as a share of the WORST CASE — three independent scanners each paying the full
    * single-scanner envelope for this object. RECORDED, NEVER ASSERTED: see `objectByteVerdicts`.
@@ -1044,6 +1126,7 @@ export function objectByteVerdicts(
   for (let ordinal = 0; ordinal < count; ordinal += 1) {
     const size = after.objectSizes[ordinal] as number;
     const served = (after.objectBytes[ordinal] as number) - (before.objectBytes[ordinal] ?? 0);
+    const observed = (after.objectObserved[ordinal] ?? 0) - (before.objectObserved[ordinal] ?? 0);
     const worstCase = scanners * ceilingFor(size);
     const fraction = Math.floor(size * largeFraction);
     const fractionBinds = size >= largeFixtureMinBytes && fraction < worstCase;
@@ -1052,10 +1135,13 @@ export function objectByteVerdicts(
       ordinal,
       sizeBytes: size,
       servedBytes: served,
+      observedBytes: observed,
       ceilingBytes: ceiling,
       boundKind: fractionBinds ? 'byte-fraction' : 'block-geometry',
       multiplier: size > 0 ? served / size : 0,
+      observedMultiplier: size > 0 ? observed / size : 0,
       withinBudget: served <= ceiling,
+      observedWithinBudget: observed <= ceiling,
       sharingRatio: worstCase > 0 ? served / worstCase : 0,
     });
   }
@@ -1121,7 +1207,10 @@ export function breachedShapes(verdicts: readonly ObjectShapeVerdict[]): ObjectS
 
 /** The verdicts that failed, worst first, so a report names the object that broke rather than the count. */
 export function breachedObjects(verdicts: readonly ObjectByteVerdict[]): ObjectByteVerdict[] {
-  return verdicts.filter((verdict) => !verdict.withinBudget)
+  // A BREACH ON EITHER COLUMN IS A BREACH. Observed can never exceed committed, so in practice the committed
+  // column is what fires — but filtering on it alone would mean the observed ceiling was reported and never
+  // enforced, which is the shape of check this repository keeps having to delete.
+  return verdicts.filter((verdict) => !verdict.withinBudget || !verdict.observedWithinBudget)
     .sort((a, b) => b.multiplier - a.multiplier);
 }
 
@@ -1309,3 +1398,20 @@ export const THREE_SERVER_NONCLAIMS: readonly string[] = Object.freeze([
  * sizes through its own semantics — and the OVERLAP evidence, which is per-server by construction.
  */
 export const PER_SERVER_PROVIDER_ATTRIBUTION_IS_IMPOSSIBLE = true;
+
+/**
+ * WHAT AN "OBSERVED" BYTE IS, AND THE FOUR THINGS IT IS NOT.
+ *
+ * The endpoint records the count `http.ResponseWriter.Write` RETURNS. That is the number of bytes the
+ * application handler successfully handed to the HTTP stack, and it is the strongest statement either of
+ * these gates can make about bytes leaving. It is:
+ *
+ *   NOT proof of PEER RECEIPT. The bytes may sit in a kernel buffer the client never drains.
+ *   NOT a TCP ACKNOWLEDGEMENT. Nothing here reads the transport's own accounting.
+ *   NOT EXACT WIRE BYTES. Chunked framing, headers and any TLS record overhead are outside it.
+ *   NOT PROVIDER BILLING. No real provider is contacted by any automated gate in this repository, and a
+ *     billing model is a commercial artefact rather than a byte count.
+ *
+ * Every figure derived from this column says so, and the offline suites refuse wording that upgrades it.
+ */
+export const OBSERVED_BYTES_ARE_APPLICATION_WRITES = true;

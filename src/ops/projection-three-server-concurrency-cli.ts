@@ -16,7 +16,7 @@ import {
 } from '../core/projection/three-server-concurrency.js';
 import { PLEX_LARGE_FIXTURE, PLEX_SCAN_ENVELOPE } from '../core/projection/plex-dataplane.js';
 import {
-  adapterFor, readCounters, readExpected, runConcurrentScans, setHold,
+  adapterFor, readCounters, readSettledCounters, readExpected, runConcurrentScans, setHold,
   type CatalogueEntry, type ConcurrentScanOutcome,
 } from './projection-three-server-concurrency.js';
 
@@ -100,6 +100,14 @@ function record(args: Args, result: GateResult): void {
   // A FAILED VERDICT STOPS THE PHASE IMMEDIATELY. Continuing would produce a run whose later measurements
   // were taken against a state the gate had already declared wrong.
   if (result.verdict === 'fail') throw new GateFailure(`${result.gate} failed`);
+}
+
+/**
+ * A RECORDED FIGURE with no ceiling. `GateResult` documents `measured` and `budget` as travelling together,
+ * so a note-only result cannot acquire a threshold by accident.
+ */
+function figure3(gate: string, note: string): GateResult {
+  return { gate, verdict: 'pass', note };
 }
 
 /** Read a counters document, refusing anything a budget could not honestly be asserted over. */
@@ -311,9 +319,22 @@ async function main(): Promise<void> {
 
     // -----------------------------------------------------------------------------------------------------
     case 'counters': {
-      const snapshot = await readCounters(need(args, 'url'));
+      // IT WAITS FOR EVERY BODY TO FINISH WRITING BEFORE IT READS. A snapshot taken between a body's commit
+      // and the moment its write returns has the COMMITTED length counted and the OBSERVED length not, so the
+      // gap between the two columns would be a measurement of when this gate happened to look. Both ends of
+      // the window wait, so a body left writing by an earlier phase cannot skew the baseline either.
+      const url = need(args, 'url');
+      const settled = args.flags.get('settled') !== 'false';
+      const snapshot = settled
+        ? await readSettledCounters(url, optionalNumber(args, 'settle-ms', 60_000))
+        : await readCounters(url);
       writeFileSync(need(args, 'out'), `${JSON.stringify(snapshot, null, 2)}\n`);
-      console.log('  counters recorded');
+      const inFlight = Number(snapshot.bodiesInFlight);
+      console.log(`  counters recorded (${inFlight} body/bodies still writing)`);
+      if (settled && inFlight !== 0) {
+        fail(`the endpoint still had ${inFlight} body/bodies writing after the settle budget, so no `
+          + 'observed-byte figure can be read from this snapshot');
+      }
       return;
     }
 
@@ -436,10 +457,21 @@ async function main(): Promise<void> {
       const aggregateCeiling = perObject.reduce((total, verdict) => total + verdict.ceilingBytes, 0);
       // G15, THE ACCEPTANCE PLAN'S OWN, FIRST — and the stricter block-geometry model IN ADDITION, never
       // instead. A gate may be stricter than the plan; it may not be looser and keep the plan's gate id.
-      record(args, withinBudget(`${gate}-G15-provider-bytes`, delta('bytesServed'),
+      // G15 IS ASSERTED ON BOTH BYTE COLUMNS, AND THAT IS WHAT MAKES AN OBSERVED BUDGET INCAPABLE OF
+      // WEAKENING ANYTHING. The COMMITTED assertion is every one this gate has ever made and its ceiling has
+      // not moved; the OBSERVED assertion — the bytes the handler's writes actually returned — is added
+      // beside it, which is the acceptance intent when the question is bytes written. Observed can never
+      // exceed committed, so the second can only fire where the first already has; it exists so the column
+      // that is REPORTED is also the column that is ENFORCED.
+      record(args, withinBudget(`${gate}-G15-provider-bytes-committed`, delta('bytesServed'),
         canonicalScanByteCeiling(remoteEntries),
-        `the acceptance plan's own G15: x${PROJECTION_PHASE_1_BUDGETS.MAX_BYTE_MULTIPLIER} of (probe window `
+        `the acceptance plan's own G15 over COMMITTED payload length: `
+        + `x${PROJECTION_PHASE_1_BUDGETS.MAX_BYTE_MULTIPLIER} of (probe window `
         + `x ${CANONICAL_SCAN_WINDOWS_PER_ENTRY} scan windows per entry x ${remoteEntries} entries)`));
+      record(args, withinBudget(`${gate}-G15-provider-bytes-observed`, delta('observedBytes'),
+        canonicalScanByteCeiling(remoteEntries),
+        'the SAME ceiling over what the endpoint\'s writes actually returned. An APPLICATION-WRITE figure: '
+        + 'not peer receipt, not a TCP acknowledgement, not exact wire bytes, not billing'));
       record(args, withinBudget(`${gate}-G15-provider-bytes-block-geometry`, delta('bytesServed'),
         aggregateCeiling,
         `STRICTER, AND IN ADDITION: the sum of every registered object's own ceiling. ${largeBytes} bytes sit `
@@ -477,6 +509,11 @@ async function main(): Promise<void> {
       // 4. PER OBJECT, WHICH IS WHERE AN AGGREGATE PASS HIDES A BREACH.
       const breached = breachedObjects(perObject);
       const exercised = perObject.filter((verdict) => verdict.servedBytes > 0);
+      // AND THE OUTCOME OF EVERY BODY, RECORDED. A truncated body is where the two columns come apart, and
+      // on this topology the daemon is the client, so a non-zero count here is itself worth seeing.
+      record(args, figure3(`${gate}-body-outcomes`,
+        `${delta('completedBodies')} bodies written in full, ${delta('truncatedBodies')} abandoned part-way `
+        + `or errored; COMMITTED ${delta('bytesServed')} bytes against OBSERVED ${delta('observedBytes')}`));
       record(args, exactly(`${gate}-G15-per-object-breaches`, breached.length, 0,
         breached.length === 0
           ? `${exercised.length} of ${perObject.length} registered objects were read during the window, each `

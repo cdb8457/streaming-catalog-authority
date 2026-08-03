@@ -708,7 +708,7 @@ func TestRequestShapeCountersCarryNothingIdentifying(t *testing.T) {
 		// them: every element must be a number, so an array of numbers carries no reference, URL, lease, offset
 		// or per-request sequence — only the registration ordering the contract documents.
 		perObjectColumns := map[string]bool{
-			"objectBytes": true, "objectSizes": true, "objectChunk": true,
+			"objectBytes": true, "objectObserved": true, "objectSizes": true, "objectChunk": true,
 			"objectSmall": true, "objectPartial": true, "objectOversized": true,
 		}
 		if !isArray || !perObjectColumns[key] {
@@ -808,6 +808,22 @@ func TestTheCountingWriterIsTheOnlyWayABodyLeavesServeRange(t *testing.T) {
 	}
 	body := text[start : start+1+end]
 
+	// COMMENTS ARE STRIPPED BEFORE ANY OF THE COUNTS BELOW, and finding that out cost a test run. The prose in
+	// this closure NAMES the discarded-write shape it exists to refuse, so a raw text count sees two writes
+	// where there is one, and the `_, _ =` check matches its own historical note. A rule that catches its own
+	// history is the accidental scoping this repository keeps having to correct.
+	code := func(in string) string {
+		out := make([]string, 0, 64)
+		for _, line := range strings.Split(in, "\n") {
+			if strings.HasPrefix(strings.TrimSpace(line), "//") {
+				continue
+			}
+			out = append(out, line)
+		}
+		return strings.Join(out, "\n")
+	}
+	body = code(body)
+
 	// ONE WRITER. Every body-producing branch routes through the closure; a branch that wrote directly would
 	// be counted late, or not at all.
 	if writes := strings.Count(body, "w.Write("); writes != 1 {
@@ -831,6 +847,223 @@ func TestTheCountingWriterIsTheOnlyWayABodyLeavesServeRange(t *testing.T) {
 	if !(counted < written && bytesAdded < written) {
 		t.Fatal("the body is written before it is counted, so a client can observe the counters without its " +
 			"own response in them -- at a phase boundary that misattributes the response to the next window")
+	}
+
+	// ...AND OBSERVE AFTER, WHICH IS THE OTHER HALF AND THE ONE THAT WAS MISSING. The committed length is
+	// counted before the write; what the write RETURNED can only be counted after it. A file where the
+	// observed add sits before the write would be recording the promise twice under two names.
+	observedAdded := strings.Index(tail, "ObservedBytes.Add(")
+	if observedAdded < 0 {
+		t.Fatal("the closure does not record what Write returned; the only byte figure would be the promise")
+	}
+	if observedAdded < written {
+		t.Fatal("the observed-byte add sits before the write, so it cannot be recording the write's own return")
+	}
+	// AND THE RETURN IS ACTUALLY USED. `_, _ = w.Write(payload)` is exactly the shape this whole remediation
+	// exists to remove, in this file and in internal/fakewebdav.
+	if strings.Contains(tail, "_, _ = w.Write(") {
+		t.Fatal("the write's count and error are discarded again; every delivery-shaped claim built on this " +
+			"endpoint would be unsupported")
+	}
+}
+
+// A CLIENT THAT CLOSES EARLY MAKES COMMITTED AND OBSERVED COME APART, and the endpoint must say so.
+//
+// THE DEFECT THIS REFUSES, WHICH SHIPPED IN THIS FILE AND IN internal/fakewebdav. Every body-producing branch
+// ended `_, _ = w.Write(payload)`, discarding the count and the error, so the only byte figure was the
+// COMMITTED payload length. A report built on that in the sibling package concluded something about delivery
+// that its instrument could not support.
+func TestAnEarlyClientCloseMakesCommittedAndObservedDiverge(t *testing.T) {
+	// THE BODY HAS TO BE BIGGER THAN A SOCKET BUFFER. A small payload is handed to the HTTP stack in full
+	// before the peer's close is noticed, and observed then legitimately equals committed — that is not the
+	// endpoint being wrong, it is a small body genuinely being written. Divergence needs a write that blocks.
+	const size = 8 << 20
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("starting the endpoint: %v", err)
+	}
+	defer func() { _ = server.Close() }()
+	server.AddObject("obj-large", size)
+
+	// KEEP-ALIVES OFF so closing the body closes the connection rather than returning it to a pool after a
+	// background drain — a pooled connection would let Go read the remainder and the test would prove nothing.
+	transport := &http.Transport{DisableKeepAlives: true}
+	defer transport.CloseIdleConnections()
+	client := &http.Client{Transport: transport}
+	request, err := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-large", nil)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	request.Header.Set("Range", byteRange(0, size-1))
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("issuing the request: %v", err)
+	}
+	buffer := make([]byte, 512)
+	if _, err := io.ReadFull(response.Body, buffer); err != nil {
+		t.Fatalf("reading the first bytes: %v", err)
+	}
+	_ = response.Body.Close()
+
+	if !server.WaitForSettlement(5 * time.Second) {
+		t.Fatal("a body was still writing after five seconds; no observed figure can be read")
+	}
+	snapshot := server.Snapshot()
+	if snapshot.BodiesInFlight != 0 {
+		t.Fatalf("the gauge says %d bodies are still writing", snapshot.BodiesInFlight)
+	}
+	if snapshot.BytesServed != size {
+		t.Fatalf("the committed length must still be the whole range: %d", snapshot.BytesServed)
+	}
+	if snapshot.ObservedBytes >= snapshot.BytesServed {
+		t.Fatalf("observed (%d) did not come apart from committed (%d); the write's return is being "+
+			"discarded again", snapshot.ObservedBytes, snapshot.BytesServed)
+	}
+	if snapshot.TruncatedBodies != 1 || snapshot.CompletedBodies != 0 {
+		t.Fatalf("an abandoned body must be recorded as truncated: %d truncated, %d completed",
+			snapshot.TruncatedBodies, snapshot.CompletedBodies)
+	}
+	if len(snapshot.ObjectObserved) != 1 || snapshot.ObjectObserved[0] != snapshot.ObservedBytes {
+		t.Fatalf("the observed column is not attributed per object: %v against %d",
+			snapshot.ObjectObserved, snapshot.ObservedBytes)
+	}
+	if snapshot.ObjectBytes[0] != size {
+		t.Fatalf("the per-object committed column is not the whole range: %d", snapshot.ObjectBytes[0])
+	}
+}
+
+// THE CONTROL FOR THE TEST ABOVE. If observed were simply always lower — a miscount, a missing final chunk —
+// the divergence assertion would pass for the wrong reason and every figure would be understated instead of
+// overstated. A client that reads to the end must see the two agree exactly.
+func TestAFullyConsumedBodyObservesExactlyWhatItCommitted(t *testing.T) {
+	const size = 4096
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("starting the endpoint: %v", err)
+	}
+	defer func() { _ = server.Close() }()
+	server.AddObject("obj-small", size)
+
+	request, err := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-small", nil)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	request.Header.Set("Range", byteRange(0, size-1))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("issuing the request: %v", err)
+	}
+	body, err := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if err != nil || len(body) != size {
+		t.Fatalf("the whole body was not received: %d bytes, err %v", len(body), err)
+	}
+
+	if !server.WaitForSettlement(5 * time.Second) {
+		t.Fatal("a fully consumed body did not settle")
+	}
+	snapshot := server.Snapshot()
+	if snapshot.ObservedBytes != snapshot.BytesServed || snapshot.ObservedBytes != size {
+		t.Fatalf("a fully consumed body must observe exactly what it committed: %d against %d",
+			snapshot.ObservedBytes, snapshot.BytesServed)
+	}
+	if snapshot.CompletedBodies != 1 || snapshot.TruncatedBodies != 0 {
+		t.Fatalf("a fully consumed body is completed, not truncated: %d/%d",
+			snapshot.CompletedBodies, snapshot.TruncatedBodies)
+	}
+	if snapshot.CompletedBodies+snapshot.TruncatedBodies != 1 {
+		t.Fatal("the outcome partition does not account for the one body served")
+	}
+}
+
+// A BODYLESS RESPONSE MOVES NEITHER BYTE COLUMN AND NEITHER OUTCOME, so the outcome partition is over BODIES
+// rather than over responses. Without this the partition would silently drift every time a refusal was added.
+func TestABodylessResponseTouchesNoByteOrOutcomeCounter(t *testing.T) {
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("starting the endpoint: %v", err)
+	}
+	defer func() { _ = server.Close() }()
+	server.AddObject("obj-refused", 4096)
+	server.InjectFault("obj-refused", Fault429, 1)
+
+	request, err := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-refused", nil)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	request.Header.Set("Range", byteRange(0, 1023))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("issuing the request: %v", err)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+
+	if !server.WaitForSettlement(5 * time.Second) {
+		t.Fatal("a bodyless response left something in flight")
+	}
+	snapshot := server.Snapshot()
+	if snapshot.BytesServed != 0 || snapshot.ObservedBytes != 0 {
+		t.Fatalf("a refusal moved a byte column: %d committed, %d observed",
+			snapshot.BytesServed, snapshot.ObservedBytes)
+	}
+	if snapshot.CompletedBodies != 0 || snapshot.TruncatedBodies != 0 {
+		t.Fatalf("a refusal moved an outcome counter: %d/%d",
+			snapshot.CompletedBodies, snapshot.TruncatedBodies)
+	}
+	if snapshot.BodylessResponses != 1 {
+		t.Fatalf("the refusal was not counted as bodiless: %d", snapshot.BodylessResponses)
+	}
+}
+
+// THE GAUGE MUST RISE WHILE A BODY IS BETWEEN ITS COMMIT AND ITS OBSERVATION, or an unsettled snapshot cannot
+// be told from a settled one and the refusal built on it is decorative.
+func TestTheInFlightGaugeRisesWhileABodyIsWritingAndReturnsToZero(t *testing.T) {
+	const size = 8 << 20
+	server, err := New(Options{})
+	if err != nil {
+		t.Fatalf("starting the endpoint: %v", err)
+	}
+	defer func() { _ = server.Close() }()
+	server.AddObject("obj-slow", size)
+
+	request, err := http.NewRequest(http.MethodGet, server.DirectURL()+"/obj-slow", nil)
+	if err != nil {
+		t.Fatalf("building the request: %v", err)
+	}
+	request.Header.Set("Range", byteRange(0, size-1))
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("issuing the request: %v", err)
+	}
+	// Read a little and then STOP, leaving the handler blocked mid-write with the socket buffer full.
+	buffer := make([]byte, 512)
+	if _, err := io.ReadFull(response.Body, buffer); err != nil {
+		t.Fatalf("reading the first bytes: %v", err)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	rose := false
+	for time.Now().Before(deadline) {
+		if server.Snapshot().BodiesInFlight == 1 {
+			rose = true
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !rose {
+		t.Fatal("the gauge never rose while a body was demonstrably mid-write")
+	}
+	// A snapshot taken HERE has the committed length counted and the observed length not. That is the state
+	// the gauge exists to describe, and the TS analysis refuses such a snapshot rather than quoting it.
+	mid := server.Snapshot()
+	if mid.ObservedBytes >= mid.BytesServed {
+		t.Fatalf("a mid-write snapshot should show the deficit the gauge warns about: %d against %d",
+			mid.ObservedBytes, mid.BytesServed)
+	}
+	_, _ = io.Copy(io.Discard, response.Body)
+	_ = response.Body.Close()
+	if !server.WaitForSettlement(10 * time.Second) {
+		t.Fatal("the gauge never returned to zero")
 	}
 }
 

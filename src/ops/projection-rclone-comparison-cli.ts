@@ -480,7 +480,9 @@ async function main(): Promise<void> {
         + `${measurements.metadataBytes} bytes of listing XML are counted SEPARATELY and are folded into `
         + 'neither media total'));
       record(args, figure(`${gate}-observed-bytes`,
-        `${measurements.observedBytes} media bytes OBSERVED — what the endpoint actually wrote to the socket `
+        `${measurements.observedBytes} media bytes OBSERVED — the counts the endpoint's Write calls RETURNED, `
+        + 'which is an APPLICATION-WRITE observation and NOT peer receipt, NOT a TCP acknowledgement, NOT '
+        + 'exact wire bytes and NOT billing '
         + `— of which ${measurements.corpusObservedBytes} were for corpus objects and `
         + `${measurements.nonCorpusObservedBytes} for the readiness canary`));
       record(args, figure(`${gate}-body-outcomes`,

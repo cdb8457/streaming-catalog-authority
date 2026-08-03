@@ -924,6 +924,10 @@ drive concurrent-scan \
   --out "$REL/out/concurrent-scan.json" --catalogue-dir "$REL/out" \
   || { logs_tail "$MOUNT_CONTAINER"; die "the concurrent scan did not complete"; }
 
+# THE AFTER SNAPSHOT WAITS FOR EVERY BODY TO FINISH WRITING. The endpoint counts a response`s COMMITTED
+# payload length before it writes it and the count its write RETURNED afterwards; a snapshot taken between
+# those two moments would report a deficit that belongs to the clock rather than to the daemon. The command
+# polls the endpoint's own in-flight gauge and REFUSES a snapshot that never settled.
 drive counters --url "http://127.0.0.1:${RANGE_PORT}" --out "$REL/out/counters-after.json"
 daemon_status "$WORK/out/daemon-after.json"
 PROBE_CACHE_AFTER="$(field probeCacheBytes < "$WORK/out/daemon-after.json")"

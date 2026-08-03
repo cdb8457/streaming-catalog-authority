@@ -375,7 +375,7 @@ each, none failed, none skipped.**
 | **media bytes OBSERVED** | **94,316,026 – 120,343,984** |
 | **as a multiple of the corpus's own 107,316,990 bytes** | **committed 17.065× – 25.938×; OBSERVED 0.878× – 1.121×** |
 | bodies completed / abandoned part-way | **866 – 940 completed, 87 – 117 truncated** |
-| the ~105 MB fixture | committed **17.023× – 26.023×**; **observed 0.543× – 0.766×** — the client never received it once in full, in any run |
+| the ~105 MB fixture | committed **17.023× – 26.023×**; **observed 0.543× – 0.766×** — fewer application-write bytes than the object's own length, in every run |
 | over the 43 comparable entries | committed **1,826,340,081 – 2,778,909,482**; **observed 88,930,627 – 115,663,883**; over **820 – 941** GETs |
 | the client's own accounting | **34,497,096 – 38,024,565 bytes** over **868 – 928 transfers** |
 | everything else | unchanged from §7.1: 52 depth-1 PROPFINDs and 90,249 bytes of listing XML in every run, 0 HTTP 429, 0 mutating requests, 50/50 matched on all three servers, 8 samples / 3.5 s of three-way overlap, cold on both instruments, seek preserved, nothing leaked |
@@ -387,11 +387,11 @@ about **2.7× to 3.1×**, which is read-ahead and discard and is a real but ordi
 remaining ~23× was the endpoint's own optimism about reads the client had abandoned, and it was never a
 statement about rclone at all.
 
-**And the headline changes with it.** Over the 43 entries both topologies fetch remotely, the product's own
-gate reports 13,205,874 bytes in every run. This topology **asked for** 1.83–2.78 GB — roughly 138–210× — and
-**received** 88.9–115.7 MB, roughly **6.7× – 8.8×**. Both are divisions of measured numbers; the first
-describes request amplification and the second describes delivered traffic, and only the second is what a
-provider would transfer.
+**And the headline changes with it — but see §7.5, which retracts half of what this paragraph first said.**
+Over the 43 entries both topologies fetch remotely, the product's own gate reported 13,205,874 bytes in every
+run. This topology **committed** 1.83–2.78 GB, roughly **138–210×** that figure. It **observed** 88.9–115.7 MB
+of application writes. **The second number is NOT comparable with 13,205,874**, and the first draft of this
+paragraph compared them anyway: see §7.5.
 
 **What did not change, and is the more durable half of the comparison.** The request count — **959–1,057
 ranged GETs against 47** — is unaffected by any of this, because a request is a request whether or not its
@@ -405,6 +405,42 @@ catalogue evidence, the overlap evidence and the cold-state evidence.
 server happens to re-open the ~105 MB fixture and seek backwards in it — but the observed spread is far
 narrower, which is itself informative: the client asks for wildly different amounts between runs and ends up
 receiving roughly the corpus's own size every time.
+
+### 7.5 RETRACTED AGAIN: the observed-to-committed comparison, and what "observed" is worth
+
+**§7.4 first said this topology "received 88.9–115.7 MB … roughly 6.7× – 8.8×" against the product's
+13,205,874, and called the second number "what a provider would transfer". Both halves of that are
+withdrawn.**
+
+**IT COMPARED TWO DIFFERENT QUANTITIES.** The 88.9–115.7 MB came from G22's then-new **observed** column. The
+13,205,874 came from the product's own fake endpoint, `internal/fakeprovider`, which at that moment still
+counted **committed payload length** — recorded before `w.Write`, with the write's result discarded, exactly
+the defect §7.3 had just corrected on the other side. An observed figure over a committed one is not a ratio
+of anything. **The committed-to-committed comparison in §7.4 was and remains sound**; the observed one was
+arithmetic between two different instruments.
+
+**AND "OBSERVED" IS A WEAKER WORD THAN THAT PARAGRAPH USED.** What both endpoints now record is the count
+`http.ResponseWriter.Write` RETURNS: bytes the application handler successfully handed to the HTTP stack. It
+is **not** proof of peer receipt, **not** a TCP acknowledgement, **not** exact wire bytes — chunked framing,
+headers and any TLS overhead sit outside it — and **not** provider billing, which is a commercial artefact
+rather than a byte count. So "received", "delivered" and "what a provider would transfer" are all wrong for
+it, and this document no longer uses them for either topology.
+
+**WHAT WAS DONE ABOUT IT.** `internal/fakeprovider` now carries the same two-column contract as
+`internal/fakewebdav`: committed before the write, the write's own returned count and error after it,
+per-object attribution for both, completed/truncated body outcomes, and a live in-flight gauge whose non-zero
+value makes the TS analysis **refuse** the snapshot. G18's byte ceilings are asserted on **both** columns —
+the committed assertion is every one that gate has ever made and its ceiling has not moved, and the
+bytes-written bound is added beside it, which cannot weaken anything because observed can never exceed
+committed.
+
+**SO THE ONLY COMPARISONS THIS DOCUMENT MAKES ARE LIKE-FOR-LIKE:** committed against committed, observed
+against observed, request counts against request counts. §7.6 is the observed-to-observed figure, measured on
+both sides by instruments that now count the same way.
+
+### 7.6 The like-for-like comparison, measured on both sides after the remediation
+
+*(filled in from the runs recorded in §7 below)*
 
 ## 8. What this gate does not prove
 
