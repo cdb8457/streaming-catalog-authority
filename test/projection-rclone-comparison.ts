@@ -848,6 +848,20 @@ async function main(): Promise<void> {
       'and the gate then searches for that exact value where it must not appear');
   });
 
+  await test('an INTERRUPTED run cannot leave the credential where `git add -A` reaches it', () => {
+    // THE CLEANUP TRAP IS NOT ENOUGH ON ITS OWN, AND THAT IS THE POINT OF THIS CHECK. It deletes the run
+    // directory on success and on failure — but a run interrupted between minting the credential and the trap
+    // firing (a `kill -9`, a lost console) leaves `secret/token` on disk inside the repository, because bind
+    // propagation forces the working directory to live beside the checkout rather than under a temp dir. Four
+    // of the five gates in this family already carry a `.gitignore` entry for exactly that; this asserts that
+    // this gate's is there rather than trusting that somebody remembered.
+    const ignore = read('.gitignore');
+    const root = (GATE.match(/^GATE_ROOT="\$PWD\/([^"]+)"/m) ?? [])[1];
+    assert(root !== undefined && root.startsWith('.'), `the gate names its scratch root: ${String(root)}`);
+    assert(ignore.includes(`${root}/`),
+      `${root}/ is not in .gitignore, so an interrupted run could leave a minted credential staged`);
+  });
+
   await test('the gate proves the credential was actually required', () => {
     assert(GATE.includes('the endpoint served a ranged request with the wrong credential'),
       'a leak search for an optional secret proves nothing');
