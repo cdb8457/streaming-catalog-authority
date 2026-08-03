@@ -210,16 +210,17 @@ So the client's own accounting is read from its remote-control surface and repor
 | 3–5 | Windows / Docker Desktop | **COMPLETED**, three consecutive fresh runs through the committed wrapper `npm run go:rclone-comparison-gate:three`, against the tree exactly as committed at `5cdf55b` | **66 each, none failed, none skipped** | wrapper exit 0, `3 of 3 consecutive … none skipped` |
 | 6–8 | Windows / Docker Desktop | **COMPLETED**, a second wrapper sequence, same commit, no tracked file edited between them | 66 each, none failed, none skipped | wrapper exit 0 |
 | 9–11 | Windows / Docker Desktop | **COMPLETED**, a third wrapper sequence, same commit | 66 each, none failed, none skipped | wrapper exit 0; the working tree was still clean at `5cdf55b` afterwards |
+| 12 | Windows / Docker Desktop | **COMPLETED**, against `12ffef1` — the tree as finally committed | 66, none failed, none skipped | **a confirming run, and it is here because the nine wrapper runs predate the last commit.** That commit changed `.gitignore` and one offline assertion and nothing the gate reads, so it could not have invalidated them — but "could not have" is an argument and this is a measurement. Every figure landed inside the ranges §7.1 records: 981 ranged GETs, 1,832,756,755 media bytes, **17.077×**, 52 PROPFIND, 90,249 bytes of listing XML, the ~105 MB fixture at 1,794,384,634 bytes over 22 GETs, and the client accounting for 34,991,428 bytes over 880 transfers |
 
-**Ten completed runs and one failure, all on Windows / Docker Desktop, and the §6.1 table of the acceptance
-plan still reads NOT RUN.** Nine of the ten came through the committed three-consecutive-fresh-run wrapper, in
-three sequences of three, with no tracked file edited inside or between them. That is the repetition the
+**Eleven completed runs and one failure, all on Windows / Docker Desktop, and the §6.1 table of the acceptance
+plan still reads NOT RUN.** Nine of the eleven came through the committed three-consecutive-fresh-run wrapper,
+in three sequences of three, with no tracked file edited inside or between them. That is the repetition the
 acceptance plan asks for — **on the wrong platform**. §6 of the plan says G22 closes on a Linux or Unraid
-host, and none of these eleven runs was one. No real provider endpoint has ever been contacted — the WebDAV
+host, and none of these twelve runs was one. No real provider endpoint has ever been contacted — the WebDAV
 endpoint is the in-repository fake — and Phase 1 remains open.
 
-**The rows for runs 3–11 were necessarily written after they finished**, which is true of every run record in
-this repository and is not a gap in this one: that edit changed this document and nothing the gate reads.
+**The rows for runs 3–12 were necessarily written after they finished**, which is true of every run record in
+this repository and is not a gap in this one: that edit changes this document and nothing the gate reads.
 Re-running after each edit that records a run would not terminate.
 
 ### 7.1 What the nine wrapper runs measured
