@@ -254,9 +254,23 @@ count that is asserted is `matched` — published keys present at the published 
 | # | Host | Outcome | Assertions | What it measured, or why it failed |
 |---|---|---|---|---|
 | 1 | Windows / Docker Desktop | **FAILED** at `TS1-simultaneous-samples`, 2 against a floor of 3 | — | **A real defect in this gate, found by running it.** The barrier was released the instant the three-way rendezvous was observed. It worked — all three servers were seen scanning at once — and releasing on success destroyed what success had created: the three scans then finished at three different speeds and the measured overlap was two samples spanning 0.75 s. It also measured **33,187 bytes of scan-window cache before the window** and would have failed the "the cache was empty" assertion, which was itself wrong: the gate publishes a LOCAL seed entry on purpose and a local entry's own byte-identity window lands in that cache. Both were fixed: the hold now runs for its whole bounded window, and the daemon-side cold check is a GROWTH rather than an emptiness |
-| 2 | Windows / Docker Desktop | **PASSED** | 59, none failed, none skipped | see §7.1 |
+| 2 | Windows / Docker Desktop | **PASSED** | 59, none failed, none skipped | the first green run, and the source of the numbers in §7.1 |
+| 3–5 | Windows / Docker Desktop | **PASSED**, three consecutive fresh runs through the committed wrapper `npm run go:three-server-concurrency-gate:three` | 59 each, none failed, none skipped | wrapper exit 0, `3 of 3 consecutive … none skipped` |
+| 6–8 | Windows / Docker Desktop | **PASSED**, a second wrapper sequence | 59 each, none failed, none skipped | wrapper exit 0 |
+| 9–11 | Windows / Docker Desktop | **PASSED**, a third wrapper sequence | 59 each, none failed, none skipped | wrapper exit 0 |
 
-### 7.1 What run 2 measured
+**Ten green runs and one failure, all on Windows / Docker Desktop, and the §6.1 table still reads NOT RUN.**
+Nine of the ten came through the committed three-consecutive-fresh-run wrapper, in three sequences of three,
+with no edit to any tracked file between them. That is the repetition the acceptance plan asks for — **on the
+wrong platform**. §6 of the plan says the media-server gates close on a Linux or Unraid host, and none of
+these eleven runs was one.
+
+**The numbers are stable across the nine wrapper runs**, which is what a deterministic corpus should produce:
+provider bytes 13,205,874 in every run, 47 ranged GETs in every run, 43 resolutions in every run, the large
+fixture at 0.109x in every run. What varied is timing: the three-way overlap measured **9 to 10 samples
+spanning 4.1–4.6 s**, and Plex's scan took 25–32 s against Emby's 8 s and Jellyfin's 5–6 s.
+
+### 7.1 What a passing run measures
 
 | | |
 |---|---|

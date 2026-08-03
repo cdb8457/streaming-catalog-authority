@@ -727,6 +727,32 @@ async function main(): Promise<void> {
       'a gate whose subject is three servers at once must fail rather than downgrade to two');
   });
 
+  await test('the three-run wrapper says what three green runs here are and are not', () => {
+    assert(THREE.includes('closes NEITHER G18 NOR any of G7-G13'),
+      'the closing message must refuse the reading that three green runs on this host closed anything');
+    assert(THREE.includes('No run of this gate has ever happened on Linux or Unraid'),
+      'and it must say where they did happen');
+    assert(THREE.includes('a run that inherited the previous one'),
+      'the whole value of the repetition is that no run can inherit what the previous one left behind');
+    assert(THREE.includes('COLD'),
+      'and on THIS gate that matters more than on the other three: a run that inherited a warm probe cache '
+      + 'would measure a window in which the data plane did no work');
+  });
+
+  await test('each adapter is the server it names, and the three are distinct', () => {
+    const adapters = THREE_SERVER_IDS.map((id) => adapterFor(id));
+    assertEq(adapters.length, REQUIRED_SERVER_COUNT, 'one adapter per server');
+    assertEq(new Set(adapters.map((adapter) => adapter.id)).size, REQUIRED_SERVER_COUNT,
+      'three distinct servers, not one server three times');
+    for (const adapter of adapters) {
+      assert((THREE_SERVER_IDS as readonly string[]).includes(adapter.id),
+        `an adapter reported an id outside the set: ${adapter.id}`);
+      for (const method of ['readState', 'scanIsRunningNow', 'scanLibrary', 'catalogue'] as const) {
+        assertEq(typeof adapter[method], 'function', `${adapter.id} must implement ${method}`);
+      }
+    }
+  });
+
   await test('the acceptance commands propagate 77 and the optional one is a separate entry point', () => {
     assertEq(PACKAGE.scripts['go:three-server-concurrency-gate'],
       'bash deploy/projection-three-server-concurrency-gate.sh', 'the gate command runs the gate');
