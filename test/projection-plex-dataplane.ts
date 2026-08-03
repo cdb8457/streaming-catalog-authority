@@ -1478,14 +1478,32 @@ await test('redaction-check reads the NDJSON the gate actually writes, not whate
 // ---------------------------------------------------------------------------------------------------------
 
 /** Runs `budget` with a real counter pair and returns the recorded NDJSON verdicts. */
+/**
+ * A counter snapshot that also states its OBSERVED column, which the real endpoint always reports.
+ *
+ * WHY THE FIXTURES NEEDED THIS AND WHY IT IS NOT A FUDGE. Every snapshot below was written to mean "these
+ * bytes were served", back when a committed length was the only byte number the endpoint had. It now has two,
+ * and a fixture that moves the committed column while leaving the observed one at zero is not a quiet window
+ * — it is an endpoint that promised bytes and wrote none, which the coherence check correctly refuses. So the
+ * helper writes what the fixtures always MEANT: a fully delivered window, nothing abandoned. A test that is
+ * about truncation states both columns itself and this leaves them alone.
+ */
+function fullyDelivered(snapshot: Record<string, unknown>): Record<string, unknown> {
+  return {
+    observedBytes: snapshot.bytesServed ?? 0,
+    truncatedBodies: 0,
+    ...snapshot,
+  };
+}
+
 function runBudget(argv: readonly string[], before: Record<string, unknown>, after: Record<string, unknown>):
 { status: number; stderr: string; results: Array<{ gate: string; verdict: string; measured?: number; budget?: number }> } {
   const dir = mkdtempSync(join(tmpdir(), 'plex-budget-'));
   const beforePath = join(dir, 'before.json');
   const afterPath = join(dir, 'after.json');
   const resultsPath = join(dir, 'results.json');
-  writeFileSync(beforePath, JSON.stringify(before));
-  writeFileSync(afterPath, JSON.stringify(after));
+  writeFileSync(beforePath, JSON.stringify(fullyDelivered(before)));
+  writeFileSync(afterPath, JSON.stringify(fullyDelivered(after)));
   const run = runCli(['budget', '--before', beforePath, '--after', afterPath,
     '--results', resultsPath, ...argv]);
   const results = existsSync(resultsPath)
@@ -1545,6 +1563,11 @@ await test('PX14\'s EXACT argument shape asserts zero bytes - the assertion that
   // The no-floor record is emitted in the size-free form too, so the report is complete rather than silent.
   assert(warm.results.some((r) => r.gate === 'PX14-rescan-provider-bytes-floor-not-applicable'),
     'and the window records WHY it carries no floor, instead of omitting the subject');
+
+  // THE RE-SCAN BRANCH IS DELIBERATELY NOT ON THE TWO-COLUMN PATH, and it does not need to be: it asserts
+  // EXACTLY ZERO bytes against a window that issued zero ranged requests, and a window with no bodies in it
+  // has nothing to abandon. A committed length can only exist where a request did.
+  assert(GATE.includes('--gate PX14-rescan --entries 1 --windows 0'), 'the re-scan call site is unchanged');
 });
 
 await test('EXECUTION: a clipped block spends the block cap, and an oversized body is refused outright', () => {
@@ -1593,6 +1616,36 @@ await test('EXECUTION: a clipped block spends the block cap, and an oversized bo
     'a single body larger than a demand block fails');
   assertEq(oversized.results.find((r) => r.gate === 'PXcls-oversized-responses')?.measured, 1,
     'and it is reported as the count it was');
+});
+
+await test('EXECUTION: the two byte columns reach the SCAN ceiling through the CLI, not just the pure function', () => {
+  // The wiring, end to end, on the branch the Unraid failure came from. A window that delivered 400,000
+  // bytes of a 40,000-byte object's 440,000 ceiling is legitimate; the same window with a further 4,000,000
+  // bytes COMMITTED and abandoned must not turn it into a failure, and the abandonment must be reported.
+  const sizes = [40_000];
+  const argv = ['--gate', 'PXtwo', '--entries', '1', '--object-sizes', `${sizes[0]}`];
+  const before = { ...QUIET_COUNTERS, objectBytes: [0], objectSizes: sizes };
+
+  const delivered = runBudget(argv, before, {
+    ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 400_000,
+    objectBytes: [400_000], objectSizes: sizes,
+  });
+  assertEq(delivered.results.find((r) => r.gate === 'PXtwo-provider-bytes')?.verdict, 'pass',
+    'a fully delivered window inside its ceiling passes, exactly as it always did');
+
+  const abandoned = runBudget(argv, before, {
+    ...QUIET_COUNTERS, bytesServed: QUIET_COUNTERS.bytesServed + 400_000 + 1_000_000,
+    observedBytes: QUIET_COUNTERS.bytesServed + 400_000, truncatedBodies: 1,
+    objectBytes: [1_400_000], objectSizes: sizes,
+  });
+  assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes-observed')?.measured, 400_000,
+    'the delivery column carries what the endpoint actually wrote');
+  assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes-observed')?.verdict, 'pass',
+    'and it is inside the ceiling');
+  assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes-abandoned')?.measured, 1_000_000,
+    'the abandoned remainder is reported as its own number');
+  assertEq(abandoned.results.find((r) => r.gate === 'PXtwo-provider-bytes')?.verdict, 'pass',
+    'and one abandoned demand block does not fail a scan that read well under budget');
 });
 
 await test('EXECUTION: per-object verdicts use ENDPOINT-reported sizes, not the caller ordering', () => {
@@ -3350,8 +3403,8 @@ function runTrafficWindow(options: {
     return path;
   };
   const argv = ['traffic-window',
-    '--before', write('p-before.json', options.provider.before),
-    '--after', write('p-after.json', options.provider.after),
+    '--before', write('p-before.json', fullyDelivered(options.provider.before)),
+    '--after', write('p-after.json', fullyDelivered(options.provider.after)),
     '--gate', 'PXTEST-window', '--object-bytes', '8594275', '--results', join(dir, 'results.json'),
     ...(options.daemon === undefined ? [] : [
       '--daemon-before', write('d-before.json', options.daemon.before),

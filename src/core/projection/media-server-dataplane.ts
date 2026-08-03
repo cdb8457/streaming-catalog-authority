@@ -725,6 +725,148 @@ export function exactly(gate: string, measured: number, expected: number, note?:
 }
 
 // ---------------------------------------------------------------------------------------------------------
+// What a window cost at the provider: what the endpoint UNDERTOOK to serve, and what it WROTE
+// ---------------------------------------------------------------------------------------------------------
+
+/**
+ * The two byte columns a scan window produced at the fake endpoint, and how many bodies were abandoned.
+ *
+ * `committed` is `bytesServed`: the payload length the endpoint counted BEFORE writing, by deliberate design
+ * in `internal/fakeprovider` — "what the handler set out to do". `observed` is `observedBytes`: what the
+ * write itself returned. `truncatedBodies` is how many bodies did not write their whole committed payload.
+ */
+export interface ProviderByteWindow {
+  readonly committed: number;
+  readonly observed: number;
+  readonly truncatedBodies: number;
+}
+
+/**
+ * THE DEFECT THIS CLOSES, AND WHY IT COULD ONLY BE FOUND ON A REAL LINUX HOST.
+ *
+ * The scan byte budget is the single most load-bearing number in these gates: it says a media server can
+ * IDENTIFY an object without downloading it. It was asserted against the COMMITTED column alone.
+ *
+ * Committed is not a delivery figure and this repository already knows it. `internal/fakeprovider` says so
+ * where it counts ("WHAT IT IS NOT is any statement that those bytes were written"), and G22 says it in the
+ * report it prints: "committed-minus-observed is the endpoint's own optimism about reads the client
+ * abandoned". G18 and G22 were brought onto both columns in `330a9e7` and `9f1d4de`. The three per-server
+ * gates were not, and their ceiling is the tight one — so they were the only place it could bite.
+ *
+ * On the first Unraid run of a per-server gate it bit. The daemon abandoned ONE demand block part-way — its
+ * read-ahead cancellation working exactly as designed, which G10 exists to exercise. The endpoint had already
+ * counted the whole block as committed, so the window read 6,357,097 against a 6,293,511 ceiling and the gate
+ * failed. What the provider actually WROTE was 5,312,437 — 981,074 bytes UNDER the ceiling. The immediately
+ * following run abandoned nothing, measured 5,308,521, and passed. A budget that fails on a run where the
+ * daemon read LESS than it allows is measuring the wrong quantity, and on Docker Desktop it never truncated a
+ * body, so it never showed.
+ *
+ * WHAT THIS IS NOT IS A WEAKENING, AND THE SPLIT IS WHAT MAKES THAT TRUE.
+ *
+ *   - `observed` carries the load-bearing claim, AT THE UNCHANGED CEILING. A daemon that downloaded the
+ *     object to identify it delivers those bytes and fails here exactly as it always would have.
+ *   - `abandoned` — committed minus observed — is bounded at ONE DEMAND BLOCK PER ABANDONED BODY. That is the
+ *     most the daemon can leave on the table per cancellation, because a block is the unit it requests in.
+ *     This is the non-vacuous half: a daemon that REQUESTED a whole object and then abandoned it delivers
+ *     little and would sail through an observed-only check, and is caught here instead.
+ *   - `committed` is still asserted, at `budget + the abandonment its own truncated bodies justify`. When
+ *     nothing was abandoned that ceiling IS the budget, unchanged — so every verdict every one of these gates
+ *     has ever reached is reproduced bit for bit.
+ *
+ * A window that abandons nothing is therefore held to precisely what it was held to before.
+ */
+export interface ProviderByteCeilings {
+  readonly committed: number;
+  readonly observed: number;
+  readonly abandoned: number;
+  /** `budget`, plus only the abandonment the truncated bodies can account for. */
+  readonly committedCeiling: number;
+  /** One demand block per abandoned body, and nothing for a window that abandoned none. */
+  readonly abandonedCeiling: number;
+  readonly truncatedBodies: number;
+}
+
+/** The read unit the daemon requests in, and therefore the most one cancellation can leave uncollected. */
+export const PROVIDER_DEMAND_BLOCK_BYTES = 4 * 1_048_576;
+
+export function providerByteCeilings(
+  window: ProviderByteWindow, budget: number,
+): ProviderByteCeilings {
+  const abandoned = window.committed - window.observed;
+  const abandonedCeiling = PROVIDER_DEMAND_BLOCK_BYTES * Math.max(0, window.truncatedBodies);
+  // `min` rather than the raw abandonment, so an over-abandoning window fails the committed check TOO rather
+  // than having its own excess handed to it as headroom. A negative abandonment — observed above committed —
+  // is a broken instrument, not headroom, and is clamped to zero so it cannot raise the ceiling either.
+  return {
+    committed: window.committed,
+    observed: window.observed,
+    abandoned,
+    abandonedCeiling,
+    truncatedBodies: window.truncatedBodies,
+    committedCeiling: budget + Math.max(0, Math.min(abandoned, abandonedCeiling)),
+  };
+}
+
+/**
+ * The structural rule the two columns must obey whatever the budget is: an endpoint cannot write more than it
+ * undertook to, and a window that abandoned no body cannot have lost bytes between the two columns.
+ *
+ * Returned as problems rather than thrown, so a gate reports them as failed assertions beside its budgets.
+ */
+export function providerByteCoherenceProblems(window: ProviderByteWindow): readonly string[] {
+  const problems: string[] = [];
+  if (window.observed > window.committed) {
+    problems.push(`the endpoint observed ${window.observed} bytes against ${window.committed} committed; `
+      + 'more was written than was ever undertaken, which is a broken instrument rather than a measurement');
+  }
+  if (window.truncatedBodies === 0 && window.committed !== window.observed) {
+    problems.push(`the window abandoned no body, so its committed (${window.committed}) and observed `
+      + `(${window.observed}) columns must agree, and they differ by ${window.committed - window.observed}`);
+  }
+  if (window.truncatedBodies < 0) {
+    problems.push(`a truncated-body count cannot be negative: ${window.truncatedBodies}`);
+  }
+  return problems;
+}
+
+/**
+ * The whole byte verdict for one window, as the assertions a gate records.
+ *
+ * ONE EMITTER FOR THREE GATES, for the same reason there is one host preflight for three gates: three copies
+ * of this reasoning would be three places for it to drift, and the drift would be invisible until an
+ * operator's run failed. The `-provider-bytes` name is kept for the committed column so that a run record
+ * from before this split still names the same measurement.
+ */
+export function providerByteResults(
+  gate: string, window: ProviderByteWindow, budget: number, denominators: string,
+): readonly GateResult[] {
+  const ceilings = providerByteCeilings(window, budget);
+  const results: GateResult[] = [
+    withinBudget(`${gate}-provider-bytes`, ceilings.committed, ceilings.committedCeiling,
+      `COMMITTED payload length — what the endpoint undertook to serve, not a delivery figure. ${denominators}`
+      + (ceilings.truncatedBodies > 0
+        ? `; the ceiling carries ${ceilings.committedCeiling - budget} bytes of abandonment that `
+          + `${ceilings.truncatedBodies} truncated body/bodies account for, over a base budget of ${budget}`
+        : '')),
+    withinBudget(`${gate}-provider-bytes-observed`, ceilings.observed, budget,
+      'the SAME ceiling over what the endpoint\'s writes actually RETURNED. This is the load-bearing one: a '
+      + `scan that DOWNLOADED the object to identify it delivers those bytes and fails here. ${denominators}`),
+    withinBudget(`${gate}-provider-bytes-abandoned`, Math.max(0, ceilings.abandoned),
+      ceilings.abandonedCeiling,
+      `committed minus observed, bounded at one ${PROVIDER_DEMAND_BLOCK_BYTES}-byte demand block per `
+      + `abandoned body (${ceilings.truncatedBodies} here). A daemon that REQUESTED a whole object and then `
+      + 'abandoned it would deliver little and pass the observed ceiling; this is what catches it'),
+  ];
+  const problems = providerByteCoherenceProblems(window);
+  results.push(problems.length === 0
+    ? { gate: `${gate}-provider-bytes-coherent`, verdict: 'pass', measured: 0, budget: 0,
+      note: 'the endpoint wrote no more than it undertook, and a window that abandoned nothing lost nothing' }
+    : { gate: `${gate}-provider-bytes-coherent`, verdict: 'fail', measured: problems.length, budget: 0,
+      note: problems.join('; ') });
+  return results;
+}
+
+// ---------------------------------------------------------------------------------------------------------
 // What a five-minute play actually looked like
 // ---------------------------------------------------------------------------------------------------------
 

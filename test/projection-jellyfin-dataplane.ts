@@ -13,7 +13,8 @@ import {
   atLeast, corpusProblems, corpusSelfProblems, directPlayPath, exactly, findRedactionProblems,
   forcedTranscodePath, hasQueryCredential, isInFlightState, mediaServerAuthHeader, movieLibraryRequest,
   analyseSeekSet, opaqueRef, seekPlanProblems, seekPositionsFor, stripQueryCredentials, withinBudget,
-  type CorpusExpectation, type CorpusObservation, type PacedSample, type SeekDecode, type SeekObservation,
+  PROVIDER_DEMAND_BLOCK_BYTES, providerByteCeilings, providerByteCoherenceProblems, providerByteResults,
+  type CorpusExpectation, type CorpusObservation, type GateResult, type PacedSample, type SeekDecode, type SeekObservation,
   type SoakProbe, type SoakSegment, type TranscodeSessionSampleRecord,
 } from '../src/core/projection/media-server-dataplane.js';
 import {
@@ -745,6 +746,115 @@ await test('a budget check records the number even when it passes, and a floor i
   assertEq(exactly('G', 0, 1).verdict, 'fail', 'under is not "within" when the gate says exactly');
   assertEq(atLeast('G', 0, 1).verdict, 'fail', 'zero requests is not a frugal scan, it is an absent one');
   assertEq(atLeast('G', 2, 1).verdict, 'pass', 'and two clears a floor of one');
+});
+
+// ---------------------------------------------------------------------------------------------------------
+// The two byte columns — the defect the FIRST UNRAID RUN found
+// ---------------------------------------------------------------------------------------------------------
+
+const verdictOf = (results: readonly GateResult[], suffix: string): GateResult => {
+  const found = results.find((result) => result.gate.endsWith(suffix));
+  if (found === undefined) throw new Error(`no verdict named *${suffix} was emitted`);
+  return found;
+};
+
+await test('A WINDOW THAT ABANDONS NOTHING IS HELD TO EXACTLY WHAT IT ALWAYS WAS', () => {
+  // The whole claim that this split weakens nothing rests on this case, because it is every run of these
+  // gates that has ever happened. Committed equals observed, so the committed ceiling IS the budget.
+  const results = providerByteResults('G', { committed: 5_308_521, observed: 5_308_521, truncatedBodies: 0 },
+    6_293_511, 'denominators');
+  assertEq(verdictOf(results, '-provider-bytes').verdict, 'pass', 'the passing Unraid re-run still passes');
+  assertEq(verdictOf(results, '-provider-bytes').budget, 6_293_511, 'AT THE UNCHANGED CEILING, not above it');
+  assertEq(verdictOf(results, '-provider-bytes-observed').verdict, 'pass', 'and so does the delivery column');
+  assertEq(verdictOf(results, '-provider-bytes-abandoned').budget, 0,
+    'a window that abandoned no body gets NO abandonment allowance at all');
+  assertEq(verdictOf(results, '-provider-bytes-coherent').verdict, 'pass', 'and the two columns agree');
+
+  const over = providerByteResults('G', { committed: 6_293_512, observed: 6_293_512, truncatedBodies: 0 },
+    6_293_511, 'denominators');
+  assertEq(verdictOf(over, '-provider-bytes').verdict, 'fail',
+    'ONE BYTE over the budget still fails when nothing was abandoned; the ceiling did not move');
+});
+
+await test('THE EXACT UNRAID FAILURE: a cancelled demand block no longer fails a scan that read LESS than budget', () => {
+  // The measured numbers from the first Jellyfin run on Unraid, verbatim. Committed 6,357,097 against a
+  // 6,293,511 ceiling — but the endpoint WROTE 5,312,437, which is 981,074 bytes UNDER it, and the whole
+  // 1,044,660-byte difference is one demand block the daemon abandoned part-way.
+  const results = providerByteResults('G', {
+    committed: 6_357_097, observed: 5_312_437, truncatedBodies: 1,
+  }, 6_293_511, 'denominators');
+  assertEq(verdictOf(results, '-provider-bytes-observed').measured, 5_312_437, 'what was actually served');
+  assertEq(verdictOf(results, '-provider-bytes-observed').verdict, 'pass', 'and it is inside the budget');
+  assertEq(verdictOf(results, '-provider-bytes-abandoned').measured, 1_044_660, 'the abandoned remainder');
+  assertEq(verdictOf(results, '-provider-bytes-abandoned').verdict, 'pass',
+    'one abandoned body may leave at most one demand block, and 1,044,660 is well inside 4 MiB');
+  assertEq(verdictOf(results, '-provider-bytes').verdict, 'pass',
+    'so the committed column passes too — on a ceiling raised by exactly the abandonment it can account for');
+  assertEq(verdictOf(results, '-provider-bytes-coherent').verdict, 'pass', 'and the accounting is coherent');
+});
+
+await test('ABANDONMENT IS NOT AN EXCUSE: requesting a whole object and dropping it is still caught', () => {
+  // THE NON-VACUOUS HALF. A daemon that asked for a 100 MB object and abandoned it after 2 MB delivers
+  // almost nothing, so an observed-only check would wave it through. The per-body block bound is what does
+  // not, and this is the case that proves the split did not simply delete an assertion.
+  const results = providerByteResults('G', {
+    committed: 100_000_000, observed: 2_000_000, truncatedBodies: 1,
+  }, 6_293_511, 'denominators');
+  assertEq(verdictOf(results, '-provider-bytes-observed').verdict, 'pass',
+    'the delivery column alone would have let this through, which is why it is not alone');
+  assertEq(verdictOf(results, '-provider-bytes-abandoned').verdict, 'fail',
+    'ONE abandoned body may not account for 98 MB of committed-but-unwritten payload');
+  assertEq(verdictOf(results, '-provider-bytes').verdict, 'fail',
+    'and the committed ceiling refuses to absorb an abandonment its truncated bodies cannot justify');
+});
+
+await test('A SCAN THAT DOWNLOADS THE OBJECT STILL FAILS, which is the budget\'s entire purpose', () => {
+  const results = providerByteResults('G', {
+    committed: 13_000_000, observed: 13_000_000, truncatedBodies: 0,
+  }, 6_293_511, 'denominators');
+  assertEq(verdictOf(results, '-provider-bytes-observed').verdict, 'fail',
+    'delivering twice the budget is a download, and the load-bearing column says so');
+  assertEq(verdictOf(results, '-provider-bytes').verdict, 'fail', 'as does the committed one');
+});
+
+await test('the abandonment allowance scales per abandoned body, and never for zero of them', () => {
+  const two = providerByteCeilings({ committed: 9_000_000, observed: 1_000_000, truncatedBodies: 2 }, 100);
+  assertEq(two.abandonedCeiling, 2 * PROVIDER_DEMAND_BLOCK_BYTES, 'two bodies, two blocks');
+  assertEq(two.abandoned, 8_000_000, 'and the abandonment is the difference between the columns');
+  const none = providerByteCeilings({ committed: 5, observed: 5, truncatedBodies: 0 }, 100);
+  assertEq(none.abandonedCeiling, 0, 'no body abandoned, no allowance');
+  assertEq(none.committedCeiling, 100, 'so the committed ceiling is the bare budget');
+});
+
+await test('A BROKEN INSTRUMENT IS NOT HEADROOM', () => {
+  // Observed above committed cannot happen and must not quietly raise a ceiling if it does.
+  const impossible = providerByteCeilings({ committed: 10, observed: 40, truncatedBodies: 1 }, 100);
+  assertEq(impossible.committedCeiling, 100,
+    'a negative abandonment is clamped to zero rather than subtracted from the ceiling');
+  assert(providerByteCoherenceProblems({ committed: 10, observed: 40, truncatedBodies: 1 }).length > 0,
+    'and it is reported as a broken instrument');
+  assertEq(providerByteResults('G', { committed: 10, observed: 40, truncatedBodies: 1 }, 100, 'd')
+    .find((r) => r.gate.endsWith('-coherent'))?.verdict, 'fail', 'as a failed assertion, not a thrown error');
+
+  // Bytes lost between the columns with NOTHING abandoned is the other broken shape: it would mean the
+  // endpoint silently dropped a write it never recorded as truncated.
+  assert(providerByteCoherenceProblems({ committed: 100, observed: 90, truncatedBodies: 0 }).length > 0,
+    'a window that abandoned no body cannot have lost ten bytes between its two columns');
+  assertEq(providerByteCoherenceProblems({ committed: 100, observed: 100, truncatedBodies: 0 }).length, 0,
+    'and an honest window has no problems at all');
+});
+
+await test('EVERY PER-SERVER GATE ASSERTS BOTH COLUMNS — the drift this defect was', () => {
+  // The defect was not that the reasoning was wrong; it was that G18 and G22 got it and these three did not.
+  // A structural check, so a fourth gate cannot be added with the committed column alone.
+  for (const server of ['jellyfin', 'plex', 'emby']) {
+    const cli = readFileSync(`src/ops/projection-${server}-dataplane-cli.ts`, 'utf8')
+      .replace(/\/\/[^\n]*/g, '').replace(/\/\*[\s\S]*?\*\//g, '');
+    assert(cli.includes('providerByteResults'),
+      `the ${server} gate emits both byte columns through the shared emitter`);
+    assert(!/withinBudget\(`\$\{gate\}-provider-bytes`/.test(cli),
+      `and the ${server} gate no longer holds its byte ceiling against the committed column alone`);
+  }
 });
 
 // ---------------------------------------------------------------------------------------------------------

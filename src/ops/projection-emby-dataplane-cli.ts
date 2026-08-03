@@ -3,7 +3,7 @@ import {
   MEDIA_SERVER_BUDGETS, MEDIA_SERVER_DEADLINES_MS, MEDIA_SERVER_SOAK, SEEK_PLAN_FRACTIONS,
   TRANSCODE_SOURCE_VIDEO_CODEC, TRANSCODE_TARGET_VIDEO_CODEC, analysePacedPlayback, analyseTranscodeSoak,
   analyseSeekSet, atLeast, corpusProblems, corpusSelfProblems, exactly, findRedactionProblems, opaqueRef,
-  seekPlanProblems, seekPositionsFor, withinBudget,
+  providerByteResults, seekPlanProblems, seekPositionsFor, withinBudget,
   type CorpusExpectation, type GateResult, type SeekObservation, type SoakProbe, type SoakSegment,
   type TranscodeSessionSampleRecord,
 } from '../core/projection/media-server-dataplane.js';
@@ -1138,10 +1138,15 @@ async function main(): Promise<void> {
       const smallBytes = optionalNumber(args, 'small-bytes', 0);
       const byteBudget = Math.floor(remoteBytes * MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION
         + smallBytes * MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER);
-      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'), byteBudget,
-        `denominators: ${remoteBytes} bytes in objects above the single-probe threshold at `
+      // BOTH COLUMNS, because the committed one is not a delivery figure — see `providerByteResults`.
+      for (const result of providerByteResults(gate, {
+        committed: delta('bytesServed'),
+        observed: delta('observedBytes'),
+        truncatedBodies: delta('truncatedBodies'),
+      }, byteBudget,
+      `denominators: ${remoteBytes} bytes in objects above the single-probe threshold at `
         + `x${MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION}, and ${smallBytes} bytes below it at `
-        + `x${MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER}`));
+        + `x${MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER}`)) record(args, result);
       record(args, withinBudget(`${gate}-http-429`, delta('served429'), MEDIA_SERVER_BUDGETS.MAX_HTTP_429));
       record(args, withinBudget(`${gate}-full-body-on-range`, delta('fullBodyServed'),
         MEDIA_SERVER_BUDGETS.MAX_FULL_BODY_SERVED));
@@ -1171,9 +1176,14 @@ async function main(): Promise<void> {
       const multiplier = optionalNumber(args, 'max-object-multiplier', 3);
       const delta = (key: string): number => (after[key] ?? 0) - (before[key] ?? 0);
 
-      record(args, withinBudget(`${gate}-provider-bytes`, delta('bytesServed'),
-        Math.floor(objectBytes * multiplier),
-        `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`));
+      for (const result of providerByteResults(gate, {
+        committed: delta('bytesServed'),
+        observed: delta('observedBytes'),
+        truncatedBodies: delta('truncatedBodies'),
+      }, Math.floor(objectBytes * multiplier),
+      `denominator: the object's own ${objectBytes} bytes, read at most ${multiplier}x over the window`)) {
+        record(args, result);
+      }
       record(args, withinBudget(`${gate}-range-requests`, delta('rangeRequests'),
         optionalNumber(args, 'max-range-requests', 4096),
         'a ranged read per window the daemon needed, and a ceiling a runaway read-ahead would blow'));
