@@ -4,6 +4,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
+import {
+  G22_WORDING_FILES, deliveryOverstatements, readForWordingScan,
+} from './projection-delivery-wording.js';
 import { findRedactionProblems, type GateResult } from '../src/core/projection/media-server-dataplane.js';
 import {
   BARRIER_RELEASE_OVERSHOOT_MS, CONCURRENCY_RULES, HOLD_ARM_MS, HOLD_MAX_MS, REQUIRED_SERVER_COUNT,
@@ -122,7 +125,7 @@ interface ObjectFixture {
   size: number;
   /** What the responses for this object PROMISED. */
   committed: number;
-  /** What was actually written for it. Defaults to `committed` — a fully consumed read. */
+  /** What the write calls for it RETURNED. Defaults to `committed` — a fully consumed read. */
   observed?: number;
   ranged: number;
   full: number;
@@ -601,6 +604,28 @@ async function main(): Promise<void> {
   // --------------------------------------------------------------------------------------------------------
   console.log('\nTHE CHEAT: a COMMITTED length reported as though it had been DELIVERED');
   // --------------------------------------------------------------------------------------------------------
+
+  await test('no G22 surface claims delivery, receipt, wire traffic or billing in the present tense', () => {
+    // THE SAME EXECUTED RULE THE G18 SUITE HOLDS, over this gate's own surfaces. It is one shared
+    // implementation on purpose: two copies of a wording rule is how the copy nobody re-read goes stale,
+    // which is the exact failure mode this rule exists to stop.
+    const findings = G22_WORDING_FILES.flatMap((file) =>
+      deliveryOverstatements(readForWordingScan(file), file));
+    assert(findings.length === 0, `G22 surfaces make delivery claims:\n    ${findings.join('\n    ')}`);
+  });
+
+  await test('...and the retracted passages this document keeps are still allowed to quote themselves', () => {
+    // THE ESCAPE HATCH IS TESTED RATHER THAN TRUSTED. §7.3 and §7.5 exist to say what was withdrawn, and a
+    // rule that forbade them from naming it would delete the history instead of the defect.
+    const doc = readForWordingScan('docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md');
+    assert(doc.includes('what a provider would transfer'),
+      'the retraction still QUOTES the claim it withdraws, which is the point of keeping it');
+    assertEq(deliveryOverstatements(doc, 'doc').length, 0,
+      'and the rule lets it, because those lines mark themselves as retracted');
+    // ...while a fresh, unmarked copy of the same sentence would be caught.
+    assert(deliveryOverstatements('the observed column is what a provider would transfer', 'x').length > 0,
+      'an unmarked restatement of the retracted claim is still a claim');
+  });
 
   await test('THE CHEAT: an unsettled snapshot, whose committed and observed totals describe different sets', () => {
     // THE DEFECT THIS CLOSES. Between a body's commit and its observation the endpoint has counted the length

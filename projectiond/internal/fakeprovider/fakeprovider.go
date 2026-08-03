@@ -92,7 +92,7 @@ type Counters struct {
 	// BytesServed is the COMMITTED payload length: what the handler undertook to write, counted before it
 	// wrote it. IT IS NOT A DELIVERY FIGURE, and the wire key keeps its historical spelling only because the
 	// three single-server data-plane gates read it and their recorded runs describe exactly this quantity.
-	// Everything that needs "what the handler actually wrote" reads ObservedBytes instead.
+	// Everything that needs "what the handler's write calls returned" reads ObservedBytes instead.
 	BytesServed atomic.Int64
 	// ObservedBytes is the sum of the counts `http.ResponseWriter.Write` RETURNED, recorded after each call.
 	//
@@ -1006,8 +1006,10 @@ func (s *Server) serveRange(w http.ResponseWriter, r *http.Request, ref, lease s
 	// budget look cheaper and the following one dearer, with the totals still summing correctly.
 	//
 	// COUNTING FIRST MEANS THE COMMITTED COUNTERS DESCRIBE WHAT THE ENDPOINT UNDERTOOK TO SERVE rather than
-	// what a client is known to have received. That is the honest reading for a conservative budget: the
-	// bytes left the endpoint's control, and a body abandoned by a broken pipe is still work the endpoint did.
+	// anything about what became of the bytes. That is the honest reading for a conservative budget: the
+	// handler committed to a length, and a body abandoned part-way is still work the handler set out to do.
+	// WHAT IT IS NOT is any statement that those bytes were written, let alone received — a committed payload
+	// length proves neither, which is exactly what ObservedBytes exists to measure separately.
 	//
 	// AND IT IS NOT, ON ITS OWN, A DELIVERY FIGURE — WHICH THIS PACKAGE ONCE LET A REPORT PRETEND. Every
 	// branch here used to end `_, _ = w.Write(payload)`, discarding both the count and the error, so the only

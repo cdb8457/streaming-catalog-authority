@@ -469,13 +469,14 @@ async function main(): Promise<void> {
         + 'efficiency rather than as the property ADR 002 rejected the topology for'));
       // TWO BYTE FIGURES, NEVER ONE, AND THE DISTINCTION IS THE CORRECTION THIS GATE MOST NEEDED.
       //
-      // COMMITTED is what the responses promised in Content-Length. OBSERVED is what was actually written.
+      // COMMITTED is what the responses promised in Content-Length. OBSERVED is what the write calls
+      // RETURNED — an application-write observation and nothing stronger.
       // An earlier version of this report had only the first and called it "served", which overstates
       // delivery by exactly the amount the client abandoned — and on a corpus built around a ~105 MB fixture,
       // a media server reading a header and closing the handle abandons a great deal.
       record(args, figure(`${gate}-committed-bytes`,
         `${measurements.committedBytes} media bytes COMMITTED — the Content-Length the responses promised, `
-        + `not what was delivered — of which ${measurements.corpusCommittedBytes} were for corpus objects and `
+        + `not a delivery figure — of which ${measurements.corpusCommittedBytes} were for corpus objects and `
         + `${measurements.nonCorpusCommittedBytes} for the readiness canary. A further `
         + `${measurements.metadataBytes} bytes of listing XML are counted SEPARATELY and are folded into `
         + 'neither media total'));

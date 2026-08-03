@@ -7,6 +7,9 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { AGGREGATE_SUITE_COMMAND } from './aggregate-suite.js';
 import {
+  G18_WORDING_FILES, deliveryOverstatements, readForWordingScan,
+} from './projection-delivery-wording.js';
+import {
   MEDIA_SERVER_BUDGETS, findRedactionProblems,
 } from '../src/core/projection/media-server-dataplane.js';
 import {
@@ -1109,6 +1112,33 @@ async function main(): Promise<void> {
     { size: 40_000, small: 3, chunk: 0, partial: 0, oversized: 0 },
   ];
 
+  await test('no G18 surface claims delivery, receipt, wire traffic or billing in the present tense', () => {
+    // THIS WORDING HAS NOW BEEN CORRECTED THREE TIMES. A committed counter was reported as "served"; the
+    // correction said "put on the socket" and "actually written"; and a comparison of one instrument's
+    // observed column against another's committed one was published as "delivered". Each round fixed the
+    // sentences somebody looked at. This one is executed, over every G18 surface, so the next round cannot
+    // depend on who reads which file.
+    const findings = G18_WORDING_FILES.flatMap((file) =>
+      deliveryOverstatements(readForWordingScan(file), file));
+    assert(findings.length === 0, `G18 surfaces make delivery claims:\n    ${findings.join('\n    ')}`);
+  });
+
+  await test('...and the rule is live in BOTH directions, so neither half is decorative', () => {
+    // A PROSE RULE THAT NEVER FIRES IS INDISTINGUISHABLE FROM ONE THAT IS BROKEN. So the check is driven
+    // against text built to fail it, and against the two shapes it must NOT fail.
+    assert(deliveryOverstatements('the endpoint actually wrote 12 bytes to the socket', 'x').length > 0,
+      'a plain current-tense delivery claim must be caught');
+    assert(deliveryOverstatements('committed bytes left the endpoint\'s control', 'x').length > 0,
+      'and so must the committed-length overstatement this round removed');
+    assertEq(deliveryOverstatements('it is NOT proof of peer receipt, NOT a TCP acknowledgement', 'x').length,
+      0, 'a NEGATED phrase is the nonclaim these gates are required to carry');
+    assertEq(deliveryOverstatements('an earlier version said the endpoint actually wrote it', 'x').length, 0,
+      'and a line that declares itself historical may quote what it retracts');
+    // THE HISTORICAL ESCAPE IS NOT A BLANKET ONE: the marker has to be on the line making the claim.
+    assert(deliveryOverstatements('the second answers where the delivered traffic went', 'x').length > 0,
+      'a claim on a line with no marker and no negation is still a claim');
+  });
+
   await test('the endpoint reports what Write RETURNED, not only what it promised', () => {
     // THE DEFECT THIS CLOSES, WHICH SHIPPED IN BOTH FAKE ENDPOINTS. Every body-producing branch ended
     // `_, _ = w.Write(payload)`, discarding the count and the error, so the only byte figure that existed was
@@ -1732,7 +1762,7 @@ async function main(): Promise<void> {
       const stale = currentTenseLines(text, retiredArm);
       assertEq(stale.length, 0,
         `${where} states the retired 4,000ms arm window in the present tense: ${stale[0]?.trim() ?? ''}`);
-      // The POSITIVE half applies only where the chain is actually written out. The driver explains the
+      // The POSITIVE half applies only where the chain is spelled out in full. The driver explains the
       // clocks and defers the numbers to the core module, and demanding it repeat them would be demanding a
       // fifth copy of the thing this check exists to keep in sync.
       if (where === 'the driver') continue;

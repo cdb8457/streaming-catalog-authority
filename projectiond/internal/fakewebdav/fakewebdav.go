@@ -25,8 +25,10 @@
 //	  no client can observe a byte the counters have not described yet, and they are the number that is
 //	  comparable with the product's own endpoint — which measures the same thing.
 //
-//	OBSERVED bytes are what `io.Copy` ACTUALLY WROTE, recorded after the write returns, together with whether
-//	  it returned the whole committed length or stopped early.
+//	OBSERVED bytes are what `io.Copy` RETURNED — the count the ResponseWriter accepted — recorded after the
+//	  write returns, together with whether it reached the whole committed length or stopped early. It is an
+//	  APPLICATION-WRITE observation: not peer receipt, not a TCP acknowledgement, not exact wire bytes, not
+//	  billing.
 //
 // THEY ARE NOT THE SAME NUMBER AND AN EARLIER VERSION OF THIS FILE HAD ONLY THE FIRST, while calling it
 // "served". A client that opens a large object, reads a header and closes the handle receives a small
@@ -154,7 +156,8 @@ type Counters struct {
 	FullCommittedBytes   atomic.Int64
 	CommittedBytes       atomic.Int64
 
-	// OBSERVED: what the write actually put on the socket, counted after it returned. See the package comment.
+	// OBSERVED: the count the write RETURNED, recorded after it returned. See the package comment for the
+	// four things that number is not.
 	RangedObservedBytes atomic.Int64
 	FullObservedBytes   atomic.Int64
 	ObservedBytes       atomic.Int64
@@ -464,12 +467,12 @@ type CountersSnapshot struct {
 	FullBodies        int64 `json:"fullBodies"`
 	BodylessResponses int64 `json:"bodylessResponses"`
 
-	// COMMITTED — what the responses promised in their Content-Length. NOT what was delivered.
+	// COMMITTED — what the responses promised in their Content-Length. NOT a delivery figure.
 	RangedCommittedBytes int64 `json:"rangedCommittedBytes"`
 	FullCommittedBytes   int64 `json:"fullCommittedBytes"`
 	CommittedBytes       int64 `json:"committedBytes"`
 
-	// OBSERVED — what the writes actually put on the socket. Readable only once BodiesInFlight is zero.
+	// OBSERVED — the counts the writes RETURNED. Readable only once BodiesInFlight is zero.
 	RangedObservedBytes int64 `json:"rangedObservedBytes"`
 	FullObservedBytes   int64 `json:"fullObservedBytes"`
 	ObservedBytes       int64 `json:"observedBytes"`
@@ -825,7 +828,8 @@ func (s *Server) serveGet(w http.ResponseWriter, r *http.Request) bool {
 		w.WriteHeader(http.StatusOK)
 	}
 
-	// PHASE TWO — OBSERVE. `io.Copy` returns how much it actually wrote and why it stopped, and BOTH are used.
+	// PHASE TWO — OBSERVE. `io.Copy` returns how many bytes the ResponseWriter accepted and why it stopped,
+	// and BOTH are used.
 	//
 	// AN EARLIER VERSION DISCARDED BOTH — `_, _ = io.Copy(...)` — and the endpoint then reported the committed
 	// length as though it had been delivered. A client that opens a large object, reads a header and closes
@@ -887,7 +891,7 @@ func (s *Server) recordObjectCommittedLocked(object *Object, n int64, ranged boo
 	}
 }
 
-// recordObjectObservedLocked attributes what was actually written for one body. The caller holds
+// recordObjectObservedLocked attributes what one body's write calls RETURNED. The caller holds
 // s.accounting. It is a SEPARATE call from the commit above, at a separate moment, because the two numbers
 // are separated by however long the write took and by whether the client stayed to receive it.
 func (s *Server) recordObjectObservedLocked(object *Object, n int64) {

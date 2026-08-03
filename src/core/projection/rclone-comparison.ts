@@ -232,7 +232,7 @@ export interface WebdavCounters {
   readonly rangedBodies: number;
   readonly fullBodies: number;
   readonly bodylessResponses: number;
-  /** COMMITTED: what the responses promised in Content-Length. NOT what was delivered. */
+  /** COMMITTED: what the responses promised in Content-Length. NOT a delivery figure. */
   readonly rangedCommittedBytes: number;
   readonly fullCommittedBytes: number;
   readonly committedBytes: number;
@@ -595,7 +595,7 @@ export function comparisonColdStateProblems(input: {
   readonly revealedBefore: boolean;
   /** Bytes the endpoint had already COMMITTED for corpus objects before the window. See below. */
   readonly corpusCommittedBytesBefore: number;
-  /** ...and had actually WRITTEN for them. Checked separately, for the reason stated above. */
+  /** ...and the bytes its write calls had RETURNED for them. Checked separately, for the reason above. */
   readonly corpusObservedBytesBefore: number;
   readonly clientCacheBytesBefore: number;
   readonly getDelta: number;
@@ -669,7 +669,7 @@ export interface ObjectCost {
   readonly sizeBytes: number;
   /** What the responses for this object PROMISED in Content-Length. */
   readonly committedBytes: number;
-  /** What was actually written for it. Never above `committedBytes`; below it whenever a read was abandoned. */
+  /** What the write calls for it RETURNED. Never above `committedBytes`; below whenever a read was abandoned. */
   readonly observedBytes: number;
   readonly gets: number;
   readonly rangedGets: number;
@@ -837,7 +837,8 @@ export function comparisonMeasurements(
     unattributedObservedBytes: totalObserved - corpusObservedBytes - nonCorpusObservedBytes,
     // THE WORST-MULTIPLIER ORDERING IS BY COMMITTED and the most-bytes ordering by OBSERVED, deliberately.
     // The first answers "which object did this topology ask for most relative to its size", which is a
-    // property of the request pattern; the second answers "where did the delivered traffic actually go",
+    // property of the request pattern; the second answers "which object did the write calls return the
+    // most bytes for",
     // which is a property of the transfer. Ordering both by the same number would collapse two questions.
     perObject: [...perObject].sort((a, b) => b.committedMultiplier - a.committedMultiplier),
     perObjectByBytes: [...perObject].sort((a, b) => b.observedBytes - a.observedBytes),
@@ -960,10 +961,10 @@ export const RESOLUTION_CALLS_DO_NOT_EXIST_ON_THIS_TOPOLOGY = true;
  * WHAT THE ENDPOINT'S NUMBERS ARE ABOUT, AND WHAT THEY ARE NOT ABOUT.
  *
  * Everything this gate counts is measured AT THE WEBDAV SERVER, and it counts two different things there.
- * COMMITTED is what the mount client ASKED FOR — the Content-Length each response promised. OBSERVED is what
- * the endpoint actually WROTE to the socket. Neither is what the client USED: its own cache, read-ahead and
+ * COMMITTED is what the mount client ASKED FOR — the Content-Length each response promised. OBSERVED is the
+ * count the endpoint's write calls RETURNED. Neither is what the client USED: its own cache, read-ahead and
  * chunk sizing sit between a media server's `read()` and a request arriving here, and a byte the client
- * received and discarded is indistinguishable at this end from one it passed upward.
+ * fetched and dropped is indistinguishable at this end from one it passed upward.
  *
  * SO THERE ARE THREE NUMBERS AND THEY ANSWER THREE QUESTIONS. The client's own accounting is read from its
  * remote-control surface and reported beside both endpoint totals. **A DIFFERENCE BETWEEN THEM IS NOT

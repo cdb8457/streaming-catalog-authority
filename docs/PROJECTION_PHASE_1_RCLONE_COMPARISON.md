@@ -151,7 +151,7 @@ compared — so the binding constraint here is the mount client's own IO deadlin
 |---|---|
 | GETs served a body, split **ranged (206)** against **whole-body (200)** | the headline shape of the comparison. A client that asks for whole bodies where the daemon asks for ranges is the finding, and one combined total would erase it |
 | **PROPFIND** (depth 0, depth 1, other), **OPTIONS**, **HEAD** | what a namespace costs when it is **discovered** rather than published. The product's topology has no equivalent figure, because its namespace arrives in one admitted manifest |
-| **media bytes, COMMITTED and OBSERVED**, per object and in total, worst multiplier first | an aggregate is exactly where one file read many times over hides — and on this topology that is the expected shape rather than a defect. The two figures are separate because a Content-Length is what a response PROMISED and a write count is what it DELIVERED, and for one release of this gate only the first existed while the report called it the second. See §7.3 |
+| **media bytes, COMMITTED and OBSERVED**, per object and in total, worst multiplier first | an aggregate is exactly where one file read many times over hides — and on this topology that is the expected shape rather than a defect. The two figures are separate because a Content-Length is what a response PROMISED and a write count is what the handler's write call RETURNED, and for one release of this gate only the first existed while the report called it the second. See §7.3 |
 | **listing bytes**, counted separately and never folded into the media total | a PROPFIND answer is XML the endpoint authored; counting it beside media would make the most-quoted figure partly a function of how verbose the listing format is |
 | **HTTP 429** observed | zero, and stated as a measurement that the client was never rate-limited rather than as evidence that a real service would not |
 | **peak connections** (sampled on every accept) and **peak in-flight requests** | the first includes the gate's own polls of the uncounted counters surface; the second does not and is the one that describes the client |
@@ -404,8 +404,8 @@ catalogue evidence, the overlap evidence and the cold-state evidence.
 **The run-to-run instability in §7.2 survives too, and now has a second dimension.** Committed still varies
 17.065×–25.938×; observed varies 0.878×–1.122×. The same cause explains both — how many times each media
 server happens to re-open the ~105 MB fixture and seek backwards in it — but the observed spread is far
-narrower, which is itself informative: the client asks for wildly different amounts between runs and ends up
-receiving roughly the corpus's own size every time.
+narrower, which is itself informative: the client asks for wildly different amounts between runs while the
+endpoint's write calls return roughly the corpus's own size every time.
 
 ### 7.5 RETRACTED AGAIN: the observed-to-committed comparison, and what "observed" is worth
 
