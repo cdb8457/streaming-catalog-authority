@@ -25,6 +25,17 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
   of them has been on **Windows / Docker Desktop**, which `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6 says
   closes **none** of G7–G13. What changed is that "one of the three is untouched" is no longer the reason
   Phase 1 is open. The reason is the platform, and it always was.
+- **A FOURTH GATE NOW RUNS ALL THREE AT ONCE, AND G18 IS STILL NOT RUN.**
+  `deploy/projection-three-server-concurrency-gate.sh` puts a real, digest-pinned Plex, Jellyfin and Emby on
+  **one** production mount, **one** admitted generation, **one** ~50-entry corpus and **one** fake endpoint,
+  and observes all three scanning at the same instant rather than inferring it from three triggers landing
+  together. It is not a wrapper around the other three gates: running those at once would stand up three
+  daemons, three mounts and three corpora and would prove something about Docker Desktop.
+  `docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md` says what it asserts and what it refuses to claim; the
+  §6.1 table records it as **NOT RUN**, because every run has been on Windows / Docker Desktop and
+  `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6 says that closes none of G7–G13 or G18. **Per-server
+  provider attribution is impossible with one shared daemon and is not claimed. G22 and G27's three-server
+  half are not run. No real provider endpoint has ever been contacted, and Phase 1 remains open.**
 - **Docker Desktop is not Unraid.** No run has happened on Linux or a real Unraid host, and no real provider
   endpoint has ever been contacted. What has been run, against which server, is
   `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 — and that table, not this page, is the authority on it.
@@ -47,8 +58,9 @@ product acquires thirty phases of scaffolding around a thing that has never run.
 phase, may be started before the Phase 1 vertical slice passes its hard gates on three consecutive runs on a
 real Linux or Unraid host.**
 
-**This rule has not been satisfied, and is not weakened by the Jellyfin gate, by the Plex gate, or by there
-now being a gate for every one of the three media servers.** Three consecutive green runs on Windows and
+**This rule has not been satisfied, and is not weakened by the Jellyfin gate, by the Plex gate, by there now
+being a gate for every one of the three media servers, or by the fourth gate that drives all three of them
+simultaneously.** Three consecutive green runs on Windows and
 Docker Desktop are three green runs on Windows and Docker Desktop. The rule says Linux or Unraid, and it says
 all three media servers, and neither has happened.
 

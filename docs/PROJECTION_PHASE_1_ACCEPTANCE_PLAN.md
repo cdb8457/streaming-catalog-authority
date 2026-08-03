@@ -162,7 +162,7 @@ the same and only the second is evidence.
 | G11 **Generation swap mid-read** | run — the in-flight stream completed correctly across an admitted successor | not run | run on Docker Desktop only — one held-open response body, partially consumed and not drained, completed with the whole file's digest across an admitted successor, with 13,670,080 of its 13,981,376 bytes arriving after the event |
 | G12 **Kill and recover** | run — `SIGKILL` mid-stream, restart, remount: zero added, zero removed, zero item-id churn; playback resumable | not run | run on Docker Desktop only — `SIGKILL` mid-stream, restart, remount, followed by a byte-for-byte read through the media server's own mount so it cannot pass on a dead one: zero added, removed, duplicated, item-id-churned, metadata-drifted or path-drifted; the published generation did not move; playback resumable |
 | G13 **Re-scan churn** | run — twice, plus across a media-server restart | not run | run on Docker Desktop only — a repeat corpus scan, a scan after the media-server restart, and a plain re-scan, each with zero churn of any kind; the plain re-scan cost the provider **zero** ranged GETs and **zero** bytes |
-| G18 **High-concurrency scan** | **not run** — it requires all three servers scanning simultaneously | not run | not run |
+| G18 **High-concurrency scan** | **NOT RUN** for tranche purposes. A gate now exists and has been run on Docker Desktop only: `deploy/projection-three-server-concurrency-gate.sh` puts a real, digest-pinned Plex, Jellyfin and Emby on the SAME production mount, SAME admitted generation, SAME ~50-entry corpus and SAME fake endpoint, and observes all three scanning at the same instant. §6 says Docker Desktop closes none of G7–G13 or G18, so this column stays NOT RUN | same gate, same run, same platform — **NOT RUN** | same gate, same run, same platform — **NOT RUN** |
 | G22 **Comparison control** | **not run** | — | — |
 | G24–G26 **Lease gates** | **not run** through a media server; the fake endpoint supports the mode, this gate uses the direct one | — | — |
 | G27 **Path immutability** | admission half closed by `npm run test:projection-publisher`; **the three-server half is not run** | not run | not run |
@@ -190,6 +190,47 @@ record (§7 of it) carried a real count: **seven runs — three failing and four
 green ones consecutive, each starting from nothing, and each 353 assertions with none failed and none skipped.
 **All seven are Windows / Docker Desktop, which §6 says closes none of G7–G13.** The column therefore reads
 `run` and the gate stays open.
+
+**A FOURTH GATE EXISTS, IT IS THE FIRST ONE ABOUT ALL THREE SERVERS AT ONCE, AND THE G18 ROW STILL READS
+NOT RUN.** `deploy/projection-three-server-concurrency-gate.sh` — `npm run go:three-server-concurrency-gate` —
+stands up **one** PostgreSQL, **one** publisher, **one** admitted generation, **one** production `projectiond`,
+**one** FUSE mount and **one** fake HTTP Range endpoint, and puts **three** real, digest-pinned media servers
+on the same mount directory as the same library root.
+`docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md` describes what it asserts, and §7 of that document is the
+only place that says what has been run: **fourteen runs, one failing and thirteen green, twelve of the
+thirteen through the committed three-consecutive-fresh-run wrapper in four sequences of three, each 59
+assertions with none failed and none skipped. All fourteen are Windows / Docker Desktop, which §6 says closes
+none of G7–G13 or G18. Fourteen of them predate a coordinator review that tightened what the gate asserts;
+the remediated gate has since been run too — one failure that exposed a real defect in it, then **three
+consecutive fresh green runs, 62 assertions each with none failed and none skipped**, still on Docker
+Desktop and still closing nothing.** The one failure is worth reading: it was the gate's, not the product's — the barrier
+was released the instant the rendezvous succeeded, which destroyed the overlap it had just created.
+
+**It is not a wrapper around the other three gates, and the distinction is the whole point.** Running those
+three at once would stand up three PostgreSQLs, three daemons, three mounts and three corpora, and would
+demonstrate that three unrelated appliances can coexist on one laptop. Nothing would be shared, so nothing
+would be about concurrency on one data plane.
+
+**Simultaneity is OBSERVED, not inferred from three triggers landing together.** One process asks all three
+servers their own present-tense scan state on a shared tick; a tick in which all three said `Running` is a
+sample of three simultaneous in-flight scans, and three sequential scans produce zero of those. A tick whose
+three answers were more than two seconds apart is recorded as imprecise and cannot count. The trigger spread
+is recorded as a harness health check and is explicitly not the evidence.
+
+**The window is COLD, on two independent instruments**, because G19 above says a re-scan legitimately costs the
+provider nothing — which would let a warm window satisfy every ceiling in §5 by doing nothing at all. The
+corpus is published only after all three libraries exist and after Plex's unavoidable library-creation scan has
+been waited out; the endpoint is asserted to have served **zero bytes for any corpus object** before the scans
+opened — the load-bearing check — and the daemon's own scan-window cache is asserted to have **grown** across
+the window. **Not** that the daemon's cache was empty: it is not, because that gate publishes a local seed
+entry on purpose and a local entry's own byte-identity window lands in the same cache.
+
+**WHAT THAT GATE STILL DOES NOT CLOSE, AND WHY THE ROW ABOVE READS `NOT RUN`.** Every run has been on Windows /
+Docker Desktop, which §6 says closes none of G7–G13 or G18. **Per-server provider attribution is impossible
+there and is not claimed**: one daemon serves all three servers, so the endpoint sees the daemon and never the
+server behind a byte — every byte is attributed to a corpus OBJECT and none to a SERVER. **G22 is not run.
+G27's three-server half is not run.** No real provider endpoint has ever been contacted, no run has ever
+happened on Linux or Unraid, and **Phase 1 remains open**.
 
 **With that, all three media servers have a gate, and the tranche is no closer to closing than it was.** §6 says
 the media-server gates close on a Linux or Unraid host; **none of the three gates has ever run on one**. What
