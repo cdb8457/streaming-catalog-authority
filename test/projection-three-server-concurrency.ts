@@ -321,15 +321,77 @@ async function main(): Promise<void> {
       .longestContinuousSimultaneousSamples, 1, 'one millisecond over is a new run');
   });
 
+  await test('THE CADENCE CEILING IS AT MOST TWICE THE NOMINAL TICK, and strictly under the duration floor', () => {
+    // IT WAS FIVE TIMES THE TICK. `SAMPLE_INTERVAL + SAMPLE_MAX_SPAN` = 2,500 ms, on the reasoning that a
+    // tick may be as wide as the simultaneity bound -- which conflates how far apart THREE ANSWERS WITHIN
+    // ONE TICK may be with how many polling intervals may go missing BETWEEN ticks.
+    assert(CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP
+      <= CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL * 2,
+      `the gap ceiling is ${CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP}ms against a nominal tick of `
+      + `${CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL}ms; more than one missed poll is unobserved time`);
+    assert(CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP > CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL,
+      'and it must tolerate at least a slow tick, or a correct run breaks on ordinary jitter');
+    assert(CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP
+      < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS * 1_000,
+      'and strictly under the duration floor, or a run can be assembled out of ceiling-width gaps alone');
+    assert(CORE.includes('assertCadenceIsFailClosed'),
+      'and the relation must be machine-checked at load, not written down in a comment');
+  });
+
+  await test('gaps of 1.5s and 2.0s BREAK the run, however unanimous the samples', () => {
+    for (const gapMs of [1_500, 1_750, 2_000]) {
+      const samples = [0, 1, 2, 3, 4, 5].map((index) => allInFlight(index * gapMs));
+      const analysis = analyseOverlap(samples);
+      assertEq(analysis.simultaneousSamples, 6, `all six samples qualify individually at ${gapMs}ms`);
+      assertEq(analysis.longestContinuousSimultaneousSamples, 1,
+        `a ${gapMs}ms gap is ${gapMs / CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL} polling intervals of `
+        + 'unobserved time and must break the run');
+      assertEq(analysis.longestContinuousSimultaneousSeconds, 0, 'so no run has any credited duration');
+      assert(overlapProblems(analysis).length > 0, 'and the timeline must be refused');
+    }
+  });
+
+  await test('a run made entirely of CEILING-width gaps cannot clear the duration floor', () => {
+    // THE HOLE THE CREDITED CALCULATION CLOSES. At the ceiling every gap is two nominal ticks, so half of
+    // the wall span was never polled. Three such samples span exactly the two-second floor in wall time.
+    const at = CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP;
+    const samples = [allInFlight(0), allInFlight(at), allInFlight(at * 2)];
+    const analysis = analyseOverlap(samples);
+    assertEq(analysis.longestContinuousSimultaneousSamples, 3, 'the run is unbroken');
+    assertEq(analysis.longestContinuousWallSeconds,
+      CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS, 'and its WALL span is exactly the floor');
+    assert(analysis.longestContinuousSimultaneousSeconds
+      < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS,
+      `but only ${analysis.longestContinuousSimultaneousSeconds}s is credited, because each gap is worth at `
+      + 'most one nominal tick — an observer that fell behind cannot charge the time it did not poll');
+    assert(overlapProblems(analysis).some((problem) => problem.includes('CONTINUOUS')),
+      'so the wall span alone must not clear the floor');
+  });
+
+  await test('the credited figure equals the wall span when the observer kept its cadence', () => {
+    const analysis = analyseOverlap(overlappingTimeline(9, 40, CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL));
+    assertEq(analysis.longestContinuousSimultaneousSeconds, analysis.longestContinuousWallSeconds,
+      'at nominal cadence nothing is discounted, so the rule costs a correct run nothing');
+  });
+
   await test('the REAL measured sequences still pass: 9-10 continuous samples over 4.1-4.6s', () => {
     // The observer ticks at 500ms; the four wrapper sequences measured 9-10 simultaneous samples spanning
     // 4.1-4.6s, which is (n-1) x ~510ms -- i.e. continuous at the tick rate. Both shapes are reproduced.
     for (const [ticks, intervalMs] of [[9, 512], [10, 511]] as const) {
       const analysis = analyseOverlap(overlappingTimeline(ticks, 40, intervalMs));
       assertEq(analysis.longestContinuousSimultaneousSamples, ticks, 'the whole run is unbroken');
+      // The measured gaps (~511-512 ms) sit just over the nominal tick, so each is credited the full 500 ms
+      // and the run is credited (n-1) x 0.5 s: 4.0 s for nine samples, 4.5 s for ten. Both clear the floor
+      // with a factor of two, and the wall span is the 4.1-4.6 s the runs reported.
       assert(analysis.longestContinuousSimultaneousSeconds >= 4
         && analysis.longestContinuousSimultaneousSeconds <= 4.7,
-        `expected a 4.1-4.6s run, got ${analysis.longestContinuousSimultaneousSeconds}s`);
+        `expected a 4.0-4.5s credited run, got ${analysis.longestContinuousSimultaneousSeconds}s`);
+      assert(analysis.longestContinuousWallSeconds >= 4.0
+        && analysis.longestContinuousWallSeconds <= 4.7,
+        `and a 4.1-4.6s wall span, got ${analysis.longestContinuousWallSeconds}s`);
+      assert(analysis.longestContinuousSimultaneousSeconds
+        >= CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS * 2,
+        'the real measured shape must clear the floor with meaningful margin, not scrape it');
       assertEq(overlapProblems(analysis).length, 0,
         'the real measured shape must not be refused by the stricter rule');
     }

@@ -197,12 +197,14 @@ async function main(): Promise<void> {
         analysis.longestContinuousSimultaneousSamples, CONCURRENCY_RULES.MIN_SIMULTANEOUS_SAMPLES,
         'the longest UNBROKEN run of samples with every server scanning. A run is broken by any sample that '
         + 'is idle, unreadable or too wide to describe one instant, and by any gap over '
-        + `${CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP}ms, because unobserved time is not overlap`));
+        + `${CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP}ms — twice the nominal tick, so at most one missed `
+        + 'poll — because unobserved time is not overlap'));
       record(args, atLeast('TS1-continuous-simultaneous-seconds',
         Math.round(analysis.longestContinuousSimultaneousSeconds * 10) / 10,
         CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS,
-        'how long that unbroken run actually lasted; an instantaneous graze, and a scattering of grazes, are '
-        + 'both refused'));
+        `how long that unbroken run lasted, CREDITED: each gap is worth at most one nominal tick, so an `
+        + `observer that fell behind cannot charge the time it did not poll. Wall span of the same run: `
+        + `${Math.round(analysis.longestContinuousWallSeconds * 10) / 10}s`));
       // TOTALS, RECORDED. The distance between them and the continuous run is itself informative: equal
       // means one uninterrupted overlap, far apart means it kept breaking.
       record(args, {

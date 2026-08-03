@@ -101,15 +101,49 @@ export const CONCURRENCY_DEADLINES_MS = Object.freeze({
   /**
    * The widest gap between two adjacent qualifying samples that may still be treated as ONE continuous run.
    *
-   * IT IS DERIVED, NOT CHOSEN: one sleep between ticks (`SAMPLE_INTERVAL`) plus the widest a tick may be and
-   * still describe one instant (`SAMPLE_MAX_SPAN`). Anything wider is time in which the observer was not
-   * watching, and **unobserved time cannot become overlap duration** — which is precisely how a run that
-   * stalled for a minute and resumed would otherwise report a minute of overlap it never saw.
+   * TWICE THE NOMINAL TICK, AND THE PREVIOUS VALUE WAS FIVE TIMES IT. It was `SAMPLE_INTERVAL +
+   * SAMPLE_MAX_SPAN` = 2,500 ms, on the reasoning that a tick may legitimately be as wide as the
+   * simultaneity bound. That conflated two different things: `SAMPLE_MAX_SPAN` bounds how far apart the
+   * THREE ANSWERS WITHIN ONE TICK may be and still describe one instant; it is not permission to leave five
+   * polling intervals missing BETWEEN ticks. At 2,500 ms, three samples 2.5 s apart cleared the two-second
+   * duration floor with 120 ms of actual observation in a five-second span — nearly the whole claimed
+   * duration unobserved.
    *
-   * The measured runs sit at ~0.51 s per gap, against this 2.5 s ceiling: roughly five times the margin.
+   * So the ceiling is one missed poll and no more: `2 x SAMPLE_INTERVAL`. It is strictly below the
+   * two-second duration floor, which matters — at the old value a run could be assembled entirely out of
+   * ceiling-width gaps and still clear the floor.
+   *
+   * The measured runs sit at ~511 ms per gap against this 1,000 ms ceiling: a factor of two of margin, and
+   * `assertCadenceIsFailClosed` below refuses the whole file if that relation ever stops holding.
    */
-  MAX_CONTINUOUS_GAP: 500 + 2_000,
+  MAX_CONTINUOUS_GAP: 500 * 2,
 } as const);
+
+/**
+ * THE CADENCE RULE, CHECKED AT MODULE LOAD RATHER THAN TRUSTED.
+ *
+ * Three numbers have to stay in a particular order or the continuity rule stops being fail-closed, and two of
+ * them live in different constants that a future edit could move independently:
+ *
+ *	SAMPLE_INTERVAL  <  MAX_CONTINUOUS_GAP  <  MIN_SIMULTANEOUS_SPAN_SECONDS x 1000
+ *
+ * The left inequality says the ceiling tolerates at least a slow tick; the right one says a run cannot be
+ * assembled out of ceiling-width gaps and still clear the duration floor. Writing them down as a comment is
+ * what the previous version did.
+ */
+function assertCadenceIsFailClosed(): void {
+  const nominal = CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL;
+  const ceiling = CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP;
+  if (!(nominal < ceiling && ceiling <= nominal * 2)) {
+    throw new Error(`the continuity gap ceiling (${ceiling}ms) must be above the nominal tick (${nominal}ms) `
+      + 'and no more than twice it: a wider tolerance counts polls that were never taken as overlap');
+  }
+  if (!(ceiling < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS * 1_000)) {
+    throw new Error(`the continuity gap ceiling (${ceiling}ms) must be strictly below the duration floor `
+      + `(${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS * 1_000}ms), or a run can be assembled entirely `
+      + 'out of ceiling-width gaps and still clear it');
+  }
+}
 
 /**
  * HOW LONG A PROVIDER READ MAY BE HELD, AND WHY BOTH NUMBERS ARE DERIVED RATHER THAN CHOSEN.
@@ -208,6 +242,9 @@ export const CONCURRENCY_RULES = Object.freeze({
    */
   MAX_TRIGGER_SPREAD_SECONDS: 15,
 } as const);
+
+// Checked once, here, where both constants it relates are in scope.
+assertCadenceIsFailClosed();
 
 /**
  * WHY A TRIGGER SPREAD IS NOT EVIDENCE OF CONCURRENCY, STATED AS A CONSTANT SO A TEST CAN HOLD IT.
@@ -327,14 +364,23 @@ export interface OverlapAnalysis {
    */
   readonly simultaneousSpanSeconds: number;
   /**
-   * THE LONGEST UNBROKEN RUN of samples in which every server was in flight, in seconds. THE CLAIM.
+   * THE LONGEST UNBROKEN RUN of simultaneity, in CREDITED seconds. THE CLAIM.
    *
    * A run is broken by any sample that is not simultaneous, not readable or not precise, and ALSO by a gap
-   * between two adjacent qualifying samples wider than `MAX_CONTINUOUS_GAP_MS`. The second half matters as
-   * much as the first: unobserved time is not overlap, and without the gap ceiling a run that stopped
-   * sampling for a minute and resumed would have that minute counted as overlap it never watched.
+   * between two adjacent qualifying samples wider than `MAX_CONTINUOUS_GAP`. The second half matters as much
+   * as the first: unobserved time is not overlap, and without a gap ceiling a run that stopped sampling for
+   * a minute and resumed would have that minute counted as overlap it never watched.
+   *
+   * AND THE GAP CEILING ALONE IS NOT ENOUGH, WHICH IS WHY THIS IS *CREDITED* RATHER THAN WALL TIME. Any
+   * duration inferred from discrete samples charges the interval between them; the only honest question is
+   * how much. **Each gap contributes at most one NOMINAL tick**, whatever the wall gap actually was. So a
+   * run whose ticks all ran late — every gap at the 2x ceiling — is credited half its wall span and needs
+   * twice as many samples to clear the floor, and a poll that was never taken cannot become overlap even
+   * inside the tolerance. `longestContinuousWallSeconds` reports what the clock said, beside it.
    */
   readonly longestContinuousSimultaneousSeconds: number;
+  /** The same run's WALL span. Equal to the credited figure when the observer kept its nominal cadence. */
+  readonly longestContinuousWallSeconds: number;
   /** How many samples that longest run contained. Two samples 2 s apart is not the same evidence as ten. */
   readonly longestContinuousSimultaneousSamples: number;
   /** How many separate runs of simultaneity there were. More than one means the overlap was interrupted. */
@@ -397,9 +443,11 @@ export function analyseOverlap(
   let runStartAt = 0;
   let previousQualifyingAt = 0;
   let runSamples = 0;
+  let runCreditedMs = 0;
   let runs = 0;
   let brokenByGap = 0;
-  let longestRunMs = 0;
+  let longestCreditedMs = 0;
+  let longestWallMs = 0;
   let longestRunSamples = 0;
 
   for (const sample of ordered) {
@@ -430,20 +478,27 @@ export function analyseOverlap(
       // JOIN THE CURRENT RUN, OR START A NEW ONE. A qualifying sample continues the run only if the previous
       // qualifying sample was close enough in wall time; otherwise the observer was not watching in between,
       // and time nobody watched cannot be counted as overlap.
-      const joins = runSamples > 0
-        && (sample.atMs - previousQualifyingAt) <= CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP;
+      const gapMs = sample.atMs - previousQualifyingAt;
+      const joins = runSamples > 0 && gapMs <= CONCURRENCY_DEADLINES_MS.MAX_CONTINUOUS_GAP;
       if (joins) {
         runSamples += 1;
+        // CREDIT AT MOST ONE NOMINAL TICK PER GAP, whatever the clock said. A tick that ran late is
+        // tolerated up to the ceiling above, but the interval nobody polled in is not overlap and is not
+        // counted as any.
+        runCreditedMs += Math.min(gapMs, CONCURRENCY_DEADLINES_MS.SAMPLE_INTERVAL);
       } else {
         if (runSamples > 0) brokenByGap += 1;
         runs += 1;
         runStartAt = sample.atMs;
         runSamples = 1;
+        runCreditedMs = 0;
       }
       previousQualifyingAt = sample.atMs;
-      const runMs = sample.atMs - runStartAt;
-      if (runMs > longestRunMs || (runMs === longestRunMs && runSamples > longestRunSamples)) {
-        longestRunMs = runMs;
+      const runWallMs = sample.atMs - runStartAt;
+      if (runCreditedMs > longestCreditedMs
+        || (runCreditedMs === longestCreditedMs && runSamples > longestRunSamples)) {
+        longestCreditedMs = runCreditedMs;
+        longestWallMs = runWallMs;
         longestRunSamples = runSamples;
       }
     } else if (runSamples > 0) {
@@ -458,7 +513,8 @@ export function analyseOverlap(
     samples: ordered.length,
     simultaneousSamples: simultaneous,
     simultaneousSpanSeconds: simultaneous === 0 ? 0 : (lastAt - firstAt) / 1_000,
-    longestContinuousSimultaneousSeconds: longestRunMs / 1_000,
+    longestContinuousSimultaneousSeconds: longestCreditedMs / 1_000,
+    longestContinuousWallSeconds: longestWallMs / 1_000,
     longestContinuousSimultaneousSamples: longestRunSamples,
     simultaneousRuns: runs,
     brokenByGap,
@@ -514,8 +570,10 @@ export function overlapProblems(analysis: OverlapAnalysis): string[] {
       + 'simultaneous scanning)');
   }
   if (analysis.longestContinuousSimultaneousSeconds < CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS) {
-    problems.push(`the longest CONTINUOUS three-way overlap lasted `
-      + `${analysis.longestContinuousSimultaneousSeconds}s, against a floor of `
+    problems.push(`the longest CONTINUOUS three-way overlap credited `
+      + `${analysis.longestContinuousSimultaneousSeconds}s (wall span `
+      + `${analysis.longestContinuousWallSeconds}s; each gap is credited at most one nominal tick, so an `
+      + `observer that fell behind cannot charge the time it did not poll), against a floor of `
       + `${CONCURRENCY_RULES.MIN_SIMULTANEOUS_SPAN_SECONDS}s. First-to-last across all simultaneous samples `
       + `was ${analysis.simultaneousSpanSeconds}s, which is not a duration: it counts every idle, unreadable `
       + 'and imprecise sample in between as though it had been overlap');

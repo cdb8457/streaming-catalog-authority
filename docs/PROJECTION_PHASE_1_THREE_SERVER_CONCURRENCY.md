@@ -80,7 +80,13 @@ Three properties are required of the observation, and each closes a different wa
   that touched at the edges, which is the closest thing to sequential that still technically overlaps;
 - **that unbroken run must last at least two seconds** — so a burst of samples inside one tick cannot satisfy
   both the count and the duration;
-- **a run is broken by any disqualifying sample and by any gap over 2.5 s**. Both floors used to be applied
+- **a run is broken by any disqualifying sample and by any gap over twice the nominal tick (1 s)**, and its
+  duration is **credited at most one nominal tick per gap** — so an observer that fell behind cannot charge
+  the time it did not poll, and a run assembled entirely from ceiling-width gaps is credited half its wall
+  span and cannot clear the floor. An earlier version allowed 2.5 s, five polling intervals, on the reasoning
+  that a tick may be as wide as the simultaneity bound; that conflates how far apart the three answers
+  *within one tick* may be with how many polls may go missing *between* ticks, and at 2.5 s three samples
+  cleared the two-second floor with 120 ms of observation in a five-second span. Both floors used to be applied
   to TOTALS — a count of simultaneous samples anywhere in the window, and `last − first` across them called a
   span. Three simultaneous samples scattered across two minutes, with the servers observed *idle* between
   them, cleared both while nothing had overlapped for two seconds at any point. `last − first` is not a
@@ -88,7 +94,7 @@ Three properties are required of the observation, and each closes a different wa
   and it counts stretches in which nothing was sampled at all. The gap ceiling is derived — one tick sleep
   plus the widest a tick may be and still describe one instant — because **unobserved time cannot become
   overlap duration**. The totals are still reported, and the distance between them and the unbroken run is
-  itself informative;
+  itself informative; so is the distance between the credited duration and the same run's wall span;
 - **every tick's three answers within two seconds of each other**. A tick is not an instant. If the slowest
   answer arrived thirty seconds after the fastest, "all three said Running in this tick" is compatible with
   the first having finished before the last was asked. Wider ticks are counted as **imprecise** and can never
@@ -344,7 +350,7 @@ spanning 4.1–4.6 s**, and Plex's scan took 25–32 s against Emby's 8 s and Je
 | | |
 |---|---|
 | corpus | **50 published identities**, one generation, one mount, one endpoint — 43 remote (one of them the 105,406,871-byte barrier fixture) and 7 local |
-| **overlap** | **9 samples with all three servers scanning at the same instant, in one unbroken run**, lasting **4.1 s**, out of 61 samples. 13 samples had two or more. **0 samples were too wide to describe one instant** (widest tick 0.02 s) and **0 had a server that could not be read** |
+| **overlap** | **9 samples with all three servers scanning at the same instant, in one unbroken run**, wall span **4.1 s** (credited **4.0 s** under the later rule — gaps of ~511 ms, each worth one nominal 500 ms tick), out of 61 samples. 13 samples had two or more. **0 samples were too wide to describe one instant** (widest tick 0.02 s) and **0 had a server that could not be read** |
 | scan durations | Plex 30 s (55 samples in flight), Emby 8 s (13), Jellyfin 5 s (9) |
 | trigger spread | 0 s — **recorded, and not the evidence** |
 | barrier | one provider request blocked, held for **4.1 s**, **zero holds lapsed** |

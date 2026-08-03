@@ -252,10 +252,14 @@ const sleep = (ms: number): Promise<void> => new Promise((resolve) => { setTimeo
  *   3. OBSERVE. One loop, one clock, three answers per tick, each server's own present-tense state. This is
  *      the evidence, and it is the only thing that is.
  *
- *   4. RELEASE THE BARRIER ON THE FIRST THREE-WAY SAMPLE, or when the arm window runs out, whichever comes
- *      first — and the arm window is well inside the daemon's own first-byte deadline, so a hold can never
- *      turn into a failed read that this gate would then be measuring as a data-plane defect. The observer
- *      keeps going after the release: the scans are still running and their overlap is still being watched.
+ *   4. RELEASE THE BARRIER WHEN ITS BOUNDED BLOCKING WINDOW ELAPSES — **not** when the three-way sample
+ *      lands. The first real run released on the rendezvous, and releasing on success destroyed what success
+ *      had created: the hold came off, the three scans finished at three different speeds, and the measured
+ *      overlap was two samples spanning 0.75 s. The window is bounded strictly inside the daemon's admission
+ *      queue-wait budget, so the hold can never starve another object's read, and far inside its first-byte
+ *      deadline, so a held read can never fail — this gate does not manufacture the defect it measures. The
+ *      observer keeps going after the release: the scans are still running and their overlap is still being
+ *      watched.
  *
  *   5. EVERY WAIT IS BOUNDED. A server whose scan never returns fails this function rather than occupying
  *      the machine, and its failure is recorded per server so the log says which one.

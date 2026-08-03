@@ -33,6 +33,12 @@
 #   or an outstanding library activity on Plex. A tick in which all three said yes is a sample of three
 #   simultaneous in-flight scans. Three sequential scans produce ZERO of those, by construction.
 #
+#   AND THE FLOORS ARE ON ONE UNBROKEN RUN OF THOSE TICKS, NOT ON TOTALS. A run is broken by any idle,
+#   unreadable or imprecise sample, and by any gap over twice the nominal tick — at most one missed poll —
+#   and its duration is CREDITED at most one nominal tick per gap, so an observer that fell behind cannot
+#   charge the time it did not poll. Scattered simultaneity is not simultaneous scanning, and unobserved
+#   time is not overlap.
+#
 #   AND BY A RENDEZVOUS, so the observation is not luck. One remote object's provider read is HELD at the
 #   endpoint before any scan is triggered. A scanner that reaches that object stops there and waits, so the
 #   three arrive at their own pace and then coexist. THE HOLD IS NOT RELEASED WHEN THE RENDEZVOUS SUCCEEDS —
@@ -1034,6 +1040,9 @@ echo "    Emby) each holding the SAME mount directory as its library root."
 echo "  - THREE LIBRARY SCANS OBSERVED IN FLIGHT AT THE SAME INSTANT, by one process on one clock asking all"
 echo "    three servers their own present-tense scan state. A tick whose three answers were more than two"
 echo "    seconds apart does not count as one instant, and three SEQUENTIAL scans produce zero such samples."
+echo "    The floors are on ONE UNBROKEN RUN of those ticks -- broken by any idle, unreadable or imprecise"
+echo "    sample and by any gap over twice the nominal tick -- and its duration is CREDITED at most one"
+echo "    nominal tick per gap, so time nobody polled in cannot be counted as overlap."
 echo "  - a RENDEZVOUS rather than luck: one remote object's provider read was held at the endpoint before"
 echo "    any trigger, so a scanner that reached it waited there. The hold is bounded below the daemon's own"
 echo "    first-byte deadline and the gate asserts that none lapsed."
