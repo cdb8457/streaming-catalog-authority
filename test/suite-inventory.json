@@ -396,6 +396,10 @@
       "group": "offline"
     },
     {
+      "file": "projection-rclone-comparison.ts",
+      "group": "offline"
+    },
+    {
       "file": "projection-host-preflight.ts",
       "group": "offline"
     },

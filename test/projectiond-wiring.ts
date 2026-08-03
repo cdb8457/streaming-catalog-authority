@@ -209,7 +209,10 @@ test('the publisher exists as a control-plane component and the daemon still hol
     .flatMap((entry) => (entry.isDirectory() ? walk(`${dir}/${entry.name}`)
       : entry.name.endsWith('.go') ? [`${dir}/${entry.name}`] : []));
   for (const file of walk('projectiond')) {
-    if (file.includes('cmd/mkfixture') || file.includes('cmd/fakerange')) continue; // gate tools; see below
+    if (file.includes('cmd/mkfixture') || file.includes('cmd/fakerange')
+      || file.includes('cmd/fakewebdav') || file.includes('internal/fakewebdav')) {
+      continue; // gate tools; see below
+    }
     const source = read(file);
     for (const forbidden of ['database/sql', 'sqlite', 'lib/pq', 'pgx', 'postgres']) {
       assert(!source.toLowerCase().includes(forbidden), `${file} reaches for ${forbidden}`);
@@ -220,11 +223,22 @@ test('the publisher exists as a control-plane component and the daemon still hol
 test('the gate tools are built by the toolchain image and are not in the shipped binary', () => {
   const dockerfile = read('projectiond/Dockerfile');
   assert(dockerfile.includes('./cmd/projectiond'), 'the image builds the daemon');
-  for (const tool of ['mkfixture', 'fakerange']) {
+  // `fakewebdav` is the third of them, and it is the COMPARISON CONTROL's server half — the endpoint G22
+  // measures an rclone mount against. It is a gate tool in exactly the sense the other two are: it never
+  // ships, the production image does not build it, and nothing in the daemon imports it. ADR 002 §2 rejected
+  // rclone over WebDAV as production architecture and kept it as a test control; a binary that exists so a
+  // control can be measured is not the product acquiring a WebDAV component.
+  for (const tool of ['mkfixture', 'fakerange', 'fakewebdav']) {
     assert(exists(`projectiond/cmd/${tool}/main.go`), `${tool} exists`);
     assert(!dockerfile.includes(tool), `the production image does not build ${tool}`);
     assert(read(`projectiond/cmd/${tool}/main.go`).includes('//go:build linux'),
       `${tool} is Linux-only, like the gates that use it`);
+  }
+  // ...and the daemon does not reach into any of them. A data plane that imported the comparison control's
+  // endpoint would be a data plane that could serve WebDAV.
+  for (const file of ['projectiond/cmd/projectiond/main.go', 'projectiond/internal/daemon/daemon.go',
+    'projectiond/internal/fusefs/fusefs.go', 'projectiond/internal/source/http.go']) {
+    assert(!read(file).includes('fakewebdav'), `${file} does not import the comparison control's endpoint`);
   }
 });
 

@@ -34,8 +34,17 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
   `docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md` says what it asserts and what it refuses to claim; the
   §6.1 table records it as **NOT RUN**, because every run has been on Windows / Docker Desktop and
   `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6 says that closes none of G7–G13 or G18. **Per-server
-  provider attribution is impossible with one shared daemon and is not claimed. G22 and G27's three-server
-  half are not run. No real provider endpoint has ever been contacted, and Phase 1 remains open.**
+  provider attribution is impossible with one shared daemon and is not claimed. G27's three-server
+  half is not run. No real provider endpoint has ever been contacted, and Phase 1 remains open.**
+- **A FIFTH GATE MEASURES WHAT THE NAIVE PATH COSTS, AND IT IS A CONTROL RATHER THAN A CANDIDATE.**
+  `deploy/projection-rclone-comparison-gate.sh` is G22: the **same** ~50-entry corpus behind a digest-pinned
+  rclone mount of a deterministic WebDAV endpoint, read by the **same** three real, digest-pinned media
+  servers, observed by G18's **own** observer and floors. `docs/ADR_002_PROJECTION_APPLIANCE.md` §2 rejected
+  rclone over WebDAV as production architecture and kept it as a test control, in those words; **nothing
+  measured here reopens that, a cheap number would not, and an expensive one is not what closed it.** G22 has
+  **no pass threshold**, so every cost figure is recorded and compared against nothing — what fails closed is
+  the instrumentation. `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` says what it measures and refuses to
+  claim; the §6.1 table records **G22 as NOT RUN**, because every run has been on Windows / Docker Desktop.
 - **Docker Desktop is not Unraid.** No run has happened on Linux or a real Unraid host, and no real provider
   endpoint has ever been contacted. What has been run, against which server, is
   `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 — and that table, not this page, is the authority on it.

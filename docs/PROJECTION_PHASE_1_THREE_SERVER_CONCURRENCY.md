@@ -449,7 +449,11 @@ rather than a review.
   servers, so the endpoint sees the daemon and never the server behind a byte. Every byte is attributed to a
   corpus **object**; no byte is attributed to a **server**, and a gate that reported "Jellyfin cost N bytes"
   would be inventing a number. What is per-server is the catalogue evidence and the overlap evidence.
-- **G22**, the rclone/WebDAV comparison control, is not run.
+- **G22**, the rclone/WebDAV comparison control, is **NOT RUN** for tranche purposes. A gate for it now
+  exists — `deploy/projection-rclone-comparison-gate.sh`, described in
+  `docs/PROJECTION_PHASE_1_RCLONE_COMPARISON.md` — and has been run on Docker Desktop only, which §6 of the
+  acceptance plan says closes nothing. It reuses this gate's observer, overlap analysis, floors and barrier
+  rather than reimplementing them.
 - **G27's three-server half** is not run.
 - **Phase 1 remains open.**
 

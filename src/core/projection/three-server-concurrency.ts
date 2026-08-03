@@ -1289,7 +1289,8 @@ export const THREE_SERVER_NONCLAIMS: readonly string[] = Object.freeze([
   'no real provider endpoint has ever been contacted; the endpoint is the in-repository fake',
   'per-server provider attribution is impossible here and is not claimed: one daemon serves all three '
     + 'servers, so the provider sees the daemon and never the server behind a byte',
-  'G22, the rclone/WebDAV comparison control, is not run',
+  'G22, the rclone/WebDAV comparison control, is NOT RUN for tranche purposes: a gate for it now exists and '
+    + 'has been run on Docker Desktop only, which closes nothing',
   'G27’s three-server half is not run',
   'Phase 1 remains open',
 ]);
