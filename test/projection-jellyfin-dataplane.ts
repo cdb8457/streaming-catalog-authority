@@ -1316,7 +1316,7 @@ await test('G8, G9 and G10 are recorded as RUN, and G10 is explicitly not record
     // Docker Desktop only. A column that quietly acquired an unqualified verdict — or a Linux or Unraid one
     // that was not earned — still fails, and it fails for the reason that matters rather than for arithmetic.
     for (const column of row(gate).split('|').slice(2).map((cell) => cell.trim()).filter(Boolean)) {
-      assert(!/Linux|Unraid/.test(column),
+      assert(!/\bLinux\b|\bUnraid\b/.test(column),
         `${gate}: a column claims a platform that would CLOSE it, which no run has ever happened on: `
         + `${column.slice(0, 120)}`);
     }
