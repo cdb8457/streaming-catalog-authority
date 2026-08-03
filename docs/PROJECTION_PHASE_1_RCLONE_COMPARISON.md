@@ -206,61 +206,104 @@ So the client's own accounting is read from its remote-control surface and repor
 | # | Host | Outcome | Assertions | What it measured, or why it failed |
 |---|---|---|---|---|
 | 1 | Windows / Docker Desktop | **FAILED** at the endpoint readiness probe | — | **A real defect in this gate, found by running it, and it never reached a measurement.** The readiness canary was named `Projection Canary.bin`, like everything else in this corpus, and the probe that reads it is a BusyBox `wget` which does not percent-encode a space in a URL. The whole corpus carries spaces and parentheses on purpose — and rclone escapes them correctly, which the endpoint's own unit tests and every later run confirm — but a readiness probe that failed on its own URL quoting is a gate that never gets as far as measuring anything. The canary was renamed; nothing else changed |
-| 2 | Windows / Docker Desktop | **COMPLETED** | 63, none failed, none skipped | the first completed run, and the source of the figures in §7.1. **Its assertion count is not the current gate's**: reading this run showed that the per-object costs were reported by MULTIPLIER only, which named five small files at 21–26× and left the ~105 MB fixture — the overwhelming majority of the window's bytes — unnamed in the very report that produced the headline byte total. A second ordering, by bytes, was added, so a later run records more assertions and the five multiplier ids gained a suffix. **Nothing measured in this run was invalidated**; the figures in §7.1 are what it measured |
+| 2 | Windows / Docker Desktop | **COMPLETED** | 63, none failed, none skipped | the first completed run. **Its assertion count is not the current gate's, and its figures are not quoted in §7.1**: reading this run showed that the per-object costs were reported by MULTIPLIER only, which named five small files at 21–26× and left the ~105 MB fixture — the overwhelming majority of the window's bytes — unnamed in the very report that produced the headline byte total. A second ordering, by bytes, was added, and the byte multiplier was made to print its own denominator, because this run's report gave a multiplier without one. Nothing it measured was invalidated; §7.1 quotes the nine wrapper runs instead, which report every denominator directly |
+| 3–5 | Windows / Docker Desktop | **COMPLETED**, three consecutive fresh runs through the committed wrapper `npm run go:rclone-comparison-gate:three`, against the tree exactly as committed at `5cdf55b` | **66 each, none failed, none skipped** | wrapper exit 0, `3 of 3 consecutive … none skipped` |
+| 6–8 | Windows / Docker Desktop | **COMPLETED**, a second wrapper sequence, same commit, no tracked file edited between them | 66 each, none failed, none skipped | wrapper exit 0 |
+| 9–11 | Windows / Docker Desktop | **COMPLETED**, a third wrapper sequence, same commit | 66 each, none failed, none skipped | wrapper exit 0; the working tree was still clean at `5cdf55b` afterwards |
 
-**Every run of this gate has been on Windows / Docker Desktop, and the §6.1 table of the acceptance plan still
-reads NOT RUN.** §6 of the plan says G22 closes on a Linux or Unraid host, and none of these runs was one. No
-real provider endpoint has ever been contacted — the WebDAV endpoint is the in-repository fake — and Phase 1
-remains open.
+**Ten completed runs and one failure, all on Windows / Docker Desktop, and the §6.1 table of the acceptance
+plan still reads NOT RUN.** Nine of the ten came through the committed three-consecutive-fresh-run wrapper, in
+three sequences of three, with no tracked file edited inside or between them. That is the repetition the
+acceptance plan asks for — **on the wrong platform**. §6 of the plan says G22 closes on a Linux or Unraid
+host, and none of these eleven runs was one. No real provider endpoint has ever been contacted — the WebDAV
+endpoint is the in-repository fake — and Phase 1 remains open.
 
-### 7.1 What a completed run measures
+**The rows for runs 3–11 were necessarily written after they finished**, which is true of every run record in
+this repository and is not a gap in this one: that edit changed this document and nothing the gate reads.
+Re-running after each edit that records a run would not terminate.
 
-From run 2, on Windows / Docker Desktop. **Every figure below is RECORDED. None of them is a pass or a
-failure**, and the column headed "the product, for scale" is quoted from
-`docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md` §7.2 — a **different gate, in different runs, on the
-same host**. It is there so the distance is visible rather than argued about; it is **not** a measurement this
-gate took.
+### 7.1 What the nine wrapper runs measured
+
+Runs 3–11, on Windows / Docker Desktop, against the tree exactly as committed at `5cdf55b`, with no tracked
+file edited inside or between the three sequences.
+
+**Every figure below is RECORDED. None of them is a pass or a failure.** The column headed "the product, for
+scale" is quoted from `docs/PROJECTION_PHASE_1_THREE_SERVER_CONCURRENCY.md` §7.2 — a **different gate, in
+different runs, on the same host**. It is there so the distance is visible rather than argued about; it is
+**not** a measurement this gate took.
+
+#### Identical in all nine runs
 
 | | this topology | the product, for scale |
 |---|---|---|
 | corpus | **50 identities**, one mount, one endpoint — all 50 served over WebDAV, because this topology has no local passthrough | 50 identities, 43 remote and 7 local |
-| **ranged GETs** | **992**, every one answered `206`; **0** whole-body answers | 47 |
-| over the 43 the product also fetches remotely | **861 GETs** | 47 |
-| **listing / metadata calls** | **52 PROPFIND** (all depth-1), 0 OPTIONS, 0 HEAD, **90,249 bytes** of listing XML | **no counterpart**: the namespace arrives in one admitted manifest |
-| access resolutions | **ABSENT** — this topology has no resolution step | 43 |
-| **media bytes** | **1,833,291,069** — 1,833,224,857 for corpus objects, 66,212 for the readiness canary | 13,205,874 |
-| over the 43 comparable entries | **1,827,996,073** | 13,205,874 |
-| **as a multiple of the corpus's own length** | **17.082×** of 107,321,247 bytes | — |
-| the ~105 MB fixture | most of the window's bytes, at **~17×** its own length | 11,534,336 bytes = **0.109×** |
-| worst object by multiplier | ordinal 36: **2,310,516 bytes over 26 GETs** for an 88,866-byte file — **26×** | — |
-| HTTP 429 | **0** observed | 0 |
-| peak connections / in flight | **5** on accept, **3** requests in flight | 6 on accept, 4 in flight |
-| scan duration | Plex **31 s**, Emby **7 s**, Jellyfin **5 s** | Plex 26–32 s, Emby 7 s, Jellyfin 4 s |
+| corpus's own total length | **107,316,990 bytes** | same corpus |
 | per server | **50 / 50 matched** on Jellyfin, Plex and Emby, through each server's own predicate: zero missing, wrong-sized, not-ordinary, duplicated or unexpected | 50 / 50 on all three |
-| overlap | **8 samples with all three scanning at one instant, in one unbroken run**, credited **3.5 s** (wall 3.6 s), 0 broken by a gap, 0 imprecise, 0 unreadable, out of 63 samples | 7 samples, credited 3.0 s |
-| barrier | one request blocked, released after **3.2 s**, **0** holds lapsed | released after 3.1 s, 0 lapsed |
-| cold window | endpoint served **0 bytes** for any corpus object beforehand; client cache directory **0 bytes** before and **0** after (`--vfs-cache-mode off`) | endpoint 0 bytes; daemon cache grew 33,187 → 5,093,165 |
+| corpus objects reached | **49 / 49** | — |
+| **listing / metadata calls** | **52 PROPFIND**, every one **depth-1**; **0** OPTIONS, **0** HEAD; **90,249 bytes** of listing XML | **no counterpart**: the namespace arrives in one admitted manifest |
+| access resolutions | **ABSENT** — this topology has no resolution step | 43 |
+| whole-body answers | **0** — every GET carried a `Range` header and was answered `206` | 0 |
+| HTTP 429 | **0** observed | 0 |
 | mutating requests | **0** reached the read-only endpoint | — |
+| overlap | **8 samples with all three scanning at one instant, in one unbroken run**, credited **3.5 s** (wall 3.6 s), 0 broken by a gap, 0 imprecise, 0 unreadable | 7 samples, credited 3.0 s |
+| barrier | one request blocked, **0** holds lapsed | one blocked, 0 lapsed |
+| cold window | endpoint served **0 bytes** for any corpus object beforehand; client cache directory **0 bytes** before and **0 bytes** after (`--vfs-cache-mode off`) | endpoint 0 bytes; daemon cache grew 33,187 → 5,093,165 |
+| scan duration | Emby **7 s**, Jellyfin **5 s** | Emby 7 s, Jellyfin 4 s |
 | seek | forward seek past the middle, **backward** seek to the start and a whole-object read all returned the bytes recorded outside the mount | — |
-| credential | minted per run, never in an argv or an environment value; **found in none of** the client's cache, the client's configuration, or any of the three servers' library state; report **redaction-safe** | — |
+| credential | minted per run, in no argv and no environment value; found in **none** of the client's cache, the client's configuration, or any of the three servers' library state; report **redaction-safe** | — |
 | cleanup | the namespace was **gone** after the mount client stopped | gone |
 
-**The two instruments disagree by a factor of fifty, and the disagreement is a finding rather than a fault.**
-The endpoint served **1,833,291,069** bytes. The mount client's own accounting reports **35,266,185** bytes
-over **893** transfers. Neither number is corrected toward the other: the endpoint counts what it was asked
-for and the client counts what it believes it delivered upward, and everything between them is read-ahead,
-chunk sizing and bytes fetched and discarded. **A reader given only the client's figure would understate what
-this topology costs a provider by a factor of about fifty**, which is the most useful single thing this
-control has produced.
+#### Varying across the nine runs
 
-**Where the bytes went, stated plainly.** With `--vfs-cache-mode off` and the default 128 MiB read chunk, a
-read at an offset fetches from that offset onward, and a *backward* seek re-opens the object from the new
-position. Three media servers each probing a ~105 MB container, several times, is most of the 1.83 GB. **That
-is what the naive path does**; it is not a defect in rclone, which is behaving exactly as configured, and it
-is not evidence that a different cache mode would behave the same way — see §6.4.
+| | this topology | the product, for scale |
+|---|---|---|
+| **ranged GETs** | **911 – 1,064** | **47**, identical in every run |
+| over the 43 entries the product also fetches remotely | **780 – 924** | 47 |
+| **media bytes** | **1,829,512,472 – 2,468,279,423** | **13,205,874**, identical in every run |
+| over the 43 comparable entries | **1,824,388,554 – 2,462,665,227** | 13,205,874 |
+| **as a multiple of the corpus's own length** | **17.047× – 22.999×** | — |
+| the ~105 MB fixture | **1,794,384,634 / 1,899,791,505 / 2,426,891,803 bytes** over **22 / 23 / 29** GETs — **17.023× / 18.023× / 23.024×** its own length | **11,534,336 bytes = 0.109×** |
+| worst small object by multiplier | between **21×** and **27.9×** its own length, on a different file most runs | — |
+| peak connections / in flight | **5 – 6** on accept, **3 – 4** in flight | 6 on accept, 4 in flight |
+| Plex scan duration | **23 – 37 s** | 26–32 s |
+| observation samples | **45 – 74** | 53–65 |
 
-**What none of this decides.** ADR 002 rejected this topology for reasons that are not in this table, and no
-row in it is a threshold.
+**The comparison, over the subset where the two sides fetch the same files.** 780–924 ranged GETs against
+**47**, and 1,824,388,554–2,462,665,227 bytes against **13,205,874**. Those ratios — roughly 17–20× the
+requests and roughly 138–186× the bytes — are divisions of the two measured numbers beside them and nothing
+more.
+
+### 7.2 The one thing that is NOT reproducible, and that is the finding
+
+**The metadata cost is exactly reproducible and the byte cost is not.** Fifty-two PROPFINDs and 90,249 bytes
+of listing XML, in all nine runs, over a corpus whose generator is byte-for-byte deterministic — confirmed
+directly, by generating it twice and comparing every file's size. The media bytes over the same corpus, on the
+same host, from the same commit, ranged from **1.83 GB to 2.47 GB**: a spread of **35 %**.
+
+**It is not noise, and the per-object columns say exactly where it comes from.** The ~105 MB fixture was read
+in one of exactly **three** patterns — 22, 23 or 29 ranged GETs, for 1,794,384,634, 1,899,791,505 or
+2,426,891,803 bytes — and which pattern a run got accounts for essentially the whole spread. With
+`--vfs-cache-mode off` and the default 128 MiB read chunk, a read at an offset fetches from that offset
+onward and a **backward** seek re-opens the object from the new position; three media servers each probing a
+~105 MB container, and how many times each happens to seek backwards in it, is the variable.
+
+**So the naive path's provider bill is a property of the RUN and not of the LIBRARY.** The product's own gate
+reports 13,205,874 bytes and 47 ranged GETs in every one of nine wrapper runs, to the byte. This one cannot
+be quoted as a single number at all — which is a more useful result than either endpoint of its range, and it
+is the kind of thing only a repeated measurement finds.
+
+**Nothing in this section is a threshold, and none of it decides anything.** ADR 002 rejected this topology
+for reasons that are not in these tables: a provider's URL space inside the media server's view, file
+identity that is a function of a remote path, and an outage that empties the mount. **A cheap number would not
+have reopened that, and these expensive ones are not what closed it.**
+
+**And the two instruments disagree by a factor of fifty.** The endpoint served 1.83–2.47 GB; the mount
+client's own accounting reports **33,082,964 – 38,412,143 bytes** over **826 – 938 transfers** for the same
+windows — a ratio of **50.8× to 64.8×**. Neither is corrected toward the other: the endpoint counts what it
+was asked for and the client counts what it believes it delivered upward, and everything between them is
+read-ahead, chunk sizing and bytes fetched and discarded. **A reader given only the client's own figure would
+understate what this topology costs a provider by more than fifty times**, which is the single most useful
+thing this control has produced and the reason both instruments are reported.
 
 ## 8. What this gate does not prove
 
