@@ -1,0 +1,48 @@
+# Projection Phase 1 — a real, migrated PostgreSQL for the EMBY data-plane gate.
+#
+# WHY A FIFTH DATABASE COMPOSE FILE. `docker-compose.yml` is the development stack and binds 5432.
+# `docker-compose.projection-publisher.yml` is the publisher-to-mount gate and binds 5470.
+# `docker-compose.projection-jellyfin.yml` is the Jellyfin data-plane gate and binds 5480.
+# `docker-compose.projection-plex.yml` is the Plex one and binds 5490. This one has to be startable BESIDE all
+# four — the whole point of running a gate three times in a row is that a previous run, or another gate, or an
+# installation, must not be able to lend it state. So it takes its own project name, its own network, its own
+# port, and throwaway storage.
+#
+# THE MEDIA SERVER IS NOT HERE, and neither is the daemon. Both are started by
+# `deploy/projection-emby-dataplane-gate.sh`: the daemon with the narrow authority a FUSE mount needs
+# (/dev/fuse, CAP_SYS_ADMIN, root inside the container), and the media server as an ordinary container whose
+# server process runs as a non-root uid, with the projected mount bind-propagated into it. Writing either into
+# a Compose file next to a database would make it look like a deployment shape somebody should copy. Neither
+# is one.
+#
+# EMBY IN PARTICULAR WOULD BE THE WORST OF THE THREE TO PUT HERE. Its image drops privilege internally, from
+# `UID`/`GID` environment variables rather than from `--user`, and its `/config` volume holds both its library
+# database and the transcoding scratch directory this gate reads the encoder's output from. A Compose service
+# expressing that arrangement would read as a recommended deployment; it is a measurement rig.
+
+name: projection-emby-gate
+
+services:
+  postgres:
+    # PINNED BY DIGEST, like every other external image this gate touches. A moving tag would mean three
+    # consecutive runs were three runs of possibly different things, which is not what the repetition is for.
+    image: postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20
+    environment:
+      POSTGRES_DB: catalog
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "${PROJECTION_EMBY_GATE_PG_PORT:-5500}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d catalog"]
+      interval: 3s
+      timeout: 5s
+      retries: 20
+    tmpfs:
+      # Throwaway, and it says so in the only way that cannot be forgotten: its storage does not survive the
+      # container. Three consecutive runs mean three runs from nothing, or they mean very little.
+      - /var/lib/postgresql/data
+
+networks:
+  default:
+    name: projection-emby-gate

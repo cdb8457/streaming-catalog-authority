@@ -109,6 +109,45 @@ cost and would hide a real regression in the scan path.
 **This split is a statement about evidence, not a schedule.** A Windows green run is not a Phase 1 pass and
 **SHALL NOT** be reported as one. The tranche closes on a Linux/Unraid run, three times.
 
+### 6.0 What the tranche-closing host has to have, and why Docker Desktop cannot tell you
+
+The row above says the Linux/Unraid environment can close everything. It does **not** say the gates will start
+there, and until one is run the difference is unmeasured. **Docker Desktop hides an entire class of
+host-shaped defect**: its bind sources live inside a Linux VM whose root is already a shared mount, and it
+ignores uid, gid and mode on the host side of a bind. A host-shaped assumption that is simply wrong on Linux
+therefore produces a green run here, every time, forever.
+
+Two such assumptions have already been found, and neither was found by a check:
+
+- a token file written `0600` that the consumer container's uid could not have read — invisible here because
+  Docker Desktop ignores modes;
+- a path spelling that a Windows `node` resolved to `C:\c\Users\…`, which killed a run twenty minutes in.
+
+`deploy/projection-*-dataplane-gate.sh` now run `src/ops/projection-host-preflight-cli.ts` **before** they
+build an image or start a container, and `npm run test:projection-host-preflight` holds the rules offline
+against the mount tables of hosts none of us has. What the preflight and this table are derived from is
+**platform semantics plus the two defects measured above — not an Unraid run.** Nothing here has been observed
+on the tranche-closing host, because nothing has.
+
+| Requirement | Why | Check |
+|---|---|---|
+| **Node.js and npx on the HOST** | every gate drives its media server from `npx tsx src/ops/…`, which runs on the host, not in a container. **A stock Unraid installation has no Node.js**, so the command this plan names as tranche-closing cannot start there | `node --version && npx --version` |
+| **The gate's working directory on a `shared` mount** | the daemon binds its mount point `rshared` so the FUSE namespace reaches the media server beside it, and the kernel permits `rshared` only from an already-shared source. Docker refuses the container outright otherwise — **the daemon never starts**. Systemd remounts `/` shared at boot; **Unraid is not systemd**, and a checkout under `/mnt/user` is on `shfs`, a FUSE share. Neither is shared by default | `findmnt -no PROPAGATION -T .` |
+| **Docker Compose v2** (`docker compose`, not `docker-compose`) | each gate stands up its throwaway PostgreSQL with `up -d --wait`, and `--wait` is v2. On Unraid this is the Compose Manager plugin | `docker compose version` |
+| **`/dev/fuse` reachable from a container** | the daemon serves the projection over FUSE. Already probed: the gates exit **77** — a SKIP, never a pass — when it is missing | `docker run --rm --device /dev/fuse:/dev/fuse alpine test -c /dev/fuse` |
+| **A traversable run directory** | the paced consumer runs as uid 1000 and writes into directories the gates `chmod 777`; those are reached *through* the run root, which `mkdir -p` creates under the operator's umask. At `077` it is `0700` and uid 1000 cannot traverse it, however permissive the leaf is. The gates now `chmod 755` it explicitly rather than inheriting a umask | the preflight's `traversal` command |
+| **No SELinux enforcement, or relabelled binds** | on an enforcing host a container cannot read an unrelabelled bind, and every gate binds several. Unraid does not use SELinux, so this bounds "Linux" generally rather than the tranche-closing host. **Recorded rather than handled**, because adding `:z` relabels files on the operator's disk | `getenforce` |
+
+**The preflight diagnoses and does not repair.** Making a host mount shared is `mount --make-rshared`, which
+changes the machine the operator is standing on and outlives the run. A gate that did that quietly would be
+mutating a host to make itself pass, so it names the remedy instead.
+
+**Its verdicts are three-valued, and the third value is the point.** On a host with no `/proc/self/mountinfo`
+— any Windows host — propagation is `undetermined`, reported on stderr, and **not** treated as a pass; the same
+is true of the traversal check, which declines to judge a platform that carries no POSIX modes. A check that
+could not run is not a check that passed, and the alternative was a preflight that broke the only environment
+these gates have ever run in.
+
 ### 6.1 What has actually been run, and against which server
 
 The table above says where a gate *can* be closed. This one says what has been *run*, because the two are not
@@ -116,13 +155,13 @@ the same and only the second is evidence.
 
 | Gate | Jellyfin | Plex | Emby |
 |---|---|---|---|
-| G7 **Scan** | run — `npm run go:jellyfin-dataplane-gate`, against a real digest-pinned Jellyfin with the mount as a library root. **The plan's ~50-entry corpus is now run**: 50 published identities, each catalogued at the published size as an ordinary file, with zero missing, zero duplicated and zero unexpected. Zero churn across a repeat scan, and across the daemon SIGKILL/restart/remount path, which is followed by a byte-for-byte read so it cannot pass on a dead mount. A graceful daemon restart under a long-running media server is **not** proved here and the reason is recorded | run on Docker Desktop only — `npm run go:plex-dataplane-gate`, against a real digest-pinned UNCLAIMED Plex. 51 published identities catalogued at the published size, zero missing, duplicated or unexpected, and zero churn across a repeat scan, a media-server restart, the daemon SIGKILL/restart/remount path and a mid-scan generation swap. Four green runs, three of them consecutive and fresh; see that gate's run record | not run |
-| G8 **Play** | run — direct play, digest-compared against values recorded outside the mount, **and the plan's five minutes are now run**: a real decoder consuming at the media's own rate for 300 s, startup under 10 s, no stall, with decoded media time and the media-per-wall-second ratio both asserted so that a fast download and a sleep cannot pass. See §6.2 | run on Docker Desktop only — direct play digest-compared against values recorded outside the mount, plus five minutes of paced play: startup 1.34 s, 300 decoded media seconds, pacing ratio 0.999, longest stall 0 s | not run |
-| G9 **Seek** | run — **the plan's ten seeks are now run**, including four backward transitions and two positions beyond 90 % of duration, each returning decodable `h264` inside 10 s, all ten segments distinct, and the decoded timestamps tracking the requested positions with a constant offset. The earlier ranged-request evidence (`206` and `Content-Range` asserted before the body is read) is kept as the byte-level control | run on Docker Desktop only — ten media-time seeks including backward transitions and two past 90 % of duration, ten distinct segments, slowest 0.33 s against a 10 s ceiling | not run |
-| G10 **Transcode** | run — forced `mpeg4` → `h264` proved by decoding the segments, **and the plan's five minutes are now run** as five minutes of *paced, continuously decoded, transcoded playback*. **NOT closed as five minutes of encoder liveness** — see §6.2, which records why that is a different claim and what was measured | run on Docker Desktop only — forced `mpeg4` —> `h264` proved by decoding, five minutes of paced continuously decoded transcoded playback, 39 distinct segments, 312 decoded seconds. **NOT closed as five minutes of encoder liveness** — see §6.2 | not run |
-| G11 **Generation swap mid-read** | run — the in-flight stream completed correctly across an admitted successor | not run | not run |
-| G12 **Kill and recover** | run — `SIGKILL` mid-stream, restart, remount: zero added, zero removed, zero item-id churn; playback resumable | not run | not run |
-| G13 **Re-scan churn** | run — twice, plus across a media-server restart | not run | not run |
+| G7 **Scan** | run — `npm run go:jellyfin-dataplane-gate`, against a real digest-pinned Jellyfin with the mount as a library root. **The plan's ~50-entry corpus is now run**: 50 published identities, each catalogued at the published size as an ordinary file, with zero missing, zero duplicated and zero unexpected. Zero churn across a repeat scan, and across the daemon SIGKILL/restart/remount path, which is followed by a byte-for-byte read so it cannot pass on a dead mount. A graceful daemon restart under a long-running media server is **not** proved here and the reason is recorded | run on Docker Desktop only — `npm run go:plex-dataplane-gate`, against a real digest-pinned UNCLAIMED Plex. 51 published identities catalogued at the published size, zero missing, duplicated or unexpected, and zero churn across a repeat scan, a media-server restart, the daemon SIGKILL/restart/remount path and a mid-scan generation swap. Four green runs, three of them consecutive and fresh; see that gate's run record | run on Docker Desktop only — `npm run go:emby-dataplane-gate`, against a real digest-pinned Emby 4.9.5.0. 50 published identities catalogued at the published size as **ordinary files**, zero missing, wrong-sized, duplicated or unexpected, and zero churn — removals, duplicates, item-id, metadata **and projected path** — across a repeat scan, a media-server restart, the daemon SIGKILL/restart/remount path and a mid-scan generation swap. "Ordinary file" is asserted differently here because **this server never sends `LocationType`**: see that gate's §3.10. Four green runs, three of them consecutive and fresh |
+| G8 **Play** | run — direct play, digest-compared against values recorded outside the mount, **and the plan's five minutes are now run**: a real decoder consuming at the media's own rate for 300 s, startup under 10 s, no stall, with decoded media time and the media-per-wall-second ratio both asserted so that a fast download and a sleep cannot pass. See §6.2 | run on Docker Desktop only — direct play digest-compared against values recorded outside the mount, plus five minutes of paced play: startup 1.34 s, 300 decoded media seconds, pacing ratio 0.999, longest stall 0 s | run on Docker Desktop only — direct play digest-compared against values recorded outside the mount, plus five minutes of paced play: startup 2.3 s, 305 decoded media seconds, pacing ratio 1.00, longest stall 0 s. **And one thing neither other column can claim:** the identical direct-play request carrying **no credential** is answered **401** and the gate asserts that refusal — the pinned Jellyfin answers it 200 with the whole file |
+| G9 **Seek** | run — **the plan's ten seeks are now run**, including four backward transitions and two positions beyond 90 % of duration, each returning decodable `h264` inside 10 s, all ten segments distinct, and the decoded timestamps tracking the requested positions with a constant offset. The earlier ranged-request evidence (`206` and `Content-Range` asserted before the body is read) is kept as the byte-level control | run on Docker Desktop only — ten media-time seeks including backward transitions and two past 90 % of duration, ten distinct segments, slowest 0.33 s against a 10 s ceiling | run on Docker Desktop only — ten media-time seeks, four backward transitions, two past 90 % of duration, ten distinct segments, slowest 0.3 s against a 10 s ceiling, decoded-offset spread **0.0 s**. The position each seek is held against comes from the server's own cumulative `#EXTINF` sums, because **Emby publishes no `runtimeTicks`** in a segment URL; the gate asserts that none does |
+| G10 **Transcode** | run — forced `mpeg4` → `h264` proved by decoding the segments, **and the plan's five minutes are now run** as five minutes of *paced, continuously decoded, transcoded playback*. **NOT closed as five minutes of encoder liveness** — see §6.2, which records why that is a different claim and what was measured | run on Docker Desktop only — forced `mpeg4` —> `h264` proved by decoding, five minutes of paced continuously decoded transcoded playback, 39 distinct segments, 312 decoded seconds. **NOT closed as five minutes of encoder liveness** — see §6.2 | run on Docker Desktop only — forced `mpeg4` —> `h264` proved by decoding, five minutes of paced continuously decoded transcoded playback, 108 distinct segments, 324 decoded seconds over a 320 s wall span. **NOT closed as five minutes of encoder liveness** — and on this server **both** encoder instruments returned nothing at all (0 files, 0 live-`TranscodingInfo` samples of 21), which that gate's §3.9 says is not a finding about the encoder |
+| G11 **Generation swap mid-read** | run — the in-flight stream completed correctly across an admitted successor | not run | run on Docker Desktop only — one held-open response body, partially consumed and not drained, completed with the whole file's digest across an admitted successor, with 13,670,080 of its 13,981,376 bytes arriving after the event |
+| G12 **Kill and recover** | run — `SIGKILL` mid-stream, restart, remount: zero added, zero removed, zero item-id churn; playback resumable | not run | run on Docker Desktop only — `SIGKILL` mid-stream, restart, remount, followed by a byte-for-byte read through the media server's own mount so it cannot pass on a dead one: zero added, removed, duplicated, item-id-churned, metadata-drifted or path-drifted; the published generation did not move; playback resumable |
+| G13 **Re-scan churn** | run — twice, plus across a media-server restart | not run | run on Docker Desktop only — a repeat corpus scan, a scan after the media-server restart, and a plain re-scan, each with zero churn of any kind; the plain re-scan cost the provider **zero** ranged GETs and **zero** bytes |
 | G18 **High-concurrency scan** | **not run** — it requires all three servers scanning simultaneously | not run | not run |
 | G22 **Comparison control** | **not run** | — | — |
 | G24–G26 **Lease gates** | **not run** through a media server; the fake endpoint supports the mode, this gate uses the direct one | — | — |
@@ -142,6 +181,29 @@ consecutive and each starting from nothing. That record also states plainly that
 index: two further runs of this gate happened and were never given rows, so seven is what the table carries
 rather than every time the gate has run. **All seven are Windows / Docker Desktop, which §6 says closes none
 of G7—G13.** The column therefore reads `run` and the gate stays open.
+
+**A THIRD GATE EXISTS AND THE EMBY COLUMN NOW RECORDS IT AS RUN ON DOCKER DESKTOP.**
+`deploy/projection-emby-dataplane-gate.sh` — `npm run go:emby-dataplane-gate` — drives a real, digest-pinned
+Emby 4.9.5.0 over the same production mount, and `docs/PROJECTION_PHASE_1_EMBY_DATA_PLANE.md` describes what it
+asserts. **A gate existing is not a gate passing**, and the Emby column changed only when that document's run
+record (§7 of it) carried a real count: **seven runs — three failing and four green**, the last three of the
+green ones consecutive, each starting from nothing, and each 353 assertions with none failed and none skipped.
+**All seven are Windows / Docker Desktop, which §6 says closes none of G7–G13.** The column therefore reads
+`run` and the gate stays open.
+
+**With that, all three media servers have a gate, and the tranche is no closer to closing than it was.** §6 says
+the media-server gates close on a Linux or Unraid host; **none of the three gates has ever run on one**. What
+has changed is that "one of the three is untouched" — true when the Plex gate merged — is no longer the reason
+the tranche is open. The reason is the platform, and it was always going to be.
+
+**Emby is the second server in the MediaBrowser API family, and that is what made it worth doing rather than
+cheap.** Six of the Jellyfin gate's hardest-won behavioural conclusions turned out to be **false for Emby**:
+no `StartupWizardCompleted` anywhere, no `LocationType` even when requested, no `runtimeTicks` in a segment
+URL, no transcoding temp path in the encoding configuration, a `docker exec` that lands as root, and — in the
+other direction — a direct-play endpoint that **refuses an unauthenticated request**, which lets the Emby gate
+assert something the Jellyfin gate had to decline to claim. A parameterised second driver would have inherited
+every one of them. Three of the six were found by **failing runs** rather than by reasoning, and that gate's §4
+records what each cost.
 
 That document also carries a **retracted** finding
 and the confound behind it: three probes said an unclaimed Plex needs plex.tv to answer its own local API,

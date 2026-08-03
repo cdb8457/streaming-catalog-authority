@@ -8,48 +8,58 @@ import {
   type TranscodeSessionSampleRecord,
 } from '../core/projection/media-server-dataplane.js';
 import {
-  GateFailure, addMovieLibrary, appendResult, awaitFile, awaitServer, bootstrap, configureEncoding,
-  directPlay, forcedTranscode, listMovies, mediaTimeSeekSet, openPinnedStream, pacedDirectPlay, rangeRead,
-  readExpected, readResults, readState, resolveLibraryId, scanIsRunningNow, scanLibrary, transcodeSoak,
-  writeState, type GateState, type ItemRecord,
-} from './projection-jellyfin-dataplane.js';
+  EMBY_CONSUMER_TOKEN_FILE, EMBY_PINNED_VERSION, EMBY_TRANSCODING_TEMP_PATH,
+  PACED_PLAY_DECODE_MARGIN_SECONDS,
+  embyAnonymousPlaybackIsRefused, embyConsumerExposureProblems, embyOrdinaryFileProblems, isEmbyItemId,
+  redactionSafeVersion,
+} from '../core/projection/emby-dataplane.js';
+import {
+  GateFailure, acceptsJellyfinAuthHeaderSpelling, addMovieLibrary, anonymousDirectPlayStatus, appendResult,
+  awaitFile, awaitServer, bootstrap, directPlay, forcedTranscode, listMovies, mediaTimeSeekSet,
+  openPinnedStream, pacedDirectPlay, rangeRead, readExpected, readResults, readState, resolveLibraryId,
+  scanIsRunningNow, scanLibrary, transcodeSoak, writeState, type GateState, type ItemRecord,
+} from './projection-emby-dataplane.js';
 
-// The Projection Phase 1 media-server data-plane gate, from the command line.
+// The Projection Phase 1 EMBY data-plane gate, from the command line.
 //
-// IT IS A SEQUENCE OF PHASES RATHER THAN ONE RUN, because three of the gates are about what happens to a
+// IT IS A SEQUENCE OF PHASES RATHER THAN ONE RUN, because several of the gates are about what happens to a
 // media server WHILE something else is done to the daemon underneath it — a successor published mid-stream, a
-// SIGKILL mid-playback — and the something else is a publisher command and a `docker kill`. A single
-// self-contained run would have had to learn to drive Docker and PostgreSQL, and then the interesting half of
-// the gate would be a mock of the shell script it replaced.
+// SIGKILL mid-playback, a provider held mid-scan — and the something else is a publisher command and a
+// `docker kill`. A single self-contained run would have had to learn to drive Docker and PostgreSQL, and the
+// interesting half of the gate would then be a mock of the shell script it replaced.
 //
 // EVERY PHASE APPENDS ITS VERDICTS to one results file, and `report` prints them, checks them against the
-// acceptance plan's redaction rule, and exits non-zero if any gate failed. A phase that throws exits 1 with a
-// message; nothing here retries forever and nothing here waits without a deadline.
+// acceptance plan's redaction rule, and exits non-zero if any gate failed.
 //
 //   bootstrap    --state F --base URL                      stand the server up through its own first-run API
-//   library      --state F --mount-path P --name N          add the projected mount as a Movies library
-//   scan         --state F --expect-file F --out F [--label L]
+//   library      --state F --mount-path P --name N         add the projected mount as a Movies library
+//   scan         --state F --expect-file F --out F [--label L] [--tolerant true] [--running-marker F]
 //   play         --state F --items F --key K --expect-file F
-//   seek         --state F --items F --key K --expect-file F --offset N --length N
+//   anonymous-play --state F --items F --key K             THE NEGATIVE CONTROL EMBY MAKES POSSIBLE
+//   seek         --state F --items F --key K --offset N --length N --expect-sha S
 //   transcode    --state F --items F --key K --out-segment F
-//   hold-stream  --state F --items F --key K --ready F --release F --expect-file F [--allow-interrupt]
+//   hold-stream  --state F --items F --key K --ready F --release F --expect-file F [--allow-interrupt true]
+//   resume       --state F --items F --key K --expect-file F
 //   compare      --before F --after F --gate G [--expect-added N]
 //   counters     --url U --out F
 //   budget       --before F --after F --gate G --entries N --bytes N [--small-bytes N] [--windows N]
-//   report       --results F [--json F]
+//   traffic-window --before F --after F --gate G --object-bytes N [--max-object-multiplier N]
+//   provider-invariants --counters F --gate G
+//   assert-scan-in-flight --state F
+//   report       --results F [--json F]        redaction-check --file F
 //
-// ...and the five-minute half, which is where G8, G9 and G10 of the acceptance plan actually live:
+// ...and the five-minute half, where G8, G9 and G10 of the acceptance plan actually live:
 //
 //   corpus-check --expect-file F --min-entries N --min-remote N
-//   configure-encoding --state F --temp-path P [--throttle-seconds N]
-//   paced-play   --state F --items F --key K --image I --network N --container-name C --work-dir D
-//                --stream-base U --output-rel P --ffmpeg P --trace F [--seconds N]
+//   encoder-observability --producer-dir D     records finding 3 rather than configuring a path
+//   paced-play   --state F --items F --key K --image I --network N --container-name C
+//                --work-dir D --local-work-dir D --stream-base U --output-rel P --ffmpeg P --trace F
+//                [--seconds N]      (--work-dir is Docker's spelling, --local-work-dir is this process's)
 //   paced-play-output  --probed-seconds N --probed-packets N [--seconds N]
 //   media-seeks  --state F --items F --key K --duration-seconds N --segment-dir D --out F
 //   seek-verify  --key K --seeks F --probes F
-//   transcode-soak       --state F --items F --key K --segment-dir D --producer-dir D --out F [--seconds N]
+//   transcode-soak        --state F --items F --key K --segment-dir D --producer-dir D --out F [--seconds N]
 //   transcode-soak-verify --key K --items F --soak F --probes F [--seconds N]
-//   traffic-window --before F --after F --gate G --object-bytes N [--max-object-multiplier N]
 //
 // THE DECODING IS NOT IN HERE, ON PURPOSE. Every "playable video" claim this gate makes is made by a real
 // decoder in a separate container, over files these phases wrote; the `*-verify` phases hold that decoder's
@@ -74,7 +84,7 @@ function parseArgs(argv: readonly string[]): Args {
 }
 
 function fail(message: string): never {
-  console.error(`projection-jellyfin-dataplane: ${message}`);
+  console.error(`projection-emby-dataplane: ${message}`);
   process.exit(1);
 }
 
@@ -103,23 +113,10 @@ function readItems(path: string): ItemRecord[] {
 }
 
 /**
- * The claim the whole appliance rests on, as one predicate: a media server sees a file on a disk.
- *
- * It was inline in the scan phase when there were two entries to check. It is a named function now because a
- * ~50-entry corpus is checked in aggregate and two anchors are checked individually, and two spellings of
- * "ordinary" would eventually disagree — with the aggregate, which covers every entry, being the one nobody
- * would notice had drifted.
- */
-function isOrdinaryFile(item: ItemRecord): boolean {
-  return item.protocol === 'File' && !item.isRemote && !item.key.endsWith('.strm')
-    && item.container !== '' && item.locationType === 'FileSystem' && item.supportsDirectPlay;
-}
-
-/**
  * One counter, refused rather than coerced when it is not a whole non-negative count.
  *
- * A `NaN` out of a malformed counters file makes every budget below it fail, and the failure blames the data
- * plane for a broken instrument. Naming it here means the instrument is what fails.
+ * A `NaN` propagating out of a malformed counters file makes every budget below it fail, and the failure
+ * blames the data plane for a broken instrument. Naming it here means the instrument is what fails.
  */
 function counterValue(snapshot: Record<string, unknown>, key: string): number {
   const raw = snapshot[key];
@@ -134,23 +131,26 @@ function counterValue(snapshot: Record<string, unknown>, key: string): number {
 /**
  * What the DAEMON's own playback cache did over a window, read from two `/readyz` documents.
  *
- * WHY THIS ARRIVED LATE, AND WHAT IT COST TO FIND OUT. This gate asserted an unconditional floor of one
- * provider request on every playback traffic window, on the reasoning that a window which never reached the
- * provider must have been served by something other than the daemon. A daemon repair made that false: once a
- * handle release stopped deleting the playback cache, an object that fits in memory is served from memory on
- * every later open. The Plex gate hit this, diagnosed it and replaced its floors; **this gate was never
- * re-run against the repaired daemon**, so it kept an inference that had already been invalidated — and
- * failed at `JD18-paced-play-traffic-range-requests-floor` measuring **0 against 1**, in a run where
- * independent decoders proved 300 s of real playback.
+ * WHY THIS EXISTS AT ALL, AND IT IS INHERITED FROM THE PLEX GATE RATHER THAN INVENTED HERE. Since a handle
+ * release stopped deleting playback entries, a window of real playback can legitimately reach the provider
+ * ZERO times — the bytes are already in the daemon's memory. "Zero provider requests" then has two
+ * explanations that demand opposite responses: the daemon served it, or something that is not the daemon did.
+ * The provider's counters cannot tell them apart, because the distinguishing evidence is on the other side.
  *
- * THE FLOOR IS NOT DROPPED. A zero-provider window now has to be EXPLAINED: the daemon's own cumulative
- * playback-cache counters, over exactly the same window, must show it served the bytes. Zero provider traffic
- * with no daemon evidence is still a failure, and it is the same failure the old floor was aimed at.
+ * A FLOOR OF ONE PROVIDER REQUEST USED TO SIT HERE AND WAS WRONG. It encoded the inference "never reached the
+ * provider means the bytes came from somewhere else", which a daemon repair made false; three windows of real
+ * playback measured zero while independent decoders proved 300 s of output. The floor was not dropped — it
+ * was replaced by this, which requires the daemon to account for the window instead.
  *
- * WHAT IT REFUSES, and none of it is pedantry: absent snapshots (a caller that measured nothing has proved
- * nothing); a missing `playback` object (a daemon too old to publish these reads as all-zero through a
- * forgiving parser, which is indistinguishable from one that served nothing); and a NEGATIVE delta, which
- * means the daemon RESTARTED inside the window — this gate restarts it on purpose elsewhere in the same run.
+ * WHAT IT REFUSES, AND WHY NONE OF THE REFUSALS IS PEDANTRY.
+ *   ABSENT SNAPSHOTS. A caller that measured no daemon evidence has proved nothing about a zero window and
+ *   must not be quietly the same as one that measured evidence and found it.
+ *   A MISSING `playback` OBJECT. A daemon too old to publish these counters reads as all-zero through a
+ *   forgiving parser, which is indistinguishable from a daemon that served nothing. It is named as absent.
+ *   A NEGATIVE DELTA. Cumulative counters only rise within one process. A drop means the daemon RESTARTED
+ *   inside the window, so the two readings describe different processes and their difference describes
+ *   neither. This is the failure mode a warm-cache claim is most exposed to, because this gate restarts the
+ *   daemon on purpose elsewhere in the same run.
  */
 interface WarmCacheEvidence {
   present: boolean;
@@ -207,6 +207,31 @@ function readWarmCacheEvidence(args: Args): WarmCacheEvidence {
   };
 }
 
+/**
+ * The claim the whole appliance rests on, as one predicate: a media server sees a file on a disk.
+ *
+ * IT DELEGATES TO THE PURE MODULE, which returns REASONS rather than a boolean, so a failure names what went
+ * wrong. `Protocol=Http` means the server decided to fetch the media itself; a `Placeholder` media source
+ * means it catalogued an item it never opened; an empty container means it never successfully probed the
+ * file. Those are three different failures of this product and they must not arrive as the same word.
+ *
+ * IT PASSES EMBY'S OWN FIELDS, NOT JELLYFIN'S. This server sends no `LocationType` at all — see
+ * `EMBY_ITEMS_OMIT_LOCATION_TYPE` — and the predicate that inherited it matched zero of two correctly
+ * catalogued entries on the first complete run of this gate.
+ */
+function ordinaryFileProblems(item: ItemRecord): string[] {
+  return embyOrdinaryFileProblems({
+    key: item.key,
+    protocol: item.protocol,
+    container: item.container,
+    isRemote: item.isRemote,
+    supportsDirectPlay: item.supportsDirectPlay,
+    mediaSourceType: item.mediaSourceType,
+    path: item.path,
+    mediaSourcePath: item.mediaSourcePath,
+  });
+}
+
 function record(args: Args, result: GateResult): void {
   const path = args.flags.get('results');
   if (path !== undefined) appendResult(path, result);
@@ -224,10 +249,11 @@ async function main(): Promise<void> {
     case 'bootstrap': {
       // The credential is generated here and never printed. It lives in the state file, inside the gate's own
       // run directory, which the gate deletes on the way out — success or failure.
-      // A RE-BOOTSTRAP AFTER A SERVER RESTART IS THE SAME INSTALLATION. The wizard is already complete, so
-      // this is an ordinary login — and the library the previous state file named is carried forward, because
-      // the whole point of the restart phase is that the server still has it. Re-deriving it here would be
-      // asking the server the question this gate is supposed to be answering.
+      //
+      // A RE-BOOTSTRAP AFTER A SERVER RESTART IS THE SAME INSTALLATION. On Emby the wizard's completion is not
+      // published as a flag anywhere (finding 1), so `bootstrap` probes the wizard endpoint's own access
+      // control instead — 200 unauthenticated means open, 401 means complete. Getting this wrong would mean
+      // re-running the wizard over the very installation the restart phase exists to prove survived.
       const statePath = need(args, 'state');
       const previous = existsSync(statePath) ? readState(statePath) : undefined;
       const state: GateState = { baseUrl: need(args, 'base') };
@@ -236,13 +262,47 @@ async function main(): Promise<void> {
       const version = await awaitServer(state);
       console.log(`  the media server answered; version ${version}`);
       // ONE PASSWORD PER STATE FILE, derived rather than random, so a re-bootstrap after a restart can log in
-      // to the account the first one created. A fresh random each time would create an account the second run
-      // could not authenticate against, and the failure would look like "the restart lost the user".
+      // to the account the first one created. A fresh random each time would create an account the second
+      // invocation could not authenticate against, and the failure would look like "the restart lost the user".
       const password = `g${opaqueRef('password', statePath)}`;
-      await bootstrap(state, 'projection-gate', password);
+      const ranWizard = await bootstrap(state, 'projection-gate', password);
       writeState(statePath, state);
       if (!existsSync(statePath)) fail('the bootstrap wrote no state file');
-      record(args, { gate: 'JD1-bootstrap', verdict: 'pass', note: `server version ${version}` });
+
+      // THE VERSION IS RENDERED WITH HYPHENS, and that is a redaction requirement rather than a style. §7
+      // forbids an IP address in a report, and `4.9.5.0` matches the four-dotted-groups pattern that enforces
+      // it exactly — so a note carrying the raw version would make the report be refused at the end of a
+      // half-hour run, after every assertion had already passed. See `redactionSafeVersion`.
+      const shownVersion = redactionSafeVersion(version);
+      record(args, { gate: 'EM1-bootstrap', verdict: 'pass', note: `server version ${shownVersion}` });
+      // THE PINNED VERSION IS ASSERTED, because every measured finding in
+      // `src/core/projection/emby-dataplane.ts` belongs to one version. A gate whose recorded behaviour
+      // belongs to a version it is no longer running reads like evidence and is not.
+      record(args, {
+        gate: 'EM1-pinned-version',
+        verdict: version === EMBY_PINNED_VERSION ? 'pass' : 'fail',
+        note: `the measured findings in emby-dataplane.ts were taken against `
+          + `${redactionSafeVersion(EMBY_PINNED_VERSION)}; this server reports ${shownVersion}. If the digest `
+          + 'was deliberately moved, re-measure the findings and update the constant rather than widening '
+          + 'this check',
+      });
+      // WHICH HALF OF THE BOOTSTRAP RAN, recorded so a reader can tell an installation from a login.
+      record(args, {
+        gate: 'EM1-wizard-ran', verdict: 'pass',
+        note: ranWizard
+          ? 'the first-run wizard was open and was completed non-interactively through the server\'s own API'
+          : 'the wizard was already complete, so this was an ordinary login against the same installation',
+      });
+      // A COMPATIBILITY OBSERVATION, RECORDED AND ASSERTED ON BY NOTHING. This gate sends Emby's own
+      // `X-Emby-Authorization` everywhere; that the fork's `Authorization` spelling also works is worth
+      // dating, because the day it stops is the day a Jellyfin-shaped driver breaks against Emby.
+      const alsoAcceptsPlain = await acceptsJellyfinAuthHeaderSpelling(state, 'projection-gate', password);
+      record(args, {
+        gate: 'EM1-auth-header-compatibility', verdict: 'pass',
+        note: `this server ${alsoAcceptsPlain ? 'also accepts' : 'no longer accepts'} the MediaBrowser scheme `
+          + 'under the plain Authorization header. RECORDED, NOT ASSERTED: the gate sends X-Emby-Authorization, '
+          + 'which is this server\'s own spelling, so neither answer changes what was proved',
+      });
       return;
     }
 
@@ -251,8 +311,8 @@ async function main(): Promise<void> {
       await addMovieLibrary(state, need(args, 'mount-path'), need(args, 'name'));
       writeState(need(args, 'state'), state);
       record(args, {
-        gate: 'JD2-library', verdict: 'pass',
-        note: 'the library exists and points at the projected mount',
+        gate: 'EM2-library', verdict: 'pass',
+        note: 'the library exists and points at the projected mount, with every internet metadata fetcher off',
       });
       return;
     }
@@ -261,17 +321,14 @@ async function main(): Promise<void> {
       const state = readState(need(args, 'state'));
       const expected = readExpected(need(args, 'expect-file'));
       // THE SYNCHRONISATION POINT FOR THE MID-SCAN GATE. When asked for, this file is written the moment the
-      // scanner is observed IN FLIGHT — not after a sleep, which is what the mid-scan race used to rely on.
-      // The publishing half of the gate waits on it, so "a generation was admitted while a scan was running"
-      // is an observation rather than a hope.
+      // scanner is observed IN FLIGHT — not after a sleep. The publishing half waits on it, so "a generation
+      // was admitted while a scan was running" is an observation rather than a hope.
       const runningMarker = args.flags.get('running-marker');
       const outcome = await scanLibrary(state, runningMarker === undefined ? undefined : () => {
         mkdirSync(runningMarker.replace(/[^/\\]*$/, '') || '.', { recursive: true });
-        writeFileSync(runningMarker, `running\n`);
+        writeFileSync(runningMarker, 'running\n');
       });
       const elapsed = outcome.elapsedMs;
-      // The library ITEM only exists once a scan has run, so this is the first point at which the id can be
-      // picked up. Once known it is persisted, and every later listing is scoped to it.
       await resolveLibraryId(state);
       writeState(need(args, 'state'), state);
       const items = await listMovies(state);
@@ -280,80 +337,88 @@ async function main(): Promise<void> {
 
       // A TOLERANT SCAN IS ONE THE GATE DELIBERATELY RACED. When a successor is published WHILE a scan is
       // running, the scan may legitimately have seen the predecessor's namespace, the successor's, or a
-      // mixture — and asserting a count against either would be asserting the outcome of a race. What must
-      // hold is checked by the STRICT scan that follows: it converges on the successor, with zero removals
-      // and zero item-id churn for everything carried. Recording what the raced scan saw is still worth
-      // doing; pretending it was deterministic is not.
+      // mixture — and asserting a count against any of them would be asserting the outcome of a race. What
+      // must hold is checked by the STRICT scan that follows: it converges, with zero removals and zero
+      // item-id churn for everything carried.
       if (args.flags.get('tolerant') === 'true') {
-        // THE RACE MUST HAVE BEEN A RACE. If the scanner was never observed in flight, the publish that the
-        // other half of the gate performed cannot be claimed to have landed mid-scan.
-        // IN FLIGHT, NOT MERELY "AN EXECUTION HAPPENED". A scan that started and finished between two polls
-        // satisfies the second and not the first, and only the first can support "a generation was admitted
-        // WHILE a scan was running".
         record(args, {
-          gate: `JD3-${label}-scan-observed-in-flight`,
+          gate: `EM3-${label}-scan-observed-in-flight`,
           verdict: outcome.observedInFlight ? 'pass' : 'fail',
           note: 'the scanner was seen actually running; a fast-complete between polls would not count',
         });
         record(args, {
-          gate: `JD3-${label}-raced-scan-completed`, verdict: 'pass',
+          gate: `EM3-${label}-raced-scan-completed`, verdict: 'pass',
           note: `a scan raced against a publish completed in ${Math.round(elapsed / 1000)}s and returned a `
             + `well-formed listing of ${items.length}; what it saw is not asserted, and the next scan is`,
         });
         for (const item of items) {
-          // Whatever it saw must at least be coherent: no item with a missing source or a nonsense size.
           record(args, {
-            gate: `JD3-${label}-raced-item-coherent:${opaqueRef('entry', item.key).slice(0, 12)}`,
+            gate: `EM3-${label}-raced-item-coherent:${opaqueRef('entry', item.key).slice(0, 12)}`,
             verdict: item.sizeBytes > 0 && item.protocol === 'File' && !item.isRemote ? 'pass' : 'fail',
-            note: `a mid-scan generation change must not produce a half-formed item`,
+            note: 'a mid-scan generation change must not produce a half-formed item',
           });
         }
         return;
       }
 
-      record(args, exactly(`JD3-${label}-item-count`, items.length, expected.length,
+      record(args, exactly(`EM3-${label}-item-count`, items.length, expected.length,
         `the scan took ${Math.round(elapsed / 1000)}s`));
 
       // THE WHOLE CORPUS, IN ONE PASS, AS A COUNT OF MATCHED IDENTITIES.
       //
-      // WHY AGGREGATE AT ALL. Fifty entries times four properties times seven scans is fourteen hundred
-      // report lines, and §7 asks for a report an operator reads rather than one they scroll past.
+      // WHY IT IS AGGREGATE: fifty entries times four properties times seven scans is fourteen hundred report
+      // lines, and a report nobody reads hides a regression as well as a silent one does.
       //
-      // WHY IT IS STILL NOT A COUNT. `matched` is the number of PUBLISHED keys that were present, at the
-      // published size, as an ordinary file — so `JD3-corpus-matched 50/50` cannot be satisfied by fifty
-      // arbitrary items the way an item count can. The three problem counters beside it name what went wrong
-      // when it is not fifty, which a bare match count would leave undiagnosable.
+      // WHY IT IS STILL NOT A COUNT: `matched` counts PUBLISHED keys that were present, at the published size,
+      // as ordinary files — so `50/50` cannot be satisfied by fifty arbitrary items the way an item count can.
       const problems = corpusProblems(expected, items.map((item) => ({
         key: item.key,
         sizeBytes: item.sizeBytes,
-        ordinaryFile: isOrdinaryFile(item),
+        ordinaryFile: ordinaryFileProblems(item).length === 0,
       })));
-      record(args, exactly(`JD3-${label}-corpus-matched`, problems.matched, expected.length,
-        'published identities the server catalogued at the published size as ordinary files'));
-      record(args, exactly(`JD3-${label}-corpus-missing`, problems.missing, 0));
-      record(args, exactly(`JD3-${label}-corpus-wrong-size`, problems.wrongSize, 0));
-      record(args, exactly(`JD3-${label}-corpus-not-ordinary`, problems.notOrdinary, 0,
+      // THE HEADLINE COUNT CARRIES THE FIRST REASONS WITH IT, and that is a repair rather than a flourish.
+      // The first complete run of this gate failed exactly here, `measured=0 budget=2`, with no indication of
+      // which property was wrong — and the cause was one field this server does not send. A count with no
+      // diagnosis costs a whole half-hour run to interpret.
+      const whyNotOrdinary = items
+        .flatMap((item) => ordinaryFileProblems(item))
+        .filter((reason, index, all) => all.indexOf(reason) === index)
+        .slice(0, 3);
+      record(args, exactly(`EM3-${label}-corpus-matched`, problems.matched, expected.length,
+        problems.matched === expected.length
+          ? 'published identities the server catalogued at the published size as ordinary files'
+          : `published identities catalogued at the published size as ordinary files. Of what was NOT `
+            + `matched: ${problems.missing} missing, ${problems.wrongSize} at the wrong size, `
+            + `${problems.notOrdinary} not ordinary${whyNotOrdinary.length > 0
+              ? ` (${whyNotOrdinary.join('; ')})` : ''}`));
+      record(args, exactly(`EM3-${label}-corpus-missing`, problems.missing, 0));
+      record(args, exactly(`EM3-${label}-corpus-wrong-size`, problems.wrongSize, 0));
+      record(args, exactly(`EM3-${label}-corpus-not-ordinary`, problems.notOrdinary, 0,
         'not a symlink, not a .strm placeholder, not a remote media source: a file on a disk'));
-      record(args, exactly(`JD3-${label}-corpus-duplicated`, problems.duplicated, 0));
-      record(args, exactly(`JD3-${label}-corpus-unexpected`, problems.unexpected, 0));
+      record(args, exactly(`EM3-${label}-corpus-duplicated`, problems.duplicated, 0));
+      record(args, exactly(`EM3-${label}-corpus-unexpected`, problems.unexpected, 0));
 
-      // AND THE ANCHORS INDIVIDUALLY. These are the entries whose BYTES are also read back and digest-
-      // compared elsewhere; naming them one at a time keeps the per-entry evidence the two-entry version of
-      // this gate had, for the entries it had it for.
+      // EMBY'S OWN IDENTIFIER SHAPE, checked once per scan. It is not a churn assertion — that is `compare` —
+      // it is a check that the ids this gate is comparing are the kind of id that was measured. See
+      // `EMBY_ITEM_IDS_ARE_DATABASE_ROW_IDS` for what a stable Emby id does and does not corroborate.
+      record(args, exactly(`EM3-${label}-item-id-shape`,
+        items.filter((item) => !isEmbyItemId(item.itemId)).length, 0,
+        'every item id is the decimal row id this server was measured to mint'));
+
+      // AND THE ANCHORS INDIVIDUALLY. These are the entries whose BYTES are also read back and digest-compared
+      // elsewhere; naming them one at a time keeps the per-entry evidence for the entries that have it.
       for (const want of expected.filter((entry) => entry.anchor === true)) {
         const item = itemFor(items, want.key);
-        // THE MEDIA SERVER'S OWN VIEW OF THE FILE, checked against what was published — size from its probe,
-        // not from a stat this gate did itself.
-        record(args, exactly(`JD3-${label}-size:${opaqueRef('entry', want.key).slice(0, 12)}`,
+        record(args, exactly(`EM3-${label}-size:${opaqueRef('entry', want.key).slice(0, 12)}`,
           item.sizeBytes, want.sizeBytes));
-        // ORDINARY FILES. Not a symlink, not a `.strm` placeholder pointing somewhere else, not a remote
-        // media source the server would fetch over HTTP itself. This is the claim the whole appliance rests
-        // on: a media server treats the projection as a disk.
+        const reasons = ordinaryFileProblems(item);
         record(args, {
-          gate: `JD3-${label}-ordinary-file:${opaqueRef('entry', want.key).slice(0, 12)}`,
-          verdict: isOrdinaryFile(item) ? 'pass' : 'fail',
-          note: `protocol=${item.protocol} container=${item.container} remote=${item.isRemote} `
-            + `location=${item.locationType} directPlay=${item.supportsDirectPlay}`,
+          gate: `EM3-${label}-ordinary-file:${opaqueRef('entry', want.key).slice(0, 12)}`,
+          verdict: reasons.length === 0 ? 'pass' : 'fail',
+          note: reasons.length === 0
+            ? `protocol=${item.protocol} container=${item.container} sourceType=${item.mediaSourceType} `
+              + `remote=${item.isRemote} directPlay=${item.supportsDirectPlay}`
+            : reasons.join('; '),
         });
       }
       return;
@@ -367,12 +432,41 @@ async function main(): Promise<void> {
       if (!want) fail(`no expectation was recorded for "${key}"`);
       const item = itemFor(items, key);
       const result = await directPlay(state, item, want.sizeBytes);
-      record(args, exactly(`JD4-direct-play-bytes:${opaqueRef('entry', key).slice(0, 12)}`,
+      record(args, exactly(`EM4-direct-play-bytes:${opaqueRef('entry', key).slice(0, 12)}`,
         result.bytes, want.sizeBytes));
       record(args, {
-        gate: `JD4-direct-play-digest:${opaqueRef('entry', key).slice(0, 12)}`,
+        gate: `EM4-direct-play-digest:${opaqueRef('entry', key).slice(0, 12)}`,
         verdict: result.sha256 === want.sha256 ? 'pass' : 'fail',
         note: `${want.kind} source; digest recorded outside the mount`,
+      });
+      return;
+    }
+
+    case 'anonymous-play': {
+      // THE NEGATIVE CONTROL THIS SERVER MAKES POSSIBLE AND JELLYFIN DOES NOT.
+      //
+      // The pinned Jellyfin answers `static=true` direct play **200 with the whole file** to a request
+      // carrying no credential at all, which is why that gate states plainly that its direct-play evidence is
+      // about BYTES and not about authorization. The pinned Emby answers the identical request **401**.
+      //
+      // SO THIS GATE ASSERTS THE REFUSAL. It is a claim the Jellyfin gate had to decline to make, it is made
+      // by actually issuing the unauthorized request, and a 200 here would be a real regression in the media
+      // server that this gate is in a position to notice. It is not a weakening of anything: the authenticated
+      // direct-play digest assertions stand exactly as they do on the other two servers, and this is evidence
+      // in addition to them.
+      const state = readState(need(args, 'state'));
+      const items = readItems(need(args, 'items'));
+      const key = need(args, 'key');
+      const item = itemFor(items, key);
+      const status = await anonymousDirectPlayStatus(state, item);
+      record(args, {
+        gate: `EM4b-anonymous-direct-play-refused:${opaqueRef('entry', key).slice(0, 12)}`,
+        verdict: embyAnonymousPlaybackIsRefused(status) ? 'pass' : 'fail',
+        measured: status, budget: 401,
+        note: 'the identical direct-play request with NO credential. A 200 would mean this server had started '
+          + 'serving media to unauthenticated callers; anything that is neither a refusal nor a serve means '
+          + 'the control measured nothing. The pinned Jellyfin answers this 200, which is why only the Emby '
+          + 'gate can assert it',
       });
       return;
     }
@@ -386,10 +480,10 @@ async function main(): Promise<void> {
       const length = optionalNumber(args, 'length', 65_536);
       const result = await rangeRead(state, item, offset, length);
       const expectedDigest = need(args, 'expect-sha');
-      record(args, exactly(`JD5-seek-206-bytes:${opaqueRef('entry', key).slice(0, 12)}`, result.bytes, length,
-        `Content-Range asserted before the body was read`));
+      record(args, exactly(`EM5-seek-206-bytes:${opaqueRef('entry', key).slice(0, 12)}`, result.bytes, length,
+        'Content-Range asserted before the body was read'));
       record(args, {
-        gate: `JD5-seek-digest:${opaqueRef('entry', key).slice(0, 12)}`,
+        gate: `EM5-seek-digest:${opaqueRef('entry', key).slice(0, 12)}`,
         verdict: result.sha256 === expectedDigest ? 'pass' : 'fail',
         note: `offset ${offset}, length ${length}`,
       });
@@ -406,35 +500,33 @@ async function main(): Promise<void> {
       const result = await forcedTranscode(state, item, maxSegments, maxBytes);
 
       // THE SOURCE MUST BE WHAT THE GATE THINKS IT IS. If the media were already h264, asking for h264 would
-      // let the server remux and the transcode claim would be empty. This is asserted rather than assumed.
+      // let the server remux and the transcode claim would be empty.
       record(args, {
-        gate: `JD6-transcode-source-codec:${opaqueRef('entry', key).slice(0, 12)}`,
+        gate: `EM6-transcode-source-codec:${opaqueRef('entry', key).slice(0, 12)}`,
         verdict: item.videoCodec === TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass' : 'fail',
         note: `the server identified the source as ${item.videoCodec || '(none)'}; `
           + `the gate asks for ${TRANSCODE_TARGET_VIDEO_CODEC}`,
       });
-      // Every requested segment must have arrived with bytes in it. `measured` and `budget` are both present
-      // or both absent, because a report line reading "2/undefined" is not a measurement against anything.
-      record(args, exactly(`JD6-transcode-segments:${opaqueRef('entry', key).slice(0, 12)}`,
+      record(args, exactly(`EM6-transcode-segments:${opaqueRef('entry', key).slice(0, 12)}`,
         result.segments, maxSegments, `${result.bytes} bytes of transcoded output consumed`));
       record(args, {
-        gate: `JD6-transcode-output-nonempty:${opaqueRef('entry', key).slice(0, 12)}`,
+        gate: `EM6-transcode-output-nonempty:${opaqueRef('entry', key).slice(0, 12)}`,
         verdict: result.bytes > 0 && result.firstSegment.byteLength > 0 ? 'pass' : 'fail',
         measured: result.bytes,
       });
-      // LEAST EXPOSURE, MEASURED AT RUNTIME. The gate authors no URL containing a credential; this asserts
-      // the server did not hand one back either, in the playlists it generated from a header-authenticated
-      // request. Anything it had found would have been stripped before the URL was followed.
-      record(args, exactly(`JD6-no-credential-in-generated-urls:${opaqueRef('entry', key).slice(0, 12)}`,
+      // LEAST EXPOSURE, MEASURED AT RUNTIME. The gate authors no URL containing a credential; this asserts the
+      // server did not hand one back either, in the playlists it generated from a header-authenticated
+      // request. Anything found would have been stripped before the URL was followed.
+      record(args, exactly(`EM6-no-credential-in-generated-urls:${opaqueRef('entry', key).slice(0, 12)}`,
         result.credentialsInGeneratedUrls, 0,
         'server-generated playlist URLs carried no api key, so no credential propagated into a playlist body'));
-      // Corroboration, recorded rather than relied on: the decode assertion is the evidence, and it happens
-      // outside this process because the thing that can decode a transport stream is ffprobe.
       record(args, {
-        gate: `JD6-transcode-session-reported:${opaqueRef('entry', key).slice(0, 12)}`,
+        gate: `EM6-transcode-session-reported:${opaqueRef('entry', key).slice(0, 12)}`,
         verdict: 'pass',
         note: `session reported transcoding=${result.sessionSawTranscode}`
-          + `${result.transcodeReasons.length ? ` reasons=${result.transcodeReasons.join('|')}` : ''}`,
+          + `${result.transcodeReasons.length ? ` reasons=${result.transcodeReasons.join('|')}` : ''}. `
+          + 'Corroboration, recorded rather than relied on: the evidence is the decode, which happens outside '
+          + 'this process',
       });
       const out = need(args, 'out-segment');
       mkdirSync(out.replace(/[^/\\]*$/, '') || '.', { recursive: true });
@@ -443,15 +535,36 @@ async function main(): Promise<void> {
       return;
     }
 
-    case 'configure-encoding': {
-      // Where the encoder writes, and that it must pace itself to its client. See `configureEncoding` for
-      // why the five-minute transcode gate cannot be measured without both.
-      const state = readState(need(args, 'state'));
-      await configureEncoding(state, need(args, 'temp-path'),
-        optionalNumber(args, 'throttle-seconds', 30));
+    case 'encoder-observability': {
+      // FINDING 3, RECORDED AS A PHASE RATHER THAN CONFIGURED AWAY.
+      //
+      // The Jellyfin gate has a `configure-encoding` phase that sets `TranscodingTempPath` and
+      // `ThrottleDelaySeconds`, and its comment says the temp path is what makes the encoder observable at
+      // all. NEITHER FIELD EXISTS ON EMBY: `GET /System/Configuration/encoding` returns seventeen keys and no
+      // transcoding path, and no throttle delay. So there is nothing to configure, and pretending otherwise —
+      // by POSTing a document with fields the server ignores — would be a phase that reported success for
+      // doing nothing.
+      //
+      // WHAT MAKES THE ENCODER OBSERVABLE HERE INSTEAD is that Emby writes to a FIXED path inside the volume
+      // the gate already binds. This phase asserts that the directory the encoder-ahead measurement will read
+      // is actually the one bound in, so a soak that later reports zero output files fails as "the encoder
+      // wrote nothing" rather than silently as "the gate was looking in the wrong place".
+      const producerDir = need(args, 'producer-dir');
       record(args, {
-        gate: 'JD17-encoder-configured', verdict: 'pass',
-        note: 'the transcoding job writes where the gate can observe it, and throttles to its client',
+        gate: 'EM17-encoder-observable',
+        verdict: existsSync(producerDir) ? 'pass' : 'fail',
+        // WHAT THIS ESTABLISHES, AND WHAT IT DELIBERATELY DOES NOT. It establishes that the directory the
+        // encoder-ahead measurement will read is really the one bound in. It does NOT license reading a
+        // zero-file result as "the encoder wrote nothing": measured on this server, the soak's encoder-ahead
+        // span came back at 0 seconds over 0 files, and that is equally consistent with the server writing
+        // segments and deleting them once served — which the Jellyfin gate measured its own server doing, and
+        // which a 15-second sampler can miss entirely. The number is RECORDED and asserted on by nothing
+        // precisely because this gate cannot tell those two apart.
+        note: `Emby's encoding configuration exposes no transcoding temp path and no throttle delay, so this `
+          + `gate BINDS ${EMBY_TRANSCODING_TEMP_PATH} rather than setting one, and this asserts the host side `
+          + 'of that bind exists. It does NOT establish what the encoder wrote: a zero-file encoder-ahead '
+          + 'result is equally consistent with output that was written and deleted between samples, which is '
+          + 'why that number is recorded and asserted on by nothing',
       });
       return;
     }
@@ -459,17 +572,17 @@ async function main(): Promise<void> {
     case 'corpus-check': {
       // THE CORPUS CHECKED AGAINST ITSELF, BEFORE A MEDIA SERVER IS INVOLVED. Two entries with the same bytes
       // make every digest comparison in this gate decorative, and a ~50-entry corpus is generated by a loop —
-      // which is exactly the thing that could quietly start emitting identical parameters.
+      // exactly the thing that could quietly start emitting identical parameters.
       const expected = readExpected(need(args, 'expect-file')) as readonly CorpusExpectation[];
       const problems = corpusSelfProblems(expected);
-      record(args, exactly('JD3-corpus-self-distinct', problems.length, 0,
+      record(args, exactly('EM3-corpus-self-distinct', problems.length, 0,
         problems.length === 0
           ? `${expected.length} entries, every one a distinct name, size-bearing and distinctly digested`
           : problems.join('; ')));
-      record(args, atLeast('JD3-corpus-size', expected.length, optionalNumber(args, 'min-entries', 50),
+      record(args, atLeast('EM3-corpus-size', expected.length, optionalNumber(args, 'min-entries', 50),
         'the acceptance plan\'s ~50-entry corpus'));
       const remote = expected.filter((entry) => entry.kind === 'http-range').length;
-      record(args, atLeast('JD3-corpus-remote-entries', remote, optionalNumber(args, 'min-remote', 1),
+      record(args, atLeast('EM3-corpus-remote-entries', remote, optionalNumber(args, 'min-remote', 1),
         'entries whose bytes only exist behind the HTTP Range provider'));
       return;
     }
@@ -477,30 +590,51 @@ async function main(): Promise<void> {
     case 'paced-play': {
       // G8: "Direct play starts within 10 s and runs 5 minutes without a stall."
       //
-      // WHAT MAKES THIS DIFFERENT FROM THE `play` PHASE ABOVE. That one proves the BYTES are right: it drains
-      // the whole response and digests it, which takes a second or two. It cannot prove anything about five
-      // minutes, and adding a sleep to it would have produced a phase that took five minutes and measured a
-      // download. This one runs a real decoder at the media's own rate and holds its progress trace against
-      // four separate numbers, three of which exist specifically to fail the ways the first one can be faked.
+      // WHAT MAKES THIS DIFFERENT FROM `play`. That one proves the BYTES are right: it drains the whole
+      // response and digests it, which takes a second or two. It cannot prove anything about five minutes, and
+      // adding a sleep would produce a phase that took five minutes and measured a download. This one runs a
+      // real decoder at the media's own rate and holds its progress trace against four separate numbers,
+      // three of which exist specifically to fail the ways the first can be faked.
+      //
+      // IT CARRIES A CREDENTIAL, WHICH THE JELLYFIN EQUIVALENT DOES NOT, because Emby refuses anonymous
+      // playback. The credential reaches the consumer through a file, never through an argument vector, and
+      // the exposure is asserted below from Docker's own record of the container.
       const state = readState(need(args, 'state'));
       const items = readItems(need(args, 'items'));
       const key = need(args, 'key');
       const item = itemFor(items, key);
       const ref = opaqueRef('entry', key).slice(0, 12);
+      // THE PLAN'S NUMBER IS WHAT IS ASSERTED; THE CONSUMER IS ASKED FOR MORE. `ffmpeg -t N` stops at the
+      // last output frame at or before N, so the final progress record reports marginally under N and
+      // `Math.floor` of it is N-1. A run of this gate failed at 299 against 300 with startup 2.3 s, no stall
+      // and a healthy pacing ratio — a correct five minutes, failed by a rounding boundary. See
+      // `PACED_PLAY_DECODE_MARGIN_SECONDS`: the assertion does not move, only the request, and it moves up.
       const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_DIRECT_PLAY_SECONDS);
+      const consumerSeconds = seconds + PACED_PLAY_DECODE_MARGIN_SECONDS;
+      const token = state.token;
+      if (token === undefined || token === '') {
+        fail('the paced consumer needs a credential on this server and the gate state holds none');
+      }
 
       const outcome = await pacedDirectPlay({
         image: need(args, 'image'),
         network: need(args, 'network'),
         containerName: need(args, 'container-name'),
+        // TWO SPELLINGS OF ONE DIRECTORY. `--work-dir` is what Docker bind-mounts and is absolute in the
+        // shell's own dialect; `--local-work-dir` is what THIS process opens. On an MSYS shell they are not
+        // interchangeable, and using one for both is what made the first complete run of this gate die at
+        // `ENOENT ... \c\Users\...` twenty minutes in.
         workDir: need(args, 'work-dir'),
+        localWorkDir: need(args, 'local-work-dir'),
         // The stream URL is built here and goes nowhere else: not into a result, not into a note, not into a
         // failure message. `withoutLocators` scrubs the consumer's own stderr for the same reason.
         streamUrl: `${need(args, 'stream-base')}/Videos/${item.itemId}/stream`
           + `?static=true&mediaSourceId=${encodeURIComponent(item.mediaSourceId)}`,
         outputRelPath: need(args, 'output-rel'),
-        seconds,
+        seconds: consumerSeconds,
         ffmpegPath: need(args, 'ffmpeg'),
+        token,
+        scriptRelPath: args.flags.get('script-rel') ?? 'out/paced-consumer.sh',
       });
       if (outcome.exitCode !== 0) {
         throw new GateFailure(`the paced consumer exited ${outcome.exitCode}: ${outcome.stderr.slice(-600)}`);
@@ -508,27 +642,47 @@ async function main(): Promise<void> {
       const analysis = analysePacedPlayback(outcome.samples);
       writeFileSync(need(args, 'trace'), `${JSON.stringify(outcome.samples, null, 2)}\n`);
 
-      record(args, atLeast(`JD18-paced-play-samples:${ref}`, analysis.samples, 30,
+      // THE CREDENTIAL-EXPOSURE ASSERTION, AND IT IS SPECIFIC TO THIS SERVER'S REFUSAL TO SERVE ANONYMOUSLY.
+      //
+      // `docker inspect` outlives the container and is readable by anything that can reach the Docker socket,
+      // so a token on the `docker run` command line is a durable leak. This searches Docker's own record of
+      // the consumer for the EXACT live token — a value, not a pattern, so it cannot false-positive on
+      // something token-shaped and cannot be quietly loosened.
+      //
+      // AN EMPTY INSPECT IS A FAILURE, NOT A PASS. A search that found nothing because it read nothing is not
+      // evidence, and this is exactly the shape of check that passes forever once the thing it reads goes away.
+      record(args, {
+        gate: `EM18-paced-play-inspect-observed:${ref}`,
+        verdict: outcome.inspectJson.trim().length > 0 ? 'pass' : 'fail',
+        note: 'Docker\'s record of the consumer container was actually read; an empty read would make the '
+          + 'exposure check below a search of nothing',
+      });
+      const exposure = embyConsumerExposureProblems(outcome.inspectJson, token);
+      record(args, exactly(`EM18-paced-play-credential-not-in-docker-metadata:${ref}`, exposure.length, 0,
+        exposure.length === 0
+          ? 'the live access token appears nowhere in the consumer container\'s Docker metadata: it was read '
+            + 'from a file inside the run directory, not passed as an argument'
+          : exposure.join('; ')));
+
+      record(args, atLeast(`EM18-paced-play-samples:${ref}`, analysis.samples, 30,
         'progress records from the decoder itself, roughly one a second'));
-      record(args, withinBudget(`JD18-paced-play-startup-seconds:${ref}`,
+      record(args, withinBudget(`EM18-paced-play-startup-seconds:${ref}`,
         Math.round(analysis.startupSeconds * 10) / 10, MEDIA_SERVER_SOAK.MAX_STARTUP_SECONDS,
         'from launching the consumer to its first decoded frame'));
-      record(args, atLeast(`JD18-paced-play-wall-seconds:${ref}`,
-        Math.floor(analysis.wallSeconds), seconds));
+      record(args, atLeast(`EM18-paced-play-wall-seconds:${ref}`, Math.floor(analysis.wallSeconds), seconds));
       // THE ONE A SLEEP CANNOT PASS. Wall clock is what a sleep buys; this is decoded media time, reported by
       // the decoder, and five minutes of it cannot be produced by waiting.
-      record(args, atLeast(`JD18-paced-play-decoded-media-seconds:${ref}`,
+      record(args, atLeast(`EM18-paced-play-decoded-media-seconds:${ref}`,
         Math.floor(analysis.mediaSeconds), seconds,
         'media the consumer actually decoded, not wall clock it spent'));
-      // ...AND THE ONE A FAST DRAIN CANNOT PASS. A consumer that downloaded the file as fast as the socket
-      // allowed and then slept has the same two numbers above and a ratio in the hundreds.
-      record(args, withinBudget(`JD18-paced-play-pacing-ratio-x100:${ref}`,
+      // ...AND THE ONE A FAST DRAIN CANNOT PASS.
+      record(args, withinBudget(`EM18-paced-play-pacing-ratio-x100:${ref}`,
         Math.round(analysis.pacingRatio * 100), Math.round(MEDIA_SERVER_SOAK.MAX_PACING_RATIO * 100),
         'decoded media seconds per wall second: a player is ~100, a download is thousands'));
-      record(args, atLeast(`JD18-paced-play-pacing-floor-x100:${ref}`,
+      record(args, atLeast(`EM18-paced-play-pacing-floor-x100:${ref}`,
         Math.round(analysis.pacingRatio * 100), Math.round(MEDIA_SERVER_SOAK.MIN_PACING_RATIO * 100),
         'and a consumer that slept through the window sits near zero'));
-      record(args, withinBudget(`JD18-paced-play-longest-stall-seconds:${ref}`,
+      record(args, withinBudget(`EM18-paced-play-longest-stall-seconds:${ref}`,
         Math.round(analysis.longestStallSeconds), MEDIA_SERVER_SOAK.MAX_STALL_SECONDS,
         'the longest wall interval in which the decoder made no progress at all'));
       return;
@@ -538,9 +692,9 @@ async function main(): Promise<void> {
       // The consumer's own output, decoded by a decoder outside this process. "Playable output" is a
       // decoder's answer; a byte count is not one.
       const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_DIRECT_PLAY_SECONDS);
-      record(args, atLeast('JD18-paced-play-output-seconds', optionalNumber(args, 'probed-seconds', 0),
+      record(args, atLeast('EM18-paced-play-output-seconds', optionalNumber(args, 'probed-seconds', 0),
         Math.floor(seconds * 0.98), 'the decoded output re-probed end to end'));
-      record(args, atLeast('JD18-paced-play-output-packets', optionalNumber(args, 'probed-packets', 0), 1,
+      record(args, atLeast('EM18-paced-play-output-packets', optionalNumber(args, 'probed-packets', 0), 1,
         'the output has decodable video packets in it'));
       return;
     }
@@ -548,11 +702,6 @@ async function main(): Promise<void> {
     case 'media-seeks': {
       // G9: "Ten seeks, including backwards and to > 90 % of duration, each producing playable video
       // within 10 s."
-      //
-      // WHAT A SEEK IS AGAINST THIS SERVER, MEASURED RATHER THAN GUESSED. One HLS session, one playlist, and
-      // ten out-of-order requests for the segments at the positions wanted -- which is what a player does
-      // when somebody drags a scrubber, and what makes the server restart its encoder at a new position.
-      // See `SEEK_IS_A_DIRECT_SEGMENT_REQUEST` for the two measurements that ruled out `startTimeTicks`.
       const state = readState(need(args, 'state'));
       const items = readItems(need(args, 'items'));
       const key = need(args, 'key');
@@ -562,10 +711,9 @@ async function main(): Promise<void> {
       if (duration <= 0) fail('--duration-seconds is required and must be positive');
 
       // THE PLAN IS CHECKED BEFORE IT IS RUN. Every per-seek assertion would pass just as happily against ten
-      // seeks into the first minute; the properties that make the SET worth running belong to the list, and
-      // nothing that watches one seek at a time can see them.
+      // seeks into the first minute; the properties that make the SET worth running belong to the list.
       const planProblems = seekPlanProblems(SEEK_PLAN_FRACTIONS);
-      record(args, exactly(`JD19-seek-plan:${ref}`, planProblems.length, 0,
+      record(args, exactly(`EM19-seek-plan:${ref}`, planProblems.length, 0,
         planProblems.length === 0
           ? 'ten distinct positions, four transitions backwards, two beyond 90% of duration'
           : planProblems.join('; ')));
@@ -583,22 +731,38 @@ async function main(): Promise<void> {
         playlistSeconds: outcome.playlistSeconds,
         durationSeconds: duration,
         credentialsInGeneratedUrls: outcome.credentialsInGeneratedUrls,
-      }, null, 2)}
-`);
+      }, null, 2)}\n`);
 
-      // THE PER-SEEK CEILING, which is the half of G9 that is about a viewer waiting for a picture.
+      // THE PLAYLIST THE SEEKS WERE PERFORMED THROUGH, CHECKED AS A DOCUMENT.
+      //
+      // WHY THIS IS NOT REDUNDANT WITH THE PER-SEEK ASSERTIONS. On this server the position the gate compares
+      // against — `serverPositionSeconds` — comes from the cumulative `#EXTINF` sums of this playlist, because
+      // Emby's segment URLs carry no `runtimeTicks` (finding 4). A playlist of one segment, or one whose
+      // durations are all zero, makes that number identically zero for all ten seeks and turns
+      // `maxPositionErrorSeconds` into a measurement of nothing — while every per-seek check still passes.
+      record(args, exactly(`EM19-seek-playlist-usable:${ref}`, outcome.playlistProblems.length, 0,
+        outcome.playlistProblems.length === 0
+          ? 'the server\'s own playlist states a position for every segment and describes this item\'s media'
+          : outcome.playlistProblems.join('; ')));
+      // AND THE SOURCE OF THOSE POSITIONS IS STILL THE ONE THAT WAS MEASURED. If a future Emby started
+      // publishing `runtimeTicks` on its segment URLs, this driver would go on summing `#EXTINF` while a
+      // better number sat unused — so a non-zero count here says "re-measure which source is authoritative"
+      // rather than continuing silently.
+      record(args, exactly(`EM19-seek-segment-position-source:${ref}`, outcome.segmentsDeclaringPosition, 0,
+        'no segment URL declares its own position, so the server states them only through #EXTINF; if this '
+        + 'ever becomes non-zero the position source must be re-measured rather than inherited'));
+
+      // THE PER-SEEK CEILING, which is the half of G9 about a viewer waiting for a picture.
       for (const seek of outcome.seeks) {
-        record(args, withinBudget(`JD19-seek-${seek.index}-seconds:${ref}`,
+        record(args, withinBudget(`EM19-seek-${seek.index}-seconds:${ref}`,
           Math.round(seek.elapsedMs / 100) / 10, MEDIA_SERVER_SOAK.MAX_SEEK_SECONDS,
           `to ${Math.round((seek.requestedSeconds / duration) * 100)}% of duration`));
       }
-      record(args, exactly(`JD19-seek-count:${ref}`, outcome.seeks.length, MEDIA_SERVER_SOAK.SEEK_COUNT));
-      record(args, exactly(`JD19-seek-no-credential-in-generated-urls:${ref}`,
+      record(args, exactly(`EM19-seek-count:${ref}`, outcome.seeks.length, MEDIA_SERVER_SOAK.SEEK_COUNT));
+      record(args, exactly(`EM19-seek-no-credential-in-generated-urls:${ref}`,
         outcome.credentialsInGeneratedUrls, 0));
-      // The server's own playlist has to describe the media the gate thinks it is seeking around, or every
-      // position below was computed against the wrong duration.
-      record(args, withinBudget(`JD19-seek-playlist-duration-drift-seconds:${ref}`,
-        Math.round(Math.abs(outcome.playlistSeconds - duration)), 5,
+      record(args, withinBudget(`EM19-seek-playlist-duration-drift-seconds:${ref}`,
+        Math.round(Math.abs(outcome.playlistSeconds - duration)), 6,
         `the server's playlist describes ${Math.round(outcome.playlistSeconds)}s and the file decodes as `
         + `${duration}s`));
       return;
@@ -619,32 +783,33 @@ async function main(): Promise<void> {
         }));
       const analysis = analyseSeekSet(raw.seeks, decodes);
 
-      record(args, exactly(`JD19-seek-decoded-count:${ref}`, analysis.count - analysis.unprobed,
+      record(args, exactly(`EM19-seek-decoded-count:${ref}`, analysis.count - analysis.unprobed,
         MEDIA_SERVER_SOAK.SEEK_COUNT, 'every seek position was decoded, not a sample of them'));
-      record(args, exactly(`JD19-seek-wrong-codec:${ref}`, analysis.wrongCodec, 0,
+      record(args, exactly(`EM19-seek-wrong-codec:${ref}`, analysis.wrongCodec, 0,
         `every seek produced ${TRANSCODE_TARGET_VIDEO_CODEC} from an ${TRANSCODE_SOURCE_VIDEO_CODEC} source`));
-      record(args, exactly(`JD19-seek-empty-of-video:${ref}`, analysis.emptyOfVideo, 0,
+      record(args, exactly(`EM19-seek-empty-of-video:${ref}`, analysis.emptyOfVideo, 0,
         'a segment with no decodable video packets is not playable video'));
-      record(args, withinBudget(`JD19-seek-slowest-seconds:${ref}`,
+      record(args, withinBudget(`EM19-seek-slowest-seconds:${ref}`,
         Math.round(analysis.slowestSeconds * 10) / 10, MEDIA_SERVER_SOAK.MAX_SEEK_SECONDS));
       // TEN SEEKS, NOT ONE SEEK TEN TIMES.
-      record(args, exactly(`JD19-seek-distinct-segments:${ref}`, analysis.distinctSegments,
+      record(args, exactly(`EM19-seek-distinct-segments:${ref}`, analysis.distinctSegments,
         MEDIA_SERVER_SOAK.SEEK_COUNT, 'ten different segments came back, byte for byte'));
-      record(args, atLeast(`JD19-seek-backward-transitions:${ref}`, analysis.backwardTransitions,
+      record(args, atLeast(`EM19-seek-backward-transitions:${ref}`, analysis.backwardTransitions,
         MEDIA_SERVER_SOAK.MIN_BACKWARD_SEEKS, 'the plan really did go backwards, in the order it was run'));
-      record(args, atLeast(`JD19-seek-past-90-percent:${ref}`, analysis.deepSeeks, 1));
-      record(args, withinBudget(`JD19-seek-position-error-seconds:${ref}`,
+      record(args, atLeast(`EM19-seek-past-90-percent:${ref}`, analysis.deepSeeks, 1));
+      record(args, withinBudget(`EM19-seek-position-error-seconds:${ref}`,
         Math.round(analysis.maxPositionErrorSeconds * 10) / 10,
         MEDIA_SERVER_SOAK.MAX_SEEK_POSITION_ERROR_SECONDS,
         'the worst gap between the position asked for and the one the server said it was serving'));
       // THE TEMPORAL ASSERTION. The decoded timestamps move one second per second of media asked for; the
-      // constant offset between them is one server's presentation-time base and is measured, not assumed.
-      record(args, withinBudget(`JD19-seek-decoded-offset-spread-x10:${ref}`,
+      // constant offset between them is one server's presentation-time base and is measured, not assumed —
+      // 10.0 s on the pinned Emby, across every seek sampled while this gate was built.
+      record(args, withinBudget(`EM19-seek-decoded-offset-spread-x10:${ref}`,
         Math.round(analysis.decodedOffsetSpreadSeconds * 10),
         Math.round(MEDIA_SERVER_SOAK.MAX_SEEK_DECODED_OFFSET_SPREAD_SECONDS * 10),
         'how much the decoded-timestamp offset varied across the ten seeks; a server that ignored the '
         + 'position would vary by the whole duration'));
-      record(args, atLeast(`JD19-seek-decoded-span-seconds:${ref}`,
+      record(args, atLeast(`EM19-seek-decoded-span-seconds:${ref}`,
         Math.floor(analysis.decodedSpanSeconds),
         Math.floor(raw.durationSeconds * MEDIA_SERVER_SOAK.MIN_SEEK_DECODED_SPAN_FRACTION),
         'the media the ten decoded segments actually covered, end to end'));
@@ -678,9 +843,9 @@ async function main(): Promise<void> {
     }
 
     case 'transcode-soak-verify': {
-      // WHAT THIS GATE CLAIMS, IN ONE SENTENCE, SO THAT THE ASSERTIONS CAN BE READ AGAINST IT: five minutes
-      // of PACED, CONTINUOUSLY DECODED, TRANSCODED PLAYBACK. Not five minutes of an encoder process being
-      // busy — see the encoder span below, which is recorded and is not that.
+      // WHAT THIS GATE CLAIMS, IN ONE SENTENCE, SO THE ASSERTIONS CAN BE READ AGAINST IT: five minutes of
+      // PACED, CONTINUOUSLY DECODED, TRANSCODED PLAYBACK. Not five minutes of an encoder process being busy —
+      // see the encoder span below, which is recorded and is not that.
       const key = need(args, 'key');
       const ref = opaqueRef('entry', key).slice(0, 12);
       const raw = JSON.parse(readFileSync(need(args, 'soak'), 'utf8')) as {
@@ -695,124 +860,90 @@ async function main(): Promise<void> {
       const seconds = optionalNumber(args, 'seconds', MEDIA_SERVER_SOAK.MIN_TRANSCODE_SECONDS);
       const analysis = analyseTranscodeSoak(raw.segments, probes, raw.producerMtimesMs, raw.sessions);
 
-      record(args, atLeast(`JD20-transcode-soak-wall-seconds:${ref}`,
+      record(args, atLeast(`EM20-transcode-soak-wall-seconds:${ref}`,
         Math.floor(analysis.wallSpanSeconds), seconds,
         'wall clock between the first segment arriving and the last, at a player\'s pace'));
-      // THE ONE THAT TURNS AN ELAPSED WINDOW INTO A CONTINUOUS ONE. A five-minute span is satisfied by
-      // consuming everything in ten seconds and fetching one last segment four minutes later; requiring
-      // every ADJACENT pair to arrive close together is what refuses that.
-      record(args, withinBudget(`JD20-transcode-soak-longest-arrival-gap-seconds:${ref}`,
+      // THE ONE THAT TURNS AN ELAPSED WINDOW INTO A CONTINUOUS ONE.
+      record(args, withinBudget(`EM20-transcode-soak-longest-arrival-gap-seconds:${ref}`,
         Math.round(analysis.maxArrivalGapSeconds), MEDIA_SERVER_SOAK.MAX_SEGMENT_ARRIVAL_GAP_SECONDS,
         'the longest wall gap between two consecutive transcoded segments arriving, including the first'));
-      record(args, atLeast(`JD20-transcode-soak-decoded-seconds:${ref}`,
+      record(args, atLeast(`EM20-transcode-soak-decoded-seconds:${ref}`,
         Math.floor(analysis.decodedMediaSeconds), seconds,
         'media time actually decoded out of the transcoded output, not segments counted'));
-      // ...AND THE ONE THAT REFUSES A FRONT-LOADED RUN. Everything real happening early and the tail padded
-      // out passes the span and the gap ceiling if the tail is thin enough; this says the end of the window
-      // looks like the middle of it.
-      record(args, atLeast(`JD20-transcode-soak-late-window-decoded-seconds:${ref}`,
+      // ...AND THE ONE THAT REFUSES A FRONT-LOADED RUN.
+      record(args, atLeast(`EM20-transcode-soak-late-window-decoded-seconds:${ref}`,
         Math.floor(analysis.lateWindowDecodedSeconds),
         Math.floor(seconds * MEDIA_SERVER_SOAK.MIN_LATE_WINDOW_DECODED_FRACTION),
         'decoded h264 media time among the segments that arrived in the LAST THIRD of the window'));
-      record(args, exactly(`JD20-transcode-soak-unprobed-segments:${ref}`, analysis.unprobed, 0,
+      record(args, exactly(`EM20-transcode-soak-unprobed-segments:${ref}`, analysis.unprobed, 0,
         'every consumed segment was decoded, so the decoded total is not a sample'));
-      record(args, exactly(`JD20-transcode-soak-distinct-segments:${ref}`,
+      record(args, exactly(`EM20-transcode-soak-distinct-segments:${ref}`,
         analysis.distinctSegments, analysis.segments,
         'every segment is a different segment: one window delivered fifty times is not fifty segments'));
-      // THE ASSERTION THAT NOW CARRIES G10, AND IT IS ANCHORED AT BOTH ENDS INSIDE THIS PHASE.
-      //
-      // The source is asserted to be the codec the transcode was forced AWAY from, here rather than only in
-      // the earlier short-transcode step: "every segment decoded as h264" says nothing at all if the source
-      // was h264 to begin with, and a phase whose two halves live in different steps is a phase where one
-      // half can quietly stop being true.
-      // TAKEN FROM THE MEDIA SERVER'S OWN IDENTIFICATION OF THE ITEM, not from a flag the shell computed.
-      // What matters is what the SERVER thought it was transcoding from, since it is the server's encoder
-      // whose output is being decoded.
+      // THE ASSERTION THAT CARRIES G10, ANCHORED AT BOTH ENDS INSIDE THIS PHASE. "Every segment decoded as
+      // h264" says nothing at all if the source was h264 to begin with, and a phase whose two halves live in
+      // different steps is a phase where one half can quietly stop being true.
       const sourceCodec = itemFor(readItems(need(args, 'items')), key).videoCodec;
       record(args, {
-        gate: `JD20-transcode-soak-source-codec:${ref}`,
+        gate: `EM20-transcode-soak-source-codec:${ref}`,
         verdict: sourceCodec === TRANSCODE_SOURCE_VIDEO_CODEC ? 'pass' : 'fail',
         note: `the media server identified the source as ${sourceCodec || '(none)'}; a transcode to `
           + `${TRANSCODE_TARGET_VIDEO_CODEC} from a source that was already ${TRANSCODE_TARGET_VIDEO_CODEC} `
           + 'would prove nothing about an encoder',
       });
-      record(args, exactly(`JD20-transcode-soak-wrong-codec:${ref}`, analysis.wrongCodec, 0,
+      record(args, exactly(`EM20-transcode-soak-wrong-codec:${ref}`, analysis.wrongCodec, 0,
         `the source is ${TRANSCODE_SOURCE_VIDEO_CODEC} throughout and every segment decoded as `
         + `${TRANSCODE_TARGET_VIDEO_CODEC}`));
-      record(args, exactly(`JD20-transcode-soak-empty-segments:${ref}`, analysis.emptyOfVideo, 0));
+      record(args, exactly(`EM20-transcode-soak-empty-segments:${ref}`, analysis.emptyOfVideo, 0));
 
-      // TWO MEASUREMENTS THIS GATE RECORDS AND DELIBERATELY DOES NOT ASSERT ON, each with the measurement
-      // that says why. Recording them is worth doing; asserting on them would be asserting something the
-      // pinned server does not do, and then relaxing the threshold until it passed.
+      // TWO MEASUREMENTS RECORDED AND DELIBERATELY NOT ASSERTED ON, each with the reason.
       //
-      // THE ENCODER'S OWN OUTPUT SPAN. An earlier version of this gate required it to cover most of the
-      // window, on the theory that a throttled encoder stays a bounded distance ahead of its client.
-      // Measured, with throttling enabled: 115 output files written inside 1.6 seconds. The encoder finishes
-      // a five-minute low-bitrate source almost immediately and exits. So this number is how far AHEAD OF
-      // THE CLIENT it ran, and it is reported as that and nothing else.
+      // THE ENCODER'S OWN OUTPUT SPAN. Emby's encoding configuration exposes no throttle delay (finding 3) and
+      // ships with `EnableThrottling: false`, and the gate does not turn it on — tuning the server to make a
+      // number nobody asserts on look better is how a recorded measurement becomes a managed one. So this is
+      // how far AHEAD OF THE PACED CLIENT the encoder ran, reported under that description and nothing else.
       record(args, {
-        gate: `JD20-transcode-soak-encoder-ahead-span-seconds:${ref}`,
+        gate: `EM20-transcode-soak-encoder-ahead-span-seconds:${ref}`,
         verdict: 'pass',
         measured: Math.round(analysis.encoderAheadSpanSeconds), budget: seconds,
-        note: `${analysis.encoderOutputFiles} file(s) written by the transcoding job inside this window, `
-          + 'spanning the seconds measured. RECORDED, NOT ASSERTED: the encoder races ahead of a paced client '
-          + 'and exits, so this is how far ahead it ran and is NOT evidence that it was busy for five '
-          + 'minutes. The five-minute claim rests on the continuity of decoded output above',
+        note: `${analysis.encoderOutputFiles} file(s) written by the transcoding job inside this window. `
+          + 'RECORDED, NOT ASSERTED: the encoder races ahead of a paced client and exits, so this is how far '
+          + 'ahead it ran and is NOT evidence that it was busy for five minutes. The five-minute claim rests '
+          + 'on the continuity of decoded output above',
       });
-      // AND THE OTHER HALF OF THE SAME LIMITATION, STATED WITH ITS NUMBER. Live `TranscodingInfo` disappears
-      // when the encoder job ends, which on this source and host is within seconds; a share of it would be
-      // an assertion about encoder liveness wearing a session's clothes.
       record(args, {
-        gate: `JD20-transcode-soak-encoder-live-samples:${ref}`,
+        gate: `EM20-transcode-soak-encoder-live-samples:${ref}`,
         verdict: 'pass',
         measured: analysis.encoderLiveSamples, budget: analysis.sessionSamples,
         note: 'samples in which the server was still reporting a LIVE transcoding job. RECORDED, NOT '
-          + 'ASSERTED: it goes null once the encoder exits, which happens seconds into the window because '
-          + 'the encoder finishes the whole source almost immediately. G10 is NOT closed as five minutes of '
-          + 'encoder liveness by this gate',
+          + 'ASSERTED: it goes null once the encoder exits. G10 is NOT closed as five minutes of encoder '
+          + 'liveness by this gate',
       });
-      // THE SESSION TELEMETRY, SAMPLED ACROSS THE WINDOW AND ASSERTED ON BY NOTHING.
-      //
-      // WHY NOTHING ASSERTS ON IT. An earlier version required `PlayState.PlayMethod` to read `Transcode` at
-      // 80 % of samples — while the gate's own playback report was SENDING `PlayMethod: 'Transcode'`. That is
-      // a claim this process made, handed to the server, and read back as evidence the server had produced.
-      // A three-arm negative control against a live pinned server, with a real mpeg4 → h264 transcode
-      // serving the segments in every arm, showed the field is client-writable: reporting `DirectPlay` made
-      // the server record `DirectPlay` throughout. The gate now sends no `PlayMethod` at all, and this number
-      // is telemetry. What carries the transcode claim is the decoded output above.
       // SAMPLES ARE SUCCESSFUL READS ONLY, and the failures beside them are gated at zero — otherwise a run
       // whose polls all failed satisfies "sampled across the window" with nothing but its own failures.
-      record(args, exactly(`JD20-transcode-soak-failed-session-polls:${ref}`, raw.failedSessionPolls, 0,
+      record(args, exactly(`EM20-transcode-soak-failed-session-polls:${ref}`, raw.failedSessionPolls, 0,
         'session reads that never reached the server; a failed read is not an observation that the server '
         + 'reported nothing, and it may not be counted as one'));
-      record(args, atLeast(`JD20-transcode-soak-session-samples:${ref}`, analysis.sessionSamples, 10,
+      record(args, atLeast(`EM20-transcode-soak-session-samples:${ref}`, analysis.sessionSamples, 10,
         'successful session reads across the window, not one at the start'));
-      // ...AND THE SAMPLES HAVE TO HAVE FOUND SOMETHING. A window in which this gate's own session was never
-      // present is a window in which every number below describes an absence: `methodIsTranscode` and
-      // `encoderJobLive` are both false for "no session of ours exists" and for "it exists and is neither",
-      // and a count that cannot tell those apart is not telemetry, it is noise.
-      record(args, atLeast(`JD20-transcode-soak-session-present-samples:${ref}`, analysis.sessionPresentSamples,
+      record(args, atLeast(`EM20-transcode-soak-session-present-samples:${ref}`, analysis.sessionPresentSamples,
         Math.ceil(analysis.sessionSamples * MEDIA_SERVER_SOAK.MIN_SESSION_PRESENT_SAMPLE_FRACTION),
         `samples in which a session for THIS gate's device and this item existed at all, of `
         + `${analysis.sessionSamples} successful reads`));
       record(args, {
-        gate: `JD20-transcode-soak-reported-method-samples:${ref}`,
+        gate: `EM20-transcode-soak-reported-method-samples:${ref}`,
         verdict: 'pass',
         measured: analysis.transcodeMethodSamples, budget: analysis.sessionSamples,
         note: 'samples in which the server reported this session\'s playback method as Transcode. RECORDED, '
-          + 'NOT ASSERTED: a negative control showed the field is client-writable — a client reporting '
-          + 'DirectPlay is recorded as DirectPlay while a real transcode serves it — so it is not the '
-          + 'server\'s independent account. The gate authors no PlayMethod, and the transcode claim rests on '
-          + 'the decoded mpeg4-to-h264 output above',
+          + 'NOT ASSERTED: the Jellyfin gate\'s three-arm negative control showed this field is '
+          + 'client-writable in this API family, so it is not the server\'s independent account. This gate '
+          + 'authors no PlayMethod, and the transcode claim rests on the decoded mpeg4-to-h264 output above',
       });
-      // AND WHETHER THE TELEMETRY ABOVE HAD A SUBJECT. A run whose playback reports were refused is a run
-      // whose session numbers describe this gate's silence rather than the server's view, and that has to be
-      // visible rather than swallowed — even for a number nothing asserts on.
-      record(args, exactly(`JD20-transcode-soak-failed-playback-reports:${ref}`,
+      record(args, exactly(`EM20-transcode-soak-failed-playback-reports:${ref}`,
         raw.failedPlaybackReports, 0,
         'playback reports the server refused; a non-zero count makes the session telemetry beside it '
         + 'meaningless rather than merely low'));
-      record(args, exactly(`JD20-transcode-soak-no-credential-in-generated-urls:${ref}`,
+      record(args, exactly(`EM20-transcode-soak-no-credential-in-generated-urls:${ref}`,
         raw.credentialsInGeneratedUrls, 0));
       return;
     }
@@ -831,16 +962,13 @@ async function main(): Promise<void> {
       const prefix = optionalNumber(args, 'prefix', 262_144);
       const ref = opaqueRef('entry', key).slice(0, 12);
 
-      // ONE RESPONSE, OPENED ONCE. Not two ranged reads either side of the event — see `openPinnedStream`
-      // for why that difference is the whole gate.
+      // ONE RESPONSE, OPENED ONCE. Not two ranged reads either side of the event.
       const stream = await openPinnedStream(state, item);
       await stream.readAtLeast(prefix);
       const bytesBefore = stream.bytesRead;
 
-      // THE STREAM MUST STILL HAVE SOMETHING LEFT TO DELIVER. If the body already ended, nothing is being
-      // held open and every claim below would be about a completed download.
       record(args, {
-        gate: `JD7-stream-open-at-event:${ref}`,
+        gate: `EM7-stream-open-at-event:${ref}`,
         verdict: !stream.ended && bytesBefore < want.sizeBytes ? 'pass' : 'fail',
         measured: bytesBefore, budget: want.sizeBytes,
         note: 'one response body, partially consumed and deliberately not drained',
@@ -852,8 +980,6 @@ async function main(): Promise<void> {
       await awaitFile(releasePath, 'the gate to finish acting on the daemon',
         MEDIA_SERVER_DEADLINES_MS.HANDSHAKE);
 
-      // Resume THE SAME reader and run it to the end. The digest is over everything this one response
-      // delivered, first half and second.
       let outcome: 'completed' | 'interrupted' = 'completed';
       let detail = '';
       let result: { bytes: number; sha256: string } | undefined;
@@ -868,32 +994,31 @@ async function main(): Promise<void> {
       if (outcome === 'completed' && result !== undefined) {
         const correct = result.bytes === want.sizeBytes && result.sha256 === want.sha256;
         record(args, {
-          gate: `JD7-open-stream-across-event:${ref}`,
+          gate: `EM7-open-stream-across-event:${ref}`,
           verdict: correct ? 'pass' : 'fail',
           measured: result.bytes, budget: want.sizeBytes,
           note: 'one held-open response delivered the whole file correctly across the event',
         });
         // ANTI-BUFFERING. If the body had already been buffered in full before the pause, nothing would have
-        // arrived afterwards and "held open" would be a fiction. This measures the share that did.
+        // arrived afterwards and "held open" would be a fiction.
         const after = result.bytes - bytesBefore;
         record(args, {
-          gate: `JD7-bytes-after-event:${ref}`,
+          gate: `EM7-bytes-after-event:${ref}`,
           verdict: after >= Math.floor(want.sizeBytes / 4) ? 'pass' : 'fail',
           measured: after, budget: Math.floor(want.sizeBytes / 4),
           note: 'bytes delivered by the same response AFTER the event, so the pause was real',
         });
       } else if (allowInterrupt) {
         // THE DOCUMENTED ALLOWED BEHAVIOUR, and only where the acceptance plan says it is: G12 says playback
-        // is expected to fail across a SIGKILL and be resumable, and that the LIBRARY is not. Named for what
-        // it is — an interruption — and deliberately NOT counted as open-handle pinning evidence.
+        // is expected to fail across a SIGKILL and be resumable, and that the LIBRARY is not.
         record(args, {
-          gate: `JD7-open-stream-interrupted:${ref}`,
+          gate: `EM7-open-stream-interrupted:${ref}`,
           verdict: 'pass',
           note: `the held-open stream failed, which the acceptance plan permits for this event. This is NOT `
             + `evidence of generation pinning; resumability is asserted separately by a new request. ${detail}`,
         });
       } else {
-        record(args, { gate: `JD7-open-stream-across-event:${ref}`, verdict: 'fail', note: detail });
+        record(args, { gate: `EM7-open-stream-across-event:${ref}`, verdict: 'fail', note: detail });
       }
       return;
     }
@@ -908,7 +1033,7 @@ async function main(): Promise<void> {
       if (!want) fail(`no expectation was recorded for "${key}"`);
       const result = await directPlay(state, item, want.sizeBytes);
       record(args, {
-        gate: `JD8-resume-after-recovery:${opaqueRef('entry', key).slice(0, 12)}`,
+        gate: `EM8-resume-after-recovery:${opaqueRef('entry', key).slice(0, 12)}`,
         verdict: result.bytes === want.sizeBytes && result.sha256 === want.sha256 ? 'pass' : 'fail',
         measured: result.bytes, budget: want.sizeBytes,
         note: 'playback is resumable and the bytes are still the published ones',
@@ -917,8 +1042,8 @@ async function main(): Promise<void> {
     }
 
     case 'compare': {
-      // Two item listings, and what changed between them. This is the churn gate, and it is the one the
-      // acceptance plan is strictest about: a daemon crash must not make a library shrink.
+      // Two item listings, and what changed between them. This is the churn gate, and the acceptance plan is
+      // strictest about it: a daemon crash must not make a library shrink.
       const before = readItems(need(args, 'before'));
       const after = readItems(need(args, 'after'));
       const gate = need(args, 'gate');
@@ -933,7 +1058,6 @@ async function main(): Promise<void> {
         'a re-scan removing an item is the failure this appliance exists to avoid'));
       record(args, exactly(`${gate}-added`, added.length, expectAdded));
 
-      // Duplicates: two items for one file is the other shape of churn, and a set comparison hides it.
       const counts = new Map<string, number>();
       for (const item of after) counts.set(item.key, (counts.get(item.key) ?? 0) + 1);
       const duplicated = [...counts.values()].filter((count) => count > 1).length;
@@ -941,11 +1065,15 @@ async function main(): Promise<void> {
 
       // IDENTITY, not just presence. A media server that re-created an item under a new id has lost every
       // piece of watch state attached to it, and a count comparison would call that a clean re-scan.
+      //
+      // ON EMBY THE ID IS A DATABASE ROW ID rather than a path-derived GUID, so a stable id proves the row
+      // survived and does NOT independently corroborate the path the way Jellyfin's does. The path and size
+      // comparisons below carry that half on their own — see `EMBY_ITEM_IDS_ARE_DATABASE_ROW_IDS`.
       let churned = 0;
       for (const item of before) {
         if (!afterKeys.has(item.key)) continue;
-        const now = after.find((entry) => entry.key === item.key) as ItemRecord;
-        if (now.itemId !== item.itemId) churned += 1;
+        const nowItem = after.find((entry) => entry.key === item.key) as ItemRecord;
+        if (nowItem.itemId !== item.itemId) churned += 1;
       }
       record(args, exactly(`${gate}-item-id-churn`, churned, 0,
         'carried items keep the id they were first given'));
@@ -953,18 +1081,27 @@ async function main(): Promise<void> {
       // And the metadata the server derived from the file has not moved either.
       let moved = 0;
       for (const item of before) {
-        const now = after.find((entry) => entry.key === item.key);
-        if (now && (now.sizeBytes !== item.sizeBytes || now.container !== item.container)) moved += 1;
+        const nowItem = after.find((entry) => entry.key === item.key);
+        if (nowItem && (nowItem.sizeBytes !== item.sizeBytes || nowItem.container !== item.container)) {
+          moved += 1;
+        }
       }
       record(args, exactly(`${gate}-metadata-drift`, moved, 0));
+
+      // THE PROJECTED PATH ITSELF, which on this server is the half a stable id does not carry.
+      let relocated = 0;
+      for (const item of before) {
+        const nowItem = after.find((entry) => entry.key === item.key);
+        if (nowItem && nowItem.path !== item.path) relocated += 1;
+      }
+      record(args, exactly(`${gate}-path-drift`, relocated, 0,
+        'a carried item is still at the path the control plane published for it'));
       return;
     }
 
     case 'counters': {
       const url = need(args, 'url');
-      // A ref'd watchdog, for the same reason every other request in this gate has one: `AbortSignal.timeout`
-      // does not keep the event loop alive, and a provider that accepted the connection without answering
-      // would let this process exit 0 having read nothing.
+      // A ref'd watchdog, for the same reason every other request in this gate has one.
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), 15_000);
       const response = await fetch(url, { signal: controller.signal }).finally(() => clearTimeout(timer));
@@ -994,12 +1131,10 @@ async function main(): Promise<void> {
       // the object's own length; the budget is a fraction of it, so "it works, it just fetches everything"
       // cannot pass.
       //
-      // TWO DENOMINATORS WHEN THERE ARE TWO KINDS OF OBJECT, AND THE SECOND ONE IS ABOVE 1.0 ON PURPOSE.
-      // Below the contract's single-probe threshold an entry's own probe window IS the whole object, so
-      // identifying it costs its whole length by construction and a sub-1.0 budget over it would be a gate
-      // that could never pass. Folding the two together would be worse than either: the large entries would
-      // pay for the small ones, and a regression in the large path — the one the product's argument rests
-      // on — would disappear into the average. So each names its own denominator, and both are printed.
+      // TWO DENOMINATORS WHEN THERE ARE TWO KINDS OF OBJECT, and the second is above 1.0 on purpose: below the
+      // contract's single-probe threshold an entry's own probe window IS the whole object, so identifying it
+      // costs its whole length by construction and a sub-1.0 budget over it could never pass. Folding them
+      // together would let the large entries pay for the small ones.
       const smallBytes = optionalNumber(args, 'small-bytes', 0);
       const byteBudget = Math.floor(remoteBytes * MEDIA_SERVER_BUDGETS.MAX_SCAN_BYTE_FRACTION
         + smallBytes * MEDIA_SERVER_BUDGETS.MAX_SMALL_OBJECT_SCAN_BYTE_MULTIPLIER);
@@ -1025,11 +1160,10 @@ async function main(): Promise<void> {
     case 'traffic-window': {
       // WHAT A FIVE-MINUTE READ COST AT THE PROVIDER, bounded explicitly rather than by a scan multiplier.
       //
-      // WHY THE SCAN BUDGETS DO NOT APPLY HERE. `budget` measures a metadata pass, whose whole argument is
-      // that it reads a fraction of the object. A five-minute PLAYBACK legitimately reads the object — that
-      // is what playing it means — so a fraction budget over it would be a gate that could not pass, and
-      // leaving the window unmeasured would be a gate that could not fail. What is bounded instead is
-      // AMPLIFICATION: how many times over the daemon fetched an object it was streaming once.
+      // WHY THE SCAN BUDGETS DO NOT APPLY. `budget` measures a metadata pass, whose whole argument is that it
+      // reads a fraction of the object. A five-minute PLAYBACK legitimately reads the object — that is what
+      // playing it means — so a fraction budget over it would be a gate that could not pass, and leaving the
+      // window unmeasured would be a gate that could not fail. What is bounded instead is AMPLIFICATION.
       const before = JSON.parse(readFileSync(need(args, 'before'), 'utf8')) as Record<string, number>;
       const after = JSON.parse(readFileSync(need(args, 'after'), 'utf8')) as Record<string, number>;
       const gate = need(args, 'gate');
@@ -1043,10 +1177,9 @@ async function main(): Promise<void> {
       record(args, withinBudget(`${gate}-range-requests`, delta('rangeRequests'),
         optionalNumber(args, 'max-range-requests', 4096),
         'a ranged read per window the daemon needed, and a ceiling a runaway read-ahead would blow'));
-      // A FLOOR AS WELL, because a window in which the provider was never reached would score perfectly
-      // against every ceiling above and would mean the entry was served from somewhere else entirely.
       // A WARM WINDOW IS NOT A FAILURE, AND IT IS NOT A FREE PASS EITHER. See `readWarmCacheEvidence` for the
-      // unconditional floor this replaces and the daemon repair that invalidated it.
+      // floor this replaces and the daemon repair that invalidated it. Zero provider requests AND no daemon
+      // cache evidence is still a failure, and it is the same failure the old floor was aimed at.
       const providerRequests = delta('rangeRequests');
       if (providerRequests > 0) {
         // COLD, AND UNCHANGED. The window reached the provider, so the original floor is exactly right and is
@@ -1055,9 +1188,10 @@ async function main(): Promise<void> {
           optionalNumber(args, 'min-range-requests', 1),
           'a window in which the provider was never reached means the bytes came from somewhere else'));
       } else if (providerRequests < 0) {
-        // A PROVIDER COUNTER THAT FELL IS A BROKEN INSTRUMENT, NOT A WARM WINDOW: the endpoint restarted or
-        // its counters were reset between the two readings, so the window describes no interval at all and
-        // neither a ceiling nor a warm claim can be made about it. The warm arm is reached on EXACTLY zero.
+        // A PROVIDER COUNTER THAT FELL IS A BROKEN INSTRUMENT, NOT A WARM WINDOW. The endpoint restarted, or
+        // its counters were reset, between the two readings — so the window describes no interval at all, and
+        // neither a ceiling nor a warm-cache claim can be made about it. The warm arm is reached on EXACTLY
+        // zero and nothing else.
         record(args, {
           gate: `${gate}-provider-counters-coherent`, verdict: 'fail',
           measured: providerRequests, budget: 0,
@@ -1079,7 +1213,7 @@ async function main(): Promise<void> {
         record(args, atLeast(`${gate}-warm-daemon-cache-hit-bytes`, warm.hitBytes, 1,
           'and served this many bytes doing it. A hit COUNT alone cannot separate a window served from '
           + 'memory from one that hit once on a trivial read'));
-        // THE HEADLINE, NAMED FOR THE ASSERTION IT REPLACES so a reader of two runs sees the substitution
+        // THE HEADLINE, NAMED FOR THE ASSERTION IT REPLACES so a reader of two runs can see the substitution
         // rather than a floor that silently vanished.
         const served = warm.coherent && warm.hits > 0 && warm.hitBytes > 0;
         record(args, {
@@ -1118,10 +1252,10 @@ async function main(): Promise<void> {
     }
 
     case 'provider-invariants': {
-      // ABSOLUTE, NOT A DELTA. These three are zero (or under a cap) for the WHOLE run, not merely across
-      // some window of it. A delta check would let a 429 that happened during direct play cancel out against
-      // a window that did not include it, and "the admission limits held during the scan" is a much weaker
-      // claim than "they never stopped holding".
+      // ABSOLUTE, NOT A DELTA. These are zero (or under a cap) for the WHOLE run, not merely across some
+      // window of it. A delta check would let a 429 during direct play cancel out against a window that did
+      // not include it, and "the admission limits held during the scan" is much weaker than "they never
+      // stopped holding".
       const snapshot = JSON.parse(readFileSync(need(args, 'counters'), 'utf8')) as Record<string, number>;
       const gate = need(args, 'gate');
       record(args, withinBudget(`${gate}-http-429-total`, snapshot.served429 ?? 0,
@@ -1132,6 +1266,25 @@ async function main(): Promise<void> {
         MEDIA_SERVER_BUDGETS.MAX_PEAK_CONNECTIONS, 'across the whole run'));
       record(args, withinBudget(`${gate}-peak-concurrent-reads`, snapshot.peakConcurrent ?? 0,
         MEDIA_SERVER_BUDGETS.MAX_PEAK_CONNECTIONS, 'across the whole run'));
+      return;
+    }
+
+    case 'cache-accounting': {
+      // THE PROBE CACHE'S SIZE, HELD AGAINST WHAT A FIXED-WINDOW PLAN CAN ACCOUNT FOR.
+      //
+      // WHY A SIZE CHECK AND NOT ONLY A SUBSTRING SEARCH. The leak checks elsewhere in this gate search the
+      // cache for provider access material, and they would notice a token. They would notice NOTHING about a
+      // read path that quietly started writing whole objects through the cache — every byte of which is
+      // legitimate media. The size is the only instrument that sees that, and the ceiling is generous on
+      // purpose: what it rules out is an order of magnitude, not a byte.
+      const bytes = optionalNumber(args, 'cache-bytes', -1);
+      const ceiling = optionalNumber(args, 'ceiling-bytes', 0);
+      const published = optionalNumber(args, 'published-bytes', 0);
+      if (bytes < 0) fail('--cache-bytes is required and the cache size could not be measured');
+      record(args, withinBudget('EM21-probe-cache-within-window-plan', bytes, ceiling,
+        'three fixed windows per version, or the whole object below the single-probe threshold, plus slack'));
+      record(args, withinBudget('EM21-probe-cache-smaller-than-library', bytes, Math.max(0, published - 1),
+        'a scan-window cache the size of the library it caches windows of is not a window cache'));
       return;
     }
 
@@ -1150,7 +1303,7 @@ async function main(): Promise<void> {
       }
 
       console.log('');
-      console.log(`Projection Phase 1 — media-server data plane: ${results.length} assertions, `
+      console.log(`Projection Phase 1 — EMBY data plane: ${results.length} assertions, `
         + `${failed.length} failed, ${skipped.length} skipped.`);
       for (const result of results) {
         const measured = result.measured === undefined ? '' : ` ${result.measured}/${result.budget}`;
@@ -1175,6 +1328,13 @@ async function main(): Promise<void> {
       return;
     }
 
+    case 'consumer-token-file': {
+      // The name of the file the paced consumer reads its credential from, for the shell's leak checks.
+      // Printed rather than duplicated, so the gate script and the driver cannot disagree about it.
+      console.log(EMBY_CONSUMER_TOKEN_FILE);
+      return;
+    }
+
     default:
       fail(`unknown command: ${args.command || '(none)'}`);
   }
@@ -1182,16 +1342,14 @@ async function main(): Promise<void> {
 
 // A PHASE THAT ENDS WITHOUT SAYING SO IS A FAILURE, NOT A PASS.
 //
-// This is the second half of the fix described on `request`. That one removes the cause; this one removes the
-// SYMPTOM'S ability to look like success. The keepalive holds the event loop open for as long as a phase is
-// running, so an idle await cannot let Node exit; and the flag makes an exit that happens anyway — for any
-// reason at all — carry a non-zero status and a message, instead of an empty stdout and a 0 the caller reads
-// as "that phase passed".
+// The keepalive holds the event loop open for as long as a phase is running, so an idle await cannot let Node
+// exit; and the flag makes an exit that happens anyway — for any reason at all — carry a non-zero status and a
+// message, instead of an empty stdout and a 0 the caller reads as "that phase passed".
 let finished = false;
 const keepalive = setInterval(() => undefined, 1_000);
 process.on('exit', (code) => {
   if (!finished && code === 0) {
-    console.error('projection-jellyfin-dataplane: the phase exited without completing');
+    console.error('projection-emby-dataplane: the phase exited without completing');
     process.exitCode = 1;
   }
 });

@@ -7,17 +7,28 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
 
 - The **control plane** works: catalog authority, operator UI, import/export, backup, restore, retention,
   custody, and a gated Jellyfin collection control plane.
-- The **data plane exists, thinly, and one media server has now read it.** This line used to say "the data
-  plane does not exist; no media server can open a file through this product", and that stopped being true
-  when `deploy/projection-jellyfin-dataplane-gate.sh` started passing: a real, digest-pinned Jellyfin scans a
-  ~50-entry projected corpus, direct-plays it for five minutes at the media's own rate, seeks ten times
-  including backwards and past 90 % of duration, and consumes a forced transcode for five minutes — all
-  through the production `projectiond` mount. Leaving the old sentence in place would have been the
-  opposite of this repository's problem and just as bad: a document that disagrees with what runs.
-- **One media server is not three, and Docker Desktop is not Unraid.** Plex and Emby are untouched, no run
-  has happened on Linux or a real Unraid host, and no real provider endpoint has ever been contacted. What
-  has been run, against which server, is `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1.
-- Therefore the product now does the thing it is for, **once, on one media server, on a developer's machine**
+- The **data plane exists, thinly, and more than one media server has now read it.** This line used to say
+  "the data plane does not exist; no media server can open a file through this product", and that stopped
+  being true when `deploy/projection-jellyfin-dataplane-gate.sh` started passing: a real, digest-pinned
+  Jellyfin scans a ~50-entry projected corpus, direct-plays it for five minutes at the media's own rate,
+  seeks ten times including backwards and past 90 % of duration, and consumes a forced transcode for five
+  minutes — all through the production `projectiond` mount. Leaving the old sentence in place would have been
+  the opposite of this repository's problem and just as bad: a document that disagrees with what runs.
+- **"Plex and Emby are untouched" was this page's line, and it is now false twice over.** It became false for
+  Plex when `deploy/projection-plex-dataplane-gate.sh` merged with a run record carrying a real count —
+  **seven runs, three failing and four green**, the last three consecutive and each starting from nothing
+  (`docs/PROJECTION_PHASE_1_PLEX_DATA_PLANE.md` §7, which also says plainly that it is not a complete index).
+  It became false for Emby when `deploy/projection-emby-dataplane-gate.sh` passed **four times, the last
+  three consecutive and fresh, each 353 assertions with none failed and none skipped**
+  (`docs/PROJECTION_PHASE_1_EMBY_DATA_PLANE.md` §7).
+- **ALL THREE MEDIA SERVERS NOW HAVE A GATE, AND THE TRANCHE IS NO CLOSER TO CLOSING.** Every run of every one
+  of them has been on **Windows / Docker Desktop**, which `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6 says
+  closes **none** of G7–G13. What changed is that "one of the three is untouched" is no longer the reason
+  Phase 1 is open. The reason is the platform, and it always was.
+- **Docker Desktop is not Unraid.** No run has happened on Linux or a real Unraid host, and no real provider
+  endpoint has ever been contacted. What has been run, against which server, is
+  `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 — and that table, not this page, is the authority on it.
+- Therefore the product now does the thing it is for, **on all three media servers, on a developer's machine**
   — and Phase 1 remains open.
 
 ## The only tranche
@@ -25,7 +36,7 @@ are not reopened. This is the roadmap for the projection appliance, and it is de
 | | |
 |---|---|
 | **Projection Phase 0** | The executable product contract. `docs/ADR_002_PROJECTION_APPLIANCE.md`, `docs/PROJECTION_PHASE_0_PRODUCT_CONTRACT.md`, `docs/schemas/projection-manifest-v1.schema.json`, `src/core/projection/*`, `test/projection-manifest-v1.ts`. **Done.** |
-| **Projection Phase 1** | The **vertical slice**: manifest producer → published artifact → `projectiond` → FUSE mount → Plex, Jellyfin and Emby scanning and playing it. Local passthrough and HTTP Range adapters, in the same tranche. Gates in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`. **Open.** The daemon, the manifest producer (`docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md`), the publisher-to-mount gate and **the Jellyfin data-plane gate** are built and run; **Plex, Emby and the Unraid half are not**, and the tranche does not close until every gate passes on a real Linux or Unraid host, on all three media servers, three times. |
+| **Projection Phase 1** | The **vertical slice**: manifest producer → published artifact → `projectiond` → FUSE mount → Plex, Jellyfin and Emby scanning and playing it. Local passthrough and HTTP Range adapters, in the same tranche. Gates in `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md`. **Open.** The daemon, the manifest producer (`docs/PROJECTION_PHASE_1_MANIFEST_PUBLISHER.md`), the publisher-to-mount gate and **all three media-server data-plane gates** are built and run — **on Windows / Docker Desktop only, which closes none of G7–G13**. **The Unraid half is not**, and the tranche does not close until every gate passes on a real Linux or Unraid host, on all three media servers, three times. Whether any given gate has ever passed is §6.1 of the acceptance plan and each gate's own run record, because **a gate existing is not a gate passing**. |
 
 There is no Phase 2 in this document. Writing one now would be a guess, and a guess in a roadmap is how a
 product acquires thirty phases of scaffolding around a thing that has never run.
@@ -36,9 +47,15 @@ product acquires thirty phases of scaffolding around a thing that has never run.
 phase, may be started before the Phase 1 vertical slice passes its hard gates on three consecutive runs on a
 real Linux or Unraid host.**
 
-**This rule has not been satisfied and is not weakened by the Jellyfin gate.** Three consecutive green runs
-on Windows and Docker Desktop are three green runs on Windows and Docker Desktop. The rule says Linux or
-Unraid, and it says all three media servers, and neither has happened.
+**This rule has not been satisfied, and is not weakened by the Jellyfin gate, by the Plex gate, or by there
+now being a gate for every one of the three media servers.** Three consecutive green runs on Windows and
+Docker Desktop are three green runs on Windows and Docker Desktop. The rule says Linux or Unraid, and it says
+all three media servers, and neither has happened.
+
+**Nor is it weakened by a gate that exists.** Writing a third gate is exactly the kind of work the rule
+permits — it is the slice itself, not a document about it — but the rule is satisfied by RUNS, on the platform
+it names. A gate is only evidence once `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6.1 records it as run,
+and even then §6 decides what that run closes.
 
 This is a rule with teeth because this repository has the failure mode it prevents. There are 336 phases
 behind it, a large fraction of which are evidence packets, review gates, closure gates, authorization

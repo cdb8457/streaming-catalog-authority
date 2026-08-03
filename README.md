@@ -13,8 +13,16 @@ README is the **control plane** for that — the part that decides what exists. 
 it is what you can run today.
 
 The **data plane** — a small Go daemon, `projectiond`, that serves a provider-agnostic, read-only namespace of
-regular files over FUSE — now exists as an **experimental vertical slice**. It is not a release, it is not
-wired into any shipped Compose stack, and it has never been run against a real media server.
+regular files over FUSE — now exists as an **experimental vertical slice**. It is not a release and it is not
+wired into any shipped Compose stack.
+
+This paragraph used to end "and it has never been run against a real media server", and that stopped being
+true: real, digest-pinned **Jellyfin** and **Plex** servers now scan, direct-play, seek and transcode out of
+the production mount, and a third gate exists for **Emby**. **What that does not mean:** every run so far has
+been on Windows / Docker Desktop, which `docs/PROJECTION_PHASE_1_ACCEPTANCE_PLAN.md` §6 says closes **none** of
+the media-server gates. No run has happened on Linux or a real **Unraid** host, no real provider endpoint has
+ever been contacted, and Phase 1 is open. What has actually been run, against which server, is §6.1 of that
+plan — and a gate existing is not a gate passing.
 
 **The manifest publisher now exists.** PostgreSQL turns the catalog into a published generation: a stable
 source registry (schema v10) that the control plane asserts through `ops:projection-register`, and a publisher

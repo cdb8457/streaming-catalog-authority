@@ -1295,16 +1295,31 @@ await test('G8, G9 and G10 are recorded as RUN, and G10 is explicitly not record
   // anchored match below would fail for a reason that has nothing to do with the table.
   const row = (gate: string): string =>
     (plan.split('\n').find((line) => line.startsWith(`| ${gate} `)) ?? '').trim();
+  // AND THE SENTENCE THAT MAKES THE WHOLE TABLE READABLE HAS TO SURVIVE. Without it a reader sees four rows
+  // of `run` and no statement of what that run closes, which is the exact shape this repository produces too
+  // much of.
+  assert(/closes none of G7[-–—]G13/.test(plan),
+    'the plan still says, in prose beside the table, that a Docker Desktop run closes none of G7-G13');
   for (const gate of ['G7 **Scan**', 'G8 **Play**', 'G9 **Seek**', 'G10 **Transcode**']) {
     assert(row(gate).includes('now run'), `${gate} records what is now run`);
-    // EMBY, AND ONLY EMBY, IS STILL THE UNTOUCHED COLUMN.
+    // NO COLUMN MAY CLAIM MORE THAN DOCKER DESKTOP.
     //
-    // This asserted `| not run | not run |` — Plex and Emby together — which was true when it was written and
-    // stopped being true when the Plex gate passed. Keeping it would have forced the acceptance plan to go on
-    // saying Plex had never run in order to keep a Jellyfin test green, which is the table lying to preserve
-    // an assertion about itself. The intent survives intact: the LAST column is Emby, no gate here has ever
-    // been run against it, and a row that quietly acquired a verdict there would still fail.
-    assert(/\| not run \|$/.test(row(gate)), `${gate} still records EMBY as not run`);
+    // THIS ASSERTION HAS NOW BEEN NARROWED TWICE, AND BOTH NARROWINGS ARE THE SAME MISTAKE. It began as
+    // `| not run | not run |` — Plex and Emby together — and became `| not run |$` when the Plex gate passed.
+    // Both spellings pinned a COUNT OF UNTOUCHED SERVERS, which is a fact about how much work has been done
+    // and not a fact this suite has any business defending: each time a gate legitimately passed, the
+    // acceptance plan had to be prevented from saying so in order to keep a Jellyfin test green. That is the
+    // table lying to preserve an assertion about itself, and it happened twice.
+    //
+    // What this suite actually cares about is the thing that has NOT changed: no media-server gate has ever
+    // run anywhere that closes G7–G13. So every column now either says it has not run, or says it ran on
+    // Docker Desktop only. A column that quietly acquired an unqualified verdict — or a Linux or Unraid one
+    // that was not earned — still fails, and it fails for the reason that matters rather than for arithmetic.
+    for (const column of row(gate).split('|').slice(2).map((cell) => cell.trim()).filter(Boolean)) {
+      assert(!/\bLinux\b|\bUnraid\b/.test(column),
+        `${gate}: a column claims a platform that would CLOSE it, which no run has ever happened on: `
+        + `${column.slice(0, 120)}`);
+    }
   }
   assert(/NOT closed as five minutes of encoder liveness/.test(row('G10 **Transcode**')),
     'and G10 names the thing it does not claim, in the row that claims the rest');

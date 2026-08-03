@@ -42,3 +42,10 @@ deploy/ci/acceptance/playwright-report/
 # ...and for the PLEX data-plane gate, which holds all of that plus a Plex config directory and a transcode
 # scratch area. The gate deletes it on success and on failure; this is the belt to that brace.
 .projection-plex-gate/
+
+# ...and for the EMBY data-plane gate. Same reasons, plus one this gate has that the other two do not: because
+# Emby refuses an unauthenticated direct play, the paced consumer needs a credential, and the gate writes a
+# throwaway access token to a file in here for it to read. The cleanup trap deletes the directory on success
+# and on failure, and this is what stops an INTERRUPTED run leaving that file where `git add -A` could reach
+# it.
+.projection-emby-gate/
