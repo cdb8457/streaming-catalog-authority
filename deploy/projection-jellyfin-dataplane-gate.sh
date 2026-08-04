@@ -651,7 +651,8 @@ docker run -d --name "$RANGE_CONTAINER" --network "$NETWORK" --network-alias fak
   --file-object "${REMOTE_REF}=/remote/${REMOTE_FILE}" \
   --file-object "${MIDSCAN_REF}=/remote/${MIDSCAN_FILE}" \
   --file-object "${SOAK_REF}=/remote/${SOAK_FILE}" \
-  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \n  "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects.json >/dev/null
+  --file-object "${LARGE_REF}=/remote/${LARGE_FILE}" \
+  "${CORPUS_OBJECT_FLAGS[@]}" --emit /out/objects.json >/dev/null
 
 echo "  waiting for the endpoint to come up"
 # A LIVENESS PROBE MUST NOT BE PROVIDER TRAFFIC, AND THIS ONE USED TO BE.
