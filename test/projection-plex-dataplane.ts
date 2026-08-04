@@ -1817,8 +1817,11 @@ await test('THE GATE MAKES THE PX9 WINDOW COLD BY CONSTRUCTION, NOT BY TIMING', 
   assert(publishAt > seedAt, 'the remote anchor is published only once that scan has settled');
   assert(windowAt > publishAt, 'and the measured window opens after the anchor exists');
   // The seed generation must be local-only, or waiting out the creation scan would itself spend the budget.
-  assert(/the seed generation is supposed to be local-only/.test(GATE),
+  assert(/the seed generation is local-only, so it must cost nothing/.test(GATE),
     'and the gate ASSERTS the creation scan cost the provider nothing, rather than assuming it');
+  assert(GATE.includes('SEED_RANGE_DELTA=$(( SEED_COUNTERS_RANGE - BEFORE_LIBRARY_RANGE ))'),
+    'as a DELTA across the creation-scan window, not an absolute counter — the gate makes one ranged '
+    + 'request of its own before this point and an absolute check blamed Plex for it');
   assert(/register entry --item "\$REMOTE_ITEM"[\s\S]{0,400}publish > "\$WORK\/out\/publish-remote.json"/.test(GATE),
     'the remote entry is registered and published together, in the later generation');
 });
