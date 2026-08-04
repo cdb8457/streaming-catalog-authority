@@ -233,7 +233,16 @@ for _ in $(seq 1 180); do
   sleep 1
 done
 test "$ready" -eq 1 || { docker logs "$RANGE_CONTAINER" 2>&1 | tail -20 >&2; die "the endpoints never answered"; }
-test -f "$WORK/out/objects.json" || die "the endpoint never emitted its object descriptor"
+# THE DESCRIPTOR IS THE READINESS SIGNAL, NOT THE COUNTERS. `cmd/fakerange` starts serving BEFORE it
+# computes each object's whole-object digest, so /counters answers while --emit is still being written.
+# With a 256 MiB object that gap is seconds wide, and the first run to use one failed inside it.
+ready=0
+for _ in $(seq 1 180); do
+  if [ -s "$WORK/out/objects.json" ]; then ready=1; break; fi
+  sleep 1
+done
+test "$ready" -eq 1 \
+  || { docker logs "$RANGE_CONTAINER" 2>&1 | tail -20 >&2; die "the endpoint never emitted its object descriptor"; }
 OBJECT_SHA="$(node "$REL/objects.cjs" "$REL/out/objects.json" "$OBJECT_REF" sha256)"
 echo "  the endpoint is in resolver mode and serves one $OBJECT_SIZE-byte object"
 
