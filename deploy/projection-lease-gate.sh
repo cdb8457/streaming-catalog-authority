@@ -334,7 +334,11 @@ while [ ! -f /out/g24-release ]; do
 done
 cat <&3 >> /out/g24-part.bin
 exec 3<&-
-sha256sum /out/g24-part.bin | cut -d" " -f1 > /out/g24-digest.txt
+# ATOMIC, OR THE WAITER READS AN EMPTY FILE. A redirect CREATES the file before sha256sum has hashed 32 MiB,
+# so a gate polling for its existence can read nothing and call it a digest mismatch. Run 7 did exactly that:
+# 33,554,432 of 33,554,432 bytes produced and an EMPTY digest. Write elsewhere, then rename.
+sha256sum /out/g24-part.bin | cut -d" " -f1 > /out/g24-digest.tmp
+mv /out/g24-digest.tmp /out/g24-digest.txt
 PINNED
 
 node "$REL/identity.cjs" "$WORK/mnt/$ENTRY_PATH" "$WORK/manifest" "$ENTRY_PATH" "$WORK/out/identity-before.json"
