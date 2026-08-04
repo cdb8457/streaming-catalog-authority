@@ -286,7 +286,7 @@ step "G24 — a lease lapses under a read that is already in flight"
 cat > "$WORK/out/pinned-read.sh" <<PINNED
 set -eu
 exec 3< "/mnt/$ENTRY_PATH"
-dd bs=1024 count=1024 <&3 > /out/g24-part.bin 2>/dev/null
+dd bs=1024 count=1024 <&3 > /out/g24-part.bin
 echo opened > /out/g24-handle-open
 attempt=0
 while [ ! -f /out/g24-release ]; do
@@ -310,7 +310,12 @@ for _ in $(seq 1 120); do
   if [ -f "$WORK/out/g24-handle-open" ]; then ready=1; break; fi
   sleep 0.5
 done
-test "$ready" -eq 1 || { docker logs "$READER_CONTAINER" 2>&1 | tail -20 >&2; die "the reader never opened its handle"; }
+if [ "$ready" -ne 1 ]; then
+  echo "--- reader logs ---" >&2; docker logs "$READER_CONTAINER" 2>&1 | tail -30 >&2
+  echo "--- daemon logs ---" >&2; docker logs "$MOUNT_CONTAINER" 2>&1 | tail -40 >&2
+  echo "--- endpoint logs ---" >&2; docker logs "$RANGE_CONTAINER" 2>&1 | tail -20 >&2
+  die "the reader never opened its handle"
+fi
 echo "  the handle is open and one megabyte has been read through it"
 
 # THE WINDOW OPENS HERE, after the handle is open and before anything lapses.
